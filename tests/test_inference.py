@@ -102,6 +102,64 @@ def test_init_audio(model_pipe, maybe_save_audio):
     assert_audio_valid(audio, DURATION_SEC, sr)
 
 
+def test_init_audio_float32_into_half_model(model_pipe, maybe_save_audio):
+    pipe = model_pipe
+    if not pipe.model_half:
+        pytest.skip(
+            "model_half is False — dtype mismatch only occurs on half-precision models"
+        )
+
+    sr = pipe.model_config["sample_rate"]
+    channels = pipe.model_config.get("io_channels", 2)
+    prompt = "funky bass groove"
+
+    # Deliberately float32, regardless of model dtype — this was the bug trigger
+    init = sine_wave(
+        DURATION_SEC, sr, channels=channels, device=str(pipe.device), half=False
+    )
+    assert init.dtype == torch.float32
+
+    audio = pipe.generate(
+        prompt=prompt,
+        duration=DURATION_SEC,
+        steps=STEPS,
+        init_audio=(sr, init),
+        init_noise_level=0.8,
+    )
+    maybe_save_audio(audio, sr, prompt)
+    assert_audio_valid(audio, DURATION_SEC, sr)
+
+
+def test_inpaint_audio_float32_into_half_model(model_pipe, maybe_save_audio):
+    pipe = model_pipe
+    if not pipe.model_half:
+        pytest.skip(
+            "model_half is False — dtype mismatch only occurs on half-precision models"
+        )
+
+    sr = pipe.model_config["sample_rate"]
+    channels = pipe.model_config.get("io_channels", 2)
+    inpaint_duration = 10.0
+    prompt = "big trumpet solo, jazz big band, 90bpm"
+
+    # Deliberately float32, regardless of model dtype — this was the bug trigger
+    base_audio = sine_wave(
+        inpaint_duration, sr, channels=channels, device=str(pipe.device), half=False
+    )
+    assert base_audio.dtype == torch.float32
+
+    audio = pipe.generate(
+        prompt=prompt,
+        duration=inpaint_duration,
+        steps=STEPS,
+        inpaint_audio=(sr, base_audio),
+        inpaint_mask_start_seconds=2.0,
+        inpaint_mask_end_seconds=7.0,
+    )
+    maybe_save_audio(audio, sr, prompt)
+    assert_audio_valid(audio, inpaint_duration, sr)
+
+
 @pytest.mark.skipif(not HAS_ACCEL, reason="Batch inference requires a GPU/accelerator")
 def test_batch_inference(model_pipe, maybe_save_audio):
     pipe = model_pipe

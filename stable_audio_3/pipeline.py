@@ -417,6 +417,7 @@ class StableAudioPipeline:
             device=device,
         )
         if self.model.pretransform is not None:
+            audio = audio.to(next(self.model.pretransform.parameters()).dtype)
             audio = self.model.pretransform.encode(audio)
             if inpaint_mask is not None:
                 inpaint_mask = interpolate(
