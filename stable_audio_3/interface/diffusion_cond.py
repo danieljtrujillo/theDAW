@@ -332,7 +332,7 @@ def create_sampling_ui(pipeline, default_prompt=None):
             with gr.Accordion("Sampler params", open=False):
                 with gr.Row():
                     # Seed
-                    seed_textbox = gr.Textbox(label="Seed (set to -1 for random seed)", value="-1")
+                    seed_textbox = gr.Number(label="Seed (set to -1 for random seed)", value=-1, precision=0)
 
                     cfg_interval_min_slider = gr.Slider(minimum=0.0, maximum=1, step=0.01, value=0.0, label="CFG interval min")
                     cfg_interval_max_slider = gr.Slider(minimum=0.0, maximum=1, step=0.01, value=1.0, label="CFG interval max")
