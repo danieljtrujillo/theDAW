@@ -33,6 +33,7 @@ import os
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import argparse
+import itertools
 import json
 from pathlib import Path
 import torch
@@ -48,7 +49,10 @@ from stable_audio_3.data.dataset import (
 from stable_audio_3.loading_utils import copy_state_dict, load_ckpt_state_dict
 from stable_audio_3.model_configs import rf_models
 from stable_audio_3.model import create_diffusion_cond_from_config
-from stable_audio_3.training.diffusion import DiffusionCondTrainingWrapper
+from stable_audio_3.training.diffusion import (
+    DiffusionCondTrainingWrapper,
+    DiffusionCondInpaintDemoCallback,
+)
 
 
 def load_model(model_name: str, device: torch.device):
@@ -78,14 +82,6 @@ def caption_metadata_fn(info, audio):
 class ExceptionCallback(pl.Callback):
     def on_exception(self, trainer, module, err):
         print(f"{type(err).__name__}: {err}")
-
-
-class ModelConfigEmbedderCallback(pl.Callback):
-    def __init__(self, model_config):
-        self.model_config = model_config
-
-    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
-        checkpoint["model_config"] = self.model_config
 
 
 def train(args):
@@ -154,7 +150,6 @@ def train(args):
         "include": args.include,
         "exclude": args.exclude,
     }
-
     optimizer_config = {
         "diffusion": {
             "optimizer": {
@@ -162,6 +157,7 @@ def train(args):
                 "config": {
                     "lr": args.lr,
                     "weight_decay": 0.01,
+                    "betas": [0.9, 0.95],
                 },
             }
         }
@@ -226,9 +222,37 @@ def train(args):
     ckpt_callback = pl.callbacks.ModelCheckpoint(
         every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1
     )
-    save_model_config_callback = ModelConfigEmbedderCallback(model_config)
 
-    callbacks = [ckpt_callback, exc_callback, save_model_config_callback]
+    demo_dl = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0,
+        drop_last=True,
+        collate_fn=collation_fn,
+    )
+
+    # Pre-fetch the first batch and cycle it so demos always use the same samples
+    demo_batch = next(iter(demo_dl))
+    _, metadata = demo_batch
+    for j in range(min(4, len(metadata))):
+        md = metadata[j]
+        print(
+            f"Demo sample {j}: prompt={md.get('prompt', '')} seconds_total={md.get('seconds_total', '')}"
+        )
+    demo_dl = itertools.cycle([demo_batch])
+
+    demo_callback = DiffusionCondInpaintDemoCallback(
+        demo_every=args.demo_every,
+        sample_size=model_config.get("sample_size"),
+        sample_rate=model_config.get("sample_rate"),
+        demo_steps=50,
+        num_demos=4,
+        demo_cfg_scales=[2, 4, 7],
+        demo_dl=demo_dl,
+    )
+
+    callbacks = [ckpt_callback, exc_callback, demo_callback]
 
     # Combine args and config dicts
     args_dict = vars(args)
@@ -339,7 +363,7 @@ def main():
         help="Path to an existing LoRA .safetensors checkpoint to resume from",
     )
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--steps", type=int, default=1000)
+    p.add_argument("--steps", type=int, default=10_000)
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument(
         "--duration",
@@ -351,8 +375,9 @@ def main():
     p.add_argument("--logger", choices=["wandb", "comet", "csv", "none"], default="csv")
     p.add_argument("--name", type=str, default="lora-finetune")
     p.add_argument("--save_dir", type=str, default="./lora_checkpoints")
-    p.add_argument("--checkpoint_every", type=int, default=100)
-    p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--checkpoint_every", type=int, default=500)
+    p.add_argument("--log_every", type=int, default=100)
+    p.add_argument("--demo_every", type=int, default=500)
     p.add_argument("--num_workers", type=int, default=8)
     args = p.parse_args()
     if not args.encoded_dir and not args.data_dir:

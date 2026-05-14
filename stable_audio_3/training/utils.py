@@ -1,6 +1,62 @@
-import torch
+from pytorch_lightning.loggers import WandbLogger, CometLogger
+from ..interface.aeiou import pca_point_cloud
+
 import math
+import wandb
+import torch
+import torch.nn.functional as F
+import os
 import typing as tp
+
+def get_rank():
+    """Get rank of current process."""
+
+    if "SLURM_PROCID" in os.environ:
+        return int(os.environ["SLURM_PROCID"])
+
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return 0
+
+    return torch.distributed.get_rank()
+
+class InverseLR(torch.optim.lr_scheduler._LRScheduler):
+    """Implements an inverse decay learning rate schedule with an optional exponential
+    warmup. When last_epoch=-1, sets initial lr as lr.
+    inv_gamma is the number of steps/epochs required for the learning rate to decay to
+    (1 / 2)**power of its original value.
+    Args:
+        optimizer (Optimizer): Wrapped optimizer.
+        inv_gamma (float): Inverse multiplicative factor of learning rate decay. Default: 1.
+        power (float): Exponential factor of learning rate decay. Default: 1.
+        warmup (float): Exponential warmup factor (0 <= warmup < 1, 0 to disable)
+            Default: 0.
+        final_lr (float): The final learning rate. Default: 0.
+        last_epoch (int): The index of last epoch. Default: -1.
+    """
+
+    def __init__(self, optimizer, inv_gamma=1., power=1., warmup=0., final_lr=0.,
+                 last_epoch=-1):
+        self.inv_gamma = inv_gamma
+        self.power = power
+        if not 0. <= warmup < 1:
+            raise ValueError('Invalid value for warmup')
+        self.warmup = warmup
+        self.final_lr = final_lr
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if not self._get_lr_called_within_step:
+            import warnings
+            warnings.warn("To get the last learning rate computed by the scheduler, "
+                          "please use `get_last_lr()`.")
+
+        return self._get_closed_form_lr()
+
+    def _get_closed_form_lr(self):
+        warmup = 1 - self.warmup ** (self.last_epoch + 1)
+        lr_mult = (1 + self.last_epoch / self.inv_gamma) ** -self.power
+        return [warmup * max(self.final_lr, base_lr * lr_mult)
+                for base_lr in self.base_lrs]
 
 def create_optimizer_from_config(optimizer_config, parameters):
     """Create optimizer from config.
@@ -14,8 +70,25 @@ def create_optimizer_from_config(optimizer_config, parameters):
     """
 
     optimizer_type = optimizer_config["type"]
-    optimizer_fn = getattr(torch.optim, optimizer_type)
-    optimizer = optimizer_fn(parameters, **optimizer_config["config"])
+
+    if optimizer_type == "FusedAdam":
+        from deepspeed.ops.adam import FusedAdam
+        optimizer = FusedAdam(parameters, **optimizer_config["config"])
+    elif optimizer_type == "CAdamW":
+        from stable_audio_tools.training.optims import CAdamW
+        optimizer = CAdamW(parameters, **optimizer_config["config"])
+    elif optimizer_type == "CLion":
+        from stable_audio_tools.training.optims import CLion
+        optimizer = CLion(parameters, **optimizer_config["config"])
+    elif optimizer_type == "AdamW8bit":
+        from bitsandbytes.optim import AdamW8bit
+        optimizer = AdamW8bit(parameters, **optimizer_config["config"])
+    elif optimizer_type == "MuonAdamW":
+        from stable_audio_tools.training.optims import MuonAdamW
+        optimizer = MuonAdamW(parameters, **optimizer_config["config"])
+    else:
+        optimizer_fn = getattr(torch.optim, optimizer_type)
+        optimizer = optimizer_fn(parameters, **optimizer_config["config"])
     return optimizer
 
 def create_scheduler_from_config(scheduler_config, optimizer):
@@ -33,14 +106,79 @@ def create_scheduler_from_config(scheduler_config, optimizer):
     else:
         scheduler_fn = getattr(torch.optim.lr_scheduler, scheduler_config["type"])
     scheduler = scheduler_fn(optimizer, **scheduler_config["config"])
-    return scheduler    
+    return scheduler
+
+def logger_project_name(logger) -> str:
+    if isinstance(logger, WandbLogger):
+        return logger.experiment.project
+    elif isinstance(logger, CometLogger):
+        return logger.name
 
 def log_metric(logger, key, value, step=None):
     from pytorch_lightning.loggers import WandbLogger, CometLogger
     if isinstance(logger, WandbLogger):
         logger.experiment.log({key: value})
     elif isinstance(logger, CometLogger):
-        logger.experiment.log_metrics({key: value}, step=step)    
+        logger.experiment.log_metrics({key: value}, step=step)
+
+def log_audio(logger, key, audio_path, sample_rate, caption=None, step=None):
+    if isinstance(logger, WandbLogger):
+        logger.experiment.log({key: wandb.Audio(audio_path, sample_rate=sample_rate, caption=caption)})
+    elif isinstance(logger, CometLogger):
+        logger.experiment.log_audio(audio_path, file_name=key, sample_rate=sample_rate, step=step)
+
+def log_image(logger, key, img_data, step=None):
+    if isinstance(logger, WandbLogger):
+        logger.experiment.log({key: wandb.Image(img_data)})
+    elif isinstance(logger, CometLogger):
+        logger.experiment.log_image(img_data, name=key, step=step)
+
+def log_point_cloud(logger, key, tokens, caption=None):
+    if isinstance(logger, WandbLogger):
+        point_cloud = pca_point_cloud(tokens)
+        logger.experiment.log({key: point_cloud})
+    elif isinstance(logger, CometLogger):
+        point_cloud = pca_point_cloud(tokens, rgb_float=True, output_type="points")
+        #logger.experiment.log_points_3d(scene_name=key, points=point_cloud)
+
+
+def compute_per_elem_trim(conditioning, sample_rate, margin_seconds=5.0):
+    """Compute per-element trim lengths from seconds_total in conditioning dicts.
+
+    Returns a list of trim lengths (in audio samples) or None if no seconds_total found.
+    """
+    if not any("seconds_total" in c for c in conditioning):
+        return None
+    margin_samples = int(margin_seconds * sample_rate)
+    per_elem_trim = []
+    for c in conditioning:
+        if "seconds_total" in c:
+            per_elem_trim.append(int(c["seconds_total"] * sample_rate) + margin_samples)
+        else:
+            per_elem_trim.append(None)
+    return per_elem_trim
+
+def trim_and_concat(x, per_elem_trim):
+    """Per-element trim and concatenate along time axis.
+
+    Trims each batch element to its own length (from seconds_total + margin),
+    removing trailing padding silence before concatenation.
+
+    Args:
+        x: (b, d, n) tensor or list of (d, n) tensors
+        per_elem_trim: list of trim lengths per element, or None for no trimming
+    """
+    items = [x[i] for i in range(x.shape[0])] if isinstance(x, torch.Tensor) and x.dim() == 3 else x
+    if per_elem_trim is None:
+        return torch.cat(items, dim=-1)
+    parts = []
+    for i, elem in enumerate(items):
+        if per_elem_trim[i] is not None:
+            parts.append(elem[..., :min(per_elem_trim[i], elem.shape[-1])])
+        else:
+            parts.append(elem)
+    return torch.cat(parts, dim=-1)
+
 
 class StaggeredLogger:
     """Accumulates log values over N steps and flushes averaged metrics.
@@ -107,6 +245,7 @@ class StaggeredLogger:
             self._accum = {}
             self._counts = {}
             self._steps = 0
+
 
 def resize_padding_mask(padding_mask: torch.Tensor, target_length: int) -> torch.Tensor:
     """Resize a padding mask to target_length using ceiling-based length scaling.
@@ -187,7 +326,8 @@ def create_augmented_padding_mask(
     positions = torch.arange(seq_len, device=device).unsqueeze(0)  # (1, seq_len)
     augmented_mask = positions < augmented_lengths.unsqueeze(1)  # (batch, seq_len)
 
-    return augmented_mask        
+    return augmented_mask
+
 
 def compute_normalized_mse(
     pred: torch.Tensor,

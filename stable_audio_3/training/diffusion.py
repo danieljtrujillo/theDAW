@@ -1,18 +1,23 @@
 import math
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger, CometLogger
+import os
 import torch
+import gc
 import typing as tp
+import torchaudio
 
 from einops import rearrange
 from safetensors.torch import save_file
 from functools import partial
 from torch.nn import functional as F
 
-from ..inference.sampling import truncated_logistic_normal_rescaled, sample_timesteps_logsnr, sample_timesteps_logsnr_uniform
+from ..interface.aeiou import audio_spectrogram_image
+from ..inference.sampling import truncated_logistic_normal_rescaled, sample_timesteps_logsnr, sample_timesteps_logsnr_uniform, sample_diffusion
 from ..models.diffusion import ConditionedDiffusionModelWrapper
-from ..models.inpainting import random_inpaint_mask
+from ..models.inpainting import random_inpaint_mask, MaskType
 from ..models.lora import add_lora, get_lora_params, get_lora_state_dict, LoRAParametrization, get_lora_layers, save_lora_safetensors, resolve_adapter_type, prepare_dora_state_dict, cast_base_to_precision
-from .utils import create_optimizer_from_config, create_scheduler_from_config, log_metric, create_augmented_padding_mask, compute_masked_loss, compute_normalized_mse, resize_padding_mask, StaggeredLogger
+from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, get_rank, create_augmented_padding_mask, compute_masked_loss, compute_normalized_mse, resize_padding_mask, StaggeredLogger, compute_per_elem_trim, trim_and_concat
 from time import time
 
 class Profiler:
@@ -631,3 +636,508 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 **get_lora_state_dict(self.diffusion.conditioner)
             }
             checkpoint['lora_config'] = self.lora_config
+
+class DiffusionCondInpaintDemoCallback(pl.Callback):
+    def __init__(
+        self,
+        demo_every=2000,
+        demo_steps=250,
+        sample_size=65536,
+        sample_rate=48000,
+        demo_cfg_scales: tp.Optional[tp.List[int]] = [3, 5, 7],
+        demo_conditioning: tp.Optional[tp.List[tp.Dict[str, tp.Any]]] = None,
+        inpaint_demo_config: tp.Optional[tp.Dict[str, int]] = None,
+        num_demos: int = 0,
+        demo_dl=None,
+    ):
+        super().__init__()
+        self.demo_every = demo_every
+        self.demo_steps = demo_steps
+        self.demo_samples = sample_size
+        self.sample_rate = sample_rate
+        self.demo_cfg_scales = demo_cfg_scales
+        self.demo_conditioning = demo_conditioning or []
+        self.last_demo_step = -1
+
+        # Map config keys to MaskType enum
+        self._mask_type_map = {
+            "num_random_segments": MaskType.RANDOM_SEGMENTS,
+            "num_full_mask": MaskType.FULL_MASK,
+            "num_causal": MaskType.CAUSAL_MASK,
+            "num_random_spans": MaskType.RANDOM_SPANS,
+        }
+
+        # Legacy fallback: if no inpaint_demo_config but num_demos is set,
+        # use num_demos items with random mask sampling (old behavior)
+        if inpaint_demo_config is not None:
+            self.inpaint_demo_config = inpaint_demo_config
+            self.legacy_inpaint_demos = False
+        elif num_demos > 0:
+            self.inpaint_demo_config = {}
+            self.legacy_inpaint_demos = True
+            self.legacy_num_demos = num_demos
+        else:
+            self.inpaint_demo_config = {}
+            self.legacy_inpaint_demos = False
+
+        # Total inpainting demos needed from batch
+        if self.legacy_inpaint_demos:
+            self.num_inpaint_demos = self.legacy_num_demos
+        else:
+            self.num_inpaint_demos = sum(
+                self.inpaint_demo_config.get(k, 0) for k in self._mask_type_map
+            )
+
+        if demo_dl is not None:
+            self.demo_dl = iter(demo_dl)
+        else:
+            self.demo_dl = None
+
+        self._teacher_demo_done = False
+
+    def _generate_prompt_demos(self, module, trainer, is_rank_zero=True):
+        """Generate full t2m demos from specified prompts (FULL_MASK)."""
+        if not self.demo_conditioning:
+            return [], []
+
+        demo_cond = self.demo_conditioning
+        num_demos = len(demo_cond)
+
+        demo_samples = self.demo_samples
+        if module.diffusion.pretransform is not None:
+            demo_samples = demo_samples // module.diffusion.pretransform.downsampling_ratio
+
+        # Conditioning from prompts
+        conditioning = module.diffusion.conditioner(demo_cond, module.device)
+
+        # FULL_MASK: all-zero inpaint conditioning
+        io_channels = module.diffusion.io_channels
+        inpaint_mask = torch.zeros(num_demos, 1, demo_samples, device=module.device)
+        inpaint_masked_input = torch.zeros(num_demos, io_channels, demo_samples, device=module.device)
+        conditioning['inpaint_mask'] = [inpaint_mask]
+        conditioning['inpaint_masked_input'] = [inpaint_masked_input]
+
+        cond_inputs = module.diffusion.get_conditioning_inputs(conditioning)
+
+        noise = torch.randn(num_demos, io_channels, demo_samples, device=module.device)
+        model_dtype = next(module.diffusion.parameters()).dtype
+        noise = noise.to(model_dtype)
+
+        per_elem_trim = compute_per_elem_trim(demo_cond, self.sample_rate, margin_seconds=2)
+
+        model = module.diffusion_ema.ema_model if module.diffusion_ema is not None else module.diffusion.model
+
+        all_audio = []
+        all_context_masks = []
+
+        for cfg_scale in self.demo_cfg_scales:
+            if is_rank_zero:
+                print(f"Generating prompt demos for cfg scale {cfg_scale}")
+
+            with torch.amp.autocast("cuda"):
+                fakes = sample_diffusion(
+                    model=model,
+                    noise=noise,
+                    cond_inputs=cond_inputs,
+                    diffusion_objective=module.diffusion_objective,
+                    steps=self.demo_steps,
+                    cfg_scale=cfg_scale,
+                    conditioning=demo_cond,
+                    sample_rate=self.sample_rate,
+                    pretransform=module.diffusion.pretransform,
+                    mask_padding_attention=module.diffusion.mask_padding_attention,
+                    use_effective_length_for_schedule=module.diffusion.use_effective_length_for_schedule,
+                    headroom_seconds=5.0,
+                    dist_shift=module.diffusion.sampling_dist_shift,
+                    batch_cfg=True,
+                    disable_tqdm=not is_rank_zero,
+                    decode=True
+                )
+
+            fakes = trim_and_concat(fakes, per_elem_trim)
+
+            all_audio.append(fakes)
+
+        # Latent-resolution all-zeros mask (no context for prompt demos),
+        # trimmed to match the per-element audio durations
+        ds_ratio = module.diffusion.pretransform.downsampling_ratio if module.diffusion.pretransform is not None else 1
+        latent_trim = [t // ds_ratio if t is not None else None for t in per_elem_trim] if per_elem_trim is not None else None
+        latent_mask = torch.zeros(num_demos, 1, demo_samples)
+        context_mask = trim_and_concat(latent_mask, latent_trim).squeeze(0).cpu()
+        all_context_masks = [context_mask] * len(self.demo_cfg_scales)
+
+        del noise, conditioning, cond_inputs, inpaint_mask, inpaint_masked_input
+        torch.cuda.empty_cache()
+
+        return all_audio, all_context_masks
+
+    def _generate_inpaint_demos(self, module, trainer, is_rank_zero=True):
+        """Generate inpainting demos from batch data with forced mask types."""
+        if self.num_inpaint_demos == 0 or self.demo_dl is None:
+            return [], []
+
+        demo_reals, metadata = next(self.demo_dl)
+
+        if demo_reals.ndim == 4 and demo_reals.shape[0] == 1:
+            demo_reals = demo_reals[0]
+
+        demo_reals = demo_reals[:self.num_inpaint_demos]
+        metadata = metadata[:self.num_inpaint_demos]
+        model_dtype = next(module.diffusion.parameters()).dtype
+        demo_reals = demo_reals.to(module.device, dtype=model_dtype)
+
+        if not module.pre_encoded:
+            if module.diffusion.pretransform is not None:
+                module.diffusion.pretransform.to(module.device)
+                demo_reals = module.diffusion.pretransform.encode(demo_reals)
+        else:
+            if hasattr(module.diffusion.pretransform, "scale") and module.diffusion.pretransform.scale != 1.0:
+                demo_reals = demo_reals / module.diffusion.pretransform.scale
+
+        padding_masks = torch.stack([md["padding_mask"][0] for md in metadata], dim=0).to(module.device)
+        if padding_masks.shape[-1] != demo_reals.shape[-1]:
+            padding_masks = resize_padding_mask(padding_masks, demo_reals.shape[-1])
+        mask_padding = module.diffusion.mask_padding_attention
+
+        if self.legacy_inpaint_demos:
+            # Legacy: random mask type sampling (old behavior)
+            masked_input, mask = random_inpaint_mask(
+                demo_reals, padding_masks=padding_masks,
+                mask_padding=mask_padding,
+                **module.inpaint_mask_kwargs
+            )
+        else:
+            # New: forced mask types per config
+            all_masks = []
+            all_masked_inputs = []
+            idx = 0
+            for config_key, mask_type in self._mask_type_map.items():
+                count = self.inpaint_demo_config.get(config_key, 0)
+                if count == 0:
+                    continue
+                subset_reals = demo_reals[idx:idx+count]
+                subset_padding = padding_masks[idx:idx+count]
+                mi, m = random_inpaint_mask(
+                    subset_reals, padding_masks=subset_padding,
+                    mask_padding=mask_padding, force_mask_type=mask_type,
+                    **module.inpaint_mask_kwargs
+                )
+                all_masks.append(m)
+                all_masked_inputs.append(mi)
+                idx += count
+
+            mask = torch.cat(all_masks, dim=0)
+            masked_input = torch.cat(all_masked_inputs, dim=0)
+
+        conditioning = module.diffusion.conditioner(metadata, module.device)
+        conditioning['inpaint_mask'] = [mask]
+        conditioning['inpaint_masked_input'] = [masked_input]
+
+        cond_inputs = module.diffusion.get_conditioning_inputs(conditioning)
+
+        demo_samples = demo_reals.shape[2]
+        noise = torch.randn(demo_reals.shape[0], module.diffusion.io_channels, demo_samples, device=module.device)
+        model_dtype = next(module.diffusion.parameters()).dtype
+        noise = noise.to(model_dtype)
+
+        per_elem_trim = compute_per_elem_trim(metadata, self.sample_rate, margin_seconds=2)
+
+        # Trim and concatenate context mask at latent resolution,
+        # using same trimming basis as audio (per_elem_trim // ds_ratio)
+        ds_ratio = module.diffusion.pretransform.downsampling_ratio if module.diffusion.pretransform is not None else 1
+        latent_trim = [t // ds_ratio if t is not None else None for t in per_elem_trim] if per_elem_trim is not None else None
+
+        # Zero out padding region in mask for display — the mask is initialized to 1,
+        # so without mask_padding the padding frames show as false context in the overlay
+        display_mask = mask * padding_masks.unsqueeze(1)
+
+        context_mask = trim_and_concat(display_mask, latent_trim).squeeze(0).cpu()
+
+        model = module.diffusion_ema.ema_model if module.diffusion_ema is not None else module.diffusion.model
+
+        all_audio = []
+        all_context_masks = []
+
+        for cfg_scale in self.demo_cfg_scales:
+            if is_rank_zero:
+                print(f"Generating inpaint demos for cfg scale {cfg_scale}")
+
+            with torch.amp.autocast("cuda"):
+                fakes = sample_diffusion(
+                    model=model,
+                    noise=noise,
+                    cond_inputs=cond_inputs,
+                    diffusion_objective=module.diffusion_objective,
+                    steps=self.demo_steps,
+                    cfg_scale=cfg_scale,
+                    conditioning=metadata,
+                    sample_rate=self.sample_rate,
+                    pretransform=module.diffusion.pretransform,
+                    mask_padding_attention=module.diffusion.mask_padding_attention,
+                    use_effective_length_for_schedule=module.diffusion.use_effective_length_for_schedule,
+                    headroom_seconds=5.0,
+                    dist_shift=module.diffusion.sampling_dist_shift,
+                    batch_cfg=True,
+                    disable_tqdm=not is_rank_zero,
+                    decode=True
+                )
+
+            fakes = trim_and_concat(fakes, per_elem_trim)
+
+            all_audio.append(fakes)
+            all_context_masks.append(context_mask)
+
+        del noise, conditioning, cond_inputs, mask, masked_input, padding_masks, demo_reals
+        torch.cuda.empty_cache()
+
+        return all_audio, all_context_masks
+
+    @torch.no_grad()
+    def on_train_batch_end(self, trainer, module: DiffusionCondTrainingWrapper, outputs, batch, batch_idx):
+        if (trainer.global_step - 1) % self.demo_every != 0 or self.last_demo_step == trainer.global_step:
+            return
+
+        is_rank_zero = get_rank() == 0
+
+        module.eval()
+
+        self.last_demo_step = trainer.global_step
+
+        try:
+            # Generate both types of demos, freeing intermediates between phases
+            prompt_audio, prompt_masks = self._generate_prompt_demos(module, trainer, is_rank_zero)
+            torch.cuda.empty_cache()
+
+            inpaint_audio, inpaint_masks = self._generate_inpaint_demos(module, trainer, is_rank_zero)
+            torch.cuda.empty_cache()
+
+            # Combine per cfg scale (prompt_audio and inpaint_audio have one entry per cfg scale)
+            if is_rank_zero:
+                for i, cfg_scale in enumerate(self.demo_cfg_scales):
+                    parts = []
+                    mask_parts = []
+
+                    if i < len(prompt_audio):
+                        parts.append(prompt_audio[i])
+                        mask_parts.append(prompt_masks[i])
+
+                    if i < len(inpaint_audio):
+                        parts.append(inpaint_audio[i])
+                        mask_parts.append(inpaint_masks[i])
+
+                    if not parts:
+                        continue
+
+                    combined_audio = torch.cat(parts, dim=-1)
+                    combined_mask = torch.cat(mask_parts, dim=-1) if mask_parts else None
+
+                    filename = f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                    combined_audio = combined_audio.to(torch.float32).div(torch.max(torch.abs(combined_audio))).mul(32767).to(torch.int16).cpu()
+                    torchaudio.save(filename, combined_audio, self.sample_rate)
+
+                    log_audio(trainer.logger, f'demo_cfg_{cfg_scale}', filename, self.sample_rate)
+                    log_image(trainer.logger, f'demo_melspec_left_cfg_{cfg_scale}', audio_spectrogram_image(combined_audio, context_mask=combined_mask))
+                    if isinstance(trainer.logger, (WandbLogger, CometLogger)):
+                        os.remove(filename)
+
+            # Teacher ODE warmup diagnostic: mirror the exact ODE warmup sample_diffusion call
+            # and decode the target to verify teacher output quality.
+            # Only runs on the first demo.
+            # Generates both prompt and inpaint demos, consistent with the main callback.
+            teacher_ref = getattr(module, '_teacher', None) or getattr(module, 'teacher_model', None)
+            if not self._teacher_demo_done and teacher_ref is not None:
+                self._teacher_demo_done = True
+                if is_rank_zero:
+                    print("Generating teacher ODE warmup diagnostic")
+                try:
+                    pretransform = module.diffusion.pretransform  # Shared pretransform (not on teacher)
+                    io_channels = teacher_ref.io_channels
+                    ode_warmup_config = getattr(module, 'ode_warmup_config', {})
+                    teacher_cfg = getattr(module, 'ode_warmup_cfg', self.demo_cfg_scales[0])
+                    ode_steps = getattr(module, 'ode_n_sampling_steps', 20)
+                    mask_padding = module.diffusion.mask_padding_attention
+                    ds_ratio = pretransform.downsampling_ratio if pretransform is not None else 1
+
+                    # --- Teacher prompt demos (FULL_MASK, same as _generate_prompt_demos) ---
+                    prompt_target = None
+                    prompt_per_elem_trim = None
+                    prompt_context_mask = None
+
+                    demo_cond = self.demo_conditioning
+                    if demo_cond:
+                        num_demos = len(demo_cond)
+                        demo_samples = self.demo_samples
+                        if pretransform is not None:
+                            demo_samples = demo_samples // ds_ratio
+
+                        with torch.no_grad():
+                            teacher_conditioning = teacher_ref.conditioner(demo_cond, module.device)
+                        inpaint_mask = torch.zeros(num_demos, 1, demo_samples, device=module.device)
+                        inpaint_masked_input = torch.zeros(num_demos, io_channels, demo_samples, device=module.device)
+                        teacher_conditioning['inpaint_mask'] = [inpaint_mask]
+                        teacher_conditioning['inpaint_masked_input'] = [inpaint_masked_input]
+                        with torch.no_grad():
+                            teacher_cond_inputs = teacher_ref.get_conditioning_inputs(teacher_conditioning)
+
+                        noise = torch.randn(num_demos, io_channels, demo_samples, device=module.device)
+                        noise = noise.to(next(teacher_ref.parameters()).dtype)
+                        prompt_per_elem_trim = compute_per_elem_trim(demo_cond, self.sample_rate, margin_seconds=2)
+
+                        prompt_target = sample_diffusion(
+                            model=teacher_ref.model,
+                            noise=noise,
+                            cond_inputs=teacher_cond_inputs,
+                            diffusion_objective=teacher_ref.diffusion_objective,
+                            steps=ode_steps,
+                            cfg_scale=teacher_cfg,
+                            conditioning=demo_cond,
+                            sample_rate=teacher_ref.sample_rate,
+                            pretransform=pretransform,
+                            mask_padding_attention=mask_padding,
+                            use_effective_length_for_schedule=module.diffusion.use_effective_length_for_schedule,
+                            padding_mask=None,
+                            dist_shift=teacher_ref.sampling_dist_shift,
+                            sampler_type=ode_warmup_config.get('sampler', 'dpmpp'),
+                            batch_cfg=True,
+                            disable_tqdm=not is_rank_zero,
+                            decode=False,
+                        )
+
+                        prompt_latent_trim = [t // ds_ratio if t is not None else None for t in prompt_per_elem_trim] if prompt_per_elem_trim is not None else None
+                        prompt_context_mask = trim_and_concat(
+                            torch.zeros(num_demos, 1, demo_samples), prompt_latent_trim
+                        ).squeeze(0).cpu()
+
+                    # --- Teacher inpaint demos (same mask logic as _generate_inpaint_demos) ---
+                    inpaint_target = None
+                    inpaint_per_elem_trim = None
+                    inpaint_context_mask = None
+
+                    if self.num_inpaint_demos > 0 and self.demo_dl is not None:
+                        try:
+                            inpaint_reals, inpaint_metadata = next(self.demo_dl)
+                            if inpaint_reals.ndim == 4 and inpaint_reals.shape[0] == 1:
+                                inpaint_reals = inpaint_reals[0]
+                            inpaint_reals = inpaint_reals[:self.num_inpaint_demos]
+                            inpaint_metadata = inpaint_metadata[:self.num_inpaint_demos]
+                            inpaint_reals = inpaint_reals.to(module.device)
+
+                            if not module.pre_encoded:
+                                if pretransform is not None:
+                                    inpaint_reals = pretransform.encode(inpaint_reals)
+                            else:
+                                if hasattr(pretransform, "scale") and pretransform.scale != 1.0:
+                                    inpaint_reals = inpaint_reals / pretransform.scale
+
+                            inpaint_padding_masks = torch.stack(
+                                [md["padding_mask"][0] for md in inpaint_metadata], dim=0
+                            ).to(module.device)
+
+                            if self.legacy_inpaint_demos:
+                                masked_input, mask = random_inpaint_mask(
+                                    inpaint_reals, padding_masks=inpaint_padding_masks,
+                                    mask_padding=mask_padding, **module.inpaint_mask_kwargs
+                                )
+                            else:
+                                all_masks = []
+                                all_masked_inputs = []
+                                idx = 0
+                                for config_key, mask_type in self._mask_type_map.items():
+                                    count = self.inpaint_demo_config.get(config_key, 0)
+                                    if count == 0:
+                                        continue
+                                    mi, m = random_inpaint_mask(
+                                        inpaint_reals[idx:idx+count],
+                                        padding_masks=inpaint_padding_masks[idx:idx+count],
+                                        mask_padding=mask_padding, force_mask_type=mask_type,
+                                        **module.inpaint_mask_kwargs
+                                    )
+                                    all_masks.append(m)
+                                    all_masked_inputs.append(mi)
+                                    idx += count
+                                mask = torch.cat(all_masks, dim=0)
+                                masked_input = torch.cat(all_masked_inputs, dim=0)
+
+                            with torch.no_grad():
+                                inpaint_teacher_cond = teacher_ref.conditioner(inpaint_metadata, module.device)
+                            inpaint_teacher_cond['inpaint_mask'] = [mask]
+                            inpaint_teacher_cond['inpaint_masked_input'] = [masked_input]
+                            with torch.no_grad():
+                                inpaint_cond_inputs = teacher_ref.get_conditioning_inputs(inpaint_teacher_cond)
+
+                            inpaint_samples = inpaint_reals.shape[2]
+                            inpaint_noise = torch.randn(
+                                inpaint_reals.shape[0], io_channels, inpaint_samples, device=module.device
+                            ).to(next(teacher_ref.parameters()).dtype)
+                            inpaint_per_elem_trim = compute_per_elem_trim(inpaint_metadata, self.sample_rate, margin_seconds=2)
+
+                            inpaint_target = sample_diffusion(
+                                model=teacher_ref.model,
+                                noise=inpaint_noise,
+                                cond_inputs=inpaint_cond_inputs,
+                                diffusion_objective=teacher_ref.diffusion_objective,
+                                steps=ode_steps,
+                                cfg_scale=teacher_cfg,
+                                conditioning=inpaint_metadata,
+                                sample_rate=teacher_ref.sample_rate,
+                                pretransform=pretransform,
+                                mask_padding_attention=mask_padding,
+                                use_effective_length_for_schedule=module.diffusion.use_effective_length_for_schedule,
+                                padding_mask=None,
+                                dist_shift=teacher_ref.sampling_dist_shift,
+                                sampler_type=ode_warmup_config.get('sampler', 'dpmpp'),
+                                batch_cfg=True,
+                                disable_tqdm=not is_rank_zero,
+                                decode=False,
+                            )
+
+                            # Context mask for overlay (same as _generate_inpaint_demos)
+                            display_mask = mask * inpaint_padding_masks.unsqueeze(1)
+                            inpaint_latent_trim = [t // ds_ratio if t is not None else None for t in inpaint_per_elem_trim] if inpaint_per_elem_trim is not None else None
+                            inpaint_context_mask = trim_and_concat(display_mask, inpaint_latent_trim).squeeze(0).cpu()
+                        except StopIteration:
+                            if is_rank_zero:
+                                print("Teacher diagnostic: no inpaint batch available from demo_dl")
+
+                    # --- Combine and log (same pattern as main callback) ---
+                    if is_rank_zero:
+                        parts = []
+                        mask_parts = []
+
+                        if prompt_target is not None:
+                            decoded_prompt = pretransform.decode(prompt_target.float())
+                            decoded_prompt = trim_and_concat(decoded_prompt, prompt_per_elem_trim)
+                            parts.append(decoded_prompt)
+                            mask_parts.append(prompt_context_mask)
+
+                        if inpaint_target is not None:
+                            decoded_inpaint = pretransform.decode(inpaint_target.float())
+                            decoded_inpaint = trim_and_concat(decoded_inpaint, inpaint_per_elem_trim)
+                            parts.append(decoded_inpaint)
+                            mask_parts.append(inpaint_context_mask)
+
+                        if parts:
+                            combined_audio = torch.cat(parts, dim=-1)
+                            combined_mask = torch.cat(mask_parts, dim=-1) if mask_parts else None
+                            filename = f'demo_teacher_target_{trainer.global_step:08}.wav'
+                            combined_audio = combined_audio.to(torch.float32).div(torch.max(torch.abs(combined_audio))).mul(32767).to(torch.int16).cpu()
+                            torchaudio.save(filename, combined_audio, self.sample_rate)
+                            log_audio(trainer.logger, f'demo_teacher_target', filename, self.sample_rate)
+                            log_image(trainer.logger, f'demo_teacher_target_melspec', audio_spectrogram_image(combined_audio, context_mask=combined_mask))
+                            os.remove(filename)
+
+                    del prompt_target, inpaint_target
+                except Exception as e:
+                    if is_rank_zero:
+                        print(f"Teacher ODE warmup diagnostic failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+        except Exception as e:
+            if is_rank_zero:
+                print(f'{type(e).__name__}: {e}')
+            raise e
+        finally:
+            gc.collect()
+            torch.cuda.empty_cache()
+            module.train()            
