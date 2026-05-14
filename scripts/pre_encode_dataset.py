@@ -12,8 +12,8 @@ Dataset layout:
 Saves .npy files for latents and .json files for metadata, compatible with train_lora.py --encoded_dir.
 
 Usage:
-  uv run python pre_encode_dataset.py --model same-s --data_dir ./my_data --output_path ./latents_out
-  uv run python pre_encode_dataset.py --model same-l --data_dir ./my_data --output_path ./latents_out --batch_size 4
+  uv run python scripts/pre_encode_dataset.py --model same-s --data_dir ./my_data --output_path ./latents_out
+  uv run python scripts/pre_encode_dataset.py --model same-l --data_dir ./my_data --output_path ./latents_out --batch_size 4
 """
 
 import argparse
@@ -102,7 +102,7 @@ def main(args):
             md = dict(metadata[i])
             padding_mask = (
                 F.interpolate(
-                    md["padding_mask"].unsqueeze(0).unsqueeze(1).float(),
+                    md["padding_mask"][0].unsqueeze(0).unsqueeze(1).float(),
                     size=latent_np.shape[-1],
                     mode="nearest",
                 )

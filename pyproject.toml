@@ -27,6 +27,10 @@ flash-attn = [
   "flash-attn"
   ]
 
+lora = [
+  "pytorch_lightning==2.5.5",
+]
+
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
 
@@ -62,4 +66,5 @@ exclude = [
     "stable_audio_3/inference",
     "stable_audio_3/interface",
     "stable_audio_3/data",
+    "stable_audio_3/training",
 ]
