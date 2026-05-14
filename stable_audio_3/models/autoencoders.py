@@ -399,7 +399,7 @@ class AudioAutoencoder(nn.Module):
                     p.requires_grad = True
 
         self.soft_clip = soft_clip
- 
+
         self.is_discrete = False
 
     def encode(self, audio, return_info=False, skip_pretransform=False, iterate_batch=False, return_pretransform = False, **kwargs):

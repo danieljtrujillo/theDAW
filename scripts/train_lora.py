@@ -21,20 +21,22 @@ Two dataset modes (exactly one required):
 Saves .safetensors LoRA checkpoints compatible with the inference pipeline and run_gradio.py.
 
 Usage:
-  uv run python train_lora.py --model medium-rf --data_dir ./my_data --output_dir ./lora_out
-  uv run python train_lora.py --model medium-rf --encoded_dir ./latents_out --output_dir ./lora_out
-  uv run python train_lora.py --model medium-rf --data_dir ./my_data --steps 500 --rank 8
+  uv run python scripts/train_lora.py --model medium-rf --data_dir ./my_data --save_dir ./lora_out
+  uv run python scripts/train_lora.py --model medium-rf --encoded_dir ./latents_out --save_dir ./lora_out
+  uv run python scripts/train_lora.py --model medium-rf --data_dir ./my_data --steps 500 --rank 8
 """
+
+# Disable HuggingFace progress bars BEFORE any imports
+# This must be at the very top to take effect
+import os
+
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import argparse
 import json
-import os
-from functools import partial
 from pathlib import Path
-
 import torch
-import torch.nn.functional as F
-from torch.optim import AdamW
+import pytorch_lightning as pl
 
 from stable_audio_3.data.dataset import (
     LatentDatasetConfig,
@@ -44,22 +46,9 @@ from stable_audio_3.data.dataset import (
     collation_fn,
 )
 from stable_audio_3.loading_utils import copy_state_dict, load_ckpt_state_dict
-from stable_audio_3.model import create_diffusion_cond_from_config
 from stable_audio_3.model_configs import rf_models
-from stable_audio_3.models.lora import (
-    LoRAParametrization,
-    add_lora,
-    cast_base_to_precision,
-    get_lora_params,
-    get_lora_state_dict,
-    prepare_dora_state_dict,
-    resolve_adapter_type,
-    save_lora_safetensors,
-)
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
+from stable_audio_3.model import create_diffusion_cond_from_config
+from stable_audio_3.training.diffusion import DiffusionCondTrainingWrapper
 
 
 def load_model(model_name: str, device: torch.device):
@@ -74,55 +63,9 @@ def load_model(model_name: str, device: torch.device):
     model = create_diffusion_cond_from_config(model_config)
     copy_state_dict(model, load_ckpt_state_dict(local_ckpt))
     model.to(device=device, dtype=torch.bfloat16).eval().requires_grad_(False)
+    if model.pretransform is not None:
+        model.pretransform.enable_grad = False
     return model, model_config
-
-
-def apply_lora(
-    model,
-    rank: int,
-    alpha: float,
-    adapter_type: str = "dora",
-    dropout: float = 0.0,
-    include=None,
-    exclude=None,
-    svd_bases=None,
-):
-    adapter_type = resolve_adapter_type(adapter_type)
-    lora_cfg = {
-        torch.nn.Linear: {
-            "weight": partial(
-                LoRAParametrization.from_linear,
-                rank=rank,
-                lora_alpha=alpha,
-                lora_dropout_p=dropout,
-                adapter_type=adapter_type,
-            ),
-        },
-        torch.nn.Conv1d: {
-            "weight": partial(
-                LoRAParametrization.from_conv1d,
-                rank=rank,
-                lora_alpha=alpha,
-                lora_dropout_p=dropout,
-                adapter_type=adapter_type,
-            ),
-        },
-    }
-    add_lora(
-        model.model, lora_cfg, include=include, exclude=exclude, svd_bases=svd_bases
-    )
-    add_lora(
-        model.conditioner,
-        lora_cfg,
-        include=include,
-        exclude=exclude,
-        svd_bases=svd_bases,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
 
 
 def caption_metadata_fn(info, audio):
@@ -132,70 +75,43 @@ def caption_metadata_fn(info, audio):
     return {"prompt": txt.read_text().strip()}
 
 
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
+class ExceptionCallback(pl.Callback):
+    def on_exception(self, trainer, module, err):
+        print(f"{type(err).__name__}: {err}")
+
+
+class ModelConfigEmbedderCallback(pl.Callback):
+    def __init__(self, model_config):
+        self.model_config = model_config
+
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        checkpoint["model_config"] = self.model_config
 
 
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    torch._dynamo.config.capture_scalar_outputs = True
+    torch.set_float32_matmul_precision("high")
 
-    model, _ = load_model(args.model, device)
+    seed = args.seed
+
+    pl.seed_everything(seed, workers=True)
+
+    model, model_config = load_model(
+        args.model, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
+
     sample_rate = model.sample_rate
     ds_ratio = model.pretransform.downsampling_ratio
 
     # Align to downsampling ratio
     sample_size = (int(args.duration * sample_rate) // ds_ratio) * ds_ratio
 
-    lora_alpha = args.lora_alpha if args.lora_alpha is not None else args.rank
-
-    svd_bases = None
-    if args.svd_bases_path is not None:
-        print(f"Loading SVD bases from {args.svd_bases_path}")
-        svd_bases = torch.load(
-            args.svd_bases_path, map_location="cpu", weights_only=True
-        )
-
-    apply_lora(
-        model,
-        rank=args.rank,
-        alpha=lora_alpha,
-        adapter_type=args.adapter_type,
-        dropout=args.dropout,
-        include=args.include,
-        exclude=args.exclude,
-        svd_bases=svd_bases,
-    )
-
-    if args.lora_checkpoint is not None:
-        print(f"Loading LoRA checkpoint from {args.lora_checkpoint}")
-        from stable_audio_3.models.lora import load_lora_checkpoint
-
-        lora_sd, _ = load_lora_checkpoint(args.lora_checkpoint)
-        prepare_dora_state_dict(lora_sd)
-        model.model.load_state_dict(lora_sd, strict=False)
-        model.conditioner.load_state_dict(lora_sd, strict=False)
-
-    lora_params = list(get_lora_params(model.model)) + list(
-        get_lora_params(model.conditioner)
-    )
-    # LoRA params train in fp32; base model stays in bf16
-    for p in lora_params:
-        p.data = p.data.float()
-
-    if args.base_precision:
-        cast_base_to_precision(model.model, args.base_precision)
-        cast_base_to_precision(model.conditioner, args.base_precision)
-        if model.pretransform is not None:
-            model.pretransform.to(
-                torch.bfloat16
-                if args.base_precision in ("bf16", "bfloat16")
-                else torch.float16
-            )
-    print(f"Trainable LoRA params: {sum(p.numel() for p in lora_params):,}")
-
-    optimizer = AdamW(lora_params, lr=args.lr)
+    # Extract tokenizers from conditioners for pre-tokenization in DataLoader workers
+    tokenizers = {}
+    if hasattr(model, "conditioner"):
+        for key, cond in model.conditioner.conditioners.items():
+            if hasattr(cond, "tokenizer") and hasattr(cond, "max_length"):
+                tokenizers[key] = (cond.tokenizer, cond.max_length)
 
     if args.encoded_dir:
         dataset = PreEncodedDataset(
@@ -216,79 +132,134 @@ def train(args):
             sample_rate=sample_rate,
             force_channels="stereo",
         )
-    loader = torch.utils.data.DataLoader(
+    dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=min(4, os.cpu_count() or 1),
+        num_workers=args.num_workers,
         drop_last=True,
         collate_fn=collation_fn,
+        worker_init_fn=lambda worker_id: torch.manual_seed(seed + worker_id),
     )
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    model.model.train()
+    lora_state_dict = None
+    if args.lora_checkpoint:
+        lora_state_dict = load_ckpt_state_dict(args.lora_checkpoint)
 
-    step = 0
-    while step < args.steps:
-        for audio_batch, metadata in loader:
-            if step >= args.steps:
-                break
-
-            if args.encoded_dir:
-                latents = audio_batch.to(device=device, dtype=torch.bfloat16)
-            else:
-                audio_batch = audio_batch.to(device=device, dtype=torch.bfloat16)
-                with torch.no_grad():
-                    latents = model.pretransform.encode(audio_batch)
-            conditioning = model.conditioner(list(metadata), str(device))
-
-            # rf_denoiser noise schedule: xt = (1-t)*x0 + t*noise, target = noise - x0
-            B = latents.shape[0]
-            t = torch.rand(B, device=device, dtype=torch.bfloat16)
-            noise = torch.randn_like(latents)
-            t_bc = t[:, None, None]
-            noised = latents * (1 - t_bc) + noise * t_bc
-            target = noise - latents
-
-            # Inpaint model requires mask conditioning; all-zeros = pure generation
-            conditioning["inpaint_mask"] = [
-                torch.zeros(B, 1, latents.shape[2], device=device, dtype=torch.bfloat16)
-            ]
-            conditioning["inpaint_masked_input"] = [torch.zeros_like(latents)]
-
-            model.model.train()
-            pred = model(noised, t, cond=conditioning, cfg_dropout_prob=0.1)
-            loss = F.mse_loss(pred.float(), target.float())
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            step += 1
-            if step % args.log_every == 0:
-                print(f"Step {step}/{args.steps}  loss={loss.item():.4f}")
-            if step % args.save_every == 0:
-                save_checkpoint(model, args, step, lora_alpha)
-    if step % args.save_every != 0:
-        save_checkpoint(model, args, step, lora_alpha)
-    print("Done.")
-
-
-def save_checkpoint(model, args, step, lora_alpha):
-    state_dict = {
-        **get_lora_state_dict(model.model),
-        **get_lora_state_dict(model.conditioner),
-    }
     lora_config = {
         "rank": args.rank,
-        "alpha": lora_alpha,
+        "alpha": args.lora_alpha if args.lora_alpha is not None else args.rank,
         "adapter_type": args.adapter_type,
+        "dropout": args.dropout,
         "include": args.include,
         "exclude": args.exclude,
     }
-    out = Path(args.output_dir) / f"lora_step{step}.safetensors"
-    save_lora_safetensors(state_dict, lora_config, out)
-    print(f"Saved {out}")
+
+    optimizer_config = {
+        "diffusion": {
+            "optimizer": {
+                "type": "AdamW",
+                "config": {
+                    "lr": args.lr,
+                    "weight_decay": 0.01,
+                },
+            }
+        }
+    }
+
+    training_wrapper = DiffusionCondTrainingWrapper(
+        model,
+        mask_loss_weight=1.0,
+        mask_padding_attention=True,
+        silence_extension_scale_seconds=4.0,
+        use_ema=False,
+        log_loss_info=False,
+        optimizer_configs=optimizer_config,
+        pre_encoded=bool(args.encoded_dir),
+        timestep_sampler="trunc_logit_normal",
+        timestep_sampler_options={},
+        inpainting_config={"mask_kwargs": {"mask_type_probabilities": [0.1, 0.8, 0.1]}},
+        use_effective_length_for_schedule=True,
+        sample_rate=model_config.get("sample_rate", 44100),
+        sample_size=model_config.get("sample_size"),
+        lora_config=lora_config,
+        lora_state_dict=lora_state_dict,
+        svd_bases_path=args.svd_bases_path,
+        log_every_n_steps=args.log_every,
+        ot_coupling=True,
+        base_precision=args.base_precision,
+    )
+
+    exc_callback = ExceptionCallback()
+
+    if args.logger == "wandb":
+        logger = pl.loggers.WandbLogger(project=args.name)
+        logger.watch(training_wrapper)
+
+        if args.save_dir and isinstance(logger.experiment.id, str):
+            checkpoint_dir = os.path.join(
+                args.save_dir,
+                logger.experiment.project,
+                logger.experiment.id,
+                "checkpoints",
+            )
+        else:
+            checkpoint_dir = None
+    elif args.logger == "comet":
+        logger = pl.loggers.CometLogger(project=args.name)
+        if args.save_dir and isinstance(logger.version, str):
+            checkpoint_dir = os.path.join(
+                args.save_dir, logger.name, logger.version, "checkpoints"
+            )
+        else:
+            print(
+                f"No save_dir specified, using {args.save_dir if args.save_dir else None}."
+            )
+            checkpoint_dir = args.save_dir if args.save_dir else None
+    elif args.logger == "csv":
+        logger = pl.loggers.CSVLogger(args.save_dir)
+        checkpoint_dir = args.save_dir if args.save_dir else None
+    else:
+        logger = None
+        checkpoint_dir = args.save_dir if args.save_dir else None
+
+    ckpt_callback = pl.callbacks.ModelCheckpoint(
+        every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1
+    )
+    save_model_config_callback = ModelConfigEmbedderCallback(model_config)
+
+    callbacks = [ckpt_callback, exc_callback, save_model_config_callback]
+
+    # Combine args and config dicts
+    args_dict = vars(args)
+    args_dict.update({"model_config": model_config})
+
+    if args.logger == "comet":
+        logger.log_hyperparams(args_dict)
+
+    if not hasattr(args, "gradient_clip_val") or args.gradient_clip_val == 0:
+        args.gradient_clip_val = None
+
+    summary = pl.callbacks.ModelSummary(max_depth=2)
+    callbacks.append(summary)
+
+    trainer = pl.Trainer(
+        devices="auto",
+        accelerator="gpu",
+        strategy="auto",
+        precision="bf16-mixed",
+        accumulate_grad_batches=1,
+        callbacks=callbacks,
+        logger=logger,
+        log_every_n_steps=1,
+        max_steps=args.steps,
+        default_root_dir=args.save_dir,
+        gradient_clip_val=args.gradient_clip_val,
+        reload_dataloaders_every_n_epochs=0,
+        num_sanity_val_steps=0,  # If you need to debug validation, change this line
+    )
+
+    trainer.fit(training_wrapper, dataloader)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +282,6 @@ def main():
         default=None,
         help="Pre-encoded latent directory from pre_encode_dataset.py (.npy/.json pairs; captions embedded in .json, no .txt needed)",
     )
-    p.add_argument("--output_dir", default="lora_out")
     p.add_argument("--rank", type=int, default=16)
     p.add_argument(
         "--lora_alpha",
@@ -332,7 +302,7 @@ def main():
             "dora-cols-xs",
             "bora-xs",
         ],
-        default="dora",
+        default="dora-rows",
     )
     p.add_argument(
         "--dropout",
@@ -360,7 +330,7 @@ def main():
     p.add_argument(
         "--base_precision",
         choices=["bf16", "bfloat16", "fp16", "float16"],
-        default="fp16",
+        default="bf16",
         help="Cast frozen base weights to lower precision (LoRA params stay fp32)",
     )
     p.add_argument(
@@ -374,11 +344,16 @@ def main():
     p.add_argument(
         "--duration",
         type=float,
-        default=30.0,
-        help="Maximum clip duration in seconds (default 30)",
+        default=380.0,
+        help="Maximum clip duration in seconds (default 380)",
     )
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--logger", choices=["wandb", "comet", "csv", None], default="csv")
+    p.add_argument("--name", type=str, default="lora-finetune")
+    p.add_argument("--save_dir", type=str, default="./lora_checkpoints")
+    p.add_argument("--checkpoint_every", type=int, default=100)
     p.add_argument("--log_every", type=int, default=10)
-    p.add_argument("--save_every", type=int, default=100)
+    p.add_argument("--num_workers", type=int, default=8)
     args = p.parse_args()
     if not args.encoded_dir and not args.data_dir:
         p.error("one of --data_dir or --encoded_dir is required")
