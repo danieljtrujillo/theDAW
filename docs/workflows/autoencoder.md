@@ -92,7 +92,7 @@ my_data/
   clip2.txt
 ```
 
-Each encoded clip is written as a `.npy` latent and a `.json` metadata file (which includes a padding mask tracking the valid audio region before padding):
+Each encoded clip is written as a `.npy` latent and a `.json` metadata file. When `--pad` is used, the metadata includes a padding mask tracking the valid audio region:
 
 ```
 latents_out/
@@ -114,3 +114,4 @@ Pass the output directory to `train_lora.py` via `--encoded_dir`. See [LoRA trai
 | `--batch_size` | `1` | Must be `1` for variable-length latents |
 | `--sample_size` | `12582912` | Samples to pad/crop to (default ~380s at 44.1kHz)|
 | `--model_half` | off | Run the autoencoder in fp16 to reduce memory |
+| `--pad` | off | Pad/crop audio to `--sample_size` (required for `--batch_size > 1`) |
