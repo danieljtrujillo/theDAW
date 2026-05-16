@@ -61,7 +61,32 @@ uv sync --no-install-package torch --no-install-package torchaudio
 Replace `cu118` with your target version. For torch 2.7.1, available CUDA variants are `cu118`, `cu126`, and `cu128`. Not all versions are published for every CUDA channel — check the [PyTorch install page](https://pytorch.org/get-started/locally/) to confirm your target is available.
 
 ### Flash Attention
-Stable Audio 3 Medium requires [Flash Attention](https://github.com/Dao-AILab/flash-attention), follow the instructions from there to install.
+
+Stable Audio 3 Medium requires [Flash Attention 2](https://github.com/Dao-AILab/flash-attention).
+
+**Install from a pre-built wheel** (fast, no compilation). The easiest source is the [flash-attention-prebuild-wheels](https://github.com/mjun0812/flash-attention-prebuild-wheels) community repo — browse the releases for a wheel matching your CUDA, PyTorch, and Python versions, then install it directly:
+
+```bash
+uv pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3+cu126torch2.7-cp310-cp310-linux_x86_64.whl
+```
+
+The filename encodes the requirements — `cu126` is CUDA 12.6, `torch2.7` is PyTorch 2.7, `cp310` is Python 3.10. Pick the URL that matches your environment.
+
+If no pre-built wheel matches your setup, build from source. Install `ninja` first to speed up the C++ compile, then set the environment variables for your machine:
+
+```bash
+uv pip install ninja
+.venv/bin/python -m ensurepip
+FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE \
+FLASH_ATTENTION_FORCE_BUILD=TRUE \
+TORCH_CUDA_ARCH_LIST="9.0" \
+MAX_JOBS=8 \
+.venv/bin/pip3 install flash-attn --no-build-isolation --no-binary flash-attn \
+    --force-reinstall --no-cache-dir --no-deps
+```
+
+- `TORCH_CUDA_ARCH_LIST` — set to your GPU's compute capability: `8.0` (A100), `8.6` (A10/RTX 3090), `8.9` (L4/RTX 4090), `9.0` (H100/H200)
+- `MAX_JOBS` — number of parallel compile jobs; 4–8 is typical, reduce if you run out of RAM during compilation
 
 ## Quick Start
 
@@ -186,14 +211,13 @@ Join our [Discord](https://discord.gg/cKpvjey8b) for updates, help, and discussi
 
 #### Output audio is a static glitch sound (affects Stable Audio 3 Medium-only)
 
-Likely an issue with flash-attention. Please make sure flash attention is installed correctly.
-You can check with
+Likely an issue with flash-attention. Verify it is importable:
 
-```
+```bash
 uv run python -c "import flash_attn; from flash_attn import flash_attn_func; print('Version:', flash_attn.__version__, '| flash_attn_func:', flash_attn_func)"
 ```
 
-if there are errors in any of this, `flash_attn` is not installed correctly.
+If this errors, flash-attn is not installed correctly — see the [Flash Attention install instructions](#flash-attention) above.
 
 ---
 
