@@ -159,7 +159,7 @@ if __name__ == "__main__":
 
     if args.no_pad and args.batch_size > 1:
         parser.error(
-            "--batch_size must be 1 (variable-length latents cannot be batched)"
+            "--no_pad requires --batch_size 1 (variable-length samples cannot be batched)"
         )
 
     main(args)
