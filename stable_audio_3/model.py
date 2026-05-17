@@ -38,7 +38,7 @@ class StableAudioModel:
             device = "cpu"
 
         if not torch.cuda.is_available():
-            if model_name_or_path in ("medium", "medium-rf"):
+            if model_name_or_path in ("medium", "medium-base"):
                 print(
                     f"Warning: You are loading the {model_name_or_path} model without a GPU. This model is not designed to run on cpu"
                 )

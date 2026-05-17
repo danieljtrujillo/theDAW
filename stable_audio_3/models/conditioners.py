@@ -10,6 +10,7 @@ from torch import Tensor, nn
 from einops import rearrange
 from .blocks import ExpoFourierFeatures
 from .utils import enable_torch_compile
+import os
 
 class PaddingMode(str, Enum):
     """Enum for handling padding in text conditioner embeddings."""
@@ -155,26 +156,31 @@ class NumberConditioner(Conditioner):
 
 class T5GemmaConditioner(Conditioner):
 
-    T5GEMMA_HIDDEN_DIM = 768
+    T5GEMMA_MODELS = ["google/t5gemma-b-b-ul2"]
+
+    T5GEMMA_MODEL_DIMS = {
+        "google/t5gemma-b-b-ul2": 768,
+    }
 
     def __init__(
             self,
             output_dim: int,
-            repo_id: str,
-            subfolder: tp.Optional[str] = None,
+            model_name: str = "google/t5gemma-b-b-ul2",
             max_length: str = 128,
             enable_grad: bool = False,
             project_out: bool = False,
-            padding_mode: str = "zero"
+            padding_mode: str = "zero",
+            model_path: str = None,
+            repo_id: str = None,
+            subfolder: str = None,
     ):
-        super().__init__(self.T5GEMMA_HIDDEN_DIM, output_dim, project_out=project_out, padding_mode=padding_mode)
+        assert model_name in self.T5GEMMA_MODELS, f"Unknown T5 model name: {model_name}"
+        super().__init__(self.T5GEMMA_MODEL_DIMS[model_name], output_dim, project_out=project_out, padding_mode=padding_mode)
 
-        import os
+        load_from = model_path or repo_id or model_name
 
         self.max_length = max_length
         self.enable_grad = enable_grad
-
-        subfolder_kwargs = {"subfolder": subfolder} if subfolder is not None else {}
 
         # Set environment variables to disable progress bars BEFORE importing transformers
         # This is the most reliable way to suppress HuggingFace progress bars
@@ -191,10 +197,12 @@ class T5GemmaConditioner(Conditioner):
             warnings.simplefilter("ignore")
             try:
                 from transformers import T5GemmaEncoderModel, AutoTokenizer, AutoConfig
-                self.tokenizer = AutoTokenizer.from_pretrained(repo_id, **subfolder_kwargs)
-                config = AutoConfig.from_pretrained(repo_id, **subfolder_kwargs)
+                logging.info(f"Loading T5Gemma tokenizer and model from: {load_from}")
+                hf_kwargs = {"subfolder": subfolder} if subfolder else {}
+                self.tokenizer = AutoTokenizer.from_pretrained(load_from, **hf_kwargs)
+                config = AutoConfig.from_pretrained(load_from, **hf_kwargs)
                 config.is_encoder_decoder = False
-                model = T5GemmaEncoderModel.from_pretrained(repo_id, config=config, **subfolder_kwargs).train(enable_grad).requires_grad_(enable_grad)
+                model = T5GemmaEncoderModel.from_pretrained(load_from, config=config, **hf_kwargs).train(enable_grad).requires_grad_(enable_grad)
 
             finally:
                 logging.disable(previous_level)
@@ -259,6 +267,7 @@ class T5GemmaConditioner(Conditioner):
         embeddings = self.apply_padding(embeddings, attention_mask)
 
         return embeddings, attention_mask
+
 
 class MultiConditioner(nn.Module):
     """
