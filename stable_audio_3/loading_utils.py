@@ -38,15 +38,20 @@ def load_autoencoder(config_path: str, ckpt_path: str, device: str = "cpu"):
 
     autoencoder = create_autoencoder_from_config(config["model"], config["sample_rate"])
 
-    prefix = "pretransform."
+    # Full DiT checkpoints nest the AE under pretransform.model.*;
+    # standalone AE-only checkpoints have no prefix.
+    nested_prefix = "pretransform.model."
     with safe_open(ckpt_path, framework="pt", device=device) as f:
         all_keys = list(f.keys())
-    has_prefix = any(k.startswith(prefix) for k in all_keys)
+    if any(k.startswith(nested_prefix) for k in all_keys):
+        effective_prefix = nested_prefix
+    else:
+        effective_prefix = ""  # standalone AE — keys are already bare
     with safe_open(ckpt_path, framework="pt", device=device) as f:
         state_dict = {
-            (k[len(prefix) :] if has_prefix else k): f.get_tensor(k)
+            k[len(effective_prefix):]: f.get_tensor(k)
             for k in all_keys
-            if k.startswith(prefix) or not has_prefix
+            if k.startswith(effective_prefix) or not effective_prefix
         }
 
     copy_state_dict(autoencoder, state_dict)
