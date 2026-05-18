@@ -45,7 +45,7 @@ uv run ruff format --check
 - `loading_utils.py` — Loads safetensor checkpoints, handles state dict key remapping between ARC/RF/standalone formats.
 - `inference/sampling.py` — All samplers: Euler, RK4, DPM++, Ping-Pong. `sample_diffusion()` is the unified entry point.
 - `inference/distribution_shift.py` — Timestep schedule warping (Flux shift, LogSNR shift).
-- `models/conditioners.py` — `T5GemmaConditioner` loads `stabilityai/t5gemma-b-b-ul2` for text encoding. `NumberConditioner` for duration.
+- `models/conditioners.py` — `T5GemmaConditioner` loads `google/t5gemma-b-b-ul2` for text encoding. `NumberConditioner` for duration.
 - `models/lora/` — LoRA implementation: parametrization, loading, stacking multiple LoRAs, per-layer filtering, interval-based activation.
 - `interface/diffusion_cond.py` — Gradio UI wiring. Calls pipeline, handles file naming, audio format conversion via ffmpeg.
 
