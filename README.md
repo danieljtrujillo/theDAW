@@ -47,57 +47,46 @@ Plus:
 
 ## Models
 
-| Key | Type | Params | Hardware | Max length | Use case |
+| RF Model | Autoencoder | Hardware | Params | Max length | Use case |
 |---|---|---|---|---|---|
-| `small` | ARC | 433M | CPU | 120 s | Lightweight inference, no GPU. |
-| `medium` | ARC | 1.4B | CUDA | 380 s | Primary inference path. |
-| `small-rf` | RF | 433M | CPU | 120 s | LoRA training base (small). |
-| `medium-rf` | RF | 1.4B | CUDA | 380 s | LoRA training base (medium). |
-| `same-s` | Autoencoder | 266M | CPU | — | Standalone SAME-Small. |
-| `same-l` | Autoencoder | 1.7B | CUDA | — | Standalone SAME-Large. |
-| Large | ARC | 2.7B | API only | 380 s | Not supported by this repo. |
-
-ARC checkpoints are 8-step post-trained models. RF checkpoints are the base rectified-flow weights used for fine-tuning; inference with them needs ~50 steps and `cfg_scale=7`.
-
+| **Stable Audio 3 Small** | SAME-Small | CPU | 433M | 120s | Lightweight inference, no GPU required |
+| **Stable Audio 3 Medium** | SAME-Large | GPU (CUDA) | 1.4B | 380s | High Quality, Fast Inference |
+| **Stable Audio 3 Large** | SAME-Large | API only | 2.7B | 380s | Highest quality, API only. Not supported by this repo, see the [API docs](#) |
 ---
+
+## Features
+- ⚡ **Fast, state-of-the-art generation** - Generate minutes of audio in milliseconds
+- 🎛️ **Three inference modes** — text-to-audio, audio-to-audio editing, and inpainting/continuation
+- ↔️ **Variable-length generation** — handles generation of a variety of sequences without wasting inference on unused latents
+- 🎯 **Personalization through LoRA fine-tuning** — adapt any model to a target style; stackable, adjustable at runtime
+- 💻 **Broad hardware support** — CPU (Small), CUDA/TensorRT (Medium), Apple Silicon via MLX/CoreML, Intel via OpenVINO
+- 🎵 **SAME autoencoder** — new Semantic-Acoustic Music Encoder; stereo, 44.1 kHz, 256-dimensional latents optimized for both generative tractability and high-quality reconstruction
+
 
 ## Installation
 
 ### Base (CPU, Small model)
 
 ```bash
+# Base install
 uv sync
-```
 
-### With CUDA (Medium model)
-
-```bash
+# With CUDA support
 uv sync --extra cuda
+
+# With Gradio UI
+uv sync --extra ui
+
+# Multiple extras
+uv sync --extra cuda --extra ui
 ```
 
-### Frontend
+### Flash Attention
+Stable Audio 3 Medium requires [Flash Attention](https://github.com/Dao-AILab/flash-attention), follow the instructions from there to install.
 
-```bash
-cd frontend && npm install
-```
+## Quick Start
 
-### Windows-specific
-
-PyTorch's CUDA index is Linux-only in `pyproject.toml`. On Windows, install torch + soundfile + flash-attention manually — see [User Guide §3](docs/USER_GUIDE.md#3-installation).
-
----
-
-## Launching
-
-### One-shot (Windows)
-
-```powershell
-.\start-dev.bat
-```
-
-Starts the backend on :8600, the Vite dev server on :5173, and opens the browser. Hot-reloads both sides.
-
-### Manual
+Launch the Gradio UI:
 
 ```bash
 # Terminal 1
@@ -121,112 +110,84 @@ uv run python run_gradio.py --model medium --lora-ckpt-path path/to/lora.ckpt
 ## Quick examples (Python)
 
 ```python
-from stable_audio_3 import StableAudioPipeline
+from stable_audio_3 import StableAudioModel
 
 pipe = StableAudioPipeline.from_pretrained("medium")
+audio = pipe.generate(
+    prompt="Lo-fi boom bap meets orchestral strings 84 BPM",
+    duration=180,
+)
+```
 
 # Text-to-audio
 audio = pipe.generate(prompt="Lo-fi boom bap, 84 BPM", duration=180)
 
 # Audio-to-audio
 import torchaudio
+from stable_audio_3 import StableAudioPipeline
+
+pipe = StableAudioPipeline.from_pretrained("medium")
 init_audio = torchaudio.load("/path/to/audio.wav")
-audio = pipe.generate(init_audio=init_audio, init_noise_level=0.9,
-                      prompt="bossa nova bassline", duration=30)
+audio = pipe.generate(
+    init_audio=init_audio,
+    init_noise_level=0.9,
+    prompt="bossa nova bassline",
+    duration=30,
+)
+```
 
-# Inpainting
+**Inpainting / Continuation** — Regenerate a specific region of an audio file while keeping the rest intact:
+
+```python
+import torchaudio
+from stable_audio_3 import StableAudioPipeline
+
+pipe = StableAudioPipeline.from_pretrained("medium")
+
 inpaint_audio = torchaudio.load("/path/to/audio.wav")
-audio = pipe.generate(inpaint_audio=inpaint_audio,
-                      inpaint_mask_start_seconds=4.0,
-                      inpaint_mask_end_seconds=8.0,
-                      prompt="punchy kick drum fill", duration=30)
+audio = pipe.generate(
+    inpaint_audio=inpaint_audio,
+    inpaint_mask_start_seconds=4.0,
+    inpaint_mask_end_seconds=8.0,
+    prompt="punchy kick drum fill",
+    duration=30,
+)
 ```
 
-See the [User Guide §14](docs/USER_GUIDE.md#14-python-pipeline-reference) for advanced controls (samplers, distribution-shift schedules, APG, RF-Inversion, autoencoder workflows).
+To extend an audio clip (continuation), set `inpaint_mask_start_seconds` to the length of the source file and choose a longer `duration`. See [Inference Methods](docs/workflows/inference.md) for the full controls reference.
 
----
 
-## UI feature surface
+**Encoding / Decoding** — Use the autoencoder directly to encode audio to latents or decode latents back to audio:
 
-The StableDAW React UI is the daily-driver interface. Top-level tabs:
+```python
+import torchaudio
+from stable_audio_3 import AutoencoderPipeline
 
-| Tab | What it does | Status |
-|---|---|---|
-| **CREATE** | Text-to-audio with init signal, inpainting, LoRA stack, generation parameters, sticky RUN button, output preview. | ✅ Full |
-| **EDIT** | 24 FFmpeg-based studio effects driven by four macro sliders. Source upload, output format selector, process history. | ✅ Full |
-| **TRAIN** | LoRA training, autoencoder round-trip, dataset pre-encode. UI scaffolded; backend endpoints stubbed in this fork (501). | 🟡 UI only |
-| **LIBRARY** | Persistent IndexedDB-backed catalog of every generation. Search, filter, sort, favorite, play, download, delete, stats. | ✅ Full |
-
-DAW workspace (center panel, persistent across tabs):
-
-| Component | Status |
-|---|---|
-| Step Sequencer (Web Audio, 5 voices, BPM clock) | ✅ Full |
-| Waveform Editor (multi-track scaffolding, transport, COMMIT EDIT) | 🟡 Scaffolding — clip drag/cut/save not wired yet |
-| Spectral analyzer (collapsible, restorable) | ✅ UI live, real-audio FFT staged |
-| Processing log (left-column footer, downloadable) | ✅ Full |
-| Player footer (track info, transport, volume) | ✅ Volume routed via `usePlaybackStore` |
-
-See [User Guide §5–§12](docs/USER_GUIDE.md#5-ui-walkthrough--shell) for every control on every screen.
-
----
-
-## Backend API (summary)
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | Liveness + model_loaded boolean. |
-| `GET` | `/api/model-info` | Active model, sample rate, VRAM. |
-| `POST` | `/api/generate-jobs` | Async generation submit (returns `{job:{id}}`). |
-| `GET` | `/api/jobs/{id}` | Poll job status / result. |
-| `GET` | `/api/jobs` | List all jobs. |
-| `POST` | `/api/generate` | Sync generation (legacy, used by Gradio UI). |
-| `POST` | `/api/studio/process` | FFmpeg effect pipeline. |
-| `POST` | `/api/jobs/train-lora` | 501 in this fork. |
-| `POST` | `/api/jobs/pre-encode` | 501 in this fork. |
-| `POST` | `/api/autoencoder/encode` | 501 in this fork. |
-| `POST` | `/api/autoencoder/decode` | 501 in this fork. |
-| `GET` | `/api/autoencoder/info` | Stub (empty arrays). |
-| `GET` | `/api/presets` | Empty list. |
-| `POST` | `/api/presets` | Returns a fake id (no persistence). |
-
-Full request/response shapes in [User Guide §13](docs/USER_GUIDE.md#13-backend-api-reference).
-
----
-
-## Architecture
-
-```
-Browser  ─── /api/* ──▶  FastAPI backend  ──▶  StableAudioPipeline
-                                                    ├── T5Gemma text encoder
-                                                    ├── DiT diffusion transformer
-                                                    └── SAME autoencoder
+ae = AutoencoderPipeline.from_pretrained("same-l")
+waveform, sr = torchaudio.load("audio.wav")
+latents = ae.encode(waveform, sr)
+audio_out = ae.decode(latents)
 ```
 
-Same-origin in production (FastAPI mounts the built `frontend/dist`); split-dev in development (Vite on 5173 proxies `/api` to backend on 8600).
+See [Autoencoder Workflows](docs/workflows/autoencoder.md) for encoding batches, chunked processing, and pre-encoding datasets for LoRA training.
 
----
+## Hardware Support
 
-## Development
+*COMING SOON*
 
-```bash
-# Python lint
-uv run ruff check
-uv run ruff format --check
+Stable Audio 3 scales from a laptop to a multi-GPU server. Specify your backend at load time:
 
-# Tests (medium tests skip on non-CUDA)
-uv run pytest
-uv run pytest --save-audio    # persist outputs to test_audio_outputs/
-
-# Frontend build
-cd frontend && npm run build
-
-# Regenerate docs (runs on commit via pre-commit hook)
-./scripts/regenerate-docs.sh        # macOS/Linux
-.\scripts\regenerate-docs.ps1       # Windows
+```python
+model = StableAudioPipeline.from_pretrained(
+    "medium",
+    backend="tensorrt"  # or "mlx", "coreml", "openvino"
+)
 ```
 
-The pre-commit hook is installed by running `./scripts/install-hooks.sh` once. It re-validates the frontend build, refreshes the docs timestamp, takes Playwright screenshots if Playwright is available, and stages the updated docs.
+
+### Inference Times
+
+TBD
 
 ---
 
@@ -247,7 +208,22 @@ The pre-commit hook is installed by running `./scripts/install-hooks.sh` once. I
 
 ## Community
 
-Join the [Discord](https://discord.gg/cKpvjey8b) for updates, help, and discussions.
+Join our [Discord](https://discord.gg/cKpvjey8b) for updates, help, and discussions. We host weekly office hours talking all things AI audio.
+
+---
+
+## Troubleshooting
+
+#### Output audio is a static glitch sound (affects Stable Audio 3 Medium-only)
+
+Likely an issue with flash-attention. Please make sure flash attention is installed correctly.
+You can check with
+
+```
+uv run python -c "import flash_attn; from flash_attn import flash_attn_func; print('Version:', flash_attn.__version__, '| flash_attn_func:', flash_attn_func)"
+```
+
+if there are errors in any of this, `flash_attn` is not installed correctly.
 
 ---
 

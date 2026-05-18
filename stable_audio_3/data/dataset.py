@@ -281,7 +281,7 @@ class SampleDataset(torch.utils.data.Dataset):
             info["timestamps"] = (t_start, t_end)
             info["seconds_start"] = seconds_start
             info["seconds_total"] = seconds_total
-            info["padding_mask"] = padding_mask
+            info["padding_mask"] = [padding_mask]
             info["sample_rate"] = self.sr
 
             end_time = time.time()

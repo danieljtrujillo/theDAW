@@ -18,23 +18,26 @@ Two dataset modes (exactly one required):
       000000000001.npy
       000000000001.json
 
-Saves .safetensors LoRA checkpoints compatible with the inference pipeline and run_gradio.py.
+Saves .safetensors LoRA checkpoints compatible with the inference model and run_gradio.py.
 
 Usage:
-  uv run python train_lora.py --model medium-rf --data_dir ./my_data --output_dir ./lora_out
-  uv run python train_lora.py --model medium-rf --encoded_dir ./latents_out --output_dir ./lora_out
-  uv run python train_lora.py --model medium-rf --data_dir ./my_data --steps 500 --rank 8
+  uv run python scripts/train_lora.py --model medium-base --data_dir ./my_data --save_dir ./lora_out
+  uv run python scripts/train_lora.py --model medium-base --encoded_dir ./latents_out --save_dir ./lora_out
+  uv run python scripts/train_lora.py --model medium-base --data_dir ./my_data --steps 500 --rank 8
 """
 
-import argparse
-import json
+# Disable HuggingFace progress bars BEFORE any imports
+# This must be at the very top to take effect
 import os
-from functools import partial
-from pathlib import Path
 
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+import argparse
+import itertools
+import json
+from pathlib import Path
 import torch
-import torch.nn.functional as F
-from torch.optim import AdamW
+import pytorch_lightning as pl
 
 from stable_audio_3.data.dataset import (
     LatentDatasetConfig,
@@ -43,86 +46,32 @@ from stable_audio_3.data.dataset import (
     SampleDataset,
     collation_fn,
 )
-from stable_audio_3.loading_utils import copy_state_dict, load_ckpt_state_dict
-from stable_audio_3.model import create_diffusion_cond_from_config
-from stable_audio_3.model_configs import rf_models
-from stable_audio_3.models.lora import (
-    LoRAParametrization,
-    add_lora,
-    cast_base_to_precision,
-    get_lora_params,
-    get_lora_state_dict,
-    prepare_dora_state_dict,
-    resolve_adapter_type,
-    save_lora_safetensors,
+from safetensors.torch import load_file
+from stable_audio_3.loading_utils import copy_state_dict
+from stable_audio_3.model_configs import base_models
+from stable_audio_3.factory import create_diffusion_cond_from_config
+from stable_audio_3.models.lora.utils import load_lora_checkpoint
+from stable_audio_3.training.diffusion import (
+    DiffusionCondTrainingWrapper,
+    DiffusionCondInpaintDemoCallback,
 )
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
 
 
 def load_model(model_name: str, device: torch.device):
-    if model_name not in rf_models:
+    if model_name not in base_models:
         raise ValueError(
-            f"LoRA training only supports RF models. Got '{model_name}', valid: {list(rf_models)}"
+            f"LoRA training requires a base model. Got '{model_name}', valid: {list(base_models)}"
         )
-    model_cfg = rf_models[model_name]
+    model_cfg = base_models[model_name]
     local_config, local_ckpt = model_cfg.resolve()
     with open(local_config) as f:
         model_config = json.load(f)
     model = create_diffusion_cond_from_config(model_config)
-    copy_state_dict(model, load_ckpt_state_dict(local_ckpt))
+    copy_state_dict(model, load_file(local_ckpt))
     model.to(device=device, dtype=torch.bfloat16).eval().requires_grad_(False)
+    if model.pretransform is not None:
+        model.pretransform.enable_grad = False
     return model, model_config
-
-
-def apply_lora(
-    model,
-    rank: int,
-    alpha: float,
-    adapter_type: str = "dora",
-    dropout: float = 0.0,
-    include=None,
-    exclude=None,
-    svd_bases=None,
-):
-    adapter_type = resolve_adapter_type(adapter_type)
-    lora_cfg = {
-        torch.nn.Linear: {
-            "weight": partial(
-                LoRAParametrization.from_linear,
-                rank=rank,
-                lora_alpha=alpha,
-                lora_dropout_p=dropout,
-                adapter_type=adapter_type,
-            ),
-        },
-        torch.nn.Conv1d: {
-            "weight": partial(
-                LoRAParametrization.from_conv1d,
-                rank=rank,
-                lora_alpha=alpha,
-                lora_dropout_p=dropout,
-                adapter_type=adapter_type,
-            ),
-        },
-    }
-    add_lora(
-        model.model, lora_cfg, include=include, exclude=exclude, svd_bases=svd_bases
-    )
-    add_lora(
-        model.conditioner,
-        lora_cfg,
-        include=include,
-        exclude=exclude,
-        svd_bases=svd_bases,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
 
 
 def caption_metadata_fn(info, audio):
@@ -132,70 +81,35 @@ def caption_metadata_fn(info, audio):
     return {"prompt": txt.read_text().strip()}
 
 
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
+class ExceptionCallback(pl.Callback):
+    def on_exception(self, trainer, module, err):
+        print(f"{type(err).__name__}: {err}")
 
 
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    torch._dynamo.config.capture_scalar_outputs = True
+    torch.set_float32_matmul_precision("high")
 
-    model, _ = load_model(args.model, device)
+    seed = args.seed
+
+    pl.seed_everything(seed, workers=True)
+
+    model, model_config = load_model(
+        args.model, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
+
     sample_rate = model.sample_rate
     ds_ratio = model.pretransform.downsampling_ratio
 
     # Align to downsampling ratio
     sample_size = (int(args.duration * sample_rate) // ds_ratio) * ds_ratio
 
-    lora_alpha = args.lora_alpha if args.lora_alpha is not None else args.rank
-
-    svd_bases = None
-    if args.svd_bases_path is not None:
-        print(f"Loading SVD bases from {args.svd_bases_path}")
-        svd_bases = torch.load(
-            args.svd_bases_path, map_location="cpu", weights_only=True
-        )
-
-    apply_lora(
-        model,
-        rank=args.rank,
-        alpha=lora_alpha,
-        adapter_type=args.adapter_type,
-        dropout=args.dropout,
-        include=args.include,
-        exclude=args.exclude,
-        svd_bases=svd_bases,
-    )
-
-    if args.lora_checkpoint is not None:
-        print(f"Loading LoRA checkpoint from {args.lora_checkpoint}")
-        from stable_audio_3.models.lora import load_lora_checkpoint
-
-        lora_sd, _ = load_lora_checkpoint(args.lora_checkpoint)
-        prepare_dora_state_dict(lora_sd)
-        model.model.load_state_dict(lora_sd, strict=False)
-        model.conditioner.load_state_dict(lora_sd, strict=False)
-
-    lora_params = list(get_lora_params(model.model)) + list(
-        get_lora_params(model.conditioner)
-    )
-    # LoRA params train in fp32; base model stays in bf16
-    for p in lora_params:
-        p.data = p.data.float()
-
-    if args.base_precision:
-        cast_base_to_precision(model.model, args.base_precision)
-        cast_base_to_precision(model.conditioner, args.base_precision)
-        if model.pretransform is not None:
-            model.pretransform.to(
-                torch.bfloat16
-                if args.base_precision in ("bf16", "bfloat16")
-                else torch.float16
-            )
-    print(f"Trainable LoRA params: {sum(p.numel() for p in lora_params):,}")
-
-    optimizer = AdamW(lora_params, lr=args.lr)
+    # Extract tokenizers from conditioners for pre-tokenization in DataLoader workers
+    tokenizers = {}
+    if hasattr(model, "conditioner"):
+        for key, cond in model.conditioner.conditioners.items():
+            if hasattr(cond, "tokenizer") and hasattr(cond, "max_length"):
+                tokenizers[key] = (cond.tokenizer, cond.max_length)
 
     if args.encoded_dir:
         dataset = PreEncodedDataset(
@@ -216,79 +130,162 @@ def train(args):
             sample_rate=sample_rate,
             force_channels="stereo",
         )
-    loader = torch.utils.data.DataLoader(
+    dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=min(4, os.cpu_count() or 1),
+        num_workers=args.num_workers,
+        drop_last=True,
+        collate_fn=collation_fn,
+        worker_init_fn=lambda worker_id: torch.manual_seed(seed + worker_id),
+    )
+
+    lora_state_dict = None
+    if args.lora_checkpoint:
+        lora_state_dict, _ = load_lora_checkpoint(args.lora_checkpoint)
+
+    lora_config = {
+        "rank": args.rank,
+        "alpha": args.lora_alpha if args.lora_alpha is not None else args.rank,
+        "adapter_type": args.adapter_type,
+        "dropout": args.dropout,
+        "include": args.include,
+        "exclude": args.exclude,
+    }
+    optimizer_config = {
+        "diffusion": {
+            "optimizer": {
+                "type": "AdamW",
+                "config": {
+                    "lr": args.lr,
+                    "weight_decay": 0.01,
+                    "betas": [0.9, 0.95],
+                },
+            }
+        }
+    }
+
+    training_wrapper = DiffusionCondTrainingWrapper(
+        model,
+        mask_loss_weight=1.0,
+        mask_padding_attention=True,
+        silence_extension_scale_seconds=4.0,
+        use_ema=False,
+        log_loss_info=False,
+        optimizer_configs=optimizer_config,
+        pre_encoded=bool(args.encoded_dir),
+        timestep_sampler="trunc_logit_normal",
+        timestep_sampler_options={},
+        inpainting_config={"mask_kwargs": {"mask_type_probabilities": [0.1, 0.8, 0.1]}},
+        use_effective_length_for_schedule=True,
+        sample_rate=model_config.get("sample_rate", 44100),
+        sample_size=model_config.get("sample_size"),
+        lora_config=lora_config,
+        lora_state_dict=lora_state_dict,
+        svd_bases_path=args.svd_bases_path,
+        log_every_n_steps=args.log_every,
+        ot_coupling=True,
+        base_precision=args.base_precision,
+    )
+
+    exc_callback = ExceptionCallback()
+
+    if args.logger == "wandb":
+        logger = pl.loggers.WandbLogger(project=args.name)
+        logger.watch(training_wrapper)
+
+        if args.save_dir and isinstance(logger.experiment.id, str):
+            checkpoint_dir = os.path.join(
+                args.save_dir,
+                logger.experiment.project,
+                logger.experiment.id,
+                "checkpoints",
+            )
+        else:
+            checkpoint_dir = None
+    elif args.logger == "comet":
+        logger = pl.loggers.CometLogger(project=args.name)
+        if args.save_dir and isinstance(logger.version, str):
+            checkpoint_dir = os.path.join(
+                args.save_dir, logger.name, logger.version, "checkpoints"
+            )
+        else:
+            print(
+                f"No save_dir specified, using {args.save_dir if args.save_dir else None}."
+            )
+            checkpoint_dir = args.save_dir if args.save_dir else None
+    elif args.logger == "csv":
+        logger = pl.loggers.CSVLogger(args.save_dir)
+        checkpoint_dir = args.save_dir if args.save_dir else None
+    else:
+        logger = None
+        checkpoint_dir = args.save_dir if args.save_dir else None
+
+    ckpt_callback = pl.callbacks.ModelCheckpoint(
+        every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1
+    )
+
+    demo_dl = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0,
         drop_last=True,
         collate_fn=collation_fn,
     )
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    model.model.train()
+    # Pre-fetch the first batch and cycle it so demos always use the same samples
+    demo_batch = next(iter(demo_dl))
+    _, metadata = demo_batch
+    for j in range(min(4, len(metadata))):
+        md = metadata[j]
+        print(
+            f"Demo sample {j}: prompt={md.get('prompt', '')} seconds_total={md.get('seconds_total', '')}"
+        )
+    demo_dl = itertools.cycle([demo_batch])
 
-    step = 0
-    while step < args.steps:
-        for audio_batch, metadata in loader:
-            if step >= args.steps:
-                break
+    demo_callback = DiffusionCondInpaintDemoCallback(
+        demo_every=args.demo_every,
+        sample_size=model_config.get("sample_size"),
+        sample_rate=model_config.get("sample_rate"),
+        demo_steps=50,
+        num_demos=4,
+        demo_cfg_scales=[2, 4, 7],
+        demo_dl=demo_dl,
+    )
 
-            if args.encoded_dir:
-                latents = audio_batch.to(device=device, dtype=torch.bfloat16)
-            else:
-                audio_batch = audio_batch.to(device=device, dtype=torch.bfloat16)
-                with torch.no_grad():
-                    latents = model.pretransform.encode(audio_batch)
-            conditioning = model.conditioner(list(metadata), str(device))
+    callbacks = [ckpt_callback, exc_callback, demo_callback]
 
-            # rf_denoiser noise schedule: xt = (1-t)*x0 + t*noise, target = noise - x0
-            B = latents.shape[0]
-            t = torch.rand(B, device=device, dtype=torch.bfloat16)
-            noise = torch.randn_like(latents)
-            t_bc = t[:, None, None]
-            noised = latents * (1 - t_bc) + noise * t_bc
-            target = noise - latents
+    # Combine args and config dicts
+    args_dict = vars(args)
+    args_dict.update({"model_config": model_config})
 
-            # Inpaint model requires mask conditioning; all-zeros = pure generation
-            conditioning["inpaint_mask"] = [
-                torch.zeros(B, 1, latents.shape[2], device=device, dtype=torch.bfloat16)
-            ]
-            conditioning["inpaint_masked_input"] = [torch.zeros_like(latents)]
+    if args.logger == "comet":
+        logger.log_hyperparams(args_dict)
 
-            model.model.train()
-            pred = model(noised, t, cond=conditioning, cfg_dropout_prob=0.1)
-            loss = F.mse_loss(pred.float(), target.float())
+    if not hasattr(args, "gradient_clip_val") or args.gradient_clip_val == 0:
+        args.gradient_clip_val = None
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+    summary = pl.callbacks.ModelSummary(max_depth=2)
+    callbacks.append(summary)
 
-            step += 1
-            if step % args.log_every == 0:
-                print(f"Step {step}/{args.steps}  loss={loss.item():.4f}")
-            if step % args.save_every == 0:
-                save_checkpoint(model, args, step, lora_alpha)
-    if step % args.save_every != 0:
-        save_checkpoint(model, args, step, lora_alpha)
-    print("Done.")
+    trainer = pl.Trainer(
+        devices="auto",
+        accelerator="auto",
+        strategy="auto",
+        precision="bf16-mixed",
+        accumulate_grad_batches=1,
+        callbacks=callbacks,
+        logger=logger,
+        log_every_n_steps=1,
+        max_steps=args.steps,
+        default_root_dir=args.save_dir,
+        gradient_clip_val=args.gradient_clip_val,
+        reload_dataloaders_every_n_epochs=0,
+        num_sanity_val_steps=0,  # If you need to debug validation, change this line
+    )
 
-
-def save_checkpoint(model, args, step, lora_alpha):
-    state_dict = {
-        **get_lora_state_dict(model.model),
-        **get_lora_state_dict(model.conditioner),
-    }
-    lora_config = {
-        "rank": args.rank,
-        "alpha": lora_alpha,
-        "adapter_type": args.adapter_type,
-        "include": args.include,
-        "exclude": args.exclude,
-    }
-    out = Path(args.output_dir) / f"lora_step{step}.safetensors"
-    save_lora_safetensors(state_dict, lora_config, out)
-    print(f"Saved {out}")
+    trainer.fit(training_wrapper, dataloader)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +297,7 @@ def main():
     p = argparse.ArgumentParser(
         description="Simple LoRA fine-tuning for Stable Audio 3"
     )
-    p.add_argument("--model", choices=list(rf_models), default="medium-rf")
+    p.add_argument("--model", choices=list(base_models), default="medium-base")
     p.add_argument(
         "--data_dir",
         default=None,
@@ -311,7 +308,6 @@ def main():
         default=None,
         help="Pre-encoded latent directory from pre_encode_dataset.py (.npy/.json pairs; captions embedded in .json, no .txt needed)",
     )
-    p.add_argument("--output_dir", default="lora_out")
     p.add_argument("--rank", type=int, default=16)
     p.add_argument(
         "--lora_alpha",
@@ -332,7 +328,7 @@ def main():
             "dora-cols-xs",
             "bora-xs",
         ],
-        default="dora",
+        default="dora-rows",
     )
     p.add_argument(
         "--dropout",
@@ -360,7 +356,7 @@ def main():
     p.add_argument(
         "--base_precision",
         choices=["bf16", "bfloat16", "fp16", "float16"],
-        default="fp16",
+        default="bf16",
         help="Cast frozen base weights to lower precision (LoRA params stay fp32)",
     )
     p.add_argument(
@@ -369,16 +365,22 @@ def main():
         help="Path to an existing LoRA .safetensors checkpoint to resume from",
     )
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--steps", type=int, default=1000)
+    p.add_argument("--steps", type=int, default=10_000)
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument(
         "--duration",
         type=float,
-        default=30.0,
-        help="Maximum clip duration in seconds (default 30)",
+        default=380.0,
+        help="Maximum clip duration in seconds (default 380)",
     )
-    p.add_argument("--log_every", type=int, default=10)
-    p.add_argument("--save_every", type=int, default=100)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--logger", choices=["wandb", "comet", "csv", "none"], default="csv")
+    p.add_argument("--name", type=str, default="lora-finetune")
+    p.add_argument("--save_dir", type=str, default="./lora_checkpoints")
+    p.add_argument("--checkpoint_every", type=int, default=500)
+    p.add_argument("--log_every", type=int, default=100)
+    p.add_argument("--demo_every", type=int, default=500)
+    p.add_argument("--num_workers", type=int, default=8)
     args = p.parse_args()
     if not args.encoded_dir and not args.data_dir:
         p.error("one of --data_dir or --encoded_dir is required")
