@@ -50,7 +50,7 @@ Browser (:5173 in dev, served from backend in prod)
    ↓ fetch('/api/...')
 FastAPI backend (:8600)
    ↓ pipeline.generate(...)
-StableAudioPipeline
+StableAudioModel
    ├── T5Gemma text encoder       (models/conditioners.py)
    ├── DiT diffusion transformer  (models/dit.py → transformer.py)
    └── SAME autoencoder           (models/autoencoders.py)
@@ -245,7 +245,7 @@ For **continuation** (extending past the source's end): drag the mask to the end
 
 Stack one or more LoRA adapters at inference. Each row shows the LoRA name, weight slider (0–1), and remove button.
 
-> **Status: UI scaffolding only.** The backend's `/api/generate-jobs` does not yet pass LoRA references through to the pipeline. Loading LoRA adapters is supported by the pipeline directly via `StableAudioPipeline.load_lora(...)` (see [§14](#14-python-pipeline-reference)).
+> **Status: UI scaffolding only.** The backend's `/api/generate-jobs` does not yet pass LoRA references through to the pipeline. Loading LoRA adapters is supported by the pipeline directly via `StableAudioModel.load_lora(...)` (see [§14](#14-python-pipeline-reference)).
 
 ### 6.6 Output Status Monitor
 
@@ -385,17 +385,37 @@ The center panel. Stays put across tab switches.
 
 Top of the panel — switch between **Waveform Editor** and **Step Sequencer**.
 
-### 10.2 Waveform Editor
+### 10.2 Waveform Editor ✅
 
-> **Status: scaffolding only.** The visual surface exists (tracks, clips, transport bar, COMMIT EDIT button) but clips are not draggable/cuttable/saveable yet — see the [polish plan](./plans/2026-05-18-stabledaw-ui-polish-and-functionality.md) §2 for the rebuild plan.
+Multi-track audio composition surface backed by `useEditorStore`. Every clip is a slice of a real audio Blob; waveform peaks are computed once via `AudioContext.decodeAudioData` and cached on the clip for fast redraws.
 
-What's there today:
-- Add Track button (creates an empty track).
-- Per-track name, M/S buttons, volume + pan sliders.
-- Snap pill (decorative).
-- Zoom in / out.
-- Playhead overlay (does not advance).
-- COMMIT EDIT button (no handler yet).
+**Toolbar:**
+- **ADD TRACK** — append an empty track. Track names auto-inherit from the first clip placed on them (editable any time after).
+- **Move tool** — drag clips horizontally to reposition, vertically to move between tracks.
+- **Cut tool** — click inside a clip to split it at that point. The right half becomes a new clip referencing the same source with an adjusted in-point.
+- **Snap dropdown** — Off / 1/4 / 1/8 / 1/16, relative to the editor BPM; applies to drag/resize math.
+- **Zoom in/out** — pixels-per-second resolution (5–400 px/s).
+- **Delete** — removes the selected clip. `Delete` / `Backspace` keys do the same.
+
+**Per-track header:**
+- Editable name (track-color text).
+- M / S / × — mute, solo (radio-style across tracks), remove track.
+- Volume slider (0–1).
+- Pan slider (−1 → +1).
+
+**Per-clip:**
+- Real downsampled waveform peaks (240 bins, normalized).
+- Header label + duration readout.
+- Left/right resize handles trim the in/out points. The left handle adjusts both `startSec` and `offsetIntoSource` so the source contents stay aligned to the playhead.
+
+**Transport:**
+- **Preview ▶︎** — plays just the selected clip through Web Audio at master volume.
+- **Stop ■** — interrupts preview.
+- **COMMIT EDIT** — renders every non-muted (or solo'd) track into a single 44.1 kHz stereo WAV via `OfflineAudioContext`, then auto-saves it to the LIBRARY as a `mixdown_*.wav` entry. The new entry is playable, downloadable, and can itself be sent back into the editor.
+
+**Status bar (bottom):** live timecode (playhead / total length), clip + track counts, and a SEL readout showing the selected clip's `startSec → endSec`. Click an empty part of the timeline to move the playhead; click empty space to deselect.
+
+**Sending audio to the editor:** every LIBRARY row has a scissors icon. Click it to append that entry to the first track at the end of any existing content. The clip's audio Blob is decoded and its peaks are cached on the spot.
 
 ### 10.3 Step Sequencer ✅
 
@@ -576,9 +596,9 @@ Not consumed by the UI yet.
 ### 14.1 Text-to-audio
 
 ```python
-from stable_audio_3 import StableAudioPipeline
+from stable_audio_3 import StableAudioModel
 
-pipe = StableAudioPipeline.from_pretrained("medium")
+pipe = StableAudioModel.from_pretrained("medium")
 audio = pipe.generate(
     prompt="Lo-fi boom bap meets orchestral strings, 84 BPM",
     duration=180,
@@ -616,9 +636,9 @@ For **continuation**: set `inpaint_mask_start_seconds` to the length of the sour
 ### 14.4 Autoencoder
 
 ```python
-from stable_audio_3 import AutoencoderPipeline
+from stable_audio_3 import AutoencoderModel
 
-ae = AutoencoderPipeline.from_pretrained("same-l")
+ae = AutoencoderModel.from_pretrained("same-l")
 waveform, sr = torchaudio.load("audio.wav")
 latents = ae.encode(waveform, sr)
 audio_out = ae.decode(latents)
@@ -627,7 +647,7 @@ audio_out = ae.decode(latents)
 ### 14.5 LoRA at inference
 
 ```python
-pipe = StableAudioPipeline.from_pretrained("medium")
+pipe = StableAudioModel.from_pretrained("medium")
 pipe.load_lora("path/to/lora.ckpt", weight=0.8)
 audio = pipe.generate(prompt="...", duration=30)
 ```
@@ -636,7 +656,7 @@ Multiple LoRAs stack additively. `weight` can be adjusted at runtime.
 
 ### 14.6 Advanced generation controls
 
-See `stable_audio_3/pipeline.py:StableAudioPipeline.generate` for the full signature. Highlights:
+See `stable_audio_3/model.py:StableAudioModel.generate` for the full signature. Highlights:
 
 - `sampler_type` — `"euler"`, `"rk4"`, `"dpmpp_2m_sde"`, `"ping_pong"`.
 - `sigma_max` — max noise level for partial trajectories.
