@@ -1,4 +1,4 @@
-// Playwright screenshot script for the SonicForge UI.
+// Playwright screenshot script for the StableDAW UI.
 // Used by scripts/regenerate-docs.{sh,ps1} when Playwright + the dev server are both available.
 //
 // Outputs go to docs/UI/screenshots/. Each tab and modal gets its own PNG.
@@ -32,8 +32,8 @@ const tabs = [
 
     log(`Loading ${BASE}`);
     await page.goto(BASE, { waitUntil: 'networkidle', timeout: 15000 });
-    // Wait for the SonicForge logo to appear so we know the React tree is mounted.
-    await page.waitForSelector('text=SONICFORGE', { timeout: 10000 });
+    // Wait for the StableDAW logo to appear so we know the React tree is mounted.
+    await page.waitForSelector('text=STABLEDAW', { timeout: 10000 });
 
     for (const t of tabs) {
       log(`Capturing ${t.label}`);
@@ -46,7 +46,7 @@ const tabs = [
     // Docs modal.
     log('Capturing Docs modal');
     await page.locator('button[title="Open documentation"]').click();
-    await page.waitForSelector('text=SonicForge Docs', { timeout: 5000 });
+    await page.waitForSelector('text=StableDAW Docs', { timeout: 5000 });
     await page.waitForTimeout(800); // let the TOC render
     await page.screenshot({ path: resolve(outDir, '05-docs-modal.png'), fullPage: false });
 

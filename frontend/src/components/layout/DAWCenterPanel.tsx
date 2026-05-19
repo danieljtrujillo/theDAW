@@ -2,17 +2,31 @@ import React, { useState, useRef, useEffect } from 'react';
 import { WaveformEditor } from '../audio/WaveformEditor';
 import { StepSequencer } from '../audio/StepSequencer';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
+import { PianoRoll } from '../audio/PianoRoll';
+import { DetailsView } from './DetailsView';
+import { MediaBucketView } from './MediaBucketView';
 import {
-  Scissors, Layers, Settings, Activity, GripHorizontal, ChevronDown, ChevronUp, Waves
+  Scissors, Layers, Activity, GripHorizontal, ChevronDown, ChevronUp,
+  Info, Piano, FolderOpen,
 } from 'lucide-react';
+import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
+
+const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
+  { id: 'spectral',   label: 'Real-time Spectral', icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
+  { id: 'details',    label: 'Details',            icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
+  { id: 'piano-roll', label: 'Piano Roll',         icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'bucket',     label: 'Media Bucket',       icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
+];
 
 export const DAWCenterPanel: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'sequencer'>('editor');
-  const [bottomHeight, setBottomHeight] = useState(220);
+  const [bottomHeight, setBottomHeight] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
-  const [isBottomOpen, setIsBottomOpen] = useState(true);
-  const [visualizerTab, setVisualizerTab] = useState<'spectral' | 'scope'>('spectral');
+  const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
+  const setBottomOpen = useBottomPanelStore((s) => s.setOpen);
+  const activeTab = useBottomPanelStore((s) => s.activeTab);
+  const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -24,7 +38,7 @@ export const DAWCenterPanel: React.FC = () => {
       const nextHeight = Math.round(containerRect.height - pointerDistanceFromTop);
       const newHeight = Math.max(60, Math.min(nextHeight, maxBottomHeight));
       setBottomHeight(newHeight);
-      if (newHeight > 60) setIsBottomOpen(true);
+      if (newHeight > 60) setBottomOpen(true);
     };
 
     const handleMouseUp = () => setIsResizing(false);
@@ -42,46 +56,32 @@ export const DAWCenterPanel: React.FC = () => {
       document.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = 'default';
     };
-  }, [isResizing]);
+  }, [isResizing, setBottomOpen]);
 
   return (
     <div ref={containerRef} className="flex-1 h-full flex flex-col pt-2 px-2 pb-0 gap-2 bg-[#0a080f]/40 relative z-0 min-h-0">
-      
-      {/* Main Timeline Section (Now at Top) */}
+
+      {/* Main Timeline Section */}
       <div className="flex-1 min-h-0 hardware-card flex flex-col pt-1">
-        
+
         {/* Toolbar */}
         <div className="flex items-center gap-2 mb-1 px-2 border-b border-white/5 pb-1 flex-shrink-0">
-           <button 
+           <button
              onClick={() => setWorkspaceMode('editor')}
-             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border 
+             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
                ${workspaceMode === 'editor' ? 'bg-purple-600/20 border-purple-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
            >
               <Scissors className="w-3.5 h-3.5" />
               <span className="text-[10px] font-black uppercase tracking-widest">Waveform Editor</span>
            </button>
-           <button 
+           <button
              onClick={() => setWorkspaceMode('sequencer')}
-             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border 
+             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
                ${workspaceMode === 'sequencer' ? 'bg-cyan-600/20 border-cyan-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
            >
               <Layers className="w-3.5 h-3.5" />
               <span className="text-[10px] font-black uppercase tracking-widest">Step Sequencer</span>
            </button>
-           
-           <div className="flex-1" />
-           
-           <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                 <span className="text-[8px] font-mono text-zinc-600">SNAP</span>
-                 <div className="w-8 h-4 bg-purple-500/10 rounded-full border border-purple-500/30 flex items-center px-0.5 cursor-pointer">
-                    <div className="w-3 h-3 bg-purple-500 rounded-full ml-auto" />
-                 </div>
-              </div>
-              <button className="p-1 px-1.5 bg-white/5 rounded border border-white/5 hover:bg-white/10 transition-colors">
-                 <Settings className="w-3.5 h-3.5 text-zinc-500" />
-              </button>
-           </div>
         </div>
 
         {/* Timeline body */}
@@ -92,7 +92,7 @@ export const DAWCenterPanel: React.FC = () => {
 
       {/* Resize Handle */}
       {isBottomOpen && (
-        <div 
+        <div
           className="h-2 -my-2 flex items-center justify-center cursor-row-resize z-10 group relative"
           onMouseDown={() => setIsResizing(true)}
         >
@@ -101,16 +101,16 @@ export const DAWCenterPanel: React.FC = () => {
         </div>
       )}
 
-      {/* Collapsible Header for Bottom Section (If Collapsed) */}
+      {/* Collapsible Header (When Collapsed) */}
       {!isBottomOpen && (
         <button
           type="button"
-          onClick={() => setIsBottomOpen(true)}
+          onClick={() => setBottomOpen(true)}
           className="hardware-card border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 flex items-center justify-between px-3 py-2 cursor-pointer transition-colors group/restore"
         >
            <div className="flex items-center gap-2">
               <Activity className="w-4 h-4 text-purple-400" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">Expand Spectral Analyzer</span>
+              <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">Expand Bottom Panel</span>
            </div>
            <div className="flex items-center gap-1.5 text-purple-300 group-hover/restore:text-white transition-colors">
               <span className="text-[9px] font-mono uppercase tracking-widest">Show</span>
@@ -119,41 +119,59 @@ export const DAWCenterPanel: React.FC = () => {
         </button>
       )}
 
-      {/* Bottom Section: Spectral Analyzer (log moved to left panel) */}
+      {/* Bottom Panel — multi-tab */}
       {isBottomOpen && (
         <div
           className="flex-shrink-0"
           style={{ height: `${bottomHeight}px` }}
         >
-          <div className="hardware-card border-purple-500/20 bg-purple-500/[0.02] flex flex-col min-h-0 relative h-full">
-             <div className="flex items-center justify-between border-b border-white/5 flex-shrink-0 bg-black/20">
+          <div className="hardware-card border-purple-500/20 bg-purple-500/[0.02] flex flex-col min-h-0 relative h-full !p-0">
+             {/* Tabs row */}
+             <div className="flex items-center justify-between border-b border-white/5 flex-shrink-0 bg-black/30">
                 <div className="flex">
-                   <button
-                     onClick={() => setVisualizerTab('spectral')}
-                     className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors ${visualizerTab === 'spectral' ? 'border-purple-500 text-purple-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
-                   >
-                     <Activity className="w-3 h-3" /> Real-time Spectral
-                   </button>
-                   <button
-                     onClick={() => setVisualizerTab('scope')}
-                     className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors ${visualizerTab === 'scope' ? 'border-blue-500 text-blue-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
-                   >
-                     <Waves className="w-3 h-3" /> Signal Scope
-                   </button>
+                   {TAB_DEFS.map((t) => {
+                     const Icon = t.icon;
+                     const active = activeTab === t.id;
+                     return (
+                       <button
+                         key={t.id}
+                         onClick={() => setActiveTab(t.id)}
+                         className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors ${active ? t.colorActive : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                         title={t.label}
+                       >
+                         <Icon className="w-3 h-3" /> {t.label}
+                       </button>
+                     );
+                   })}
                 </div>
                 <div className="flex items-center gap-2 px-2">
-                   <button onClick={() => setIsBottomOpen(false)} className="p-1 hover:bg-white/10 rounded" title="Collapse spectral analyzer">
+                   <button onClick={() => setBottomOpen(false)} className="p-1 hover:bg-white/10 rounded" title="Collapse bottom panel">
                       <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
                    </button>
                 </div>
              </div>
-             <div className="flex-1 min-h-0 relative p-1">
-                {visualizerTab === 'spectral' ? (
-                   <AdvancedVisualizer />
-                ) : (
-                   <div className="h-full w-full rounded border border-white/5 bg-[#0a080f] flex items-center justify-center text-zinc-600 font-mono text-[10px] uppercase">
-                      [ Signal Scope View Active ]
-                   </div>
+
+             {/* Tab content */}
+             <div className="flex-1 min-h-0 relative">
+                {activeTab === 'spectral' && (
+                  <div className="absolute inset-0 p-1">
+                    <AdvancedVisualizer />
+                  </div>
+                )}
+                {activeTab === 'details' && (
+                  <div className="absolute inset-0">
+                    <DetailsView />
+                  </div>
+                )}
+                {activeTab === 'piano-roll' && (
+                  <div className="absolute inset-0">
+                    <PianoRoll />
+                  </div>
+                )}
+                {activeTab === 'bucket' && (
+                  <div className="absolute inset-0">
+                    <MediaBucketView />
+                  </div>
                 )}
              </div>
           </div>

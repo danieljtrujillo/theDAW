@@ -67,16 +67,6 @@ export const StudioView: React.FC = () => {
     <div className="flex flex-col gap-2 h-full text-[11px] pb-4 px-2 pt-2">
       
       <Section title="STUDIO MACROS" icon={SlidersHorizontal} defaultOpen={true}>
-             <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*"
-                className="hidden"
-                onChange={(event) => {
-                   const file = event.target.files?.[0] ?? null;
-                   setSourceFile(file);
-                }}
-             />
          <div className="space-y-4">
              <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between"><span className="mono-label !text-[9px]">Global Drive</span><span className="mono-label !text-[9px] text-zinc-400">{macros.drive}%</span></div>
@@ -125,9 +115,23 @@ export const StudioView: React.FC = () => {
                <Heart className="w-3 h-3" /> {isProcessing ? 'PROCESSING...' : 'PROCESS AUDIO'}
             </button>
          </div>
-         <button className="btn-ghost text-[9px] py-1.5 flex items-center justify-center gap-1.5 mt-2" onClick={() => fileInputRef.current?.click()}>
-            <UploadCloud className="w-3 h-3" /> {sourceFile ? 'CHANGE SOURCE' : 'LOAD SOURCE'}
-         </button>
+         <div className="relative mt-2">
+            <input
+               ref={fileInputRef}
+               type="file"
+               accept="audio/*"
+               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+               onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setSourceFile(file);
+                  event.target.value = '';
+               }}
+               title={sourceFile ? 'Replace studio source audio' : 'Load studio source audio'}
+            />
+            <div className="btn-ghost text-[9px] py-1.5 flex items-center justify-center gap-1.5 pointer-events-none">
+               <UploadCloud className="w-3 h-3" /> {sourceFile ? 'CHANGE SOURCE' : 'LOAD SOURCE'}
+            </div>
+         </div>
          {sourceFile && <p className="text-[9px] font-mono text-zinc-500 mt-2">SOURCE: {sourceFile.name}</p>}
          {error && <p className="text-[9px] font-mono text-red-400 mt-2">{error}</p>}
       </Section>

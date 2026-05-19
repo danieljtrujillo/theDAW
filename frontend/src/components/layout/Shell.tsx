@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Settings, Zap, ChevronRight, BookOpen } from 'lucide-react';
+import { Search, Settings, ChevronRight, BookOpen } from 'lucide-react';
 import { GenerateView } from '../../views/GenerateView';
 import { StudioView } from '../../views/StudioView';
 import { LibraryView } from '../../views/LibraryView';
@@ -8,6 +8,7 @@ import { TrainingView } from '../../views/TrainingView';
 import { ResizablePanel } from './ResizablePanel';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
+import { GlobalGenerateBar } from './GlobalGenerateBar';
 import { DocsModal } from './DocsModal';
 import { useStatusBarStore } from '../../state/statusBarStore';
 
@@ -51,32 +52,23 @@ export const Shell: React.FC = () => {
           
           {/* Header & Tabs */}
           <div className="flex flex-col border-b border-white/5 pt-3 pb-0 px-3 bg-[#0a080f]">
-            {/* Logo */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-[0_0_10px_rgba(139,92,246,0.5)]">
-                  <Zap className="w-4 h-4 text-white fill-current" />
-                </div>
-                <div className="flex flex-col">
-                  <span className="font-black text-[14px] tracking-widest uppercase italic leading-none text-white shadow-purple-500/50">STABLEDAW</span>
-                  <span className="text-[8px] font-mono text-purple-500/80 tracking-tighter uppercase mt-0.5">V3.2 Engine</span>
-                </div>
-              </div>
-              <button onClick={() => setIsLeftPanelOpen(false)} className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors">
+            {/* Top utility row — keeps the collapse chevron without the logo block */}
+            <div className="flex items-center justify-end mb-2">
+              <button onClick={() => setIsLeftPanelOpen(false)} className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors" title="Collapse left panel">
                 <ChevronRight className="w-4 h-4 rotate-180" />
               </button>
             </div>
 
             {/* Horizontal Tabs */}
-            <div className="flex items-center gap-3 sm:gap-5 overflow-x-auto no-scrollbar">
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar mb-2 px-1">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveView(tab.id)}
-                  className={`pb-1.5 border-b-2 font-black text-[14px] sm:text-[18px] tracking-widest uppercase transition-colors whitespace-nowrap
-                    ${activeView === tab.id ? 'border-white text-white' : 'border-transparent text-zinc-600 hover:text-zinc-400'}`}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border whitespace-nowrap
+                    ${activeView === tab.id ? 'bg-purple-600/20 border-purple-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
                 >
-                  {tab.label}
+                  <span className="text-[10px] font-black uppercase tracking-widest">{tab.label}</span>
                 </button>
               ))}
             </div>
@@ -101,6 +93,10 @@ export const Shell: React.FC = () => {
              </AnimatePresence>
           </div>
 
+          {/* Pinned CREATE-tab CTA: output progress + RUN button. Hard structural
+              attachment as flex sibling of ProcessingLog so it can't desync. */}
+          {activeView === 'create' && <GlobalGenerateBar />}
+
           {/* Global Processing Log */}
           <ProcessingLog />
         </div>
@@ -108,16 +104,23 @@ export const Shell: React.FC = () => {
 
       {/* Main Canvas (DAW Center Panel) */}
       <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
-        <header className="h-10 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a080f]/80 backdrop-blur-md z-20 flex-shrink-0">
-          <div className="flex items-center gap-6">
+        <header className="h-10 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a080f]/80 backdrop-blur-md z-20 flex-shrink-0 relative">
+          
+          {/* Centered App Name */}
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+            <span className="font-semibold text-[15px] font-sans text-zinc-100 tracking-wide">
+              StableDAW
+            </span>
+          </div>
+
+          <div className="flex items-center gap-6 relative z-10">
             <h2 className="text-[10px] font-black uppercase tracking-[0.4em] flex items-center gap-2.5">
               {!isLeftPanelOpen && (
-                <button onClick={() => setIsLeftPanelOpen(true)} className="p-1 hover:bg-white/10 rounded mr-1">
+                <button onClick={() => setIsLeftPanelOpen(true)} className="p-1 hover:bg-white/10 rounded mr-1 pointer-events-auto" title="Open left panel">
                    <ChevronRight className="w-4 h-4 text-zinc-500 hover:text-white transition-colors" />
                 </button>
               )}
               <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(139,92,246,1)]" />
-              DAW Workspace
             </h2>
             <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
                <Search className="w-3 h-3 text-zinc-600" />

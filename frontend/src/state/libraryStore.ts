@@ -100,6 +100,7 @@ export interface LibraryState {
   onlyFavorites: boolean;
   sortBy: 'newest' | 'oldest' | 'duration' | 'title';
   playingId: string | null;
+  selectedEntryId: string | null;
 
   load: () => Promise<void>;
   addEntry: (entry: LibraryEntry) => Promise<void>;
@@ -111,6 +112,7 @@ export interface LibraryState {
   setOnlyFavorites: (v: boolean) => void;
   setSortBy: (s: LibraryState['sortBy']) => void;
   setPlayingId: (id: string | null) => void;
+  setSelectedEntry: (id: string | null) => void;
   getAudioUrl: (entry: LibraryEntry) => string;
   getFiltered: () => LibraryEntry[];
 }
@@ -123,6 +125,7 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
   onlyFavorites: false,
   sortBy: 'newest',
   playingId: null,
+  selectedEntryId: null,
 
   load: async () => {
     if (get().loading) return;
@@ -192,6 +195,7 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
   setOnlyFavorites: (onlyFavorites) => set({ onlyFavorites }),
   setSortBy: (sortBy) => set({ sortBy }),
   setPlayingId: (playingId) => set({ playingId }),
+  setSelectedEntry: (selectedEntryId) => set({ selectedEntryId }),
 
   getAudioUrl: (entry) => urlFor(entry),
 

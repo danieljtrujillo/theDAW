@@ -1,4 +1,4 @@
-# Install SonicForge git hooks (PowerShell variant for Windows).
+# Install StableDAW git hooks (PowerShell variant for Windows).
 #
 # Usage:  .\scripts\install-hooks.ps1
 #

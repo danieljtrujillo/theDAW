@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SonicForge pre-commit hook.
+# StableDAW pre-commit hook.
 #
 # Re-runs scripts/regenerate-docs.sh so the canonical user guide,
 # the in-app copy under frontend/public, and (optionally) the

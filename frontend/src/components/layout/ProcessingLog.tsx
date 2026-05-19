@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal, ChevronDown, ChevronUp, Trash2, Download } from 'lucide-react';
+import { Terminal, ChevronDown, ChevronUp, Trash2, Download, Play, Pause, FileDown } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
+import { usePlayerStore } from '../../state/playerStore';
+import { useLibraryStore } from '../../state/libraryStore';
 
 const levelStyles: Record<LogLevel, string> = {
   info: 'text-zinc-300 border-l-2 border-purple-500/60',
@@ -41,11 +43,31 @@ const downloadLog = (entries: LogEntry[]): void => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
+const downloadCurrentTrack = (): void => {
+  const player = usePlayerStore.getState();
+  if (!player.hasTrack) return;
+  const entryId = player.currentEntryId;
+  const entries = useLibraryStore.getState().entries;
+  const entry = entryId ? entries.find((e) => e.id === entryId) : entries[0];
+  if (!entry) return;
+  const url = useLibraryStore.getState().getAudioUrl(entry);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = entry.title;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
 export const ProcessingLog: React.FC = () => {
   const entries = useLogStore((s) => s.entries);
   const clear = useLogStore((s) => s.clear);
   const [isOpen, setIsOpen] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  const hasTrack = usePlayerStore((s) => s.hasTrack);
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const toggle = usePlayerStore((s) => s.toggle);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -76,6 +98,33 @@ export const ProcessingLog: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-1">
+          {/* Current-track controls — always visible when something is loaded in the engine */}
+          {hasTrack && (
+            <>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); toggle(); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggle(); } }}
+                className={`p-0.5 transition-colors cursor-pointer ${isPlaying ? 'text-purple-300 hover:text-purple-200' : 'text-zinc-500 hover:text-purple-300'}`}
+                title={isPlaying ? 'Pause current track' : 'Play current track'}
+              >
+                {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
+              </span>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); downloadCurrentTrack(); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); downloadCurrentTrack(); } }}
+                className="p-0.5 text-zinc-500 hover:text-purple-300 transition-colors cursor-pointer"
+                title="Download current track"
+              >
+                <FileDown className="w-3 h-3" />
+              </span>
+              <span className="w-px h-3 bg-white/10 mx-0.5" />
+            </>
+          )}
+          {/* Log-specific controls — only when open */}
           {isOpen && (
             <>
               <span

@@ -39,9 +39,9 @@ sample_rate = 44100
 @app.on_event("startup")
 async def load_model():
     global pipeline, sample_rate
-    from stable_audio_3.pipeline import StableAudioPipeline
+    from stable_audio_3.model import StableAudioModel
 
-    pipeline = StableAudioPipeline.from_pretrained("medium")
+    pipeline = StableAudioModel.from_pretrained("medium")
     sample_rate = pipeline.model_config["sample_rate"]
 
 

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
 import { useLibraryStore } from './libraryStore';
+import { usePlayerStore } from './playerStore';
 
 export interface GenerateParams {
   prompt: string;
@@ -247,7 +248,11 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
           useStatusBarStore.getState().setText('GENERATION COMPLETE');
           logInfo('generate', `Completed: ${resultItem.filename || 'output.wav'} (${params.duration}s)`);
 
-          // Auto-add all returned items (handles batch) to the library.
+          // Auto-add all returned items (handles batch) to the library, and
+          // auto-load the first one into the global footer player.
+          let firstSavedBlob: Blob | null = null;
+          let firstSavedTitle: string | null = null;
+          let firstSavedId: string | null = null;
           try {
             const nowIso = new Date().toISOString();
             const library = useLibraryStore.getState();
@@ -257,9 +262,10 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
               const mime = it.mime_type || 'audio/wav';
               const blob = base64ToBlob(it.audio_base64, mime);
               const entryId = items.length > 1 ? `${jobId}_${i}` : jobId;
+              const title = it.filename || `gen_${entryId.slice(0, 8)}.wav`;
               await library.addEntry({
                 id: entryId,
-                title: it.filename || `gen_${entryId.slice(0, 8)}.wav`,
+                title,
                 prompt,
                 negativePrompt: params.negativePrompt || '',
                 model: params.model,
@@ -276,11 +282,26 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
                 notes: '',
                 source: 'generate',
               });
+              if (i === 0) {
+                firstSavedBlob = blob;
+                firstSavedTitle = title;
+                firstSavedId = entryId;
+              }
             }
           } catch (libErr) {
-            // Non-fatal: generation succeeded even if persistence didn't.
             const msg = libErr instanceof Error ? libErr.message : 'Unknown error';
             logError('library', `Auto-save skipped: ${msg}`);
+          }
+
+          if (firstSavedBlob && firstSavedTitle) {
+            try {
+              await usePlayerStore.getState().load(firstSavedBlob, {
+                label: firstSavedTitle,
+                entryId: firstSavedId ?? undefined,
+              });
+            } catch {
+              /* non-fatal */
+            }
           }
 
           return;

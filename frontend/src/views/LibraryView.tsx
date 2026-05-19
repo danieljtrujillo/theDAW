@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
-  Music, MoreVertical, Star, Tag, Filter, ArrowUpDown,
-  LayoutGrid, List as ListIcon, Activity,
+  Music, Star, Tag, Filter, ArrowUpDown,
+  LayoutGrid, List as ListIcon, Activity, Scissors, Layers,
 } from 'lucide-react';
 import { Section } from '../components/ui/Section';
 import { useLibraryStore, type LibraryEntry } from '../state/libraryStore';
-import { usePlaybackStore } from '../state/playbackStore';
+import { useEditorStore, computePeaks } from '../state/editorStore';
+import { usePlayerStore } from '../state/playerStore';
+import { useBottomPanelStore } from '../state/bottomPanelStore';
+import { logError } from '../state/logStore';
 
 const formatDuration = (sec: number): string => {
   if (!Number.isFinite(sec) || sec <= 0) return '--:--';
@@ -63,30 +66,84 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   }, [loaded, load]);
 
   const filteredEntries = getFiltered();
-  const audioElRef = React.useRef<HTMLAudioElement | null>(null);
-  const volume = usePlaybackStore((s) => s.volume);
-  const muted = usePlaybackStore((s) => s.muted);
+  const engineEntryId = usePlayerStore((s) => s.currentEntryId);
+  const engineIsPlaying = usePlayerStore((s) => s.isPlaying);
+  const engineLoad = usePlayerStore((s) => s.load);
+  const enginePlay = usePlayerStore((s) => s.play);
+  const enginePause = usePlayerStore((s) => s.pause);
 
-  // Keep the active <audio> element's volume in sync with the global playback store.
-  useEffect(() => {
-    if (audioElRef.current) {
-      audioElRef.current.volume = muted ? 0 : volume / 100;
+  const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
+  const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
+  const showBottomTab = useBottomPanelStore((s) => s.showTab);
+
+  const handleSelectEntry = (entry: LibraryEntry) => {
+    setSelectedEntry(entry.id);
+    // Reveal extreme metadata in the bottom panel's Details tab.
+    showBottomTab('details');
+  };
+
+  const sendEntryToTrack = async (
+    entry: LibraryEntry,
+    target: 'first-track-tail' | 'new-track',
+  ) => {
+    const editor = useEditorStore.getState();
+    let trackId: string;
+    if (target === 'new-track' || editor.tracks.length === 0) {
+      trackId = editor.addTrack({ name: entry.title });
+    } else {
+      trackId = editor.tracks[0].id;
     }
-  }, [volume, muted]);
+    const tail =
+      target === 'new-track'
+        ? 0
+        : Math.max(
+            0,
+            ...editor.clips
+              .filter((c) => c.trackId === trackId)
+              .map((c) => c.startSec + c.durationSec),
+          );
+    try {
+      const { peaks, duration } = await computePeaks(entry.audioBlob, 240);
+      // Re-read tracks after potential addTrack so we pick up the right color.
+      const trackColor =
+        useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#8b5cf6';
+      const clipId = editor.addClipToTrack({
+        trackId,
+        label: entry.title,
+        audioBlob: entry.audioBlob,
+        mimeType: entry.mimeType,
+        sourceDuration: duration || entry.duration,
+        offsetIntoSource: 0,
+        durationSec: duration || entry.duration,
+        startSec: tail,
+        color: trackColor,
+        libraryEntryId: entry.id,
+      });
+      editor.cachePeaks(clipId, peaks);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logError('library', `Could not send to editor: ${msg}`);
+    }
+  };
 
-  const handlePlay = (entry: LibraryEntry) => {
-    if (playingId === entry.id) {
-      audioElRef.current?.pause();
-      setPlayingId(null);
+  const handleSendToEditor = (entry: LibraryEntry) => void sendEntryToTrack(entry, 'first-track-tail');
+  const handleSendToNewTrack = (entry: LibraryEntry) => void sendEntryToTrack(entry, 'new-track');
+
+  const handlePlay = async (entry: LibraryEntry) => {
+    // If this entry is already loaded in the global engine, just toggle play/pause.
+    if (engineEntryId === entry.id) {
+      if (engineIsPlaying) {
+        enginePause();
+        setPlayingId(null);
+      } else {
+        enginePlay();
+        setPlayingId(entry.id);
+      }
       return;
     }
-    const url = getAudioUrl(entry);
-    if (!audioElRef.current) audioElRef.current = new Audio();
-    const el = audioElRef.current;
-    el.onended = () => setPlayingId(null);
-    el.volume = muted ? 0 : volume / 100;
-    el.src = url;
-    void el.play();
+    // Otherwise load and play through the global engine — visualizer + footer follow.
+    await engineLoad(entry.audioBlob, { label: entry.title, entryId: entry.id });
+    enginePlay();
     setPlayingId(entry.id);
   };
 
@@ -150,8 +207,17 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           {filteredEntries.map((entry) => (
             <div
               key={entry.id}
-              className={`hardware-card !p-0 group cursor-pointer transition-all hover:bg-white/[0.04]
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('application/x-stabledaw-library-id', entry.id);
+                e.dataTransfer.setData('text/plain', entry.title);
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              onClick={() => handleSelectEntry(entry)}
+              className={`hardware-card !p-0 group cursor-grab active:cursor-grabbing transition-all hover:bg-white/[0.04]
+                ${selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/[0.06]' : ''}
                 ${viewMode === 'list' ? 'flex-row items-center p-1' : 'aspect-square flex-col'}`}
+              title="Click to inspect metadata. Drag onto a Waveform Editor track."
             >
               {viewMode === 'grid' && (
                 <div className="flex-1 bg-black/40 flex items-center justify-center relative">
@@ -160,7 +226,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                     className="absolute top-1 right-1 p-1 bg-black/80 rounded opacity-0 group-hover:opacity-100 transition-opacity"
                     onClick={() => handlePlay(entry)}
                   >
-                    {playingId === entry.id ? <Pause className="w-3 h-3 text-purple-300" /> : <Play className="w-3 h-3 text-zinc-300" />}
+                    {engineEntryId === entry.id && engineIsPlaying ? <Pause className="w-3 h-3 text-purple-300" /> : <Play className="w-3 h-3 text-zinc-300" />}
                   </button>
                 </div>
               )}
@@ -194,9 +260,23 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                         <button
                           className="p-1 hover:bg-white/10 rounded"
                           onClick={(e) => { e.stopPropagation(); handlePlay(entry); }}
-                          title={playingId === entry.id ? 'Pause' : 'Play'}
+                          title={engineEntryId === entry.id && engineIsPlaying ? 'Pause' : 'Play'}
                         >
-                          {playingId === entry.id ? <Pause className="w-2.5 h-2.5 text-purple-400" /> : <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />}
+                          {engineEntryId === entry.id && engineIsPlaying ? <Pause className="w-2.5 h-2.5 text-purple-400" /> : <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />}
+                        </button>
+                        <button
+                          className="p-1 hover:bg-white/10 rounded"
+                          onClick={(e) => { e.stopPropagation(); handleSendToEditor(entry); }}
+                          title="Append to first editor track"
+                        >
+                          <Scissors className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
+                        </button>
+                        <button
+                          className="p-1 hover:bg-white/10 rounded"
+                          onClick={(e) => { e.stopPropagation(); handleSendToNewTrack(entry); }}
+                          title="Send to editor as a NEW track"
+                        >
+                          <Layers className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
                         </button>
                         <button
                           className="p-1 hover:bg-white/10 rounded"

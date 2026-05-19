@@ -40,6 +40,7 @@ Plus:
 - **Variable-length generation** — duration determines the latent sequence length directly, no wasted compute on padding.
 - **FFmpeg-based studio chain** — 24 effects covering mastering, dynamics, EQ, pitch, fade, denoise, format conversion.
 - **Persistent IndexedDB library** — every generation auto-saves with full metadata; survives reloads.
+- **Multi-track waveform editor** — drag/cut/resize/delete clips, snap to BPM grid, preview-play selected clip, render full composition to a WAV via `OfflineAudioContext` and auto-save to the library.
 - **Web Audio step sequencer** — 16-step drum machine with hand-rolled kick/snare/hat/tone/noise voices.
 - **Live processing log** — per-source, per-level, downloadable as text.
 
@@ -112,7 +113,7 @@ uv run python run_gradio.py --model medium --lora-ckpt-path path/to/lora.ckpt
 ```python
 from stable_audio_3 import StableAudioModel
 
-pipe = StableAudioPipeline.from_pretrained("medium")
+pipe = StableAudioModel.from_pretrained("medium")
 audio = pipe.generate(
     prompt="Lo-fi boom bap meets orchestral strings 84 BPM",
     duration=180,
@@ -124,9 +125,9 @@ audio = pipe.generate(prompt="Lo-fi boom bap, 84 BPM", duration=180)
 
 # Audio-to-audio
 import torchaudio
-from stable_audio_3 import StableAudioPipeline
+from stable_audio_3 import StableAudioModel
 
-pipe = StableAudioPipeline.from_pretrained("medium")
+pipe = StableAudioModel.from_pretrained("medium")
 init_audio = torchaudio.load("/path/to/audio.wav")
 audio = pipe.generate(
     init_audio=init_audio,
@@ -140,9 +141,9 @@ audio = pipe.generate(
 
 ```python
 import torchaudio
-from stable_audio_3 import StableAudioPipeline
+from stable_audio_3 import StableAudioModel
 
-pipe = StableAudioPipeline.from_pretrained("medium")
+pipe = StableAudioModel.from_pretrained("medium")
 
 inpaint_audio = torchaudio.load("/path/to/audio.wav")
 audio = pipe.generate(
@@ -161,9 +162,9 @@ To extend an audio clip (continuation), set `inpaint_mask_start_seconds` to the 
 
 ```python
 import torchaudio
-from stable_audio_3 import AutoencoderPipeline
+from stable_audio_3 import AutoencoderModel
 
-ae = AutoencoderPipeline.from_pretrained("same-l")
+ae = AutoencoderModel.from_pretrained("same-l")
 waveform, sr = torchaudio.load("audio.wav")
 latents = ae.encode(waveform, sr)
 audio_out = ae.decode(latents)
@@ -178,7 +179,7 @@ See [Autoencoder Workflows](docs/workflows/autoencoder.md) for encoding batches,
 Stable Audio 3 scales from a laptop to a multi-GPU server. Specify your backend at load time:
 
 ```python
-model = StableAudioPipeline.from_pretrained(
+model = StableAudioModel.from_pretrained(
     "medium",
     backend="tensorrt"  # or "mlx", "coreml", "openvino"
 )

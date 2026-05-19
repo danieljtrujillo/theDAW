@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install SonicForge git hooks.
+# Install StableDAW git hooks.
 #
 # Usage:
 #   ./scripts/install-hooks.sh
