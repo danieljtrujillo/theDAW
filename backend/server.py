@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import io
 import json
 import os
 import logging
@@ -9,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import io
 from pathlib import Path
 from typing import Optional
 

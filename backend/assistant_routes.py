@@ -390,12 +390,6 @@ def _parse_claude_event(data: dict) -> list[dict]:
 
     return frames
 
-
-# ---------------------------------------------------------------------------
-# Claude Code CLI — oneshot & resume modes (spawn-per-message)
-# ---------------------------------------------------------------------------
-
-
 async def _stream_claude_spawn(req: ChatRequest, request: Request):
     """
     Stream Claude Code CLI for oneshot and resume modes.
@@ -576,8 +570,7 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
         return
 
     # Get or create persistent process
-    process = _claude_processes.get(session_id)
-    
+    process = _claude_processes.get(session_id)    
 
     if process is None or process.returncode is not None:
         # Need a new process
