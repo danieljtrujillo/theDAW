@@ -104,7 +104,7 @@ export const Shell: React.FC = () => {
 
       {/* Main Canvas (DAW Center Panel) */}
       <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
-        <header className="h-10 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a080f]/80 backdrop-blur-md z-20 flex-shrink-0 relative">
+        <header className="h-10 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a080f]/80 backdrop-blur-md z-20 shrink-0 relative">
           
           {/* Centered App Name */}
           <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
@@ -142,7 +142,7 @@ export const Shell: React.FC = () => {
                   <Settings className="w-3.5 h-3.5 text-zinc-500 group-hover:rotate-90 transition-transform duration-500" />
                </button>
                <div className="flex items-center gap-2.5 pl-2 border-l border-white/5">
-                  <div className="w-7 h-7 rounded bg-gradient-to-tr from-purple-500 to-indigo-600 border border-white/20 p-0.5 shadow-xl">
+                  <div className="w-7 h-7 rounded bg-linear-to-tr from-purple-500 to-indigo-600 border border-white/20 p-0.5 shadow-xl">
                      <div className="w-full h-full rounded bg-[#0a080f] flex items-center justify-center font-bold text-[10px]">U</div>
                   </div>
                </div>
