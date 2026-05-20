@@ -577,7 +577,7 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
 
     # Get or create persistent process
     process = _claude_processes.get(session_id)
-    spawned_new = False
+    
 
     if process is None or process.returncode is not None:
         # Need a new process
