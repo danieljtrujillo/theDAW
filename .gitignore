@@ -2,8 +2,14 @@
 codegraph/
 .codegraph/
 
-# Secrets
+# Secrets & user data
 data/api_key_pools.json
+data/generations/
+backend/rag_index/
+archive/
+*.png
+!docs/UI/**/*.png
+!docs/guides/**/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
