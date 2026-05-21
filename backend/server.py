@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import matplotlib
 matplotlib.use('Agg')
 
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 
@@ -454,8 +453,6 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
         else:
             y = waveform.cpu().numpy()
 
-        # Librosa may not be installed
-        import librosa
 
         result["stft"] = _generate_stft(y, sr)
         result["chromagram"] = _generate_chromagram(y, sr)
