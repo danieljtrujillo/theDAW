@@ -672,7 +672,7 @@ async def generate(
         init_audio_tuple = await _load_audio_upload(init_audio)
     (
         init_audio_type,
-        has_init_audio=init_audio_tuple is not None,
+        has_init_audio = init_audio_tuple is not None,
     )
 
     # Load inpaint audio if provided
