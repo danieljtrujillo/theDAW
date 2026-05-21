@@ -872,7 +872,6 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
     desired_model = _resolve_claude_model(req)
     desired_effort = _resolve_claude_effort(req)
     desired_config = (desired_model, desired_effort)
-    spawned_new = False
 
     if process is not None and process.returncode is None:
         current_config = _claude_process_configs.get(session_id)
@@ -932,7 +931,6 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
         )
         _claude_processes[session_id] = process
         _claude_process_configs[session_id] = desired_config
-        spawned_new = True
 
         yield _sse_frame({
             "type": "status",
