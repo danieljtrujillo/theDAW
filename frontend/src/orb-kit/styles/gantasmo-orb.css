@@ -1,0 +1,553 @@
+/* Gantasmo Orb Kit — extracted visual core
+   Import this stylesheet in the host app before using the orb component.
+   All selectors are scoped under .gantasmo-orb-theme to avoid app-wide leakage.
+*/
+
+.gantasmo-orb-theme {
+    color-scheme: dark;
+
+    --bg-primary: #09090b;
+    --bg-secondary: #0f0f12;
+    --bg-tertiary: #18181b;
+    --bg-glass: rgba(24, 24, 27, 0.7);
+    --bg-glass-hover: rgba(24, 24, 27, 0.85);
+
+    --accent-primary: #8b5cf6;
+    --accent-secondary: #ec4899;
+    --accent-tertiary: #3b82f6;
+    --accent-success: #10b981;
+    --accent-warning: #f59e0b;
+    --accent-danger: #ef4444;
+
+    --glow-primary: rgba(139, 92, 246, 0.5);
+    --glow-secondary: rgba(236, 72, 153, 0.5);
+    --glow-tertiary: rgba(59, 130, 246, 0.5);
+
+    --text-primary: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-muted: #52525b;
+
+    --border-subtle: rgba(255, 255, 255, 0.06);
+    --border-visible: rgba(255, 255, 255, 0.1);
+    --border-glow: rgba(139, 92, 246, 0.3);
+
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-smooth: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.gantasmo-orb-theme,
+.gantasmo-orb-theme * {
+    box-sizing: border-box;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 9999;
+    cursor: grab;
+    -webkit-user-select: none;
+    user-select: none;
+    will-change: transform;
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+    transform: translate3d(20px, calc(100vh - 140px), 0);
+    width: 80px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.is-inline {
+    position: relative;
+    transform: translate3d(0, 0, 0);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging {
+    cursor: grabbing;
+    transition: none !important;
+    pointer-events: auto;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle:hover .aether-orb-main {
+    transform: scale(1.1);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle:hover .floating-particles .particle {
+    animation-duration: 1.5s;
+}
+
+.gantasmo-orb-theme .floating-particles {
+    position: absolute;
+    inset: -10px;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.gantasmo-orb-theme .particle {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: var(--accent-primary);
+    border-radius: 50%;
+    opacity: 0.6;
+    animation: gantasmo-orb-particle-float 3s ease-in-out infinite;
+    box-shadow: 0 0 6px var(--glow-primary);
+}
+
+.gantasmo-orb-theme .particle:nth-child(1) {
+    top: 10%;
+    left: 20%;
+    animation-delay: 0s;
+    background: var(--accent-primary);
+}
+
+.gantasmo-orb-theme .particle:nth-child(2) {
+    top: 30%;
+    right: 15%;
+    animation-delay: 0.5s;
+    background: var(--accent-secondary);
+}
+
+.gantasmo-orb-theme .particle:nth-child(3) {
+    bottom: 20%;
+    left: 10%;
+    animation-delay: 1s;
+    background: var(--accent-tertiary);
+}
+
+.gantasmo-orb-theme .particle:nth-child(4) {
+    bottom: 10%;
+    right: 25%;
+    animation-delay: 1.5s;
+    background: var(--accent-primary);
+}
+
+.gantasmo-orb-theme .particle:nth-child(5) {
+    top: 50%;
+    left: 5%;
+    animation-delay: 2s;
+    background: var(--accent-secondary);
+}
+
+.gantasmo-orb-theme .particle:nth-child(6) {
+    top: 15%;
+    right: 5%;
+    animation-delay: 2.5s;
+    background: var(--accent-tertiary);
+}
+
+.gantasmo-orb-theme .aether-orb-main {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform var(--transition-smooth);
+}
+
+.gantasmo-orb-theme .orb-core-main {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    background: linear-gradient(135deg,
+            var(--accent-primary) 0%,
+            var(--accent-secondary) 50%,
+            var(--accent-tertiary) 100%);
+    border-radius: 50%;
+    box-shadow:
+        0 0 20px var(--glow-primary),
+        0 0 40px var(--glow-secondary),
+        0 0 60px rgba(139, 92, 246, 0.2),
+        inset 0 0 20px rgba(255, 255, 255, 0.3);
+    animation: gantasmo-orb-core-breathe 3s ease-in-out infinite;
+    z-index: 2;
+}
+
+.gantasmo-orb-theme .gantasmo-face {
+    position: absolute;
+    inset: 12px;
+    z-index: 10;
+    opacity: 0.9;
+    animation: gantasmo-ghost-float 3s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .gantasmo-face svg {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.3));
+}
+
+.gantasmo-orb-theme .face-base {
+    fill: #8b5cf6;
+    opacity: 0.9;
+    transition: fill 0.3s ease;
+}
+
+.gantasmo-orb-theme .face-eye {
+    fill: #fff;
+    animation: gantasmo-eye-blink 6s ease-in-out infinite;
+    transform-origin: center;
+}
+
+.gantasmo-orb-theme .gantasmo-mouth {
+    animation: gantasmo-mouth-move 3s ease-in-out infinite;
+    transform-origin: center;
+}
+
+.gantasmo-orb-theme .orb-glow-main {
+    position: absolute;
+    inset: -8px;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+            var(--glow-primary) 0%,
+            transparent 70%);
+    opacity: 0.5;
+    z-index: 1;
+    animation: gantasmo-glow-main-pulse 2s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .orb-pulse-main {
+    position: absolute;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-primary);
+    opacity: 0;
+    z-index: 0;
+    animation: gantasmo-pulse-main-expand 2s ease-out infinite;
+}
+
+.gantasmo-orb-theme .orb-swirl-layer {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg,
+            transparent 0%,
+            var(--accent-primary) 25%,
+            transparent 50%,
+            var(--accent-secondary) 75%,
+            transparent 100%);
+    opacity: 0.3;
+    z-index: 1;
+    animation: gantasmo-swirl-rotate 4s linear infinite;
+    -webkit-mask: radial-gradient(circle, transparent 60%, black 61%);
+    mask: radial-gradient(circle, transparent 60%, black 61%);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .orb-core-main {
+    animation: gantasmo-orb-core-active 1s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .orb-pulse-main {
+    animation-duration: 1s;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .orb-swirl-layer {
+    animation-duration: 2s;
+    opacity: 0.5;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .gantasmo-face {
+    animation: gantasmo-ghost-float 2s ease-in-out infinite;
+    transform: scale(1.05);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .face-base {
+    fill: #a78bfa;
+    filter: brightness(1.2);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .face-eye {
+    animation: gantasmo-eye-blink 2s ease-in-out infinite, gantasmo-eye-glow 1s ease-in-out infinite;
+    fill: #fbbf24;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .gantasmo-mouth {
+    animation: gantasmo-mouth-talk 0.8s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle:hover .gantasmo-face {
+    transform: scale(1.1);
+    filter: drop-shadow(0 0 20px rgba(139, 92, 246, 0.6));
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.processing .gantasmo-face {
+    animation: gantasmo-ghost-processing 0.8s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging {
+    will-change: transform;
+    pointer-events: none;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging * {
+    animation: none !important;
+    transition: none !important;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging .gantasmo-face {
+    transform: scale(0.95);
+    opacity: 0.8;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging .face-eye {
+    transform: scaleY(0.5);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging .floating-particles,
+.gantasmo-orb-theme .aether-orb-toggle.dragging .orb-swirl-layer {
+    display: none;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(139, 92, 246, 0.3) 0%, transparent 70%);
+    animation: gantasmo-ghost-pulse 2s ease-in-out infinite;
+    pointer-events: none;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle::after {
+    content: 'Drag to move';
+    position: absolute;
+    bottom: -30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-glass);
+    border: 1px solid var(--border-subtle);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition-fast);
+}
+
+.gantasmo-orb-theme .aether-orb-toggle:hover::after {
+    opacity: 1;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.dragging::after {
+    opacity: 0;
+}
+
+@keyframes gantasmo-orb-particle-float {
+    0%,
+    100% {
+        transform: translateY(0) translateX(0) scale(1);
+        opacity: 0.6;
+    }
+
+    25% {
+        transform: translateY(-4px) translateX(2px) scale(1.1);
+        opacity: 0.8;
+    }
+
+    50% {
+        transform: translateY(-2px) translateX(-2px) scale(0.9);
+        opacity: 0.5;
+    }
+
+    75% {
+        transform: translateY(2px) translateX(3px) scale(1.05);
+        opacity: 0.7;
+    }
+}
+
+@keyframes gantasmo-orb-core-breathe {
+    0%,
+    100% {
+        transform: scale(1);
+        filter: brightness(1) hue-rotate(0deg);
+    }
+
+    50% {
+        transform: scale(1.05);
+        filter: brightness(1.15) hue-rotate(15deg);
+    }
+}
+
+@keyframes gantasmo-face-blink {
+    0%,
+    45%,
+    55%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.7;
+    }
+}
+
+@keyframes gantasmo-glow-main-pulse {
+    0%,
+    100% {
+        opacity: 0.5;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.8;
+        transform: scale(1.1);
+    }
+}
+
+@keyframes gantasmo-pulse-main-expand {
+    0% {
+        transform: scale(0.8);
+        opacity: 0.8;
+        border-color: var(--accent-primary);
+    }
+
+    50% {
+        border-color: var(--accent-secondary);
+    }
+
+    100% {
+        transform: scale(1.8);
+        opacity: 0;
+        border-color: var(--accent-tertiary);
+    }
+}
+
+@keyframes gantasmo-swirl-rotate {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes gantasmo-orb-core-active {
+    0%,
+    100% {
+        transform: scale(1);
+        box-shadow:
+            0 0 25px var(--glow-primary),
+            0 0 50px var(--glow-secondary),
+            0 0 75px rgba(139, 92, 246, 0.3),
+            inset 0 0 25px rgba(255, 255, 255, 0.4);
+    }
+
+    50% {
+        transform: scale(1.08);
+        box-shadow:
+            0 0 35px var(--glow-primary),
+            0 0 70px var(--glow-secondary),
+            0 0 100px rgba(139, 92, 246, 0.4),
+            inset 0 0 30px rgba(255, 255, 255, 0.5);
+    }
+}
+
+@keyframes gantasmo-ghost-float {
+    0%,
+    100% {
+        transform: translateY(0) rotate(0deg);
+    }
+
+    25% {
+        transform: translateY(-3px) rotate(2deg);
+    }
+
+    50% {
+        transform: translateY(2px) rotate(-1deg);
+    }
+
+    75% {
+        transform: translateY(-2px) rotate(-2deg);
+    }
+}
+
+@keyframes gantasmo-eye-blink {
+    0%,
+    90%,
+    100% {
+        transform: scaleY(1);
+    }
+
+    95% {
+        transform: scaleY(0.1);
+    }
+}
+
+@keyframes gantasmo-eye-glow {
+    0%,
+    100% {
+        filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.8));
+    }
+
+    50% {
+        filter: drop-shadow(0 0 10px rgba(255, 255, 255, 1));
+    }
+}
+
+@keyframes gantasmo-mouth-move {
+    0%,
+    100% {
+        transform: scaleY(1);
+    }
+
+    33% {
+        transform: scaleY(0.8) translateY(-1px);
+    }
+
+    66% {
+        transform: scaleY(1.2) translateY(1px);
+    }
+}
+
+@keyframes gantasmo-mouth-talk {
+    0%,
+    100% {
+        transform: scaleY(0.3);
+        opacity: 0.7;
+    }
+
+    50% {
+        transform: scaleY(1);
+        opacity: 1;
+    }
+}
+
+@keyframes gantasmo-ghost-processing {
+    0%,
+    100% {
+        transform: scale(1) rotate(0deg);
+    }
+
+    25% {
+        transform: scale(1.1) rotate(5deg);
+    }
+
+    50% {
+        transform: scale(1) rotate(-5deg);
+    }
+
+    75% {
+        transform: scale(1.1) rotate(5deg);
+    }
+}
+
+@keyframes gantasmo-ghost-pulse {
+    0%,
+    100% {
+        transform: scale(1);
+        opacity: 0.5;
+    }
+
+    50% {
+        transform: scale(1.15);
+        opacity: 0.2;
+    }
+}

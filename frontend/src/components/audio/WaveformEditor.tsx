@@ -14,6 +14,7 @@ import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/ed
 
 const TRACK_HEADER_PX = 180;
 const TRACK_HEIGHT = 88;
+const DECODE_TIMEOUT_MS = 15000;
 
 const formatTimecode = (sec: number): string => {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -22,6 +23,11 @@ const formatTimecode = (sec: number): string => {
   const s = Math.floor(total / 1000) % 60;
   const m = Math.floor(total / 60000);
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${Math.floor(ms / 10).toString().padStart(2, '0')}`;
+};
+
+const isEditorTimelinePlaying = (): boolean => {
+  const player = usePlayerStore.getState();
+  return player.isPlaying && player.currentEntryId === 'editor-timeline';
 };
 
 // Preview routes through the shared engine context so the visualizer sees it too.
@@ -297,9 +303,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // --- Multi-track timeline playback (routes through the footer's playerStore) ---
 
   const stopEditorPlayback = useCallback(() => {
-    usePlayerStore.getState().pause();
+    usePlayerStore.getState().stop();
+    setPlayhead(0);
     stopPreview();
-  }, [stopPreview]);
+  }, [setPlayhead, stopPreview]);
 
   const playEditorTimeline = useCallback(async () => {
     if (clips.length === 0) return;
@@ -327,7 +334,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             const decoded = await Promise.race([
               decodeCtx.decodeAudioData(ab.slice(0)),
               new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('decodeAudioData timeout')), 15000),
+                setTimeout(() => reject(new Error('decodeAudioData timeout')), DECODE_TIMEOUT_MS),
               ),
             ]);
             blobCache.set(clip.audioBlob, decoded);
@@ -448,7 +455,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         }
         if (e.key === ' ') {
           e.preventDefault();
-          if (useEditorStore.getState().isPlaying) stopEditorPlayback();
+          if (isEditorTimelinePlaying()) stopEditorPlayback();
           else void playEditorTimeline();
           return;
         }
@@ -572,7 +579,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             const decoded = await Promise.race([
               decodeCtx.decodeAudioData(ab.slice(0)),
               new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('decodeAudioData timeout')), 15000),
+                setTimeout(() => reject(new Error('decodeAudioData timeout')), DECODE_TIMEOUT_MS),
               ),
             ]);
             blobCache.set(c.audioBlob, decoded);
@@ -662,14 +669,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // --- Pointer math helpers. ---
   const pxToSec = useCallback((px: number) => px / zoom, [zoom]);
+  const timelineClientXToSec = useCallback((clientX: number): number => {
+    const scroller = timelineScrollRef.current;
+    const timeline = timelineRef.current;
+    const rect = (scroller ?? timeline)?.getBoundingClientRect();
+    if (!rect) return 0;
+    return pxToSec(clientX - rect.left + (scroller?.scrollLeft ?? 0));
+  }, [pxToSec]);
 
   // --- Inpaint drag handlers ---
   const handleInpaintDragStart = (e: React.PointerEvent, clip: AudioClip) => {
     if (tool === 'cut') return;
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
-    const rect = timelineRef.current!.getBoundingClientRect();
-    const anchorSec = pxToSec(e.clientX - rect.left);
+    const anchorSec = timelineClientXToSec(e.clientX);
     inpaintDragRef.current = { clipId: clip.id, anchorSec };
   };
 
@@ -678,8 +691,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const { clipId, anchorSec } = inpaintDragRef.current;
     const clip = clips.find((c) => c.id === clipId);
     if (!clip) return;
-    const rect = timelineRef.current!.getBoundingClientRect();
-    const curSec = pxToSec(e.clientX - rect.left);
+    const curSec = timelineClientXToSec(e.clientX);
     const clampedStart = Math.max(clip.startSec, Math.min(anchorSec, curSec));
     const clampedEnd   = Math.min(clip.startSec + clip.durationSec, Math.max(anchorSec, curSec));
     if (clampedEnd - clampedStart >= 0.1) {
@@ -843,15 +855,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // --- Playhead drag (initiated from the ruler OR the drag handle on the line) ---
   const secFromClientX = useCallback((clientX: number): number => {
-    if (!timelineRef.current) return 0;
-    const rect = timelineRef.current.getBoundingClientRect();
-    return Math.max(0, pxToSec(clientX - rect.left));
-  }, [pxToSec]);
+    return Math.max(0, timelineClientXToSec(clientX));
+  }, [timelineClientXToSec]);
 
   const onPlayheadPointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
-    const wasPlaying = useEditorStore.getState().isPlaying;
+    const wasPlaying = isEditorTimelinePlaying();
     if (wasPlaying) stopEditorPlayback();
     const sec = secFromClientX(e.clientX);
     setPlayhead(sec);
@@ -883,10 +893,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // Ruler click sets playhead immediately (same coord math as track lanes).
   const onRulerMouseDown = (e: React.MouseEvent) => {
-    if (!timelineRef.current) return;
-    const rect = timelineRef.current.getBoundingClientRect();
-    const sec = Math.max(0, pxToSec(e.clientX - rect.left));
-    seekEditorTo(sec);
+    seekEditorTo(secFromClientX(e.clientX));
   };
 
   const onTimelineClick = (e: React.MouseEvent) => {

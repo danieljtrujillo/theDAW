@@ -3,6 +3,7 @@ import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
 import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
+import type { GenerateParamsState } from './generateParamsStore';
 
 export interface GenerateParams {
   prompt: string;
@@ -15,11 +16,46 @@ export interface GenerateParams {
   batch: number;
   initNoise: number;
   initType: string;
+  initAudioEnabled?: boolean;
   initAudioFile?: File | null;
   inpaintAudioFile?: File | null;
   inpaintEnabled?: boolean;
   maskStart?: number;
   maskEnd?: number;
+
+  samplerType?: string;
+  sigmaMax?: number;
+  durationPaddingSec?: number;
+
+  apgScale?: number;
+  cfgRescale?: number;
+  cfgNormThreshold?: number;
+  cfgIntervalMin?: number;
+  cfgIntervalMax?: number;
+
+  shiftMode?: string;
+  logsnrAnchorLength?: number;
+  logsnrAnchorLogsnr?: number;
+  logsnrRate?: number;
+  logsnrEnd?: number;
+  fluxMinLen?: number;
+  fluxMaxLen?: number;
+  fluxAlphaMin?: number;
+  fluxAlphaMax?: number;
+  fullBaseShift?: number;
+  fullMaxShift?: number;
+  fullMinLen?: number;
+  fullMaxLen?: number;
+
+  inversionSteps?: number;
+  inversionGamma?: number;
+  inversionUnconditional?: boolean;
+
+  fileFormat?: string;
+  fileNaming?: string;
+  cutToDuration?: boolean;
+
+  loras?: Array<{ file: File | null; weight: number }>;
 }
 
 type JobStatus = 'idle' | 'submitting' | 'queued' | 'running' | 'completed' | 'failed';
@@ -83,6 +119,119 @@ const wait = (ms: number): Promise<void> =>
     window.setTimeout(resolve, ms);
   });
 
+export const buildGenerateJobFormData = (params: GenerateParams, prompt: string): FormData => {
+  const formData = new FormData();
+  formData.append('model_name', params.model);
+  formData.append('prompt', prompt);
+  formData.append('negative_prompt', params.negativePrompt || '');
+  formData.append('duration', String(params.duration));
+  formData.append('steps', String(params.steps));
+  formData.append('cfg_scale', String(params.cfg));
+  formData.append('seed', String(params.seed));
+  formData.append('batch_size', String(Math.max(1, params.batch)));
+  formData.append('init_noise_level', String(params.initNoise));
+  formData.append('init_audio_type', params.initType);
+  formData.append('file_format', params.fileFormat || 'wav');
+  formData.append('file_naming', params.fileNaming || 'verbose');
+
+  if (params.samplerType) formData.append('sampler_type', params.samplerType);
+  if (params.sigmaMax !== undefined) formData.append('sigma_max', String(params.sigmaMax));
+  if (params.durationPaddingSec !== undefined) formData.append('duration_padding_sec', String(params.durationPaddingSec));
+
+  if (params.apgScale !== undefined) formData.append('apg_scale', String(params.apgScale));
+  if (params.cfgRescale !== undefined) formData.append('cfg_rescale', String(params.cfgRescale));
+  if (params.cfgNormThreshold !== undefined) formData.append('cfg_norm_threshold', String(params.cfgNormThreshold));
+  if (params.cfgIntervalMin !== undefined) formData.append('cfg_interval_min', String(params.cfgIntervalMin));
+  if (params.cfgIntervalMax !== undefined) formData.append('cfg_interval_max', String(params.cfgIntervalMax));
+
+  if (params.shiftMode) formData.append('dist_shift_type', params.shiftMode);
+  if (params.logsnrAnchorLength !== undefined) formData.append('logsnr_anchor_length', String(params.logsnrAnchorLength));
+  if (params.logsnrAnchorLogsnr !== undefined) formData.append('logsnr_anchor_logsnr', String(params.logsnrAnchorLogsnr));
+  if (params.logsnrRate !== undefined) formData.append('logsnr_rate', String(params.logsnrRate));
+  if (params.logsnrEnd !== undefined) formData.append('logsnr_end', String(params.logsnrEnd));
+  if (params.fluxMinLen !== undefined) formData.append('flux_min_len', String(params.fluxMinLen));
+  if (params.fluxMaxLen !== undefined) formData.append('flux_max_len', String(params.fluxMaxLen));
+  if (params.fluxAlphaMin !== undefined) formData.append('flux_alpha_min', String(params.fluxAlphaMin));
+  if (params.fluxAlphaMax !== undefined) formData.append('flux_alpha_max', String(params.fluxAlphaMax));
+  if (params.fullBaseShift !== undefined) formData.append('full_base_shift', String(params.fullBaseShift));
+  if (params.fullMaxShift !== undefined) formData.append('full_max_shift', String(params.fullMaxShift));
+  if (params.fullMinLen !== undefined) formData.append('full_min_len', String(params.fullMinLen));
+  if (params.fullMaxLen !== undefined) formData.append('full_max_len', String(params.fullMaxLen));
+
+  if (params.inversionSteps !== undefined) formData.append('inversion_steps', String(params.inversionSteps));
+  if (params.inversionGamma !== undefined) formData.append('inversion_gamma', String(params.inversionGamma));
+  if (params.inversionUnconditional !== undefined) formData.append('inversion_unconditional', String(params.inversionUnconditional));
+
+  if (params.cutToDuration !== undefined) formData.append('cut_to_duration', String(params.cutToDuration));
+
+  if (params.loras) {
+    params.loras.forEach((lora, i) => {
+      if (lora.file) {
+        formData.append(`lora_file_${i}`, lora.file);
+        formData.append(`lora_weight_${i}`, String(lora.weight));
+      }
+    });
+  }
+
+  if ((params.initAudioEnabled ?? true) && params.initAudioFile) {
+    formData.append('init_audio', params.initAudioFile);
+  }
+  if (params.inpaintEnabled && params.inpaintAudioFile) {
+    formData.append('inpaint_audio', params.inpaintAudioFile);
+    formData.append('mask_start', String(params.maskStart ?? 0));
+    formData.append('mask_end', String(params.maskEnd ?? 0));
+  }
+
+  return formData;
+};
+
+export const buildGenerateParamsFromState = (params: GenerateParamsState): GenerateParams => ({
+  prompt: params.prompt,
+  negativePrompt: params.negativePrompt,
+  model: params.model,
+  duration: params.duration,
+  steps: params.steps,
+  cfg: params.cfg,
+  seed: params.seed,
+  batch: params.batch,
+  initNoise: params.initNoise,
+  initType: params.initType,
+  initAudioEnabled: params.initAudioEnabled,
+  initAudioFile: params.initAudioFile,
+  inpaintAudioFile: params.inpaintAudioFile,
+  inpaintEnabled: params.inpaintEnabled,
+  maskStart: params.maskStart,
+  maskEnd: params.maskEnd,
+  samplerType: params.samplerType,
+  sigmaMax: params.sigmaMax,
+  durationPaddingSec: params.durationPaddingSec,
+  apgScale: params.apgScale,
+  cfgRescale: params.cfgRescale,
+  cfgNormThreshold: params.cfgNormThreshold,
+  cfgIntervalMin: params.cfgIntervalMin,
+  cfgIntervalMax: params.cfgIntervalMax,
+  shiftMode: params.shiftMode,
+  logsnrAnchorLength: params.logsnrAnchorLength,
+  logsnrAnchorLogsnr: params.logsnrAnchorLogsnr,
+  logsnrRate: params.logsnrRate,
+  logsnrEnd: params.logsnrEnd,
+  fluxMinLen: params.fluxMinLen,
+  fluxMaxLen: params.fluxMaxLen,
+  fluxAlphaMin: params.fluxAlphaMin,
+  fluxAlphaMax: params.fluxAlphaMax,
+  fullBaseShift: params.fullBaseShift,
+  fullMaxShift: params.fullMaxShift,
+  fullMinLen: params.fullMinLen,
+  fullMaxLen: params.fullMaxLen,
+  inversionSteps: params.inversionSteps,
+  inversionGamma: params.inversionGamma,
+  inversionUnconditional: params.inversionUnconditional,
+  fileFormat: params.fileFormat,
+  fileNaming: params.fileNaming,
+  cutToDuration: params.cutToDuration,
+  loras: params.loras.map((lora) => ({ file: lora.file, weight: lora.weight })),
+});
+
 export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
   isGenerating: false,
   jobStatus: 'idle',
@@ -124,27 +273,7 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
     useStatusBarStore.getState().setText('GENERATION STARTED');
     logInfo('generate', `Submitting job: model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed} prompt="${prompt.slice(0, 60)}${prompt.length > 60 ? '...' : ''}"`);
 
-    const formData = new FormData();
-    formData.append('model_name', params.model);
-    formData.append('prompt', prompt);
-    formData.append('negative_prompt', params.negativePrompt || '');
-    formData.append('duration', String(params.duration));
-    formData.append('steps', String(params.steps));
-    formData.append('cfg_scale', String(params.cfg));
-    formData.append('seed', String(params.seed));
-    formData.append('batch_size', String(Math.max(1, params.batch)));
-    formData.append('init_noise_level', String(params.initNoise));
-    formData.append('init_audio_type', params.initType);
-    formData.append('file_format', 'wav');
-    formData.append('file_naming', 'verbose');
-    if (params.initAudioFile) {
-      formData.append('init_audio', params.initAudioFile);
-    }
-    if (params.inpaintEnabled && params.inpaintAudioFile) {
-      formData.append('inpaint_audio', params.inpaintAudioFile);
-      formData.append('mask_start', String(params.maskStart ?? 0));
-      formData.append('mask_end', String(params.maskEnd ?? 0));
-    }
+    const formData = buildGenerateJobFormData(params, prompt);
 
     try {
       const response = await fetch('/api/generate-jobs', {

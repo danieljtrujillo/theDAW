@@ -1,16 +1,15 @@
 import os
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
+logger = logging.getLogger(__name__)
+
 
 def _local_search_dirs() -> list[Path]:
-    """Directories to search for locally-cloned model repos, in priority order.
-
-    Sources: SA3_LOCAL_MODELS_DIR env var, then `local_models.txt` (one path per
-    line) in the project root, then a built-in fallback list.
-    """
+    """Directories to search for locally-cloned model repos, in priority order."""
     dirs: list[Path] = []
     env = os.environ.get("SA3_LOCAL_MODELS_DIR")
     if env:
@@ -24,19 +23,18 @@ def _local_search_dirs() -> list[Path]:
             if line and not line.startswith("#"):
                 dirs.append(Path(line))
 
+    default_models_dir = project_root / "models"
+    if default_models_dir.is_dir():
+        dirs.append(default_models_dir)
+
     return dirs
 
 
 def _local_override(repo_id: str, filename: str) -> str | None:
-    """Look for `<base>/<repo_name>/<filename>` in each configured local dir.
-
-    e.g. `<base>/stable-audio-3-medium/stable-audio-3-medium-ARC.safetensors`.
-    Returns the absolute path if found, else None.
-    """
+    """Look for a model file below each configured local model directory."""
     repo_name = repo_id.split("/", 1)[-1]
     alt_filenames = [filename]
 
-    # Local clones may use ARC/RF naming instead of generic model_config/model names.
     if filename == "model_config.json":
         alt_filenames.extend(
             [
@@ -58,24 +56,20 @@ def _local_override(repo_id: str, filename: str) -> str | None:
         for name in alt_filenames:
             candidate = base / repo_name / name
             if candidate.is_file():
-                print(f"[stable_audio_3] using local model file: {candidate}")
+                logger.info("Using local model file: %s", candidate)
                 return str(candidate)
     return None
 
 
 def resolve_local_repo_path(repo_id: str, subfolder: str | None = None) -> str | None:
-    """Resolve a local path for a repo (or repo subfolder) from configured search dirs.
-
-    For repo_id "org/name", this checks `<base>/name` in each configured local dir.
-    If subfolder is provided, checks `<base>/name/<subfolder>`.
-    """
+    """Resolve a local repo path from configured search dirs."""
     repo_name = repo_id.split("/", 1)[-1]
     for base in _local_search_dirs():
         candidate = base / repo_name
         if subfolder:
             candidate = candidate / subfolder
         if candidate.is_dir():
-            print(f"[stable_audio_3] using local repo path: {candidate}")
+            logger.info("Using local repo path: %s", candidate)
             return str(candidate)
     return None
 
@@ -87,7 +81,7 @@ class ModelConfig:
     ckpt_path: str
 
     def resolve(self):
-        """Return local paths for config + checkpoint. Prefer SA3_LOCAL_MODELS_DIR if set, else HF Hub."""
+        """Return local paths for config + checkpoint, falling back to HF Hub unless local-only is set."""
         local_only = os.environ.get("SA3_LOCAL_ONLY", "0").strip().lower() in {
             "1",
             "true",
@@ -104,23 +98,23 @@ class ModelConfig:
             )
 
         if local_config is None:
+            local_config = try_to_load_from_cache(self.repo_id, self.config_path)
+        if not isinstance(local_config, str):
             local_config = hf_hub_download(
                 repo_id=self.repo_id, filename=self.config_path
             )
+
         if local_ckpt is None:
+            local_ckpt = try_to_load_from_cache(self.repo_id, self.ckpt_path)
+        if not isinstance(local_ckpt, str):
             local_ckpt = hf_hub_download(repo_id=self.repo_id, filename=self.ckpt_path)
+
         return local_config, local_ckpt
 
 
 @dataclass(frozen=True)
 class AutoencoderModelConfig:
-    """Config for a standalone autoencoder HF repo (e.g. stabilityai/SAME-S).
-
-    resolve() first checks whether any full Stable Audio 3 checkpoint that contains the same
-    autoencoder is already cached locally.  If one is found it is used as-is
-    (load_autoencoder strips the pretransform.* prefix automatically), avoiding a
-    redundant download.  Otherwise the lightweight AE-only repo is fetched instead.
-    """
+    """Config for a standalone autoencoder HF repo (e.g. stabilityai/SAME-S)."""
 
     ae_repo_id: str
     ae_config_path: str
@@ -128,16 +122,38 @@ class AutoencoderModelConfig:
     stable_audio_3: tuple[ModelConfig, ...]
 
     def resolve(self):
-        """Return (config_path, ckpt_path), preferring an already-cached Stable Audio 3 checkpoint."""
+        """Return (config_path, ckpt_path), preferring local/full Stable Audio 3 checkpoints."""
+        local_only = os.environ.get("SA3_LOCAL_ONLY", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        local_config = _local_override(self.ae_repo_id, self.ae_config_path)
+        local_ckpt = _local_override(self.ae_repo_id, self.ae_ckpt_path)
+        if local_config and local_ckpt:
+            return local_config, local_ckpt
+
         for fallback in self.stable_audio_3:
-            cached_config = try_to_load_from_cache(
-                fallback.repo_id, fallback.config_path
-            )
-            cached_ckpt = try_to_load_from_cache(fallback.repo_id, fallback.ckpt_path)
+            cached_config = _local_override(fallback.repo_id, fallback.config_path)
+            if cached_config is None:
+                cached_config = try_to_load_from_cache(
+                    fallback.repo_id, fallback.config_path
+                )
+            cached_ckpt = _local_override(fallback.repo_id, fallback.ckpt_path)
+            if cached_ckpt is None:
+                cached_ckpt = try_to_load_from_cache(
+                    fallback.repo_id, fallback.ckpt_path
+                )
             if isinstance(cached_config, str) and isinstance(cached_ckpt, str):
                 return cached_config, cached_ckpt
 
-        # No Stable Audio 3 checkpoint found in local cache — download the AE-only repo.
+        if local_only:
+            raise FileNotFoundError(
+                f"SA3_LOCAL_ONLY=1 and local autoencoder files were not found for repo {self.ae_repo_id}. "
+                f"Expected files: {self.ae_config_path}, {self.ae_ckpt_path}. "
+                f"Search dirs: {[str(p) for p in _local_search_dirs()]}"
+            )
+
         local_config = hf_hub_download(
             repo_id=self.ae_repo_id, filename=self.ae_config_path
         )
@@ -146,6 +162,32 @@ class AutoencoderModelConfig:
         )
         return local_config, local_ckpt
 
+
+rf_models: dict[str, ModelConfig] = {
+    "small-rf": ModelConfig(
+        "stabilityai/stable-audio-3-small",
+        "stable-audio-3-small-RF.json",
+        "stable-audio-3-small-RF.safetensors",
+    ),
+    "medium-rf": ModelConfig(
+        "stabilityai/stable-audio-3-medium",
+        "stable-audio-3-medium-RF.json",
+        "stable-audio-3-medium-RF.safetensors",
+    ),
+}
+
+arc_models: dict[str, ModelConfig] = {
+    "small": ModelConfig(
+        "stabilityai/stable-audio-3-small",
+        "stable-audio-3-small-ARC.json",
+        "stable-audio-3-small-ARC.safetensors",
+    ),
+    "medium": ModelConfig(
+        "stabilityai/stable-audio-3-medium",
+        "stable-audio-3-medium-ARC.json",
+        "stable-audio-3-medium-ARC.safetensors",
+    ),
+}
 
 models: dict[str, ModelConfig] = {
     "small-music": ModelConfig(
@@ -168,11 +210,6 @@ models: dict[str, ModelConfig] = {
         "model_config.json",
         "model.safetensors",
     ),
-    "medium": ModelConfig(
-        "stabilityai/stable-audio-3-medium",
-        "model_config.json",
-        "model.safetensors",
-    ),
     "medium-base": ModelConfig(
         "stabilityai/stable-audio-3-medium-base",
         "model_config.json",
@@ -180,24 +217,29 @@ models: dict[str, ModelConfig] = {
     ),
 }
 
-# Stable Audio 3 full-model configs to probe (in order) before downloading the AE-only repo.
+# Stable Audio 3 full-model configs to probe before downloading AE-only repos.
 _small_stable_audio_3: tuple[ModelConfig, ...] = (
+    arc_models["small"],
+    rf_models["small-rf"],
     models["small-music"],
     models["small-sfx"],
 )
-_medium_stable_audio_3: tuple[ModelConfig, ...] = (models["medium"],)
+_medium_stable_audio_3: tuple[ModelConfig, ...] = (
+    arc_models["medium"],
+    rf_models["medium-rf"],
+)
 
 ae_models: dict[str, AutoencoderModelConfig] = {
     "same-s": AutoencoderModelConfig(
         ae_repo_id="stabilityai/SAME-S",
-        ae_config_path="model_config.json",
-        ae_ckpt_path="model.safetensors",
+        ae_config_path="SAME-S.json",
+        ae_ckpt_path="SAME-S.safetensors",
         stable_audio_3=_small_stable_audio_3,
     ),
     "same-l": AutoencoderModelConfig(
         ae_repo_id="stabilityai/SAME-L",
-        ae_config_path="model_config.json",
-        ae_ckpt_path="model.safetensors",
+        ae_config_path="SAME-L.json",
+        ae_ckpt_path="SAME-L.safetensors",
         stable_audio_3=_medium_stable_audio_3,
     ),
 }
@@ -208,5 +250,7 @@ base_models: dict[str, ModelConfig] = {
 
 all_models: dict[str, ModelConfig | AutoencoderModelConfig] = {
     **models,
+    **rf_models,
+    **arc_models,
     **ae_models,
 }

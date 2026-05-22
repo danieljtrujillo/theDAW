@@ -71,16 +71,16 @@ All in-browser audio — library playback, waveform editor preview, step sequenc
 
 ## 3. Installation
 
-### Base (CPU-only, Small model)
+### Base Python environment
 
 ```bash
 uv sync
 ```
 
-### With CUDA (Medium model)
+### Optional Linux CUDA wheels (Medium model)
 
 ```bash
-uv sync --extra cuda
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
 ```
 
 ### With dev dependencies

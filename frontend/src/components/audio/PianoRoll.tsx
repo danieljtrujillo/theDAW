@@ -4,7 +4,7 @@ import { usePianoRollStore, pianoNotesToMidiNotes, type PianoNote } from '../../
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
-import { downloadMidi, parseMidi } from '../../lib/midi';
+import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
 
 const NOTE_HEIGHT = 12;

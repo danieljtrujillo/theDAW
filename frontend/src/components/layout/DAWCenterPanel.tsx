@@ -7,8 +7,10 @@ import { DetailsView } from './DetailsView';
 import { MediaBucketView } from './MediaBucketView';
 import {
   Scissors, Layers, Activity, GripHorizontal, ChevronDown, ChevronUp,
-  Info, Piano, FolderOpen,
+  Info, Piano, FolderOpen, Sliders, Zap,
 } from 'lucide-react';
+import { AdvancedView } from '../../views/AdvancedView';
+import { AdvancedEditorPanel } from '../../views/AdvancedEditorPanel';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 
 const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
@@ -20,7 +22,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
 
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'sequencer'>('editor');
+  const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'sequencer' | 'advanced' | 'effects'>('editor');
   const [bottomHeight, setBottomHeight] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
@@ -65,7 +67,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       <div className="flex-1 min-h-0 hardware-card flex flex-col pt-1">
 
         {/* Toolbar */}
-        <div className="flex items-center gap-2 mb-1 px-2 border-b border-white/5 pb-1 shrink-0">
+        <div className="flex items-center gap-2 mb-1 px-2 border-b border-white/5 pb-1 flex-shrink-0">
            <button
              onClick={() => setWorkspaceMode('editor')}
              className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
@@ -82,11 +84,30 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <Layers className="w-3.5 h-3.5" />
               <span className="text-[10px] font-black uppercase tracking-widest">Step Sequencer</span>
            </button>
+           <button
+             onClick={() => setWorkspaceMode('advanced')}
+             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
+               ${workspaceMode === 'advanced' ? 'bg-rose-600/20 border-rose-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
+           >
+              <Sliders className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
+           </button>
+           <button
+             onClick={() => setWorkspaceMode('effects')}
+             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
+               ${workspaceMode === 'effects' ? 'bg-orange-600/20 border-orange-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
+           >
+              <Zap className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-black uppercase tracking-widest">Effects</span>
+           </button>
         </div>
 
         {/* Timeline body */}
         <div className="flex-1 min-h-0 relative">
-           {workspaceMode === 'editor' ? <WaveformEditor onSwitchTab={onSwitchTab} /> : <StepSequencer />}
+           {workspaceMode === 'editor' && <WaveformEditor onSwitchTab={onSwitchTab} />}
+           {workspaceMode === 'sequencer' && <StepSequencer />}
+           {workspaceMode === 'advanced' && <div className="absolute inset-0 overflow-hidden"><AdvancedView /></div>}
+           {workspaceMode === 'effects' && <div className="absolute inset-0 overflow-y-auto"><AdvancedEditorPanel /></div>}
         </div>
       </div>
 
@@ -122,12 +143,12 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       {/* Bottom Panel — multi-tab */}
       {isBottomOpen && (
         <div
-          className="shrink-0"
+          className="flex-shrink-0"
           style={{ height: `${bottomHeight}px` }}
         >
-          <div className="hardware-card border-purple-500/20 bg-purple-500/2 flex flex-col min-h-0 relative h-full p-0!">
+          <div className="hardware-card border-purple-500/20 bg-purple-500/[0.02] flex flex-col min-h-0 relative h-full !p-0">
              {/* Tabs row */}
-             <div className="flex items-center justify-between border-b border-white/5 shrink-0 bg-black/30">
+             <div className="flex items-center justify-between border-b border-white/5 flex-shrink-0 bg-black/30">
                 <div className="flex">
                    {TAB_DEFS.map((t) => {
                      const Icon = t.icon;

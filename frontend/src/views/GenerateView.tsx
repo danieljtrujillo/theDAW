@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Sparkles, Command, Layers,
   Mic2, FileAudio,
@@ -7,10 +7,12 @@ import {
 import { Section } from '../components/ui/Section';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
+import { enhanceStableAudioPrompt, type PromptEnhancementTarget } from '../orb-kit/promptEnhancer';
 
 export const GenerateView: React.FC = () => {
   const initAudioInputRef = useRef<HTMLInputElement | null>(null);
   const inpaintAudioInputRef = useRef<HTMLInputElement | null>(null);
+  const [enhancingPrompt, setEnhancingPrompt] = useState<PromptEnhancementTarget | null>(null);
 
   const p = useGenerateParamsStore();
   const setField = p.setField;
@@ -36,10 +38,31 @@ export const GenerateView: React.FC = () => {
     });
   };
 
-  const handleMagicPrompt = () => {
-    if (p.prompt.trim()) return;
-    setField('prompt', 'Cinematic ambient texture, warm analog pads, evolving harmonic motion, detailed stereo field');
+  const handleMagicPrompt = async (target: PromptEnhancementTarget) => {
+    if (enhancingPrompt) return;
+    setEnhancingPrompt(target);
+    try {
+      const enhanced = await enhanceStableAudioPrompt({
+        target,
+        positivePrompt: p.prompt,
+        negativePrompt: p.negativePrompt,
+      });
+      if (target === 'positive') {
+        setField('prompt', enhanced);
+      } else {
+        setField('negativePrompt', enhanced);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Prompt enhancement failed.';
+      window.dispatchEvent(new CustomEvent('stabledaw:assistant-error', { detail: { message } }));
+      console.error('[Prompt Wand]', message);
+    } finally {
+      setEnhancingPrompt(null);
+    }
   };
+
+  const isEnhancingPositive = enhancingPrompt === 'positive';
+  const isEnhancingNegative = enhancingPrompt === 'negative';
 
   return (
     <div className="flex flex-col gap-2 h-full text-[11px] pb-0 px-2 pt-2">
@@ -54,20 +77,35 @@ export const GenerateView: React.FC = () => {
             />
             <button
               type="button"
-              onClick={handleMagicPrompt}
-              className="absolute bottom-2 right-2 text-zinc-600 group-focus-within:text-purple-500 hover:text-purple-400"
-              title="Auto-fill prompt"
+              onClick={() => handleMagicPrompt('positive')}
+              disabled={!!enhancingPrompt}
+              className={`absolute bottom-2 right-2 transition-colors ${isEnhancingPositive ? 'text-purple-300 animate-pulse' : 'text-zinc-600 group-focus-within:text-purple-500 hover:text-purple-400 disabled:opacity-50'}`}
+              title="Enhance positive prompt using the current orb provider"
+              aria-label="Enhance positive prompt using the current orb provider"
             >
                <Sparkles className="w-3 h-3" />
             </button>
          </div>
-         <input
-           type="text"
-           className="compact-input w-full"
-           placeholder="NEGATIVE PROMPT / Avoid specific frequencies, instruments..."
-           value={p.negativePrompt}
-           onChange={(e) => setField('negativePrompt', e.target.value)}
-         />
+         <div className="relative group">
+           <input
+             type="text"
+             className="compact-input w-full pr-8"
+             placeholder="NEGATIVE PROMPT / Avoid specific frequencies, instruments..."
+             value={p.negativePrompt}
+             onChange={(e) => setField('negativePrompt', e.target.value)}
+             title="Negative prompt"
+           />
+           <button
+             type="button"
+             onClick={() => handleMagicPrompt('negative')}
+             disabled={!!enhancingPrompt}
+             className={`absolute right-2 top-1/2 -translate-y-1/2 transition-colors ${isEnhancingNegative ? 'text-purple-300 animate-pulse' : 'text-zinc-600 group-focus-within:text-purple-500 hover:text-purple-400 disabled:opacity-50'}`}
+             title="Enhance negative prompt using the current orb provider"
+             aria-label="Enhance negative prompt using the current orb provider"
+           >
+             <Sparkles className="w-3 h-3" />
+           </button>
+         </div>
       </Section>
 
       <Section title="GENERATION PARAMETERS" icon={Settings2} defaultOpen={false}>
@@ -192,7 +230,7 @@ export const GenerateView: React.FC = () => {
                  onChange={(e) => setField('initType', e.target.value)}
                >
                  <option>Audio</option>
-                 <option>RF-Inv</option>
+                 <option value="RF-Inversion">RF-Inversion</option>
                </select>
            </div>
         </div>
@@ -304,7 +342,7 @@ export const GenerateView: React.FC = () => {
         </div>
         <button
           className="w-full py-1 border border-dashed border-white/10 rounded text-[8px] uppercase font-bold text-zinc-500 hover:text-zinc-300"
-          onClick={() => setField('loras', [...p.loras, { name: `Slot_${p.loras.length + 1}`, weight: 1.0 }])}
+          onClick={() => setField('loras', [...p.loras, { name: `Slot_${p.loras.length + 1}`, weight: 1.0, file: null }])}
         >
           Add LoRA Slot
         </button>

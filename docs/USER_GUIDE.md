@@ -71,16 +71,16 @@ All in-browser audio — library playback, waveform editor preview, step sequenc
 
 ## 3. Installation
 
-### Base (CPU-only, Small model)
+### Base Python environment
 
 ```bash
 uv sync
 ```
 
-### With CUDA (Medium model)
+### Optional Linux CUDA wheels (Medium model)
 
 ```bash
-uv sync --extra cuda
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
 ```
 
 ### With dev dependencies
@@ -385,14 +385,14 @@ Each entry stores:
   mimeType: string,
   timestamp: string,      // ISO 8601
   favorite: boolean,
-  rating: number | null,
+  rating: 'like' | 'dislike' | null,
   tags: string[],
   notes: string,
-  source: 'generate' | 'editor-mixdown' | 'bucket'
+  source: 'generate' | 'studio' | 'import'
 }
 ```
 
-Waveform editor mixdowns are also auto-saved here on commit, with `source: 'editor-mixdown'` and all generation fields set to their neutral defaults.
+Waveform editor mixdowns are also auto-saved here on commit, with `source: 'studio'` and all generation fields set to their neutral defaults.
 
 ### 9.2 List and Grid Views
 
@@ -503,7 +503,7 @@ Render process:
 4. Each clip is scheduled via `BufferSourceNode.start(clipStartSec, offsetIntoSource, durationSec)`. Per-track volume and stereo pan are applied. Fade-in and fade-out gain envelopes are automated with `linearRampToValueAtTime`.
 5. `OfflineAudioContext.startRendering()` produces the final `AudioBuffer`.
 6. A WAV Blob is encoded as 16-bit PCM (`encodeWav`).
-7. The Blob is saved to the Library (`source: 'editor-mixdown'`).
+7. The Blob is saved to the Library (`source: 'studio'`).
 8. A browser file download is triggered automatically.
 
 During the render, the COMMIT EDIT button shows an animated spinner and is disabled.
@@ -643,7 +643,7 @@ Displays full metadata for the currently selected library entry.
 | Timestamp | Locale date and time |
 | File size | Bytes / KB / MB |
 | Tags / Notes | Editable per-entry |
-| Source | `generate`, `editor-mixdown`, or `bucket` |
+| Source | `generate`, `studio`, or `import` |
 
 **Actions:**
 - **Audition in engine** — loads the entry into `playerStore` and begins playback.
@@ -661,7 +661,7 @@ Session-scoped file holding area for arbitrary audio files. Contents are lost on
 - **Dropzone** — accepts drag-and-drop or click-to-upload. Supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus.
 - **Per-item display** — filename, MIME type, file size.
 - **Send to Editor** — decodes peaks and appends the item to the waveform editor as a new clip on a new track. Non-audio files are rejected with a log entry.
-- **Send to Library** — decodes the audio, measures its duration, and creates a persistent IndexedDB entry with `source: 'bucket'`.
+- **Send to Library** — decodes the audio, measures its duration, and creates a persistent IndexedDB entry with `source: 'import'`.
 - **Remove** — removes the item from the bucket. Does not affect the library or editor.
 - **Clear all** — removes all items simultaneously.
 

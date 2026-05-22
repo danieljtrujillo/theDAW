@@ -1,28 +1,50 @@
 import asyncio
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import base64
 import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import torch
 import torchaudio
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+
+# MUST set non-interactive backend BEFORE any other matplotlib imports
+import matplotlib
+
+matplotlib.use("Agg")
+
+from matplotlib.figure import Figure
+from PIL import Image
+from backend.assistant_routes import router as assistant_router
 
 from stable_audio_3.inference.distribution_shift import (
     DistributionShift,
     FluxDistributionShift,
     LogSNRShift,
 )
+from stable_audio_3.interface.aeiou import audio_spectrogram_image
+from stable_audio_3.model_configs import arc_models, rf_models
+from stable_audio_3.models.lora import remove_lora
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="StableDAW API")
 
@@ -36,56 +58,461 @@ app.add_middleware(
 
 pipeline = None
 sample_rate = 44100
-model_load_error: Optional[str] = None
-model_load_error_detail: Optional[str] = None
-SA3_DEBUG_ERRORS = os.environ.get("SA3_DEBUG_ERRORS", "0") in ("1", "true", "True")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GENERATION_MODEL = "medium"
+GENERATION_MODELS = {**arc_models, **rf_models}
+SPECTROGRAM_TYPES = ("mel", "stft", "chromagram", "cqt")
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]+")
+_DASH_RUN = re.compile(r"-{2,}")
+_WINDOWS_RESERVED_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+_generation_pipelines: dict[str, object] = {}
+_active_model_name = DEFAULT_GENERATION_MODEL
+_generation_job_lock = asyncio.Lock()
+
+# Spectrogram cache: {job_id: {mel, stft, chromagram, cqt}}
+_spec_cache: dict[str, dict[str, str]] = {}
+
+
+@dataclass(frozen=True)
+class LoraFormSlot:
+    index: int
+    upload: object
+    weight: float
+
+
+def _normalize_generation_model(model_name: str | None) -> str:
+    """Return a supported DiT generation model, falling back away from AE-only names."""
+    normalized = (model_name or "").strip().lower()
+    if normalized in GENERATION_MODELS:
+        return normalized
+    return DEFAULT_GENERATION_MODEL
+
+
+def _get_or_load_generation_pipeline(model_name: str):
+    """Load and cache the selected DiT generation pipeline."""
+    global pipeline, sample_rate, _active_model_name
+
+    normalized = _normalize_generation_model(model_name)
+    if normalized not in _generation_pipelines:
+        from stable_audio_3.model import StableAudioModel
+
+        _generation_pipelines[normalized] = StableAudioModel.from_pretrained(normalized)
+
+    selected = _generation_pipelines[normalized]
+    pipeline = selected
+    sample_rate = selected.model_config["sample_rate"]
+    _active_model_name = normalized
+    return selected
+
+
+def _coerce_form_bool(value) -> bool:
+    """Coerce browser FormData boolean strings into Python booleans."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
+def _normalize_init_audio_type(init_audio_type: str | None) -> str:
+    normalized = (init_audio_type or "Audio").strip().lower()
+    if normalized in {"rf-inv", "rf inversion", "rf-inversion", "rfinversion"}:
+        return "RF-Inversion"
+    return "Audio"
+
+
+def _validate_init_audio_mode(init_audio_type: str | None, has_init_audio: bool) -> str:
+    normalized = _normalize_init_audio_type(init_audio_type)
+    if has_init_audio and normalized == "RF-Inversion":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "RF-Inversion controls are present in the UI, but the current "
+                "Stable Audio 3 pipeline code does not implement RF-Inversion yet. "
+                "Use Init Audio / Audio mode for this generation."
+            ),
+        )
+    return normalized
+
+
+def _condense_filename_text(text: str | None, fallback: str = "_") -> str:
+    condensed = _UNSAFE_FILENAME_CHARS.sub("-", str(text or ""))
+    condensed = _DASH_RUN.sub("-", condensed).strip(" .-")[:150].rstrip(" .-")
+    if not condensed:
+        condensed = fallback
+    if condensed.upper() in _WINDOWS_RESERVED_FILENAMES:
+        condensed = f"{condensed}_"
+    return condensed
+
+
+def _get_generation_artifacts_root() -> Path:
+    """Return the local folder where generated audio + spectrograms are saved."""
+    configured = os.getenv("STABLEDAW_GENERATIONS_DIR")
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else PROJECT_ROOT / "data" / "generations"
+    )
+
+
+def _safe_filename(filename: str | None, fallback: str = "output.wav") -> str:
+    raw_name = str(filename or fallback).replace("\\", "-").replace("/", "-")
+    fallback_suffix = Path(fallback).suffix or ".wav"
+    suffix_match = re.search(r"\.[A-Za-z0-9]{1,16}$", raw_name)
+    suffix = suffix_match.group(0) if suffix_match else fallback_suffix
+    stem_text = (
+        raw_name[: -len(suffix)] if suffix and raw_name.endswith(suffix) else raw_name
+    )
+    stem = _condense_filename_text(stem_text, Path(fallback).stem or "output")
+    suffix = _UNSAFE_FILENAME_CHARS.sub("", suffix or fallback_suffix)
+    if suffix.lower() not in {".wav", ".flac", ".ogg", ".png", ".json", ".safetensors"}:
+        suffix = fallback_suffix
+    return f"{stem}{suffix}"
+
+
+def _make_generation_filename(
+    job_id: str,
+    index: int,
+    file_format: str,
+    file_naming: str,
+    prompt: str,
+    negative_prompt: str | None,
+    seed: int,
+) -> str:
+    """Build a safe output filename using the frontend-selected naming mode."""
+    fmt = (file_format or "wav").split()[0].lower()
+    if fmt not in {"wav", "flac", "ogg"}:
+        fmt = "wav"
+
+    mode = (file_naming or "verbose").strip().lower()
+    if mode == "seed":
+        basename = f"seed_{seed}"
+    elif mode == "prompt":
+        basename = _condense_filename_text(prompt)
+    elif mode == "verbose":
+        basename = _condense_filename_text(prompt)
+        if negative_prompt:
+            basename += f".neg-{_condense_filename_text(negative_prompt)}"
+        basename += f".{seed}"
+    else:
+        basename = f"stabledaw_{_condense_filename_text(job_id[:8], 'job')}"
+
+    return f"{basename}_{index}.{fmt}"
+
+
+def _save_generation_artifacts(
+    job_id: str,
+    index: int,
+    audio_bytes: bytes,
+    audio_filename: str,
+    mime_type: str,
+    spectrograms: dict[str, str],
+    metadata: dict | None = None,
+) -> dict:
+    """Save one generation's audio, spectrogram PNGs, and metadata locally."""
+    item_dir = _get_generation_artifacts_root() / job_id / f"{index:02d}"
+    item_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_audio_filename = _safe_filename(audio_filename)
+    audio_path = item_dir / safe_audio_filename
+    audio_path.write_bytes(audio_bytes)
+
+    spectrogram_paths: dict[str, str | None] = {}
+    for name in SPECTROGRAM_TYPES:
+        encoded = spectrograms.get(name) or ""
+        if not encoded:
+            spectrogram_paths[name] = None
+            continue
+        spec_path = item_dir / f"spectrogram_{name}.png"
+        spec_path.write_bytes(base64.b64decode(encoded))
+        spectrogram_paths[name] = str(spec_path)
+
+    metadata_path = item_dir / "metadata.json"
+    metadata_payload = {
+        "job_id": job_id,
+        "index": index,
+        "filename": safe_audio_filename,
+        "mime_type": mime_type,
+        "audio_path": str(audio_path),
+        "artifact_dir": str(item_dir),
+        "spectrogram_paths": spectrogram_paths,
+        "saved_at": time.time(),
+        **(metadata or {}),
+    }
+    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+
+    return {
+        "artifact_dir": str(item_dir),
+        "audio_path": str(audio_path),
+        "spectrogram_paths": spectrogram_paths,
+        "metadata_path": str(metadata_path),
+    }
+
+
+def _extract_lora_form_slots(form) -> list[LoraFormSlot]:
+    """Extract ordered LoRA uploads and weights from multipart form data."""
+    slots: list[LoraFormSlot] = []
+    for key, upload in form.multi_items():
+        if not key.startswith("lora_file_"):
+            continue
+        try:
+            index = int(key.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if not getattr(upload, "filename", None):
+            continue
+        try:
+            weight = float(form.get(f"lora_weight_{index}", 1.0))
+        except (TypeError, ValueError):
+            weight = 1.0
+        slots.append(LoraFormSlot(index=index, upload=upload, weight=weight))
+    return sorted(slots, key=lambda slot: slot.index)
+
+
+async def _persist_lora_uploads(
+    form, job_id: str
+) -> tuple[list[str], list[float], Path | None]:
+    """Persist uploaded LoRA files long enough for the background job to load them."""
+    slots = _extract_lora_form_slots(form)
+    if not slots:
+        return [], [], None
+
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"stabledaw_lora_{job_id[:8]}_"))
+    paths: list[str] = []
+    weights: list[float] = []
+    for slot in slots:
+        original = Path(
+            getattr(slot.upload, "filename", f"lora_{slot.index}.safetensors")
+        ).name
+        stem = _condense_filename_text(Path(original).stem, f"lora_{slot.index}")
+        suffix = Path(original).suffix or ".safetensors"
+        dest = temp_dir / f"{slot.index:02d}_{stem}{suffix}"
+        data = await slot.upload.read()
+        dest.write_bytes(data)
+        paths.append(str(dest))
+        weights.append(slot.weight)
+
+    return paths, weights, temp_dir
+
+
+def _clear_generation_loras(generation_pipeline) -> None:
+    """Remove request-scoped LoRA parametrizations from a cached pipeline."""
+    remove_lora(generation_pipeline.model)
+    generation_pipeline.model.use_lora = False
+    generation_pipeline.model.lora_names = []
+
+
+def _image_to_base64(img: Image.Image) -> str:
+    """Convert PIL Image to base64 PNG string."""
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
+
+def _fig_to_base64(fig: Figure) -> str:
+    """Convert matplotlib Figure to base64 PNG string."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0, dpi=100)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
+
+async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
+    """Decode raw audio bytes to numpy array. Returns (waveform, sample_rate).
+
+    Tries soundfile first (wav, flac, ogg), then falls back to torchaudio via temp file.
+    Waveform shape: (channels, samples) as float32.
+    """
+    buf = io.BytesIO(audio_bytes)
+
+    # Try soundfile first (handles wav, flac, ogg)
+    try:
+        import soundfile as sf
+
+        waveform, sr = sf.read(buf)
+        # Convert to float32, shape (channels, samples) or (samples,)
+        waveform = waveform.astype(np.float32)
+        if waveform.ndim == 1:
+            waveform = waveform[None, :]  # (1, samples)
+        else:
+            waveform = waveform.T  # (channels, samples)
+        return waveform, sr
+    except (ImportError, Exception) as e:
+        logger.debug(f"soundfile decode failed, trying torchaudio: {e}")
+        buf.seek(0)
+
+    # Fallback: torchaudio via temp file
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio_bytes)
+        fname = f.name
+    try:
+        t, sr = torchaudio.load(fname)
+        return t.numpy(), sr
+    finally:
+        try:
+            os.unlink(fname)
+        except Exception:
+            pass
+
+
+def _generate_mel(waveform: torch.Tensor, sr: int) -> str:
+    """Generate MEL spectrogram. Returns base64 PNG or empty string on error."""
+    try:
+        mel_img = audio_spectrogram_image(
+            waveform,
+            power=2.0,
+            sample_rate=sr,
+            db=True,
+            db_range=[35, 120],
+            justimage=True,
+        )
+        return _image_to_base64(mel_img)
+    except Exception as e:
+        logger.warning(f"MEL spectrogram failed: {e}")
+        return ""
+
+
+def _generate_stft(waveform: np.ndarray, sr: int) -> str:
+    """Generate STFT spectrogram. Returns base64 PNG or empty string on error."""
+    try:
+        import librosa
+        import librosa.display
+
+        mono = waveform[0] if waveform.ndim > 1 else waveform
+        D = librosa.amplitude_to_db(np.abs(librosa.stft(mono)), ref=np.max)
+
+        fig = Figure(figsize=(10, 3))
+        ax = fig.add_subplot(111)
+        librosa.display.specshow(
+            D, sr=sr, x_axis="time", y_axis="hz", ax=ax, cmap="viridis"
+        )
+        ax.set_axis_off()
+        fig.tight_layout(pad=0)
+
+        return _fig_to_base64(fig)
+    except Exception as e:
+        logger.warning(f"STFT spectrogram failed: {e}")
+        return ""
+
+
+def _generate_chromagram(waveform: np.ndarray, sr: int) -> str:
+    """Generate chromagram. Returns base64 PNG or empty string on error."""
+    try:
+        import librosa
+        import librosa.display
+
+        mono = waveform[0] if waveform.ndim > 1 else waveform
+        chroma = librosa.feature.chroma_stft(y=mono, sr=sr)
+
+        fig = Figure(figsize=(10, 3))
+        ax = fig.add_subplot(111)
+        librosa.display.specshow(
+            chroma, sr=sr, x_axis="time", y_axis="chroma", ax=ax, cmap="viridis"
+        )
+        ax.set_axis_off()
+        fig.tight_layout(pad=0)
+
+        return _fig_to_base64(fig)
+    except Exception as e:
+        logger.warning(f"chromagram failed: {e}")
+        return ""
+
+
+def _generate_cqt(waveform: np.ndarray, sr: int) -> str:
+    """Generate CQT spectrogram. Returns base64 PNG or empty string on error."""
+    try:
+        import librosa
+        import librosa.display
+
+        mono = waveform[0] if waveform.ndim > 1 else waveform
+        C = np.abs(librosa.cqt(mono, sr=sr))
+        C_db = librosa.amplitude_to_db(C, ref=np.max)
+
+        fig = Figure(figsize=(10, 3))
+        ax = fig.add_subplot(111)
+        librosa.display.specshow(
+            C_db, sr=sr, x_axis="time", y_axis="cqt_note", ax=ax, cmap="viridis"
+        )
+        ax.set_axis_off()
+        fig.tight_layout(pad=0)
+
+        return _fig_to_base64(fig)
+    except Exception as e:
+        logger.warning(f"CQT spectrogram failed: {e}")
+        return ""
+
+
+def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
+    """
+    Generate all 4 spectrogram types from waveform tensor.
+    Returns dict with base64 PNG strings: {mel, stft, chromagram, cqt}.
+    Each type is independently fault-tolerant - returns empty string on error.
+    """
+    result = {"mel": "", "stft": "", "chromagram": "", "cqt": ""}
+
+    # MEL - use existing aeiou function
+    result["mel"] = _generate_mel(waveform, sr)
+
+    # For STFT, Chromagram, CQT - convert to numpy for librosa
+    try:
+        if waveform.ndim > 1:
+            y = waveform.mean(dim=0).cpu().numpy()
+        else:
+            y = waveform.cpu().numpy()
+
+        result["stft"] = _generate_stft(y, sr)
+        result["chromagram"] = _generate_chromagram(y, sr)
+        result["cqt"] = _generate_cqt(y, sr)
+
+    except ImportError:
+        logger.warning("librosa not installed - STFT, Chromagram, and CQT unavailable")
+    except Exception as e:
+        logger.warning(f"Librosa spectrogram generation failed: {e}")
+
+    return result
 
 
 @app.on_event("startup")
 async def load_model():
-    global pipeline, sample_rate, model_load_error, model_load_error_detail
-    from stable_audio_3.model import StableAudioModel
+    _get_or_load_generation_pipeline(DEFAULT_GENERATION_MODEL)
 
-    # Default to local-only model resolution for StableDAW backend startup.
-    # Set SA3_LOCAL_ONLY=0 if you explicitly want HF fallback.
-    os.environ.setdefault("SA3_LOCAL_ONLY", "1")
+    import logging as _logging
 
+    _logger = _logging.getLogger(__name__)
     try:
-        pipeline = StableAudioModel.from_pretrained("medium")
-        sample_rate = pipeline.model_config["sample_rate"]
-        model_load_error = None
-        model_load_error_detail = None
+        from backend.rag import initialize_rag
+
+        n_chunks = initialize_rag()
+        _logger.info("RAG indexed %d chunks", n_chunks)
     except Exception as e:
-        pipeline = None
-        model_load_error = "MODEL_LOAD_FAILED"
-        model_load_error_detail = str(e)
-        logging.error("Model load failed", exc_info=True)
+        _logger.warning("RAG initialization failed (non-fatal): %s", e)
 
 
 @app.get("/api/health")
 async def health():
-    if model_load_error:
-        resp = {
-            "status": "degraded",
-            "model_loaded": False,
-            "error": model_load_error,
-        }
-        if SA3_DEBUG_ERRORS and model_load_error_detail:
-            resp["detail"] = model_load_error_detail
-        return JSONResponse(resp, status_code=503)
     return {"status": "ok", "model_loaded": pipeline is not None}
 
 
 @app.get("/api/model-info")
 async def model_info():
     if not pipeline:
-        resp = {"error": model_load_error or "Model not loaded"}
-        if SA3_DEBUG_ERRORS and model_load_error_detail:
-            resp["detail"] = model_load_error_detail
-        return JSONResponse(resp, status_code=503)
+        return JSONResponse({"error": "Model not loaded"}, status_code=503)
     return {
-        "active_model": "medium",
-        "available_models": ["medium"],
+        "active_model": _active_model_name,
+        "available_models": sorted(GENERATION_MODELS),
+        "loaded_models": sorted(_generation_pipelines),
         "sample_rate": sample_rate,
         "diffusion_objective": pipeline.model.diffusion_objective,
         "has_cuda": torch.cuda.is_available(),
@@ -103,28 +530,101 @@ async def model_info():
     }
 
 
+@app.post("/api/spectrogram")
+async def generate_spectrogram(
+    audio_base64: Optional[str] = Form(None),
+    mime_type: str = Form("audio/wav"),
+    sample_rate_form: int = Form(44100),
+    audio_file: Optional[UploadFile] = File(None),
+):
+    """
+    Generate spectrograms (MEL, STFT, Chromagram, CQT) from audio.
+    Accepts either audio_base64 (string) OR audio_file (UploadFile).
+    Returns JSON with base64 PNG strings for each spectrogram type.
+    """
+    # Validate input
+    if audio_base64 is None and audio_file is None:
+        raise HTTPException(
+            status_code=400, detail="Either audio_base64 or audio_file must be provided"
+        )
+
+    if audio_base64 is not None and audio_file is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either audio_base64 or audio_file, not both",
+        )
+
+    try:
+        # Load audio
+        if audio_file is not None:
+            # Read from UploadFile
+            audio_data = await audio_file.read()
+
+            # Validate size (50MB limit)
+            if len(audio_data) > 50 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=413, detail="Audio file exceeds 50MB limit"
+                )
+        else:
+            # Decode base64
+            audio_data = base64.b64decode(audio_base64)
+
+            # Validate size (50MB limit)
+            if len(audio_data) > 50 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=413, detail="Audio data exceeds 50MB limit"
+                )
+
+        # Decode audio with robust fallback
+        waveform_np, sr = await _decode_audio_bytes(audio_data)
+        waveform = torch.from_numpy(waveform_np)
+
+        # Generate spectrograms
+        spectrograms = _generate_spectrograms(waveform, sr)
+
+        return JSONResponse(spectrograms)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Spectrogram generation error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate spectrograms: {str(e)}"
+        )
+
+
+@app.get("/api/spectrogram/{job_id}")
+async def get_cached_spectrogram(job_id: str):
+    """
+    Retrieve cached spectrograms for a completed job.
+    Returns 404 if job not found or spectrograms not cached.
+    """
+    if job_id not in _spec_cache:
+        raise HTTPException(
+            status_code=404, detail="Spectrograms not found for this job"
+        )
+
+    return JSONResponse(_spec_cache[job_id])
+
+
+@app.get("/api/spectrogram/{job_id}/{index}")
+async def get_cached_spectrogram_item(job_id: str, index: int):
+    """Retrieve cached spectrograms for a specific generated item in a batch."""
+    cache_key = f"{job_id}:{index}"
+    if cache_key not in _spec_cache:
+        raise HTTPException(
+            status_code=404, detail="Spectrograms not found for this job item"
+        )
+
+    return JSONResponse(_spec_cache[cache_key])
+
+
 async def _load_audio_upload(upload: UploadFile):
     """Read an uploaded audio file and return (sample_rate, tensor) tuple."""
     data = await upload.read()
     buf = io.BytesIO(data)
     waveform, sr = torchaudio.load(buf)
     return (sr, waveform)
-
-
-def _audio_to_bytes(audio: torch.Tensor, sr: int, fmt: str) -> bytes:
-    """Encode a tensor to audio bytes via a named temp file.
-
-    torchaudio.save's type stubs declare the first argument as str | PathLike,
-    but the runtime implementation accepts BinaryIO in newer versions. Using a
-    named temp file keeps the call site properly typed and portable.
-    """
-    with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        torchaudio.save(tmp_path, audio, sr, format=fmt)
-        return Path(tmp_path).read_bytes()
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
 
 
 @app.post("/api/generate")
@@ -174,10 +674,7 @@ async def generate(
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
     if not pipeline:
-        resp = {"error": model_load_error or "Model not loaded"}
-        if SA3_DEBUG_ERRORS and model_load_error_detail:
-            resp["detail"] = model_load_error_detail
-        return JSONResponse(resp, status_code=503)
+        return JSONResponse({"error": "Model not loaded"}, status_code=503)
 
     # Build dist_shift object
     dist_shift = None
@@ -208,6 +705,10 @@ async def generate(
     init_audio_tuple = None
     if init_audio is not None and init_audio.filename:
         init_audio_tuple = await _load_audio_upload(init_audio)
+    init_audio_type = _validate_init_audio_mode(
+        init_audio_type,
+        has_init_audio=init_audio_tuple is not None,
+    )
 
     # Load inpaint audio if provided
     inpaint_audio_tuple = None
@@ -247,22 +748,19 @@ async def generate(
             generate_args["inpaint_mask_start_seconds"] = mask_start
             generate_args["inpaint_mask_end_seconds"] = mask_end
 
-    if pipeline is None:
-        return JSONResponse(
-            {"error": model_load_error or "Model not loaded"}, status_code=503
-        )
-
     audio = pipeline.generate(**generate_args)
-    audio = audio.float().clamp(-1, 1).squeeze(0).cpu()
+    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
 
     # Output format
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
 
-    audio_bytes = _audio_to_bytes(audio, sample_rate, fmt)
+    buffer = io.BytesIO()
+    torchaudio.save(buffer, audio, sample_rate, format=fmt)
+    buffer.seek(0)
 
     return StreamingResponse(
-        io.BytesIO(audio_bytes),
+        buffer,
         media_type=mime_map.get(fmt, "audio/wav"),
         headers={
             "Content-Disposition": f"attachment; filename=output_{seed}.{fmt}",
@@ -277,53 +775,122 @@ async def generate(
 JOBS: dict[str, dict] = {}
 
 
-def _generate_to_bytes(generate_args: dict, file_format: str) -> tuple[bytes, str]:
-    if pipeline is None:
-        raise RuntimeError("Model not loaded")
-    audio = pipeline.generate(**generate_args)
-    audio = audio.float().clamp(-1, 1).squeeze(0).cpu()
+def _generate_to_bytes(
+    generation_pipeline, generate_args: dict, file_format: str
+) -> tuple[bytes, str]:
+    audio = generation_pipeline.generate(**generate_args)
+    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
-    return _audio_to_bytes(audio, sample_rate, fmt), fmt
+    output_sample_rate = int(
+        generation_pipeline.model_config.get("sample_rate", sample_rate)
+    )
+    buf = io.BytesIO()
+    torchaudio.save(buf, audio, output_sample_rate, format=fmt)
+    return buf.getvalue(), fmt
 
 
 async def _run_generate_job(
     job_id: str,
+    generation_pipeline,
     base_args: dict,
     batch_size: int,
     file_format: str,
+    file_naming: str,
+    lora_paths: list[str],
+    lora_weights: list[float],
+    lora_temp_dir: Path | None,
 ):
     JOBS[job_id]["status"] = "running"
     loop = asyncio.get_event_loop()
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
     try:
         items = []
-        seed_base = int(base_args.get("seed", -1))
-        for i in range(max(1, batch_size)):
-            args = dict(base_args)
-            if batch_size > 1 and seed_base != -1:
-                args["seed"] = seed_base + i
-            audio_bytes, fmt = await loop.run_in_executor(
-                None, _generate_to_bytes, args, file_format
-            )
-            items.append(
-                {
-                    "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-                    "mime_type": mime_map.get(fmt, "audio/wav"),
-                    "filename": f"stabledaw_{job_id[:8]}_{i}.{fmt}",
-                }
-            )
+        async with _generation_job_lock:
+            try:
+                if lora_paths:
+                    _clear_generation_loras(generation_pipeline)
+                    generation_pipeline.load_lora(lora_paths)
+                    for i, weight in enumerate(lora_weights):
+                        generation_pipeline.set_lora_strength(weight, lora_index=i)
+
+                seed_base = int(base_args.get("seed", -1))
+                for i in range(max(1, batch_size)):
+                    args = dict(base_args)
+                    if batch_size > 1 and seed_base != -1:
+                        args["seed"] = seed_base + i
+                    audio_bytes, fmt = await loop.run_in_executor(
+                        None, _generate_to_bytes, generation_pipeline, args, file_format
+                    )
+                    mime_type = mime_map.get(fmt, "audio/wav")
+                    filename = _make_generation_filename(
+                        job_id,
+                        i,
+                        fmt,
+                        file_naming,
+                        str(base_args.get("prompt", "")),
+                        base_args.get("negative_prompt"),
+                        int(args.get("seed", -1)),
+                    )
+                    waveform, sr = torchaudio.load(io.BytesIO(audio_bytes))
+                    spectrograms = _generate_spectrograms(waveform, sr)
+                    artifact_info = _save_generation_artifacts(
+                        job_id=job_id,
+                        index=i,
+                        audio_bytes=audio_bytes,
+                        audio_filename=filename,
+                        mime_type=mime_type,
+                        spectrograms=spectrograms,
+                        metadata={
+                            "model_name": JOBS[job_id].get("model_name"),
+                            "prompt": base_args.get("prompt", ""),
+                            "negative_prompt": base_args.get("negative_prompt"),
+                            "duration": base_args.get("duration"),
+                            "steps": args.get("steps"),
+                            "cfg_scale": args.get("cfg_scale"),
+                            "seed": args.get("seed"),
+                        },
+                    )
+                    _spec_cache[f"{job_id}:{i}"] = spectrograms
+                    if i == 0:
+                        _spec_cache[job_id] = spectrograms
+                    items.append(
+                        {
+                            "audio_base64": base64.b64encode(audio_bytes).decode(
+                                "ascii"
+                            ),
+                            "mime_type": mime_type,
+                            "filename": filename,
+                            "spectrograms": spectrograms,
+                            **artifact_info,
+                        }
+                    )
+            finally:
+                if lora_paths:
+                    _clear_generation_loras(generation_pipeline)
+
         if batch_size > 1:
             JOBS[job_id]["result"] = {"batch": True, "items": items}
         else:
             JOBS[job_id]["result"] = {"batch": False, "item": items[0]}
+        JOBS[job_id]["artifact_dir"] = str(_get_generation_artifacts_root() / job_id)
         JOBS[job_id]["status"] = "completed"
+        logger.info(
+            "Saved generation artifacts for job %s in %s",
+            job_id,
+            JOBS[job_id]["artifact_dir"],
+        )
+
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)
+    finally:
+        if lora_temp_dir is not None:
+            shutil.rmtree(lora_temp_dir, ignore_errors=True)
 
 
 @app.post("/api/generate-jobs")
 async def generate_jobs(
+    request: Request,
     model_name: str = Form("medium"),
     prompt: str = Form(...),
     negative_prompt: str = Form(""),
@@ -338,23 +905,76 @@ async def generate_jobs(
     file_naming: str = Form("verbose"),
     mask_start: float = Form(0.0),
     mask_end: float = Form(0.0),
+    sampler_type: Optional[str] = Form(None),
+    sigma_max: float = Form(1.0),
+    duration_padding_sec: float = Form(6.0),
+    apg_scale: float = Form(1.0),
+    cfg_rescale: float = Form(0.0),
+    cfg_norm_threshold: float = Form(0.0),
+    cfg_interval_min: float = Form(0.0),
+    cfg_interval_max: float = Form(1.0),
+    dist_shift_type: Optional[str] = Form(None),
+    logsnr_anchor_length: int = Form(2000),
+    logsnr_anchor_logsnr: float = Form(-6.2),
+    logsnr_rate: float = Form(1.0),
+    logsnr_end: float = Form(2.0),
+    flux_min_len: int = Form(256),
+    flux_max_len: int = Form(4096),
+    flux_alpha_min: float = Form(1.15),
+    flux_alpha_max: float = Form(4.5),
+    full_base_shift: float = Form(0.5),
+    full_max_shift: float = Form(1.15),
+    full_min_len: int = Form(256),
+    full_max_len: int = Form(4096),
+    inversion_steps: int = Form(8),
+    inversion_gamma: float = Form(0.5),
+    inversion_unconditional: str = Form("false"),
+    cut_to_duration: str = Form("true"),
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
     if not pipeline:
-        detail = model_load_error or "Model not loaded"
-        if SA3_DEBUG_ERRORS and model_load_error_detail:
-            detail = f"{detail}: {model_load_error_detail}"
-        logging.error(f"/api/generate-jobs failed: {detail}")
-        raise HTTPException(status_code=503, detail=detail)
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    normalized_model_name = _normalize_generation_model(model_name)
+    generation_pipeline = _get_or_load_generation_pipeline(normalized_model_name)
 
     init_audio_tuple = None
     if init_audio is not None and init_audio.filename:
         init_audio_tuple = await _load_audio_upload(init_audio)
 
+    normalized_init_audio_type = _validate_init_audio_mode(
+        init_audio_type,
+        has_init_audio=init_audio_tuple is not None,
+    )
+
     inpaint_audio_tuple = None
     if inpaint_audio is not None and inpaint_audio.filename:
         inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+
+    dist_shift = None
+    if dist_shift_type and dist_shift_type not in ("None", "none", ""):
+        if dist_shift_type == "LogSNR":
+            dist_shift = LogSNRShift(
+                anchor_length=logsnr_anchor_length,
+                anchor_logsnr=logsnr_anchor_logsnr,
+                rate=logsnr_rate,
+                logsnr_end=logsnr_end,
+            )
+        elif dist_shift_type == "Flux":
+            dist_shift = FluxDistributionShift(
+                min_length=flux_min_len,
+                max_length=flux_max_len,
+                alpha_min=flux_alpha_min,
+                alpha_max=flux_alpha_max,
+            )
+        elif dist_shift_type == "Full":
+            dist_shift = DistributionShift(
+                base_shift=full_base_shift,
+                max_shift=full_max_shift,
+                min_length=full_min_len,
+                max_length=full_max_len,
+            )
 
     base_args: dict = {
         "prompt": prompt,
@@ -363,7 +983,19 @@ async def generate_jobs(
         "steps": int(steps),
         "cfg_scale": float(cfg_scale),
         "seed": int(seed),
+        "apg_scale": float(apg_scale),
+        "duration_padding_sec": float(duration_padding_sec),
+        "scale_phi": float(cfg_rescale),
+        "cfg_norm_threshold": float(cfg_norm_threshold),
+        "cfg_interval": (float(cfg_interval_min), float(cfg_interval_max)),
+        "truncate_output_to_duration": _coerce_form_bool(cut_to_duration),
     }
+    if sampler_type:
+        base_args["sampler_type"] = sampler_type
+    if sigma_max != 1.0:
+        base_args["sigma_max"] = float(sigma_max)
+    if dist_shift is not None:
+        base_args["dist_shift"] = dist_shift
     if init_audio_tuple:
         base_args["init_audio"] = init_audio_tuple
         base_args["init_noise_level"] = float(init_noise_level)
@@ -374,16 +1006,33 @@ async def generate_jobs(
             base_args["inpaint_mask_end_seconds"] = float(mask_end)
 
     job_id = str(uuid.uuid4())
+    lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(
+        await request.form(),
+        job_id,
+    )
     JOBS[job_id] = {
         "id": job_id,
         "kind": "generate",
+        "model_name": normalized_model_name,
+        "init_audio_type": normalized_init_audio_type,
+        "lora_count": len(lora_paths),
         "status": "queued",
         "progress": {"step": 0, "steps": int(steps)},
         "created_at": time.time(),
     }
 
     asyncio.create_task(
-        _run_generate_job(job_id, base_args, int(batch_size), file_format)
+        _run_generate_job(
+            job_id,
+            generation_pipeline,
+            base_args,
+            int(batch_size),
+            file_format,
+            file_naming,
+            lora_paths,
+            lora_weights,
+            lora_temp_dir,
+        )
     )
 
     return {"job": {"id": job_id}}
@@ -405,6 +1054,34 @@ async def get_job(job_id: str):
 @app.get("/api/autoencoder/info")
 async def autoencoder_info():
     return {"available_autoencoders": [], "loaded_autoencoders": []}
+
+
+@app.post("/api/jobs/train-lora")
+async def train_lora_stub():
+    raise HTTPException(
+        status_code=501, detail="LoRA training not implemented in this backend."
+    )
+
+
+@app.post("/api/jobs/pre-encode")
+async def pre_encode_stub():
+    raise HTTPException(
+        status_code=501, detail="Pre-encode not implemented in this backend."
+    )
+
+
+@app.post("/api/autoencoder/encode")
+async def ae_encode_stub():
+    raise HTTPException(
+        status_code=501, detail="Autoencoder encode not implemented in this backend."
+    )
+
+
+@app.post("/api/autoencoder/decode")
+async def ae_decode_stub():
+    raise HTTPException(
+        status_code=501, detail="Autoencoder decode not implemented in this backend."
+    )
 
 
 @app.get("/api/presets")
@@ -784,3 +1461,6 @@ async def studio_process(
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+app.include_router(assistant_router)

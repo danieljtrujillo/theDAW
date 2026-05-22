@@ -1,20 +1,12 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
-# Run and deploy your AI Studio app
-
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/5a9432c4-2ca2-4107-aa33-6ba92db409fc
+# StableDAW Frontend
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
+**Prerequisites:** Node.js 20+
 
+1. Install dependencies: `npm install`
+2. Start the FastAPI backend from the repository root on port 8600.
+3. Run the Vite dev server: `npm run dev`
+4. Open `http://localhost:5173`.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+The dev server proxies `/api/*` requests to the backend. See the root `README.md` and `docs/USER_GUIDE.md` for complete setup and feature documentation.

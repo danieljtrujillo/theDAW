@@ -9,19 +9,29 @@ dependencies = [
     "einops-exts>=0.0.4",
     "numpy>=2.2.6",
     "packaging>=26.0",
+    "fastapi>=0.135.1",
+    "uvicorn>=0.42.0",
+    "python-multipart>=0.0.26",
+    "matplotlib>=3.10.8",
+    "pillow>=12.2.0",
+    "soundfile>=0.12.0",
     "safetensors>=0.7.0",
     "torch==2.7.1",
     "torchaudio==2.7.1",
     "tqdm>=4.67.3",
     "huggingface-hub>=1.7.1",
     "transformers>=5.8.0",
+    "chromadb>=1.0.0",
+    "sentence-transformers>=3.0.0",
+    "httpx>=0.28.1",
+    "onnxruntime<1.24",
 ]
 
 [project.optional-dependencies]
 ui = [
   "gradio==6.3.0",
-  "matplotlib>=3.10.8",
   "accelerate>=1.13.0",
+  "librosa>=0.10.0",
 ]
 
 lora = [
@@ -48,7 +58,6 @@ torch = [
 torchaudio = [
   { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
 ]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -44,6 +44,40 @@ export const GlobalGenerateBar: React.FC = () => {
       inpaintEnabled: params.inpaintEnabled,
       maskStart: params.maskStart,
       maskEnd: params.maskEnd,
+
+      samplerType: params.samplerType,
+      sigmaMax: params.sigmaMax,
+      durationPaddingSec: params.durationPaddingSec,
+
+      apgScale: params.apgScale,
+      cfgRescale: params.cfgRescale,
+      cfgNormThreshold: params.cfgNormThreshold,
+      cfgIntervalMin: params.cfgIntervalMin,
+      cfgIntervalMax: params.cfgIntervalMax,
+
+      shiftMode: params.shiftMode,
+      logsnrAnchorLength: params.logsnrAnchorLength,
+      logsnrAnchorLogsnr: params.logsnrAnchorLogsnr,
+      logsnrRate: params.logsnrRate,
+      logsnrEnd: params.logsnrEnd,
+      fluxMinLen: params.fluxMinLen,
+      fluxMaxLen: params.fluxMaxLen,
+      fluxAlphaMin: params.fluxAlphaMin,
+      fluxAlphaMax: params.fluxAlphaMax,
+      fullBaseShift: params.fullBaseShift,
+      fullMaxShift: params.fullMaxShift,
+      fullMinLen: params.fullMinLen,
+      fullMaxLen: params.fullMaxLen,
+
+      inversionSteps: params.inversionSteps,
+      inversionGamma: params.inversionGamma,
+      inversionUnconditional: params.inversionUnconditional,
+
+      fileFormat: params.fileFormat,
+      fileNaming: params.fileNaming,
+      cutToDuration: params.cutToDuration,
+
+      loras: params.loras,
     });
   };
 

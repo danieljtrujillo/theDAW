@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
+import { uuid } from '../orb-kit/utils';
 
 interface StudioHistoryEntry {
   id: string;
@@ -86,7 +87,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
       const blob = await response.blob();
       const outputUrl = URL.createObjectURL(blob);
       const nextEntry: StudioHistoryEntry = {
-        id: crypto.randomUUID(),
+        id: uuid(),
         effect,
         format: get().outputFormat,
         createdAt: Date.now(),

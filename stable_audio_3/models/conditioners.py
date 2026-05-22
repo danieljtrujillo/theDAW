@@ -12,6 +12,7 @@ from einops import rearrange
 from .blocks import ExpoFourierFeatures
 from .utils import enable_torch_compile
 import os
+from pathlib import PureWindowsPath
 
 from stable_audio_3.model_configs import resolve_local_repo_path
 
@@ -195,7 +196,15 @@ class T5GemmaConditioner(Conditioner):
 
         # If `load_from` is still a Hub repo id, prefer an already-cached local snapshot
         # to avoid network access during backend startup.
-        if isinstance(load_from, str) and "/" in load_from and not os.path.isdir(load_from):
+        is_local_path = (
+            isinstance(load_from, str)
+            and (
+                "\\" in load_from
+                or os.path.isabs(load_from)
+                or bool(PureWindowsPath(load_from).drive)
+            )
+        )
+        if isinstance(load_from, str) and "/" in load_from and not is_local_path and not os.path.isdir(load_from):
             try:
                 from huggingface_hub import try_to_load_from_cache
 

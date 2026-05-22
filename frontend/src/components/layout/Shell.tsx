@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, Settings, ChevronRight, BookOpen } from 'lucide-react';
 import { GenerateView } from '../../views/GenerateView';
@@ -11,13 +11,15 @@ import { ProcessingLog } from './ProcessingLog';
 import { GlobalGenerateBar } from './GlobalGenerateBar';
 import { DocsModal } from './DocsModal';
 import { useStatusBarStore } from '../../state/statusBarStore';
-import { useActiveViewStore } from '../../state/activeViewStore';
+import { useAppUiStore } from '../../state/appUiStore';
 
 export const Shell: React.FC = () => {
-  const activeView = useActiveViewStore((s) => s.activeView);
-  const setActiveView = useActiveViewStore((s) => s.setActiveView);
-  const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(true);
-  const [docsOpen, setDocsOpen] = useState(false);
+  const activeView = useAppUiStore((state) => state.activeView);
+  const setActiveView = useAppUiStore((state) => state.setActiveView);
+  const isLeftPanelOpen = useAppUiStore((state) => state.isLeftPanelOpen);
+  const setIsLeftPanelOpen = useAppUiStore((state) => state.setLeftPanelOpen);
+  const docsOpen = useAppUiStore((state) => state.docsOpen);
+  const setDocsOpen = useAppUiStore((state) => state.setDocsOpen);
   const refreshHealth = useStatusBarStore((state) => state.refreshHealth);
 
   useEffect(() => {
@@ -27,6 +29,29 @@ export const Shell: React.FC = () => {
     }, 30000);
     return () => window.clearInterval(timer);
   }, [refreshHealth]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const tab = (e as CustomEvent).detail?.tab;
+      setActiveView(tab);
+    };
+    const openDocsHandler = () => setDocsOpen(true);
+    const closeDocsHandler = () => setDocsOpen(false);
+    const leftPanelHandler = (e: Event) => {
+      const open = (e as CustomEvent).detail?.open;
+      if (typeof open === 'boolean') setIsLeftPanelOpen(open);
+    };
+    window.addEventListener('stabledaw:navigate', handler);
+    window.addEventListener('stabledaw:open-docs', openDocsHandler);
+    window.addEventListener('stabledaw:close-docs', closeDocsHandler);
+    window.addEventListener('stabledaw:set-left-panel', leftPanelHandler);
+    return () => {
+      window.removeEventListener('stabledaw:navigate', handler);
+      window.removeEventListener('stabledaw:open-docs', openDocsHandler);
+      window.removeEventListener('stabledaw:close-docs', closeDocsHandler);
+      window.removeEventListener('stabledaw:set-left-panel', leftPanelHandler);
+    };
+  }, [setActiveView, setDocsOpen, setIsLeftPanelOpen]);
 
   const tabs = [
     { id: 'create', label: 'CREATE' },

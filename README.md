@@ -42,11 +42,11 @@ cd frontend && npm run dev
 ### Dependencies
 
 ```bash
-# Python (base, CPU-only)
+# Python
 uv sync
 
-# Python (with CUDA support for Medium model)
-uv sync --extra cuda
+# Optional Linux CUDA wheels for Medium model, if you need a specific CUDA build
+uv pip install torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126
 
 # Frontend
 cd frontend && npm install
@@ -72,6 +72,7 @@ audio = pipe.generate(
 
 ### Audio-to-audio
 
+```python
 # Audio-to-audio
 import torchaudio
 

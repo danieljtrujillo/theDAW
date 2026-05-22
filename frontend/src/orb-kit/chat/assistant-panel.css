@@ -1,0 +1,799 @@
+/* StableDAW Assistant Panel — glass-morphism chat panel
+   Companion stylesheet to gantasmo-orb.css.
+   All selectors scoped under .gantasmo-orb-theme to share the orb's variable namespace.
+   Ported from SunoHarvester orb-kit for StableDAW integration.
+*/
+
+/* -- 1. Panel Custom Properties ------------------------------------------------ */
+
+.gantasmo-orb-theme {
+    --panel-width: 440px;
+    --panel-height: 600px;
+    --panel-min-width: 340px;
+    --panel-min-height: 300px;
+    --panel-bg-glass: rgba(15, 15, 25, 0.85);
+    --panel-bg-glass-hover: rgba(20, 20, 35, 0.9);
+    --panel-radius: 16px;
+    --panel-border: 1px solid var(--border-glow);
+    --panel-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.4),
+        0 0 24px var(--glow-primary);
+}
+
+/* -- 2. Panel Container -------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-panel {
+    position: fixed;
+    z-index: 9998;
+    width: var(--panel-width);
+    height: var(--panel-height);
+    min-width: var(--panel-min-width);
+    min-height: var(--panel-min-height);
+    max-width: 90vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel-bg-glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: var(--panel-border);
+    border-radius: var(--panel-radius);
+    box-shadow: var(--panel-shadow);
+    resize: both;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    animation: gantasmo-status-fade-in var(--transition-smooth) ease-out;
+}
+
+.gantasmo-orb-theme .gantasmo-panel.is-minimized {
+    height: auto;
+    min-height: unset;
+    resize: none;
+}
+
+.gantasmo-orb-theme .gantasmo-panel.is-minimized .gantasmo-panel-messages,
+.gantasmo-orb-theme .gantasmo-panel.is-minimized .gantasmo-panel-input {
+    display: none;
+}
+
+/* -- 3. Panel Header ----------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: linear-gradient(
+        135deg,
+        rgba(139, 92, 246, 0.15) 0%,
+        rgba(236, 72, 153, 0.1) 50%,
+        rgba(59, 130, 246, 0.08) 100%
+    );
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header.dragging {
+    cursor: grabbing;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-selector {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-selector select {
+    background: var(--bg-glass);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    max-width: 140px;
+    transition: border-color var(--transition-fast);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-selector select:focus {
+    border-color: var(--accent-primary);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+        background var(--transition-fast),
+        color var(--transition-fast);
+    padding: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-btn:hover {
+    background: var(--bg-glass-hover);
+    color: var(--text-primary);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-header-btn.close:hover {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--accent-danger);
+}
+
+/* -- 4. Message Area ----------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-panel-messages {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    scroll-behavior: smooth;
+}
+
+/* Custom scrollbar */
+.gantasmo-orb-theme .gantasmo-panel-messages::-webkit-scrollbar {
+    width: 6px;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-messages::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-messages::-webkit-scrollbar-thumb {
+    background: var(--border-visible);
+    border-radius: 3px;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-messages::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+}
+
+/* Firefox scrollbar */
+.gantasmo-orb-theme .gantasmo-panel-messages {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-visible) transparent;
+}
+
+/* -- 5. Message Bubbles -------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-msg {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    animation: gantasmo-status-fade-in var(--transition-smooth) ease-out;
+}
+
+/* User message — right-aligned, accent bg */
+.gantasmo-orb-theme .gantasmo-msg-user {
+    align-self: flex-end;
+    background: linear-gradient(
+        135deg,
+        var(--accent-primary) 0%,
+        rgba(139, 92, 246, 0.8) 100%
+    );
+    color: #fff;
+    border-bottom-right-radius: 4px;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.25);
+}
+
+/* Assistant message — left-aligned, glass bg */
+.gantasmo-orb-theme .gantasmo-msg-assistant {
+    align-self: flex-start;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    border-bottom-left-radius: 4px;
+}
+
+.gantasmo-orb-theme .gantasmo-msg-assistant pre {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    font-size: 12px;
+    margin: 8px 0;
+}
+
+.gantasmo-orb-theme .gantasmo-msg-assistant code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+}
+
+.gantasmo-orb-theme .gantasmo-msg-assistant :not(pre) > code {
+    background: rgba(139, 92, 246, 0.15);
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+/* Action message — centered */
+.gantasmo-orb-theme .gantasmo-msg-action {
+    align-self: center;
+    max-width: 95%;
+    width: 100%;
+    background: transparent;
+    padding: 4px 0;
+}
+
+/* Typing indicator */
+.gantasmo-orb-theme .gantasmo-typing-indicator {
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 16px;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    border-bottom-left-radius: 4px;
+}
+
+.gantasmo-orb-theme .gantasmo-typing-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    animation: gantasmo-typing-bounce 1.4s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .gantasmo-typing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+    background: var(--accent-secondary);
+}
+
+.gantasmo-orb-theme .gantasmo-typing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+    background: var(--accent-tertiary);
+}
+
+/* -- 6. ThinkingPanel ---------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-thinking-panel {
+    background: rgba(9, 9, 11, 0.6);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    overflow: hidden;
+    transition: max-height var(--transition-smooth) ease-out;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-panel.is-collapsed {
+    max-height: 40px;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: color var(--transition-fast);
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-header:hover {
+    color: var(--text-primary);
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-header-chevron {
+    width: 14px;
+    height: 14px;
+    transition: transform var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-panel.is-collapsed .gantasmo-thinking-header-chevron {
+    transform: rotate(-90deg);
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-header-label {
+    flex: 1;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-header-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg-glass);
+    padding: 2px 6px;
+    border-radius: 8px;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-steps {
+    padding: 0 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    animation: gantasmo-card-slide-in var(--transition-smooth) ease-out;
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-step-icon {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+}
+
+/* Spinner state */
+.gantasmo-orb-theme .gantasmo-thinking-step-icon.is-running {
+    color: var(--accent-primary);
+    animation: gantasmo-swirl-rotate 1s linear infinite;
+}
+
+/* Checkmark state */
+.gantasmo-orb-theme .gantasmo-thinking-step-icon.is-done {
+    color: var(--accent-success);
+}
+
+/* Alert state */
+.gantasmo-orb-theme .gantasmo-thinking-step-icon.is-error {
+    color: var(--accent-danger);
+}
+
+.gantasmo-orb-theme .gantasmo-thinking-step-text {
+    flex: 1;
+    min-width: 0;
+}
+
+/* -- 7. ActionCard ------------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-action-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    border-left: 3px solid var(--accent-primary);
+    cursor: default;
+    transition:
+        transform var(--transition-fast),
+        box-shadow var(--transition-fast),
+        background var(--transition-fast);
+    animation: gantasmo-card-slide-in var(--transition-smooth) ease-out;
+}
+
+.gantasmo-orb-theme .gantasmo-action-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    background: var(--panel-bg-glass-hover);
+}
+
+/* Action kind color coding */
+.gantasmo-orb-theme .gantasmo-action-card.kind-search {
+    border-left-color: var(--accent-tertiary);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card.kind-play {
+    border-left-color: var(--accent-success);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card.kind-download {
+    border-left-color: var(--accent-secondary);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card.kind-navigate {
+    border-left-color: var(--accent-primary);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card.kind-filter {
+    border-left-color: var(--accent-warning);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card.kind-danger {
+    border-left-color: var(--accent-danger);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card-icon {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+}
+
+.gantasmo-orb-theme .gantasmo-action-card-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-action-card-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gantasmo-orb-theme .gantasmo-action-card-detail {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* -- 8. IntentPreviewCard ------------------------------------------------------ */
+
+.gantasmo-orb-theme .gantasmo-intent-card {
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-glow);
+    border-radius: 12px;
+    animation: gantasmo-card-slide-in var(--transition-smooth) ease-out;
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card.is-pending {
+    animation:
+        gantasmo-card-slide-in var(--transition-smooth) ease-out,
+        gantasmo-intent-pulse 2s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card.is-skipped,
+.gantasmo-orb-theme .gantasmo-intent-card.is-expired {
+    opacity: 0.5;
+    border-color: var(--border-subtle);
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card.is-skipped .gantasmo-intent-card-label,
+.gantasmo-orb-theme .gantasmo-intent-card.is-expired .gantasmo-intent-card-label {
+    text-decoration: line-through;
+    color: var(--text-muted);
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card-timer {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent-warning);
+    font-variant-numeric: tabular-nums;
+    min-width: 32px;
+    text-align: right;
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card-detail {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+
+.gantasmo-orb-theme .gantasmo-intent-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gantasmo-orb-theme .gantasmo-intent-btn {
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition:
+        background var(--transition-fast),
+        transform var(--transition-fast),
+        box-shadow var(--transition-fast);
+}
+
+.gantasmo-orb-theme .gantasmo-intent-btn:active {
+    transform: scale(0.97);
+}
+
+/* Run button — green accent */
+.gantasmo-orb-theme .gantasmo-intent-btn.run {
+    background: var(--accent-success);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
+.gantasmo-orb-theme .gantasmo-intent-btn.run:hover {
+    background: #0fce7e;
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.45);
+}
+
+/* Skip button — muted */
+.gantasmo-orb-theme .gantasmo-intent-btn.skip {
+    background: var(--bg-glass);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+}
+
+.gantasmo-orb-theme .gantasmo-intent-btn.skip:hover {
+    background: var(--bg-glass-hover);
+    color: var(--text-primary);
+}
+
+/* -- 9. Input Area ------------------------------------------------------------- */
+
+.gantasmo-orb-theme .gantasmo-panel-input {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 12px 16px;
+    background: rgba(9, 9, 11, 0.5);
+    border-top: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-wrap {
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 8px 12px;
+    transition: border-color var(--transition-fast);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-wrap:focus-within {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.15);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    max-height: 120px;
+    font-family: inherit;
+    padding: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-btn {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition:
+        background var(--transition-fast),
+        color var(--transition-fast),
+        box-shadow var(--transition-fast);
+    padding: 0;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-btn:hover {
+    color: var(--text-secondary);
+    background: var(--bg-glass-hover);
+}
+
+/* Send button — accent glow */
+.gantasmo-orb-theme .gantasmo-panel-input-btn.send {
+    background: var(--accent-primary);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--glow-primary);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-btn.send:hover {
+    box-shadow: 0 4px 16px var(--glow-primary);
+    background: #9b6ff7;
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-btn.send:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+/* Stop button — danger */
+.gantasmo-orb-theme .gantasmo-panel-input-btn.stop {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-danger);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.gantasmo-orb-theme .gantasmo-panel-input-btn.stop:hover {
+    background: rgba(239, 68, 68, 0.25);
+}
+
+/* Mic button */
+.gantasmo-orb-theme .gantasmo-panel-input-btn.mic.is-recording {
+    color: var(--accent-danger);
+    animation: gantasmo-intent-pulse 1.5s ease-in-out infinite;
+}
+
+/* Attachment button */
+.gantasmo-orb-theme .gantasmo-panel-input-btn.attach:hover {
+    color: var(--accent-tertiary);
+}
+
+/* -- 10. Animations ------------------------------------------------------------ */
+
+@keyframes gantasmo-typing-bounce {
+    0%, 60%, 100% {
+        transform: translateY(0);
+        opacity: 0.4;
+    }
+    30% {
+        transform: translateY(-6px);
+        opacity: 1;
+    }
+}
+
+@keyframes gantasmo-status-fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes gantasmo-intent-pulse {
+    0%, 100% {
+        border-color: var(--border-glow);
+        box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+    }
+    50% {
+        border-color: var(--accent-primary);
+        box-shadow: 0 0 12px 2px rgba(139, 92, 246, 0.2);
+    }
+}
+
+@keyframes gantasmo-card-slide-in {
+    from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* -- 11. Responsive ------------------------------------------------------------ */
+
+@media (max-width: 640px) {
+    .gantasmo-orb-theme .gantasmo-panel {
+        position: fixed;
+        inset: 0;
+        width: 100% !important;
+        height: 100% !important;
+        max-width: 100vw;
+        max-height: 100vh;
+        min-width: unset;
+        min-height: unset;
+        border-radius: 0;
+        resize: none;
+        border: none;
+    }
+
+    .gantasmo-orb-theme .gantasmo-panel-header {
+        padding: 14px 16px;
+        border-radius: 0;
+    }
+
+    .gantasmo-orb-theme .gantasmo-panel-messages {
+        padding: 12px;
+    }
+
+    .gantasmo-orb-theme .gantasmo-msg {
+        max-width: 90%;
+    }
+
+    .gantasmo-orb-theme .gantasmo-panel-input {
+        padding: 10px 12px;
+        /* Safe area inset for notched devices */
+        padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .gantasmo-orb-theme .gantasmo-panel,
+    .gantasmo-orb-theme .gantasmo-msg,
+    .gantasmo-orb-theme .gantasmo-action-card,
+    .gantasmo-orb-theme .gantasmo-intent-card,
+    .gantasmo-orb-theme .gantasmo-thinking-step,
+    .gantasmo-orb-theme .gantasmo-typing-dot {
+        animation: none !important;
+    }
+
+    .gantasmo-orb-theme .gantasmo-thinking-step-icon.is-running {
+        animation: none !important;
+    }
+
+    .gantasmo-orb-theme .gantasmo-intent-card.is-pending {
+        animation: none !important;
+        border-color: var(--accent-primary);
+    }
+
+    .gantasmo-orb-theme .gantasmo-panel-input-btn.mic.is-recording {
+        animation: none !important;
+    }
+
+    .gantasmo-orb-theme .gantasmo-panel-messages {
+        scroll-behavior: auto;
+    }
+}

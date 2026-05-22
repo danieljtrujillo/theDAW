@@ -4,6 +4,8 @@ import { getAnalyser, getEngineCtx, samplePeakAndRMS } from '../../state/playerS
 
 type Mode = 'oscilloscope' | 'spectrum' | 'radial';
 
+const OVERLAY_RESERVE_HEIGHT = 18;
+
 const formatDb = (db: number): string => {
   if (!Number.isFinite(db)) return '−∞';
   return `${db >= 0 ? '+' : ''}${db.toFixed(1)}`;
@@ -80,7 +82,7 @@ export const AdvancedVisualizer: React.FC = () => {
         const usableBins = Math.min(freqBuf.length, Math.floor(freqBuf.length * 0.6));
         const barCount = Math.min(96, usableBins);
         const barWidth = w / barCount;
-        const floor = h - 18; // leave room above overlay
+        const floor = h - OVERLAY_RESERVE_HEIGHT;
         for (let i = 0; i < barCount; i += 1) {
           const t = i / barCount;
           const binIdx = Math.floor(Math.pow(t, 1.6) * (usableBins - 1));

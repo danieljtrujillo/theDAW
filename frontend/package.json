@@ -1,5 +1,5 @@
 {
-  "name": "react-example",
+  "name": "stabledaw-frontend",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -22,6 +22,8 @@
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "vite": "^6.2.3",
     "wavesurfer.js": "^7.12.7",
     "zustand": "^5.0.8"
