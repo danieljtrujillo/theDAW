@@ -87,7 +87,7 @@ export const MediaBucketView: React.FC = () => {
   return (
     <div className="h-full flex flex-col bg-[#0a080f]">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-2 py-1 border-b border-white/5 bg-black/40 flex-shrink-0">
+      <div className="flex items-center justify-between px-2 py-1 border-b border-white/5 bg-black/40 shrink-0">
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono text-zinc-500">{items.length} file{items.length === 1 ? '' : 's'}</span>
         </div>
@@ -145,9 +145,9 @@ export const MediaBucketView: React.FC = () => {
                   e.dataTransfer.effectAllowed = 'copy';
                   e.dataTransfer.setData('text/plain', item.name);
                 }}
-                className="flex items-center gap-2 px-2 py-1.5 rounded border border-white/5 bg-black/20 hover:bg-white/[0.03] group"
+                className="flex items-center gap-2 px-2 py-1.5 rounded border border-white/5 bg-black/20 hover:bg-white/3 group"
               >
-                <div className="flex-shrink-0">
+                <div className="shrink-0">
                   {isAudio(item.mimeType, item.name) ? (
                     <Music className="w-3 h-3 text-purple-300" />
                   ) : (

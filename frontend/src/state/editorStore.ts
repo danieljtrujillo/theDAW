@@ -7,6 +7,12 @@ export type SnapDivision = 'off' | '1/4' | '1/8' | '1/16';
 
 export type ClipSourceKind = 'audio' | 'piano-roll';
 
+export interface InpaintSelection {
+  clipId: string;
+  startSec: number; // timeline seconds
+  endSec: number;   // timeline seconds
+}
+
 export interface AudioClip {
   id: string;
   trackId: string;
@@ -35,6 +41,10 @@ export interface AudioClip {
   sourceBpm?: number;
   /** When sourceKind === 'piano-roll', the grid length at render time. */
   sourceTotalSteps?: number;
+  /** Fade-in duration in seconds (0 = no fade). */
+  fadeInSec?: number;
+  /** Fade-out duration in seconds (0 = no fade). */
+  fadeOutSec?: number;
 }
 
 export interface EditorTrack {
@@ -60,6 +70,7 @@ interface EditorStoreState {
   isPlaying: boolean;
   snap: SnapDivision;
   bpm: number;              // for snap math
+  inpaintSelection: InpaintSelection | null;
 
   // Mutations
   addTrack: (overrides?: Partial<EditorTrack>) => string;
@@ -81,6 +92,8 @@ interface EditorStoreState {
   setPlaying: (p: boolean) => void;
   setSnap: (s: SnapDivision) => void;
   setBpm: (b: number) => void;
+  setInpaintSelection: (sel: InpaintSelection | null) => void;
+  clearInpaintSelection: () => void;
 
   // Selectors
   getTotalDurationSec: () => number;
@@ -114,6 +127,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   isPlaying: false,
   snap: '1/16',
   bpm: 120,
+  inpaintSelection: null,
 
   addTrack: (overrides) => {
     const id = `track-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -241,6 +255,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   setPlaying: (p) => set({ isPlaying: p }),
   setSnap: (s) => set({ snap: s }),
   setBpm: (b) => set({ bpm: Math.max(40, Math.min(240, b)) }),
+  setInpaintSelection: (sel) => set({ inpaintSelection: sel }),
+  clearInpaintSelection: () => set({ inpaintSelection: null }),
 
   getTotalDurationSec: () => {
     const { clips } = get();

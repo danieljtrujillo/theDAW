@@ -75,6 +75,28 @@ Ruff excludes `stable_audio_3/models`, `stable_audio_3/inference`, `stable_audio
 
 Tests use session-scoped fixtures to avoid reloading models. The `model_pipe` fixture is parametrized over `["small", "medium"]` — medium tests are auto-skipped without a CUDA GPU. `--save-audio` writes outputs to `test_audio_outputs/` for manual listening.
 
+## Tailwind CSS v4 — Mandatory Class Forms
+
+This project uses **Tailwind CSS v4**. The following v3 forms are forbidden and will cause VS Code Problems tab warnings. Never write them; always use the v4 canonical form instead.
+
+| FORBIDDEN (v3) | REQUIRED (v4) |
+|---|---|
+| `!className` (prefix important) | `className!` (suffix important) |
+| `flex-shrink-0` | `shrink-0` |
+| `flex-grow` | `grow` |
+| `bg-gradient-to-*` | `bg-linear-to-*` |
+| `bg-opacity-*` | `bg-black/50` style opacity modifier |
+| `w-[300px]` when scale token exists | `w-75` (300 ÷ 4) |
+| `h-[14px]` when scale token exists | `h-3.5` (14 ÷ 4) |
+| `z-[15]`, `z-[25]`, `z-[200]` | `z-15`, `z-25`, `z-200` |
+| `min-w-[160px]` when scale token exists | `min-w-40` |
+| `min-h-[80px]` when scale token exists | `min-h-20` |
+| `bg-white/[0.03]`, `bg-purple-500/[0.04]` | `bg-white/3`, `bg-purple-500/4` |
+
+**Scale token rule:** Tailwind v4 spacing scale is `value ÷ 4`. A `[Npx]` arbitrary value maps to `N/4` as a scale token whenever N is divisible by 4 (or to the nearest 0.5 step). Prefer scale tokens over arbitrary values at all times.
+
+**Before writing any className string, mentally check it against this table.**
+
 ## Windows-Specific Setup
 
 The `pyproject.toml` CUDA index mapping only covers Linux. On Windows:

@@ -1,12 +1,14 @@
 import asyncio
 import base64
-import io
 import json
+import os
+import logging
 import shutil
 import subprocess
 import tempfile
 import time
 import uuid
+import io
 from pathlib import Path
 from typing import Optional
 
@@ -34,26 +36,53 @@ app.add_middleware(
 
 pipeline = None
 sample_rate = 44100
+model_load_error: Optional[str] = None
+model_load_error_detail: Optional[str] = None
+SA3_DEBUG_ERRORS = os.environ.get("SA3_DEBUG_ERRORS", "0") in ("1", "true", "True")
 
 
 @app.on_event("startup")
 async def load_model():
-    global pipeline, sample_rate
+    global pipeline, sample_rate, model_load_error, model_load_error_detail
     from stable_audio_3.model import StableAudioModel
 
-    pipeline = StableAudioModel.from_pretrained("medium")
-    sample_rate = pipeline.model_config["sample_rate"]
+    # Default to local-only model resolution for StableDAW backend startup.
+    # Set SA3_LOCAL_ONLY=0 if you explicitly want HF fallback.
+    os.environ.setdefault("SA3_LOCAL_ONLY", "1")
+
+    try:
+        pipeline = StableAudioModel.from_pretrained("medium")
+        sample_rate = pipeline.model_config["sample_rate"]
+        model_load_error = None
+        model_load_error_detail = None
+    except Exception as e:
+        pipeline = None
+        model_load_error = "MODEL_LOAD_FAILED"
+        model_load_error_detail = str(e)
+        logging.error("Model load failed", exc_info=True)
 
 
 @app.get("/api/health")
 async def health():
+    if model_load_error:
+        resp = {
+            "status": "degraded",
+            "model_loaded": False,
+            "error": model_load_error,
+        }
+        if SA3_DEBUG_ERRORS and model_load_error_detail:
+            resp["detail"] = model_load_error_detail
+        return JSONResponse(resp, status_code=503)
     return {"status": "ok", "model_loaded": pipeline is not None}
 
 
 @app.get("/api/model-info")
 async def model_info():
     if not pipeline:
-        return JSONResponse({"error": "Model not loaded"}, status_code=503)
+        resp = {"error": model_load_error or "Model not loaded"}
+        if SA3_DEBUG_ERRORS and model_load_error_detail:
+            resp["detail"] = model_load_error_detail
+        return JSONResponse(resp, status_code=503)
     return {
         "active_model": "medium",
         "available_models": ["medium"],
@@ -80,6 +109,22 @@ async def _load_audio_upload(upload: UploadFile):
     buf = io.BytesIO(data)
     waveform, sr = torchaudio.load(buf)
     return (sr, waveform)
+
+
+def _audio_to_bytes(audio: torch.Tensor, sr: int, fmt: str) -> bytes:
+    """Encode a tensor to audio bytes via a named temp file.
+
+    torchaudio.save's type stubs declare the first argument as str | PathLike,
+    but the runtime implementation accepts BinaryIO in newer versions. Using a
+    named temp file keeps the call site properly typed and portable.
+    """
+    with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        torchaudio.save(tmp_path, audio, sr, format=fmt)
+        return Path(tmp_path).read_bytes()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 @app.post("/api/generate")
@@ -129,7 +174,10 @@ async def generate(
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
     if not pipeline:
-        return JSONResponse({"error": "Model not loaded"}, status_code=503)
+        resp = {"error": model_load_error or "Model not loaded"}
+        if SA3_DEBUG_ERRORS and model_load_error_detail:
+            resp["detail"] = model_load_error_detail
+        return JSONResponse(resp, status_code=503)
 
     # Build dist_shift object
     dist_shift = None
@@ -199,19 +247,22 @@ async def generate(
             generate_args["inpaint_mask_start_seconds"] = mask_start
             generate_args["inpaint_mask_end_seconds"] = mask_end
 
+    if pipeline is None:
+        return JSONResponse(
+            {"error": model_load_error or "Model not loaded"}, status_code=503
+        )
+
     audio = pipeline.generate(**generate_args)
-    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
+    audio = audio.float().clamp(-1, 1).squeeze(0).cpu()
 
     # Output format
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
 
-    buffer = io.BytesIO()
-    torchaudio.save(buffer, audio, sample_rate, format=fmt)
-    buffer.seek(0)
+    audio_bytes = _audio_to_bytes(audio, sample_rate, fmt)
 
     return StreamingResponse(
-        buffer,
+        io.BytesIO(audio_bytes),
         media_type=mime_map.get(fmt, "audio/wav"),
         headers={
             "Content-Disposition": f"attachment; filename=output_{seed}.{fmt}",
@@ -227,12 +278,12 @@ JOBS: dict[str, dict] = {}
 
 
 def _generate_to_bytes(generate_args: dict, file_format: str) -> tuple[bytes, str]:
+    if pipeline is None:
+        raise RuntimeError("Model not loaded")
     audio = pipeline.generate(**generate_args)
-    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
+    audio = audio.float().clamp(-1, 1).squeeze(0).cpu()
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
-    buf = io.BytesIO()
-    torchaudio.save(buf, audio, sample_rate, format=fmt)
-    return buf.getvalue(), fmt
+    return _audio_to_bytes(audio, sample_rate, fmt), fmt
 
 
 async def _run_generate_job(
@@ -291,7 +342,11 @@ async def generate_jobs(
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
     if not pipeline:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+        detail = model_load_error or "Model not loaded"
+        if SA3_DEBUG_ERRORS and model_load_error_detail:
+            detail = f"{detail}: {model_load_error_detail}"
+        logging.error(f"/api/generate-jobs failed: {detail}")
+        raise HTTPException(status_code=503, detail=detail)
 
     init_audio_tuple = None
     if init_audio is not None and init_audio.filename:
@@ -350,26 +405,6 @@ async def get_job(job_id: str):
 @app.get("/api/autoencoder/info")
 async def autoencoder_info():
     return {"available_autoencoders": [], "loaded_autoencoders": []}
-
-
-@app.post("/api/jobs/train-lora")
-async def train_lora_stub():
-    raise HTTPException(status_code=501, detail="LoRA training not implemented in this backend.")
-
-
-@app.post("/api/jobs/pre-encode")
-async def pre_encode_stub():
-    raise HTTPException(status_code=501, detail="Pre-encode not implemented in this backend.")
-
-
-@app.post("/api/autoencoder/encode")
-async def ae_encode_stub():
-    raise HTTPException(status_code=501, detail="Autoencoder encode not implemented in this backend.")
-
-
-@app.post("/api/autoencoder/decode")
-async def ae_decode_stub():
-    raise HTTPException(status_code=501, detail="Autoencoder decode not implemented in this backend.")
 
 
 @app.get("/api/presets")
@@ -487,7 +522,9 @@ def _validate_param(value: float, bounds: tuple[float, float], name: str) -> flo
         raise ValueError(f"Parameter '{name}' must be a number, got: {value!r}")
     lo, hi = bounds
     if val < lo or val > hi:
-        raise ValueError(f"Parameter '{name}' must be between {lo} and {hi}, got: {val}")
+        raise ValueError(
+            f"Parameter '{name}' must be between {lo} and {hi}, got: {val}"
+        )
     return val
 
 
@@ -510,7 +547,9 @@ def _build_filter(effect: str, params: dict[str, float]) -> list[str]:
     elif effect == "compression":
         attack = params["attack"]
         decay = params["decay"]
-        af = f"compand=attacks={attack}:decays={decay}:points=-80/-80|-30/-15|0/-3|20/-1"
+        af = (
+            f"compand=attacks={attack}:decays={decay}:points=-80/-80|-30/-15|0/-3|20/-1"
+        )
         return ["-af", af]
 
     elif effect == "highpass":
@@ -660,7 +699,9 @@ async def studio_process(
     # Validate output format
     allowed_formats = {"wav", "flac", "ogg", "mp3", "aac", "opus"}
     if output_format not in allowed_formats:
-        raise HTTPException(status_code=400, detail=f"Unsupported format: {output_format}")
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported format: {output_format}"
+        )
 
     # Parse and validate params
     try:
@@ -697,8 +738,10 @@ async def studio_process(
 
         # Build FFmpeg command as a list (no shell=True)
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
             *filter_args,
             str(output_path),
         ]
@@ -734,7 +777,9 @@ async def studio_process(
         return StreamingResponse(
             io.BytesIO(output_bytes),
             media_type=mime_types.get(output_format, "audio/wav"),
-            headers={"Content-Disposition": f'attachment; filename="processed.{output_ext}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="processed.{output_ext}"'
+            },
         )
 
     finally:

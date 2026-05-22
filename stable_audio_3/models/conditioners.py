@@ -3,6 +3,7 @@
 import torch
 import logging, warnings
 import typing as tp
+from pathlib import Path
 from enum import Enum
 from math import pi
 from typing import List, Union
@@ -11,6 +12,8 @@ from einops import rearrange
 from .blocks import ExpoFourierFeatures
 from .utils import enable_torch_compile
 import os
+
+from stable_audio_3.model_configs import resolve_local_repo_path
 
 class PaddingMode(str, Enum):
     """Enum for handling padding in text conditioner embeddings."""
@@ -156,10 +159,14 @@ class NumberConditioner(Conditioner):
 
 class T5GemmaConditioner(Conditioner):
 
-    T5GEMMA_MODELS = ["google/t5gemma-b-b-ul2"]
+    T5GEMMA_MODELS = [
+        "google/t5gemma-b-b-ul2",
+        "stabilityai/t5gemma-b-b-ul2",
+    ]
 
     T5GEMMA_MODEL_DIMS = {
         "google/t5gemma-b-b-ul2": 768,
+        "stabilityai/t5gemma-b-b-ul2": 768,
     }
 
     def __init__(
@@ -178,6 +185,32 @@ class T5GemmaConditioner(Conditioner):
         super().__init__(self.T5GEMMA_MODEL_DIMS[model_name], output_dim, project_out=project_out, padding_mode=padding_mode)
 
         load_from = model_path or repo_id or model_name
+        hf_kwargs = {"subfolder": subfolder} if subfolder else {}
+
+        if model_path is None and repo_id is not None:
+            local_repo_path = resolve_local_repo_path(repo_id, subfolder=subfolder)
+            if local_repo_path:
+                load_from = local_repo_path
+                hf_kwargs = {}
+
+        # If `load_from` is still a Hub repo id, prefer an already-cached local snapshot
+        # to avoid network access during backend startup.
+        if isinstance(load_from, str) and "/" in load_from and not os.path.isdir(load_from):
+            try:
+                from huggingface_hub import try_to_load_from_cache
+
+                candidates = [load_from]
+                if load_from == "stabilityai/t5gemma-b-b-ul2":
+                    candidates.append("google/t5gemma-b-b-ul2")
+
+                for candidate_repo in candidates:
+                    cached_config = try_to_load_from_cache(candidate_repo, "config.json")
+                    if isinstance(cached_config, str):
+                        load_from = str(Path(cached_config).parent)
+                        hf_kwargs = {}
+                        break
+            except Exception:
+                pass
 
         self.max_length = max_length
         self.enable_grad = enable_grad
@@ -198,7 +231,6 @@ class T5GemmaConditioner(Conditioner):
             try:
                 from transformers import T5GemmaEncoderModel, AutoTokenizer, AutoConfig
                 logging.info(f"Loading T5Gemma tokenizer and model from: {load_from}")
-                hf_kwargs = {"subfolder": subfolder} if subfolder else {}
                 self.tokenizer = AutoTokenizer.from_pretrained(load_from, **hf_kwargs)
                 config = AutoConfig.from_pretrained(load_from, **hf_kwargs)
                 config.is_encoder_decoder = False

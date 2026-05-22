@@ -34,10 +34,48 @@ def _local_override(repo_id: str, filename: str) -> str | None:
     Returns the absolute path if found, else None.
     """
     repo_name = repo_id.split("/", 1)[-1]
+    alt_filenames = [filename]
+
+    # Local clones may use ARC/RF naming instead of generic model_config/model names.
+    if filename == "model_config.json":
+        alt_filenames.extend(
+            [
+                f"{repo_name}-ARC.json",
+                f"{repo_name}-RF.json",
+                f"{repo_name}.json",
+            ]
+        )
+    elif filename == "model.safetensors":
+        alt_filenames.extend(
+            [
+                f"{repo_name}-ARC.safetensors",
+                f"{repo_name}-RF.safetensors",
+                f"{repo_name}.safetensors",
+            ]
+        )
+
     for base in _local_search_dirs():
-        candidate = base / repo_name / filename
-        if candidate.is_file():
-            print(f"[stable_audio_3] using local model file: {candidate}")
+        for name in alt_filenames:
+            candidate = base / repo_name / name
+            if candidate.is_file():
+                print(f"[stable_audio_3] using local model file: {candidate}")
+                return str(candidate)
+    return None
+
+
+def resolve_local_repo_path(repo_id: str, subfolder: str | None = None) -> str | None:
+    """Resolve a local path for a repo (or repo subfolder) from configured search dirs.
+
+    For repo_id "org/name", this checks `<base>/name` in each configured local dir.
+    If subfolder is provided, checks `<base>/name/<subfolder>`.
+    """
+    repo_name = repo_id.split("/", 1)[-1]
+    for base in _local_search_dirs():
+        candidate = base / repo_name
+        if subfolder:
+            candidate = candidate / subfolder
+        if candidate.is_dir():
+            print(f"[stable_audio_3] using local repo path: {candidate}")
             return str(candidate)
     return None
 
@@ -50,12 +88,27 @@ class ModelConfig:
 
     def resolve(self):
         """Return local paths for config + checkpoint. Prefer SA3_LOCAL_MODELS_DIR if set, else HF Hub."""
-        local_config = _local_override(self.repo_id, self.config_path) or hf_hub_download(
-            repo_id=self.repo_id, filename=self.config_path
-        )
-        local_ckpt = _local_override(self.repo_id, self.ckpt_path) or hf_hub_download(
-            repo_id=self.repo_id, filename=self.ckpt_path
-        )
+        local_only = os.environ.get("SA3_LOCAL_ONLY", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        local_config = _local_override(self.repo_id, self.config_path)
+        local_ckpt = _local_override(self.repo_id, self.ckpt_path)
+
+        if local_only and (local_config is None or local_ckpt is None):
+            raise FileNotFoundError(
+                f"SA3_LOCAL_ONLY=1 and local model files were not found for repo {self.repo_id}. "
+                f"Expected files: {self.config_path}, {self.ckpt_path}. "
+                f"Search dirs: {[str(p) for p in _local_search_dirs()]}"
+            )
+
+        if local_config is None:
+            local_config = hf_hub_download(
+                repo_id=self.repo_id, filename=self.config_path
+            )
+        if local_ckpt is None:
+            local_ckpt = hf_hub_download(repo_id=self.repo_id, filename=self.ckpt_path)
         return local_config, local_ckpt
 
 

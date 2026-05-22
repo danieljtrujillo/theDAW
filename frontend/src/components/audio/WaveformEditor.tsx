@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Scissors, Play, Square, ZoomIn, ZoomOut,
-  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano,
+  Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
+  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X,
 } from 'lucide-react';
-import { useEditorStore, computePeaks, type SnapDivision } from '../../state/editorStore';
+import { useEditorStore, computePeaks, type AudioClip, type SnapDivision } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlaybackStore } from '../../state/playbackStore';
-import { getEngineCtx, getMasterGain } from '../../state/playerStore';
+import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { logError, logInfo } from '../../state/logStore';
+import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/editorPlaybackBridge';
 
 const TRACK_HEADER_PX = 180;
 const TRACK_HEIGHT = 88;
@@ -62,6 +63,39 @@ const encodeWav = (audioBuf: AudioBuffer): Blob => {
   return new Blob([buffer], { type: 'audio/wav' });
 };
 
+/**
+ * Decode an audio Blob, extract the portion [offsetSec, offsetSec+durationSec],
+ * and return it as a fresh WAV Blob. Used so inpaint submissions always receive
+ * exactly the visible clip region, with mask coords relative to its start.
+ */
+const cropAudioBlob = async (
+  blob: Blob,
+  offsetSec: number,
+  durationSec: number,
+): Promise<Blob> => {
+  const arrayBuf = await blob.arrayBuffer();
+  const tmpCtx = new AudioContext({ sampleRate: 44100 });
+  try {
+    const audioBuf = await tmpCtx.decodeAudioData(arrayBuf.slice(0));
+    const safeOffset = Math.max(0, Math.min(offsetSec, audioBuf.duration - 0.001));
+    const safeDur = Math.max(0.001, Math.min(durationSec, audioBuf.duration - safeOffset));
+    const sr = 44100;
+    const offline = new OfflineAudioContext(
+      audioBuf.numberOfChannels,
+      Math.ceil(safeDur * sr),
+      sr,
+    );
+    const src = offline.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(offline.destination);
+    src.start(0, safeOffset, safeDur);
+    const rendered = await offline.startRendering();
+    return encodeWav(rendered);
+  } finally {
+    tmpCtx.close().catch(() => {});
+  }
+};
+
 interface PointerOp {
   kind: 'move' | 'resize-left' | 'resize-right';
   clipId: string;
@@ -73,7 +107,7 @@ interface PointerOp {
   initialTrackIndex: number;
 }
 
-export const WaveformEditor: React.FC = () => {
+export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = () => {
   const tracks = useEditorStore((s) => s.tracks);
   const clips = useEditorStore((s) => s.clips);
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
@@ -98,12 +132,137 @@ export const WaveformEditor: React.FC = () => {
   const snapSec = useEditorStore((s) => s.snapSec);
   const getTotalDurationSec = useEditorStore((s) => s.getTotalDurationSec);
   const masterGain = usePlaybackStore((s) => (s.muted ? 0 : s.volume / 100));
+  const inpaintSelection = useEditorStore((s) => s.inpaintSelection);
+  const setInpaintSelection = useEditorStore((s) => s.setInpaintSelection);
+  const clearInpaintSelection = useEditorStore((s) => s.clearInpaintSelection);
+  // Footer player — editor audio is loaded here so all footer controls work natively.
+  const playerCurrentTime = usePlayerStore((s) => s.currentTime);
+  const playerEntryId = usePlayerStore((s) => s.currentEntryId);
+  const playerIsPlaying = usePlayerStore((s) => s.isPlaying);
+  // Derived: are we currently playing the editor's rendered timeline?
+  const isEditorPlaying = playerIsPlaying && playerEntryId === 'editor-timeline';
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const opRef = useRef<PointerOp | null>(null);
+  const inpaintDragRef = useRef<{ clipId: string; anchorSec: number } | null>(null);
   const previewSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Playhead drag
+  const playheadDragRef = useRef<{ startX: number; startSec: number; wasPlaying: boolean } | null>(null);
+  // Fade handle drag
+  const fadeDragRef = useRef<{ clipId: string; edge: 'in' | 'out'; startX: number; initialFade: number } | null>(null);
   const [isCommitting, setIsCommitting] = useState(false);
+  const [isRendering, setIsRendering] = useState(false);
+  const [mixdownName, setMixdownName] = useState('');
+
+  // --- Inpaint panel state ---
+  type InpaintPhase =
+    | { kind: 'params' }
+    | { kind: 'generating'; jobId: string }
+    | { kind: 'review'; blob: Blob; blobUrl: string };
+  const [inpaintPanel, setInpaintPanel] = useState<InpaintPhase | null>(null);
+  const [inpaintPrompt, setInpaintPrompt] = useState('');
+  const [inpaintSteps, setInpaintSteps] = useState(8);
+  const [inpaintSeed, setInpaintSeed] = useState(-1);
+
+  // Revoke the object URL when the review phase ends or the panel closes.
+  useEffect(() => {
+    return () => {
+      if (inpaintPanel?.kind === 'review') URL.revokeObjectURL(inpaintPanel.blobUrl);
+    };
+  }, [inpaintPanel]);
+
+  // Drive polling reactively: starts when phase is 'generating', stops on cleanup.
+  useEffect(() => {
+    if (inpaintPanel?.kind !== 'generating') return;
+    const { jobId } = inpaintPanel;
+    const intervalId = setInterval(() => {
+      void (async () => {
+        try {
+          const r = await fetch(`/api/jobs/${jobId}`);
+          const job = await r.json() as { status: string; result?: { item?: { audio_base64: string; mime_type: string } }; error?: string };
+          if (job.status === 'completed' && job.result?.item) {
+            const { audio_base64, mime_type } = job.result.item;
+            const bytes = atob(audio_base64);
+            const arr = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+            const blob = new Blob([arr], { type: mime_type });
+            setInpaintPanel({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob) });
+          } else if (job.status === 'failed') {
+            logError('editor', `Inpaint job failed: ${job.error ?? 'unknown'}`);
+            setInpaintPanel({ kind: 'params' });
+          }
+        } catch (e) {
+          logError('editor', `Inpaint poll error: ${e instanceof Error ? e.message : e}`);
+        }
+      })();
+    }, 1500);
+    return () => clearInterval(intervalId);
+  }, [inpaintPanel]);
+
+  const openInpaintPanel = useCallback(() => {
+    const sel = useEditorStore.getState().inpaintSelection;
+    if (!sel) return;
+    setInpaintPanel({ kind: 'params' });
+  }, []);
+
+  const submitInpaint = async () => {
+    const sel = useEditorStore.getState().inpaintSelection;
+    if (!sel) return;
+    const clip = useEditorStore.getState().clips.find((c) => c.id === sel.clipId);
+    if (!clip) return;
+
+    // Always crop the audio to exactly the visible clip region before sending.
+    // This guarantees mask coordinates are relative to the start of the audio
+    // the model receives, regardless of offsetIntoSource (split/trim clips).
+    let croppedAudio: Blob;
+    try {
+      croppedAudio = await cropAudioBlob(clip.audioBlob, clip.offsetIntoSource, clip.durationSec);
+    } catch (e) {
+      logError('editor', `Inpaint: failed to crop audio: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
+
+    // Mask coords are now relative to the start of the cropped (visible) audio.
+    const maskStart = sel.startSec - clip.startSec;
+    const maskEnd   = sel.endSec   - clip.startSec;
+
+    const fd = new FormData();
+    fd.append('prompt', inpaintPrompt);
+    fd.append('steps', String(inpaintSteps));
+    fd.append('seed', String(inpaintSeed));
+    fd.append('cfg_scale', '1.0');
+    fd.append('duration', String(clip.durationSec));
+    fd.append('mask_start', String(Math.max(0, maskStart)));
+    fd.append('mask_end', String(Math.min(clip.durationSec, maskEnd)));
+    fd.append('inpaint_audio', new File([croppedAudio], 'inpaint.wav', { type: 'audio/wav' }));
+    try {
+      const res = await fetch('/api/generate-jobs', { method: 'POST', body: fd });
+      if (!res.ok) {
+        logError('editor', `Inpaint submit HTTP ${res.status}`);
+        return;
+      }
+      const data = await res.json() as { job?: { id: string } };
+      const jobId = data.job?.id;
+      if (!jobId) {
+        logError('editor', 'Inpaint submit: no job id in response');
+        return;
+      }
+      setInpaintPanel({ kind: 'generating', jobId });
+    } catch (e) {
+      logError('editor', `Inpaint submit failed: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  const acceptInpaint = (blob: Blob) => {
+    const sel = useEditorStore.getState().inpaintSelection;
+    if (!sel) return;
+    updateClip(sel.clipId, { audioBlob: blob, mimeType: 'audio/wav', peaks: undefined });
+    clearInpaintSelection();
+    setInpaintPanel(null);
+  };
+
+  const rejectInpaint = () => setInpaintPanel(null);
 
   const totalDuration = getTotalDurationSec();
   const timelineWidthPx = Math.max(totalDuration * zoom, 1000);
@@ -134,6 +293,106 @@ export const WaveformEditor: React.FC = () => {
       previewSourceRef.current = null;
     }
   }, []);
+
+  // --- Multi-track timeline playback (routes through the footer's playerStore) ---
+
+  const stopEditorPlayback = useCallback(() => {
+    usePlayerStore.getState().pause();
+    stopPreview();
+  }, [stopPreview]);
+
+  const playEditorTimeline = useCallback(async () => {
+    if (clips.length === 0) return;
+    stopPreview();
+    setIsRendering(true);
+    try {
+      const edState = useEditorStore.getState();
+      const totalDur = edState.getTotalDurationSec();
+      const startHead = edState.playheadSec >= totalDur - 0.05 ? 0 : edState.playheadSec;
+      if (startHead !== edState.playheadSec) edState.setPlayhead(0);
+
+      const sr = 44100;
+      const offline = new OfflineAudioContext(2, Math.ceil(totalDur * sr), sr);
+      const anySolo = tracks.some((t) => t.solo);
+      const blobCache = new Map<Blob, AudioBuffer>();
+
+      // Decode with a regular AudioContext — more reliable than OfflineAudioContext.decodeAudioData.
+      const decodeCtx = new AudioContext({ sampleRate: 44100 });
+      try {
+        for (const clip of clips) {
+          const track = tracks.find((t) => t.id === clip.trackId);
+          if (!track || track.mute || (anySolo && !track.solo)) continue;
+          if (!blobCache.has(clip.audioBlob)) {
+            const ab = await clip.audioBlob.arrayBuffer();
+            const decoded = await Promise.race([
+              decodeCtx.decodeAudioData(ab.slice(0)),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('decodeAudioData timeout')), 15000),
+              ),
+            ]);
+            blobCache.set(clip.audioBlob, decoded);
+          }
+        }
+      } finally {
+        decodeCtx.close().catch(() => {});
+      }
+
+      for (const clip of clips) {
+        const track = tracks.find((t) => t.id === clip.trackId);
+        if (!track || track.mute || (anySolo && !track.solo)) continue;
+        const buf = blobCache.get(clip.audioBlob);
+        if (!buf) continue;
+        const src = offline.createBufferSource();
+        src.buffer = buf;
+        const gainNode = offline.createGain();
+        const panner = offline.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, track.pan));
+        src.connect(gainNode).connect(panner).connect(offline.destination);
+        const vol = track.volume;
+        const fadeIn = clip.fadeInSec ?? 0;
+        const fadeOut = clip.fadeOutSec ?? 0;
+        const safeOffset = Math.min(clip.offsetIntoSource, Math.max(0, buf.duration - 0.01));
+        const safeDur = Math.min(clip.durationSec, buf.duration - safeOffset);
+        if (safeDur <= 0) continue;
+        gainNode.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, clip.startSec);
+        if (fadeIn > 0) gainNode.gain.linearRampToValueAtTime(vol, clip.startSec + Math.min(fadeIn, safeDur));
+        if (fadeOut > 0) {
+          const foStart = clip.startSec + safeDur - Math.min(fadeOut, safeDur);
+          gainNode.gain.setValueAtTime(vol, foStart);
+          gainNode.gain.linearRampToValueAtTime(0, clip.startSec + safeDur);
+        }
+        src.start(clip.startSec, safeOffset, safeDur);
+      }
+
+      const rendered = await offline.startRendering();
+      const wavBlob = encodeWav(rendered);
+
+      const ps = usePlayerStore.getState();
+      await ps.load(wavBlob, { label: 'Editor Timeline', entryId: 'editor-timeline' });
+      ps.seek(startHead);
+      ps.play();
+    } catch (e) {
+      logError('editor', `Timeline render failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setIsRendering(false);
+    }
+  }, [clips, tracks, stopPreview]);
+
+  // Register with bridge so PlayerFooter can trigger a fresh render+play.
+  useEffect(() => {
+    registerEditorPlayback(
+      () => void playEditorTimeline(),
+      stopEditorPlayback,
+    );
+    return () => unregisterEditorPlayback();
+  }, [playEditorTimeline, stopEditorPlayback]);
+
+  // Keep the editor playhead in sync with the footer player when our audio is loaded.
+  useEffect(() => {
+    if (playerEntryId === 'editor-timeline') {
+      setPlayhead(playerCurrentTime);
+    }
+  }, [playerCurrentTime, playerEntryId, setPlayhead]);
 
   // Preview playback of the selected clip.
   const playSelectedPreview = useCallback(async () => {
@@ -188,11 +447,9 @@ export const WaveformEditor: React.FC = () => {
           return;
         }
         if (e.key === ' ') {
-          if (selectedClipId) {
-            e.preventDefault();
-            if (previewSourceRef.current) stopPreview();
-            else void playSelectedPreview();
-          }
+          e.preventDefault();
+          if (useEditorStore.getState().isPlaying) stopEditorPlayback();
+          else void playEditorTimeline();
           return;
         }
         if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -200,6 +457,10 @@ export const WaveformEditor: React.FC = () => {
             e.preventDefault();
             removeClip(selectedClipId);
           }
+          return;
+        }
+        if (e.key === 'Escape') {
+          clearInpaintSelection();
           return;
         }
       }
@@ -215,10 +476,15 @@ export const WaveformEditor: React.FC = () => {
         });
         logInfo('editor', `Duplicated clip → ${newId.slice(0, 8)}`);
       }
+      // Ctrl/Cmd + P = inpaint selected region.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        openInpaintPanel();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, clips, setTool, stopPreview, playSelectedPreview, removeClip, addClipToTrack]);
+  }, [selectedClipId, clips, setTool, stopEditorPlayback, playEditorTimeline, removeClip, addClipToTrack, openInpaintPanel, clearInpaintSelection]);
 
   // --- Wheel: Ctrl/Cmd + wheel = zoom; plain wheel = horizontal pan ---
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
@@ -296,14 +562,24 @@ export const WaveformEditor: React.FC = () => {
       const sr = 44100;
       const offline = new OfflineAudioContext(2, Math.ceil(dur * sr), sr);
       const anySolo = tracks.some((t) => t.solo);
-      // Decode every unique blob once.
+      // Decode with a regular AudioContext — more reliable than OfflineAudioContext.decodeAudioData.
       const blobCache = new Map<Blob, AudioBuffer>();
-      for (const c of clips) {
-        if (!blobCache.has(c.audioBlob)) {
-          const ab = await c.audioBlob.arrayBuffer();
-          const decoded = await offline.decodeAudioData(ab.slice(0));
-          blobCache.set(c.audioBlob, decoded);
+      const decodeCtx = new AudioContext({ sampleRate: 44100 });
+      try {
+        for (const c of clips) {
+          if (!blobCache.has(c.audioBlob)) {
+            const ab = await c.audioBlob.arrayBuffer();
+            const decoded = await Promise.race([
+              decodeCtx.decodeAudioData(ab.slice(0)),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('decodeAudioData timeout')), 15000),
+              ),
+            ]);
+            blobCache.set(c.audioBlob, decoded);
+          }
         }
+      } finally {
+        decodeCtx.close().catch(() => {});
       }
       for (const c of clips) {
         const track = tracks.find((t) => t.id === c.trackId);
@@ -315,19 +591,40 @@ export const WaveformEditor: React.FC = () => {
         const src = offline.createBufferSource();
         src.buffer = buf;
         const gain = offline.createGain();
-        gain.gain.value = track.volume;
         const panner = offline.createStereoPanner();
         panner.pan.value = Math.max(-1, Math.min(1, track.pan));
         src.connect(gain).connect(panner).connect(offline.destination);
-        src.start(c.startSec, c.offsetIntoSource, c.durationSec);
+
+        const vol = track.volume;
+        const fadeIn = c.fadeInSec ?? 0;
+        const fadeOut = c.fadeOutSec ?? 0;
+        const safeOffset = Math.min(c.offsetIntoSource, Math.max(0, buf.duration - 0.01));
+        const safeDur = Math.min(c.durationSec, buf.duration - safeOffset);
+        if (safeDur <= 0) continue;
+
+        gain.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, c.startSec);
+        if (fadeIn > 0) {
+          gain.gain.linearRampToValueAtTime(vol, c.startSec + Math.min(fadeIn, safeDur));
+        }
+        if (fadeOut > 0) {
+          const foStart = c.startSec + safeDur - Math.min(fadeOut, safeDur);
+          gain.gain.setValueAtTime(vol, foStart);
+          gain.gain.linearRampToValueAtTime(0, c.startSec + safeDur);
+        }
+
+        src.start(c.startSec, safeOffset, safeDur);
       }
       const rendered = await offline.startRendering();
       const wavBlob = encodeWav(rendered);
       const stamp = new Date().toISOString();
       const id = `mix-${Date.now()}`;
+      const trimmedName = mixdownName.trim();
+      const title = trimmedName
+        ? (trimmedName.endsWith('.wav') ? trimmedName : `${trimmedName}.wav`)
+        : `mixdown_${id.slice(-6)}.wav`;
       await useLibraryStore.getState().addEntry({
         id,
-        title: `mixdown_${id.slice(-6)}.wav`,
+        title,
         prompt: `Editor mixdown of ${clips.length} clips`,
         negativePrompt: '',
         model: 'editor-mixdown',
@@ -344,17 +641,59 @@ export const WaveformEditor: React.FC = () => {
         notes: '',
         source: 'studio',
       });
+      // Also trigger an immediate browser download so the file lands on disk.
+      const dlUrl = URL.createObjectURL(wavBlob);
+      const a = document.createElement('a');
+      a.href = dlUrl;
+      a.download = title;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(dlUrl), 10000);
+
       const ms = (performance.now() - start).toFixed(0);
-      logInfo('editor', `Mixdown complete: ${rendered.duration.toFixed(2)}s rendered in ${ms}ms → library`);
+      logInfo('editor', `Mixdown complete: ${rendered.duration.toFixed(2)}s rendered in ${ms}ms → library + download`);
     } catch (e) {
       logError('editor', `Mixdown failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setIsCommitting(false);
     }
-  }, [clips, tracks, getTotalDurationSec]);
+  }, [clips, tracks, getTotalDurationSec, mixdownName]);
 
   // --- Pointer math helpers. ---
   const pxToSec = useCallback((px: number) => px / zoom, [zoom]);
+
+  // --- Inpaint drag handlers ---
+  const handleInpaintDragStart = (e: React.PointerEvent, clip: AudioClip) => {
+    if (tool === 'cut') return;
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = timelineRef.current!.getBoundingClientRect();
+    const anchorSec = pxToSec(e.clientX - rect.left);
+    inpaintDragRef.current = { clipId: clip.id, anchorSec };
+  };
+
+  const handleInpaintDragMove = (e: React.PointerEvent) => {
+    if (!inpaintDragRef.current) return;
+    const { clipId, anchorSec } = inpaintDragRef.current;
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    const rect = timelineRef.current!.getBoundingClientRect();
+    const curSec = pxToSec(e.clientX - rect.left);
+    const clampedStart = Math.max(clip.startSec, Math.min(anchorSec, curSec));
+    const clampedEnd   = Math.min(clip.startSec + clip.durationSec, Math.max(anchorSec, curSec));
+    if (clampedEnd - clampedStart >= 0.1) {
+      setInpaintSelection({ clipId, startSec: clampedStart, endSec: clampedEnd });
+    }
+  };
+
+  const handleInpaintDragEnd = () => {
+    const sel = useEditorStore.getState().inpaintSelection;
+    if (sel && sel.endSec - sel.startSec < 0.1) {
+      clearInpaintSelection();
+    }
+    inpaintDragRef.current = null;
+  };
 
   const onClipPointerDown = (e: React.PointerEvent, clipId: string, edge: 'move' | 'left' | 'right') => {
     e.stopPropagation();
@@ -470,12 +809,94 @@ export const WaveformEditor: React.FC = () => {
     }
   };
 
+  // --- Fade handle drag ---
+  const onFadePointerDown = (e: React.PointerEvent, clipId: string, edge: 'in' | 'out') => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    fadeDragRef.current = {
+      clipId,
+      edge,
+      startX: e.clientX,
+      initialFade: edge === 'in' ? (clip.fadeInSec ?? 0) : (clip.fadeOutSec ?? 0),
+    };
+  };
+
+  const onFadePointerMove = (e: React.PointerEvent) => {
+    const fd = fadeDragRef.current;
+    if (!fd) return;
+    const clip = clips.find((c) => c.id === fd.clipId);
+    if (!clip) return;
+    const dxPx = e.clientX - fd.startX;
+    const dxSec = fd.edge === 'in' ? pxToSec(dxPx) : pxToSec(-dxPx);
+    const maxFade = clip.durationSec / 2;
+    const newFade = Math.max(0, Math.min(maxFade, fd.initialFade + dxSec));
+    updateClip(fd.clipId, fd.edge === 'in' ? { fadeInSec: newFade } : { fadeOutSec: newFade });
+  };
+
+  const onFadePointerUp = (e: React.PointerEvent) => {
+    if (!fadeDragRef.current) return;
+    fadeDragRef.current = null;
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+  };
+
+  // --- Playhead drag (initiated from the ruler OR the drag handle on the line) ---
+  const secFromClientX = useCallback((clientX: number): number => {
+    if (!timelineRef.current) return 0;
+    const rect = timelineRef.current.getBoundingClientRect();
+    return Math.max(0, pxToSec(clientX - rect.left));
+  }, [pxToSec]);
+
+  const onPlayheadPointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const wasPlaying = useEditorStore.getState().isPlaying;
+    if (wasPlaying) stopEditorPlayback();
+    const sec = secFromClientX(e.clientX);
+    setPlayhead(sec);
+    playheadDragRef.current = { startX: e.clientX, startSec: sec, wasPlaying };
+  };
+
+  const seekEditorTo = useCallback((sec: number) => {
+    setPlayhead(sec);
+    if (usePlayerStore.getState().currentEntryId === 'editor-timeline') {
+      usePlayerStore.getState().seek(sec);
+    }
+  }, [setPlayhead]);
+
+  const onPlayheadPointerMove = (e: React.PointerEvent) => {
+    if (!playheadDragRef.current) return;
+    seekEditorTo(secFromClientX(e.clientX));
+  };
+
+  const onPlayheadPointerUp = (e: React.PointerEvent) => {
+    if (!playheadDragRef.current) return;
+    const { wasPlaying } = playheadDragRef.current;
+    playheadDragRef.current = null;
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    // Resume footer player if it was playing; it already has the audio loaded.
+    if (wasPlaying && usePlayerStore.getState().currentEntryId === 'editor-timeline') {
+      usePlayerStore.getState().play();
+    }
+  };
+
+  // Ruler click sets playhead immediately (same coord math as track lanes).
+  const onRulerMouseDown = (e: React.MouseEvent) => {
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const sec = Math.max(0, pxToSec(e.clientX - rect.left));
+    seekEditorTo(sec);
+  };
+
   const onTimelineClick = (e: React.MouseEvent) => {
     if (!timelineRef.current) return;
     if (opRef.current) return;
     // Only react to direct clicks on the timeline gutter (not on a clip).
     const target = e.target as HTMLElement;
     if (target.closest('[data-clip="1"]')) return;
+    if (target.closest('[data-playhead-handle="1"]')) return;
+    clearInpaintSelection();
     const rect = timelineRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const sec = pxToSec(x);
@@ -507,11 +928,11 @@ export const WaveformEditor: React.FC = () => {
   return (
     <div className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
       {/* Editor Toolbar */}
-      <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 flex-shrink-0">
+      <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
         <div className="flex items-center gap-3">
           <button
             onClick={() => addTrack()}
-            className="btn-primary flex items-center gap-1.5 !bg-purple-600/20 !border-purple-500/30 !text-purple-300 !px-2 !py-0.5 text-[9px]"
+            className="btn-primary flex items-center gap-1.5 bg-purple-600/20! border-purple-500/30! text-purple-300! px-2! py-0.5! text-[9px]"
             title="Add a new empty track"
           >
             <Plus className="w-3 h-3" /> ADD TRACK
@@ -535,6 +956,16 @@ export const WaveformEditor: React.FC = () => {
               <Scissors className="w-3 h-3" />
             </button>
           </div>
+
+          <button
+            onClick={openInpaintPanel}
+            disabled={!inpaintSelection}
+            className={`p-1 px-2 rounded border transition-colors disabled:opacity-30 disabled:pointer-events-none
+              ${inpaintSelection ? 'bg-purple-600/20 border-purple-500/40 text-purple-300 hover:bg-purple-600/30' : 'border-white/5 text-zinc-500'}`}
+            title="Inpaint selected region (Ctrl+P)"
+          >
+            <Paintbrush className="w-3 h-3" />
+          </button>
 
           <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 border border-white/5 rounded">
             <Magnet className={`w-3 h-3 ${snap === 'off' ? 'text-zinc-700' : 'text-purple-300'}`} />
@@ -578,24 +1009,37 @@ export const WaveformEditor: React.FC = () => {
             {formatTimecode(playheadSec)} / {formatTimecode(totalDuration)}
           </span>
           <button
-            onClick={playSelectedPreview}
-            disabled={!selectedClipId}
-            className="p-1.5 hover:bg-purple-500/20 rounded text-purple-300 disabled:opacity-30"
-            title="Preview selected clip"
+            onClick={() => isEditorPlaying ? stopEditorPlayback() : void playEditorTimeline()}
+            disabled={clips.length === 0 || isRendering}
+            className={`p-1.5 rounded transition-colors disabled:opacity-30 ${isEditorPlaying ? 'bg-purple-500/30 text-purple-200 hover:bg-purple-500/20' : 'hover:bg-purple-500/20 text-purple-300'}`}
+            title={isRendering ? 'Rendering…' : isEditorPlaying ? 'Stop (Space)' : 'Play from playhead (Space)'}
           >
-            <Play className="w-3.5 h-3.5 fill-current" />
+            {isRendering
+              ? <div className="w-3.5 h-3.5 border-2 border-purple-400/40 border-t-purple-300 rounded-full animate-spin" />
+              : isEditorPlaying
+                ? <Pause className="w-3.5 h-3.5 fill-current" />
+                : <Play className="w-3.5 h-3.5 fill-current" />}
           </button>
           <button
-            onClick={stopPreview}
-            className="p-1.5 hover:bg-white/10 rounded text-zinc-400"
-            title="Stop preview"
+            onClick={stopEditorPlayback}
+            disabled={!isEditorPlaying}
+            className="p-1.5 hover:bg-white/10 rounded text-zinc-400 disabled:opacity-30"
+            title="Stop and return to start"
           >
             <Square className="w-3.5 h-3.5 fill-current" />
           </button>
+          <input
+            type="text"
+            value={mixdownName}
+            onChange={(e) => setMixdownName(e.target.value)}
+            placeholder="mixdown name…"
+            className="bg-black/40 border border-white/10 rounded px-2 py-0.5 text-[9px] font-mono text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-purple-500/50 transition-colors w-28"
+            title="Optional filename for the committed mixdown"
+          />
           <button
             onClick={() => void commitEdit()}
             disabled={isCommitting || clips.length === 0}
-            className="btn-primary !py-1 !px-2 text-[9px] flex items-center gap-1.5 disabled:opacity-40"
+            className="btn-primary py-1! px-2! text-[9px] flex items-center gap-1.5 disabled:opacity-40"
             title="Render all clips to a single audio file and save it to the library"
           >
             {isCommitting ? <Upload className="w-3 h-3 animate-pulse" /> : <Save className="w-3 h-3" />}
@@ -607,7 +1051,7 @@ export const WaveformEditor: React.FC = () => {
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
-        <div className="flex-shrink-0 bg-[#0c0a12] border-r border-[#1a1528] overflow-hidden flex flex-col" style={{ width: TRACK_HEADER_PX }}>
+        <div className="shrink-0 bg-[#0c0a12] border-r border-[#1a1528] overflow-hidden flex flex-col" style={{ width: TRACK_HEADER_PX }}>
           {/* Ruler row spacer */}
           <div className="h-6 border-b border-white/5 bg-black/30 flex items-center justify-center text-[8px] font-mono text-zinc-700 uppercase">tracks</div>
           <div className="flex-1 overflow-y-auto">
@@ -621,7 +1065,7 @@ export const WaveformEditor: React.FC = () => {
                     className="bg-transparent border-none outline-none text-[10px] font-bold w-full hover:bg-white/5 px-1 -mx-1 rounded transition-colors min-w-0"
                     style={{ color: t.color }}
                   />
-                  <div className="flex gap-1 flex-shrink-0">
+                  <div className="flex gap-1 shrink-0">
                     <button
                       onClick={() => updateTrack(t.id, { mute: !t.mute })}
                       className={`w-4 h-4 rounded text-[8px] font-bold flex items-center justify-center ${t.mute ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-black/40 text-zinc-500 border border-white/5 hover:text-white'}`}
@@ -638,7 +1082,7 @@ export const WaveformEditor: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <Volume2 className="w-2.5 h-2.5 text-zinc-600 flex-shrink-0" />
+                  <Volume2 className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
                   <input
                     type="range"
                     min={0} max={1} step={0.01}
@@ -672,12 +1116,16 @@ export const WaveformEditor: React.FC = () => {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
         >
-          {/* Ruler */}
-          <div className="h-6 border-b border-white/5 bg-black/30 relative" style={{ width: timelineWidthPx }}>
+          {/* Ruler — click or drag to set playhead */}
+          <div
+            className="h-6 border-b border-white/5 bg-black/30 relative select-none cursor-col-resize"
+            style={{ width: timelineWidthPx }}
+            onMouseDown={onRulerMouseDown}
+          >
             {renderRuler.map((tick) => (
               <div
                 key={tick.sec}
-                className="absolute top-0 bottom-0 flex items-center px-1 border-l border-white/5"
+                className="absolute top-0 bottom-0 flex items-center px-1 border-l border-white/5 pointer-events-none"
                 style={{ left: tick.sec * zoom }}
               >
                 <span className={`text-[8px] font-mono ${tick.major ? 'text-zinc-500' : 'text-zinc-700'}`}>
@@ -685,6 +1133,29 @@ export const WaveformEditor: React.FC = () => {
                 </span>
               </div>
             ))}
+            {/* Playhead in ruler: line + draggable triangle handle */}
+            <div
+              className="absolute top-0 bottom-0 w-px bg-red-500/60 pointer-events-none z-20"
+              style={{ left: playheadSec * zoom }}
+            />
+            <div
+              data-playhead-handle="1"
+              className="absolute bottom-0 z-30 cursor-ew-resize"
+              style={{ left: playheadSec * zoom - 6, width: 13 }}
+              onPointerDown={onPlayheadPointerDown}
+              onPointerMove={onPlayheadPointerMove}
+              onPointerUp={onPlayheadPointerUp}
+            >
+              {/* Downward-pointing triangle */}
+              <div
+                className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0 h-0"
+                style={{
+                  borderLeft: '5px solid transparent',
+                  borderRight: '5px solid transparent',
+                  borderTop: '7px solid #ef4444',
+                }}
+              />
+            </div>
           </div>
 
           {/* Track lanes + 'drop here for new track' slot at the bottom */}
@@ -729,17 +1200,17 @@ export const WaveformEditor: React.FC = () => {
                   }}
                 >
                   {/* Header bar */}
-                  <div className="absolute top-0 left-0 right-0 px-1 h-[14px] bg-black/50 backdrop-blur-sm border-b border-white/10 flex justify-between items-center text-[8px] font-mono uppercase tracking-tighter">
+                  <div className="absolute top-0 left-0 right-0 px-1 h-3.5 bg-black/50 backdrop-blur-sm border-b border-white/10 flex justify-between items-center text-[8px] font-mono uppercase tracking-tighter">
                     <span className="flex items-center gap-1 min-w-0 max-w-[60%]">
                       {clip.sourceKind === 'piano-roll' && (
-                        <Piano className="w-2.5 h-2.5 text-emerald-300 flex-shrink-0" />
+                        <Piano className="w-2.5 h-2.5 text-emerald-300 shrink-0" />
                       )}
                       <span className="text-white truncate">{clip.label}</span>
                     </span>
                     <span className="text-zinc-300">{clip.durationSec.toFixed(2)}s</span>
                   </div>
                   {/* Waveform peaks */}
-                  <div className="absolute inset-x-0 bottom-0 top-[14px] flex items-center gap-[0.5px] px-1">
+                  <div className="absolute inset-x-0 bottom-0 top-3.5 flex items-center gap-[0.5px] px-1">
                     {peaks ? (
                       Array.from(peaks).map((v, i) => (
                         <div
@@ -752,30 +1223,95 @@ export const WaveformEditor: React.FC = () => {
                       <span className="text-[8px] font-mono text-zinc-600 italic">decoding…</span>
                     )}
                   </div>
-                  {/* Resize handles */}
+                  {/* Inpaint drag target — covers waveform body below header */}
                   <div
-                    className="absolute inset-y-0 left-0 w-1.5 hover:bg-white/40 cursor-ew-resize"
+                    className="absolute inset-x-0 bottom-0 z-10 cursor-crosshair"
+                    style={{ top: 14 }}
+                    onPointerDown={(e) => handleInpaintDragStart(e, clip)}
+                    onPointerMove={handleInpaintDragMove}
+                    onPointerUp={handleInpaintDragEnd}
+                  />
+                  {/* Inpaint selection overlay */}
+                  {inpaintSelection?.clipId === clip.id && (
+                    <div
+                      className="absolute top-0 bottom-0 pointer-events-none z-20 border-x border-purple-400"
+                      style={{
+                        left:  (inpaintSelection.startSec - clip.startSec) * zoom,
+                        width: (inpaintSelection.endSec - inpaintSelection.startSec) * zoom,
+                        background: 'rgba(168, 85, 247, 0.18)',
+                      }}
+                    >
+                      <span className="absolute top-0.5 left-1 text-[8px] font-mono text-purple-300 pointer-events-none leading-none">
+                        {(inpaintSelection.endSec - inpaintSelection.startSec).toFixed(2)}s
+                      </span>
+                    </div>
+                  )}
+                  {/* Resize handles — z-20 to stay above inpaint drag target */}
+                  <div
+                    className="absolute inset-y-0 left-0 w-1.5 hover:bg-white/40 cursor-ew-resize z-20"
                     onPointerDown={(e) => onClipPointerDown(e, clip.id, 'left')}
                   />
                   <div
-                    className="absolute inset-y-0 right-0 w-1.5 hover:bg-white/40 cursor-ew-resize"
+                    className="absolute inset-y-0 right-0 w-1.5 hover:bg-white/40 cursor-ew-resize z-20"
                     onPointerDown={(e) => onClipPointerDown(e, clip.id, 'right')}
                   />
+                  {/* Fade-in overlay */}
+                  {(clip.fadeInSec ?? 0) > 0 && (
+                    <div
+                      className="absolute top-3.5 bottom-0 left-0 pointer-events-none z-15"
+                      style={{
+                        width: (clip.fadeInSec ?? 0) * zoom,
+                        background: `linear-gradient(to right, rgba(0,0,0,0.65) 0%, transparent 100%)`,
+                      }}
+                    />
+                  )}
+                  {/* Fade-out overlay */}
+                  {(clip.fadeOutSec ?? 0) > 0 && (
+                    <div
+                      className="absolute top-3.5 bottom-0 right-0 pointer-events-none z-15"
+                      style={{
+                        width: (clip.fadeOutSec ?? 0) * zoom,
+                        background: `linear-gradient(to left, rgba(0,0,0,0.65) 0%, transparent 100%)`,
+                      }}
+                    />
+                  )}
+                  {/* Fade-in handle — draggable fence post */}
+                  <div
+                    className="absolute bottom-0 top-3.5 w-2 cursor-ew-resize z-25 group/fh flex items-center justify-center"
+                    style={{ left: Math.max(2, (clip.fadeInSec ?? 0) * zoom - 4) }}
+                    title="Fade in — drag right"
+                    onPointerDown={(e) => onFadePointerDown(e, clip.id, 'in')}
+                    onPointerMove={onFadePointerMove}
+                    onPointerUp={onFadePointerUp}
+                  >
+                    <div className="w-px h-full bg-white/20 group-hover/fh:bg-white/60 transition-colors" />
+                    <div className="absolute bottom-2 w-2 h-2 rounded-full bg-white/30 group-hover/fh:bg-white/70 transition-colors border border-white/40" />
+                  </div>
+                  {/* Fade-out handle — draggable fence post */}
+                  <div
+                    className="absolute bottom-0 top-3.5 w-2 cursor-ew-resize z-25 group/fh flex items-center justify-center"
+                    style={{ right: Math.max(4, (clip.fadeOutSec ?? 0) * zoom - 4) }}
+                    title="Fade out — drag left"
+                    onPointerDown={(e) => onFadePointerDown(e, clip.id, 'out')}
+                    onPointerMove={onFadePointerMove}
+                    onPointerUp={onFadePointerUp}
+                  >
+                    <div className="w-px h-full bg-white/20 group-hover/fh:bg-white/60 transition-colors" />
+                    <div className="absolute bottom-2 w-2 h-2 rounded-full bg-white/30 group-hover/fh:bg-white/70 transition-colors border border-white/40" />
+                  </div>
                 </div>
               );
             })}
 
-            {/* Playhead */}
+            {/* Playhead line in track lanes */}
             <div
-              className="absolute top-0 bottom-0 w-px bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)] z-20 pointer-events-none"
+              className="absolute top-0 bottom-0 w-px bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)] z-30 pointer-events-none"
               style={{ left: playheadSec * zoom }}
-            >
-              <div className="absolute top-0 -left-1 w-2 h-2 rotate-45 bg-red-500" />
-            </div>
+            />
 
             {/* Drop-here-for-new-track strip — directly below the last lane */}
             <div
-              className="absolute left-0 right-0 border-t border-dashed border-purple-500/30 bg-purple-500/[0.04] flex items-center justify-center text-[9px] font-mono uppercase tracking-widest text-purple-400/60 pointer-events-none"
+              className="absolute left-0 right-0 border-t border-dashed border-purple-500/30 bg-purple-500/4 flex items-center justify-center text-[9px] font-mono uppercase tracking-widest text-purple-400/60 pointer-events-none"
               style={{ top: tracks.length * TRACK_HEIGHT, height: 34 }}
             >
               Drop here to create a new track
@@ -785,7 +1321,7 @@ export const WaveformEditor: React.FC = () => {
       </div>
 
       {/* Status bar */}
-      <div className="h-6 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 flex-shrink-0">
+      <div className="h-6 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 shrink-0">
         <div className="flex items-center gap-3">
           <span className="text-[9px] font-mono text-zinc-500 tabular-nums">
             {formatTimecode(playheadSec)} / {formatTimecode(totalDuration)}
@@ -810,11 +1346,23 @@ export const WaveformEditor: React.FC = () => {
       {/* Right-click context menu */}
       {ctxMenu && (
         <div
-          className="fixed z-[200] min-w-[160px] bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
+          className="fixed z-200 min-w-40 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
         >
+          {inpaintSelection?.clipId === ctxMenu.clipId && (
+            <>
+              <button
+                className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-purple-300 flex items-center justify-between"
+                onClick={() => { setCtxMenu(null); openInpaintPanel(); }}
+              >
+                <span className="flex items-center gap-1.5"><Paintbrush className="w-3 h-3" /> Inpaint Region</span>
+                <span className="text-zinc-600 text-[8px]">Ctrl+P</span>
+              </button>
+              <div className="my-0.5 border-t border-white/5" />
+            </>
+          )}
           <button
             className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-zinc-200 flex items-center justify-between"
             onClick={() => { void playSelectedPreview(); setCtxMenu(null); }}
@@ -871,6 +1419,97 @@ export const WaveformEditor: React.FC = () => {
             <span>Delete</span>
             <span className="text-zinc-600 text-[8px]">Del</span>
           </button>
+        </div>
+      )}
+
+      {/* Floating inpaint panel */}
+      {inpaintPanel && (
+        <div
+          className="fixed right-4 z-150 w-72 bg-[#0a080f] border border-purple-500/40 rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.75)] p-3 flex flex-col gap-2.5"
+          style={{ top: (containerRef.current?.getBoundingClientRect().top ?? 140) + 52 }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">
+              <Paintbrush className="w-3 h-3" /> Inpaint Region
+            </span>
+            <button onClick={rejectInpaint} className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+
+          {/* Phase: params */}
+          {inpaintPanel.kind === 'params' && (
+            <>
+              <textarea
+                placeholder="Describe what to generate in this region…"
+                value={inpaintPrompt}
+                onChange={(e) => setInpaintPrompt(e.target.value)}
+                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-purple-500/50 transition-colors"
+                rows={3}
+                autoFocus
+              />
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-mono text-zinc-500">Steps</span>
+                  <span className="text-[9px] font-mono text-zinc-400">{inpaintSteps}</span>
+                </div>
+                <input
+                  type="range" min={4} max={20} step={1} value={inpaintSteps}
+                  onChange={(e) => setInpaintSteps(parseInt(e.target.value))}
+                  className="pro-slider"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] font-mono text-zinc-500 shrink-0">Seed</span>
+                <input
+                  type="number" value={inpaintSeed}
+                  onChange={(e) => setInpaintSeed(parseInt(e.target.value) || -1)}
+                  className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-[9px] font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
+                  placeholder="-1 (random)"
+                />
+              </div>
+              <button
+                onClick={() => void submitInpaint()}
+                disabled={!inpaintPrompt.trim()}
+                className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+              >
+                Generate
+              </button>
+            </>
+          )}
+
+          {/* Phase: generating */}
+          {inpaintPanel.kind === 'generating' && (
+            <div className="flex flex-col items-center gap-3 py-4">
+              <div className="w-5 h-5 border-2 border-purple-500/40 border-t-purple-400 rounded-full animate-spin" />
+              <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">Generating…</span>
+              <button onClick={rejectInpaint} className="text-[9px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors">
+                cancel
+              </button>
+            </div>
+          )}
+
+          {/* Phase: review */}
+          {inpaintPanel.kind === 'review' && (
+            <>
+              <audio controls src={inpaintPanel.blobUrl} className="w-full h-8 mt-1" />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => acceptInpaint(inpaintPanel.blob)}
+                  className="flex-1 py-1.5 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600/50 transition-colors"
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={rejectInpaint}
+                  className="flex-1 py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-300 text-[9px] font-black uppercase tracking-widest hover:bg-red-600/40 transition-colors"
+                >
+                  Reject
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
