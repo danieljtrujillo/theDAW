@@ -72,7 +72,7 @@ audio = pipe.generate(
 
 ### Audio-to-audio
 
-```python
+# Audio-to-audio
 import torchaudio
 
 init_audio = torchaudio.load("/path/to/audio.wav")
