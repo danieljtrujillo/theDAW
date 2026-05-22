@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ComponentType } from 'react'
+import { useState, useRef, useEffect, type ComponentType, type RefObject } from 'react'
 import {
   Brain, Wrench, Eye, Mic, Headphones, Video, Image, Code, Globe,
   Braces, BookOpen, Zap, ChevronDown, Check, Loader2
@@ -78,7 +78,7 @@ function CapabilityBadge({ capability }: { capability: Capability }) {
 // ---------------------------------------------------------------------------
 
 function useDropdownDismiss(
-  ref: React.RefObject<HTMLElement | null>,
+  ref: RefObject<HTMLElement | null>,
   isOpen: boolean,
   onClose: () => void,
 ) {
