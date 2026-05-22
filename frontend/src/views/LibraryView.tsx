@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react';
 import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
   Music, Star, Tag, Filter, ArrowUpDown,
-  LayoutGrid, List as ListIcon, Activity, Scissors, Layers,
+  LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
 } from 'lucide-react';
 import { Section } from '../components/ui/Section';
 import { useLibraryStore, type LibraryEntry } from '../state/libraryStore';
+import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
@@ -129,6 +130,18 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   const handleSendToEditor = (entry: LibraryEntry) => void sendEntryToTrack(entry, 'first-track-tail');
   const handleSendToNewTrack = (entry: LibraryEntry) => void sendEntryToTrack(entry, 'new-track');
 
+  const patchGenParams = useGenerateParamsStore((s) => s.patch);
+
+  const handleSendToInit = (entry: LibraryEntry) => {
+    const file = new File([entry.audioBlob], entry.title, { type: entry.mimeType });
+    patchGenParams({ initAudioFile: file });
+  };
+
+  const handleSendToInpaint = (entry: LibraryEntry) => {
+    const file = new File([entry.audioBlob], entry.title, { type: entry.mimeType });
+    patchGenParams({ inpaintAudioFile: file, inpaintEnabled: true, maskStart: 0, maskEnd: 0 });
+  };
+
   const handlePlay = async (entry: LibraryEntry) => {
     // If this entry is already loaded in the global engine, just toggle play/pause.
     if (engineEntryId === entry.id) {
@@ -175,18 +188,18 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
 
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
             <button
-              className={`mono-tag flex items-center gap-1 whitespace-nowrap ${onlyFavorites ? '!bg-purple-600/20 !text-purple-300 !border-purple-500/40' : '!bg-white/5 !text-zinc-400'}`}
+              className={`mono-tag flex items-center gap-1 whitespace-nowrap ${onlyFavorites ? 'bg-purple-600/20! text-purple-300! border-purple-500/40!' : 'bg-white/5! text-zinc-400!'}`}
               onClick={() => setOnlyFavorites(!onlyFavorites)}
             >
               <Star className="w-2 h-2 fill-current" /> FAVS
             </button>
-            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'newest' ? '!bg-purple-600/20 !text-purple-300' : '!bg-white/5 !text-zinc-400'}`} onClick={() => setSortBy('newest')}>
+            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'newest' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('newest')}>
               <Clock className="w-2 h-2" /> NEWEST
             </button>
-            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'duration' ? '!bg-purple-600/20 !text-purple-300' : '!bg-white/5 !text-zinc-400'}`} onClick={() => setSortBy('duration')}>
+            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'duration' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('duration')}>
               <Tag className="w-2 h-2" /> DURATION
             </button>
-            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'title' ? '!bg-purple-600/20 !text-purple-300' : '!bg-white/5 !text-zinc-400'}`} onClick={() => setSortBy('title')}>
+            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'title' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('title')}>
               <Filter className="w-2 h-2" /> TITLE
             </button>
           </div>
@@ -214,8 +227,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                 e.dataTransfer.effectAllowed = 'copy';
               }}
               onClick={() => handleSelectEntry(entry)}
-              className={`hardware-card !p-0 group cursor-grab active:cursor-grabbing transition-all hover:bg-white/[0.04]
-                ${selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/[0.06]' : ''}
+              className={`hardware-card p-0! group cursor-grab active:cursor-grabbing transition-all hover:bg-white/4
+                ${selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/6' : ''}
                 ${viewMode === 'list' ? 'flex-row items-center p-1' : 'aspect-square flex-col'}`}
               title="Click to inspect metadata. Drag onto a Waveform Editor track."
             >
@@ -238,20 +251,20 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                   </span>
                   <button
                     onClick={(e) => { e.stopPropagation(); void toggleFavorite(entry.id); }}
-                    className="flex-shrink-0"
+                    className="shrink-0"
                     title={entry.favorite ? 'Unfavorite' : 'Favorite'}
                   >
                     <Star className={`w-2.5 h-2.5 ${entry.favorite ? 'text-yellow-500 fill-current' : 'text-zinc-700'}`} />
                   </button>
                 </div>
                 {entry.prompt && (
-                  <span className="mono-label !text-[8px] !text-zinc-500 truncate" title={entry.prompt}>
+                  <span className="mono-label text-[8px]! text-zinc-500! truncate" title={entry.prompt}>
                     {entry.prompt}
                   </span>
                 )}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[8px] font-mono text-purple-400/80 uppercase tracking-wider">{entry.model}</span>
-                  <div className="flex items-center gap-3 flex-shrink-0">
+                  <div className="flex items-center gap-3 shrink-0">
                     <span className="text-[8px] font-mono text-zinc-600">{formatDuration(entry.duration)}</span>
                     <span className="text-[8px] font-mono text-zinc-700">{formatDate(entry.timestamp)}</span>
                     <span className="text-[8px] font-mono text-zinc-700">{formatSize(entry.audioBlob.size)}</span>
@@ -277,6 +290,20 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                           title="Send to editor as a NEW track"
                         >
                           <Layers className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
+                        </button>
+                        <button
+                          className="p-1 hover:bg-white/10 rounded"
+                          onClick={(e) => { e.stopPropagation(); handleSendToInit(entry); }}
+                          title="Send to Init audio"
+                        >
+                          <Wand2 className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
+                        </button>
+                        <button
+                          className="p-1 hover:bg-white/10 rounded"
+                          onClick={(e) => { e.stopPropagation(); handleSendToInpaint(entry); }}
+                          title="Send to Inpaint"
+                        >
+                          <PenLine className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
                         </button>
                         <button
                           className="p-1 hover:bg-white/10 rounded"
@@ -311,7 +338,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
               <>
                 <p>Library is empty.</p>
                 <button
-                  className="mono-tag !bg-purple-600/20 !text-purple-300 !border-purple-500/40 cursor-pointer"
+                  className="mono-tag bg-purple-600/20! text-purple-300! border-purple-500/40! cursor-pointer"
                   onClick={() => onSwitchTab?.('create')}
                 >
                   Go generate something

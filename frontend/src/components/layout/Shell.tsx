@@ -11,9 +11,11 @@ import { ProcessingLog } from './ProcessingLog';
 import { GlobalGenerateBar } from './GlobalGenerateBar';
 import { DocsModal } from './DocsModal';
 import { useStatusBarStore } from '../../state/statusBarStore';
+import { useActiveViewStore } from '../../state/activeViewStore';
 
 export const Shell: React.FC = () => {
-  const [activeView, setActiveView] = useState('create');
+  const activeView = useActiveViewStore((s) => s.activeView);
+  const setActiveView = useActiveViewStore((s) => s.setActiveView);
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(true);
   const [docsOpen, setDocsOpen] = useState(false);
   const refreshHealth = useStatusBarStore((state) => state.refreshHealth);
@@ -150,7 +152,7 @@ export const Shell: React.FC = () => {
           </div>
         </header>
 
-        <DAWCenterPanel />
+        <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
       </div>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />

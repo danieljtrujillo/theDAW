@@ -1,76 +1,77 @@
-# Stable Audio 3 — User Guide
+# Stable Audio 3 — StableDAW User Guide
 
-A complete walkthrough of every feature in this fork: the upstream Stable Audio 3 Python pipeline, the FastAPI backend that wraps it, and the StableDAW React UI on top.
-
-> This document is the source of truth. The in-app **Docs** button renders this file. The README is a shorter overview that links here.
+Complete reference for the StableDAW platform: the upstream Stable Audio 3 ML pipeline, the FastAPI backend that wraps it, and the StableDAW React interface built on top. The in-app **Docs** button renders this document as an interactive modal with PDF export.
 
 ---
 
-## Table of contents
+## Table of Contents
 
-1. [What's in this repo](#1-whats-in-this-repo)
-2. [Architecture at a glance](#2-architecture-at-a-glance)
+1. [Repository Anatomy](#1-repository-anatomy)
+2. [Architecture](#2-architecture)
 3. [Installation](#3-installation)
-4. [Launching the app](#4-launching-the-app)
-5. [UI walkthrough — Shell](#5-ui-walkthrough--shell)
-6. [CREATE tab — text-to-audio, audio-to-audio, inpainting](#6-create-tab)
-7. [EDIT tab — Studio effects](#7-edit-tab)
-8. [TRAIN tab — LoRA + autoencoder](#8-train-tab)
-9. [LIBRARY tab — persistent generations](#9-library-tab)
-10. [DAW workspace — waveform editor + step sequencer](#10-daw-workspace)
-11. [Processing Log](#11-processing-log)
-12. [Player Footer](#12-player-footer)
-13. [Backend API reference](#13-backend-api-reference)
-14. [Python pipeline reference](#14-python-pipeline-reference)
-15. [Models](#15-models)
-16. [Troubleshooting](#16-troubleshooting)
-17. [Development workflows](#17-development-workflows)
+4. [Launching the Application](#4-launching-the-application)
+5. [UI Shell](#5-ui-shell)
+6. [CREATE Tab — Audio Generation](#6-create-tab)
+7. [EDIT Tab — Studio Effects](#7-edit-tab)
+8. [TRAIN Tab — LoRA and Autoencoder](#8-train-tab)
+9. [LIBRARY Tab — Persistent Generations](#9-library-tab)
+10. [DAW Workspace — Waveform Editor](#10-waveform-editor)
+11. [DAW Workspace — Step Sequencer](#11-step-sequencer)
+12. [DAW Workspace — Piano Roll](#12-piano-roll)
+13. [DAW Workspace — Bottom Panel Tabs](#13-bottom-panel-tabs)
+14. [Player Footer](#14-player-footer)
+15. [Processing Log](#15-processing-log)
+16. [Backend API Reference](#16-backend-api-reference)
+17. [Python Pipeline Reference](#17-python-pipeline-reference)
+18. [Models](#18-models)
+19. [LoRA Adapter Types](#19-lora-adapter-types)
+20. [Troubleshooting](#20-troubleshooting)
+21. [Development Workflows](#21-development-workflows)
 
 ---
 
-## 1. What's in this repo
+## 1. Repository Anatomy
 
-This is a fork of upstream Stable Audio 3 with three additional layers stacked on top:
-
-| Layer | Location | Purpose |
+| Layer | Path | Description |
 |---|---|---|
-| **Upstream Python pipeline** | `stable_audio_3/` | The actual ML — DiT diffusion transformer, SAME autoencoder, LoRA support, samplers, distribution-shift schedules. |
-| **FastAPI backend** | `backend/server.py` | HTTP wrapper around the pipeline. Async job queue for generation, synchronous endpoints for studio effects. Runs on port 8600. |
-| **StableDAW React UI** | `frontend/` | Tailwind 4 + React 19 + Zustand 5 + Vite 6. Talks to the backend via same-origin `/api/*`. Runs on port 5173 in dev. |
-| **Gradio UI** | `run_gradio.py`, `stable_audio_3/interface/` | The upstream Gradio interface. Still works for direct pipeline access; the React UI replaces it for day-to-day use. |
-
-Both UIs share the same Python pipeline. They are independent — one can be used without the other.
+| **ML pipeline** | `stable_audio_3/` | Upstream Stability AI code. DiT, SAME autoencoder, all samplers, LoRA parametrization, distribution-shift schedules, T5Gemma conditioner. |
+| **FastAPI backend** | `backend/server.py` | HTTP wrapper around the pipeline. Async job queue for generation; synchronous endpoints for studio effects and model introspection. Port 8600. |
+| **React UI** | `frontend/` | Tailwind 4 + React 19 + Zustand 5 + Vite 6. Multi-tab DAW interface. Proxies `/api/*` to the backend. Port 5173 in development. |
+| **Gradio UI** | `run_gradio.py`, `stable_audio_3/interface/` | Upstream Gradio interface. Retains full pipeline access; the React UI supersedes it for daily use. Both share the same Python pipeline. |
 
 ---
 
-## 2. Architecture at a glance
+## 2. Architecture
 
 ```
-Browser (:5173 in dev, served from backend in prod)
-   ↓ fetch('/api/...')
+Browser (:5173 dev / static serve in prod)
+  ↓ fetch('/api/...')
 FastAPI backend (:8600)
-   ↓ pipeline.generate(...)
+  ↓ pipeline.generate(...)  /  subprocess.run(ffmpeg ...)
 StableAudioModel
-   ├── T5Gemma text encoder       (models/conditioners.py)
-   ├── DiT diffusion transformer  (models/dit.py → transformer.py)
-   └── SAME autoencoder           (models/autoencoders.py)
+  ├── T5Gemma text encoder       models/conditioners.py
+  ├── DiT diffusion transformer  models/dit.py → models/transformer.py
+  └── SAME autoencoder           models/autoencoders.py
 ```
 
-**Two-stage generation pipeline:** DiT generates 256-dimensional latents at 1/4096 the original audio rate; SAME decodes those latents to 44.1 kHz stereo audio.
+### Two-stage generation
 
-**Three model sizes:** Small (433M, CPU-capable), Medium (1.4B, GPU), Large (2.7B, API-only).
+The DiT generates 256-dimensional latents at 1/4096 the source audio rate. The SAME autoencoder decodes those latents to 44.1 kHz stereo audio. These two stages share the same checkpoint for bundled models; standalone SAME checkpoints (`same-s`, `same-l`) are interchangeable with the bundled versions and reuse the cached full checkpoint when available.
 
-**Two checkpoint flavors per size:**
-- **ARC** — post-trained, 8-step inference, `cfg_scale=1`. Use these for inference. Keys: `small`, `medium`.
-- **RF** — base rectified-flow checkpoints. Use these as a starting point for LoRA training. Keys: `small-rf`, `medium-rf`. Inference uses ~50 steps with `cfg_scale=7`.
+### Checkpoint flavors
 
-The autoencoder is also available standalone (`same-s`, `same-l`) for encoding/decoding outside the generation pipeline.
+- **ARC** — post-trained checkpoints (`small`, `medium`). Optimized for 8-step inference with `cfg_scale=1`. Recommended for all generation tasks.
+- **RF** — rectified-flow base checkpoints (`small-rf`, `medium-rf`). Require ~50 steps and `cfg_scale=7` at inference. Used as starting points for LoRA training.
+
+### Web Audio engine
+
+All in-browser audio — library playback, waveform editor preview, step sequencer, piano roll live notes — routes through a single shared `AudioContext` graph: source nodes → master gain node → analyser node → destination. The real-time spectral analyzer reads from the analyser node continuously; the player footer volume and mute controls drive the master gain.
 
 ---
 
 ## 3. Installation
 
-### Base install (CPU-only, Small model)
+### Base (CPU-only, Small model)
 
 ```bash
 uv sync
@@ -88,21 +89,23 @@ uv sync --extra cuda
 uv sync --group dev
 ```
 
-### Windows-specific extras
+### Windows-specific requirements
 
-The `pyproject.toml` CUDA index map only covers Linux. On Windows you must:
+`pyproject.toml`'s CUDA index mapping covers Linux only. On Windows:
 
-1. Install PyTorch with the CUDA wheel index manually:
+1. Install PyTorch with the correct CUDA wheel index:
    ```powershell
    uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
    ```
-2. Install `soundfile` (torchaudio has no default backend on Windows):
+
+2. Install `soundfile` (torchaudio has no default audio backend on Windows):
    ```powershell
    uv pip install soundfile
    ```
-3. Flash Attention requires a pre-built wheel from [`kingbri1/flash-attention`](https://github.com/kingbri1/flash-attention) releases — pick the one matching your Python + torch + CUDA versions.
 
-See `docs/windows/setup-guide.md` for the full walkthrough.
+3. Flash Attention requires a pre-built wheel matching your Python + PyTorch + CUDA version. Download from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+
+Full walkthrough: [docs/windows/setup-guide.md](windows/setup-guide.md).
 
 ### Frontend dependencies
 
@@ -111,11 +114,11 @@ cd frontend
 npm install
 ```
 
-The frontend's `package-lock.json` is committed — `npm ci` reproduces the exact tree, `npm install` is fine in dev.
+`package-lock.json` is committed. Use `npm ci` to reproduce the exact dependency tree; `npm install` is acceptable in development.
 
 ---
 
-## 4. Launching the app
+## 4. Launching the Application
 
 ### One-shot launcher (Windows)
 
@@ -123,379 +126,644 @@ The frontend's `package-lock.json` is committed — `npm ci` reproduces the exac
 .\start-dev.bat
 ```
 
-The launcher:
-1. Kills any stale process on ports 5173 / 8600.
-2. Starts the FastAPI backend (`uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload`) in a new terminal.
+Sequence:
+1. Kills any stale process on ports 5173 and 8600.
+2. Starts the FastAPI backend (`uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload`) in a new terminal window.
 3. Waits 3 seconds for the backend to bind.
-4. Starts the Vite dev server in a second terminal.
-5. Opens http://localhost:5173 in your default browser.
+4. Starts the Vite dev server in a second terminal window.
+5. Opens `http://localhost:5173` in the default browser.
 
-The backend has `--reload`, so editing `backend/server.py` triggers an automatic restart.
+The `--reload` flag on the backend triggers automatic restart when `backend/server.py` is modified.
 
 ### Manual launch
-
-Two terminals:
 
 ```bash
 # Terminal 1 — backend
 uv run uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload
-```
 
-```bash
 # Terminal 2 — frontend
 cd frontend && npm run dev
 ```
 
-The frontend's `vite.config.ts` proxies `/api/*` to `http://localhost:8600`, so same-origin fetches Just Work.
+`vite.config.ts` proxies all `/api/*` requests to `http://localhost:8600`, so same-origin fetches require no CORS configuration in development.
 
 ### Gradio UI (legacy)
 
 ```bash
 uv run python run_gradio.py --model medium
-uv run python run_gradio.py --model medium --lora-ckpt-path path/to/lora.ckpt
+uv run python run_gradio.py --model medium --lora-ckpt-path path/to/lora.safetensors
 ```
 
 ---
 
-## 5. UI walkthrough — Shell
+## 5. UI Shell
 
-The StableDAW UI has three columns:
+The application window is divided into three persistent regions:
 
 ```
-+----------------------+----------------------------------------+
-| LEFT PANEL           | DAW WORKSPACE (CENTER)                 |
-| (resizable, hideable)|                                        |
-|                      |  - Toolbar (Waveform / Sequencer)      |
-|  - STABLEDAW logo   |  - Timeline / Step grid                |
-|  - Tab strip:        |  - Resize handle                       |
-|    CREATE / EDIT /   |  - Spectral analyzer (collapsible)     |
-|    TRAIN / LIBRARY   |                                        |
-|                      |                                        |
-|  - View content      |                                        |
-|    (accordion        |                                        |
-|     sections per     |                                        |
-|     tab)             |                                        |
-|                      |                                        |
-|  - Sticky RUN CTA    |                                        |
-|  - Processing Log    |                                        |
-+----------------------+----------------------------------------+
-| PLAYER FOOTER (fixed at viewport bottom)                      |
-+---------------------------------------------------------------+
+┌──────────────────────┬───────────────────────────────────────┐
+│  LEFT PANEL          │  DAW WORKSPACE (center)               │
+│  (resizable)         │                                       │
+│                      │  ┌─────────────────────────────────┐  │
+│  STABLEDAW logo      │  │ Mode toolbar (Editor/Sequencer) │  │
+│  Tab strip:          │  ├─────────────────────────────────┤  │
+│    CREATE            │  │ Timeline or Step grid           │  │
+│    EDIT              │  │                                 │  │
+│    TRAIN             │  ├─────────────────────────────────┤  │
+│    LIBRARY           │  │ Bottom panel (collapsible)      │  │
+│                      │  │ Spectral/Details/Piano/Bucket   │  │
+│  View content        │  └─────────────────────────────────┘  │
+│  (per-tab accordion) │                                       │
+│                      │                                       │
+│  RUN CTA (sticky)    │                                       │
+│  Processing Log      │                                       │
+└──────────────────────┴───────────────────────────────────────┘
+│  PLAYER FOOTER (fixed, z-50)                                  │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-**Tabs (left-panel top):** CREATE, EDIT, TRAIN, LIBRARY. Switching tabs swaps the accordion content in the left panel; the DAW workspace stays put across all tabs.
+**Left panel resize:** drag the vertical handle on the panel's right edge. Range: 300 px – 500 px.
 
-**Resize the left panel:** drag the vertical handle on its right edge. Min 300px, max 500px.
+**Left panel collapse:** click the chevron adjacent to the STABLEDAW logo. The DAW workspace expands to full width. Click again to restore.
 
-**Collapse the left panel:** click the chevron next to the STABLEDAW logo. The DAW expands to full width.
+**Tab switching:** tabs (CREATE / EDIT / TRAIN / LIBRARY) swap the accordion content in the left panel. The DAW workspace remains in place across all tab selections.
 
-**Header chips (top-right of DAW):** settings cog (currently decorative), user avatar (decorative).
-
-**Density:** the whole UI uses a CSS `zoom` factor depending on viewport width (0.85 → 0.95 → 1.1 at 1440px / 1920px breakpoints). The Shell height calc compensates for this so layout always tiles cleanly to the footer top.
+**Viewport scaling:** the UI applies a CSS `zoom` factor based on viewport width (0.85 at < 1440 px; 0.95 at 1440–1919 px; 1.1 at ≥ 1920 px). Shell height calculations compensate so the layout tiles cleanly to the footer.
 
 ---
 
-## 6. CREATE tab
+## 6. CREATE Tab
 
-Generates audio from a prompt. Submits an async job to `POST /api/generate-jobs`, then polls `GET /api/jobs/{id}` every 1s until completion.
+### Purpose
+
+Submits audio generation jobs to the backend and displays their output. Supports all three inference modes: text-to-audio, audio-to-audio, and inpainting/continuation.
 
 ### 6.1 PRIMARY SYNTHESIS / PROMPT
 
-- **Prompt** — required, plain text describing the desired audio.
-- **Negative prompt** — optional, things to avoid.
-- **Magic wand button** (top-right of prompt box) — when the prompt is empty, fills in a sample prompt.
+- **Prompt** — required. Plain-text description of the desired audio content, instrumentation, or sonic texture.
+- **Negative prompt** — optional. Aspects or characteristics to suppress.
+- **Magic prompt button** (sparkle icon, bottom-right of the prompt box) — inserts a sample prompt when the prompt field is empty. Has no effect if the field already contains text.
 
-The `RF-ENGINE` chip in the section header is decorative — it indicates this section drives the synthesis stage.
+### 6.2 GENERATION PARAMETERS
 
-### 6.2 GENERATION PARAMETERS *(was MODEL & DURATION + SEED & BATCH — merged for compactness)*
+Six controls arranged in a 3-column grid:
 
-Six fields in a 3-column grid:
-
-| Field | Type | Notes |
+| Control | Type | Notes |
 |---|---|---|
-| Model | dropdown | `small`, `medium`, `small-rf`, `medium-rf`. Switching to a `-rf` model auto-adjusts steps to 50 and cfg to 7. |
-| Duration (s) | integer | Total output length. Small caps at 120s, Medium/Large at 380s. |
-| Batch | integer | Generate N variations in one job. Each variation gets a unique entry in the Library. |
-| Steps | integer | Sampler steps. ARC defaults 8; RF defaults 50. |
-| CFG | float | Classifier-free guidance scale. ARC defaults 1.0; RF defaults 7.0. |
-| Seed | integer + reroll button | -1 for random per run. Reroll = sets a new random seed and shows it. |
+| **Model** | Dropdown | `small`, `medium`, `small-rf`, `medium-rf`. Selecting an `-rf` variant automatically sets Steps to 50 and CFG to 7.0. |
+| **Duration (s)** | Integer | Total output length in seconds. Small model: max 120 s. Medium/Large: max 380 s. |
+| **Batch** | Integer | Number of simultaneous variations. Each variation produces a distinct library entry with its own seed. |
+| **Steps** | Integer | Sampler denoising steps. ARC default: 8. RF default: 50. |
+| **CFG** | Float | Classifier-free guidance scale. ARC default: 1.0. RF default: 7.0. Higher values increase adherence to the prompt but can introduce artifacts. |
+| **Seed** | Integer + reroll button | Use −1 for a random seed on each run. The reroll button generates and displays a new random seed without submitting a job. |
 
-### 6.3 INIT SIGNAL / CONDITIONING (audio-to-audio)
+### 6.3 INIT SIGNAL / CONDITIONING
 
-Click the dashed dropzone to upload a source audio file. Below:
+Audio-to-audio mode. Upload a source file via the dropzone to condition the model on existing audio.
 
-- **Init Noise** (0–1) — how much of the source to keep. Lower = more faithful to source; higher = more freedom for the model.
-- **Type** — `Audio` (standard) or `RF-Inv` (RF-Inversion mode, only meaningful for `-rf` models).
+- **Init Noise (0–1)** — controls the ratio of source signal to random noise injected at the start of the denoising trajectory. Lower values preserve more of the source character; higher values grant the model more generative freedom.
+- **Type** — `Audio` (standard) or `RF-Inv` (RF-Inversion, only meaningful with `-rf` model variants).
 
-The `BYPASS` chip in the section header is decorative — there's no explicit bypass toggle; an empty dropzone means no init signal is sent.
+Removing the source file returns the form to text-to-audio mode.
 
 ### 6.4 INPAINTING / REGEN REGION
 
-Replace a time region of an existing audio clip while keeping everything else.
+Replaces a defined time window within a source audio clip while preserving everything outside that window.
 
-- **ON/OFF toggle** (header) — must be ON for the inpaint payload to actually be sent with the next generation. Toggle goes ON automatically when you load a source file.
-- **Load source** — drag-drop or click the dropzone.
-- **Waveform preview** — once a file is loaded, a `WaveSurfer` waveform appears below.
-- **Drag a purple region across the waveform** — that region is the regen window. Start/End/Region readouts update live.
-- **Generation submit** includes `inpaint_audio`, `mask_start`, `mask_end` as form fields.
+- **Enable toggle** (section header) — must be active for the inpainting payload to be submitted. Activates automatically when a source file is loaded.
+- **Source dropzone** — accepts drag-and-drop or click-to-upload.
+- **Waveform preview** — rendered by WaveSurfer once a file is loaded.
+- **Region selection** — drag horizontally across the waveform to define the regeneration window. The Start, End, and Region Duration readouts update in real time.
+- **Continuation** — to extend audio beyond its current end, drag the region to the end of the waveform and set Duration to a value larger than the source length. The model fills the extension conditioned on the existing audio tail.
 
-For **continuation** (extending past the source's end): drag the mask to the end of the source and set `Duration` larger than the source's length. The model fills the new tail conditioned on the existing audio.
+The form field `mask_start` and `mask_end` are submitted in seconds relative to the start of the inpaint audio file.
 
 ### 6.5 LORA / ADAPTIVE LAYERS
 
-Stack one or more LoRA adapters at inference. Each row shows the LoRA name, weight slider (0–1), and remove button.
+Stack one or more LoRA adapters for the next generation. Each adapter row displays its name, a weight slider (0–1), and a remove button.
 
-> **Status: UI scaffolding only.** The backend's `/api/generate-jobs` does not yet pass LoRA references through to the pipeline. Loading LoRA adapters is supported by the pipeline directly via `StableAudioModel.load_lora(...)` (see [§14](#14-python-pipeline-reference)).
+> **Current status:** UI scaffolding. The `/api/generate-jobs` endpoint does not yet forward LoRA references to the pipeline. LoRA at inference is supported directly via the Python API (see [§17.5](#175-lora-at-inference)) and the Gradio UI.
 
 ### 6.6 Output Status Monitor
 
-Appears below the accordion when a generation is running or has completed. Shows progress bar (binary today — `queued → running → completed`), engine info, the audio player, and download/clear buttons. Completed audio is also auto-saved to the Library.
+Appears below the accordion after a job is submitted or completed.
 
-### 6.7 RUN GENERATION CTA
+- Binary progress bar (`queued → running → completed`).
+- Engine information chip (model, steps).
+- Inline audio player for the completed result.
+- Download and clear buttons.
+- All completed results are concurrently auto-saved to the Library.
 
-Sticky bar at the bottom of the left column. Submits the generation. While running, the button becomes a red `ABORT (NN%)` button — clicking it cancels polling (the backend job continues but its result is discarded by the UI).
+### 6.7 RUN GENERATION
+
+Sticky bar fixed at the bottom of the left panel. Submits the generation job to `POST /api/generate-jobs`. While a job is active, the button changes to a red **ABORT** button showing an estimated percentage. Clicking Abort cancels the polling loop; the backend job continues running but its result is discarded by the UI.
 
 ---
 
-## 7. EDIT tab
+## 7. EDIT Tab
 
-Audio processing via FFmpeg. Synchronous — submit, get a binary audio response, play it.
+### Purpose
 
-### 7.1 STUDIO MACROS
+Applies one of 24 FFmpeg-backed audio processing effects to a source file. Processing is synchronous; the result is returned as binary audio and made available for inline playback.
 
-Four high-level macro sliders: **Drive**, **Width**, **Air**, **Punch**. The effective parameter mapping depends on the currently-selected FX chain entry — see `buildEffectParams` in [`StudioView.tsx`](../frontend/src/views/StudioView.tsx).
+### 7.1 Studio Macros
 
-### 7.2 FX chain
+Four global macro sliders whose values are translated into effect-specific parameters:
 
-Pick one of:
+| Macro | Range | Effective parameter (varies by effect) |
+|---|---|---|
+| **Drive** | 0–100 | Compression attack, low boost |
+| **Width** | 0–100 | Compression decay, stereo delay |
+| **Air** | 0–100 | High boost, lowpass frequency |
+| **Punch** | 0–100 | Sub boost, low boost |
 
-| Effect | Params (auto-mapped from macros) |
+### 7.2 FX Chain
+
+A vertical list of effects to construct a processing chain. Each row shows the effect name, an active/inactive toggle, and a color indicator. The currently selected row defines the effect submitted to the backend.
+
+| Effect key | Description | Macro-derived parameters |
+|---|---|---|
+| `mastering_chain` | EQ + limiting + LUFS normalization | lowBoost, highBoost, limiterCeiling, targetLUFS |
+| `compression` | Dynamic range compression | attack, decay |
+| `highpass` | High-pass filter | cutoff frequency |
+| `lowpass` | Low-pass filter | cutoff frequency |
+| `volume` | Gain adjustment | output level |
+| `tempo` | Time-stretch / playback rate | rate |
+| `vocal_processing` | High-pass + presence boost + LUFS normalization | highpassFreq, presenceBoost, targetLUFS |
+| `lofi_vinyl` | Bit degradation + low-pass | degradation, lowpassFreq |
+| `stereo_widener` | Haas-effect widening | delayMs |
+| `reverb_delay` | Combined reverb + delay | delayMs, decay, reverbDecay |
+| `sub_exciter` | Sub-bass and treble harmonic excitation | subBoost, trebleBoost |
+| `phase_isolation` | Mid-side phase cancellation | cancelAmount |
+| `eq_mid` | Single-band parametric EQ | frequency, width (Q), gain |
+| `loudnorm` | ITU-R BS.1770 loudness normalization | targetLUFS, truePeak |
+| `pitch_shift` | Semitone pitch transposition | shift (cents) |
+| `delay` | Stereo delay | leftMs, rightMs |
+| `echo` | Echo with feedback | delayMs, decay |
+| `fade` | Linear fade-in and fade-out | fadeInDuration, fadeOutDuration |
+| `denoise` | Noise floor reduction | noiseReduction |
+| `declick` | Impulse noise removal | windowSize |
+| `silence_remove` | Leading/trailing silence trimming | threshold |
+| `export_flac` | Lossless FLAC export | compressionLevel |
+| `export_mp3` | Lossy MP3 export | bitrate |
+| `export_aac` | AAC export | bitrate |
+| `export_opus` | Opus export | bitrate |
+
+All effects are dispatched to `ffmpeg` via `subprocess.run`. Server-side bounds checks apply to all parameters; out-of-range values return HTTP 400.
+
+### 7.3 Source and Output
+
+- **Source dropzone** — upload an audio file; or click **Use Last Output** to promote the most recent result as the new source.
+- **Output format selector** — `wav`, `flac`, `ogg`, `mp3`, `aac`, `opus`.
+- **Process button** — submits to `POST /api/studio/process`. The binary audio response is wrapped in a Blob URL for inline playback.
+
+### 7.4 Process History
+
+The last 8 processing invocations are retained in the store. Any item in the history list can be selected and promoted to the current source via **Reuse as source**.
+
+---
+
+## 8. TRAIN Tab
+
+### Purpose
+
+Interface for LoRA fine-tuning configuration and autoencoder round-trip validation. Some endpoints are fully implemented in the backend; others are stubs in this fork pending integration.
+
+### 8.1 Target Architecture
+
+| Field | Description |
 |---|---|
-| `mastering_chain` | lowBoost, highBoost, limiterCeiling, targetLUFS |
-| `compression` | attack, decay |
-| `highpass` | frequency |
-| `lowpass` | frequency |
-| `volume` | level |
-| `tempo` | rate |
-| `vocal_processing` | highpassFreq, presenceBoost, targetLUFS |
-| `lofi_vinyl` | degradation, lowpassFreq |
-| `stereo_widener` | delayMs |
-| `reverb_delay` | delayMs, decay, reverbDecay |
-| `sub_exciter` | subBoost, trebleBoost |
-| `phase_isolation` | cancelAmount |
-| `eq_mid` | frequency, width, gain |
-| `loudnorm` | targetLUFS, truePeak |
-| `pitch_shift` | shift (cents) |
-| `delay` | leftMs, rightMs |
-| `echo` | delayMs, decay |
-| `fade` | fadeInDuration, fadeOutDuration |
-| `denoise` | noiseReduction |
-| `declick` | windowSize |
-| `silence_remove` | threshold |
-| `export_flac` / `export_mp3` / `export_aac` / `export_opus` | bitrate / compressionLevel |
+| **Module name** | Output checkpoint filename label. |
+| **Target module** | Which submodule to attach LoRA to (`attn_kv` is the default and most-tested). |
+| **Epochs / Steps** | Training step budget. |
+| **Rank** | LoRA rank. Controls the number of trainable parameters per layer. |
+| **Alpha** | Scaling factor. Effective update scale = alpha / rank. Setting alpha = rank gives a scale of 1.0. |
+| **Dataset path** | Server-side filesystem path containing audio files and paired text prompts. |
 
-All effects are dispatched to `ffmpeg` via `subprocess.run`. Parameters are bounds-checked server-side; out-of-range values return HTTP 400.
+### 8.2 Pre-encode Workflow
 
-### 7.3 Source / output
+Pre-encoding a dataset to latents before training accelerates iteration. Submit a dataset path and output path; the backend job runner calls `pre_encode.py` against the dataset.
 
-- **Source** — upload an audio file via the dropzone or "Use last output" if there's a previous result.
-- **Output format** — `wav`, `flac`, `ogg`, `mp3`, `aac`, `opus`.
-- **Process** button submits to `POST /api/studio/process`. Response is a binary audio body; the UI wraps it in a Blob URL for inline playback.
+> **Backend status:** stub — returns HTTP 501. Use `python -m stable_audio_3.scripts.pre_encode` directly until this is wired.
 
-### 7.4 Process history
+### 8.3 Autoencoder Round-trip
 
-The store keeps the last 8 process invocations as a history list. Reuse-as-source promotes any past output to the current source.
+Upload an audio file; the backend encodes it to base64-serialized latents and then decodes them back to audio for reconstruction quality verification.
+
+> **Backend status:** `/api/autoencoder/info` returns an empty list, so the TRAIN tab displays "no autoencoders available." Encode and decode endpoints return HTTP 501.
+
+### 8.4 Job Polling
+
+Long-running training jobs are tracked via `GET /api/jobs/{id}` polled at 1-second intervals. The `logs` field of the response is rendered as a streaming console output.
 
 ---
 
-## 8. TRAIN tab
+## 9. LIBRARY Tab
 
-LoRA training and autoencoder round-trips. The backend exposes the endpoints; some are full implementations (LoRA / pre-encode are wired to `subprocess.Popen`-based job runners in the upstream codebase), others are stubs in this fork's backend shim.
+### Purpose
 
-### 8.1 TARGET ARCHITECTURE
+Persistent storage for all generated audio, backed by IndexedDB (`sa3-library` database, `generations` object store). Entries survive page reloads and browser restarts within the same origin.
 
-- **Module name** — output checkpoint label.
-- **Target module** — which submodule to attach the LoRA to (`attn_kv` is the default and most-tested).
-- **Epochs / Steps** — training step count.
-- **Rank, Alpha** — LoRA-specific. Rank controls capacity; alpha is the scaling factor (effective LR = alpha / rank).
-- **Dataset path** — server-side filesystem path containing audio + paired prompts.
+### 9.1 Automatic Entry Creation
 
-### 8.2 PRE-ENCODE workflow
+Every successful generation in the CREATE tab produces one or more library entries. Batch jobs produce N entries with IDs `${jobId}_0`, `${jobId}_1`, …
 
-Pre-encoding a dataset to latents accelerates training. Submit a dataset path and an output path; the backend kicks off a job that runs `pre_encode.py` against the dataset.
+Each entry stores:
 
-> **Backend support in this fork:** stub — returns HTTP 501. Use the upstream `python -m stable_audio_3.scripts.pre_encode` directly for now.
-
-### 8.3 AUTOENCODER ROUNDTRIP
-
-Encode an uploaded audio to latents (base64), then decode it back to verify the autoencoder's reconstruction quality.
-
-> **Backend support in this fork:** `/api/autoencoder/info` returns an empty list (so the TRAIN tab shows "no autoencoders available" until that endpoint is wired). The encode/decode endpoints return HTTP 501.
-
-### 8.4 Polling and logs
-
-For long jobs, the UI polls `GET /api/jobs/{id}` every 1s. The `logs` field of the response is rendered as a streaming console.
-
----
-
-## 9. LIBRARY tab
-
-Persistent storage for every generated audio. **Backed by IndexedDB** (object store `generations` in DB `sa3-library`), so entries survive page reloads.
-
-### 9.1 What lands here automatically
-
-Every successful generation in the CREATE tab is auto-saved with all its metadata:
-
-```ts
+```typescript
 {
-  id, title, prompt, negativePrompt, model, duration,
-  steps, cfg, seed, audioBlob, mimeType, timestamp,
-  favorite, rating, tags, notes, source: 'generate'
+  id: string,
+  title: string,
+  prompt: string,
+  negativePrompt: string,
+  model: string,
+  duration: number,       // seconds
+  steps: number,
+  cfg: number,
+  seed: number,
+  audioBlob: Blob,
+  mimeType: string,
+  timestamp: string,      // ISO 8601
+  favorite: boolean,
+  rating: number | null,
+  tags: string[],
+  notes: string,
+  source: 'generate' | 'editor-mixdown' | 'bucket'
 }
 ```
 
-Batch jobs split into N entries with ids `${jobId}_0`, `${jobId}_1`, …
+Waveform editor mixdowns are also auto-saved here on commit, with `source: 'editor-mixdown'` and all generation fields set to their neutral defaults.
 
-### 9.2 LIBRARY section
+### 9.2 List and Grid Views
 
-- **List/Grid toggle** (top-right) — switch between dense list and image-tile grid.
-- **Search** — filters across title, prompt, model, tags, notes.
-- **Filters** — `FAVS` (favorites only), sort by `NEWEST` / `DURATION` / `TITLE`.
-- **Each row** — title, prompt preview, model, duration, date, file size, action cluster (play/pause, download, delete).
-- **Favorite star** — clickable per row.
-- **Play** — uses a single shared `<audio>` element. Pausing while another track is selected stops the first.
+Toggle between a dense **List** view (one row per entry) and a **Grid** view (tile cards) via the icons in the section header. List view shows title, prompt preview, model chip, duration, date, file size, and a per-entry action cluster.
 
-The UI's playback element honors the global volume / mute state from the player footer.
+### 9.3 Search, Filter, Sort
 
-### 9.3 LIBRARY ANALYSIS
+- **Search** — filters across title, prompt, model, tags, and notes fields simultaneously.
+- **FAVS** toggle — restricts the view to favorited entries.
+- **Sort** — Newest (timestamp descending), Duration (longest first), or Title (alphabetical).
 
-Stats footer: total entries, favorites count, total disk size, total duration.
+### 9.4 Per-entry Controls
 
-### 9.4 Empty state
-
-Library is empty until you generate something. The empty state has a "Go generate something" button that switches to the CREATE tab.
-
----
-
-## 10. DAW workspace
-
-The center panel. Stays put across tab switches.
-
-### 10.1 Mode toolbar
-
-Top of the panel — switch between **Waveform Editor** and **Step Sequencer**.
-
-### 10.2 Waveform Editor ✅
-
-Multi-track audio composition surface backed by `useEditorStore`. Every clip is a slice of a real audio Blob; waveform peaks are computed once via `AudioContext.decodeAudioData` and cached on the clip for fast redraws.
-
-**Toolbar:**
-- **ADD TRACK** — append an empty track. Track names auto-inherit from the first clip placed on them (editable any time after).
-- **Move tool** — drag clips horizontally to reposition, vertically to move between tracks.
-- **Cut tool** — click inside a clip to split it at that point. The right half becomes a new clip referencing the same source with an adjusted in-point.
-- **Snap dropdown** — Off / 1/4 / 1/8 / 1/16, relative to the editor BPM; applies to drag/resize math.
-- **Zoom in/out** — pixels-per-second resolution (5–400 px/s).
-- **Delete** — removes the selected clip. `Delete` / `Backspace` keys do the same.
-
-**Per-track header:**
-- Editable name (track-color text).
-- M / S / × — mute, solo (radio-style across tracks), remove track.
-- Volume slider (0–1).
-- Pan slider (−1 → +1).
-
-**Per-clip:**
-- Real downsampled waveform peaks (240 bins, normalized).
-- Header label + duration readout.
-- Left/right resize handles trim the in/out points. The left handle adjusts both `startSec` and `offsetIntoSource` so the source contents stay aligned to the playhead.
-
-**Transport:**
-- **Preview ▶︎** — plays just the selected clip through Web Audio at master volume.
-- **Stop ■** — interrupts preview.
-- **COMMIT EDIT** — renders every non-muted (or solo'd) track into a single 44.1 kHz stereo WAV via `OfflineAudioContext`, then auto-saves it to the LIBRARY as a `mixdown_*.wav` entry. The new entry is playable, downloadable, and can itself be sent back into the editor.
-
-**Status bar (bottom):** live timecode (playhead / total length), clip + track counts, and a SEL readout showing the selected clip's `startSec → endSec`. Click an empty part of the timeline to move the playhead; click empty space to deselect.
-
-**Sending audio to the editor:** every LIBRARY row has a scissors icon. Click it to append that entry to the first track at the end of any existing content. The clip's audio Blob is decoded and its peaks are cached on the spot.
-
-### 10.3 Step Sequencer ✅
-
-Fully functional Web Audio drum machine.
-
-| Control | Behavior |
+| Control | Description |
 |---|---|
-| **Tempo** | BPM input (40–240). Drives the 16th-note clock. |
-| **Play/Stop** | Starts/stops the clock. Unlocks the AudioContext on the first press. |
-| **RANDOM FILL** | Randomizes every track's pattern. |
-| **CLEAR** | Empties every track. |
-| **+** | Adds a new track. |
+| **Play / Pause** | Loads and plays the entry through `playerStore`. Pausing one entry while another is active stops playback globally. |
+| **Favorite star** | Toggles the favorite flag; persisted to IndexedDB immediately. |
+| **Download** | Triggers a browser file download of the audio Blob. |
+| **Delete** | Removes the entry from IndexedDB and from the in-memory store. |
+| **Scissors icon** | Decodes the audio Blob, computes 240-bin waveform peaks, and appends the clip to the first available waveform editor track. If no tracks exist, a new track is created. |
+| **Row click** | Selects the entry; the Details panel in the bottom tab bar reflects the selection. |
 
-Per-track:
+### 9.5 Library Analysis
 
-| Control | Behavior |
+A stats footer displays: total entry count, favorites count, cumulative storage size (sum of all Blob sizes), and cumulative playback duration.
+
+### 9.6 Empty State
+
+Displayed until the first generation. Contains a **Go generate something** button that switches the active left-panel tab to CREATE.
+
+---
+
+## 10. Waveform Editor
+
+### Purpose
+
+Multi-track audio composition surface. Clips are slices of source audio Blobs placed on a pixel-per-second timeline. All editing is non-destructive at the Blob level; rendering occurs on demand via `OfflineAudioContext`.
+
+### 10.1 Toolbar
+
+| Control | Description |
 |---|---|
-| **Name** (text input) | Editable label. |
-| **Voice chip** | Cycles through `kick / snare / hat / tone / noise`. Each is a hand-rolled Web Audio synthesizer. |
-| **Volume slider** | Per-track gain. |
-| **16 step buttons** | Toggle the step on/off. Beats 1/5/9/13 are visually emphasized. |
-| **Target icon** (hover-revealed) | Preview the voice once without running the clock. |
-| **Trash icon** (hover-revealed) | Remove the track. |
+| **ADD TRACK** | Appends an empty track. Track names auto-inherit from the first clip placed on them and are editable at any time. |
+| **Move tool** | Default tool. Drag clips horizontally to reposition in time; drag vertically to move between tracks. |
+| **Cut tool** | Click anywhere inside a clip to split it at that position. The right half becomes a new clip referencing the same source Blob with an adjusted `offsetIntoSource`, preserving source alignment. |
+| **Snap** | Off / 1/4 / 1/8 / 1/16 — quantizes drag and resize operations to note-grid intervals relative to the editor BPM. |
+| **Zoom in / out** | Adjusts the timeline resolution in pixels-per-second. Range: 5–400 px/s. |
+| **Delete** | Removes the selected clip. The Delete and Backspace keyboard keys perform the same action when a clip is selected. |
+| **Mixdown name** | Text input field. Sets the output filename on COMMIT EDIT. If empty, the committed file defaults to `mixdown_<id>.wav`. Automatically appends `.wav` if the user does not include the extension. |
+| **COMMIT EDIT** | Renders the composition to a WAV file. See §10.6. |
 
-The master volume comes from the player footer's volume slider (via `usePlaybackStore`).
+### 10.2 Per-track Controls
 
-### 10.4 Spectral analyzer
+Each track has a fixed-width header to the left of the timeline lanes:
 
-Bottom band of the DAW. Two tabs: **Real-time Spectral** and **Signal Scope**. The visualizer is currently driven by procedural noise (no live audio analyser node yet — coming with the playback wiring in [§5.5](./plans/2026-05-18-stabledaw-ui-polish-and-functionality.md)).
-
-Collapse: click the chevron in the panel header. The collapsed state shows a tall purple "Expand Spectral Analyzer" button — impossible to lose. Click anywhere on it to restore.
-
-Resize: drag the horizontal bar above the spectrum panel up/down to resize between ~60px and viewport-bound.
-
----
-
-## 11. Processing Log
-
-Pinned bar at the bottom of the left panel, glued to the footer top.
-
-- **Always visible** — even in collapsed state, the header bar persists.
-- **Producers:** `system`, `health`, `generate`, `training`, `studio`, `sequencer`, `library`.
-- **Levels:** info (purple bar), warn (amber bar), error (red bar), debug (gray bar).
-- **Ring buffer cap:** 500 entries.
-- **Auto-scroll** to the latest entry.
-- **Download button** (📥 in header) — exports the log as `stabledaw-log-YYYYMMDD-HHMMSS.txt` with ISO timestamps and level/source/message per line.
-- **Clear button** (🗑️ in header) — wipes the buffer.
-- **Click anywhere on the header bar** to collapse/expand. Collapsed state shows a purple-highlighted bar with an "— click to expand" hint and the entry count.
-
----
-
-## 12. Player Footer
-
-Fixed at the bottom of the viewport, z-50.
-
-| Region | Behavior |
+| Control | Description |
 |---|---|
-| **Track info (left)** | Reads from `useGenerateStore.lastFilename` / `lastModelName` / `lastDurationSec`. Shows "No output loaded / IDLE / --:--" until something has generated. |
-| **Transport (center)** | Play/Pause, prev/next, loop, fullscreen — UI is in place; the actual playback wiring is staged for [§5.5](./plans/2026-05-18-stabledaw-ui-polish-and-functionality.md). The progress bar reads 0 until that lands. |
-| **Volume + mute (right)** | Drives `usePlaybackStore` — same store every audio element reads from (LibraryView's preview, the sequencer's master gain). |
-| **Download / more** | Decorative until the global player wiring lands. |
+| **Name** | Editable text. Click to edit in place. Color matches the track's assigned hue. |
+| **M (Mute)** | Silences the track in both preview and final render. |
+| **S (Solo)** | Exclusive across all tracks: soloing a track mutes all others. Soloing a second track adds it to the active set. |
+| **× (Remove)** | Deletes the track and all clips assigned to it. |
+| **Volume slider** | Per-track gain, 0–1. Applied in both preview and offline render. |
+| **Pan slider** | Per-track stereo position, −1 (full left) to +1 (full right). Applied via a `StereoPannerNode` in the offline render. |
+
+### 10.3 Per-clip Display and Handles
+
+Each clip renders a downsampled waveform (240 bins, normalized) as a visual background, with a header label and duration readout.
+
+**Resize handles:** thin strips at the left and right edges. Dragging the left handle adjusts both `startSec` (timeline position) and `offsetIntoSource` (in-point into the source audio) together, so the audio content at the playhead position remains constant. Dragging the right handle adjusts only `durationSec` (out-point).
+
+**Fade handles:** vertical semi-transparent lines with a circular grab point near the bottom edge. The fade-in handle sits inset from the left edge; dragging it right extends the fade-in duration. The fade-out handle sits inset from the right edge; dragging it left extends the fade-out duration. Both fades are applied as linear gain ramps in the offline render and as `gain.linearRampToValueAtTime` automation during preview.
+
+### 10.4 Inpainting from the Editor
+
+Regenerate a sub-region of any clip using the model, while keeping the surrounding audio intact.
+
+1. Select a clip.
+2. Switch to the **Paintbrush** tool (or right-drag within a clip while in Move mode) to draw an inpaint selection region. The selection is visualized as a highlighted band across the clip.
+3. Click **INPAINT REGION** to open the inpaint panel.
+4. Set the prompt, number of steps, and seed.
+5. Click **Generate** to submit an async job.
+
+The submission process:
+- The visible clip region (from `offsetIntoSource` to `offsetIntoSource + durationSec`) is extracted from the source Blob as a cropped WAV via `cropAudioBlob`. This ensures correct behavior for trimmed or split clips regardless of their in-point.
+- Mask coordinates are computed relative to the start of the cropped audio: `maskStart = selection.startSec − clip.startSec`, `maskEnd = selection.endSec − clip.startSec`.
+- The cropped WAV and mask are sent to `POST /api/generate-jobs`.
+
+On completion, the result enters a **Review** phase:
+- An inline audio player allows audition of the regenerated region.
+- **Accept** replaces the clip's source Blob with the result and clears the inpaint selection.
+- **Discard** dismisses the panel without modifying the clip.
+
+### 10.5 Timeline Interaction
+
+- **Playhead** — the red vertical line. Click any empty area in the timeline to position the playhead. The footer transport's skip-to-start button resets it to 0.
+- **Deselect** — click empty space in a track lane to deselect the active clip.
+- **Scroll** — horizontal scroll on the timeline area moves the view.
+- **Status bar** — displays live timecode as `MM:SS.cs / MM:SS.cs` (current / total), clip count, track count, and the selected clip's start→end range.
+
+### 10.6 COMMIT EDIT
+
+Renders the complete composition to a single 44.1 kHz stereo WAV.
+
+Render process:
+1. All non-muted (or exclusively soloed) tracks are collected.
+2. Clip source Blobs are decoded in a temporary `AudioContext` (one decode per unique Blob, cached for clips sharing a source). A 15-second timeout guards against stalled decode operations.
+3. A `OfflineAudioContext` is initialized at 44.1 kHz stereo with a duration equal to the total timeline length.
+4. Each clip is scheduled via `BufferSourceNode.start(clipStartSec, offsetIntoSource, durationSec)`. Per-track volume and stereo pan are applied. Fade-in and fade-out gain envelopes are automated with `linearRampToValueAtTime`.
+5. `OfflineAudioContext.startRendering()` produces the final `AudioBuffer`.
+6. A WAV Blob is encoded as 16-bit PCM (`encodeWav`).
+7. The Blob is saved to the Library (`source: 'editor-mixdown'`).
+8. A browser file download is triggered automatically.
+
+During the render, the COMMIT EDIT button shows an animated spinner and is disabled.
 
 ---
 
-## 13. Backend API reference
+## 11. Step Sequencer
 
-All endpoints are same-origin under `/api/*`. Errors return `{detail: string}` (FastAPI default) or `{error: string}`.
+### Purpose
 
-### 13.1 Health
+A 16-step drum machine driven by a BPM clock, with five synthesized voice types. All audio routes through the shared Web Audio engine.
+
+### 11.1 Transport
+
+| Control | Description |
+|---|---|
+| **Tempo (BPM)** | Clock rate, 40–240 BPM. Each step represents a 16th note. |
+| **Play / Stop** | Starts and stops the step clock. The first press unlocks the `AudioContext` (browser autoplay policy). |
+| **Random Fill** | Randomizes the step pattern for every track simultaneously. |
+| **Clear** | Sets all step buttons to off for all tracks. |
+| **Add Track (+)** | Appends a new track with a synthesized voice. |
+
+### 11.2 Voice Synthesis
+
+Each track's voice is synthesized on-the-fly via the Web Audio API:
+
+| Voice | Synthesis method |
+|---|---|
+| **kick** | Pitched sine oscillator with a rapid frequency sweep (pitch drop) and an exponential gain decay. |
+| **snare** | Bandpass-filtered noise burst combined with a short tonal sine body. |
+| **hat** | White noise passed through a high-frequency bandpass filter with a short gain decay. |
+| **tone** | Sawtooth oscillator through a low-pass filter with an ADSR envelope. Frequency set by the track's `freq` parameter. |
+| **noise** | White noise through a frequency-dependent low-pass filter with a short decay. |
+
+All voices share the same `triggerVoice` function, which accepts a `BaseAudioContext` and destination node. This allows identical synthesis code to be used for both live playback and offline rendering.
+
+### 11.3 Per-track Controls
+
+| Control | Description |
+|---|---|
+| **Name** | Editable text label. |
+| **Voice chip** | Displays the current voice type. Click to cycle through `kick → snare → hat → tone → noise`. |
+| **Volume slider** | Per-track gain, 0–1. |
+| **Step buttons (16)** | Toggle individual steps on/off. Buttons on beats 1, 5, 9, 13 have a distinct visual emphasis. |
+| **Preview (target icon)** | Hover-revealed. Triggers the voice once without starting the clock. |
+| **Remove (trash icon)** | Hover-revealed. Deletes the track. |
+
+### 11.4 Send to Editor
+
+Renders the current pattern offline to a WAV Blob using `OfflineAudioContext`, then appends it to the waveform editor as a new clip on a new track. The clip's source kind is set to `'audio'`.
+
+---
+
+## 12. Piano Roll
+
+### Purpose
+
+MIDI-style note editor for melodic and harmonic content. Notes are placed on a chromatic grid, rendered to audio via a sawtooth+filter synthesizer, and can be exported as MIDI or sent to the waveform editor.
+
+### 12.1 Grid and Keyboard
+
+A vertical chromatic keyboard (MIDI notes 0–127, configurable visible range) occupies the left axis. The horizontal grid represents time in 16th-note steps at the configured BPM. Black and white keys are visually distinguished; note labels appear on C notes.
+
+### 12.2 Note Editing
+
+| Action | Result |
+|---|---|
+| Click on empty grid cell | Places a new note at that pitch and step position. |
+| Drag a placed note horizontally | Repositions the note in time. |
+| Drag the right edge of a note | Resizes the note's duration. |
+| Click a placed note | Selects it. |
+| Delete / Backspace | Removes the selected note. |
+
+### 12.3 Playback
+
+The Play button starts a step-based clock that advances `currentStep` and triggers each note whose `step` index matches, routed through the shared engine `AudioContext` and master gain node. Output is audible in the spectral analyzer. Stop halts the clock.
+
+### 12.4 BPM and Grid Length
+
+- **BPM** — sets the tempo for both playback and offline render. Range: 40–240.
+- **Total Steps** — defines the loop length in 16th-note steps. Longer values extend the grid horizontally.
+
+### 12.5 MIDI Import and Export
+
+- **Import MIDI** — parses a `.mid` file via `parseMidi` and replaces the current note list with the imported content. Tempo and note mappings are preserved.
+- **Export MIDI** — serializes the current note list to a standard MIDI file via `downloadMidi` and triggers a browser download.
+
+### 12.6 Send to Editor
+
+Renders the current note pattern to a 44.1 kHz stereo WAV via `OfflineAudioContext`. The rendered clip is appended to the waveform editor on a new track. The clip's metadata records `sourceKind: 'piano-roll'`, the note list, BPM, and grid length, enabling it to be re-opened for editing.
+
+### 12.7 Edit in Piano Roll
+
+Clips in the waveform editor whose `sourceKind` is `'piano-roll'` display an **Edit in Piano Roll** action. Triggering it loads the clip's stored note list and BPM into the piano roll store and switches the bottom panel to the Piano Roll tab.
+
+---
+
+## 13. Bottom Panel Tabs
+
+The bottom panel is collapsible and vertically resizable (drag the grip handle above it). Four tabs are available:
+
+### 13.1 Real-time Spectral Analyzer
+
+Live visualization of the shared Web Audio engine's output, reading from the engine analyser node continuously via `requestAnimationFrame`.
+
+**Display modes** (O / S / R buttons, vertical column, top-left of canvas):
+
+| Mode | Description |
+|---|---|
+| **Oscilloscope (O)** | Time-domain waveform drawn with a purple glow. Amplitude on the vertical axis; sample index on the horizontal. |
+| **Spectrum (S)** | Frequency-domain bar chart. Bins are log-scaled; bar height represents magnitude. Gradient from deep purple at the base to lavender at the peak. Bars are constrained below the status overlay to prevent visual overlap. |
+| **Radial (R)** | Frequency data mapped to a polar coordinate shape, drawn as a closed path centered in the canvas. |
+
+**Status overlay** (bottom of canvas, gradient backdrop):
+
+- Sample rate (kHz) and FFT size.
+- RMS level in dBFS (sampled every 5 animation frames), indicated with a yellow lightning icon.
+- Peak level in dBFS, indicated with a green target icon.
+- LIVE / SILENT state (signal threshold: −60 dBFS). LIVE animates with a purple pulse.
+- Settings and fullscreen toggle buttons.
+
+Text in the overlay uses `textShadow` for legibility against any visualization content behind it.
+
+**Canvas scaling:** the canvas element is sized to its container in physical pixels (device pixel ratio capped at 2×) via a `ResizeObserver`. The `style` dimensions are set in CSS pixels, so the canvas is always crisp on high-DPI displays.
+
+### 13.2 Details
+
+Displays full metadata for the currently selected library entry.
+
+| Field | Displayed value |
+|---|---|
+| Title | Entry title |
+| Prompt / Negative prompt | Generation text |
+| Model | Model key |
+| Duration | MM:SS.ms |
+| Steps / CFG / Seed | Generation parameters |
+| Timestamp | Locale date and time |
+| File size | Bytes / KB / MB |
+| Tags / Notes | Editable per-entry |
+| Source | `generate`, `editor-mixdown`, or `bucket` |
+
+**Actions:**
+- **Audition in engine** — loads the entry into `playerStore` and begins playback.
+- **Send to editor** — decodes waveform peaks and appends to the waveform editor as a new clip.
+- **Download** — browser file download of the audio Blob.
+
+### 13.3 Piano Roll
+
+Full piano roll interface embedded in the bottom panel. See [§12](#12-piano-roll) for the complete reference.
+
+### 13.4 Media Bucket
+
+Session-scoped file holding area for arbitrary audio files. Contents are lost on page reload.
+
+- **Dropzone** — accepts drag-and-drop or click-to-upload. Supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus.
+- **Per-item display** — filename, MIME type, file size.
+- **Send to Editor** — decodes peaks and appends the item to the waveform editor as a new clip on a new track. Non-audio files are rejected with a log entry.
+- **Send to Library** — decodes the audio, measures its duration, and creates a persistent IndexedDB entry with `source: 'bucket'`.
+- **Remove** — removes the item from the bucket. Does not affect the library or editor.
+- **Clear all** — removes all items simultaneously.
+
+---
+
+## 14. Player Footer
+
+A fixed bar at the bottom of the viewport (z-index 50). Visible and functional across all tabs and workspace modes.
+
+### 14.1 Track Information (left region)
+
+- **Thumbnail** — animated music-note icon with a purple pulse when audio is playing.
+- **Title** — the current `playerStore.currentLabel`. Truncated to fit the column.
+- **Model chip** — derived from `useGenerateStore.lastModelName`. Shows `LIBRARY` for entries loaded from the library, and `IDLE` when nothing has been generated or loaded.
+- **Duration readout** — `MM:SS // 48kHz`. Reads from `playerStore.duration`.
+
+### 14.2 Transport (center region)
+
+| Control | Description |
+|---|---|
+| **Loop** | Toggles looped playback in `playerStore`. Active state shown in purple. |
+| **Skip to start** | Calls `playerStore.seekByFraction(0)`. |
+| **Play / Pause** | Primary playback toggle. In EDIT workspace mode with no editor audio loaded, the first press triggers an offline render of the waveform editor timeline, loads the result into `playerStore`, and begins playback. Subsequent presses toggle playback natively. |
+| **Skip to end** | Calls `playerStore.seekByFraction(1)`. |
+| **Fullscreen** | Toggles browser fullscreen on `document.documentElement`. |
+
+**Progress bar:** a horizontal track showing playback position. Click anywhere to seek (`playerStore.seekByFraction`). On hover, a circular scrubber handle appears at the current position. Time labels at left and right show current time and total duration.
+
+### 14.3 Utilities (right region)
+
+- **Mute toggle** — switches the `playbackStore` mute flag. The volume icon changes to a red `VolumeX` when muted.
+- **Volume slider** — an overlay `<input type="range">` drives `playbackStore.volume` (0–100). The visual fill scales proportionally. The combined `volume × !muted` value is forwarded to `playerStore.setMasterGain`, which drives the shared Web Audio master gain node.
+- **Download** — retrieves the library entry whose `id` matches `playerStore.currentEntryId` and triggers a browser file download.
+- **More** — decorative.
+
+---
+
+## 15. Processing Log
+
+A collapsible message log pinned between the left panel content and the player footer.
+
+### Producers
+
+| Source | Events |
+|---|---|
+| `system` | Application startup, model load status. |
+| `health` | Backend connectivity check results. |
+| `generate` | Job submission, progress, completion, errors. |
+| `training` | LoRA job updates (when wired). |
+| `studio` | Studio processing results and errors. |
+| `sequencer` | Sequencer start/stop, render events. |
+| `library` | IndexedDB save/load events. |
+
+### Log Levels
+
+Each entry has a severity level displayed as a colored left-border indicator:
+
+| Level | Color | Usage |
+|---|---|---|
+| `info` | Purple | Normal operational events. |
+| `warn` | Amber | Non-fatal anomalies. |
+| `error` | Red | Failures that prevented an operation from completing. |
+| `debug` | Gray | Verbose internal state for development. |
+
+### Controls
+
+- **Ring buffer capacity:** 500 entries. Oldest entries are discarded when the cap is reached.
+- **Auto-scroll:** the log panel automatically scrolls to the most recent entry.
+- **Download (📥):** exports the full buffer as `stabledaw-log-YYYYMMDD-HHMMSS.txt`. Each line contains an ISO timestamp, level, source, and message.
+- **Clear (🗑️):** wipes the ring buffer.
+- **Collapse/expand:** click anywhere on the header bar. Collapsed state shows the entry count and a "click to expand" hint.
+
+---
+
+## 16. Backend API Reference
+
+All endpoints are served under `/api/*` on port 8600. Error responses use `{"detail": string}` (FastAPI default) or `{"error": string}`. The `SA3_DEBUG_ERRORS` environment variable (set to `"1"`) enables additional detail fields in error responses.
+
+### 16.1 Health
 
 ```
 GET /api/health
-→ { "status": "ok", "model_loaded": true }
 ```
 
-### 13.2 Model info
+Response when healthy:
+```json
+{ "status": "ok", "model_loaded": true }
+```
+
+Response when degraded (HTTP 503):
+```json
+{ "status": "degraded", "model_loaded": false, "error": "MODEL_LOAD_FAILED" }
+```
+
+### 16.2 Model Info
 
 ```
 GET /api/model-info
-→ {
+```
+
+```json
+{
   "active_model": "medium",
   "available_models": ["medium"],
   "sample_rate": 44100,
@@ -507,93 +775,115 @@ GET /api/model-info
 }
 ```
 
-### 13.3 Generation (async, used by StableDAW UI)
+### 16.3 Generation — Async (StableDAW UI)
 
+Submit:
 ```
 POST /api/generate-jobs   multipart/form-data
-fields:
-  model_name        string
-  prompt            string  (required, non-empty)
-  negative_prompt   string
-  duration          float (seconds)
-  steps             int
-  cfg_scale         float
-  seed              int  (-1 for random)
-  batch_size        int  (>=1)
-  init_noise_level  float
-  init_audio_type   string
-  file_format       string ('wav' usually)
-  file_naming       string ('verbose' usually)
-  mask_start        float (seconds, 0 = no inpaint)
-  mask_end          float (seconds, 0 = no inpaint)
-  init_audio        file (optional)
-  inpaint_audio     file (optional)
-→ { "job": { "id": "<uuid>" } }
 ```
 
-Then poll:
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `prompt` | string | required | Generation text prompt. |
+| `negative_prompt` | string | `""` | Aspects to suppress. |
+| `model_name` | string | `"medium"` | Model key. |
+| `duration` | float | `30.0` | Output length in seconds. |
+| `steps` | int | `8` | Denoising steps. |
+| `cfg_scale` | float | `1.0` | Classifier-free guidance scale. |
+| `seed` | int | `-1` | −1 for random. |
+| `batch_size` | int | `1` | Number of simultaneous variations. |
+| `init_noise_level` | float | `1.0` | Audio-to-audio conditioning strength. |
+| `init_audio_type` | string | `"Audio"` | `"Audio"` or `"RF-Inv"`. |
+| `file_format` | string | `"wav"` | Output file format. |
+| `mask_start` | float | `0.0` | Inpaint region start in seconds. |
+| `mask_end` | float | `0.0` | Inpaint region end in seconds. |
+| `init_audio` | file | optional | Source audio for audio-to-audio mode. |
+| `inpaint_audio` | file | optional | Source audio for inpainting. |
 
+Response:
+```json
+{ "job": { "id": "<uuid>" } }
+```
+
+Poll:
 ```
 GET /api/jobs/{job_id}
-→ {
-  "id": ..., "kind": "generate",
-  "status": "queued" | "running" | "completed" | "failed",
-  "progress": { "step": 0, "steps": 8 },
+```
+
+```json
+{
+  "id": "...",
+  "kind": "generate",
+  "status": "queued | running | completed | failed",
+  "progress": { "step": 4, "steps": 8 },
   "result": {
     "batch": false,
-    "item":  { "audio_base64": "...", "mime_type": "audio/wav", "filename": "..." }
-    // OR for batch:
-    // "batch": true,
-    // "items": [ { audio_base64, mime_type, filename }, ... ]
+    "item": { "audio_base64": "...", "mime_type": "audio/wav", "filename": "..." }
   },
-  "error": "..." // when status === "failed"
+  "error": "..."
 }
 ```
 
-### 13.4 Generation (sync, legacy)
+Batch results use `"batch": true` with an `"items"` array instead of a single `"item"`.
+
+### 16.4 Generation — Sync (Legacy / Gradio)
 
 ```
 POST /api/generate   multipart/form-data
 ```
 
-Same surface as `/api/generate-jobs` plus a bunch of advanced params (`sampler_type`, `apg_scale`, all the distribution-shift params, inversion params). Response is the raw audio bytes (`audio/wav` by default). Kept for backwards compat and the Gradio UI.
+Identical surface to `/api/generate-jobs` with additional advanced parameters: `sampler_type`, `apg_scale`, `sigma_max`, `cfg_rescale`, `cfg_norm_threshold`, `cfg_interval_min`, `cfg_interval_max`, all distribution-shift parameters (`dist_shift_type`, `logsnr_*`, `flux_*`, `full_*`), and RF-Inversion parameters (`inversion_steps`, `inversion_gamma`, `inversion_unconditional`).
 
-### 13.5 Studio (synchronous FFmpeg)
+Response: raw binary audio body (`audio/wav` by default). Retained for backwards compatibility and the Gradio UI.
+
+### 16.5 Studio Processing
 
 ```
 POST /api/studio/process   multipart/form-data
-  audio          file (required)
-  effect         string (one of the keys in EFFECT_PARAM_BOUNDS)
-  params         JSON-stringified Record<string, number>
-  output_format  string ('wav' | 'flac' | 'ogg' | 'mp3' | 'aac' | 'opus')
-→ binary audio body, content-type: audio/<format>
 ```
 
-### 13.6 Training / autoencoder
+| Field | Type | Description |
+|---|---|---|
+| `audio` | file | Input audio. Required. |
+| `effect` | string | One of the effect keys from §7.2. |
+| `params` | string | JSON-serialized `Record<string, number>`. |
+| `output_format` | string | `wav`, `flac`, `ogg`, `mp3`, `aac`, or `opus`. |
 
-| Endpoint | Status in this fork |
+Response: binary audio body with the appropriate `Content-Type` header.
+
+### 16.6 Jobs List
+
+```
+GET /api/jobs
+→ Array of all job objects currently in the in-memory store.
+```
+
+The job store is in-memory only; all jobs are lost on backend restart.
+
+### 16.7 Training and Autoencoder (Stub Endpoints)
+
+| Endpoint | Status |
 |---|---|
-| `GET /api/jobs` | Lists all jobs in the in-memory store. |
-| `GET /api/autoencoder/info` | Returns empty arrays (stub). |
+| `GET /api/autoencoder/info` | Returns empty arrays. |
 | `POST /api/jobs/train-lora` | HTTP 501. |
 | `POST /api/jobs/pre-encode` | HTTP 501. |
 | `POST /api/autoencoder/encode` | HTTP 501. |
 | `POST /api/autoencoder/decode` | HTTP 501. |
 
-### 13.7 Presets (decorative)
+### 16.8 Presets
 
 ```
 GET /api/presets   → []
-POST /api/presets  → { id: <uuid>, saved: true }
+POST /api/presets  → { "id": "<uuid>", "saved": true }
 ```
 
-Not consumed by the UI yet.
+Not consumed by the UI. Reserved for future use.
 
 ---
 
-## 14. Python pipeline reference
+## 17. Python Pipeline Reference
 
-### 14.1 Text-to-audio
+### 17.1 Text-to-audio
 
 ```python
 from stable_audio_3 import StableAudioModel
@@ -605,10 +895,11 @@ audio = pipe.generate(
 )
 ```
 
-### 14.2 Audio-to-audio
+### 17.2 Audio-to-audio
 
 ```python
 import torchaudio
+
 init_audio = torchaudio.load("/path/to/audio.wav")
 audio = pipe.generate(
     init_audio=init_audio,
@@ -618,7 +909,7 @@ audio = pipe.generate(
 )
 ```
 
-### 14.3 Inpainting / continuation
+### 17.3 Inpainting
 
 ```python
 inpaint_audio = torchaudio.load("/path/to/audio.wav")
@@ -631,9 +922,9 @@ audio = pipe.generate(
 )
 ```
 
-For **continuation**: set `inpaint_mask_start_seconds` to the length of the source clip and use a longer `duration`.
+**Continuation:** set `inpaint_mask_start_seconds` equal to the source clip's total length and `duration` to the desired output length. The model fills the extension conditioned on the tail of the source.
 
-### 14.4 Autoencoder
+### 17.4 Autoencoder
 
 ```python
 from stable_audio_3 import AutoencoderModel
@@ -644,91 +935,142 @@ latents = ae.encode(waveform, sr)
 audio_out = ae.decode(latents)
 ```
 
-### 14.5 LoRA at inference
+Batch encoding, chunked processing, and dataset pre-encoding for LoRA training: see [docs/workflows/autoencoder.md](autoencoder.md).
+
+### 17.5 LoRA at Inference
 
 ```python
 pipe = StableAudioModel.from_pretrained("medium")
-pipe.load_lora("path/to/lora.ckpt", weight=0.8)
+pipe.load_lora("style.safetensors", weight=0.8)
 audio = pipe.generate(prompt="...", duration=30)
 ```
 
-Multiple LoRAs stack additively. `weight` can be adjusted at runtime.
+Multiple LoRAs stack additively. Strength is adjustable at runtime:
 
-### 14.6 Advanced generation controls
+```python
+from stable_audio_3.models.lora import set_lora_strength
 
-See `stable_audio_3/model.py:StableAudioModel.generate` for the full signature. Highlights:
-
-- `sampler_type` — `"euler"`, `"rk4"`, `"dpmpp_2m_sde"`, `"ping_pong"`.
-- `sigma_max` — max noise level for partial trajectories.
-- `apg_scale` — Adaptive Projected Guidance scale.
-- `cfg_interval` — `(min, max)` interval over which CFG is applied.
-- `dist_shift` — a `DistributionShift` instance (Flux, LogSNR, or Full).
-
----
-
-## 15. Models
-
-| Key | Type | Params | Use |
-|---|---|---|---|
-| `small` | ARC | 433M | CPU-capable inference. |
-| `medium` | ARC | 1.4B | Primary GPU inference. |
-| `small-rf` | RF | 433M | LoRA training base (small). |
-| `medium-rf` | RF | 1.4B | LoRA training base (medium). |
-| `same-s` | Autoencoder | 266M | Standalone SAME-Small. |
-| `same-l` | Autoencoder | 1.7B | Standalone SAME-Large. |
-
-ARC and RF checkpoints bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled versions and will reuse cached full checkpoints when available.
-
----
-
-## 16. Troubleshooting
-
-### Generation returns a static glitch (Medium)
-
-Flash Attention isn't loading. Verify:
-
-```bash
-uv run python -c "import flash_attn; from flash_attn import flash_attn_func; print('Version:', flash_attn.__version__, '| flash_attn_func:', flash_attn_func)"
+set_lora_strength(pipe.model, 0.5)                  # all LoRAs
+set_lora_strength(pipe.model, 1.0, lora_index=0)    # first LoRA only
 ```
 
-If any error, reinstall flash-attention with a wheel that matches your Python + torch + CUDA versions.
+### 17.6 Advanced Generation Parameters
 
-### UI shows "API UNREACHABLE"
+```python
+audio = pipe.generate(
+    prompt="...",
+    duration=30,
+    sampler_type="dpmpp_2m_sde",    # euler | rk4 | dpmpp_2m_sde | ping_pong
+    sigma_max=1.0,                   # max noise level
+    apg_scale=1.0,                   # Adaptive Projected Guidance scale
+    cfg_interval=(0.0, 1.0),         # sigma range over which CFG is applied
+)
+```
 
-The backend isn't responding on port 8600. Check:
+Full parameter reference: `stable_audio_3/model.py:StableAudioModel.generate`.
 
+---
+
+## 18. Models
+
+| Key | Flavor | Params | Autoencoder | Hardware requirement | Max duration |
+|---|---|---|---|---|---|
+| `small` | ARC | 433 M | SAME-S (266 M) | CPU | 120 s |
+| `medium` | ARC | 1.4 B | SAME-L (1.7 B) | GPU — CUDA | 380 s |
+| `small-rf` | RF | 433 M | SAME-S | CPU | 120 s |
+| `medium-rf` | RF | 1.4 B | SAME-L | GPU — CUDA | 380 s |
+| `same-s` | Autoencoder | 266 M | — | CPU | — |
+| `same-l` | Autoencoder | 1.7 B | — | GPU | — |
+
+ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled version and reuse the cached full checkpoint when both are available. The RTX 3060 (6 GB VRAM) supports only the Small model; the Medium model requires approximately 8 GB.
+
+---
+
+## 19. LoRA Adapter Types
+
+Eight adapter types are available, trading parameter count against expressiveness:
+
+| Type | Trainable params per layer | Description |
+|---|---|---|
+| `lora` | `rank × (fan_in + fan_out)` | Standard LoRA. Two low-rank matrices A and B; update = `(alpha/rank) × B @ A`. |
+| `dora-rows` | `rank × (fan_in + fan_out) + fan_out` | DoRA with per-row magnitude. Weight update is decomposed into direction and per-output-neuron magnitude. Default adapter type. |
+| `dora-cols` | `rank × (fan_in + fan_out) + fan_in` | DoRA with per-column (per-input-feature) magnitude. |
+| `bora` | `rank × (fan_in + fan_out) + fan_in + fan_out` | Bi-dimensional DoRA. Independent row and column magnitude scaling. |
+| `lora-xs` | `rank²` | Maximum parameter efficiency. Only a `(rank, rank)` core matrix is trained; U and V bases are frozen SVD factors of the original weight. |
+| `dora-rows-xs` | `rank² + fan_out` | DoRA-rows combined with the LoRA-XS frozen SVD bases. |
+| `dora-cols-xs` | `rank² + fan_in` | DoRA-cols combined with LoRA-XS bases. |
+| `bora-xs` | `rank² + fan_in + fan_out` | BoRA combined with LoRA-XS bases. |
+
+### Training configuration
+
+| Argument | Default | Description |
+|---|---|---|
+| `--rank` | 16 | LoRA rank. Lower = fewer parameters; higher = more capacity. |
+| `--lora_alpha` | equal to `--rank` | Scaling factor. Effective scale = alpha / rank. |
+| `--adapter_type` | `dora-rows` | Adapter type from the table above. |
+| `--dropout` | 0.0 | Dropout on LoRA inputs during training. |
+| `--include` | all layers | Restrict LoRA to layers whose name contains one of these substrings. Bracket ranges supported: `layers[0-11]`. |
+| `--exclude` | none | Skip layers matching any of these substrings, even if they match `--include`. |
+| `--svd_bases_path` | none | Pre-computed SVD bases `.pt` file. Eliminates per-layer SVD at startup for `-XS` adapters. |
+| `--base_precision` | none | Cast frozen base weights to `bf16` after applying LoRA. Reduces VRAM usage; LoRA parameters remain in fp32. |
+| `--lora_checkpoint` | none | Existing checkpoint to resume from. Loaded with `strict=False`. |
+
+Full training walkthrough: [docs/workflows/lora.md](lora.md).
+
+---
+
+## 20. Troubleshooting
+
+### Generation produces a static glitch (Medium model)
+
+Flash Attention is not loaded correctly. Verify:
+```bash
+uv run python -c "import flash_attn; from flash_attn import flash_attn_func; print('Version:', flash_attn.__version__)"
+```
+Any import error indicates the wheel does not match the installed Python + PyTorch + CUDA combination. Reinstall from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+
+### "API UNREACHABLE" banner in the StableDAW header
+
+The backend is not responding on port 8600. Test directly:
 ```bash
 curl http://localhost:8600/api/health
 ```
+If the request fails, restart the backend. On Windows, `.\start-dev.bat` kills stale processes automatically. Manually: `taskkill /F /IM uvicorn.exe`.
 
-If that fails, restart the backend. On Windows the `start-dev.bat` launcher kills stale processes; otherwise `taskkill /F /IM uvicorn.exe` (or your usual stop signal).
+### COMMIT EDIT hangs indefinitely
 
-### TRAIN tab shows "TRAINING METADATA FAILED"
+One or more clip source Blobs are failing to decode. The decode step has a 15-second timeout per Blob; if all clips time out, the render will not complete. Check the Processing Log for `decodeAudioData timeout` entries. Likely causes: a corrupted Blob in the library, or an unusually large audio file. Remove the suspect clip and retry.
 
-`/api/autoencoder/info` returned non-OK. In this fork it's a stub that returns an empty list — that's expected; the TRAIN tab gracefully degrades but anything that depends on autoencoder metadata is unavailable.
+### TRAIN tab displays "TRAINING METADATA FAILED"
 
-### Vite dev server can't reach `/api`
+`/api/autoencoder/info` returned a non-OK status. In this fork, the endpoint is a stub returning an empty list — this is expected behavior. The TRAIN tab degrades gracefully; LoRA training is available via the command line.
 
-`vite.config.ts` is missing the proxy block, or `localhost:8600` isn't listening. Check both. The graft of the StableDAW UI patched this — if you somehow ended up on the upstream UI's config, copy the `server.proxy` block from `frontend/vite.config.ts` here.
+### Vite dev server cannot reach `/api`
 
-### Audio plays at the wrong speed / pitch
+The proxy block in `vite.config.ts` is missing or `localhost:8600` is not listening. Verify the backend is running (`curl http://localhost:8600/api/health`) and that `vite.config.ts` contains:
+```typescript
+server: { proxy: { '/api': 'http://localhost:8600' } }
+```
 
-Sample-rate mismatch. The pipeline is 44.1 kHz stereo end-to-end; if you're saving with a different rate the playback engine will resample wrong. Check `pipeline.sample_rate`.
+### Audio plays at the wrong speed or pitch
 
-### "OOM" on Medium model
+A sample-rate mismatch exists somewhere in the chain. The full pipeline is 44.1 kHz stereo end-to-end. Verify `pipeline.sample_rate` and that the audio file being uploaded matches.
 
-You need ~8 GB VRAM for the medium pipeline. Workarounds:
-- Use `small` instead.
-- Reduce `duration` (shorter sequences = less peak memory).
-- Make sure no other CUDA process is competing.
+### Out-of-memory on Medium model
 
-### IndexedDB quota errors in Library
+Approximately 8 GB VRAM is required. Workarounds:
+- Use the `small` model.
+- Reduce `duration` (shorter sequences consume less peak memory).
+- Confirm no other CUDA processes are active on the same device.
+- The RTX 3060 Laptop (6 GB) is constrained to the Small model.
 
-Browser hit its storage cap. Clear old entries or use the trash icon per row.
+### IndexedDB storage quota exceeded
+
+The browser has reached its per-origin storage cap. Delete old library entries using the trash icon per row, or clear the entire store via the browser's developer tools (Application → Storage → IndexedDB → `sa3-library`).
 
 ---
 
-## 17. Development workflows
+## 21. Development Workflows
 
 ### Lint
 
@@ -737,51 +1079,54 @@ uv run ruff check
 uv run ruff format --check
 ```
 
-Ruff excludes `stable_audio_3/models`, `inference`, `interface`, and `data` from linting. Only top-level files are checked.
+Ruff excludes `stable_audio_3/models`, `inference`, `interface`, and `data`. Only top-level files (`pipeline.py`, `model.py`, `model_configs.py`, `loading_utils.py`, `verbose.py`) are checked.
 
 ### Tests
 
 ```bash
-uv run pytest                  # Full suite (medium tests skip on non-CUDA hosts)
+uv run pytest                        # Full suite (Medium tests skip on non-CUDA hosts)
 uv run pytest tests/test_inference.py
-uv run pytest --save-audio     # Persist test outputs to test_audio_outputs/
+uv run pytest --save-audio           # Write outputs to test_audio_outputs/ for inspection
 ```
+
+Session-scoped fixtures avoid reloading models between tests. Medium tests are skipped automatically on hosts without a CUDA GPU.
 
 ### Frontend build
 
 ```bash
 cd frontend
-npm run build      # → frontend/dist/
-npm run preview    # serve the built bundle locally
+npm run build      # Outputs to frontend/dist/
+npm run preview    # Serves the built bundle locally
 ```
 
-### Regenerating docs (this guide)
+### Adding a new FFmpeg effect
 
-There's a helper script — see [§17.1](#171-regenerate-docs).
+1. Add an entry to `EFFECT_PARAM_BOUNDS` in `backend/server.py` with the allowed parameter ranges.
+2. Extend `_build_filter()` (or equivalent) with the FFmpeg filter graph command for the new effect.
+3. Add the effect to the hardcoded FX chain list in `frontend/src/views/StudioView.tsx` with a display label and color class.
 
-### 17.1 Regenerate docs
+### Backend job persistence
 
-`scripts/regenerate-docs.sh` (bash) or `scripts/regenerate-docs.ps1` (PowerShell) runs:
+The current async job store (`JOBS` dict in `backend/server.py`) is in-memory. All jobs are lost on backend restart. For production deployment, swap this for SQLite or Redis — the job object shape is well-defined and the swap is a single-layer change.
 
-1. Validates the frontend builds (`npx vite build`).
-2. (Optional) Takes Playwright screenshots if Playwright is installed.
-3. Bumps the docs timestamp in `docs/USER_GUIDE.md`.
-4. Stages the updated docs files for commit.
+### Zustand store architecture
 
-Wire it as a pre-commit hook via `.git/hooks/pre-commit` (sample lives in `scripts/git-hooks/pre-commit`).
-
-### 17.2 Backend job persistence
-
-The current async job store (`backend/server.py:JOBS`) is in-memory only. Jobs die on restart. For production you'd swap this for SQLite or Redis — the job dict shape is already well-defined, so the swap is a single layer change.
-
-### 17.3 Adding new effects
-
-Add an entry to `EFFECT_PARAM_BOUNDS` in `backend/server.py` with the parameter ranges, then extend `_build_filter()` with the FFmpeg command. The frontend FX chain in `StudioView.tsx` is a hardcoded list — add the new effect there with a label and color class.
-
-### 17.4 Memory / context notes
-
-The repo has a `CLAUDE.md` with project-specific guidance for Claude Code, plus a custom-stack memory note about this being a FastAPI+React layer on top of upstream SA3. Honor both.
+| Store | State owned |
+|---|---|
+| `useEditorStore` | Waveform editor tracks, clips, playhead, tool mode, snap, zoom, inpaint selection. |
+| `usePlayerStore` | HTMLAudioElement-based playback engine (load, play, pause, seek, loop). Shared by all playback sources. |
+| `usePlaybackStore` | Master volume and mute. Read by `playerStore`, the library player, and the sequencer master gain. |
+| `useLibraryStore` | IndexedDB-backed generation entries, search/filter/sort state, selected entry. |
+| `useGenerateStore` | Last generation metadata (filename, model, duration) for footer display. |
+| `useGenerateParamsStore` | All CREATE tab form field values. |
+| `useStudioStore` | EDIT tab source, output, process history. |
+| `useEditorPlaybackBridge` | Module-level callback registration (not a Zustand store) decoupling the footer from the editor to avoid circular dependencies. |
+| `usePianoRollStore` | Piano roll note list, BPM, grid length, playback state. |
+| `useMediaBucketStore` | Session-scoped file bucket items. |
+| `useBottomPanelStore` | Bottom panel open state, height, active tab. |
+| `useLogStore` | Processing log ring buffer. |
+| `useActiveViewStore` | Active left-panel tab (`create`, `edit`, `train`, `library`). |
 
 ---
 
-*Last updated: this file is regenerated by `scripts/regenerate-docs.{sh,ps1}` on each commit.*
+*Last updated: 2026-05-21. Maintained by the StableDAW development team.*

@@ -5,6 +5,8 @@ import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useActiveViewStore } from '../../state/activeViewStore';
+import { callEditorPlay, isEditorPlaybackRegistered } from '../../state/editorPlaybackBridge';
 
 const formatDuration = (sec: number | null | undefined): string => {
   if (sec == null || !Number.isFinite(sec) || sec < 0) return '--:--';
@@ -43,6 +45,12 @@ export const PlayerFooter: React.FC = () => {
   const lastDurationSec = useGenerateStore((s) => s.lastDurationSec);
   const lastModelName = useGenerateStore((s) => s.lastModelName);
 
+  // Editor mode — when the EDIT tab is active and editor bridge is registered,
+  // the first play click triggers an offline render into playerStore.
+  // After that, all transport (seek, skip, loop, volume) works natively.
+  const activeView = useActiveViewStore((s) => s.activeView);
+  const inEditorMode = activeView === 'edit' && isEditorPlaybackRegistered();
+
   // Volume → master gain (continuous).
   useEffect(() => {
     setMasterGain(isMuted ? 0 : volume / 100);
@@ -53,7 +61,6 @@ export const PlayerFooter: React.FC = () => {
     if (hasTrack) return;
     const entries = useLibraryStore.getState().entries;
     if (entries.length === 0) return;
-    // Find the newest library entry; if it matches the last generation, load it.
     const newest = entries.reduce((acc, e) => (e.timestamp.localeCompare(acc.timestamp) > 0 ? e : acc), entries[0]);
     if (newest) {
       void load(newest.audioBlob, { label: newest.title, entryId: newest.id });
@@ -62,7 +69,19 @@ export const PlayerFooter: React.FC = () => {
 
   const displayLabel = engineLabel ?? lastFilename ?? null;
   const displayDuration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
-  const progressPct = displayDuration > 0 ? Math.min(100, (currentTime / displayDuration) * 100) : 0;
+  const displayCurrentTime = currentTime;
+  const displayIsPlaying = isPlaying;
+  const progressPct = displayDuration > 0 ? Math.min(100, (displayCurrentTime / displayDuration) * 100) : 0;
+
+  const handleToggle = () => {
+    // In editor mode, if editor audio isn't loaded yet, trigger the offline render+play.
+    // Once loaded (entryId === 'editor-timeline'), toggle works natively.
+    if (inEditorMode && currentEntryId !== 'editor-timeline') {
+      callEditorPlay();
+    } else {
+      toggle();
+    }
+  };
 
   const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const el = progressRef.current;
@@ -88,8 +107,8 @@ export const PlayerFooter: React.FC = () => {
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-20 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center justify-between gap-8 group">
       {/* 1. Track Info & Actions */}
-      <div className="flex items-center gap-4 w-[300px] flex-shrink-0">
-        <div className="w-11 h-11 rounded-lg bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-white/5 flex items-center justify-center relative overflow-hidden group/thumb">
+      <div className="flex items-center gap-4 w-75 shrink-0">
+        <div className="w-11 h-11 rounded-lg bg-linear-to-br from-purple-500/20 to-blue-500/20 border border-white/5 flex items-center justify-center relative overflow-hidden group/thumb">
           <Music className="w-5 h-5 text-purple-400 group-hover/thumb:scale-110 transition-transform" />
           {isPlaying && (
             <motion.div
@@ -135,18 +154,18 @@ export const PlayerFooter: React.FC = () => {
           <button
             onClick={() => seekByFraction(0)}
             className="text-zinc-500 hover:text-white transition-colors disabled:opacity-30"
-            disabled={!hasTrack}
+            disabled={!inEditorMode && !hasTrack}
             title="Jump to start"
           >
             <SkipBack className="w-5 h-5 fill-current" />
           </button>
           <button
-            onClick={toggle}
-            disabled={!hasTrack}
+            onClick={handleToggle}
+            disabled={!inEditorMode && !hasTrack}
             className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-[0_0_15px_rgba(255,255,255,0.2)] disabled:opacity-40 disabled:pointer-events-none"
-            title={isPlaying ? 'Pause' : 'Play'}
+            title={displayIsPlaying ? 'Pause' : 'Play'}
           >
-            {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+            {displayIsPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
           </button>
           <button
             onClick={() => seekByFraction(1)}
@@ -172,15 +191,15 @@ export const PlayerFooter: React.FC = () => {
         </div>
 
         <div className="w-full flex items-center gap-3">
-          <span className="text-[10px] font-mono text-zinc-500 w-8 text-right">{formatDuration(currentTime)}</span>
+          <span className="text-[10px] font-mono text-zinc-500 w-8 text-right">{formatDuration(displayCurrentTime)}</span>
           <div
             ref={progressRef}
             onClick={handleProgressClick}
-            className="flex-1 h-[3px] bg-white/5 rounded-full relative group/bar cursor-pointer"
+            className="flex-1 h-0.75 bg-white/5 rounded-full relative group/bar cursor-pointer"
           >
             <div className="absolute inset-0 bg-white/5" />
             <div
-              className="absolute inset-y-0 left-0 bg-gradient-to-r from-purple-600 to-purple-400 rounded-full"
+              className="absolute inset-y-0 left-0 bg-linear-to-r from-purple-600 to-purple-400 rounded-full"
               style={{ width: `${progressPct}%` }}
             >
               <div className="hidden group-hover/bar:block absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-[0_0_8px_rgba(139,92,246,0.6)]" />
@@ -191,7 +210,7 @@ export const PlayerFooter: React.FC = () => {
       </div>
 
       {/* 3. Utilities */}
-      <div className="flex items-center justify-end gap-6 w-[320px] flex-shrink-0">
+      <div className="flex items-center justify-end gap-6 w-[320px] shrink-0">
         <div className="flex items-center gap-5">
           <div className="flex items-center gap-3">
             <button onClick={toggleMute} className="text-zinc-500 hover:text-white transition-colors" title={isMuted ? 'Unmute' : 'Mute'}>

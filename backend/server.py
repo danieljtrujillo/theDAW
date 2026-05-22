@@ -111,6 +111,22 @@ async def _load_audio_upload(upload: UploadFile):
     return (sr, waveform)
 
 
+def _audio_to_bytes(audio: torch.Tensor, sr: int, fmt: str) -> bytes:
+    """Encode a tensor to audio bytes via a named temp file.
+
+    torchaudio.save's type stubs declare the first argument as str | PathLike,
+    but the runtime implementation accepts BinaryIO in newer versions. Using a
+    named temp file keeps the call site properly typed and portable.
+    """
+    with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        torchaudio.save(tmp_path, audio, sr, format=fmt)
+        return Path(tmp_path).read_bytes()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
 @app.post("/api/generate")
 async def generate(
     prompt: str = Form(...),
@@ -231,19 +247,20 @@ async def generate(
             generate_args["inpaint_mask_start_seconds"] = mask_start
             generate_args["inpaint_mask_end_seconds"] = mask_end
 
+    if pipeline is None:
+        return JSONResponse({"error": model_load_error or "Model not loaded"}, status_code=503)
+
     audio = pipeline.generate(**generate_args)
-    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
+    audio = audio.float().clamp(-1, 1).squeeze(0).cpu()
 
     # Output format
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
 
-    buffer = io.BytesIO()
-    torchaudio.save(buffer, audio, sample_rate, format=fmt)
-    buffer.seek(0)
+    audio_bytes = _audio_to_bytes(audio, sample_rate, fmt)
 
     return StreamingResponse(
-        buffer,
+        io.BytesIO(audio_bytes),
         media_type=mime_map.get(fmt, "audio/wav"),
         headers={
             "Content-Disposition": f"attachment; filename=output_{seed}.{fmt}",
@@ -259,12 +276,12 @@ JOBS: dict[str, dict] = {}
 
 
 def _generate_to_bytes(generate_args: dict, file_format: str) -> tuple[bytes, str]:
+    if pipeline is None:
+        raise RuntimeError("Model not loaded")
     audio = pipeline.generate(**generate_args)
-    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
+    audio = audio.float().clamp(-1, 1).squeeze(0).cpu()
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
-    buf = io.BytesIO()
-    torchaudio.save(buf, audio, sample_rate, format=fmt)
-    return buf.getvalue(), fmt
+    return _audio_to_bytes(audio, sample_rate, fmt), fmt
 
 
 async def _run_generate_job(
@@ -380,10 +397,12 @@ async def get_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    # This endpoint is not implemented for autoencoder decode in this backend
-    raise HTTPException(
-        status_code=501, detail="Autoencoder decode not implemented in this backend."
-    )
+    return job
+
+
+@app.get("/api/autoencoder/info")
+async def autoencoder_info():
+    return {"available_autoencoders": [], "loaded_autoencoders": []}
 
 
 @app.get("/api/presets")

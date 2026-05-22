@@ -18,7 +18,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'bucket',     label: 'Media Bucket',       icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
 ];
 
-export const DAWCenterPanel: React.FC = () => {
+export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'sequencer'>('editor');
   const [bottomHeight, setBottomHeight] = useState(260);
@@ -65,7 +65,7 @@ export const DAWCenterPanel: React.FC = () => {
       <div className="flex-1 min-h-0 hardware-card flex flex-col pt-1">
 
         {/* Toolbar */}
-        <div className="flex items-center gap-2 mb-1 px-2 border-b border-white/5 pb-1 flex-shrink-0">
+        <div className="flex items-center gap-2 mb-1 px-2 border-b border-white/5 pb-1 shrink-0">
            <button
              onClick={() => setWorkspaceMode('editor')}
              className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
@@ -86,7 +86,7 @@ export const DAWCenterPanel: React.FC = () => {
 
         {/* Timeline body */}
         <div className="flex-1 min-h-0 relative">
-           {workspaceMode === 'editor' ? <WaveformEditor /> : <StepSequencer />}
+           {workspaceMode === 'editor' ? <WaveformEditor onSwitchTab={onSwitchTab} /> : <StepSequencer />}
         </div>
       </div>
 
@@ -122,12 +122,12 @@ export const DAWCenterPanel: React.FC = () => {
       {/* Bottom Panel — multi-tab */}
       {isBottomOpen && (
         <div
-          className="flex-shrink-0"
+          className="shrink-0"
           style={{ height: `${bottomHeight}px` }}
         >
-          <div className="hardware-card border-purple-500/20 bg-purple-500/[0.02] flex flex-col min-h-0 relative h-full !p-0">
+          <div className="hardware-card border-purple-500/20 bg-purple-500/2 flex flex-col min-h-0 relative h-full p-0!">
              {/* Tabs row */}
-             <div className="flex items-center justify-between border-b border-white/5 flex-shrink-0 bg-black/30">
+             <div className="flex items-center justify-between border-b border-white/5 shrink-0 bg-black/30">
                 <div className="flex">
                    {TAB_DEFS.map((t) => {
                      const Icon = t.icon;
