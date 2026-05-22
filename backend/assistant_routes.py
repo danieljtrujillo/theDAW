@@ -169,7 +169,9 @@ When the selected provider is Claude Code, you are not only a chat assistant. Yo
 CLAUDE_CMD = r"C:\Users\skream\AppData\Roaming\npm\claude.cmd"
 PROJECT_CWD = r"C:\Users\skream\projects\StableDAW"
 STABLE_AUDIO_SKILL_NAME = "stable-audio-3-mastery"
-STABLE_AUDIO_SKILL_PATH = Path(PROJECT_CWD) / ".claude" / "skills" / STABLE_AUDIO_SKILL_NAME / "SKILL.md"
+STABLE_AUDIO_SKILL_PATH = (
+    Path(PROJECT_CWD) / ".claude" / "skills" / STABLE_AUDIO_SKILL_NAME / "SKILL.md"
+)
 
 KEEPALIVE_INTERVAL = 15.0
 CLAUDE_MAX_TURNS = 25
@@ -271,14 +273,16 @@ PROVIDERS = {
 
 
 class ChatAttachment(BaseModel):
-    name: str               # original filename
-    mime: str               # MIME type
-    data: str               # base64-encoded file content
+    name: str  # original filename
+    mime: str  # MIME type
+    data: str  # base64-encoded file content
 
 
 class ChatMessage(BaseModel):
     role: str
-    content: Any  # str or list of content blocks for multimodal (audio_url, image_url, text)
+    content: (
+        Any  # str or list of content blocks for multimodal (audio_url, image_url, text)
+    )
 
 
 class ChatRequest(BaseModel):
@@ -288,12 +292,20 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     apiKey: Optional[str] = None
     effort: Optional[str] = CLAUDE_DEFAULT_EFFORT
-    claudeMode: Optional[str] = "interactive"  # interactive | persistent | resume | oneshot
+    claudeMode: Optional[str] = (
+        "interactive"  # interactive | persistent | resume | oneshot
+    )
     claudeSessionId: Optional[str] = None
     attachments: Optional[List[ChatAttachment]] = None
-    staged_attachments: Optional[list] = None  # internal; set by chat_stream before routing
-    skill_bootstrap_session_id: Optional[str] = None  # internal; set when Claude gets repo skill context
-    claude_resume_existing: bool = False  # internal; true when browser supplied an existing session id
+    staged_attachments: Optional[list] = (
+        None  # internal; set by chat_stream before routing
+    )
+    skill_bootstrap_session_id: Optional[str] = (
+        None  # internal; set when Claude gets repo skill context
+    )
+    claude_resume_existing: bool = (
+        False  # internal; true when browser supplied an existing session id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +400,12 @@ def _load_stable_audio_skill_text() -> str:
     try:
         _stable_audio_skill_text = STABLE_AUDIO_SKILL_PATH.read_text(encoding="utf-8")
     except OSError as exc:
-        logger.warning("[AssistantChat] Could not load %s skill from %s: %s",
-                       STABLE_AUDIO_SKILL_NAME, STABLE_AUDIO_SKILL_PATH, exc)
+        logger.warning(
+            "[AssistantChat] Could not load %s skill from %s: %s",
+            STABLE_AUDIO_SKILL_NAME,
+            STABLE_AUDIO_SKILL_PATH,
+            exc,
+        )
         _stable_audio_skill_text = ""
 
     return _stable_audio_skill_text
@@ -412,7 +428,9 @@ When you have repo/file access and a specific mode is needed, read the reference
 </skill>"""
 
 
-def _build_prompt(messages: List[ChatMessage], attachments: Optional[list] = None) -> str:
+def _build_prompt(
+    messages: List[ChatMessage], attachments: Optional[list] = None
+) -> str:
     """
     Build a prompt string from the message list.
 
@@ -565,12 +583,16 @@ def _claude_record_crash(session_id: str) -> None:
 def _claude_base_cmd_args(req: ChatRequest) -> list[str]:
     """Build common CLI args shared across all Claude modes."""
     args = [
-        "cmd", "/c", CLAUDE_CMD,
+        "cmd",
+        "/c",
+        CLAUDE_CMD,
         "--print",
-        "--output-format", "stream-json",
+        "--output-format",
+        "stream-json",
         "--include-partial-messages",
         "--verbose",
-        "--max-turns", str(CLAUDE_MAX_TURNS),
+        "--max-turns",
+        str(CLAUDE_MAX_TURNS),
         "--dangerously-skip-permissions",
     ]
     model = _resolve_claude_model(req)
@@ -639,12 +661,14 @@ def _parse_claude_event(data: dict) -> list[dict]:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use":
-                frames.append({
-                    "type": "function_call",
-                    "name": block.get("name", ""),
-                    "id": block.get("id", ""),
-                    "input": block.get("input", {}),
-                })
+                frames.append(
+                    {
+                        "type": "function_call",
+                        "name": block.get("name", ""),
+                        "id": block.get("id", ""),
+                        "input": block.get("input", {}),
+                    }
+                )
 
     elif msg_type == "content_block_delta":
         delta = data.get("delta", {})
@@ -654,11 +678,13 @@ def _parse_claude_event(data: dict) -> list[dict]:
                 frames.append({"type": "text_delta", "delta": text})
 
     elif msg_type == "tool_result":
-        frames.append({
-            "type": "function_result",
-            "tool_use_id": data.get("tool_use_id", ""),
-            "content": data.get("content", ""),
-        })
+        frames.append(
+            {
+                "type": "function_result",
+                "tool_use_id": data.get("tool_use_id", ""),
+                "content": data.get("content", ""),
+            }
+        )
 
     elif msg_type == "system":
         subtype = data.get("subtype", "")
@@ -672,11 +698,14 @@ def _parse_claude_event(data: dict) -> list[dict]:
             if mcp_servers:
                 detail.append(f"{len(mcp_servers)} MCP servers")
             if session_id:
-                frames.append({
-                    "type": "status",
-                    "message": "Claude Code session initialized" + (f" ({', '.join(detail)})" if detail else ""),
-                    "session_id": session_id,
-                })
+                frames.append(
+                    {
+                        "type": "status",
+                        "message": "Claude Code session initialized"
+                        + (f" ({', '.join(detail)})" if detail else ""),
+                        "session_id": session_id,
+                    }
+                )
 
     elif msg_type == "result":
         usage = data.get("usage", {})
@@ -721,18 +750,27 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
         else:
             session_id = str(uuid.uuid4())
             cmd_args.extend(["--session-id", session_id])
-            yield _sse_frame({
-                "type": "status",
-                "message": f"new Claude Code session: {session_id}",
-                "session_id": session_id,
-            })
+            yield _sse_frame(
+                {
+                    "type": "status",
+                    "message": f"new Claude Code session: {session_id}",
+                    "session_id": session_id,
+                }
+            )
 
     prompt = _build_prompt(req.messages, req.staged_attachments or [])
     if not prompt:
-        yield _sse_frame({"type": "error", "error": "No prompt content found in messages"})
+        yield _sse_frame(
+            {"type": "error", "error": "No prompt content found in messages"}
+        )
         return
 
-    yield _sse_frame({"type": "status", "message": f"thinking ({mode}, model={model}, effort={effort})..."})
+    yield _sse_frame(
+        {
+            "type": "status",
+            "message": f"thinking ({mode}, model={model}, effort={effort})...",
+        }
+    )
 
     process = None
     try:
@@ -741,12 +779,16 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            limit=10 * 1024 * 1024,  # 10 MB — avoids ValueError on long Claude JSON lines
+            limit=10
+            * 1024
+            * 1024,  # 10 MB — avoids ValueError on long Claude JSON lines
             cwd=PROJECT_CWD,
         )
 
         if process.stdout is None:
-            yield _sse_frame({"type": "error", "error": "Failed to capture Claude CLI stdout"})
+            yield _sse_frame(
+                {"type": "error", "error": "Failed to capture Claude CLI stdout"}
+            )
             return
 
         # Pipe prompt via stdin and close
@@ -754,7 +796,9 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
             process.stdin.write(prompt.encode("utf-8"))
             process.stdin.close()
             if req.skill_bootstrap_session_id:
-                _stable_audio_skill_bootstrapped_sessions.add(req.skill_bootstrap_session_id)
+                _stable_audio_skill_bootstrapped_sessions.add(
+                    req.skill_bootstrap_session_id
+                )
 
         last_keepalive = time.monotonic()
         start_time = time.monotonic()
@@ -763,15 +807,24 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
         while True:
             # Check client disconnect
             if await request.is_disconnected():
-                logger.info("[AssistantChat] Client disconnected, terminating Claude process")
+                logger.info(
+                    "[AssistantChat] Client disconnected, terminating Claude process"
+                )
                 await _terminate_claude_process(process)
                 return
 
             # Check timeout
             elapsed = time.monotonic() - start_time
             if elapsed > CLAUDE_TIMEOUT_S:
-                logger.warning("[AssistantChat] Claude stream timed out after %ds", int(elapsed))
-                yield _sse_frame({"type": "error", "error": f"Claude stream timed out after {int(elapsed)}s"})
+                logger.warning(
+                    "[AssistantChat] Claude stream timed out after %ds", int(elapsed)
+                )
+                yield _sse_frame(
+                    {
+                        "type": "error",
+                        "error": f"Claude stream timed out after {int(elapsed)}s",
+                    }
+                )
                 await _terminate_claude_process(process)
                 break
 
@@ -791,9 +844,16 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
 
             total_bytes_read += len(line_bytes)
             if total_bytes_read > CLAUDE_MAX_STDOUT_BYTES:
-                logger.warning("[AssistantChat] Claude stdout exceeded %d bytes, terminating",
-                               CLAUDE_MAX_STDOUT_BYTES)
-                yield _sse_frame({"type": "error", "error": "Claude output exceeded 10MB safety limit"})
+                logger.warning(
+                    "[AssistantChat] Claude stdout exceeded %d bytes, terminating",
+                    CLAUDE_MAX_STDOUT_BYTES,
+                )
+                yield _sse_frame(
+                    {
+                        "type": "error",
+                        "error": "Claude output exceeded 10MB safety limit",
+                    }
+                )
                 await _terminate_claude_process(process)
                 break
 
@@ -804,7 +864,9 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
-                logger.debug("[AssistantChat] Non-JSON line from Claude CLI: %s", line[:200])
+                logger.debug(
+                    "[AssistantChat] Non-JSON line from Claude CLI: %s", line[:200]
+                )
                 continue
 
             # Parse and emit SSE frames
@@ -828,9 +890,14 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
             stderr_output = stderr_bytes.decode("utf-8", errors="replace").strip()
 
         if process.returncode != 0 and stderr_output:
-            logger.error("[AssistantChat] Claude CLI exited with code %d: %s",
-                         process.returncode, stderr_output[:500])
-            yield _sse_frame({"type": "error", "error": f"Claude CLI error: {stderr_output[:500]}"})
+            logger.error(
+                "[AssistantChat] Claude CLI exited with code %d: %s",
+                process.returncode,
+                stderr_output[:500],
+            )
+            yield _sse_frame(
+                {"type": "error", "error": f"Claude CLI error: {stderr_output[:500]}"}
+            )
             return
 
         done_frame: dict = {
@@ -850,7 +917,9 @@ async def _stream_claude_spawn(req: ChatRequest, request: Request):
     except Exception as exc:
         logger.exception("[AssistantChat] Error in Claude spawn stream")
         yield _sse_frame({"type": "error", "error": str(exc)})
-        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+        yield _sse_frame(
+            {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        )
 
     finally:
         if process and process.returncode is None:
@@ -874,13 +943,17 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
 
     # Check crash backoff
     if _claude_should_refuse_restart(session_id):
-        yield _sse_frame({
-            "type": "error",
-            "error": f"Session {session_id} crashed {CLAUDE_CRASH_THRESHOLD}+ times "
-                     f"in {int(CLAUDE_CRASH_WINDOW_S)}s. Refusing restart. "
-                     "Try a new session or switch to oneshot mode.",
-        })
-        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+        yield _sse_frame(
+            {
+                "type": "error",
+                "error": f"Session {session_id} crashed {CLAUDE_CRASH_THRESHOLD}+ times "
+                f"in {int(CLAUDE_CRASH_WINDOW_S)}s. Refusing restart. "
+                "Try a new session or switch to oneshot mode.",
+            }
+        )
+        yield _sse_frame(
+            {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        )
         return
 
     # Get or create persistent process
@@ -892,11 +965,13 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
     if process is not None and process.returncode is None:
         current_config = _claude_process_configs.get(session_id)
         if current_config != desired_config:
-            yield _sse_frame({
-                "type": "status",
-                "message": f"restarting Claude Code for model={desired_model}, effort={desired_effort}",
-                "session_id": session_id,
-            })
+            yield _sse_frame(
+                {
+                    "type": "status",
+                    "message": f"restarting Claude Code for model={desired_model}, effort={desired_effort}",
+                    "session_id": session_id,
+                }
+            )
             await _terminate_claude_process(process)
             _claude_processes.pop(session_id, None)
             _claude_process_configs.pop(session_id, None)
@@ -906,20 +981,28 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
     if process is None or process.returncode is not None:
         # Need a new process
         if process is not None and process.returncode is not None:
-            logger.info("[AssistantChat] Claude persistent process for %s died (rc=%d), respawning",
-                        session_id, process.returncode)
+            logger.info(
+                "[AssistantChat] Claude persistent process for %s died (rc=%d), respawning",
+                session_id,
+                process.returncode,
+            )
             _claude_record_crash(session_id)
             _claude_processes.pop(session_id, None)
             _claude_process_configs.pop(session_id, None)
             _stable_audio_skill_bootstrapped_sessions.discard(session_id)
 
         cmd_args = [
-            "cmd", "/c", CLAUDE_CMD,
+            "cmd",
+            "/c",
+            CLAUDE_CMD,
             "--print",
-            "--output-format", "stream-json",
+            "--output-format",
+            "stream-json",
             "--include-partial-messages",
-            "--input-format", "stream-json",
-            "--max-turns", str(CLAUDE_MAX_TURNS),
+            "--input-format",
+            "stream-json",
+            "--max-turns",
+            str(CLAUDE_MAX_TURNS),
             "--dangerously-skip-permissions",
             "--verbose",
         ]
@@ -945,26 +1028,34 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            limit=10 * 1024 * 1024,  # 10 MB — avoids ValueError on long Claude JSON lines
+            limit=10
+            * 1024
+            * 1024,  # 10 MB — avoids ValueError on long Claude JSON lines
             cwd=PROJECT_CWD,
         )
         _claude_processes[session_id] = process
         _claude_process_configs[session_id] = desired_config
 
-        yield _sse_frame({
-            "type": "status",
-            "message": f"{'resumed' if req.claude_resume_existing else 'spawned'} {mode} process (model={model}, effort={effort}, session={session_id})",
-            "session_id": session_id,
-        })
+        yield _sse_frame(
+            {
+                "type": "status",
+                "message": f"{'resumed' if req.claude_resume_existing else 'spawned'} {mode} process (model={model}, effort={effort}, session={session_id})",
+                "session_id": session_id,
+            }
+        )
 
     if process.stdout is None or process.stdin is None:
-        yield _sse_frame({"type": "error", "error": "Failed to capture Claude CLI stdio"})
+        yield _sse_frame(
+            {"type": "error", "error": "Failed to capture Claude CLI stdio"}
+        )
         return
 
     # Build and send the user message as a JSON line
     prompt = _build_prompt(req.messages, req.staged_attachments or [])
     if not prompt:
-        yield _sse_frame({"type": "error", "error": "No prompt content found in messages"})
+        yield _sse_frame(
+            {"type": "error", "error": "No prompt content found in messages"}
+        )
         return
 
     user_payload = {
@@ -980,23 +1071,36 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
         process.stdin.write(message_line.encode("utf-8"))
         await process.stdin.drain()
         if req.skill_bootstrap_session_id:
-            _stable_audio_skill_bootstrapped_sessions.add(req.skill_bootstrap_session_id)
+            _stable_audio_skill_bootstrapped_sessions.add(
+                req.skill_bootstrap_session_id
+            )
     except (BrokenPipeError, ConnectionResetError, OSError) as exc:
-        logger.error("[AssistantChat] Failed to write to Claude persistent stdin: %s", exc)
+        logger.error(
+            "[AssistantChat] Failed to write to Claude persistent stdin: %s", exc
+        )
         _claude_record_crash(session_id)
         _claude_processes.pop(session_id, None)
         _claude_process_configs.pop(session_id, None)
-        yield _sse_frame({"type": "error", "error": f"Claude process stdin broken: {exc}"})
-        yield _sse_frame({
-            "type": "done",
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-            "session_id": session_id,
-        })
+        yield _sse_frame(
+            {"type": "error", "error": f"Claude process stdin broken: {exc}"}
+        )
+        yield _sse_frame(
+            {
+                "type": "done",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                "session_id": session_id,
+            }
+        )
         return
 
     model = desired_model
     effort = desired_effort
-    yield _sse_frame({"type": "status", "message": f"thinking ({mode}, model={model}, effort={effort})..."})
+    yield _sse_frame(
+        {
+            "type": "status",
+            "message": f"thinking ({mode}, model={model}, effort={effort})...",
+        }
+    )
 
     # Read stdout lines until we get a result event for this turn
     start_time = time.monotonic()
@@ -1007,7 +1111,9 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
         while True:
             # Check client disconnect
             if await request.is_disconnected():
-                logger.info("[AssistantChat] Client disconnected during persistent stream")
+                logger.info(
+                    "[AssistantChat] Client disconnected during persistent stream"
+                )
                 # Don't kill the process — it stays alive for future messages.
                 # But we do stop reading.
                 return
@@ -1015,8 +1121,16 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
             # Check timeout
             elapsed = time.monotonic() - start_time
             if elapsed > CLAUDE_TIMEOUT_S:
-                logger.warning("[AssistantChat] Claude persistent stream timed out after %ds", int(elapsed))
-                yield _sse_frame({"type": "error", "error": f"Claude stream timed out after {int(elapsed)}s"})
+                logger.warning(
+                    "[AssistantChat] Claude persistent stream timed out after %ds",
+                    int(elapsed),
+                )
+                yield _sse_frame(
+                    {
+                        "type": "error",
+                        "error": f"Claude stream timed out after {int(elapsed)}s",
+                    }
+                )
                 # Kill the process on timeout — it's stuck
                 await _terminate_claude_process(process)
                 _claude_processes.pop(session_id, None)
@@ -1039,8 +1153,11 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
             if not line_bytes:
                 # EOF — process died
                 detail = await _claude_exit_detail(process)
-                logger.warning("[AssistantChat] Claude persistent process EOF (session=%s): %s",
-                               session_id, detail)
+                logger.warning(
+                    "[AssistantChat] Claude persistent process EOF (session=%s): %s",
+                    session_id,
+                    detail,
+                )
                 _claude_record_crash(session_id)
                 _claude_processes.pop(session_id, None)
                 _claude_process_configs.pop(session_id, None)
@@ -1050,9 +1167,16 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
 
             total_bytes_read += len(line_bytes)
             if total_bytes_read > CLAUDE_MAX_STDOUT_BYTES:
-                logger.warning("[AssistantChat] Claude persistent stdout exceeded %d bytes",
-                               CLAUDE_MAX_STDOUT_BYTES)
-                yield _sse_frame({"type": "error", "error": "Claude output exceeded 10MB safety limit"})
+                logger.warning(
+                    "[AssistantChat] Claude persistent stdout exceeded %d bytes",
+                    CLAUDE_MAX_STDOUT_BYTES,
+                )
+                yield _sse_frame(
+                    {
+                        "type": "error",
+                        "error": "Claude output exceeded 10MB safety limit",
+                    }
+                )
                 await _terminate_claude_process(process)
                 _claude_processes.pop(session_id, None)
                 _claude_process_configs.pop(session_id, None)
@@ -1066,7 +1190,10 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
-                logger.debug("[AssistantChat] Non-JSON line from Claude persistent: %s", line[:200])
+                logger.debug(
+                    "[AssistantChat] Non-JSON line from Claude persistent: %s",
+                    line[:200],
+                )
                 continue
 
             # Parse and emit SSE frames
@@ -1083,29 +1210,38 @@ async def _stream_claude_persistent(req: ChatRequest, request: Request):
                 last_keepalive = now
 
         # Fell through without a result event
-        yield _sse_frame({
-            "type": "done",
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-            "session_id": session_id,
-        })
+        yield _sse_frame(
+            {
+                "type": "done",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                "session_id": session_id,
+            }
+        )
 
     except asyncio.CancelledError:
-        logger.info("[AssistantChat] Claude persistent stream cancelled (session=%s)", session_id)
+        logger.info(
+            "[AssistantChat] Claude persistent stream cancelled (session=%s)",
+            session_id,
+        )
         # Don't kill the process on cancel — it persists
         raise
 
     except Exception as exc:
-        logger.exception("[AssistantChat] Error in Claude persistent stream (session=%s)", session_id)
+        logger.exception(
+            "[AssistantChat] Error in Claude persistent stream (session=%s)", session_id
+        )
         _claude_record_crash(session_id)
         _claude_processes.pop(session_id, None)
         _claude_process_configs.pop(session_id, None)
         _stable_audio_skill_bootstrapped_sessions.discard(session_id)
         yield _sse_frame({"type": "error", "error": str(exc)})
-        yield _sse_frame({
-            "type": "done",
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-            "session_id": session_id,
-        })
+        yield _sse_frame(
+            {
+                "type": "done",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                "session_id": session_id,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1125,7 +1261,9 @@ async def _stream_claude(req: ChatRequest, request: Request):
             yield frame
     else:
         yield _sse_frame({"type": "error", "error": f"Unknown claudeMode: {mode}"})
-        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+        yield _sse_frame(
+            {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1133,28 +1271,338 @@ async def _stream_claude(req: ChatRequest, request: Request):
 # ---------------------------------------------------------------------------
 
 STABLEDAW_TOOLS = [
-    {"type": "function", "function": {"name": "navigate", "description": "Switch the active tab/view in StableDAW", "parameters": {"type": "object", "properties": {"tab": {"type": "string", "enum": ["create", "edit", "train", "library", "advanced"], "description": "Tab to navigate to"}}, "required": ["tab"]}}},
-    {"type": "function", "function": {"name": "open_docs", "description": "Open the StableDAW documentation modal", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "close_docs", "description": "Close the StableDAW documentation modal", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "open_left_panel", "description": "Open the left app panel that contains the generation tabs", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "close_left_panel", "description": "Collapse the left app panel", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "set_prompt", "description": "Set the audio generation prompt text", "parameters": {"type": "object", "properties": {"prompt": {"type": "string", "description": "The text prompt for audio generation"}}, "required": ["prompt"]}}},
-    {"type": "function", "function": {"name": "append_prompt", "description": "Append descriptive text to the current audio prompt", "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Text to append to the current prompt"}}, "required": ["text"]}}},
-    {"type": "function", "function": {"name": "improve_prompt", "description": "Replace the current prompt with an improved production-ready audio prompt", "parameters": {"type": "object", "properties": {"prompt": {"type": "string", "description": "Improved prompt"}, "negative_prompt": {"type": "string", "description": "Optional negative prompt"}}, "required": ["prompt"]}}},
-    {"type": "function", "function": {"name": "set_negative_prompt", "description": "Set the negative prompt (what to avoid in generation)", "parameters": {"type": "object", "properties": {"prompt": {"type": "string", "description": "Negative prompt text"}}, "required": ["prompt"]}}},
-    {"type": "function", "function": {"name": "set_model", "description": "Set the audio generation model", "parameters": {"type": "object", "properties": {"model": {"type": "string", "enum": ["small", "medium", "small-rf", "medium-rf"], "description": "Model name"}}, "required": ["model"]}}},
-    {"type": "function", "function": {"name": "set_duration", "description": "Set audio generation duration in seconds (1-180)", "parameters": {"type": "object", "properties": {"duration": {"type": "number", "description": "Duration in seconds"}}, "required": ["duration"]}}},
-    {"type": "function", "function": {"name": "set_steps", "description": "Set diffusion sampling steps", "parameters": {"type": "object", "properties": {"steps": {"type": "integer", "description": "Number of diffusion steps"}}, "required": ["steps"]}}},
-    {"type": "function", "function": {"name": "set_cfg", "description": "Set classifier-free guidance scale", "parameters": {"type": "object", "properties": {"cfg": {"type": "number", "description": "CFG scale value"}}, "required": ["cfg"]}}},
-    {"type": "function", "function": {"name": "set_seed", "description": "Set generation seed (-1 for random)", "parameters": {"type": "object", "properties": {"seed": {"type": "integer", "description": "Seed value, -1 for random"}}, "required": ["seed"]}}},
-    {"type": "function", "function": {"name": "set_batch", "description": "Set batch size for generation", "parameters": {"type": "object", "properties": {"batch": {"type": "integer", "description": "Batch size"}}, "required": ["batch"]}}},
-    {"type": "function", "function": {"name": "set_sampler", "description": "Set the diffusion sampler type", "parameters": {"type": "object", "properties": {"sampler": {"type": "string", "enum": ["pingpong", "euler", "rk4", "dpmpp"], "description": "Sampler type"}}, "required": ["sampler"]}}},
-    {"type": "function", "function": {"name": "set_shift_mode", "description": "Set timestep shift mode", "parameters": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["LogSNR", "Flux", "Full", "None"], "description": "Shift mode"}}, "required": ["mode"]}}},
-    {"type": "function", "function": {"name": "set_init_noise", "description": "Set init noise level for audio-to-audio (0=keep original, 1=full noise)", "parameters": {"type": "object", "properties": {"noise": {"type": "number", "description": "Noise level 0.0-1.0"}}, "required": ["noise"]}}},
-    {"type": "function", "function": {"name": "set_params", "description": "Set multiple generation parameters at once, including advanced settings", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}, "model": {"type": "string"}, "duration": {"type": "number"}, "steps": {"type": "integer"}, "cfg": {"type": "number"}, "seed": {"type": "integer"}, "batch": {"type": "integer"}, "sampler": {"type": "string"}, "sigma_max": {"type": "number"}, "duration_padding_sec": {"type": "number"}, "apg_scale": {"type": "number"}, "cfg_rescale": {"type": "number"}, "cfg_norm_threshold": {"type": "number"}, "cfg_interval_min": {"type": "number"}, "cfg_interval_max": {"type": "number"}, "shift_mode": {"type": "string"}, "logsnr_anchor_length": {"type": "number"}, "logsnr_anchor_logsnr": {"type": "number"}, "logsnr_rate": {"type": "number"}, "logsnr_end": {"type": "number"}, "flux_min_len": {"type": "number"}, "flux_max_len": {"type": "number"}, "flux_alpha_min": {"type": "number"}, "flux_alpha_max": {"type": "number"}, "full_base_shift": {"type": "number"}, "full_max_shift": {"type": "number"}, "full_min_len": {"type": "number"}, "full_max_len": {"type": "number"}, "init_noise": {"type": "number"}, "inversion_steps": {"type": "number"}, "inversion_gamma": {"type": "number"}, "inversion_unconditional": {"type": "boolean"}, "file_format": {"type": "string"}, "file_naming": {"type": "string"}, "cut_to_duration": {"type": "boolean"}}}}},
-    {"type": "function", "function": {"name": "generate", "description": "Start audio generation with current parameters", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "abort", "description": "Cancel the current audio generation", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "get_status", "description": "Get current generation status and parameters", "parameters": {"type": "object", "properties": {}}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "navigate",
+            "description": "Switch the active tab/view in StableDAW",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab": {
+                        "type": "string",
+                        "enum": ["create", "edit", "train", "library", "advanced"],
+                        "description": "Tab to navigate to",
+                    }
+                },
+                "required": ["tab"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_docs",
+            "description": "Open the StableDAW documentation modal",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_docs",
+            "description": "Close the StableDAW documentation modal",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_left_panel",
+            "description": "Open the left app panel that contains the generation tabs",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_left_panel",
+            "description": "Collapse the left app panel",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_prompt",
+            "description": "Set the audio generation prompt text",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The text prompt for audio generation",
+                    }
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_prompt",
+            "description": "Append descriptive text to the current audio prompt",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to append to the current prompt",
+                    }
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "improve_prompt",
+            "description": "Replace the current prompt with an improved production-ready audio prompt",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Improved prompt"},
+                    "negative_prompt": {
+                        "type": "string",
+                        "description": "Optional negative prompt",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_negative_prompt",
+            "description": "Set the negative prompt (what to avoid in generation)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Negative prompt text"}
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_model",
+            "description": "Set the audio generation model",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "enum": ["small", "medium", "small-rf", "medium-rf"],
+                        "description": "Model name",
+                    }
+                },
+                "required": ["model"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_duration",
+            "description": "Set audio generation duration in seconds (1-180)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration": {"type": "number", "description": "Duration in seconds"}
+                },
+                "required": ["duration"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_steps",
+            "description": "Set diffusion sampling steps",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "integer",
+                        "description": "Number of diffusion steps",
+                    }
+                },
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_cfg",
+            "description": "Set classifier-free guidance scale",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cfg": {"type": "number", "description": "CFG scale value"}
+                },
+                "required": ["cfg"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_seed",
+            "description": "Set generation seed (-1 for random)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seed": {
+                        "type": "integer",
+                        "description": "Seed value, -1 for random",
+                    }
+                },
+                "required": ["seed"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_batch",
+            "description": "Set batch size for generation",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "batch": {"type": "integer", "description": "Batch size"}
+                },
+                "required": ["batch"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_sampler",
+            "description": "Set the diffusion sampler type",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sampler": {
+                        "type": "string",
+                        "enum": ["pingpong", "euler", "rk4", "dpmpp"],
+                        "description": "Sampler type",
+                    }
+                },
+                "required": ["sampler"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_shift_mode",
+            "description": "Set timestep shift mode",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["LogSNR", "Flux", "Full", "None"],
+                        "description": "Shift mode",
+                    }
+                },
+                "required": ["mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_init_noise",
+            "description": "Set init noise level for audio-to-audio (0=keep original, 1=full noise)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "noise": {"type": "number", "description": "Noise level 0.0-1.0"}
+                },
+                "required": ["noise"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_params",
+            "description": "Set multiple generation parameters at once, including advanced settings",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "negative_prompt": {"type": "string"},
+                    "model": {"type": "string"},
+                    "duration": {"type": "number"},
+                    "steps": {"type": "integer"},
+                    "cfg": {"type": "number"},
+                    "seed": {"type": "integer"},
+                    "batch": {"type": "integer"},
+                    "sampler": {"type": "string"},
+                    "sigma_max": {"type": "number"},
+                    "duration_padding_sec": {"type": "number"},
+                    "apg_scale": {"type": "number"},
+                    "cfg_rescale": {"type": "number"},
+                    "cfg_norm_threshold": {"type": "number"},
+                    "cfg_interval_min": {"type": "number"},
+                    "cfg_interval_max": {"type": "number"},
+                    "shift_mode": {"type": "string"},
+                    "logsnr_anchor_length": {"type": "number"},
+                    "logsnr_anchor_logsnr": {"type": "number"},
+                    "logsnr_rate": {"type": "number"},
+                    "logsnr_end": {"type": "number"},
+                    "flux_min_len": {"type": "number"},
+                    "flux_max_len": {"type": "number"},
+                    "flux_alpha_min": {"type": "number"},
+                    "flux_alpha_max": {"type": "number"},
+                    "full_base_shift": {"type": "number"},
+                    "full_max_shift": {"type": "number"},
+                    "full_min_len": {"type": "number"},
+                    "full_max_len": {"type": "number"},
+                    "init_noise": {"type": "number"},
+                    "inversion_steps": {"type": "number"},
+                    "inversion_gamma": {"type": "number"},
+                    "inversion_unconditional": {"type": "boolean"},
+                    "file_format": {"type": "string"},
+                    "file_naming": {"type": "string"},
+                    "cut_to_duration": {"type": "boolean"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate",
+            "description": "Start audio generation with current parameters",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "abort",
+            "description": "Cancel the current audio generation",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_status",
+            "description": "Get current generation status and parameters",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -1178,17 +1626,21 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
     is_local = cfg["base_url"].startswith("http://localhost")
     model = req.model or cfg["default_model"]
     if not model:
-        yield _sse_frame({"type": "error", "error": f"No model specified for {provider_id}"})
+        yield _sse_frame(
+            {"type": "error", "error": f"No model specified for {provider_id}"}
+        )
         return
 
     messages_payload = [{"role": m.role, "content": m.content} for m in req.messages]
     url = _chat_url(provider_id)
     label = cfg["label"]
 
-    max_key_retries = (len(key_pool.get_raw_keys(provider_id)) or 1) if provider_id == "gemini" else 1
+    max_key_retries = (
+        (len(key_pool.get_raw_keys(provider_id)) or 1) if provider_id == "gemini" else 1
+    )
 
     for key_attempt in range(max_key_retries):
-        api_key = _get_api_key(provider_id, getattr(req, 'apiKey', None))
+        api_key = _get_api_key(provider_id, getattr(req, "apiKey", None))
 
         if not is_local and not api_key:
             env_key = cfg.get("env_key", "???")
@@ -1203,7 +1655,9 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
             headers["X-Title"] = "StableDAW Assistant"
 
         if key_attempt == 0:
-            yield _sse_frame({"type": "status", "message": f"Connecting to {label} ({model})..."})
+            yield _sse_frame(
+                {"type": "status", "message": f"Connecting to {label} ({model})..."}
+            )
 
         try:
             request_json: dict = {
@@ -1213,32 +1667,53 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                 "tools": STABLEDAW_TOOLS,
             }
 
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0)
+            ) as client:
                 async with client.stream(
                     "POST",
                     url,
                     headers=headers,
                     json=request_json,
                 ) as response:
-                    if response.status_code == 429 and key_attempt + 1 < max_key_retries:
+                    if (
+                        response.status_code == 429
+                        and key_attempt + 1 < max_key_retries
+                    ):
                         body = await response.aread()
                         if api_key:
                             key_pool.report_failure(provider_id, api_key, 429)
-                        logger.info("[AssistantChat] %s 429 on key attempt %d, rotating", label, key_attempt + 1)
-                        yield _sse_frame({"type": "status", "message": f"Key rate-limited, trying next key ({key_attempt + 2}/{max_key_retries})..."})
+                        logger.info(
+                            "[AssistantChat] %s 429 on key attempt %d, rotating",
+                            label,
+                            key_attempt + 1,
+                        )
+                        yield _sse_frame(
+                            {
+                                "type": "status",
+                                "message": f"Key rate-limited, trying next key ({key_attempt + 2}/{max_key_retries})...",
+                            }
+                        )
                         continue
 
                     if response.status_code != 200:
                         body = await response.aread()
-                        err_text = body.decode('utf-8', errors='replace')[:500]
+                        err_text = body.decode("utf-8", errors="replace")[:500]
                         # If tools not supported, retry without them
-                        if response.status_code == 400 and ("tool" in err_text.lower() or "function" in err_text.lower()):
-                            logger.info("[AssistantChat] %s doesn't support tools, retrying without", label)
+                        if response.status_code == 400 and (
+                            "tool" in err_text.lower() or "function" in err_text.lower()
+                        ):
+                            logger.info(
+                                "[AssistantChat] %s doesn't support tools, retrying without",
+                                label,
+                            )
                         else:
-                            yield _sse_frame({
-                                "type": "error",
-                                "error": f"{label} {response.status_code}: {err_text}",
-                            })
+                            yield _sse_frame(
+                                {
+                                    "type": "error",
+                                    "error": f"{label} {response.status_code}: {err_text}",
+                                }
+                            )
                             return
 
                     if response.status_code != 200:
@@ -1270,7 +1745,9 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                                         delta = choices[0].get("delta", {})
                                         text = delta.get("content", "")
                                         if text:
-                                            yield _sse_frame({"type": "text_delta", "delta": text})
+                                            yield _sse_frame(
+                                                {"type": "text_delta", "delta": text}
+                                            )
 
                                         # Handle streamed tool calls
                                         for tc in delta.get("tool_calls", []):
@@ -1278,7 +1755,9 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                                             if idx not in tool_calls_acc:
                                                 tool_calls_acc[idx] = {
                                                     "id": tc.get("id", ""),
-                                                    "name": tc.get("function", {}).get("name", ""),
+                                                    "name": tc.get("function", {}).get(
+                                                        "name", ""
+                                                    ),
                                                     "arguments": "",
                                                 }
                                             acc = tool_calls_acc[idx]
@@ -1291,63 +1770,108 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                                                 acc["arguments"] += fn["arguments"]
 
                                         finish_reason = choices[0].get("finish_reason")
-                                        if finish_reason == "tool_calls" or finish_reason == "function_call":
+                                        if (
+                                            finish_reason == "tool_calls"
+                                            or finish_reason == "function_call"
+                                        ):
                                             # Execute all accumulated tool calls as actions
-                                            for _idx, tc_data in sorted(tool_calls_acc.items()):
+                                            for _idx, tc_data in sorted(
+                                                tool_calls_acc.items()
+                                            ):
                                                 try:
-                                                    args = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+                                                    args = (
+                                                        json.loads(tc_data["arguments"])
+                                                        if tc_data["arguments"]
+                                                        else {}
+                                                    )
                                                 except json.JSONDecodeError:
                                                     args = {}
-                                                yield _sse_frame({
-                                                    "type": "action",
-                                                    "action_type": tc_data["name"],
-                                                    "payload": args,
-                                                })
+                                                yield _sse_frame(
+                                                    {
+                                                        "type": "action",
+                                                        "action_type": tc_data["name"],
+                                                        "payload": args,
+                                                    }
+                                                )
                                             usage = data.get("usage") or {}
-                                            yield _sse_frame({
-                                                "type": "done",
-                                                "usage": {
-                                                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                                                    "completion_tokens": usage.get("completion_tokens", 0),
-                                                },
-                                            })
+                                            yield _sse_frame(
+                                                {
+                                                    "type": "done",
+                                                    "usage": {
+                                                        "prompt_tokens": usage.get(
+                                                            "prompt_tokens", 0
+                                                        ),
+                                                        "completion_tokens": usage.get(
+                                                            "completion_tokens", 0
+                                                        ),
+                                                    },
+                                                }
+                                            )
                                             return
                                         elif finish_reason:
                                             # Also check if there are pending tool calls on normal stop
-                                            for _idx, tc_data in sorted(tool_calls_acc.items()):
+                                            for _idx, tc_data in sorted(
+                                                tool_calls_acc.items()
+                                            ):
                                                 try:
-                                                    args = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+                                                    args = (
+                                                        json.loads(tc_data["arguments"])
+                                                        if tc_data["arguments"]
+                                                        else {}
+                                                    )
                                                 except json.JSONDecodeError:
                                                     args = {}
-                                                yield _sse_frame({
-                                                    "type": "action",
-                                                    "action_type": tc_data["name"],
-                                                    "payload": args,
-                                                })
+                                                yield _sse_frame(
+                                                    {
+                                                        "type": "action",
+                                                        "action_type": tc_data["name"],
+                                                        "payload": args,
+                                                    }
+                                                )
                                             usage = data.get("usage") or {}
-                                            yield _sse_frame({
-                                                "type": "done",
-                                                "usage": {
-                                                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                                                    "completion_tokens": usage.get("completion_tokens", 0),
-                                                },
-                                            })
+                                            yield _sse_frame(
+                                                {
+                                                    "type": "done",
+                                                    "usage": {
+                                                        "prompt_tokens": usage.get(
+                                                            "prompt_tokens", 0
+                                                        ),
+                                                        "completion_tokens": usage.get(
+                                                            "completion_tokens", 0
+                                                        ),
+                                                    },
+                                                }
+                                            )
                                             return
                                 except json.JSONDecodeError:
                                     continue
 
-                        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+                        yield _sse_frame(
+                            {
+                                "type": "done",
+                                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                            }
+                        )
                         return
 
             # Retry without tools if we fell through due to tool support error
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0)
+            ) as client:
                 async with client.stream(
-                    "POST", url, headers=headers,
+                    "POST",
+                    url,
+                    headers=headers,
                     json={"model": model, "messages": messages_payload, "stream": True},
                 ) as response:
                     if response.status_code != 200:
                         body = await response.aread()
-                        yield _sse_frame({"type": "error", "error": f"{label} {response.status_code}: {body.decode('utf-8', errors='replace')[:500]}"})
+                        yield _sse_frame(
+                            {
+                                "type": "error",
+                                "error": f"{label} {response.status_code}: {body.decode('utf-8', errors='replace')[:500]}",
+                            }
+                        )
                         return
                     buffer = ""
                     async for chunk in response.aiter_text():
@@ -1368,28 +1892,59 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                                     delta = choices[0].get("delta", {})
                                     text = delta.get("content", "")
                                     if text:
-                                        yield _sse_frame({"type": "text_delta", "delta": text})
+                                        yield _sse_frame(
+                                            {"type": "text_delta", "delta": text}
+                                        )
                                     if choices[0].get("finish_reason"):
                                         usage = data.get("usage") or {}
-                                        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": usage.get("prompt_tokens", 0), "completion_tokens": usage.get("completion_tokens", 0)}})
+                                        yield _sse_frame(
+                                            {
+                                                "type": "done",
+                                                "usage": {
+                                                    "prompt_tokens": usage.get(
+                                                        "prompt_tokens", 0
+                                                    ),
+                                                    "completion_tokens": usage.get(
+                                                        "completion_tokens", 0
+                                                    ),
+                                                },
+                                            }
+                                        )
                                         return
                             except json.JSONDecodeError:
                                 continue
-            yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+            yield _sse_frame(
+                {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+            )
             return
 
         except httpx.ConnectError:
             if is_local:
-                yield _sse_frame({"type": "error", "error": f"{label} is not running at {cfg['base_url']}"})
+                yield _sse_frame(
+                    {
+                        "type": "error",
+                        "error": f"{label} is not running at {cfg['base_url']}",
+                    }
+                )
             else:
-                yield _sse_frame({"type": "error", "error": f"Cannot connect to {label}"})
-            yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+                yield _sse_frame(
+                    {"type": "error", "error": f"Cannot connect to {label}"}
+                )
+            yield _sse_frame(
+                {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+            )
             return
 
         except Exception as exc:
-            logger.exception("[AssistantChat] %s streaming error (key attempt %d)", label, key_attempt + 1)
+            logger.exception(
+                "[AssistantChat] %s streaming error (key attempt %d)",
+                label,
+                key_attempt + 1,
+            )
             yield _sse_frame({"type": "error", "error": str(exc)})
-            yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+            yield _sse_frame(
+                {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+            )
             return
 
 
@@ -1408,7 +1963,7 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
     - Requires `x-api-key` and `anthropic-version` headers
     """
     cfg = PROVIDERS["anthropic"]
-    api_key = _get_api_key("anthropic", getattr(req, 'apiKey', None))
+    api_key = _get_api_key("anthropic", getattr(req, "apiKey", None))
     if not api_key:
         yield _sse_frame({"type": "error", "error": "ANTHROPIC_API_KEY not set"})
         return
@@ -1426,7 +1981,9 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
 
     # Anthropic requires at least one non-system message
     if not non_system_messages:
-        yield _sse_frame({"type": "error", "error": "No user/assistant messages provided"})
+        yield _sse_frame(
+            {"type": "error", "error": "No user/assistant messages provided"}
+        )
         return
 
     url = f"{cfg['base_url']}/v1/messages"
@@ -1440,11 +1997,13 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
     anthropic_tools = []
     for t in STABLEDAW_TOOLS:
         fn = t["function"]
-        anthropic_tools.append({
-            "name": fn["name"],
-            "description": fn["description"],
-            "input_schema": fn["parameters"],
-        })
+        anthropic_tools.append(
+            {
+                "name": fn["name"],
+                "description": fn["description"],
+                "input_schema": fn["parameters"],
+            }
+        )
 
     body: dict = {
         "model": model,
@@ -1456,10 +2015,14 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
     if system_parts:
         body["system"] = "\n\n".join(system_parts)
 
-    yield _sse_frame({"type": "status", "message": f"Connecting to Anthropic ({model})..."})
+    yield _sse_frame(
+        {"type": "status", "message": f"Connecting to Anthropic ({model})..."}
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0)
+        ) as client:
             async with client.stream(
                 "POST",
                 url,
@@ -1468,14 +2031,19 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
             ) as response:
                 if response.status_code != 200:
                     err_body = await response.aread()
-                    yield _sse_frame({
-                        "type": "error",
-                        "error": f"Anthropic {response.status_code}: {err_body.decode('utf-8', errors='replace')[:500]}",
-                    })
+                    yield _sse_frame(
+                        {
+                            "type": "error",
+                            "error": f"Anthropic {response.status_code}: {err_body.decode('utf-8', errors='replace')[:500]}",
+                        }
+                    )
                     return
 
                 buffer = ""
-                usage_data: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
+                usage_data: dict[str, int] = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                }
                 anthropic_tool_acc: Optional[dict] = None
 
                 async for chunk in response.aiter_text():
@@ -1504,28 +2072,47 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
                         if event_type == "content_block_start":
                             cb = data.get("content_block", {})
                             if cb.get("type") == "tool_use":
-                                anthropic_tool_acc = {"name": cb.get("name", ""), "input_json": ""}
+                                anthropic_tool_acc = {
+                                    "name": cb.get("name", ""),
+                                    "input_json": "",
+                                }
 
                         elif event_type == "content_block_delta":
                             delta = data.get("delta", {})
                             if delta.get("type") == "text_delta":
                                 text = delta.get("text", "")
                                 if text:
-                                    yield _sse_frame({"type": "text_delta", "delta": text})
-                            elif delta.get("type") == "input_json_delta" and anthropic_tool_acc is not None:
-                                anthropic_tool_acc["input_json"] += delta.get("partial_json", "")
+                                    yield _sse_frame(
+                                        {"type": "text_delta", "delta": text}
+                                    )
+                            elif (
+                                delta.get("type") == "input_json_delta"
+                                and anthropic_tool_acc is not None
+                            ):
+                                anthropic_tool_acc["input_json"] += delta.get(
+                                    "partial_json", ""
+                                )
 
                         elif event_type == "content_block_stop":
-                            if anthropic_tool_acc is not None and anthropic_tool_acc.get("name"):
+                            if (
+                                anthropic_tool_acc is not None
+                                and anthropic_tool_acc.get("name")
+                            ):
                                 try:
-                                    args = json.loads(anthropic_tool_acc["input_json"]) if anthropic_tool_acc["input_json"] else {}
+                                    args = (
+                                        json.loads(anthropic_tool_acc["input_json"])
+                                        if anthropic_tool_acc["input_json"]
+                                        else {}
+                                    )
                                 except json.JSONDecodeError:
                                     args = {}
-                                yield _sse_frame({
-                                    "type": "action",
-                                    "action_type": anthropic_tool_acc["name"],
-                                    "payload": args,
-                                })
+                                yield _sse_frame(
+                                    {
+                                        "type": "action",
+                                        "action_type": anthropic_tool_acc["name"],
+                                        "payload": args,
+                                    }
+                                )
                                 anthropic_tool_acc = None
 
                         elif event_type == "message_delta":
@@ -1550,12 +2137,16 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
 
     except httpx.ConnectError:
         yield _sse_frame({"type": "error", "error": "Cannot connect to Anthropic API"})
-        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+        yield _sse_frame(
+            {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        )
 
     except Exception as exc:
         logger.exception("[AssistantChat] Anthropic streaming error")
         yield _sse_frame({"type": "error", "error": str(exc)})
-        yield _sse_frame({"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+        yield _sse_frame(
+            {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1563,18 +2154,80 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
 # ---------------------------------------------------------------------------
 
 CLAUDE_MODELS = [
-    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "capabilities": ["tools", "reasoning", "vision", "code", "long_context"]},
-    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "capabilities": ["tools", "reasoning", "vision", "code", "long_context"]},
-    {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "capabilities": ["tools", "vision", "code", "fast"]},
-    {"id": "sonnet", "name": "Sonnet (Latest)", "capabilities": ["tools", "reasoning", "vision", "code", "long_context"]},
-    {"id": "opus", "name": "Opus (Latest)", "capabilities": ["tools", "reasoning", "vision", "code", "long_context"]},
-    {"id": "haiku", "name": "Haiku (Latest)", "capabilities": ["tools", "vision", "code", "fast"]},
+    {
+        "id": "claude-opus-4-6",
+        "name": "Claude Opus 4.6",
+        "capabilities": ["tools", "reasoning", "vision", "code", "long_context"],
+    },
+    {
+        "id": "claude-sonnet-4-6",
+        "name": "Claude Sonnet 4.6",
+        "capabilities": ["tools", "reasoning", "vision", "code", "long_context"],
+    },
+    {
+        "id": "claude-haiku-4-5",
+        "name": "Claude Haiku 4.5",
+        "capabilities": ["tools", "vision", "code", "fast"],
+    },
+    {
+        "id": "sonnet",
+        "name": "Sonnet (Latest)",
+        "capabilities": ["tools", "reasoning", "vision", "code", "long_context"],
+    },
+    {
+        "id": "opus",
+        "name": "Opus (Latest)",
+        "capabilities": ["tools", "reasoning", "vision", "code", "long_context"],
+    },
+    {
+        "id": "haiku",
+        "name": "Haiku (Latest)",
+        "capabilities": ["tools", "vision", "code", "fast"],
+    },
 ]
 
 GEMINI_MODELS = [
-    {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "capabilities": ["tools", "reasoning", "vision", "audio_in", "video_in", "code", "long_context", "fast"]},
-    {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "capabilities": ["tools", "reasoning", "vision", "audio_in", "video_in", "code", "long_context"]},
-    {"id": "gemini-flash-recent", "name": "Gemini Flash (Latest)", "capabilities": ["tools", "reasoning", "vision", "audio_in", "video_in", "code", "long_context", "fast"]},
+    {
+        "id": "gemini-2.5-flash",
+        "name": "Gemini 2.5 Flash",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-2.5-pro",
+        "name": "Gemini 2.5 Pro",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+        ],
+    },
+    {
+        "id": "gemini-flash-recent",
+        "name": "Gemini Flash (Latest)",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
+        ],
+    },
 ]
 
 OPENAI_CAPS: dict[str, list[str]] = {
@@ -1612,7 +2265,9 @@ _openrouter_cache: dict = {"data": None, "ts": 0.0}
 _OPENROUTER_CACHE_TTL = 300.0  # seconds
 
 
-def _match_caps(model_id: str, caps_map: dict[str, list[str]], default: list[str]) -> list[str]:
+def _match_caps(
+    model_id: str, caps_map: dict[str, list[str]], default: list[str]
+) -> list[str]:
     """Look up capabilities for a model ID using longest-prefix match.
 
     Checks if any key in caps_map is a prefix of model_id, preferring the
@@ -1702,10 +2357,20 @@ def _enrich_anthropic_models(models: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 # Models to exclude from listings (non-chat)
-_SKIP_MODEL_KEYWORDS = ("embed", "rerank", "whisper", "tts", "sdxl", "flux", "stable-diffusion")
+_SKIP_MODEL_KEYWORDS = (
+    "embed",
+    "rerank",
+    "whisper",
+    "tts",
+    "sdxl",
+    "flux",
+    "stable-diffusion",
+)
 
 
-async def _fetch_openai_compat_models(base_url: str, models_path: str, api_key: str) -> list[dict]:
+async def _fetch_openai_compat_models(
+    base_url: str, models_path: str, api_key: str
+) -> list[dict]:
     """Fetch models from a standard OpenAI-compatible /v1/models endpoint."""
     url = f"{base_url}{models_path}"
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -1723,11 +2388,13 @@ async def _fetch_openai_compat_models(base_url: str, models_path: str, api_key: 
         mid = m.get("id", "")
         if any(kw in mid.lower() for kw in _SKIP_MODEL_KEYWORDS):
             continue
-        models.append({
-            "id": mid,
-            "name": m.get("name", mid),
-            "context_length": m.get("context_length", 0),
-        })
+        models.append(
+            {
+                "id": mid,
+                "name": m.get("name", mid),
+                "context_length": m.get("context_length", 0),
+            }
+        )
     return models
 
 
@@ -1736,7 +2403,10 @@ async def _fetch_openrouter_models(free_only: bool = False) -> dict:
     global _openrouter_cache
 
     now = time.monotonic()
-    if _openrouter_cache["data"] is not None and (now - _openrouter_cache["ts"]) < _OPENROUTER_CACHE_TTL:
+    if (
+        _openrouter_cache["data"] is not None
+        and (now - _openrouter_cache["ts"]) < _OPENROUTER_CACHE_TTL
+    ):
         data = _openrouter_cache["data"]
     else:
         cfg = PROVIDERS["openrouter"]
@@ -1798,7 +2468,10 @@ async def _fetch_ollama_models(base_url: str) -> list[dict]:
             raise ValueError(f"HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json().get("models", [])
 
-    return [{"id": m.get("name", ""), "name": m.get("name", ""), "context_length": 0} for m in data]
+    return [
+        {"id": m.get("name", ""), "name": m.get("name", ""), "context_length": 0}
+        for m in data
+    ]
 
 
 async def _fetch_gemini_models(api_key: str) -> list[dict]:
@@ -1835,7 +2508,10 @@ async def _fetch_anthropic_models(api_key: str) -> list[dict]:
             raise ValueError(f"HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json().get("data", [])
 
-    return [{"id": m.get("id", ""), "name": m.get("id", ""), "context_length": 0} for m in data]
+    return [
+        {"id": m.get("id", ""), "name": m.get("id", ""), "context_length": 0}
+        for m in data
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1846,6 +2522,7 @@ async def _fetch_anthropic_models(api_key: str) -> list[dict]:
 @router.get("/reindex")
 async def reindex_rag():
     from backend.rag import initialize_rag
+
     n = initialize_rag(force=True)
     return {"status": "ok", "chunks_indexed": n}
 
@@ -1856,21 +2533,25 @@ async def get_providers():
     result = []
     for pid, cfg in PROVIDERS.items():
         has_key = True
-        result.append({
-            "id": pid,
-            "label": cfg["label"],
-            "default_model": cfg["default_model"],
-            "has_key": has_key,
-            "is_local": cfg["base_url"].startswith("http://localhost"),
-        })
+        result.append(
+            {
+                "id": pid,
+                "label": cfg["label"],
+                "default_model": cfg["default_model"],
+                "has_key": has_key,
+                "is_local": cfg["base_url"].startswith("http://localhost"),
+            }
+        )
     # Claude Code (CLI-based, always available)
-    result.append({
-        "id": "claude",
-        "label": "Claude Code",
-        "default_model": CLAUDE_DEFAULT_MODEL,
-        "has_key": True,
-        "is_local": False,
-    })
+    result.append(
+        {
+            "id": "claude",
+            "label": "Claude Code",
+            "default_model": CLAUDE_DEFAULT_MODEL,
+            "has_key": True,
+            "is_local": False,
+        }
+    )
     return {"providers": result}
 
 
@@ -1892,12 +2573,16 @@ async def get_provider_models(provider_id: str):
             "model_ids": [m["id"] for m in models],
             "modes": ["interactive", "persistent", "resume", "oneshot"],
             "note": "Set claudeMode in chat request. interactive/persistent keep one warm "
-                "Claude Code stream-json process; resume/oneshot spawn per message.",
+            "Claude Code stream-json process; resume/oneshot spawn per message.",
             "error": None,
         }
 
     if not cfg:
-        return {"models": [], "model_ids": [], "error": f"Unknown provider: {provider_id}"}
+        return {
+            "models": [],
+            "model_ids": [],
+            "error": f"Unknown provider: {provider_id}",
+        }
 
     api_key = _get_api_key(provider_id)
     is_local = cfg["base_url"].startswith("http://localhost")
@@ -1909,7 +2594,9 @@ async def get_provider_models(provider_id: str):
     try:
         # --- OpenRouter (with free/paid split, already enriched) ---
         if provider_id in ("openrouter", "openrouter-free"):
-            result = await _fetch_openrouter_models(free_only=(provider_id == "openrouter-free"))
+            result = await _fetch_openrouter_models(
+                free_only=(provider_id == "openrouter-free")
+            )
             return result
 
         # --- Ollama (local, default capabilities) ---
@@ -1934,7 +2621,9 @@ async def get_provider_models(provider_id: str):
                     models = await _fetch_gemini_models(k)
                     if models:
                         key_pool.report_success("gemini", k)
-                        _enrich_models_with_caps(models, gemini_caps, ["tools", "vision", "code"])
+                        _enrich_models_with_caps(
+                            models, gemini_caps, ["tools", "vision", "code"]
+                        )
                         return {
                             "models": models,
                             "model_ids": [m["id"] for m in models],
@@ -1986,7 +2675,12 @@ async def get_provider_models(provider_id: str):
                             caps.append("structured_output")
 
                         arch = m.get("arch", "")
-                        if "qwen3vl" in arch or "glm4" in arch or "llava" in arch or "pixtral" in arch:
+                        if (
+                            "qwen3vl" in arch
+                            or "glm4" in arch
+                            or "llava" in arch
+                            or "pixtral" in arch
+                        ):
                             caps.append("vision")
 
                         ctx = m.get("max_context_length", 0)
@@ -2003,19 +2697,23 @@ async def get_provider_models(provider_id: str):
                         if state == "loaded":
                             name_parts.append("(active)")
 
-                        models.append({
-                            "id": m.get("id", ""),
-                            "name": " ".join(name_parts),
-                            "capabilities": list(dict.fromkeys(caps)),
-                            "context_length": ctx,
-                            "state": state,
-                            "type": model_type,
-                            "arch": arch,
-                            "quantization": quant,
-                            "publisher": m.get("publisher", ""),
-                        })
+                        models.append(
+                            {
+                                "id": m.get("id", ""),
+                                "name": " ".join(name_parts),
+                                "capabilities": list(dict.fromkeys(caps)),
+                                "context_length": ctx,
+                                "state": state,
+                                "type": model_type,
+                                "arch": arch,
+                                "quantization": quant,
+                                "publisher": m.get("publisher", ""),
+                            }
+                        )
 
-                    models.sort(key=lambda x: (0 if x["state"] == "loaded" else 1, x["id"]))
+                    models.sort(
+                        key=lambda x: (0 if x["state"] == "loaded" else 1, x["id"])
+                    )
 
                     return {
                         "models": models,
@@ -2023,12 +2721,17 @@ async def get_provider_models(provider_id: str):
                         "error": None,
                     }
             except Exception as lms_err:
-                logger.warning("[AssistantChat] LM Studio native API failed (%s), falling back to OpenAI compat", lms_err)
+                logger.warning(
+                    "[AssistantChat] LM Studio native API failed (%s), falling back to OpenAI compat",
+                    lms_err,
+                )
 
         # --- Standard OpenAI-compatible (openai, grok, groq, llamacpp, vllm) ---
         models_path = cfg.get("models_path")
         if models_path:
-            models = await _fetch_openai_compat_models(cfg["base_url"], models_path, api_key)
+            models = await _fetch_openai_compat_models(
+                cfg["base_url"], models_path, api_key
+            )
             caps_map = _PROVIDER_CAPS_MAP.get(provider_id, {})
             default_caps = ["tools", "code"]
             _enrich_models_with_caps(models, caps_map, default_caps)
@@ -2038,12 +2741,20 @@ async def get_provider_models(provider_id: str):
                 "error": None,
             }
 
-        return {"models": [], "model_ids": [], "error": f"No model discovery for {provider_id}"}
+        return {
+            "models": [],
+            "model_ids": [],
+            "error": f"No model discovery for {provider_id}",
+        }
 
     except httpx.ConnectError:
         label = cfg["label"]
         if is_local:
-            return {"models": [], "model_ids": [], "error": f"{label} is not running at {cfg['base_url']}"}
+            return {
+                "models": [],
+                "model_ids": [],
+                "error": f"{label} is not running at {cfg['base_url']}",
+            }
         return {"models": [], "model_ids": [], "error": f"Cannot connect to {label}"}
 
     except Exception as exc:
@@ -2101,6 +2812,7 @@ async def chat_stream(req: ChatRequest, request: Request):
         if user_text:
             try:
                 from backend.rag import format_context, retrieve
+
                 rag_chunks = await asyncio.to_thread(retrieve, user_text, 5)
                 rag_context = format_context(rag_chunks)
             except Exception:
@@ -2116,7 +2828,9 @@ async def chat_stream(req: ChatRequest, request: Request):
                 req.conversationId = claude_session_id
         include_skill_block = bool(skill_block)
         if claude_session_id:
-            include_skill_block = claude_session_id not in _stable_audio_skill_bootstrapped_sessions
+            include_skill_block = (
+                claude_session_id not in _stable_audio_skill_bootstrapped_sessions
+            )
             if include_skill_block:
                 req.skill_bootstrap_session_id = claude_session_id
 
@@ -2143,13 +2857,20 @@ async def chat_stream(req: ChatRequest, request: Request):
     # Stage file attachments once before routing to any provider
     req.staged_attachments = _stage_attachments(
         req.attachments,
-        _resolve_claude_session_id(req) if provider == "claude" else (req.conversationId or "default"),
+        _resolve_claude_session_id(req)
+        if provider == "claude"
+        else (req.conversationId or "default"),
     )
 
     if provider == "claude":
         mode = _resolve_claude_mode(req)
-        logger.info("[AssistantChat] Claude %s mode (model=%s, session=%s, messages=%d)",
-                     mode, req.model, _resolve_claude_session_id(req), len(req.messages))
+        logger.info(
+            "[AssistantChat] Claude %s mode (model=%s, session=%s, messages=%d)",
+            mode,
+            req.model,
+            _resolve_claude_session_id(req),
+            len(req.messages),
+        )
         return StreamingResponse(
             _stream_claude(req, request),
             media_type="text/event-stream",
@@ -2157,8 +2878,11 @@ async def chat_stream(req: ChatRequest, request: Request):
         )
 
     if provider == "anthropic":
-        logger.info("[AssistantChat] Starting Anthropic stream (model=%s, messages=%d)",
-                     req.model, len(req.messages))
+        logger.info(
+            "[AssistantChat] Starting Anthropic stream (model=%s, messages=%d)",
+            req.model,
+            len(req.messages),
+        )
         return StreamingResponse(
             _stream_anthropic(req, request),
             media_type="text/event-stream",
@@ -2166,8 +2890,12 @@ async def chat_stream(req: ChatRequest, request: Request):
         )
 
     if provider in PROVIDERS:
-        logger.info("[AssistantChat] Starting %s stream (model=%s, messages=%d)",
-                     PROVIDERS[provider]["label"], req.model, len(req.messages))
+        logger.info(
+            "[AssistantChat] Starting %s stream (model=%s, messages=%d)",
+            PROVIDERS[provider]["label"],
+            req.model,
+            len(req.messages),
+        )
         return StreamingResponse(
             _stream_openai_compat(req, request, provider),
             media_type="text/event-stream",

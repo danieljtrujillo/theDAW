@@ -29,7 +29,12 @@ PROVIDER_ENV_MAP = {
     "openrouter": ["OPENROUTER_API_KEY"],
     "openai": ["OPENAI_API_KEY"],
     "anthropic": ["ANTHROPIC_API_KEY"],
-    "gemini": ["VITE_GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "VITE_GEMINI_API_KEY"],
+    "gemini": [
+        "VITE_GEMINI_API_KEYS",
+        "GEMINI_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "VITE_GEMINI_API_KEY",
+    ],
     "groq": ["GROQ_API_KEY"],
     "grok": ["XAI_API_KEY"],
     "openrouter-free": ["OPENROUTER_API_KEY"],
@@ -47,7 +52,9 @@ def _key_id(key: str) -> str:
 
 def _is_valid(key: str) -> bool:
     """Check if a key string is non-placeholder and long enough."""
-    return bool(key) and key.strip().lower() not in PLACEHOLDERS and len(key.strip()) >= 8
+    return (
+        bool(key) and key.strip().lower() not in PLACEHOLDERS and len(key.strip()) >= 8
+    )
 
 
 class KeyEntry:
@@ -101,11 +108,17 @@ class KeyPoolManager:
                 if not isinstance(keys, list):
                     continue
                 for item in keys:
-                    raw = item if isinstance(item, str) else (item.get("key", "") if isinstance(item, dict) else "")
+                    raw = (
+                        item
+                        if isinstance(item, str)
+                        else (item.get("key", "") if isinstance(item, dict) else "")
+                    )
                     if _is_valid(raw):
                         self._ensure_pool(provider)
                         if not any(e.key == raw for e in self._pools[provider]):
-                            self._pools[provider].append(KeyEntry(provider, raw, "file"))
+                            self._pools[provider].append(
+                                KeyEntry(provider, raw, "file")
+                            )
             logger.info(
                 "[KeyPool] Loaded pools from %s: %s",
                 POOL_FILE,
@@ -145,7 +158,9 @@ class KeyPoolManager:
                 continue
             for k in val.split(","):
                 k = k.strip()
-                if _is_valid(k) and not any(e.key == k for e in self._pools.get(provider, [])):
+                if _is_valid(k) and not any(
+                    e.key == k for e in self._pools.get(provider, [])
+                ):
                     self._ensure_pool(provider)
                     self._pools[provider].append(KeyEntry(provider, k, "env"))
 
@@ -232,7 +247,11 @@ class KeyPoolManager:
                 )
             elif http_status == 429:
                 body_lower = error_body.lower()
-                is_daily = "quota" in body_lower or "daily" in body_lower or "free_tier" in body_lower
+                is_daily = (
+                    "quota" in body_lower
+                    or "daily" in body_lower
+                    or "free_tier" in body_lower
+                )
                 if is_daily:
                     entry.cooldown_until = now + 8 * 3600
                     logger.warning(
@@ -344,7 +363,9 @@ class KeyPoolManager:
                 "keys": [
                     {
                         "id": _key_id(e.key),
-                        "masked": e.key[:6] + ".." + e.key[-4:] if len(e.key) > 10 else "***",
+                        "masked": e.key[:6] + ".." + e.key[-4:]
+                        if len(e.key) > 10
+                        else "***",
                         "source": e.source,
                         "available": e.cooldown_until <= now,
                         "fail_count": e.fail_count,

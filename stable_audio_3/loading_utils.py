@@ -100,6 +100,7 @@ def load_diffusion_cond(
     model_half: bool = False,
 ):
     import time as _time
+
     t0 = _time.perf_counter()
     print("[LOAD] Building model graph from config...")
     model = create_diffusion_cond_from_config(model_config)

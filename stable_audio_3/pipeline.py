@@ -144,6 +144,7 @@ class StableAudioPipeline:
         """
 
         import time as _time
+
         _t0 = _time.perf_counter()
 
         device = str(self.device)
@@ -293,7 +294,9 @@ class StableAudioPipeline:
         sampler_type = sampler_kwargs.pop("sampler_type", None)
 
         _cond_elapsed = _time.perf_counter() - _t0
-        print(f"[PIPELINE] Conditioning ready in {_cond_elapsed:.1f}s — starting sampler '{sampler_type}' ({steps} steps)")
+        print(
+            f"[PIPELINE] Conditioning ready in {_cond_elapsed:.1f}s — starting sampler '{sampler_type}' ({steps} steps)"
+        )
         result = sample_diffusion(
             model=self.model.model,
             noise=noise,

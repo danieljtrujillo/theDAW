@@ -28,7 +28,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 # MUST set non-interactive backend BEFORE any other matplotlib imports
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 
 from matplotlib.figure import Figure
 from PIL import Image
@@ -61,8 +62,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GENERATION_MODEL = "medium"
 GENERATION_MODELS = {**arc_models, **rf_models}
 SPECTROGRAM_TYPES = ("mel", "stft", "chromagram", "cqt")
-_UNSAFE_FILENAME_CHARS = re.compile(r'[^A-Za-z0-9._ -]+')
-_DASH_RUN = re.compile(r'-{2,}')
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]+")
+_DASH_RUN = re.compile(r"-{2,}")
 _WINDOWS_RESERVED_FILENAMES = {
     "CON",
     "PRN",
@@ -158,15 +159,21 @@ def _condense_filename_text(text: str | None, fallback: str = "_") -> str:
 def _get_generation_artifacts_root() -> Path:
     """Return the local folder where generated audio + spectrograms are saved."""
     configured = os.getenv("STABLEDAW_GENERATIONS_DIR")
-    return Path(configured).expanduser().resolve() if configured else PROJECT_ROOT / "data" / "generations"
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else PROJECT_ROOT / "data" / "generations"
+    )
 
 
 def _safe_filename(filename: str | None, fallback: str = "output.wav") -> str:
     raw_name = str(filename or fallback).replace("\\", "-").replace("/", "-")
     fallback_suffix = Path(fallback).suffix or ".wav"
-    suffix_match = re.search(r'\.[A-Za-z0-9]{1,16}$', raw_name)
+    suffix_match = re.search(r"\.[A-Za-z0-9]{1,16}$", raw_name)
     suffix = suffix_match.group(0) if suffix_match else fallback_suffix
-    stem_text = raw_name[: -len(suffix)] if suffix and raw_name.endswith(suffix) else raw_name
+    stem_text = (
+        raw_name[: -len(suffix)] if suffix and raw_name.endswith(suffix) else raw_name
+    )
     stem = _condense_filename_text(stem_text, Path(fallback).stem or "output")
     suffix = _UNSAFE_FILENAME_CHARS.sub("", suffix or fallback_suffix)
     if suffix.lower() not in {".wav", ".flac", ".ogg", ".png", ".json", ".safetensors"}:
@@ -273,7 +280,9 @@ def _extract_lora_form_slots(form) -> list[LoraFormSlot]:
     return sorted(slots, key=lambda slot: slot.index)
 
 
-async def _persist_lora_uploads(form, job_id: str) -> tuple[list[str], list[float], Path | None]:
+async def _persist_lora_uploads(
+    form, job_id: str
+) -> tuple[list[str], list[float], Path | None]:
     """Persist uploaded LoRA files long enough for the background job to load them."""
     slots = _extract_lora_form_slots(form)
     if not slots:
@@ -283,7 +292,9 @@ async def _persist_lora_uploads(form, job_id: str) -> tuple[list[str], list[floa
     paths: list[str] = []
     weights: list[float] = []
     for slot in slots:
-        original = Path(getattr(slot.upload, "filename", f"lora_{slot.index}.safetensors")).name
+        original = Path(
+            getattr(slot.upload, "filename", f"lora_{slot.index}.safetensors")
+        ).name
         stem = _condense_filename_text(Path(original).stem, f"lora_{slot.index}")
         suffix = Path(original).suffix or ".safetensors"
         dest = temp_dir / f"{slot.index:02d}_{stem}{suffix}"
@@ -305,17 +316,17 @@ def _clear_generation_loras(generation_pipeline) -> None:
 def _image_to_base64(img: Image.Image) -> str:
     """Convert PIL Image to base64 PNG string."""
     buf = io.BytesIO()
-    img.save(buf, format='PNG')
+    img.save(buf, format="PNG")
     buf.seek(0)
-    return base64.b64encode(buf.read()).decode('utf-8')
+    return base64.b64encode(buf.read()).decode("utf-8")
 
 
 def _fig_to_base64(fig: Figure) -> str:
     """Convert matplotlib Figure to base64 PNG string."""
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0, dpi=100)
     buf.seek(0)
-    return base64.b64encode(buf.read()).decode('utf-8')
+    return base64.b64encode(buf.read()).decode("utf-8")
 
 
 async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
@@ -329,6 +340,7 @@ async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     # Try soundfile first (handles wav, flac, ogg)
     try:
         import soundfile as sf
+
         waveform, sr = sf.read(buf)
         # Convert to float32, shape (channels, samples) or (samples,)
         waveform = waveform.astype(np.float32)
@@ -342,7 +354,7 @@ async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
         buf.seek(0)
 
     # Fallback: torchaudio via temp file
-    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(audio_bytes)
         fname = f.name
     try:
@@ -364,7 +376,7 @@ def _generate_mel(waveform: torch.Tensor, sr: int) -> str:
             sample_rate=sr,
             db=True,
             db_range=[35, 120],
-            justimage=True
+            justimage=True,
         )
         return _image_to_base64(mel_img)
     except Exception as e:
@@ -383,7 +395,9 @@ def _generate_stft(waveform: np.ndarray, sr: int) -> str:
 
         fig = Figure(figsize=(10, 3))
         ax = fig.add_subplot(111)
-        librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='hz', ax=ax, cmap='viridis')
+        librosa.display.specshow(
+            D, sr=sr, x_axis="time", y_axis="hz", ax=ax, cmap="viridis"
+        )
         ax.set_axis_off()
         fig.tight_layout(pad=0)
 
@@ -404,7 +418,9 @@ def _generate_chromagram(waveform: np.ndarray, sr: int) -> str:
 
         fig = Figure(figsize=(10, 3))
         ax = fig.add_subplot(111)
-        librosa.display.specshow(chroma, sr=sr, x_axis='time', y_axis='chroma', ax=ax, cmap='viridis')
+        librosa.display.specshow(
+            chroma, sr=sr, x_axis="time", y_axis="chroma", ax=ax, cmap="viridis"
+        )
         ax.set_axis_off()
         fig.tight_layout(pad=0)
 
@@ -426,7 +442,9 @@ def _generate_cqt(waveform: np.ndarray, sr: int) -> str:
 
         fig = Figure(figsize=(10, 3))
         ax = fig.add_subplot(111)
-        librosa.display.specshow(C_db, sr=sr, x_axis='time', y_axis='cqt_note', ax=ax, cmap='viridis')
+        librosa.display.specshow(
+            C_db, sr=sr, x_axis="time", y_axis="cqt_note", ax=ax, cmap="viridis"
+        )
         ax.set_axis_off()
         fig.tight_layout(pad=0)
 
@@ -454,7 +472,6 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
         else:
             y = waveform.cpu().numpy()
 
-
         result["stft"] = _generate_stft(y, sr)
         result["chromagram"] = _generate_chromagram(y, sr)
         result["cqt"] = _generate_cqt(y, sr)
@@ -472,9 +489,11 @@ async def load_model():
     _get_or_load_generation_pipeline(DEFAULT_GENERATION_MODEL)
 
     import logging as _logging
+
     _logger = _logging.getLogger(__name__)
     try:
         from backend.rag import initialize_rag
+
         n_chunks = initialize_rag()
         _logger.info("RAG indexed %d chunks", n_chunks)
     except Exception as e:
@@ -525,10 +544,15 @@ async def generate_spectrogram(
     """
     # Validate input
     if audio_base64 is None and audio_file is None:
-        raise HTTPException(status_code=400, detail="Either audio_base64 or audio_file must be provided")
+        raise HTTPException(
+            status_code=400, detail="Either audio_base64 or audio_file must be provided"
+        )
 
     if audio_base64 is not None and audio_file is not None:
-        raise HTTPException(status_code=400, detail="Provide either audio_base64 or audio_file, not both")
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either audio_base64 or audio_file, not both",
+        )
 
     try:
         # Load audio
@@ -538,14 +562,18 @@ async def generate_spectrogram(
 
             # Validate size (50MB limit)
             if len(audio_data) > 50 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="Audio file exceeds 50MB limit")
+                raise HTTPException(
+                    status_code=413, detail="Audio file exceeds 50MB limit"
+                )
         else:
             # Decode base64
             audio_data = base64.b64decode(audio_base64)
 
             # Validate size (50MB limit)
             if len(audio_data) > 50 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="Audio data exceeds 50MB limit")
+                raise HTTPException(
+                    status_code=413, detail="Audio data exceeds 50MB limit"
+                )
 
         # Decode audio with robust fallback
         waveform_np, sr = await _decode_audio_bytes(audio_data)
@@ -560,7 +588,9 @@ async def generate_spectrogram(
         raise
     except Exception as e:
         logger.error(f"Spectrogram generation error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to generate spectrograms: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate spectrograms: {str(e)}"
+        )
 
 
 @app.get("/api/spectrogram/{job_id}")
@@ -570,7 +600,9 @@ async def get_cached_spectrogram(job_id: str):
     Returns 404 if job not found or spectrograms not cached.
     """
     if job_id not in _spec_cache:
-        raise HTTPException(status_code=404, detail="Spectrograms not found for this job")
+        raise HTTPException(
+            status_code=404, detail="Spectrograms not found for this job"
+        )
 
     return JSONResponse(_spec_cache[job_id])
 
@@ -580,7 +612,9 @@ async def get_cached_spectrogram_item(job_id: str, index: int):
     """Retrieve cached spectrograms for a specific generated item in a batch."""
     cache_key = f"{job_id}:{index}"
     if cache_key not in _spec_cache:
-        raise HTTPException(status_code=404, detail="Spectrograms not found for this job item")
+        raise HTTPException(
+            status_code=404, detail="Spectrograms not found for this job item"
+        )
 
     return JSONResponse(_spec_cache[cache_key])
 
@@ -741,11 +775,15 @@ async def generate(
 JOBS: dict[str, dict] = {}
 
 
-def _generate_to_bytes(generation_pipeline, generate_args: dict, file_format: str) -> tuple[bytes, str]:
+def _generate_to_bytes(
+    generation_pipeline, generate_args: dict, file_format: str
+) -> tuple[bytes, str]:
     audio = generation_pipeline.generate(**generate_args)
     audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
-    output_sample_rate = int(generation_pipeline.model_config.get("sample_rate", sample_rate))
+    output_sample_rate = int(
+        generation_pipeline.model_config.get("sample_rate", sample_rate)
+    )
     buf = io.BytesIO()
     torchaudio.save(buf, audio, output_sample_rate, format=fmt)
     return buf.getvalue(), fmt
@@ -817,7 +855,9 @@ async def _run_generate_job(
                         _spec_cache[job_id] = spectrograms
                     items.append(
                         {
-                            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+                            "audio_base64": base64.b64encode(audio_bytes).decode(
+                                "ascii"
+                            ),
                             "mime_type": mime_type,
                             "filename": filename,
                             "spectrograms": spectrograms,
@@ -834,7 +874,11 @@ async def _run_generate_job(
             JOBS[job_id]["result"] = {"batch": False, "item": items[0]}
         JOBS[job_id]["artifact_dir"] = str(_get_generation_artifacts_root() / job_id)
         JOBS[job_id]["status"] = "completed"
-        logger.info("Saved generation artifacts for job %s in %s", job_id, JOBS[job_id]["artifact_dir"])
+        logger.info(
+            "Saved generation artifacts for job %s in %s",
+            job_id,
+            JOBS[job_id]["artifact_dir"],
+        )
 
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
@@ -1014,22 +1058,30 @@ async def autoencoder_info():
 
 @app.post("/api/jobs/train-lora")
 async def train_lora_stub():
-    raise HTTPException(status_code=501, detail="LoRA training not implemented in this backend.")
+    raise HTTPException(
+        status_code=501, detail="LoRA training not implemented in this backend."
+    )
 
 
 @app.post("/api/jobs/pre-encode")
 async def pre_encode_stub():
-    raise HTTPException(status_code=501, detail="Pre-encode not implemented in this backend.")
+    raise HTTPException(
+        status_code=501, detail="Pre-encode not implemented in this backend."
+    )
 
 
 @app.post("/api/autoencoder/encode")
 async def ae_encode_stub():
-    raise HTTPException(status_code=501, detail="Autoencoder encode not implemented in this backend.")
+    raise HTTPException(
+        status_code=501, detail="Autoencoder encode not implemented in this backend."
+    )
 
 
 @app.post("/api/autoencoder/decode")
 async def ae_decode_stub():
-    raise HTTPException(status_code=501, detail="Autoencoder decode not implemented in this backend.")
+    raise HTTPException(
+        status_code=501, detail="Autoencoder decode not implemented in this backend."
+    )
 
 
 @app.get("/api/presets")
@@ -1147,7 +1199,9 @@ def _validate_param(value: float, bounds: tuple[float, float], name: str) -> flo
         raise ValueError(f"Parameter '{name}' must be a number, got: {value!r}")
     lo, hi = bounds
     if val < lo or val > hi:
-        raise ValueError(f"Parameter '{name}' must be between {lo} and {hi}, got: {val}")
+        raise ValueError(
+            f"Parameter '{name}' must be between {lo} and {hi}, got: {val}"
+        )
     return val
 
 
@@ -1170,7 +1224,9 @@ def _build_filter(effect: str, params: dict[str, float]) -> list[str]:
     elif effect == "compression":
         attack = params["attack"]
         decay = params["decay"]
-        af = f"compand=attacks={attack}:decays={decay}:points=-80/-80|-30/-15|0/-3|20/-1"
+        af = (
+            f"compand=attacks={attack}:decays={decay}:points=-80/-80|-30/-15|0/-3|20/-1"
+        )
         return ["-af", af]
 
     elif effect == "highpass":
@@ -1320,7 +1376,9 @@ async def studio_process(
     # Validate output format
     allowed_formats = {"wav", "flac", "ogg", "mp3", "aac", "opus"}
     if output_format not in allowed_formats:
-        raise HTTPException(status_code=400, detail=f"Unsupported format: {output_format}")
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported format: {output_format}"
+        )
 
     # Parse and validate params
     try:
@@ -1357,8 +1415,10 @@ async def studio_process(
 
         # Build FFmpeg command as a list (no shell=True)
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
             *filter_args,
             str(output_path),
         ]
@@ -1394,10 +1454,13 @@ async def studio_process(
         return StreamingResponse(
             io.BytesIO(output_bytes),
             media_type=mime_types.get(output_format, "audio/wav"),
-            headers={"Content-Disposition": f'attachment; filename="processed.{output_ext}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="processed.{output_ext}"'
+            },
         )
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 app.include_router(assistant_router)

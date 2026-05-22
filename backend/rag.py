@@ -40,6 +40,7 @@ _last_indexed_hash: Optional[str] = None
 
 _INDEX_VERSION = 2  # bump to force re-index after chunking logic changes
 
+
 def _compute_docs_hash() -> str:
     h = hashlib.md5()
     h.update(f"v{_INDEX_VERSION}:chunk{MAX_CHUNK_CHARS}".encode())
@@ -86,11 +87,23 @@ def _split_long_chunk(text: str, source: str, section: str) -> list[dict]:
             return
         if len(buf) <= MAX_CHUNK_CHARS:
             part_num += 1
-            chunks.append({"text": buf, "source": source, "section": f"{section} (part {part_num})"})
+            chunks.append(
+                {
+                    "text": buf,
+                    "source": source,
+                    "section": f"{section} (part {part_num})",
+                }
+            )
         else:
             for piece in _force_split(buf, MAX_CHUNK_CHARS):
                 part_num += 1
-                chunks.append({"text": piece, "source": source, "section": f"{section} (part {part_num})"})
+                chunks.append(
+                    {
+                        "text": piece,
+                        "source": source,
+                        "section": f"{section} (part {part_num})",
+                    }
+                )
 
     for para in paragraphs:
         if current and len(current) + len(para) + 2 > MAX_CHUNK_CHARS:
@@ -100,7 +113,7 @@ def _split_long_chunk(text: str, source: str, section: str) -> list[dict]:
         if len(para) > MAX_CHUNK_CHARS:
             _flush(current)
             current = ""
-            sentences = re.split(r'(?<=[.!?])\s+', para)
+            sentences = re.split(r"(?<=[.!?])\s+", para)
             for sentence in sentences:
                 if current and len(current) + len(sentence) + 1 > MAX_CHUNK_CHARS:
                     _flush(current)
@@ -111,7 +124,9 @@ def _split_long_chunk(text: str, source: str, section: str) -> list[dict]:
 
     if current.strip():
         if not chunks:
-            chunks.append({"text": current.strip(), "source": source, "section": section})
+            chunks.append(
+                {"text": current.strip(), "source": source, "section": section}
+            )
         else:
             _flush(current)
 
@@ -119,7 +134,7 @@ def _split_long_chunk(text: str, source: str, section: str) -> list[dict]:
 
 
 def _chunk_markdown(text: str, source: str) -> list[dict]:
-    sections = re.split(r'^(#{1,3}\s+.+)$', text, flags=re.MULTILINE)
+    sections = re.split(r"^(#{1,3}\s+.+)$", text, flags=re.MULTILINE)
     chunks = []
     current_heading = source
     current_body = ""
@@ -128,11 +143,11 @@ def _chunk_markdown(text: str, source: str) -> list[dict]:
         part = part.strip()
         if not part:
             continue
-        if re.match(r'^#{1,3}\s+', part):
+        if re.match(r"^#{1,3}\s+", part):
             if current_body.strip():
                 raw = f"# {current_heading}\n\n{current_body.strip()}"
                 chunks.extend(_split_long_chunk(raw, source, current_heading))
-            current_heading = part.lstrip('#').strip()
+            current_heading = part.lstrip("#").strip()
             current_body = ""
         else:
             current_body += part + "\n"
@@ -148,6 +163,7 @@ def initialize_rag(force: bool = False) -> int:
     global _collection, _last_indexed_hash
 
     import os
+
     os.environ["HF_HUB_OFFLINE"] = "1"
 
     import chromadb
@@ -193,11 +209,15 @@ def initialize_rag(force: bool = False) -> int:
     _collection.add(
         ids=[f"chunk_{i}" for i in range(len(all_chunks))],
         documents=[c["text"] for c in all_chunks],
-        metadatas=[{"source": c["source"], "section": c["section"]} for c in all_chunks],
+        metadatas=[
+            {"source": c["source"], "section": c["section"]} for c in all_chunks
+        ],
     )
 
     _last_indexed_hash = current_hash
-    logger.info("[RAG] Indexed %d chunks from %d documents", len(all_chunks), len(DOC_PATHS))
+    logger.info(
+        "[RAG] Indexed %d chunks from %d documents", len(all_chunks), len(DOC_PATHS)
+    )
     return len(all_chunks)
 
 
@@ -209,12 +229,16 @@ def retrieve(query: str, n_results: int = 5) -> list[dict]:
 
     chunks = []
     for i in range(len(results["documents"][0])):
-        chunks.append({
-            "text": results["documents"][0][i],
-            "source": results["metadatas"][0][i]["source"],
-            "section": results["metadatas"][0][i]["section"],
-            "distance": results["distances"][0][i] if results.get("distances") else None,
-        })
+        chunks.append(
+            {
+                "text": results["documents"][0][i],
+                "source": results["metadatas"][0][i]["source"],
+                "section": results["metadatas"][0][i]["section"],
+                "distance": results["distances"][0][i]
+                if results.get("distances")
+                else None,
+            }
+        )
     return chunks
 
 

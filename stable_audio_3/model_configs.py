@@ -100,7 +100,9 @@ class ModelConfig:
         if local_config is None:
             local_config = try_to_load_from_cache(self.repo_id, self.config_path)
         if not isinstance(local_config, str):
-            local_config = hf_hub_download(repo_id=self.repo_id, filename=self.config_path)
+            local_config = hf_hub_download(
+                repo_id=self.repo_id, filename=self.config_path
+            )
 
         if local_ckpt is None:
             local_ckpt = try_to_load_from_cache(self.repo_id, self.ckpt_path)
@@ -152,8 +154,12 @@ class AutoencoderModelConfig:
                 f"Search dirs: {[str(p) for p in _local_search_dirs()]}"
             )
 
-        local_config = hf_hub_download(repo_id=self.ae_repo_id, filename=self.ae_config_path)
-        local_ckpt = hf_hub_download(repo_id=self.ae_repo_id, filename=self.ae_ckpt_path)
+        local_config = hf_hub_download(
+            repo_id=self.ae_repo_id, filename=self.ae_config_path
+        )
+        local_ckpt = hf_hub_download(
+            repo_id=self.ae_repo_id, filename=self.ae_ckpt_path
+        )
         return local_config, local_ckpt
 
 

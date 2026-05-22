@@ -88,15 +88,27 @@ def test_rf_inversion_is_reported_as_unsupported_until_pipeline_support_exists()
 
 
 def test_generation_filename_modes_are_sanitized():
-    assert _make_generation_filename("abc12345", 0, "wav", "seed", "bad/name", "neg", 123) == "seed_123_0.wav"
-    assert _make_generation_filename("abc12345", 1, "flac", "prompt", "bad/name", "neg", -1) == "bad-name_1.flac"
-    verbose = _make_generation_filename("abc12345", 0, "ogg", "verbose", "kick: loop", "vocals", 42)
+    assert (
+        _make_generation_filename("abc12345", 0, "wav", "seed", "bad/name", "neg", 123)
+        == "seed_123_0.wav"
+    )
+    assert (
+        _make_generation_filename(
+            "abc12345", 1, "flac", "prompt", "bad/name", "neg", -1
+        )
+        == "bad-name_1.flac"
+    )
+    verbose = _make_generation_filename(
+        "abc12345", 0, "ogg", "verbose", "kick: loop", "vocals", 42
+    )
     assert verbose == "kick- loop.neg-vocals.42_0.ogg"
 
 
 def test_generation_filename_strips_control_characters_and_reserved_names():
     raw_prompt = "{\r\n -action- -create-,\r\n -genre- -[trap-"
-    filename = _make_generation_filename("abc12345", 0, "wav", "prompt", raw_prompt, None, -1)
+    filename = _make_generation_filename(
+        "abc12345", 0, "wav", "prompt", raw_prompt, None, -1
+    )
 
     assert "\r" not in filename
     assert "\n" not in filename
@@ -105,7 +117,9 @@ def test_generation_filename_strips_control_characters_and_reserved_names():
     assert _safe_filename("bad\r\nname.wav") == "bad-name.wav"
 
 
-def test_generation_artifacts_save_audio_spectrograms_and_metadata(tmp_path, monkeypatch):
+def test_generation_artifacts_save_audio_spectrograms_and_metadata(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("STABLEDAW_GENERATIONS_DIR", str(tmp_path))
     png_payload = base64.b64encode(b"fake-png-bytes").decode("ascii")
 
@@ -122,7 +136,9 @@ def test_generation_artifacts_save_audio_spectrograms_and_metadata(tmp_path, mon
     root = _get_generation_artifacts_root()
     assert root == tmp_path
     assert saved["artifact_dir"] == str(tmp_path / "job-123" / "02")
-    assert (tmp_path / "job-123" / "02" / "bad-name.wav").read_bytes() == b"fake-audio-bytes"
+    assert (
+        tmp_path / "job-123" / "02" / "bad-name.wav"
+    ).read_bytes() == b"fake-audio-bytes"
 
     for name in SPECTROGRAM_TYPES:
         spec_path = tmp_path / "job-123" / "02" / f"spectrogram_{name}.png"
