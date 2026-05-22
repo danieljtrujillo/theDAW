@@ -69,7 +69,7 @@ export const StudioView: React.FC = () => {
       <Section title="STUDIO MACROS" icon={SlidersHorizontal} defaultOpen={true}>
          <div className="space-y-4">
              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between"><span className="mono-label !text-[9px]">Global Drive</span><span className="mono-label !text-[9px] text-zinc-400">{macros.drive}%</span></div>
+                <div className="flex items-center justify-between"><span className="mono-label text-[9px]!">Global Drive</span><span className="mono-label text-[9px]! text-zinc-400">{macros.drive}%</span></div>
                 <input 
                   type="range" 
                   className="pro-slider accent-blue-500" 
@@ -78,7 +78,7 @@ export const StudioView: React.FC = () => {
                 />
              </div>
              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between"><span className="mono-label !text-[9px]">Stereo Width</span><span className="mono-label !text-[9px] text-zinc-400">{macros.width + 100}%</span></div>
+                <div className="flex items-center justify-between"><span className="mono-label text-[9px]!">Stereo Width</span><span className="mono-label text-[9px]! text-zinc-400">{macros.width + 100}%</span></div>
                 <input 
                   type="range" 
                   className="pro-slider accent-blue-500" 
@@ -87,7 +87,7 @@ export const StudioView: React.FC = () => {
                 />
              </div>
              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between"><span className="mono-label !text-[9px]">Spectral Air</span><span className="mono-label !text-[9px] text-zinc-400">{macros.air}%</span></div>
+                <div className="flex items-center justify-between"><span className="mono-label text-[9px]!">Spectral Air</span><span className="mono-label text-[9px]! text-zinc-400">{macros.air}%</span></div>
                 <input 
                   type="range" 
                   className="pro-slider accent-blue-500" 
@@ -96,7 +96,7 @@ export const StudioView: React.FC = () => {
                 />
              </div>
              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between"><span className="mono-label !text-[9px]">Transient Punch</span><span className="mono-label !text-[9px] text-zinc-400">{macros.punch}%</span></div>
+                <div className="flex items-center justify-between"><span className="mono-label text-[9px]!">Transient Punch</span><span className="mono-label text-[9px]! text-zinc-400">{macros.punch}%</span></div>
                 <input 
                   type="range" 
                   className="pro-slider accent-blue-500" 
@@ -220,7 +220,7 @@ export const StudioView: React.FC = () => {
             </div>
          </div>
          <div className="flex flex-col gap-1 mt-2">
-            <div className="flex items-center justify-between"><span className="mono-label !text-[9px]">Filter Reso</span><span className="mono-label !text-[9px] text-zinc-500">0.42</span></div>
+            <div className="flex items-center justify-between"><span className="mono-label text-[9px]!">Filter Reso</span><span className="mono-label text-[9px]! text-zinc-500">0.42</span></div>
             <input type="range" className="pro-slider accent-blue-500" defaultValue="42" />
          </div>
              {outputUrl && (

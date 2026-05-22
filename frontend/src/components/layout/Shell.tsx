@@ -177,7 +177,7 @@ export const Shell: React.FC = () => {
           </div>
         </header>
 
-        <DAWCenterPanel />
+        <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
       </div>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />

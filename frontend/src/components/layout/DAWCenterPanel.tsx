@@ -20,7 +20,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'bucket',     label: 'Media Bucket',       icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
 ];
 
-export const DAWCenterPanel: React.FC = () => {
+export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'sequencer' | 'advanced' | 'effects'>('editor');
   const [bottomHeight, setBottomHeight] = useState(260);
@@ -104,7 +104,7 @@ export const DAWCenterPanel: React.FC = () => {
 
         {/* Timeline body */}
         <div className="flex-1 min-h-0 relative">
-           {workspaceMode === 'editor' && <WaveformEditor />}
+           {workspaceMode === 'editor' && <WaveformEditor onSwitchTab={onSwitchTab} />}
            {workspaceMode === 'sequencer' && <StepSequencer />}
            {workspaceMode === 'advanced' && <div className="absolute inset-0 overflow-hidden"><AdvancedView /></div>}
            {workspaceMode === 'effects' && <div className="absolute inset-0 overflow-y-auto"><AdvancedEditorPanel /></div>}

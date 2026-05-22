@@ -4,7 +4,7 @@ import { usePianoRollStore, pianoNotesToMidiNotes, type PianoNote } from '../../
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
-import { downloadMidi, parseMidi } from '../../lib/midi';
+import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
 
 const NOTE_HEIGHT = 12;
@@ -409,7 +409,7 @@ export const PianoRoll: React.FC = () => {
   return (
     <div className="h-full flex flex-col bg-[#07050a] overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 px-2 py-1 border-b border-white/5 bg-black/40 flex-shrink-0">
+      <div className="flex items-center justify-between gap-2 px-2 py-1 border-b border-white/5 bg-black/40 shrink-0">
         <div className="flex items-center gap-2">
           <button
             onClick={handlePlayToggle}
@@ -479,7 +479,7 @@ export const PianoRoll: React.FC = () => {
           <button
             onClick={() => void handleSendToEditor()}
             disabled={isBouncing || notes.length === 0}
-            className={`btn-ghost text-[9px] py-1 flex items-center gap-1.5 disabled:opacity-40 ${editingClipId ? '!border-emerald-500/40 !text-emerald-200' : ''}`}
+            className={`btn-ghost text-[9px] py-1 flex items-center gap-1.5 disabled:opacity-40 ${editingClipId ? 'border-emerald-500/40! text-emerald-200!' : ''}`}
             title={editingClipId
               ? 'Re-render and update the linked editor clip in place'
               : 'Render these notes to audio and add to the waveform editor as a new track'}
@@ -509,7 +509,7 @@ export const PianoRoll: React.FC = () => {
       {/* Body */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Keyboard column */}
-        <div className="flex-shrink-0 overflow-hidden bg-[#0c0a12] border-r border-white/5" style={{ width: KEYBOARD_WIDTH }}>
+        <div className="shrink-0 overflow-hidden bg-[#0c0a12] border-r border-white/5" style={{ width: KEYBOARD_WIDTH }}>
           <div className="bg-black/40" style={{ height: HEADER_HEIGHT }} />
           <div className="overflow-hidden" style={{ height: gridHeight }}>
             {rows.map((midi) => {
@@ -551,7 +551,7 @@ export const PianoRoll: React.FC = () => {
             {rows.map((midi, idx) => (
               <div
                 key={midi}
-                className={`absolute left-0 right-0 border-b border-black/30 ${isBlackKey(midi) ? 'bg-white/[0.02]' : 'bg-white/[0.04]'} ${midi % 12 === 0 ? '!border-purple-500/20' : ''}`}
+                className={`absolute left-0 right-0 border-b border-black/30 ${isBlackKey(midi) ? 'bg-white/2' : 'bg-white/4'} ${midi % 12 === 0 ? 'border-purple-500/20!' : ''}`}
                 style={{ top: idx * NOTE_HEIGHT, height: NOTE_HEIGHT }}
               />
             ))}
@@ -559,7 +559,7 @@ export const PianoRoll: React.FC = () => {
             {Array.from({ length: totalSteps + 1 }).map((_, i) => (
               <div
                 key={i}
-                className={`absolute top-0 bottom-0 ${i % 4 === 0 ? 'border-l border-white/10' : 'border-l border-white/[0.03]'}`}
+                className={`absolute top-0 bottom-0 ${i % 4 === 0 ? 'border-l border-white/10' : 'border-l border-white/3'}`}
                 style={{ left: i * stepPx }}
               />
             ))}
@@ -604,7 +604,7 @@ export const PianoRoll: React.FC = () => {
       </div>
 
       {/* Status */}
-      <div className="h-5 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 flex-shrink-0">
+      <div className="h-5 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 shrink-0">
         <span className="text-[8px] font-mono text-zinc-500">
           {isPlaying ? `PLAYING · step ${currentStep + 1}/${totalSteps}` : 'STOPPED'} · {bpm} BPM
           {editingClipId && (

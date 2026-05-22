@@ -52,14 +52,14 @@ export const Section: React.FC<SectionProps> = ({
   }, [isResizing, minHeight]);
 
   return (
-    <div className="hardware-card flex flex-col flex-shrink-0 relative mb-1 last:mb-0">
+    <div className="hardware-card flex flex-col shrink-0 relative mb-1 last:mb-0">
        <div 
-         className="flex items-center justify-between px-2 py-1.5 cursor-pointer select-none bg-white/[0.02] hover:bg-white/[0.05] transition-colors" 
+         className="flex items-center justify-between px-2 py-1.5 cursor-pointer select-none bg-white/2 hover:bg-white/5 transition-colors" 
          onClick={() => setIsOpen(!isOpen)}
        >
           <div className="flex items-center gap-2">
              {Icon && <Icon className="w-3.5 h-3.5 text-purple-400" />}
-             <span className="mono-label !text-[10px]">{title}</span>
+             <span className="mono-label text-[10px]!">{title}</span>
           </div>
           <div className="flex items-center gap-2">
              {rightNode}

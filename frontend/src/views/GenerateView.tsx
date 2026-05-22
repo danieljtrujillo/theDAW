@@ -67,10 +67,10 @@ export const GenerateView: React.FC = () => {
   return (
     <div className="flex flex-col gap-2 h-full text-[11px] pb-0 px-2 pt-2">
 
-      <Section title="PRIMARY SYNTHESIS / PROMPT" icon={Command} defaultOpen={true} rightNode={<span className="mono-tag !bg-purple-600/20 !border-purple-500/30 !text-purple-300">RF-ENGINE</span>}>
-         <div className="bg-black/40 rounded border border-white/5 focus-within:border-purple-500/50 transition-colors relative group">
+      <Section title="PRIMARY SYNTHESIS / PROMPT" icon={Command} defaultOpen={true} rightNode={<span className="mono-tag bg-purple-600/20! border-purple-500/30! text-purple-300!">RF-ENGINE</span>}>
+         <div className="bg-black/40 rounded border border-white/5 focus-within:border-purple-500/50 transition-colors relative group flex flex-col flex-1">
             <textarea
-              className="w-full bg-transparent border-none outline-none resize-none p-3 text-[12px] text-zinc-200 placeholder:text-zinc-600 min-h-[80px]"
+              className="w-full flex-1 bg-transparent border-none outline-none resize-none p-3 text-[12px] text-zinc-200 placeholder:text-zinc-600 min-h-20"
               placeholder="PROMPT / Describe your soundscape, instrument, or atmosphere..."
               value={p.prompt}
               onChange={(e) => setField('prompt', e.target.value)}
@@ -170,7 +170,7 @@ export const GenerateView: React.FC = () => {
                    onChange={(e) => setField('seed', parseInt(e.target.value) || 0)}
                  />
                  <button
-                   className="p-1 bg-white/5 hover:bg-white/10 rounded text-zinc-500 flex-shrink-0"
+                   className="p-1 bg-white/5 hover:bg-white/10 rounded text-zinc-500 shrink-0"
                    onClick={() => setField('seed', Math.floor(Math.random() * 100000000))}
                    title="Random seed"
                  >
@@ -181,7 +181,7 @@ export const GenerateView: React.FC = () => {
          </div>
       </Section>
 
-      <Section title="INIT SIGNAL / CONDITIONING" icon={Mic2} defaultOpen={false} rightNode={<span className="mono-tag !text-zinc-500">BYPASS</span>}>
+      <Section title="INIT SIGNAL / CONDITIONING" icon={Mic2} defaultOpen={false} rightNode={<span className="mono-tag text-zinc-500!">BYPASS</span>}>
          <div className="relative border border-dashed border-white/10 rounded p-4 flex flex-col items-center justify-center gap-2 hover:border-purple-500/30 hover:bg-purple-500/5 transition-all">
             <input
               ref={initAudioInputRef}
@@ -247,7 +247,7 @@ export const GenerateView: React.FC = () => {
               e.stopPropagation();
               setField('inpaintEnabled', !p.inpaintEnabled);
             }}
-            className={`mono-tag ${p.inpaintEnabled ? '!bg-purple-600/30 !text-purple-200 !border-purple-500/50' : '!bg-white/5 !text-zinc-500 !border-white/5'}`}
+            className={`mono-tag ${p.inpaintEnabled ? 'bg-purple-600/30! text-purple-200! border-purple-500/50!' : 'bg-white/5! text-zinc-500! border-white/5!'}`}
           >
             {p.inpaintEnabled ? 'ON' : 'OFF'}
           </button>
