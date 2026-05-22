@@ -4561,6 +4561,12 @@ lora = [
     { name = "dill" },
     { name = "pytorch-lightning" },
 ]
+server = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
+]
 ui = [
     { name = "accelerate" },
     { name = "gradio" },
@@ -4601,7 +4607,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.8.0" },
     { name = "uvicorn", specifier = ">=0.42.0" },
 ]
-provides-extras = ["ui", "lora"]
+provides-extras = ["ui", "lora", "server"]
 
 [package.metadata.requires-dev]
 dev = [

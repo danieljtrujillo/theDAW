@@ -1,16 +1,17 @@
 import json
+import typing as tp
+
 import numpy as np
 import torch
-import typing as tp
 from torch.nn.functional import interpolate
 
-from stable_audio_3.inference.audio_utils import prepare_audio, numpy_audio_to_tensor
+from stable_audio_3.inference.audio_utils import numpy_audio_to_tensor, prepare_audio
 from stable_audio_3.inference.sampling import sample_diffusion
 from stable_audio_3.loading_utils import load_autoencoder, load_diffusion_cond
 from stable_audio_3.model_configs import ae_models, all_models
 from stable_audio_3.models.lora import (
-    set_lora_strength as _set_lora_strength,
     load_and_apply_loras,
+    set_lora_strength as _set_lora_strength,
 )
 
 

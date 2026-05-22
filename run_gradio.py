@@ -1,8 +1,10 @@
-import torch
-from stable_audio_3.interface.diffusion_cond import create_diffusion_cond_ui
-from stable_audio_3 import StableAudioModel
-from stable_audio_3.verbose import set_verbose
 import sys
+
+import torch
+
+from stable_audio_3 import StableAudioModel
+from stable_audio_3.interface.diffusion_cond import create_diffusion_cond_ui
+from stable_audio_3.verbose import set_verbose
 
 # Silence Python warnings (FutureWarning, DeprecationWarning, etc.) unless --verbose.
 # Must run before any ML library imports since most warnings fire at import time.

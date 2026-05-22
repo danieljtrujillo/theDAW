@@ -1,6 +1,7 @@
+from functools import partial
+
 import pytest
 import torch
-from functools import partial
 
 from stable_audio_3 import StableAudioModel
 from stable_audio_3.models.lora import (
