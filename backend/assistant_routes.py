@@ -18,10 +18,27 @@ import uuid
 from typing import Any, List, Optional
 
 import httpx
-from backend.key_pool import _key_id, key_pool
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+try:
+    from backend.key_pool import _key_id, key_pool
+except ModuleNotFoundError:
+    def _key_id(key: Optional[str]) -> str:
+        if not key:
+            return "missing"
+        if len(key) <= 8:
+            return key
+        return f"{key[:4]}...{key[-4:]}"
+
+    key_pool = {
+        "openai": [key for key in [os.getenv("OPENAI_API_KEY")] if key],
+        "anthropic": [key for key in [os.getenv("ANTHROPIC_API_KEY")] if key],
+        "openrouter": [key for key in [os.getenv("OPENROUTER_API_KEY")] if key],
+        "groq": [key for key in [os.getenv("GROQ_API_KEY")] if key],
+        "together": [key for key in [os.getenv("TOGETHER_API_KEY")] if key],
+    }
 
 logger = logging.getLogger(__name__)
 
