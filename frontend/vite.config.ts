@@ -18,7 +18,7 @@ export default defineConfig(({mode}) => {
     server: {
       // Auto-reload is OFF BY DEFAULT so agent edits don't nuke app state.
       // To turn live reload back on: set ENABLE_HMR=true in the environment.
-      port: 4173,
+      port: 5173,
       strictPort: true,
       proxy: {
         '/api': 'http://localhost:8600',
