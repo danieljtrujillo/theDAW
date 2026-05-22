@@ -27,12 +27,12 @@ import torch
 from torch.nn import functional as F
 
 from stable_audio_3 import AutoencoderModel
-from stable_audio_3.model_configs import ae_models
 from stable_audio_3.data.dataset import (
     LocalDatasetConfig,
     SampleDataset,
     collation_fn,
 )
+from stable_audio_3.model_configs import ae_models
 
 
 def caption_metadata_fn(info, _audio):

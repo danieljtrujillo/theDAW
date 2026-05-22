@@ -15,14 +15,31 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Optional, List
+from typing import Any, List, Optional
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from backend.key_pool import key_pool, _key_id
+try:
+    from backend.key_pool import _key_id, key_pool
+except ModuleNotFoundError:
+
+    def _key_id(key: Optional[str]) -> str:
+        if not key:
+            return "missing"
+        if len(key) <= 8:
+            return key
+        return f"{key[:4]}...{key[-4:]}"
+
+    key_pool = {
+        "openai": [key for key in [os.getenv("OPENAI_API_KEY")] if key],
+        "anthropic": [key for key in [os.getenv("ANTHROPIC_API_KEY")] if key],
+        "openrouter": [key for key in [os.getenv("OPENROUTER_API_KEY")] if key],
+        "groq": [key for key in [os.getenv("GROQ_API_KEY")] if key],
+        "together": [key for key in [os.getenv("TOGETHER_API_KEY")] if key],
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -1886,7 +1903,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 break
         if user_text:
             try:
-                from backend.rag import retrieve, format_context
+                from backend.rag import format_context, retrieve
 
                 rag_chunks = await asyncio.to_thread(retrieve, user_text, 5)
 

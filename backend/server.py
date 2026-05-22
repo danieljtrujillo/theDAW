@@ -1,27 +1,27 @@
 import asyncio
 import base64
+import io
 import json
-import os
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
 import time
 import uuid
-import io
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torchaudio
-from fastapi import FastAPI, Form, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from stable_audio_3.inference.distribution_shift import (
-    LogSNRShift,
-    FluxDistributionShift,
     DistributionShift,
+    FluxDistributionShift,
+    LogSNRShift,
 )
 
 app = FastAPI(title="StableDAW API")

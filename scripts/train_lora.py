@@ -36,8 +36,10 @@ import argparse
 import itertools
 import json
 from pathlib import Path
-import torch
+
 import pytorch_lightning as pl
+import torch
+from safetensors.torch import load_file
 
 from stable_audio_3.data.dataset import (
     LatentDatasetConfig,
@@ -46,14 +48,13 @@ from stable_audio_3.data.dataset import (
     SampleDataset,
     collation_fn,
 )
-from safetensors.torch import load_file
+from stable_audio_3.factory import create_diffusion_cond_from_config
 from stable_audio_3.loading_utils import copy_state_dict
 from stable_audio_3.model_configs import base_models
-from stable_audio_3.factory import create_diffusion_cond_from_config
 from stable_audio_3.models.lora.utils import load_lora_checkpoint
 from stable_audio_3.training.diffusion import (
-    DiffusionCondTrainingWrapper,
     DiffusionCondInpaintDemoCallback,
+    DiffusionCondTrainingWrapper,
 )
 
 
