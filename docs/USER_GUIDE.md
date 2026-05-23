@@ -36,6 +36,7 @@ Complete reference for the StableDAW platform: the upstream Stable Audio 3 ML pi
 |---|---|---|
 | **ML pipeline** | `stable_audio_3/` | Upstream Stability AI code. DiT, SAME autoencoder, all samplers, LoRA parametrization, distribution-shift schedules, T5Gemma conditioner. |
 | **FastAPI backend** | `backend/server.py` | HTTP wrapper around the pipeline. Async job queue for generation; synchronous endpoints for studio effects and model introspection. Port 8600. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` (name, API prefix, enabled flag) and `router.py` (FastAPI APIRouter). The loader (`backend/modules/loader.py`) discovers and mounts all enabled modules at startup; a failed module is logged and skipped without stopping the server. The `effects` module is the only built-in module and mounts at `/api/studio`. |
 | **React UI** | `frontend/` | Tailwind 4 + React 19 + Zustand 5 + Vite 6. Multi-tab DAW interface. Proxies `/api/*` to the backend. Port 5173 in development. |
 | **Gradio UI** | `run_gradio.py`, `stable_audio_3/interface/` | Upstream Gradio interface. Retains full pipeline access; the React UI supersedes it for daily use. Both share the same Python pipeline. |
 
@@ -91,19 +92,14 @@ uv sync --group dev
 
 ### Windows-specific requirements
 
-`pyproject.toml`'s CUDA index mapping covers Linux only. On Windows:
+`pyproject.toml` includes CUDA 12.8 wheel sources for torch, torchaudio, and Flash Attention under `[tool.uv.sources]`. Running `uv sync` on Windows installs all of them automatically — no additional flags or manual wheel downloads required for Python 3.10 with CUDA 12.8.
 
-1. Install PyTorch with the correct CUDA wheel index:
-   ```powershell
-   uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-   ```
+If you are on a different CUDA version or Python version, install PyTorch manually:
+```powershell
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
 
-2. Install `soundfile` (torchaudio has no default audio backend on Windows):
-   ```powershell
-   uv pip install soundfile
-   ```
-
-3. Flash Attention requires a pre-built wheel matching your Python + PyTorch + CUDA version. Download from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+`soundfile` is included in the base dependencies. Flash Attention is conditionally installed (`sys_platform == 'win32' and python_version < '3.11'`); the wheel URL in `pyproject.toml` targets Python 3.10 + CUDA 12.8 + torch 2.7.0. For other combinations, download a matching wheel from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
 
 Full walkthrough: [docs/windows/setup-guide.md](windows/setup-guide.md).
 
@@ -182,11 +178,15 @@ The application window is divided into three persistent regions:
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Left panel resize:** drag the vertical handle on the panel's right edge. Range: 300 px – 500 px.
+**Full-width header:** a fixed bar spanning the entire window width. Contains: left-panel collapse/reveal toggle (chevron), the StableDAW logo dot, a global search input, and action buttons (Docs, Settings, User avatar, AI Assistant orb).
 
-**Left panel collapse:** click the chevron adjacent to the STABLEDAW logo. The DAW workspace expands to full width. Click again to restore.
+**Left panel resize:** drag the vertical handle on the panel's right edge. Range: 300 px to 500 px.
+
+**Left panel collapse:** click the chevron in the header. The DAW workspace expands to full width. Click again to restore.
 
 **Tab switching:** tabs (CREATE / EDIT / TRAIN / LIBRARY) swap the accordion content in the left panel. The DAW workspace remains in place across all tab selections.
+
+**AI Assistant panel:** click the orb icon in the header to open the collapsible assistant panel. Streams chat from any configured LLM provider with RAG context sourced from this user guide. See [§16.9](#169-assistant) for the API reference.
 
 **Viewport scaling:** the UI applies a CSS `zoom` factor based on viewport width (0.85 at < 1440 px; 0.95 at 1440–1919 px; 1.1 at ≥ 1920 px). Shell height calculations compensate so the layout tiles cleanly to the footer.
 
@@ -385,14 +385,14 @@ Each entry stores:
   mimeType: string,
   timestamp: string,      // ISO 8601
   favorite: boolean,
-  rating: 'like' | 'dislike' | null,
+  rating: number | null,
   tags: string[],
   notes: string,
-  source: 'generate' | 'studio' | 'import'
+  source: 'generate' | 'editor-mixdown' | 'bucket'
 }
 ```
 
-Waveform editor mixdowns are also auto-saved here on commit, with `source: 'studio'` and all generation fields set to their neutral defaults.
+Waveform editor mixdowns are also auto-saved here on commit, with `source: 'editor-mixdown'` and all generation fields set to their neutral defaults.
 
 ### 9.2 List and Grid Views
 
@@ -503,7 +503,7 @@ Render process:
 4. Each clip is scheduled via `BufferSourceNode.start(clipStartSec, offsetIntoSource, durationSec)`. Per-track volume and stereo pan are applied. Fade-in and fade-out gain envelopes are automated with `linearRampToValueAtTime`.
 5. `OfflineAudioContext.startRendering()` produces the final `AudioBuffer`.
 6. A WAV Blob is encoded as 16-bit PCM (`encodeWav`).
-7. The Blob is saved to the Library (`source: 'studio'`).
+7. The Blob is saved to the Library (`source: 'editor-mixdown'`).
 8. A browser file download is triggered automatically.
 
 During the render, the COMMIT EDIT button shows an animated spinner and is disabled.
@@ -643,7 +643,7 @@ Displays full metadata for the currently selected library entry.
 | Timestamp | Locale date and time |
 | File size | Bytes / KB / MB |
 | Tags / Notes | Editable per-entry |
-| Source | `generate`, `studio`, or `import` |
+| Source | `generate`, `editor-mixdown`, or `bucket` |
 
 **Actions:**
 - **Audition in engine** — loads the entry into `playerStore` and begins playback.
@@ -661,7 +661,7 @@ Session-scoped file holding area for arbitrary audio files. Contents are lost on
 - **Dropzone** — accepts drag-and-drop or click-to-upload. Supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus.
 - **Per-item display** — filename, MIME type, file size.
 - **Send to Editor** — decodes peaks and appends the item to the waveform editor as a new clip on a new track. Non-audio files are rejected with a log entry.
-- **Send to Library** — decodes the audio, measures its duration, and creates a persistent IndexedDB entry with `source: 'import'`.
+- **Send to Library** — decodes the audio, measures its duration, and creates a persistent IndexedDB entry with `source: 'bucket'`.
 - **Remove** — removes the item from the bucket. Does not affect the library or editor.
 - **Clear all** — removes all items simultaneously.
 
@@ -878,6 +878,80 @@ POST /api/presets  → { "id": "<uuid>", "saved": true }
 ```
 
 Not consumed by the UI. Reserved for future use.
+
+### 16.9 Assistant
+
+All routes under `/api/assistant` are provided by `backend/assistant_routes.py`.
+
+**Provider catalog**
+```
+GET /api/assistant/providers
+→ { "providers": [ { "id", "label", "default_model", "has_key", "is_local" }, ... ] }
+```
+
+Returns one entry per configured provider. `claude` (Claude Code CLI) is always present and `has_key: true`. Remote providers with no API key in the environment are still listed but requests to them will fail.
+
+**Model discovery**
+```
+GET /api/assistant/models/{provider_id}
+→ { "models": [...], "model_ids": [...], "error": null | string }
+```
+
+For `openrouter` and `openrouter-free`: fetches the model list from OpenRouter with a free/paid filter. For `ollama`: queries the local `/api/tags` endpoint. For `gemini`: queries the Google model list. All others use the standard `/v1/models` endpoint.
+
+**Chat (streaming)**
+```
+POST /api/assistant/chat   application/json
+```
+
+Request body:
+```json
+{
+  "provider": "gemini",
+  "model": "gemini-2.0-flash",
+  "messages": [ { "role": "user", "content": "..." } ],
+  "attachments": [],
+  "claudeMode": "interactive"
+}
+```
+
+Response: server-sent events (`text/event-stream`). Each event is a JSON object:
+```json
+{ "type": "delta", "content": "..." }
+{ "type": "done" }
+{ "type": "error", "message": "..." }
+```
+
+For the `claude` provider, `claudeMode` controls process lifecycle: `interactive` and `persistent` keep a warm Claude Code stream-json process across messages; `oneshot` and `resume` spawn per-message.
+
+**Key pool management**
+```
+POST   /api/assistant/keys/{provider_id}/ingest      → add keys (body: newline-separated or JSON array)
+DELETE /api/assistant/keys/{provider_id}/{key_hash}  → remove one key
+DELETE /api/assistant/keys/{provider_id}             → clear all keys for provider
+GET    /api/assistant/keys                            → status for all providers
+GET    /api/assistant/keys/{provider_id}             → status for one provider
+GET    /api/assistant/keys/{provider_id}/raw         → key hashes with full status
+```
+
+Keys are stored in memory (lost on restart). The pool round-robins across available keys per provider, tracking last-used timestamps and failure counts.
+
+**RAG reindex**
+```
+GET /api/assistant/reindex
+→ { "status": "ok", "chunks_indexed": N }
+```
+
+Forces a full re-parse and re-embedding of `USER_GUIDE.md` into the ChromaDB vector store. Called automatically at startup.
+
+### 16.10 Module Loader
+
+```
+GET /api/modules
+→ [ { "name", "label", "enabled", "api_prefix", ... }, ... ]
+```
+
+Returns the list of module manifests (`module.json` contents) for all modules that loaded successfully at startup. A module that failed to load does not appear in this list.
 
 ---
 
@@ -1105,6 +1179,34 @@ npm run preview    # Serves the built bundle locally
 2. Extend `_build_filter()` (or equivalent) with the FFmpeg filter graph command for the new effect.
 3. Add the effect to the hardcoded FX chain list in `frontend/src/views/StudioView.tsx` with a display label and color class.
 
+### Adding a backend module
+
+Create a new directory under `backend/modules/` with two required files:
+
+`module.json`:
+```json
+{
+  "name": "my-module",
+  "label": "My Module",
+  "enabled": true,
+  "api_prefix": "/api/my-module",
+  "description": "What this module does"
+}
+```
+
+`router.py`:
+```python
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/status")
+async def status():
+    return {"ok": True}
+```
+
+The loader (`backend/modules/loader.py`) discovers the directory automatically on next server start and mounts the router at `api_prefix`. Set `"enabled": false` in `module.json` to disable without deleting. Any import error is logged and the module is skipped; other modules and the main app continue loading normally.
+
 ### Backend job persistence
 
 The current async job store (`JOBS` dict in `backend/server.py`) is in-memory. All jobs are lost on backend restart. For production deployment, swap this for SQLite or Redis — the job object shape is well-defined and the swap is a single-layer change.
@@ -1129,4 +1231,4 @@ The current async job store (`JOBS` dict in `backend/server.py`) is in-memory. A
 
 ---
 
-*Last updated: 2026-05-21. Maintained by the StableDAW development team.*
+*Last updated: 2026-05-22. Maintained by the StableDAW development team.*
