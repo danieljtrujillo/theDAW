@@ -5,8 +5,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+from fastapi.responses import Response
 
 router = APIRouter()
 
@@ -257,7 +256,9 @@ def _build_filter(effect: str, params: dict[str, float], output_format: str = "w
 
     elif effect == "silence_remove":
         thresh = params["threshold"]
-        return ["-af", f"silenceremove=1:0:{thresh}dB"]
+        # Strip leading silence only: remove 1 silence period from the start,
+        # requiring at least 0.1 s of silence before trimming.
+        return ["-af", f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={thresh}dB"]
 
     elif effect == "export_flac":
         level = int(params["compressionLevel"])
@@ -329,7 +330,6 @@ async def studio_process(
     }
 
     tmp_dir = tempfile.mkdtemp(prefix="studio_")
-    cleanup = BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True)
     try:
         input_path = Path(tmp_dir) / "input.wav"
         output_ext = output_format if output_format != "ogg" else "ogg"
@@ -374,11 +374,19 @@ async def studio_process(
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(status_code=500, detail="FFmpeg produced no output")
 
-        return FileResponse(
-            path=output_path,
+        # Read the entire output into memory so the temp dir can be cleaned
+        # immediately.  This avoids Vite-proxy streaming issues where
+        # FileResponse's chunked pipe breaks mid-transfer for large files,
+        # causing net::ERR_FAILED in the browser.
+        output_bytes = output_path.read_bytes()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return Response(
+            content=output_bytes,
             media_type=mime_types.get(output_format, "audio/wav"),
-            filename=f"processed.{output_ext}",
-            background=cleanup,
+            headers={
+                "Content-Disposition": f'attachment; filename="processed.{output_ext}"',
+            },
         )
     except HTTPException:
         raise

@@ -33,11 +33,24 @@ interface StudioStoreState {
 
 const parseErrorText = async (response: Response): Promise<string> => {
   try {
-    const payload = (await response.json()) as { detail?: string; error?: string };
+    const text = await response.text();
+    // Guard against non-JSON responses (e.g. Vite returning HTML for
+    // unmatched routes when the backend is down).
+    if (text.startsWith('<') || text.startsWith('<!')) {
+      return `Backend returned HTML instead of JSON (HTTP ${response.status}). Is the backend running on port 8600?`;
+    }
+    const payload = JSON.parse(text) as { detail?: string; error?: string };
     return payload.detail || payload.error || `Request failed (${response.status})`;
   } catch {
     return `Request failed (${response.status})`;
   }
+};
+
+/** Fetch with an AbortController timeout (default 10 minutes). */
+const fetchWithTimeout = (input: RequestInfo | URL, init?: RequestInit, timeoutMs = 600_000): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
 };
 
 export const useStudioStore = create<StudioStoreState>()((set, get) => ({
@@ -94,7 +107,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
 
     try {
       logInfo('studio', `POST /api/studio/process — effect=${effect} params=${JSON.stringify(params)}`);
-      const response = await fetch('/api/studio/process', {
+      const response = await fetchWithTimeout('/api/studio/process', {
         method: 'POST',
         body: form,
       });
@@ -103,6 +116,15 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
         const detail = await parseErrorText(response);
         logError('studio', `POST /api/studio/process → ${response.status} ${response.statusText} — ${detail}`);
         throw new Error(detail);
+      }
+
+      // Guard: make sure we actually got audio back, not HTML from Vite's
+      // SPA fallback (which would happen if the proxy silently failed).
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        const msg = 'Backend returned HTML instead of audio. Is the backend running on port 8600?';
+        logError('studio', msg);
+        throw new Error(msg);
       }
 
       const blob = await response.blob();
@@ -151,7 +173,14 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
         } catch { /* non-fatal */ }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Studio process failed.';
+      let message: string;
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        message = 'Effect processing timed out after 10 minutes. Try a shorter audio file or simpler effect.';
+      } else if (error instanceof TypeError && /fetch|network/i.test(error.message)) {
+        message = 'Network error — the backend may not be running on port 8600, or the response was interrupted. Restart the backend and try again.';
+      } else {
+        message = error instanceof Error ? error.message : 'Studio process failed.';
+      }
       set({ isProcessing: false, error: message });
       useStatusBarStore.getState().setText(`STUDIO PROCESS FAILED: ${message}`);
       logError('studio', `effect=${effect} FAILED — ${message}`);
