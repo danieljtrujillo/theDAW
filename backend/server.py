@@ -8,6 +8,7 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -338,6 +339,62 @@ def _fig_to_base64(fig: Figure) -> str:
     fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0, dpi=100)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
+
+
+def _compute_request_sample_size(
+    generation_pipeline,
+    duration_sec: float,
+    duration_padding_sec: float,
+) -> int:
+    """Compute an aligned sample_size from requested duration (+padding).
+
+    StableAudioModel.generate() clamps adapted lengths to the provided sample_size.
+    If we do not set this per request, it falls back to the model default (~120s).
+    """
+    output_sr = int(generation_pipeline.model_config.get("sample_rate", sample_rate))
+    target_seconds = max(0.0, float(duration_sec)) + max(0.0, float(duration_padding_sec))
+    target_audio_samples = int(math.ceil(target_seconds * output_sr))
+
+    pretransform = getattr(generation_pipeline.model, "pretransform", None)
+    if pretransform is not None:
+        ds_ratio = int(getattr(pretransform, "downsampling_ratio", 1))
+    else:
+        ds_ratio = 1
+
+    align = max(1, ds_ratio)
+    try:
+        encoder_config = generation_pipeline.model_config["model"]["pretransform"]["config"][
+            "encoder"
+        ]["config"]
+        chunk_size = int(encoder_config.get("chunk_size", 32))
+        strides = encoder_config.get("strides", [1])
+        stride = int(strides[0]) if strides else 1
+        latent_align = max(1, chunk_size // max(1, stride))
+        align = max(align, ds_ratio * latent_align)
+    except (KeyError, TypeError, ValueError):
+        pass
+
+    if target_audio_samples <= 0:
+        target_audio_samples = align
+
+    if align > 1:
+        target_audio_samples = (
+            (target_audio_samples + align - 1) // align
+        ) * align
+
+    max_sample_size_env = os.getenv("STABLEDAW_MAX_SAMPLE_SIZE")
+    if max_sample_size_env:
+        try:
+            max_sample_size = int(max_sample_size_env)
+            if max_sample_size > 0:
+                target_audio_samples = min(target_audio_samples, max_sample_size)
+        except ValueError:
+            logger.warning(
+                "Invalid STABLEDAW_MAX_SAMPLE_SIZE=%r (must be int)",
+                max_sample_size_env,
+            )
+
+    return int(target_audio_samples)
 
 
 async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
@@ -777,6 +834,8 @@ async def generate(
     if not pipeline:
         return JSONResponse({"error": "Model not loaded"}, status_code=503)
 
+    generation_pipeline = pipeline
+
     # Build dist_shift object
     dist_shift = None
     if dist_shift_type and dist_shift_type not in ("None", "none", ""):
@@ -829,6 +888,11 @@ async def generate(
         "cfg_norm_threshold": cfg_norm_threshold,
         "cfg_interval": (cfg_interval_min, cfg_interval_max),
     }
+    generate_args["sample_size"] = _compute_request_sample_size(
+        generation_pipeline,
+        duration,
+        duration_padding_sec,
+    )
 
     if sampler_type:
         generate_args["sampler_type"] = sampler_type
@@ -851,7 +915,7 @@ async def generate(
 
     loop = asyncio.get_event_loop()
     def _do_generate():
-        gen_audio = pipeline.generate(**generate_args)
+        gen_audio = generation_pipeline.generate(**generate_args)
         gen_audio = gen_audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
         
         fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
@@ -1109,6 +1173,11 @@ async def generate_jobs(
         "cfg_interval": (float(cfg_interval_min), float(cfg_interval_max)),
         "truncate_output_to_duration": _coerce_form_bool(cut_to_duration),
     }
+    base_args["sample_size"] = _compute_request_sample_size(
+        generation_pipeline,
+        float(duration),
+        float(duration_padding_sec),
+    )
     if sampler_type:
         base_args["sampler_type"] = sampler_type
     if sigma_max != 1.0:
