@@ -36,6 +36,17 @@ export const GenerateView: React.FC = () => {
     };
   }, [inpaintAudioUrl]);
 
+  const initAudioUrl = useMemo(
+    () => (p.initAudioFile ? URL.createObjectURL(p.initAudioFile) : null),
+    [p.initAudioFile],
+  );
+  useEffect(() => {
+    return () => {
+      if (initAudioUrl) URL.revokeObjectURL(initAudioUrl);
+    };
+  }, [initAudioUrl]);
+  const [initSourcesOpen, setInitSourcesOpen] = useState(false);
+
   const handleModelChange = (model: string) => {
     const isRf = model.endsWith('-rf');
     patch({
@@ -198,20 +209,33 @@ export const GenerateView: React.FC = () => {
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
               onChange={(event) => {
                 const file = event.target.files?.[0] ?? null;
-                setField('initAudioFile', file);
-                // Reset so re-picking the same file re-fires onChange.
+                patch({
+                  initAudioFile: file,
+                  initAudioSourceLabel: null,
+                  initAudioSourceClipLabels: [],
+                });
                 event.target.value = '';
               }}
               title={p.initAudioFile ? 'Replace init audio' : 'Choose init audio'}
             />
-            <FileAudio className="w-5 h-5 text-zinc-600 pointer-events-none" />
-            <span className="text-[9px] text-zinc-500 font-mono tracking-widest uppercase pointer-events-none">
-              {p.initAudioFile ? `Loaded: ${p.initAudioFile.name}` : 'Drop or click to load source audio'}
+            {p.initAudioSourceClipLabels.length > 1 ? (
+              <Layers className="w-5 h-5 text-purple-400 pointer-events-none" />
+            ) : (
+              <FileAudio className="w-5 h-5 text-zinc-600 pointer-events-none" />
+            )}
+            <span className="text-[9px] text-zinc-300 font-mono tracking-widest uppercase pointer-events-none text-center px-2">
+              {p.initAudioSourceLabel
+                ? p.initAudioSourceLabel
+                : p.initAudioFile ? `Loaded: ${p.initAudioFile.name}` : 'Drop or click to load source audio'}
             </span>
             {p.initAudioFile && (
               <button
                 type="button"
-                onClick={() => setField('initAudioFile', null)}
+                onClick={() => patch({
+                  initAudioFile: null,
+                  initAudioSourceLabel: null,
+                  initAudioSourceClipLabels: [],
+                })}
                 className="absolute top-1 right-1 z-20 p-0.5 rounded bg-black/40 hover:bg-red-500/40 text-zinc-400 hover:text-red-300 transition-colors"
                 title="Clear init audio"
               >
@@ -219,6 +243,39 @@ export const GenerateView: React.FC = () => {
               </button>
             )}
          </div>
+         {p.initAudioFile && initAudioUrl && (
+           <div className="mt-1.5 flex flex-col gap-1.5">
+             <audio
+               controls
+               src={initAudioUrl}
+               className="w-full h-7"
+               title="Preview init audio (mashup mixdown)"
+             />
+             {p.initAudioSourceClipLabels.length > 0 && (
+               <div className="flex flex-col gap-0.5">
+                 <button
+                   type="button"
+                   onClick={() => setInitSourcesOpen((v) => !v)}
+                   className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-widest text-purple-300/80 hover:text-purple-200 transition-colors"
+                 >
+                   <Layers className="w-2.5 h-2.5" />
+                   <span>{p.initAudioSourceClipLabels.length} source clip{p.initAudioSourceClipLabels.length === 1 ? '' : 's'}</span>
+                   <span className="text-zinc-600">{initSourcesOpen ? '▼' : '▶'}</span>
+                 </button>
+                 {initSourcesOpen && (
+                   <ul className="ml-3.5 flex flex-col gap-0.5 text-[9px] font-mono text-zinc-400">
+                     {p.initAudioSourceClipLabels.map((label, i) => (
+                       <li key={i} className="flex items-center gap-1.5">
+                         <span className="text-purple-500/60">{(i + 1).toString().padStart(2, '0')}</span>
+                         <span className="truncate">{label}</span>
+                       </li>
+                     ))}
+                   </ul>
+                 )}
+               </div>
+             )}
+           </div>
+         )}
          <div className="mt-1.5 grid grid-cols-2 gap-2 pt-1.5 border-t border-white/5">
            <div>
               <p className="mono-label mb-0.5 flex justify-between">Init Noise <span className="text-zinc-600">{p.initNoise}</span></p>

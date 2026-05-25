@@ -45,6 +45,9 @@ const downloadEntry = (entry: LibraryEntry, url: string) => {
 
 export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
 
   const entries = useLibraryStore((s) => s.entries);
   const loaded = useLibraryStore((s) => s.loaded);
@@ -67,6 +70,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   }, [loaded, load]);
 
   const filteredEntries = getFiltered();
+  const selectedEntries = filteredEntries.filter((entry) => selectedEntryIds.includes(entry.id));
   const engineEntryId = usePlayerStore((s) => s.currentEntryId);
   const engineIsPlaying = usePlayerStore((s) => s.isPlaying);
   const engineLoad = usePlayerStore((s) => s.load);
@@ -77,10 +81,68 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
   const showBottomTab = useBottomPanelStore((s) => s.showTab);
 
-  const handleSelectEntry = (entry: LibraryEntry) => {
+  useEffect(() => {
+    setSelectedEntryIds((prev) => prev.filter((id) => entries.some((entry) => entry.id === id)));
+  }, [entries]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, { capture: true });
+    window.addEventListener('blur', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, { capture: true } as EventListenerOptions);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
+
+  const handleSelectEntry = (entry: LibraryEntry, event?: React.MouseEvent) => {
+    const additive = !!(event?.ctrlKey || event?.metaKey);
+    const range = !!event?.shiftKey;
+
+    if (range && selectionAnchorId) {
+      const orderedIds = filteredEntries.map((item) => item.id);
+      const anchorIndex = orderedIds.indexOf(selectionAnchorId);
+      const targetIndex = orderedIds.indexOf(entry.id);
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+        const rangeIds = orderedIds.slice(start, end + 1);
+        setSelectedEntryIds((prev) => (additive ? Array.from(new Set([...prev, ...rangeIds])) : rangeIds));
+      } else {
+        setSelectedEntryIds([entry.id]);
+      }
+    } else if (additive) {
+      setSelectedEntryIds((prev) => (
+        prev.includes(entry.id) ? prev.filter((id) => id !== entry.id) : [...prev, entry.id]
+      ));
+      setSelectionAnchorId(entry.id);
+    } else {
+      setSelectedEntryIds([entry.id]);
+      setSelectionAnchorId(entry.id);
+    }
+
     setSelectedEntry(entry.id);
     // Reveal extreme metadata in the bottom panel's Details tab.
     showBottomTab('details');
+  };
+
+  const handleEntryContextMenu = (event: React.MouseEvent, entry: LibraryEntry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedEntryIds.includes(entry.id)) {
+      setSelectedEntryIds([entry.id]);
+      setSelectionAnchorId(entry.id);
+      setSelectedEntry(entry.id);
+      showBottomTab('details');
+    }
+    setContextMenu({ x: event.clientX, y: event.clientY, entryId: entry.id });
   };
 
   const sendEntryToTrack = async (
@@ -134,7 +196,20 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
 
   const handleSendToInit = (entry: LibraryEntry) => {
     const file = new File([entry.audioBlob], entry.title, { type: entry.mimeType });
-    patchGenParams({ initAudioFile: file });
+    patchGenParams({
+      initAudioFile: file,
+      initAudioEnabled: true,
+      initAudioSourceLabel: null,
+      initAudioSourceClipLabels: [],
+    });
+  };
+
+  const handleSendSelectedToInit = () => {
+    const firstSelected = selectedEntries[0] ?? entries.find((entry) => entry.id === contextMenu?.entryId);
+    if (!firstSelected) return;
+    handleSendToInit(firstSelected);
+    onSwitchTab?.('create');
+    setContextMenu(null);
   };
 
   const handleSendToInpaint = (entry: LibraryEntry) => {
@@ -226,9 +301,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                 e.dataTransfer.setData('text/plain', entry.title);
                 e.dataTransfer.effectAllowed = 'copy';
               }}
-              onClick={() => handleSelectEntry(entry)}
+              onClick={(e) => handleSelectEntry(entry, e)}
+              onContextMenu={(e) => handleEntryContextMenu(e, entry)}
               className={`hardware-card p-0! group cursor-grab active:cursor-grabbing transition-all hover:bg-white/4
-                ${selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/6' : ''}
+                ${selectedEntryIds.includes(entry.id) || selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/6' : ''}
                 ${viewMode === 'list' ? 'flex-row items-center p-1' : 'aspect-square flex-col'}`}
               title="Click to inspect metadata. Drag onto a Waveform Editor track."
             >
@@ -350,6 +426,27 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           </div>
         )}
       </Section>
+
+      {contextMenu && (
+        <div
+          className="fixed z-200 min-w-48 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5">
+            {selectedEntries.length > 1 ? `${selectedEntries.length} selected` : '1 selected'}
+          </div>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between"
+            disabled={selectedEntries.length === 0}
+            onClick={handleSendSelectedToInit}
+          >
+            <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3" /> Send selected to Init</span>
+            <span className="text-zinc-600 text-[8px]">first item</span>
+          </button>
+        </div>
+      )}
 
       <Section title="LIBRARY ANALYSIS [WIP]" icon={Activity} defaultOpen={false}>
         <div className="space-y-2 text-[10px] font-mono text-zinc-500">

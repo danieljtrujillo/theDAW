@@ -44,6 +44,8 @@ export interface GenerateParamsState {
   initType: string;
   initAudioFile: File | null;
   initAudioEnabled: boolean;
+  initAudioSourceLabel: string | null;
+  initAudioSourceClipLabels: string[];
   inversionSteps: number;
   inversionGamma: number;
   inversionUnconditional: boolean;
@@ -105,6 +107,8 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
   initType: 'Audio',
   initAudioFile: null,
   initAudioEnabled: false,
+  initAudioSourceLabel: null,
+  initAudioSourceClipLabels: [],
   inversionSteps: 100,
   inversionGamma: 0.0,
   inversionUnconditional: false,

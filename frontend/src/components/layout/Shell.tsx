@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Settings, ChevronRight, BookOpen } from 'lucide-react';
+import { Search, Settings, ChevronRight, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
 import { GenerateView } from '../../views/GenerateView';
 import { StudioView } from '../../views/StudioView';
 import { LibraryView } from '../../views/LibraryView';
@@ -20,6 +20,36 @@ export const Shell: React.FC = () => {
   const docsOpen = useAppUiStore((state) => state.docsOpen);
   const setDocsOpen = useAppUiStore((state) => state.setDocsOpen);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
+  const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {
+    if (typeof window === 'undefined') return '';
+    return window.localStorage.getItem('stabledaw.shareUrlOverride') ?? '';
+  });
+  const [copiedShareUrl, setCopiedShareUrl] = React.useState(false);
+
+  const detectedShareUrl = typeof window === 'undefined' ? '' : window.location.origin;
+  const shareUrl = shareUrlOverride.trim() || detectedShareUrl;
+  const qrImageUrl = useMemo(
+    () => `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(shareUrl)}`,
+    [shareUrl],
+  );
+
+  const updateShareUrlOverride = (value: string) => {
+    setShareUrlOverride(value);
+    if (typeof window === 'undefined') return;
+    if (value.trim()) window.localStorage.setItem('stabledaw.shareUrlOverride', value);
+    else window.localStorage.removeItem('stabledaw.shareUrlOverride');
+  };
+
+  const copyShareUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShareUrl(true);
+      window.setTimeout(() => setCopiedShareUrl(false), 1400);
+    } catch {
+      setCopiedShareUrl(false);
+    }
+  };
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -87,6 +117,14 @@ export const Shell: React.FC = () => {
           >
             <BookOpen className="w-3.5 h-3.5 text-purple-300 group-hover:text-purple-200" />
             <span className="text-[9px] font-black uppercase tracking-widest text-purple-300 group-hover:text-purple-200 pr-1">Docs</span>
+          </button>
+          <button
+            onClick={() => setShareOpen(true)}
+            className="p-1.5 rounded hover:bg-emerald-500/15 transition-colors border border-emerald-500/20 group flex items-center gap-1.5"
+            title="Open mobile access QR/link"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-emerald-300 group-hover:text-emerald-200" />
+            <span className="hidden md:inline text-[9px] font-black uppercase tracking-widest text-emerald-300 group-hover:text-emerald-200 pr-1">Mobile</span>
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
@@ -157,6 +195,69 @@ export const Shell: React.FC = () => {
       </main>
       </div>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
+      {shareOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={() => setShareOpen(false)} />
+          <div className="relative w-[min(420px,92vw)] bg-[#0c0a14] border border-emerald-500/30 rounded-lg shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-linear-to-r from-emerald-900/25 to-purple-900/15">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-emerald-300" />
+                <div className="flex flex-col leading-tight">
+                  <span className="text-[11px] font-black uppercase tracking-widest text-emerald-200">Mobile Access</span>
+                  <span className="text-[8px] font-mono uppercase tracking-wider text-emerald-300/60">QR + tunnel-friendly link</span>
+                </div>
+              </div>
+              <button onClick={() => setShareOpen(false)} className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5" title="Close">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="p-4 flex flex-col gap-4">
+              <div className="flex justify-center">
+                <div className="p-3 rounded-lg bg-white shadow-[0_0_24px_rgba(16,185,129,0.16)]">
+                  <img src={qrImageUrl} alt="StableDAW mobile access QR code" className="w-[220px] h-[220px]" />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Share URL</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={shareUrl}
+                    readOnly
+                    className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 outline-none"
+                  />
+                  <button
+                    onClick={() => void copyShareUrl()}
+                    className="px-2 py-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-200 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5"
+                    title="Copy share URL"
+                  >
+                    <Copy className="w-3 h-3" /> {copiedShareUrl ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <a href={shareUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-300/75 hover:text-emerald-200 transition-colors">
+                  <ExternalLink className="w-2.5 h-2.5" /> Open link in new tab
+                </a>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[9px] font-black uppercase tracking-widest text-zinc-400">External URL override</label>
+                <input
+                  type="url"
+                  value={shareUrlOverride}
+                  onChange={(e) => updateShareUrlOverride(e.target.value)}
+                  placeholder="Paste Cloudflare tunnel URL, e.g. https://name.trycloudflare.com"
+                  className="bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-emerald-500/50 transition-colors"
+                />
+                <p className="text-[9px] leading-relaxed text-zinc-500">
+                  By default this uses <span className="font-mono text-zinc-400">{detectedShareUrl}</span>. Paste a Cloudflare Tunnel or other public URL here when your phone is not on the same network.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );

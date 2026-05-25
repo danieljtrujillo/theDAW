@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
-  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X,
+  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2,
 } from 'lucide-react';
 import { useEditorStore, computePeaks, type AudioClip, type SnapDivision } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
@@ -9,6 +9,7 @@ import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
+import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
 import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/editorPlaybackBridge';
 
@@ -111,9 +112,10 @@ interface PointerOp {
   initialDurationSec: number;
   initialOffsetIntoSource: number;
   initialTrackIndex: number;
+  initialClips?: Array<{ id: string; startSec: number; trackIndex: number }>;
 }
 
-export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = () => {
+export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const tracks = useEditorStore((s) => s.tracks);
   const clips = useEditorStore((s) => s.clips);
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
@@ -150,6 +152,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const trackHeaderScrollRef = useRef<HTMLDivElement>(null);
   const opRef = useRef<PointerOp | null>(null);
   const inpaintDragRef = useRef<{ clipId: string; anchorSec: number } | null>(null);
   const previewSourceRef = useRef<AudioBufferSourceNode | null>(null);
@@ -160,6 +163,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const [isCommitting, setIsCommitting] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [mixdownName, setMixdownName] = useState('');
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
   // --- Inpaint panel state ---
   type InpaintPhase =
@@ -298,6 +303,194 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const totalDuration = getTotalDurationSec();
   const timelineWidthPx = Math.max(totalDuration * zoom, 1000);
+
+  const trackById = useMemo(
+    () => new Map(tracks.map((t) => [t.id, t] as const)),
+    [tracks],
+  );
+  const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
+
+  const selectedClipCount = selectedClipIds.length || (selectedClipId ? 1 : 0);
+
+  useEffect(() => {
+    setSelectedClipIds((prev) => prev.filter((id) => clips.some((clip) => clip.id === id)));
+    setSelectedTrackIds((prev) => prev.filter((id) => tracks.some((track) => track.id === id)));
+  }, [clips, tracks]);
+
+  const deleteSelectedClips = useCallback(() => {
+    const ids = selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
+    if (ids.length === 0) return;
+    ids.forEach((id) => removeClip(id));
+    setSelectedClipIds([]);
+    setSelectedTrackIds([]);
+    setSelected(null);
+  }, [removeClip, selectedClipId, selectedClipIds, setSelected]);
+
+  const duplicateSelectedClips = useCallback(() => {
+    const ids = selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
+    if (ids.length === 0) return;
+    const selected = clips.filter((c) => ids.includes(c.id));
+    const newIds = selected.map((clip) => addClipToTrack({
+      ...clip,
+      startSec: clip.startSec + clip.durationSec,
+    }));
+    setSelectedClipIds(newIds);
+    setSelectedTrackIds([]);
+    setSelected(newIds[0] ?? null);
+    logInfo('editor', `Duplicated ${newIds.length} clip${newIds.length === 1 ? '' : 's'}`);
+  }, [addClipToTrack, clips, selectedClipId, selectedClipIds, setSelected]);
+
+  const selectClipSingle = useCallback((clipId: string | null) => {
+    setSelectedClipIds(clipId ? [clipId] : []);
+    setSelectedTrackIds([]);
+    setSelected(clipId);
+  }, [setSelected]);
+
+  const selectTrackSingle = useCallback((trackId: string | null) => {
+    setSelectedTrackIds(trackId ? [trackId] : []);
+    setSelectedClipIds([]);
+    setSelected(null);
+  }, [setSelected]);
+
+  const toggleTrackSelection = useCallback((trackId: string) => {
+    setSelectedTrackIds((prev) => (
+      prev.includes(trackId) ? prev.filter((id) => id !== trackId) : [...prev, trackId]
+    ));
+    setSelectedClipIds([]);
+    setSelected(null);
+  }, [setSelected]);
+
+  const selectTrackWithModifiers = useCallback((trackId: string, e?: { metaKey?: boolean; ctrlKey?: boolean }) => {
+    if (e?.metaKey || e?.ctrlKey) toggleTrackSelection(trackId);
+    else selectTrackSingle(trackId);
+  }, [selectTrackSingle, toggleTrackSelection]);
+
+  const selectClipWithModifiers = useCallback((clipId: string, e?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) => {
+    const additive = !!(e?.metaKey || e?.ctrlKey);
+    const range = !!e?.shiftKey;
+
+    if (range && selectedClipId) {
+      const orderedIds = [...clips].sort((a, b) => a.startSec - b.startSec).map((c) => c.id);
+      const a = orderedIds.indexOf(selectedClipId);
+      const b = orderedIds.indexOf(clipId);
+      if (a >= 0 && b >= 0) {
+        const [start, end] = a < b ? [a, b] : [b, a];
+        const rangeIds = orderedIds.slice(start, end + 1);
+        setSelectedClipIds((prev) => (additive ? Array.from(new Set([...prev, ...rangeIds])) : rangeIds));
+        setSelectedTrackIds([]);
+        setSelected(clipId);
+        return;
+      }
+    }
+
+    if (additive) {
+      setSelectedClipIds((prev) => (
+        prev.includes(clipId) ? prev.filter((id) => id !== clipId) : [...prev, clipId]
+      ));
+      setSelectedTrackIds([]);
+      setSelected(clipId);
+      return;
+    }
+
+    selectClipSingle(clipId);
+  }, [clips, selectedClipId, selectClipSingle, setSelected]);
+
+  const getSelectionForInit = useCallback((): AudioClip[] => {
+    if (selectedClipIds.length > 0) return clips.filter((c) => selectedClipIds.includes(c.id));
+    if (selectedTrackIds.length > 0) return clips.filter((c) => selectedTrackIds.includes(c.trackId));
+    if (selectedClipId) {
+      const clip = clips.find((c) => c.id === selectedClipId);
+      return clip ? [clip] : [];
+    }
+    return [];
+  }, [clips, selectedClipIds, selectedTrackIds, selectedClipId]);
+
+  const sendSelectionToInit = useCallback(async () => {
+    const selection = getSelectionForInit();
+    if (selection.length === 0) {
+      logError('editor', 'Select at least one clip or track first.');
+      return;
+    }
+    setIsRendering(true);
+    try {
+      const sr = 44100;
+      const totalDur = Math.max(...selection.map((c) => c.startSec + c.durationSec), 1);
+      const offline = new OfflineAudioContext(2, Math.ceil(totalDur * sr), sr);
+      const blobCache = new Map<Blob, AudioBuffer>();
+      const decodeCtx = new AudioContext({ sampleRate: 44100 });
+      try {
+        for (const clip of selection) {
+          if (blobCache.has(clip.audioBlob)) continue;
+          const ab = await clip.audioBlob.arrayBuffer();
+          const decoded = await Promise.race([
+            decodeCtx.decodeAudioData(ab.slice(0)),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('decodeAudioData timeout')), DECODE_TIMEOUT_MS)),
+          ]);
+          blobCache.set(clip.audioBlob, decoded);
+        }
+      } finally {
+        decodeCtx.close().catch(() => {});
+      }
+
+      for (const clip of selection) {
+        const track = trackById.get(clip.trackId);
+        if (!track || track.mute) continue;
+        const buf = blobCache.get(clip.audioBlob);
+        if (!buf) continue;
+        const src = offline.createBufferSource();
+        src.buffer = buf;
+        const gain = offline.createGain();
+        const panner = offline.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, track.pan));
+        src.connect(gain).connect(panner).connect(offline.destination);
+
+        const vol = track.volume;
+        const fadeIn = clip.fadeInSec ?? 0;
+        const fadeOut = clip.fadeOutSec ?? 0;
+        const safeOffset = Math.min(clip.offsetIntoSource, Math.max(0, buf.duration - 0.01));
+        const safeDur = Math.min(clip.durationSec, buf.duration - safeOffset);
+        if (safeDur <= 0) continue;
+        gain.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, clip.startSec);
+        if (fadeIn > 0) gain.gain.linearRampToValueAtTime(vol, clip.startSec + Math.min(fadeIn, safeDur));
+        if (fadeOut > 0) {
+          const foStart = clip.startSec + safeDur - Math.min(fadeOut, safeDur);
+          gain.gain.setValueAtTime(vol, foStart);
+          gain.gain.linearRampToValueAtTime(0, clip.startSec + safeDur);
+        }
+        src.start(clip.startSec, safeOffset, safeDur);
+      }
+
+      const rendered = await offline.startRendering();
+      const blob = encodeWav(rendered);
+      const clipLabels = selection.map((c) => c.label);
+      const mixDur = rendered.duration;
+      const fileName = selection.length === 1
+        ? `editor-clip-${Date.now()}.wav`
+        : `editor-mashup-${selection.length}clips-${Date.now()}.wav`;
+      const file = new File([blob], fileName, { type: 'audio/wav' });
+      const summary = selection.length === 1
+        ? `Editor clip · ${mixDur.toFixed(2)}s`
+        : `Editor mashup · ${selection.length} clips · ${mixDur.toFixed(2)}s`;
+      useGenerateParamsStore.getState().patch({
+        initAudioFile: file,
+        initAudioEnabled: true,
+        initAudioSourceLabel: summary,
+        initAudioSourceClipLabels: clipLabels,
+      });
+      logInfo('editor', `Selection mashup sent to Init (${selection.length} clip${selection.length === 1 ? '' : 's'}, ${mixDur.toFixed(2)}s).`);
+      onSwitchTab?.('create');
+    } catch (e) {
+      logError('editor', `Send to Init failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setIsRendering(false);
+    }
+  }, [getSelectionForInit, onSwitchTab, trackById]);
+
+  const handleTrackHeaderPointerDown = useCallback((e: React.PointerEvent, trackId: string) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('input, button, select, textarea')) return;
+    selectTrackWithModifiers(trackId, e);
+  }, [selectTrackWithModifiers]);
 
   // Decode + cache peaks for any clip that doesn't have them yet.
   useEffect(() => {
@@ -486,9 +679,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           return;
         }
         if (e.key === 'Delete' || e.key === 'Backspace') {
-          if (selectedClipId) {
+          if (selectedClipCount > 0) {
             e.preventDefault();
-            removeClip(selectedClipId);
+            deleteSelectedClips();
           }
           return;
         }
@@ -500,14 +693,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // Ctrl/Cmd + D = duplicate selected clip.
       if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault();
-        if (!selectedClipId) return;
-        const clip = clips.find((c) => c.id === selectedClipId);
-        if (!clip) return;
-        const newId = addClipToTrack({
-          ...clip,
-          startSec: clip.startSec + clip.durationSec,
-        });
-        logInfo('editor', `Duplicated clip → ${newId.slice(0, 8)}`);
+        duplicateSelectedClips();
       }
       // Ctrl/Cmd + P = inpaint selected region.
       if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
@@ -517,7 +703,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, clips, setTool, stopEditorPlayback, playEditorTimeline, removeClip, addClipToTrack, openInpaintPanel, clearInpaintSelection]);
+  }, [selectedClipCount, setTool, stopEditorPlayback, playEditorTimeline, deleteSelectedClips, duplicateSelectedClips, openInpaintPanel, clearInpaintSelection]);
 
   // --- Wheel: Ctrl/Cmd + wheel = zoom; plain wheel = horizontal pan ---
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
@@ -539,8 +725,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         el.scrollLeft = cursorX * ratio - (e.clientX - rect.left);
         return;
       }
-      // Plain wheel — convert vertical delta to horizontal scroll.
-      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      // Shift + wheel — convert vertical delta to horizontal scroll. Plain wheel remains vertical.
+      if (e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
         e.preventDefault();
         el.scrollLeft += e.deltaY;
       }
@@ -572,12 +758,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const openContextMenu = (e: React.MouseEvent, clipId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelected(clipId);
-    let atSec = 0;
-    if (timelineRef.current) {
-      const rect = timelineRef.current.getBoundingClientRect();
-      atSec = pxToSec(e.clientX - rect.left);
+    if (!selectedClipIds.includes(clipId)) {
+      selectClipSingle(clipId);
     }
+    const atSec = timelineClientXToSec(e.clientX);
     setCtxMenu({ x: e.clientX, y: e.clientY, clipId, atSec });
   };
 
@@ -737,8 +921,26 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     e.stopPropagation();
     const clip = clips.find((c) => c.id === clipId);
     if (!clip) return;
-    setSelected(clipId);
+    if (edge === 'move') {
+      selectClipWithModifiers(clipId, e);
+    } else if (!selectedClipIds.includes(clipId)) {
+      selectClipSingle(clipId);
+    }
     const trackIndex = tracks.findIndex((t) => t.id === clip.trackId);
+    const moveIds = edge === 'move' && selectedClipIds.includes(clipId) && !(e.ctrlKey || e.metaKey || e.shiftKey)
+      ? selectedClipIds
+      : [clipId];
+    const initialClips = moveIds
+      .map((id) => {
+        const c = clips.find((item) => item.id === id);
+        if (!c) return null;
+        return {
+          id,
+          startSec: c.startSec,
+          trackIndex: Math.max(0, tracks.findIndex((t) => t.id === c.trackId)),
+        };
+      })
+      .filter((item): item is { id: string; startSec: number; trackIndex: number } => item !== null);
     opRef.current = {
       kind: edge === 'move' ? 'move' : edge === 'left' ? 'resize-left' : 'resize-right',
       clipId,
@@ -748,6 +950,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       initialDurationSec: clip.durationSec,
       initialOffsetIntoSource: clip.offsetIntoSource,
       initialTrackIndex: trackIndex,
+      initialClips,
     };
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
@@ -761,12 +964,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const clip = clips.find((c) => c.id === op.clipId);
     if (!clip) return;
     if (op.kind === 'move') {
-      const newStart = snapSec(op.initialStartSec + dxSec);
       // Vertical track shift.
       const trackDelta = Math.round(dySec / TRACK_HEIGHT);
-      const targetIdx = Math.max(0, Math.min(tracks.length - 1, op.initialTrackIndex + trackDelta));
-      const newTrackId = tracks[targetIdx].id;
-      updateClip(op.clipId, { startSec: newStart, trackId: newTrackId });
+      const moveTargets = op.initialClips?.length ? op.initialClips : [{ id: op.clipId, startSec: op.initialStartSec, trackIndex: op.initialTrackIndex }];
+      moveTargets.forEach((target) => {
+        const newStart = Math.max(0, snapSec(target.startSec + dxSec));
+        const targetIdx = Math.max(0, Math.min(tracks.length - 1, target.trackIndex + trackDelta));
+        const newTrackId = tracks[targetIdx].id;
+        updateClip(target.id, { startSec: newStart, trackId: newTrackId });
+      });
     } else if (op.kind === 'resize-right') {
       const newDur = Math.max(0.05, op.initialDurationSec + dxSec);
       // Don't exceed source.
@@ -958,6 +1164,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
 
+  const handleTimelineScroll = useCallback(() => {
+    if (trackHeaderScrollRef.current && timelineScrollRef.current) {
+      trackHeaderScrollRef.current.scrollTop = timelineScrollRef.current.scrollTop;
+    }
+  }, []);
+
   return (
     <div className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
       {/* Editor Toolbar */}
@@ -1028,10 +1240,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <div className="h-4 w-px bg-white/10" />
 
           <button
-            disabled={!selectedClipId}
-            onClick={() => selectedClipId && removeClip(selectedClipId)}
+            disabled={selectedClipCount === 0}
+            onClick={deleteSelectedClips}
             className="p-1.5 hover:bg-red-500/20 rounded text-zinc-400 hover:text-red-400 disabled:opacity-30 disabled:pointer-events-none"
-            title="Delete selected clip (Del)"
+            title="Delete selected clip(s) (Del)"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -1087,9 +1299,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         <div className="shrink-0 bg-[#0c0a12] border-r border-[#1a1528] overflow-hidden flex flex-col" style={{ width: TRACK_HEADER_PX }}>
           {/* Ruler row spacer */}
           <div className="h-6 border-b border-white/5 bg-black/30 flex items-center justify-center text-[8px] font-mono text-zinc-700 uppercase">tracks</div>
-          <div className="flex-1 overflow-y-auto">
+          <div ref={trackHeaderScrollRef} className="flex-1 overflow-hidden">
             {tracks.map((t) => (
-              <div key={t.id} className="border-b border-[#1a1528] p-2 flex flex-col gap-1.5" style={{ height: TRACK_HEIGHT }}>
+              <div
+                key={t.id}
+                onPointerDown={(e) => handleTrackHeaderPointerDown(e, t.id)}
+                className={`border-b border-[#1a1528] p-2 flex flex-col gap-1.5 transition-colors ${selectedTrackIds.includes(t.id) ? 'bg-purple-500/10 ring-1 ring-inset ring-purple-500/35' : ''}`}
+                style={{ height: TRACK_HEIGHT }}
+                title="Click to select track. Ctrl/Cmd-click to multi-select tracks."
+              >
                 <div className="flex justify-between items-center gap-1">
                   <input
                     type="text"
@@ -1148,10 +1366,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           className="flex-1 min-w-0 overflow-x-auto overflow-y-auto bg-[#07050a]"
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onScroll={handleTimelineScroll}
         >
-          {/* Ruler — click or drag to set playhead */}
+          {/* Ruler — click or drag to set playhead. Sticky so vertical scroll keeps it pinned. */}
           <div
-            className="h-6 border-b border-white/5 bg-black/30 relative select-none cursor-col-resize"
+            className="h-6 border-b border-white/5 bg-black/80 backdrop-blur-sm sticky top-0 z-40 select-none cursor-col-resize"
             style={{ width: timelineWidthPx }}
             onMouseDown={onRulerMouseDown}
           >
@@ -1216,7 +1435,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               const width = clip.durationSec * zoom;
               const top = trackIdx * TRACK_HEIGHT + 6;
               const height = TRACK_HEIGHT - 12;
-              const selected = clip.id === selectedClipId;
+              const selected = selectedClipIdSet.has(clip.id) || clip.id === selectedClipId;
               const peaks = clip.peaks;
               return (
                 <div
@@ -1413,13 +1632,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <button
             className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-zinc-200 flex items-center justify-between"
             onClick={() => {
-              const clip = clips.find((c) => c.id === ctxMenu.clipId);
-              if (clip) addClipToTrack({ ...clip, startSec: clip.startSec + clip.durationSec });
+              duplicateSelectedClips();
               setCtxMenu(null);
             }}
           >
             <span>Duplicate</span>
             <span className="text-zinc-600 text-[8px]">Ctrl+D</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-40 disabled:pointer-events-none"
+            disabled={isRendering}
+            onClick={() => { void sendSelectionToInit(); setCtxMenu(null); }}
+          >
+            <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3" /> Send Selection to Init</span>
+            <span className="text-zinc-600 text-[8px]">mix</span>
           </button>
           {(() => {
             const clip = clips.find((c) => c.id === ctxMenu.clipId);
@@ -1447,7 +1673,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <div className="my-0.5 border-t border-white/5" />
           <button
             className="w-full text-left px-3 py-1 hover:bg-red-500/20 text-red-300 flex items-center justify-between"
-            onClick={() => { removeClip(ctxMenu.clipId); setCtxMenu(null); }}
+            onClick={() => { deleteSelectedClips(); setCtxMenu(null); }}
           >
             <span>Delete</span>
             <span className="text-zinc-600 text-[8px]">Del</span>
