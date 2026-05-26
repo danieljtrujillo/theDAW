@@ -63,7 +63,10 @@ export const PlayerFooter: React.FC = () => {
     if (entries.length === 0) return;
     const newest = entries.reduce((acc, e) => (e.timestamp.localeCompare(acc.timestamp) > 0 ? e : acc), entries[0]);
     if (newest) {
-      void load(newest.audioBlob, { label: newest.title, entryId: newest.id });
+      void (async () => {
+        const blob = await useLibraryStore.getState().fetchAudioBlob(newest);
+        await load(blob, { label: newest.title, entryId: newest.id });
+      })();
     }
   }, [hasTrack, lastFilename, load]);
 

@@ -1,0 +1,10 @@
+{
+  "name": "chimera",
+  "label": "Chimera",
+  "enabled": true,
+  "icon": "Layers",
+  "sidebar": false,
+  "api_prefix": "/api/chimera",
+  "backend": true,
+  "description": "BPM-aware multi-init mashup: detect tempo, time-stretch (pitch-preserved), mix"
+}

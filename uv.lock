@@ -246,6 +246,16 @@ wheels = [
 ]
 
 [[package]]
+name = "aubio"
+version = "0.4.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cd/80/302d89240603e5347c7f8026c8b02c59f8dfaec66c91a743d82de7c86006/aubio-0.4.9.tar.gz", hash = "sha256:df1244f6c4cf5bea382c8c2d35aa43bc31f4cf631fe325ae3992c219546a4202", size = 479008, upload-time = "2019-02-08T11:21:02.438Z" }
+
+[[package]]
 name = "audioop-lts"
 version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4563,6 +4573,7 @@ name = "stable-audio-3"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aubio" },
     { name = "chromadb" },
     { name = "einops" },
     { name = "einops-exts" },
@@ -4618,6 +4629,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'ui'", specifier = ">=1.13.0" },
+    { name = "aubio", specifier = ">=0.4.9" },
     { name = "chromadb", specifier = ">=1.0.0" },
     { name = "dill", marker = "extra == 'lora'", specifier = ">=0.4.1" },
     { name = "einops", specifier = ">=0.8.2" },

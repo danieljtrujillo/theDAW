@@ -118,7 +118,9 @@ def _validate_param(value: float, bounds: tuple[float, float], name: str) -> flo
     return val
 
 
-def _build_filter(effect: str, params: dict[str, float], output_format: str = "wav") -> list[str]:
+def _build_filter(
+    effect: str, params: dict[str, float], output_format: str = "wav"
+) -> list[str]:
     """Build FFmpeg audio filter arguments. Returns ['-af', 'filter_string'] or more complex args."""
     if effect == "mastering_chain":
         low_boost = params["lowBoost"]
@@ -258,7 +260,10 @@ def _build_filter(effect: str, params: dict[str, float], output_format: str = "w
         thresh = params["threshold"]
         # Strip leading silence only: remove 1 silence period from the start,
         # requiring at least 0.1 s of silence before trimming.
-        return ["-af", f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={thresh}dB"]
+        return [
+            "-af",
+            f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={thresh}dB",
+        ]
 
     elif effect == "export_flac":
         level = int(params["compressionLevel"])

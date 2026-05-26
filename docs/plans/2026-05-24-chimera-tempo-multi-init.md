@@ -16,10 +16,10 @@ Nothing existing is removed. The current single-file INIT flow, the existing cli
 |---|---|---|
 | 3A | Backend module | `backend/modules/chimera/`, prefix `/api/chimera` |
 | 3B | Per-clip "Noise" semantics | Slider 0.0–1.0, default 0.5. Mirrors the global Init Noise slider direction: higher = less influence. Implemented as `clip_gain = 1 - clip_noise` in the pre-mix, then the mix is RMS-normalized so total energy is stable as clips are added. |
-| 3C | Default alignment | Downbeat-aligned. Also ships: `Start`, `Phrase Weave` (smart hybrid). |
-| UI label | The slot stays called **INIT**. When the user drops or sends a second clip into it, a sub-affordance reading "**Drop more tracks here for a Chimera**" appears beneath the existing dropzone. |
+| 3C | Default alignment | **Phrase Weave (smart hybrid)** once C12 ships and audio QA confirms it sounds best. Until then: Downbeat-aligned. Initial frontend default order while building: Start → Downbeat → Weave. Flip to Weave default at C12 cutover. |
+| UI label | The slot stays called **INIT**. As soon as one clip is loaded, a sub-affordance reading "**Drop more tracks here for a Chimera**" appears beneath the existing dropzone. The Chimera mashup pipeline only engages once the stack has ≥ 2 clips; the affordance shows up earlier so users discover it without needing to drop two files. |
 | Editor preservation | `WaveformEditor.tsx` `sendSelectionToInit` is **not modified**. Its client-side OfflineAudioContext mixdown stays as-is. Chimera is an additional path the user can opt into by stacking clips in INIT. |
-| Render trigger | **No auto-render. No preview render. No "Re-render" button.** The Chimera mashup is computed exactly once, server-side, at the moment the user clicks **CREATE** (the generate button). The mashup result is sent into the same generate POST as `init_audio`. |
+| Render trigger | **No auto-render. No preview render. No labeled "Re-render" button.** The Chimera mashup is computed server-side every time the user clicks **CREATE**. Pressing CREATE a second time re-runs the mashup with the current settings — re-render is implicit in the CREATE action, not a separate button. |
 | Phrase Weave bar count | Default 16 bars, capped at 16, floored at 4 |
 | Documentation | This file. |
 
@@ -47,13 +47,13 @@ The INIT Section keeps its current shape for the first clip. Once anything is lo
 
 Rules:
 
-- The first clip uses the existing single-file flow. When a second clip is added, the second clip is the first row of the Chimera stack.
+- The first clip uses the existing single-file flow. The Chimera affordance ("Drop more tracks here for a Chimera") appears as soon as **one** clip is loaded so users discover the feature immediately. The Chimera mashup pipeline only engages once a **second** clip is added.
 - Adding more clips appends rows. Each row shows: color swatch, label, detected BPM (or "—" / "no beat"), stretch ratio (after target BPM resolved), per-clip **Noise** slider, **Base** radio toggle, remove ✕.
-- The dashed "Drop more tracks here for a Chimera" affordance is always present at the bottom of the stack while in stack mode.
+- The dashed "Drop more tracks here for a Chimera" affordance is always present at the bottom of the stack while at least one clip is loaded.
 - Target BPM defaults to "Auto" (median of detected BPMs).
 - Setting **Base** on a row pins target BPM to that row's detected BPM and clears Auto; the BPM number input reflects this and is editable (which clears Base).
 - Align mode dropdown: `Start` | `Downbeat` (default) | `Phrase Weave`.
-- No re-render button. No mid-stack audio preview. Nothing is rendered until CREATE.
+- No labeled re-render button. No mid-stack audio preview. The mashup is rendered every time CREATE is pressed, so adjusting settings and clicking CREATE again re-runs Chimera with the new settings.
 
 ## 4. Send-to-Chimera surfaces
 

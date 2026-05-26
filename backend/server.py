@@ -16,9 +16,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -58,7 +59,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-pipeline = None
+pipeline: Any = None
 sample_rate = 44100
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODULES_DIR = Path(__file__).parent / "modules"
@@ -77,14 +78,14 @@ _WINDOWS_RESERVED_FILENAMES = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
-_generation_pipelines: dict[str, object] = {}
+_generation_pipelines: dict[str, Any] = {}
 _active_model_name = DEFAULT_GENERATION_MODEL
 _generation_job_lock = asyncio.Lock()
 
-from collections import OrderedDict
 # Spectrogram cache: {job_id: {mel, stft, chromagram, cqt}}
 _spec_cache: OrderedDict[str, dict[str, str]] = OrderedDict()
 _SPEC_CACHE_MAX_SIZE = 20
+
 
 def _add_to_spec_cache(key: str, value: dict[str, str]):
     _spec_cache[key] = value
@@ -95,7 +96,7 @@ def _add_to_spec_cache(key: str, value: dict[str, str]):
 @dataclass(frozen=True)
 class LoraFormSlot:
     index: int
-    upload: object
+    upload: Any
     weight: float
 
 
@@ -115,7 +116,19 @@ def _get_or_load_generation_pipeline(model_name: str):
     if normalized not in _generation_pipelines:
         from stable_audio_3.model import StableAudioModel
 
+        logger.info("model.load: starting from_pretrained for %r", normalized)
+        t0 = time.perf_counter()
         _generation_pipelines[normalized] = StableAudioModel.from_pretrained(normalized)
+        dt = time.perf_counter() - t0
+        logger.info(
+            "model.load: %r ready in %.2fs (cuda=%s)",
+            normalized,
+            dt,
+            torch.cuda.is_available(),
+        )
+        if torch.cuda.is_available():
+            mem_gb = torch.cuda.memory_allocated() / 1024**3
+            logger.info("model.load: %r VRAM allocated %.2f GB", normalized, mem_gb)
 
     selected = _generation_pipelines[normalized]
     pipeline = selected
@@ -352,7 +365,9 @@ def _compute_request_sample_size(
     If we do not set this per request, it falls back to the model default (~120s).
     """
     output_sr = int(generation_pipeline.model_config.get("sample_rate", sample_rate))
-    target_seconds = max(0.0, float(duration_sec)) + max(0.0, float(duration_padding_sec))
+    target_seconds = max(0.0, float(duration_sec)) + max(
+        0.0, float(duration_padding_sec)
+    )
     target_audio_samples = int(math.ceil(target_seconds * output_sr))
 
     pretransform = getattr(generation_pipeline.model, "pretransform", None)
@@ -363,9 +378,9 @@ def _compute_request_sample_size(
 
     align = max(1, ds_ratio)
     try:
-        encoder_config = generation_pipeline.model_config["model"]["pretransform"]["config"][
-            "encoder"
-        ]["config"]
+        encoder_config = generation_pipeline.model_config["model"]["pretransform"][
+            "config"
+        ]["encoder"]["config"]
         chunk_size = int(encoder_config.get("chunk_size", 32))
         strides = encoder_config.get("strides", [1])
         stride = int(strides[0]) if strides else 1
@@ -378,9 +393,7 @@ def _compute_request_sample_size(
         target_audio_samples = align
 
     if align > 1:
-        target_audio_samples = (
-            (target_audio_samples + align - 1) // align
-        ) * align
+        target_audio_samples = ((target_audio_samples + align - 1) // align) * align
 
     max_sample_size_env = os.getenv("STABLEDAW_MAX_SAMPLE_SIZE")
     if max_sample_size_env:
@@ -417,14 +430,14 @@ async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
         else:
             waveform = waveform.T  # (channels, samples)
         return waveform, sr
-    except (ImportError, Exception) as e:
+    except Exception as e:
         logger.debug(f"soundfile decode failed, trying torchaudio: {e}")
         buf.seek(0)
 
     # Fallback: torchaudio via temp file
     fd, fname = tempfile.mkstemp(suffix=".wav")
     try:
-        with os.fdopen(fd, 'wb') as f:
+        with os.fdopen(fd, "wb") as f:
             f.write(audio_bytes)
         t, sr = torchaudio.load(fname)
         return t.numpy(), sr
@@ -555,12 +568,45 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
 @app.on_event("startup")
 async def load_model():
     loop = asyncio.get_event_loop()
+    startup_t0 = time.perf_counter()
+
+    # System stats so the user can correlate "model loaded slowly" with hardware.
+    try:
+        import platform
+
+        gpu_info = "no CUDA"
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            gpu_info = (
+                f"{props.name} "
+                f"({round(props.total_memory / 1024**3, 1)} GB VRAM, "
+                f"cuda={torch.version.cuda})"
+            )
+        logger.info(
+            "startup: python=%s torch=%s os=%s gpu=%s",
+            platform.python_version(),
+            torch.__version__,
+            f"{platform.system()} {platform.release()}",
+            gpu_info,
+        )
+        loaded_module_names = [m.get("name") for m in (app.state.loaded_modules or [])]
+        logger.info(
+            "startup: loaded backend modules: %s",
+            ", ".join(loaded_module_names) if loaded_module_names else "(none)",
+        )
+    except Exception as e:
+        logger.warning("startup: system-stat probe failed: %s", e)
 
     # Run blocking model load off the event loop so /api/health can respond
     # immediately while the model is still loading in the background.
     try:
         await loop.run_in_executor(
             None, _get_or_load_generation_pipeline, DEFAULT_GENERATION_MODEL
+        )
+        logger.info(
+            "startup: default model %r ready, total startup time %.2fs",
+            DEFAULT_GENERATION_MODEL,
+            time.perf_counter() - startup_t0,
         )
     except Exception as e:
         logger.warning(
@@ -624,11 +670,19 @@ async def system_stats():
     stats: dict = {}
     if torch.cuda.is_available():
         stats["vram_used_gb"] = round(torch.cuda.memory_allocated() / 1024**3, 2)
-        stats["vram_total_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
+        stats["vram_total_gb"] = round(
+            torch.cuda.get_device_properties(0).total_memory / 1024**3, 2
+        )
         try:
             r = subprocess.run(
-                ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2,
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
             )
             if r.returncode == 0:
                 parts = [p.strip() for p in r.stdout.strip().split(",")]
@@ -646,6 +700,7 @@ async def system_stats():
 
     try:
         import psutil
+
         stats["cpu_pct"] = round(psutil.cpu_percent(interval=None))
         vm = psutil.virtual_memory()
         stats["ram_used_gb"] = round(vm.used / 1024**3, 1)
@@ -725,6 +780,7 @@ async def generate_spectrogram(
                 )
         else:
             # Decode base64
+            assert audio_base64 is not None
             audio_data = base64.b64decode(audio_base64)
 
             # Validate size (50MB limit)
@@ -914,19 +970,20 @@ async def generate(
             generate_args["inpaint_mask_end_seconds"] = mask_end
 
     loop = asyncio.get_event_loop()
+
     def _do_generate():
         gen_audio = generation_pipeline.generate(**generate_args)
         gen_audio = gen_audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
-        
+
         fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
-        
+
         buf = io.BytesIO()
         torchaudio.save(buf, gen_audio, sample_rate, format=fmt)
         buf.seek(0)
         return buf, fmt
-        
+
     buffer, fmt = await loop.run_in_executor(None, _do_generate)
-    
+
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
 
     return StreamingResponse(
@@ -990,14 +1047,19 @@ async def _run_generate_job(
                     args = dict(base_args)
                     if batch_size > 1 and seed_base != -1:
                         args["seed"] = seed_base + i
-                        
+
                     def _step_callback(step_info):
                         # Ensure we update the job progress safely
                         if job_id in JOBS:
                             JOBS[job_id]["progress"]["step"] = step_info.get("i", 0) + 1
-                            
+
                     audio_bytes, fmt = await loop.run_in_executor(
-                        None, _generate_to_bytes, generation_pipeline, args, file_format, _step_callback
+                        None,
+                        _generate_to_bytes,
+                        generation_pipeline,
+                        args,
+                        file_format,
+                        _step_callback,
                     )
                     mime_type = mime_map.get(fmt, "audio/wav")
                     filename = _make_generation_filename(
@@ -1009,6 +1071,7 @@ async def _run_generate_job(
                         base_args.get("negative_prompt"),
                         int(args.get("seed", -1)),
                     )
+
                     def _do_specs_and_save():
                         waveform, sr = torchaudio.load(io.BytesIO(audio_bytes))
                         spectrograms = _generate_spectrograms(waveform, sr)
@@ -1030,8 +1093,10 @@ async def _run_generate_job(
                             },
                         )
                         return spectrograms, artifact_info
-                        
-                    spectrograms, artifact_info = await loop.run_in_executor(None, _do_specs_and_save)
+
+                    spectrograms, artifact_info = await loop.run_in_executor(
+                        None, _do_specs_and_save
+                    )
 
                     _add_to_spec_cache(f"{job_id}:{i}", spectrograms)
                     if i == 0:

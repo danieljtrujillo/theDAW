@@ -98,11 +98,18 @@ Object.entries(EFFECT_CATALOG).forEach(([catId, fxs]) => {
   fxs.forEach((fx) => { fxToCategory[fx.id] = catById[catId] ?? CATEGORY_META[0]; });
 });
 
-function fileFromDrop(e: React.DragEvent): File | null {
+async function fileFromDrop(e: React.DragEvent): Promise<File | null> {
   const libId = e.dataTransfer.getData('application/x-stabledaw-library-id');
   if (libId) {
     const entry = useLibraryStore.getState().entries.find((en) => en.id === libId);
-    if (entry) return new File([entry.audioBlob], `${entry.title.slice(0, 40)}.wav`, { type: entry.mimeType || 'audio/wav' });
+    if (entry) {
+      const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+      return new File(
+        [blob],
+        `${entry.title.slice(0, 40)}.wav`,
+        { type: entry.mimeType || 'audio/wav' },
+      );
+    }
   }
   return e.dataTransfer.files[0] || null;
 }
@@ -241,9 +248,9 @@ export const AdvancedEditorPanel: React.FC = () => {
     document.body.style.cursor = 'col-resize';
   }, []);
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault(); setDragOverSource(false);
-    const file = fileFromDrop(e);
+    const file = await fileFromDrop(e);
     if (file) { setSource(file); useStudioStore.getState().setSourceFile(file); }
   };
 
@@ -276,27 +283,18 @@ export const AdvancedEditorPanel: React.FC = () => {
         const finalBlob = await fetch(finalUrl).then((r) => r.blob());
         const chainLabel = enabled.map((e) => EFFECT_LABELS[e.effect] || e.effect).join(' → ');
         const title = `chain-${Date.now()}.${outputFormat}`;
-        const entryId = crypto.randomUUID();
-        await useLibraryStore.getState().addEntry({
-          id: entryId,
-          title,
-          prompt: chainLabel,
-          negativePrompt: '',
-          model: '',
-          duration: 0,
-          steps: 0,
-          cfg: 0,
-          seed: 0,
-          audioBlob: finalBlob,
+        const entry = await useLibraryStore.getState().importEntry({
+          blob: finalBlob,
+          filename: title,
           mimeType: finalBlob.type || 'audio/wav',
-          timestamp: new Date().toISOString(),
-          favorite: false,
-          rating: null,
-          tags: ['effects-chain'],
-          notes: '',
-          source: 'studio',
+          metadata: {
+            title,
+            prompt: chainLabel,
+            source: 'studio',
+            tags: ['effects-chain'],
+          },
         });
-        await usePlayerStore.getState().load(finalBlob, { label: title, entryId });
+        await usePlayerStore.getState().load(finalBlob, { label: title, entryId: entry.id });
       } catch { /* non-fatal */ }
     }
     setProcessing(false);

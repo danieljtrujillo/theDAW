@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
-  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2,
+  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
 } from 'lucide-react';
+import { addBlobsToChimera } from '../../lib/chimeraClient';
+import type { AudioDragItem } from '../../lib/audioDnD';
+import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, type AudioClip, type SnapDivision } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlaybackStore } from '../../state/playbackStore';
@@ -104,7 +107,7 @@ const cropAudioBlob = async (
 };
 
 interface PointerOp {
-  kind: 'move' | 'resize-left' | 'resize-right';
+  kind: 'move' | 'resize-left' | 'resize-right' | 'ctrl-drag-pending';
   clipId: string;
   startPxX: number;
   startPxY: number;
@@ -113,7 +116,10 @@ interface PointerOp {
   initialOffsetIntoSource: number;
   initialTrackIndex: number;
   initialClips?: Array<{ id: string; startSec: number; trackIndex: number }>;
+  dragItems?: AudioDragItem[];
 }
+
+const CTRL_DRAG_MOVE_THRESHOLD_PX = 4;
 
 export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const tracks = useEditorStore((s) => s.tracks);
@@ -270,30 +276,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!sel) return;
     updateClip(sel.clipId, { audioBlob: blob, mimeType: 'audio/wav', peaks: undefined });
     
-    // Auto-save the accepted inpaint to the library
-    try {
-      useLibraryStore.getState().addEntry({
-        id: `inpaint-${Date.now()}`,
+    // Auto-save the accepted inpaint to the library (via the storage provider).
+    void useLibraryStore.getState().importEntry({
+      blob,
+      filename: `inpaint_${inpaintPrompt.slice(0, 15) || 'result'}.wav`,
+      mimeType: 'audio/wav',
+      metadata: {
         title: `inpaint_${inpaintPrompt.slice(0, 15) || 'result'}.wav`,
         prompt: inpaintPrompt,
-        negativePrompt: '',
         model: 'inpaint',
         duration: sel.endSec - sel.startSec,
         steps: inpaintSteps,
         cfg: 1.0,
         seed: inpaintSeed,
-        audioBlob: blob,
-        mimeType: 'audio/wav',
-        timestamp: new Date().toISOString(),
-        favorite: false,
-        rating: null,
-        tags: ['inpaint'],
-        notes: '',
         source: 'generate',
-      }).catch(e => logError('editor', `Inpaint library save failed: ${e}`));
-    } catch (e) {
-      logError('editor', `Inpaint library save failed: ${e}`);
-    }
+        tags: ['inpaint'],
+      },
+    }).catch((e) => logError('editor', `Inpaint library save failed: ${e}`));
 
     clearInpaintSelection();
     setInpaintPanel(null);
@@ -833,30 +832,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       }
       const rendered = await offline.startRendering();
       const wavBlob = encodeWav(rendered);
-      const stamp = new Date().toISOString();
       const id = `mix-${Date.now()}`;
       const trimmedName = mixdownName.trim();
       const title = trimmedName
         ? (trimmedName.endsWith('.wav') ? trimmedName : `${trimmedName}.wav`)
         : `mixdown_${id.slice(-6)}.wav`;
-      await useLibraryStore.getState().addEntry({
-        id,
-        title,
-        prompt: `Editor mixdown of ${clips.length} clips`,
-        negativePrompt: '',
-        model: 'editor-mixdown',
-        duration: rendered.duration,
-        steps: 0,
-        cfg: 0,
-        seed: -1,
-        audioBlob: wavBlob,
+      await useLibraryStore.getState().importEntry({
+        blob: wavBlob,
+        filename: title,
         mimeType: 'audio/wav',
-        timestamp: stamp,
-        favorite: false,
-        rating: null,
-        tags: ['mixdown'],
-        notes: '',
-        source: 'studio',
+        metadata: {
+          title,
+          prompt: `Editor mixdown of ${clips.length} clips`,
+          model: 'editor-mixdown',
+          duration: rendered.duration,
+          source: 'studio',
+          tags: ['mixdown'],
+        },
       });
       // Also trigger an immediate browser download so the file lands on disk.
       const dlUrl = URL.createObjectURL(wavBlob);
@@ -921,6 +913,31 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     e.stopPropagation();
     const clip = clips.find((c) => c.id === clipId);
     if (!clip) return;
+
+    if (edge === 'move' && (e.ctrlKey || e.metaKey)) {
+      const ids = selectedClipIds.includes(clipId) ? selectedClipIds : [clipId];
+      const dragItems: AudioDragItem[] = ids
+        .map((id) => clips.find((c) => c.id === id))
+        .filter((c): c is AudioClip => !!c)
+        .map((c) => ({
+          blob: c.audioBlob,
+          mimeType: c.mimeType,
+          label: c.label,
+        }));
+      opRef.current = {
+        kind: 'ctrl-drag-pending',
+        clipId,
+        startPxX: e.clientX,
+        startPxY: e.clientY,
+        initialStartSec: clip.startSec,
+        initialDurationSec: clip.durationSec,
+        initialOffsetIntoSource: clip.offsetIntoSource,
+        initialTrackIndex: Math.max(0, tracks.findIndex((t) => t.id === clip.trackId)),
+        dragItems,
+      };
+      return;
+    }
+
     if (edge === 'move') {
       selectClipWithModifiers(clipId, e);
     } else if (!selectedClipIds.includes(clipId)) {
@@ -960,6 +977,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!op) return;
     const dxPx = e.clientX - op.startPxX;
     const dySec = e.clientY - op.startPxY;
+
+    if (op.kind === 'ctrl-drag-pending') {
+      const dist = Math.hypot(dxPx, dySec);
+      if (dist >= CTRL_DRAG_MOVE_THRESHOLD_PX && op.dragItems && op.dragItems.length > 0) {
+        useExternalDragStore.getState().begin(op.dragItems);
+        opRef.current = null;
+      }
+      return;
+    }
+
     const dxSec = pxToSec(dxPx);
     const clip = clips.find((c) => c.id === op.clipId);
     if (!clip) return;
@@ -993,6 +1020,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
+    const op = opRef.current;
+    if (op?.kind === 'ctrl-drag-pending') {
+      selectClipWithModifiers(op.clipId, { ctrlKey: true });
+      opRef.current = null;
+      return;
+    }
     if (opRef.current) {
       (e.target as Element).releasePointerCapture?.(e.pointerId);
       opRef.current = null;
@@ -1033,11 +1066,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!targetTrack) return;
     const startSec = droppedBelowAllTracks ? 0 : snapSec(pxToSec(xPx));
     try {
-      const { peaks, duration } = await computePeaks(entry.audioBlob, 240);
+      const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+      const { peaks, duration } = await computePeaks(blob, 240);
       const clipId = addClipToTrack({
         trackId: targetTrack.id,
         label: entry.title ?? `clip_${entryId.slice(0, 6)}`,
-        audioBlob: entry.audioBlob,
+        audioBlob: blob,
         mimeType: entry.mimeType,
         sourceDuration: duration || entry.duration,
         offsetIntoSource: 0,
@@ -1646,6 +1680,28 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           >
             <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3" /> Send Selection to Init</span>
             <span className="text-zinc-600 text-[8px]">mix</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-40 disabled:pointer-events-none"
+            onClick={() => {
+              const selection = getSelectionForInit();
+              if (selection.length === 0) {
+                setCtxMenu(null);
+                return;
+              }
+              addBlobsToChimera(
+                selection.map((c) => ({
+                  blob: c.audioBlob,
+                  mimeType: c.mimeType,
+                  label: c.label,
+                })),
+              );
+              onSwitchTab?.('create');
+              setCtxMenu(null);
+            }}
+          >
+            <span className="flex items-center gap-1.5"><Layers className="w-3 h-3" /> Send Selection to Init (stacked)</span>
+            <span className="text-zinc-600 text-[8px]">chimera</span>
           </button>
           {(() => {
             const clip = clips.find((c) => c.id === ctxMenu.clipId);

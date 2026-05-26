@@ -50,10 +50,12 @@ export const DetailsView: React.FC = () => {
   const playerLoad = usePlayerStore((s) => s.load);
   const playerPlay = usePlayerStore((s) => s.play);
   const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
+  const fetchAudioBlob = useLibraryStore((s) => s.fetchAudioBlob);
 
   const handleAuditionInEngine = async () => {
     if (!entry) return;
-    await playerLoad(entry.audioBlob, { label: entry.title, entryId: entry.id });
+    const blob = await fetchAudioBlob(entry);
+    await playerLoad(blob, { label: entry.title, entryId: entry.id });
     playerPlay();
   };
 
@@ -61,13 +63,14 @@ export const DetailsView: React.FC = () => {
     if (!entry) return;
     try {
       const editor = useEditorStore.getState();
-      const { peaks, duration } = await computePeaks(entry.audioBlob, 240);
+      const blob = await fetchAudioBlob(entry);
+      const { peaks, duration } = await computePeaks(blob, 240);
       const trackId = editor.addTrack({ name: entry.title });
       const trackColor = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
       const clipId = editor.addClipToTrack({
         trackId,
         label: entry.title,
-        audioBlob: entry.audioBlob,
+        audioBlob: blob,
         mimeType: entry.mimeType,
         sourceDuration: duration || entry.duration,
         offsetIntoSource: 0,
@@ -137,7 +140,7 @@ export const DetailsView: React.FC = () => {
         <div>
           <Row icon={Calendar} label="Created" value={fmtDate(entry.timestamp)} />
           <Row icon={FileAudio} label="MIME" value={entry.mimeType} />
-          <Row icon={FileAudio} label="Size" value={fmtSize(entry.audioBlob.size)} />
+          <Row icon={FileAudio} label="Size" value={fmtSize(entry.fileSizeBytes)} />
           <Row icon={Star} label="Favorite" value={entry.favorite ? 'yes' : 'no'} />
           <Row icon={Star} label="Rating" value={entry.rating ?? '—'} />
           <Row icon={Tag} label="Tags" value={entry.tags.length ? entry.tags.join(', ') : '—'} />
@@ -150,6 +153,22 @@ export const DetailsView: React.FC = () => {
         <p className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest mb-1">PROMPT</p>
         <p className="text-[11px] text-zinc-200 leading-relaxed">{entry.prompt || <em className="text-zinc-600">No prompt was used for this generation.</em>}</p>
       </div>
+
+      {entry.chimeraSources && entry.chimeraSources.length > 0 && (
+        <div className="mt-3 p-2 rounded border border-purple-500/30 bg-purple-500/5">
+          <p className="text-[8px] font-mono text-purple-300/80 uppercase tracking-widest mb-1">
+            CHIMERA SOURCES ({entry.chimeraSources.length})
+          </p>
+          <ul className="flex flex-col gap-0.5">
+            {entry.chimeraSources.map((label, i) => (
+              <li key={i} className="text-[10px] font-mono text-zinc-300 flex items-baseline gap-1.5">
+                <span className="text-purple-400/70 w-5">{(i + 1).toString().padStart(2, '0')}</span>
+                <span className="truncate">{label}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 };

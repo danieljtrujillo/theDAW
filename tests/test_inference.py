@@ -186,9 +186,9 @@ def test_batch_inference(sa3_model, maybe_save_audio):
         duration_padding_sec=duration_padding_sec,
         batch_size=batch_size,
     )
-    assert (
-        audio_same_durations.shape[0] == batch_size
-    ), f"Expected batch dim {batch_size}, got {audio_same_durations.shape[0]}"
+    assert audio_same_durations.shape[0] == batch_size, (
+        f"Expected batch dim {batch_size}, got {audio_same_durations.shape[0]}"
+    )
     # Validate each item in the batch individually and optionally save
     for i, prompt in enumerate(prompts):
         maybe_save_audio(audio_same_durations[i : i + 1], sr, prompt)

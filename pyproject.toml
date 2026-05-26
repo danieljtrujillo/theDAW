@@ -35,6 +35,7 @@ dependencies = [
     # `uv sync` never removes it. The wheel URL lives in [tool.uv.sources].
     # Update both when upgrading torch/CUDA.
     "flash-attn ; sys_platform == 'win32' and python_version < '3.11'",
+    "aubio>=0.4.9",
 ]
 
 [project.optional-dependencies]

@@ -11,6 +11,8 @@ import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { logError } from '../state/logStore';
+import { addBlobsToChimera } from '../lib/chimeraClient';
+import { setAudioDragData } from '../lib/audioDnD';
 
 const formatDuration = (sec: number): string => {
   if (!Number.isFinite(sec) || sec <= 0) return '--:--';
@@ -166,14 +168,15 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
               .map((c) => c.startSec + c.durationSec),
           );
     try {
-      const { peaks, duration } = await computePeaks(entry.audioBlob, 240);
+      const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+      const { peaks, duration } = await computePeaks(blob, 240);
       // Re-read tracks after potential addTrack so we pick up the right color.
       const trackColor =
         useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#8b5cf6';
       const clipId = editor.addClipToTrack({
         trackId,
         label: entry.title,
-        audioBlob: entry.audioBlob,
+        audioBlob: blob,
         mimeType: entry.mimeType,
         sourceDuration: duration || entry.duration,
         offsetIntoSource: 0,
@@ -194,8 +197,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
 
   const patchGenParams = useGenerateParamsStore((s) => s.patch);
 
-  const handleSendToInit = (entry: LibraryEntry) => {
-    const file = new File([entry.audioBlob], entry.title, { type: entry.mimeType });
+  const handleSendToInit = async (entry: LibraryEntry) => {
+    const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+    const file = new File([blob], entry.title, { type: entry.mimeType });
     patchGenParams({
       initAudioFile: file,
       initAudioEnabled: true,
@@ -205,15 +209,36 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   };
 
   const handleSendSelectedToInit = () => {
-    const firstSelected = selectedEntries[0] ?? entries.find((entry) => entry.id === contextMenu?.entryId);
-    if (!firstSelected) return;
-    handleSendToInit(firstSelected);
-    onSwitchTab?.('create');
-    setContextMenu(null);
+    const targets = selectedEntries.length > 0
+      ? selectedEntries
+      : (() => {
+          const ctxEntry = entries.find((entry) => entry.id === contextMenu?.entryId);
+          return ctxEntry ? [ctxEntry] : [];
+        })();
+    if (targets.length === 0) return;
+
+    void (async () => {
+      const fetchBlob = useLibraryStore.getState().fetchAudioBlob;
+      if (targets.length === 1) {
+        await handleSendToInit(targets[0]);
+      } else {
+        const items = await Promise.all(
+          targets.map(async (entry) => ({
+            blob: await fetchBlob(entry),
+            mimeType: entry.mimeType,
+            label: entry.title,
+          })),
+        );
+        addBlobsToChimera(items);
+      }
+      onSwitchTab?.('create');
+      setContextMenu(null);
+    })();
   };
 
-  const handleSendToInpaint = (entry: LibraryEntry) => {
-    const file = new File([entry.audioBlob], entry.title, { type: entry.mimeType });
+  const handleSendToInpaint = async (entry: LibraryEntry) => {
+    const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+    const file = new File([blob], entry.title, { type: entry.mimeType });
     patchGenParams({ inpaintAudioFile: file, inpaintEnabled: true, maskStart: 0, maskEnd: 0 });
   };
 
@@ -230,7 +255,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       return;
     }
     // Otherwise load and play through the global engine — visualizer + footer follow.
-    await engineLoad(entry.audioBlob, { label: entry.title, entryId: entry.id });
+    const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+    await engineLoad(blob, { label: entry.title, entryId: entry.id });
     enginePlay();
     setPlayingId(entry.id);
   };
@@ -299,7 +325,16 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
               onDragStart={(e) => {
                 e.dataTransfer.setData('application/x-stabledaw-library-id', entry.id);
                 e.dataTransfer.setData('text/plain', entry.title);
-                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.effectAllowed = 'copyMove';
+                const dragItems = selectedEntryIds.includes(entry.id) && selectedEntries.length > 1
+                  ? selectedEntries
+                  : [entry];
+                const fetchBlob = useLibraryStore.getState().fetchAudioBlob;
+                setAudioDragData(e, dragItems.map((en) => ({
+                  fetcher: () => fetchBlob(en),
+                  mimeType: en.mimeType,
+                  label: en.title,
+                })));
               }}
               onClick={(e) => handleSelectEntry(entry, e)}
               onContextMenu={(e) => handleEntryContextMenu(e, entry)}
@@ -343,7 +378,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                   <div className="flex items-center gap-3 shrink-0">
                     <span className="text-[8px] font-mono text-zinc-600">{formatDuration(entry.duration)}</span>
                     <span className="text-[8px] font-mono text-zinc-700">{formatDate(entry.timestamp)}</span>
-                    <span className="text-[8px] font-mono text-zinc-700">{formatSize(entry.audioBlob.size)}</span>
+                    <span className="text-[8px] font-mono text-zinc-700">{formatSize(entry.fileSizeBytes)}</span>
                     {viewMode === 'list' && (
                       <div className="flex gap-1">
                         <button
@@ -443,7 +478,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
             onClick={handleSendSelectedToInit}
           >
             <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3" /> Send selected to Init</span>
-            <span className="text-zinc-600 text-[8px]">first item</span>
+            <span className="text-zinc-600 text-[8px]">
+              {selectedEntries.length > 1 ? `${selectedEntries.length} → Chimera` : 'single'}
+            </span>
           </button>
         </div>
       )}
@@ -455,7 +492,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           <p>
             Total size:{' '}
             <span className="text-zinc-300">
-              {formatSize(entries.reduce((sum, e) => sum + e.audioBlob.size, 0))}
+              {formatSize(entries.reduce((sum, e) => sum + e.fileSizeBytes, 0))}
             </span>
           </p>
           <p>
@@ -463,6 +500,49 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
             <span className="text-zinc-300">
               {formatDuration(entries.reduce((sum, e) => sum + e.duration, 0))}
             </span>
+          </p>
+        </div>
+
+        <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-2">
+          <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Library maintenance</p>
+          <button
+            type="button"
+            className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1.5 justify-center self-start hover:bg-orange-500/15 hover:text-orange-200 border border-orange-500/30"
+            disabled={entries.filter((e) => !e.favorite).length === 0}
+            onClick={async () => {
+              const targets = entries.filter((e) => !e.favorite);
+              if (targets.length === 0) return;
+              const ok = window.confirm(
+                `Delete ${targets.length} non-favorite entr${targets.length === 1 ? 'y' : 'ies'} from disk? Favorites and their audio files are kept.`,
+              );
+              if (!ok) return;
+              const { deleted, failed } = await useLibraryStore.getState().removeMany(targets.map((t) => t.id));
+              window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
+            }}
+            title="Delete every non-favorite library entry from the server's data folder."
+          >
+            <Trash2 className="w-2.5 h-2.5" />
+            CLEAR NON-FAVORITES ({entries.filter((e) => !e.favorite).length})
+          </button>
+          <button
+            type="button"
+            className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1.5 justify-center self-start hover:bg-red-500/15 hover:text-red-200 border border-red-500/40"
+            disabled={entries.length === 0}
+            onClick={async () => {
+              const ok = window.confirm(
+                `Delete ALL ${entries.length} library entr${entries.length === 1 ? 'y' : 'ies'} including favorites from the server's data folder?\n\nThis cannot be undone.`,
+              );
+              if (!ok) return;
+              const { deleted, failed } = await useLibraryStore.getState().clearAll();
+              window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
+            }}
+            title="Nuke the library entirely. The audio files on disk are deleted by the backend."
+          >
+            <Trash2 className="w-2.5 h-2.5" />
+            CLEAR ALL ({entries.length})
+          </button>
+          <p className="text-[8px] font-mono text-zinc-700 leading-relaxed">
+            Library entries (and their audio) live on the server's filesystem now — the browser only holds metadata. Use these buttons to prune the on-disk collection.
           </p>
         </div>
       </Section>
