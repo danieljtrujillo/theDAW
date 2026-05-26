@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from backend.modules.library.db import LibraryDB
 
@@ -30,6 +31,32 @@ log = logging.getLogger(__name__)
 
 POLL_INTERVAL_SEC = 2.0
 JOB_TIMEOUT_SEC = 30 * 60  # 30 minutes — Demucs on CPU can be slow
+
+
+# Process-wide progress for in-flight separations. Keyed by entry_id.
+# The /api/stems/{entry_id}/progress endpoint reads this; the frontend
+# polls it every ~1s during a stems run so the user sees what's actually
+# happening (installing deps / launching sidecar / separating / writing).
+_PROGRESS_LOCK = threading.Lock()
+_PROGRESS: dict[str, dict[str, Any]] = {}
+
+
+def _set_progress(entry_id: str, **fields: Any) -> None:
+    with _PROGRESS_LOCK:
+        cur = _PROGRESS.setdefault(entry_id, {})
+        cur.update(fields)
+        cur["updated_at"] = time.time()
+
+
+def get_progress(entry_id: str) -> Optional[dict[str, Any]]:
+    with _PROGRESS_LOCK:
+        snap = _PROGRESS.get(entry_id)
+        return dict(snap) if snap else None
+
+
+def clear_progress(entry_id: str) -> None:
+    with _PROGRESS_LOCK:
+        _PROGRESS.pop(entry_id, None)
 
 
 async def separate_entry(
@@ -45,22 +72,69 @@ async def separate_entry(
     """Run separation for one entry. Returns the final task payload.
     Raises if the sidecar isn't reachable or times out.
 
-    ``device`` may be 'cpu' / 'cuda' / 'mps' / None (sidecar chooses)."""
+    ``device`` may be 'cpu' / 'cuda' / 'mps' / None (sidecar chooses).
+
+    Writes per-phase progress to the shared ``_PROGRESS`` map so the
+    frontend can poll ``/api/stems/{entry_id}/progress`` while this is
+    running and surface what's happening in the ProcessingLog.
+    """
     sc = sidecar or get_sidecar()
 
     _set_status(db, entry_id, "running")
+    _set_progress(
+        entry_id,
+        phase="starting",
+        message="Preparing sidecar…",
+        progress=0,
+        stems=stems,
+    )
     try:
+        _set_progress(
+            entry_id,
+            phase="bootstrap",
+            message=(
+                "Bootstrapping sidecar venv (first run can take several minutes "
+                "while demucs + torch + dependencies download)…"
+            ),
+        )
         submit = await sc.submit_separation(audio_path, stems=stems, device=device)
         task_id = submit.get("task_id")
         if not task_id:
             raise RuntimeError(f"sidecar didn't return a task_id: {submit}")
+        _set_progress(
+            entry_id,
+            phase="queued",
+            task_id=task_id,
+            message=submit.get("message") or "Queued in sidecar",
+            progress=0,
+        )
 
         deadline = time.monotonic() + JOB_TIMEOUT_SEC
         last_status: dict = {}
+        last_logged_phase = ""
         while time.monotonic() < deadline:
             last_status = await sc.poll_status(task_id)
-            status_value = last_status.get("status")
-            if status_value in ("completed", "error", "failed"):
+            sidecar_status = last_status.get("status") or "running"
+            sidecar_message = last_status.get("message") or ""
+            sidecar_progress = last_status.get("progress")
+            _set_progress(
+                entry_id,
+                phase=sidecar_status,
+                message=sidecar_message,
+                progress=sidecar_progress,
+                task_id=task_id,
+            )
+            # Surface only phase changes to the python logger (the
+            # frontend polls progress directly).
+            if sidecar_status != last_logged_phase:
+                log.info(
+                    "stems.engine: %s → %s (%s)",
+                    entry_id,
+                    sidecar_status,
+                    sidecar_message,
+                )
+                last_logged_phase = sidecar_status
+            if sidecar_status in ("completed", "error", "failed"):
                 break
             await asyncio.sleep(POLL_INTERVAL_SEC)
         else:
@@ -77,6 +151,11 @@ async def separate_entry(
         if isinstance(files, dict):
             # Some shapes return a name → path mapping.
             files = list(files.keys())
+        _set_progress(
+            entry_id,
+            phase="writing",
+            message=f"Writing {len(files)} stem(s) to disk…",
+        )
 
         written = 0
         for filename in files:
@@ -111,14 +190,21 @@ async def separate_entry(
             written += 1
 
         _set_status(db, entry_id, "complete")
+        _set_progress(
+            entry_id,
+            phase="completed",
+            message=f"Wrote {written} stem(s)",
+            progress=100,
+        )
         return {
             "task_id": task_id,
             "status": "completed",
             "written": written,
             "files": files,
         }
-    except Exception:
+    except Exception as e:
         _set_status(db, entry_id, "failed")
+        _set_progress(entry_id, phase="failed", message=str(e))
         raise
 
 

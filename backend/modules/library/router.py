@@ -237,15 +237,21 @@ def list_all_midi() -> dict[str, Any]:
 
 @router.get("/_graph/all")
 def get_full_graph() -> dict[str, Any]:
-    """Return EVERY entry + relation in the library. Intended for the
-    library-wide knowledge-graph visualization. Cheap up to a few
-    thousand entries; if it grows large we'll paginate later."""
+    """Return EVERY entry + relation in the library, PLUS virtual nodes
+    for stems / midis / external source-labels referenced in edges but
+    not present in the entries table. Without those virtual nodes the
+    genealogy view sees chimera-children as orphans (their from_id is a
+    file-name string, not an entry id) and the layered layout collapses
+    to one row. Cheap up to a few thousand entries; if it grows large
+    we'll paginate later."""
     store = get_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     raw_entries = store.db.list_entries()
     raw_edges = store.db.list_relations()
-    nodes = [
+
+    entries_by_id: dict[str, dict[str, Any]] = {r["id"]: r for r in raw_entries}
+    nodes: list[dict[str, Any]] = [
         {
             "id": r["id"],
             "kind": "entry",
@@ -256,6 +262,55 @@ def get_full_graph() -> dict[str, Any]:
         }
         for r in raw_entries
     ]
+    seen_ids = set(entries_by_id.keys())
+
+    # Look up stems + midis once so we can label virtual nodes nicely.
+    all_stems: dict[str, dict[str, Any]] = {}
+    all_midis: dict[str, dict[str, Any]] = {}
+    for entry in raw_entries:
+        for s in store.db.list_stems(entry["id"]):
+            all_stems[s["id"]] = s
+        for m in store.db.list_midis(entry["id"]):
+            all_midis[m["id"]] = m
+
+    for edge in raw_edges:
+        for ref in (edge["from_id"], edge["to_id"]):
+            if ref in seen_ids:
+                continue
+            seen_ids.add(ref)
+            if ref in all_stems:
+                stem = all_stems[ref]
+                nodes.append(
+                    {
+                        "id": ref,
+                        "kind": "stem",
+                        "title": stem.get("stem_name") or ref,
+                        "source": "stem",
+                        "model": stem.get("model"),
+                    }
+                )
+            elif ref in all_midis:
+                midi = all_midis[ref]
+                nodes.append(
+                    {
+                        "id": ref,
+                        "kind": "midi",
+                        "title": Path(midi.get("midi_path") or ref).stem,
+                        "source": "midi",
+                        "model": midi.get("engine"),
+                    }
+                )
+            else:
+                # Chimera source-label or external reference.
+                nodes.append(
+                    {
+                        "id": ref,
+                        "kind": "external",
+                        "title": ref,
+                        "source": "external",
+                    }
+                )
+
     return {"nodes": nodes, "edges": raw_edges, "count": len(nodes)}
 
 

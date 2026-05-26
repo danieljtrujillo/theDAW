@@ -186,14 +186,51 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
     if (onlyFavorites) filtered = filtered.filter((e) => e.favorite);
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
-      filtered = filtered.filter(
-        (e) =>
-          e.title.toLowerCase().includes(q) ||
-          e.prompt.toLowerCase().includes(q) ||
-          e.model.toLowerCase().includes(q) ||
-          e.tags.some((t) => t.toLowerCase().includes(q)) ||
-          e.notes.toLowerCase().includes(q),
-      );
+      // Numeric search: queries like "120 bpm", "key c", "5min", "30s" or
+      // a plain number try to match BPM / duration / key / etc. via
+      // analysis_json so users can find tracks by their musical features.
+      const num = parseFloat(q);
+      const queryIsNumeric = !Number.isNaN(num);
+      filtered = filtered.filter((e) => {
+        const haystack: string[] = [
+          e.title,
+          e.prompt,
+          e.negativePrompt,
+          e.model,
+          e.notes,
+          e.source,
+          e.mimeType,
+          e.rating ?? '',
+          ...e.tags,
+          ...(e.chimeraSources ?? []),
+        ];
+        // Pull analysis bits stashed by the backend (best-effort; field
+        // names mirror the SQLite `analysis` columns we already persist).
+        const analysis = (e as unknown as { analysis?: Record<string, unknown> }).analysis;
+        if (analysis && typeof analysis === 'object') {
+          for (const v of Object.values(analysis)) {
+            if (v == null) continue;
+            haystack.push(String(v));
+          }
+        }
+        // Embedded ID3/iTunes/etc tags surfaced by the import pipeline.
+        const embedded = (e as unknown as { embeddedTags?: Record<string, unknown> }).embeddedTags;
+        if (embedded && typeof embedded === 'object') {
+          for (const v of Object.values(embedded)) {
+            if (v == null) continue;
+            haystack.push(String(v));
+          }
+        }
+        const hayLower = haystack.join(' ​ ').toLowerCase();
+        if (hayLower.includes(q)) return true;
+
+        // Convenience numeric matches.
+        if (queryIsNumeric) {
+          if (Math.round(e.duration) === Math.round(num)) return true;
+          if (Math.round(e.duration / 60) === Math.round(num)) return true;
+        }
+        return false;
+      });
     }
     if (sortBy === 'newest') filtered.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     else if (sortBy === 'oldest') filtered.sort((a, b) => a.timestamp.localeCompare(b.timestamp));

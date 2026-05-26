@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.modules.library.router import get_store as get_library_store
 
-from .engine import separate_entry
+from .engine import get_progress, separate_entry
 from .sidecar import get_sidecar, install_dependencies, probe, reset_sidecar
 
 log = logging.getLogger(__name__)
@@ -87,6 +87,17 @@ def stems_stop() -> dict:
     sc.stop()
     reset_sidecar()
     return {"ok": True, "running": False}
+
+
+@router.get("/{entry_id}/progress")
+def get_entry_progress(entry_id: str) -> dict:
+    """Current progress snapshot for an in-flight separation. Returns
+    ``{phase, message, progress, task_id, updated_at}`` or
+    ``{phase: 'idle'}`` if there's no run in progress for that entry."""
+    snap = get_progress(entry_id)
+    if snap is None:
+        return {"phase": "idle"}
+    return snap
 
 
 @router.get("/{entry_id}")

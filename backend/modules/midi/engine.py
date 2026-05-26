@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -218,7 +219,12 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
     from basic_pitch.inference import predict_and_save  # type: ignore[import]
     from basic_pitch import ICASSP_2022_MODEL_PATH  # type: ignore[import]
 
-    with tempfile.TemporaryDirectory() as td:
+    # Use a tempdir adjacent to the output path so the final move is
+    # always on the same volume (Path.replace() fails cross-drive on
+    # Windows, e.g. tmp on C: → output on D:). shutil.move is the
+    # cross-volume-safe fallback regardless.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=str(output_path.parent)) as td:
         td_path = Path(td)
         predict_and_save(
             audio_path_list=[str(audio_path)],
@@ -233,7 +239,10 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
         produced = next(td_path.glob("*_basic_pitch.mid"), None)
         if produced is None:
             return {"ok": False, "engine": "basic_pitch", "error": "no MIDI emitted"}
-        produced.replace(output_path)
+        # shutil.move handles cross-volume moves (Path.replace() does not).
+        if output_path.exists():
+            output_path.unlink()
+        shutil.move(str(produced), str(output_path))
 
     notes_count = _count_midi_notes(output_path)
     version = _module_version("basic_pitch")

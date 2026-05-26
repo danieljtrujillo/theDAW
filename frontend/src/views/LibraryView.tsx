@@ -13,6 +13,8 @@ import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { useStatusBarStore } from '../state/statusBarStore';
+import { usePianoRollStore } from '../state/pianoRollStore';
+import { parseMidi } from '../lib/midi';
 import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { setAudioDragData } from '../lib/audioDnD';
@@ -70,6 +72,68 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       midi: 'MIDI conversion',
     };
     logInfo('library', `Running ${labels[kind]} on ${entryId.slice(0, 8)}…`);
+
+    // For stems, poll /progress every ~1.5s while the /run request is
+    // in-flight so the user sees install/download/separate phases in
+    // the ProcessingLog instead of an opaque 5-minute "running…".
+    // Includes a 30-second heartbeat that logs elapsed time even when
+    // the sidecar phase / message hasn't changed (demucs can sit at a
+    // single percentage point for minutes while it processes shifts).
+    let stemsPoller: ReturnType<typeof setInterval> | null = null;
+    if (kind === 'stems') {
+      let lastPhase = '';
+      let lastMessage = '';
+      let lastProgress = -1;
+      let lastChangeAt = Date.now();
+      let lastHeartbeatAt = Date.now();
+      const runStartedAt = Date.now();
+      stemsPoller = setInterval(() => {
+        void fetch(`/api/stems/${entryId}/progress`)
+          .then((r) => r.json())
+          .then((p: { phase?: string; message?: string; progress?: number }) => {
+            const phase = p.phase || 'idle';
+            const message = p.message || '';
+            const progress = typeof p.progress === 'number' ? p.progress : -1;
+            if (phase === 'idle') return;
+            const now = Date.now();
+            const elapsedTotal = Math.round((now - runStartedAt) / 1000);
+            const fmtElapsed = (s: number) =>
+              s >= 60 ? `${Math.floor(s / 60)}m${(s % 60).toString().padStart(2, '0')}s` : `${s}s`;
+            const pctText = progress >= 0 ? ` ${Math.round(progress)}%` : '';
+
+            const changed =
+              phase !== lastPhase || message !== lastMessage || progress !== lastProgress;
+            if (changed) {
+              lastPhase = phase;
+              lastMessage = message;
+              lastProgress = progress;
+              lastChangeAt = now;
+              lastHeartbeatAt = now;
+              logInfo(
+                'library',
+                `stems[${entryId.slice(0, 8)}] ${phase}${pctText} @ ${fmtElapsed(elapsedTotal)}: ${message.slice(0, 200)}`,
+              );
+              return;
+            }
+
+            // No change since last poll. Emit a heartbeat every 30s so
+            // the user knows the run is still alive (demucs commonly
+            // pauses ~minutes at a single percent during shifts).
+            if (now - lastHeartbeatAt >= 30_000) {
+              lastHeartbeatAt = now;
+              const stuckFor = Math.round((now - lastChangeAt) / 1000);
+              logInfo(
+                'library',
+                `stems[${entryId.slice(0, 8)}] still ${phase}${pctText} — no update for ${fmtElapsed(stuckFor)} (total ${fmtElapsed(elapsedTotal)})`,
+              );
+            }
+          })
+          .catch(() => {
+            /* swallow — poll loop continues */
+          });
+      }, 1500);
+    }
+
     try {
       const res = await fetch(`/api/${kind}/${entryId}/run`, { method: 'POST' });
       const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -122,6 +186,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     } catch (e) {
       logError('library', `${labels[kind]} request failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      if (stemsPoller) clearInterval(stemsPoller);
       setRunningKind(null);
     }
   };
@@ -396,11 +461,14 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
             <input
-              type="text"
+              id="library-search"
+              name="library-search"
+              type="search"
               className="compact-input w-full pl-7"
-              placeholder="SEARCH PROMPTS / TITLES / TAGS..."
+              placeholder="SEARCH titles / prompts / tags / model / bpm / key / genre…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search the library"
             />
           </div>
 
@@ -823,37 +891,156 @@ interface SubTabListProps {
   placeholder: string;
 }
 
+async function sendMidiToTarget(
+  midiId: string,
+  target: 'piano-roll' | 'step-seq',
+): Promise<void> {
+  try {
+    const res = await fetch(`/api/midi/file/${midiId}`);
+    if (!res.ok) {
+      logError('library', `MIDI fetch failed for ${midiId}: HTTP ${res.status}`);
+      return;
+    }
+    const buf = await res.arrayBuffer();
+    const midi = parseMidi(buf);
+    const ppq = midi.ppq || 480;
+    const stepTicks = ppq / 4; // 16th-note resolution
+
+    const pianoNotes = midi.tracks.flatMap((track) =>
+      track.notes.map((n) => ({
+        id: `pn-${Math.random().toString(36).slice(2)}`,
+        note: n.note,
+        step: Math.round(n.tick / stepTicks),
+        length: Math.max(1, Math.round(n.durationTicks / stepTicks)),
+        velocity: n.velocity,
+      })),
+    );
+
+    if (pianoNotes.length === 0) {
+      logError('library', `MIDI ${midiId} parsed empty — no note-on events`);
+      return;
+    }
+
+    const lastStep = Math.max(...pianoNotes.map((p) => p.step + p.length));
+    const totalSteps = Math.max(16, Math.min(256, lastStep + 16));
+
+    const piano = usePianoRollStore.getState();
+    piano.setBpm(midi.bpm || piano.bpm);
+    piano.setTotalSteps(totalSteps);
+    piano.replaceAll(pianoNotes);
+
+    const bottom = useBottomPanelStore.getState();
+    bottom.showTab(target === 'piano-roll' ? 'piano-roll' : 'step-seq');
+
+    logInfo(
+      'library',
+      `Loaded ${pianoNotes.length} notes into ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps)`,
+    );
+  } catch (e) {
+    logError('library', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+
 const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder }) => {
   const parentIds = Object.keys(byParent);
+  const [menu, setMenu] = useState<{ x: number; y: number; midiId: string; target: string } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, { capture: true });
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, { capture: true } as EventListenerOptions);
+    };
+  }, [menu]);
+
   if (parentIds.length === 0) {
     return <p className="text-[10px] text-zinc-500 italic py-4 text-center">{placeholder}</p>;
   }
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2 relative">
       {parentIds.map((pid) => (
         <div key={pid} className="border border-white/5 rounded p-2 bg-white/3">
           <div className="text-[9px] font-black uppercase tracking-widest text-purple-300 mb-1 truncate">
             {parentTitles[pid] ?? pid}
           </div>
           <div className="flex flex-col gap-0.5">
-            {byParent[pid].map((row, idx) => (
-              <div
-                key={String(row.id ?? idx)}
-                className="flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded"
-              >
-                <span className="truncate">
-                  {kind === 'stem' ? String(row.stem_name ?? 'stem') : String(row.source ?? 'midi')}
-                </span>
-                <span className="text-[8px] text-zinc-600 ml-2">
-                  {kind === 'stem'
-                    ? `${row.model ?? ''} ${row.model_variant ?? ''}`.trim()
-                    : `${row.engine ?? ''}`}
-                </span>
-              </div>
-            ))}
+            {byParent[pid].map((row, idx) => {
+              const isMidi = kind === 'midi';
+              const midiId = String(row.id ?? '');
+              const target = String((isMidi ? row.source : row.stem_name) ?? 'midi');
+              return (
+                <div
+                  key={String(row.id ?? idx)}
+                  className={`flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded ${isMidi ? 'cursor-context-menu' : ''}`}
+                  onContextMenu={(e) => {
+                    if (!isMidi || !midiId) return;
+                    e.preventDefault();
+                    setMenu({ x: e.clientX, y: e.clientY, midiId, target });
+                  }}
+                >
+                  <span className="truncate">
+                    {kind === 'stem' ? String(row.stem_name ?? 'stem') : String(row.source ?? 'midi')}
+                  </span>
+                  <span className="text-[8px] text-zinc-600 ml-2">
+                    {kind === 'stem'
+                      ? `${row.model ?? ''} ${row.model_variant ?? ''}`.trim()
+                      : `${row.engine ?? ''}`}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
+
+      {menu && (
+        <div
+          className="fixed z-200 min-w-44 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
+          style={{ left: menu.x, top: menu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5 truncate">
+            MIDI · {menu.target}
+          </div>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
+            onClick={() => {
+              void sendMidiToTarget(menu.midiId, 'piano-roll');
+              setMenu(null);
+            }}
+          >
+            Send to piano roll
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
+            onClick={() => {
+              void sendMidiToTarget(menu.midiId, 'step-seq');
+              setMenu(null);
+            }}
+          >
+            Send to step sequencer
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
+            onClick={() => {
+              const a = document.createElement('a');
+              a.href = `/api/midi/file/${menu.midiId}`;
+              a.download = '';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setMenu(null);
+            }}
+          >
+            Download .mid
+          </button>
+        </div>
+      )}
     </div>
   );
 };

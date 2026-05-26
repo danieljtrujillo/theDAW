@@ -102,6 +102,12 @@ def detect_key(audio_path: Path) -> dict[str, Optional[float] | Optional[str]]:
 
     if y.size == 0:
         return out
+    # librosa.feature.chroma_cqt emits a warning + degrades when the
+    # signal is shorter than the default n_fft (1024). Anything under
+    # ~250 ms isn't long enough for meaningful key detection anyway, so
+    # bail rather than chase the warning.
+    if y.size < 1024:
+        return out
 
     try:
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
