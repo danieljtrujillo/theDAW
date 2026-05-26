@@ -5,6 +5,9 @@ codegraph/
 # Secrets & user data
 data/api_key_pools.json
 data/generations/
+data/settings.json
+data/library.db
+data/library.db-*
 backend/rag_index/
 archive/
 *.png

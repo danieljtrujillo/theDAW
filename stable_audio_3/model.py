@@ -343,17 +343,17 @@ class StableAudioModel:
         if isinstance(prompt, str):
             conditioning = [{"prompt": prompt, "seconds_total": duration}] * batch_size
         else:
-            assert (
-                len(prompt) == batch_size
-            ), "When passing a list of prompts, the length must match the batch size"
+            assert len(prompt) == batch_size, (
+                "When passing a list of prompts, the length must match the batch size"
+            )
             if isinstance(duration, (int, float)):
                 conditioning = [
                     {"prompt": p, "seconds_total": duration} for p in prompt
                 ]
             else:
-                assert (
-                    len(prompt) == len(duration)
-                ), "When passing a list of prompts and durations, the length of durations must match the length of prompts"
+                assert len(prompt) == len(duration), (
+                    "When passing a list of prompts and durations, the length of durations must match the length of prompts"
+                )
                 conditioning = [
                     {"prompt": p, "seconds_total": d} for p, d in zip(prompt, duration)
                 ]
@@ -393,9 +393,7 @@ class StableAudioModel:
             # For chunked attention with latent space, align to chunk size after downsampling
             latent_align = chunk_size // stride
             align = ds_ratio * latent_align
-            target_audio_samples = (
-                (target_audio_samples + align - 1) // align
-            ) * align
+            target_audio_samples = ((target_audio_samples + align - 1) // align) * align
 
         return min(target_audio_samples, sample_size)
 

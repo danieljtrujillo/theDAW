@@ -1,0 +1,10 @@
+{
+  "name": "analysis",
+  "label": "Analysis",
+  "enabled": true,
+  "icon": "Activity",
+  "sidebar": false,
+  "api_prefix": "/api/analysis",
+  "backend": true,
+  "description": "Audio analysis: tempo (aubio), key (chroma/Krumhansl), pitch (pyin), bars, ffprobe metadata. Runs opt-in during idle."
+}

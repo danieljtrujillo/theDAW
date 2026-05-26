@@ -36,6 +36,7 @@ dependencies = [
     # Update both when upgrading torch/CUDA.
     "flash-attn ; sys_platform == 'win32' and python_version < '3.11'",
     "aubio>=0.4.9",
+    "mutagen>=1.47",
 ]
 
 [project.optional-dependencies]
@@ -90,7 +91,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
-    "ruff>=0.15.9",
+    "ruff==0.15.14",
 ]
 
 [tool.pytest.ini_options]

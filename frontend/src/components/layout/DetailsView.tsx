@@ -1,9 +1,26 @@
-import React from 'react';
-import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors, Activity } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { logError } from '../../state/logStore';
+
+interface AnalysisRow {
+  bpm: number | null;
+  key: string | null;
+  scale: string | null;
+  key_confidence: number | null;
+  pitch_mean_hz: number | null;
+  pitch_std_hz: number | null;
+  loudness_lufs: number | null;
+  rms_db: number | null;
+  bars_estimated: number | null;
+  genre: string | null;
+  genre_confidence: number | null;
+  embedded_tags_json: string | null;
+  ffprobe_json: string | null;
+  analyzed_at: number | null;
+}
 
 const fmtDuration = (sec: number): string => {
   if (!Number.isFinite(sec) || sec <= 0) return '--:--';
@@ -51,6 +68,42 @@ export const DetailsView: React.FC = () => {
   const playerPlay = usePlayerStore((s) => s.play);
   const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
   const fetchAudioBlob = useLibraryStore((s) => s.fetchAudioBlob);
+
+  const [analysis, setAnalysis] = useState<AnalysisRow | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setAnalysis(null);
+      return;
+    }
+    let cancelled = false;
+    setAnalysisLoading(true);
+    setAnalysis(null);
+    void fetch(`/api/analysis/${selectedId}`)
+      .then(async (r) => {
+        if (cancelled) return;
+        if (r.status === 404) {
+          setAnalysis(null);
+          return;
+        }
+        if (!r.ok) {
+          setAnalysis(null);
+          return;
+        }
+        const payload = (await r.json()) as AnalysisRow;
+        if (!cancelled) setAnalysis(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setAnalysis(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAnalysisLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
 
   const handleAuditionInEngine = async () => {
     if (!entry) return;
@@ -154,6 +207,63 @@ export const DetailsView: React.FC = () => {
         <p className="text-[11px] text-zinc-200 leading-relaxed">{entry.prompt || <em className="text-zinc-600">No prompt was used for this generation.</em>}</p>
       </div>
 
+      {/* Analysis: BPM / key / pitch / bars / loudness + embedded tags
+          + ffprobe summary. Populated automatically on import / generate
+          (Settings → Background features). */}
+      <div className="mt-3 p-2 rounded border border-emerald-500/25 bg-emerald-500/4">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-[8px] font-mono text-emerald-300/80 uppercase tracking-widest flex items-center gap-1.5">
+            <Activity className="w-3 h-3" /> ANALYSIS
+          </p>
+          {analysisLoading && (
+            <span className="text-[8px] font-mono text-zinc-600">loading…</span>
+          )}
+          {!analysisLoading && !analysis && (
+            <span className="text-[8px] font-mono text-zinc-600">
+              not yet analyzed
+            </span>
+          )}
+        </div>
+        {analysis && (
+          <div className="grid grid-cols-2 gap-x-6">
+            <div>
+              <Row label="BPM" value={analysis.bpm != null ? analysis.bpm.toFixed(1) : '—'} />
+              <Row label="Key" value={analysis.key ? `${analysis.key} ${analysis.scale ?? ''}`.trim() : '—'} />
+              <Row label="Key conf." value={analysis.key_confidence != null ? analysis.key_confidence.toFixed(2) : '—'} />
+              <Row label="Bars" value={analysis.bars_estimated != null ? analysis.bars_estimated.toFixed(1) : '—'} />
+              <Row label="RMS (dB)" value={analysis.rms_db != null ? analysis.rms_db.toFixed(1) : '—'} />
+            </div>
+            <div>
+              <Row label="Pitch mean" value={analysis.pitch_mean_hz != null ? `${analysis.pitch_mean_hz.toFixed(0)} Hz` : '—'} />
+              <Row label="Pitch std" value={analysis.pitch_std_hz != null ? `${analysis.pitch_std_hz.toFixed(0)} Hz` : '—'} />
+              <Row label="Loudness" value={analysis.loudness_lufs != null ? `${analysis.loudness_lufs.toFixed(1)} LUFS` : '—'} />
+              <Row label="Genre" value={analysis.genre ? `${analysis.genre} (${(analysis.genre_confidence ?? 0).toFixed(2)})` : '—'} />
+              <Row label="Analyzed" value={analysis.analyzed_at ? new Date(analysis.analyzed_at * 1000).toLocaleString() : '—'} />
+            </div>
+          </div>
+        )}
+        {analysis && analysis.embedded_tags_json && analysis.embedded_tags_json !== '{}' && (
+          <details className="mt-2">
+            <summary className="text-[8px] font-mono uppercase tracking-widest text-zinc-500 cursor-pointer hover:text-zinc-300">
+              Embedded tags (ID3 / Vorbis / iTunes)
+            </summary>
+            <pre className="text-[9px] font-mono text-zinc-400 mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all">
+              {safeJsonPretty(analysis.embedded_tags_json)}
+            </pre>
+          </details>
+        )}
+        {analysis && analysis.ffprobe_json && analysis.ffprobe_json !== '{}' && (
+          <details className="mt-1">
+            <summary className="text-[8px] font-mono uppercase tracking-widest text-zinc-500 cursor-pointer hover:text-zinc-300">
+              ffprobe summary
+            </summary>
+            <pre className="text-[9px] font-mono text-zinc-400 mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all">
+              {safeFfprobeSummary(analysis.ffprobe_json)}
+            </pre>
+          </details>
+        )}
+      </div>
+
       {entry.chimeraSources && entry.chimeraSources.length > 0 && (
         <div className="mt-3 p-2 rounded border border-purple-500/30 bg-purple-500/5">
           <p className="text-[8px] font-mono text-purple-300/80 uppercase tracking-widest mb-1">
@@ -172,3 +282,29 @@ export const DetailsView: React.FC = () => {
     </div>
   );
 };
+
+
+function safeJsonPretty(jsonText: string): string {
+  try {
+    return JSON.stringify(JSON.parse(jsonText), null, 2);
+  } catch {
+    return jsonText;
+  }
+}
+
+
+function safeFfprobeSummary(jsonText: string): string {
+  try {
+    const parsed = JSON.parse(jsonText) as {
+      _summary?: Record<string, unknown>;
+      streams?: Array<Record<string, unknown>>;
+      format?: Record<string, unknown>;
+    };
+    if (parsed._summary) {
+      return JSON.stringify(parsed._summary, null, 2);
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return jsonText;
+  }
+}

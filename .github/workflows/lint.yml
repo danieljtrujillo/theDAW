@@ -3,6 +3,15 @@ name: Lint
 on:
   pull_request:
 
+# Ruff version is pinned in BOTH this workflow and in pyproject.toml's
+# `dependency-groups.dev` so the CI ruff and the local-dev ruff (via
+# `uv sync --group dev`) are always identical. Bumping the version
+# requires changing it in both places at once — see CONTRIBUTING / the
+# CLAUDE.md note about ruff drift on stable_audio_3/model.py +
+# stable_audio_3/pipeline.py.
+env:
+  RUFF_VERSION: "0.15.14"
+
 jobs:
   ruff:
     runs-on: ubuntu-latest
@@ -10,7 +19,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
         with:
+          version: ${{ env.RUFF_VERSION }}
           args: check
       - uses: astral-sh/ruff-action@v3
         with:
+          version: ${{ env.RUFF_VERSION }}
           args: format --check

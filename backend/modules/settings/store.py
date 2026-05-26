@@ -23,23 +23,28 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "analysis": {
-        "auto_on_import": False,
-        "auto_on_generate": False,
+        # Analysis is cheap (local librosa + aubio), so it's default-ON
+        # — every imported / generated track gets its bpm/key/pitch/bars
+        # written into the DB + Details panel without the user opting in.
+        "auto_on_import": True,
+        "auto_on_generate": True,
         "include_genre": False,
         "include_key": True,
     },
     "stems": {
+        # Heavy; requires the integration-package sidecar. Opt-in.
         "auto_on_import": False,
         "auto_on_generate": False,
         "default_count": 4,
     },
     "midi": {
+        # Requires basic-pitch / piano-transcription-inference. Opt-in.
         "auto_on_import": False,
         "auto_on_generate": False,
         "from_stems": True,
@@ -62,15 +67,26 @@ def default_settings_path(project_root: Path) -> Path:
 
 def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     """Fill missing top-level sections / keys from DEFAULT_SETTINGS without
-    overwriting anything the user already set."""
+    overwriting anything the user already set.
+
+    Runs schema migrations on the way through:
+      - v1 → v2: analysis.auto_on_import / auto_on_generate become
+        default-ON because analysis is local and cheap. Any user who
+        opened the app on a v1 build has the legacy off/off state; we
+        flip them to on/on once during the upgrade.
+    """
     merged = deepcopy(DEFAULT_SETTINGS)
     if not isinstance(payload, dict):
         return merged
+
+    raw_version = payload.get("schema_version")
+    try:
+        old_version = int(raw_version) if isinstance(raw_version, (int, float)) else 0
+    except (TypeError, ValueError):
+        old_version = 0
+
     for section, value in payload.items():
         if section == "schema_version":
-            merged[section] = (
-                int(value) if isinstance(value, (int, float)) else SCHEMA_VERSION
-            )
             continue
         if isinstance(value, dict) and isinstance(merged.get(section), dict):
             merged[section].update(
@@ -78,6 +94,14 @@ def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             merged[section] = value
+
+    if old_version < 2:
+        # Migration v1 → v2: turn analysis on. Users who had it off can
+        # flip it back via Settings → Background features.
+        merged["analysis"]["auto_on_import"] = True
+        merged["analysis"]["auto_on_generate"] = True
+
+    merged["schema_version"] = SCHEMA_VERSION
     return merged
 
 
@@ -103,7 +127,15 @@ class SettingsStore:
                 "settings.store: failed to read %s: %s — using defaults", self.path, e
             )
             return deepcopy(DEFAULT_SETTINGS)
-        return _merge_defaults(raw)
+        merged = _merge_defaults(raw)
+        # Persist the post-migration shape so future loads start clean.
+        prev_version = raw.get("schema_version") if isinstance(raw, dict) else None
+        if prev_version != merged.get("schema_version"):
+            try:
+                self._write(merged)
+            except OSError as e:
+                log.warning("settings.store: failed to persist migrated schema: %s", e)
+        return merged
 
     def _write(self, payload: dict[str, Any]) -> None:
         tmp = self.path.with_suffix(".json.tmp")
