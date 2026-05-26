@@ -71,6 +71,15 @@ The model supports variable-length sequences without wasting compute on padding.
 
 Ruff excludes `stable_audio_3/models`, `stable_audio_3/inference`, `stable_audio_3/interface`, and `stable_audio_3/data` from linting. Only top-level files (`pipeline.py`, `model.py`, `model_configs.py`, `loading_utils.py`, `verbose.py`) are checked.
 
+**Ruff version is pinned exactly.** Both `pyproject.toml` (`dependency-groups.dev`) and `.github/workflows/lint.yml` (the `RUFF_VERSION` env var) set the same version. When upgrading, change BOTH at once and run `uv sync --group dev` + `uv run ruff format .` in the same commit. Drift here typically shows up as `Would reformat: stable_audio_3/model.py` and `stable_audio_3/pipeline.py` failing CI even though local formatting looks clean — that's the smoking gun for a ruff version mismatch.
+
+**Always run from the repo root, never on a subset of dirs:**
+```
+uv run ruff check .
+uv run ruff format .
+```
+CI runs at the repo root, so `ruff format backend/ tests/` alone will silently miss `stable_audio_3/*.py` drift.
+
 ## Testing
 
 Tests use session-scoped fixtures to avoid reloading models. The `model_pipe` fixture is parametrized over `["small", "medium"]` — medium tests are auto-skipped without a CUDA GPU. `--save-audio` writes outputs to `test_audio_outputs/` for manual listening.
