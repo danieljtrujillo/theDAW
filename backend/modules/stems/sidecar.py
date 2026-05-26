@@ -509,19 +509,49 @@ def _stems_install_cmd(python_exe: Path, req: Path) -> tuple[list[str], str]:
     )
 
 
+# Optional / problematic dependencies stripped from the
+# integration-package's requirements.txt before install. Each one has a
+# graceful fallback inside the package (audio-separator is documented
+# as optional, used only as a BS-RoFormer wrapper).
+_FILTERED_REQS = {
+    "audio-separator",
+}
+
+
+def _materialize_filtered_requirements(cfg: SidecarConfig) -> Path:
+    """Read requirements.txt, drop entries in _FILTERED_REQS, write the
+    cleaned list to ``<pkg>/.sidecar_venv_requirements.txt`` and return
+    that path. We do this because audio-separator's newer versions pull
+    scipy>=1.13.0 while the integration-package pins scipy==1.11.4 →
+    ResolutionImpossible. The package gracefully degrades without it."""
+    src = cfg.package_path / "requirements.txt"
+    dst = cfg.package_path / ".sidecar_venv_requirements.txt"
+    cleaned_lines: list[str] = []
+    for raw in src.read_text(encoding="utf-8").splitlines():
+        stripped = raw.split("#", 1)[0].strip()
+        # Match the canonical package name in the line.
+        first_token = stripped.split("==", 1)[0].split(">=", 1)[0].split("<", 1)[0]
+        first_token = first_token.split("[", 1)[0].strip().lower()
+        if first_token in _FILTERED_REQS:
+            cleaned_lines.append(f"# filtered out by stems sidecar: {raw}")
+            continue
+        cleaned_lines.append(raw)
+    dst.write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
+    return dst
+
+
 def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
     """Bootstrap the dedicated sidecar venv if needed, then install
-    the integration-package's requirements.txt into it.
+    the (filtered) integration-package requirements.txt into it.
 
     Returns a dict with ``ok, install_mode, stdout, stderr, returncode``
-    plus an optional ``venv_bootstrap`` block describing the venv-
-    creation step.
+    plus a ``venv_bootstrap`` block and the path of the filtered reqs.
     """
     cfg = cfg or resolve_config()
-    req = cfg.package_path / "requirements.txt"
+    req_src = cfg.package_path / "requirements.txt"
     out: dict = {"ok": False, "python_exe": str(cfg.python_exe)}
-    if not req.is_file():
-        out["error"] = f"requirements.txt not found at {req}"
+    if not req_src.is_file():
+        out["error"] = f"requirements.txt not found at {req_src}"
         return out
 
     # Bootstrap the venv first so install lands in an isolated environment.
@@ -532,6 +562,15 @@ def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
             "could not create sidecar venv at "
             f"{cfg.python_exe.parent.parent}: {bootstrap.get('stderr', bootstrap.get('error', '?'))}"
         )
+        return out
+
+    # Materialize the filtered requirements (drops audio-separator).
+    try:
+        req = _materialize_filtered_requirements(cfg)
+        out["requirements_used"] = str(req)
+        out["filtered_packages"] = sorted(_FILTERED_REQS)
+    except OSError as e:
+        out["error"] = f"failed to write filtered requirements: {e}"
         return out
 
     try:
