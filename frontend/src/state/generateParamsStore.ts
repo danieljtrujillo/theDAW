@@ -6,6 +6,51 @@ export interface LoraSlot {
   file: File | null;
 }
 
+export interface ChimeraClip {
+  id: string;
+  blob: Blob;
+  mimeType: string;
+  label: string;
+  noise: number;
+  isBase: boolean;
+  detectedBpm?: number | null;
+  stretchRatio?: number;
+}
+
+export type ChimeraAlignMode = 'start' | 'downbeat' | 'weave';
+
+export interface ChimeraPerClipMeta {
+  index: number;
+  label: string;
+  detected_bpm: number | null;
+  beats: number[];
+  stretch_ratio: number;
+  stretched_duration_sec: number;
+  window_start_sec: number;
+  window_end_sec: number;
+  weight_used: number;
+  note: string | null;
+}
+
+export interface ChimeraMashupMeta {
+  sample_rate: number;
+  duration_sec: number;
+  target_bpm_used: number;
+  target_bpm_source: 'user' | 'base_clip' | 'median' | 'fallback';
+  align_mode_used: ChimeraAlignMode;
+  per_clip: ChimeraPerClipMeta[];
+  warnings: string[];
+}
+
+export interface ChimeraState {
+  clips: ChimeraClip[];
+  targetBpm: number | 'auto';
+  alignMode: ChimeraAlignMode;
+  weaveBars: number;
+  weaveTotalBars: number;
+  lastMeta: ChimeraMashupMeta | null;
+}
+
 export interface GenerateParamsState {
   prompt: string;
   negativePrompt: string;
@@ -62,11 +107,18 @@ export interface GenerateParamsState {
   autoDownload: boolean;
 
   loras: LoraSlot[];
+
+  chimera: ChimeraState;
 }
 
 interface ParamsStore extends GenerateParamsState {
   setField: <K extends keyof GenerateParamsState>(key: K, value: GenerateParamsState[K]) => void;
   patch: (partial: Partial<GenerateParamsState>) => void;
+  addChimeraClip: (clip: Omit<ChimeraClip, 'id' | 'noise' | 'isBase'> & { noise?: number }) => void;
+  removeChimeraClip: (id: string) => void;
+  updateChimeraClip: (id: string, patch: Partial<Omit<ChimeraClip, 'id'>>) => void;
+  setChimeraField: <K extends keyof ChimeraState>(key: K, value: ChimeraState[K]) => void;
+  clearChimera: () => void;
 }
 
 export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
@@ -126,6 +178,56 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
 
   loras: [],
 
+  chimera: {
+    clips: [],
+    targetBpm: 'auto',
+    alignMode: 'weave',
+    weaveBars: 8,
+    weaveTotalBars: 90,
+    lastMeta: null,
+  },
+
   setField: (key, value) => set({ [key]: value } as Partial<GenerateParamsState>),
   patch: (partial) => set(partial),
+
+  addChimeraClip: (clip) => set((state) => ({
+    chimera: {
+      ...state.chimera,
+      clips: [
+        ...state.chimera.clips,
+        {
+          id: (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+            ? crypto.randomUUID()
+            : `chimera-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          blob: clip.blob,
+          mimeType: clip.mimeType,
+          label: clip.label,
+          noise: clip.noise ?? 0.5,
+          isBase: false,
+        },
+      ],
+    },
+  })),
+
+  removeChimeraClip: (id) => set((state) => ({
+    chimera: {
+      ...state.chimera,
+      clips: state.chimera.clips.filter((c) => c.id !== id),
+    },
+  })),
+
+  updateChimeraClip: (id, patch) => set((state) => ({
+    chimera: {
+      ...state.chimera,
+      clips: state.chimera.clips.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    },
+  })),
+
+  setChimeraField: (key, value) => set((state) => ({
+    chimera: { ...state.chimera, [key]: value },
+  })),
+
+  clearChimera: () => set((state) => ({
+    chimera: { ...state.chimera, clips: [], lastMeta: null },
+  })),
 }));

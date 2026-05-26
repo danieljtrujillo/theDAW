@@ -8,6 +8,7 @@ import { Section } from '../components/ui/Section';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
+import { ChimeraStack } from '../components/chimera/ChimeraStack';
 import { enhanceStableAudioPrompt, type PromptEnhancementTarget } from '../orb-kit/promptEnhancer';
 
 export const GenerateView: React.FC = () => {
@@ -276,6 +277,7 @@ export const GenerateView: React.FC = () => {
              )}
            </div>
          )}
+         <ChimeraStack />
          <div className="mt-1.5 grid grid-cols-2 gap-2 pt-1.5 border-t border-white/5">
            <div>
               <p className="mono-label mb-0.5 flex justify-between">Init Noise <span className="text-zinc-600">{p.initNoise}</span></p>

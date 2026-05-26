@@ -317,11 +317,18 @@ export const AdvancedGenPanel: React.FC<{
     return () => { cancelled = true; };
   }, [lastAudioUrl]);
 
-  const fileFromDrop = useCallback((e: React.DragEvent): File | null => {
+  const fileFromDrop = useCallback(async (e: React.DragEvent): Promise<File | null> => {
     const libId = e.dataTransfer.getData('application/x-stabledaw-library-id');
     if (libId) {
       const entry = libraryEntries.find((en) => en.id === libId);
-      if (entry) return new File([entry.audioBlob], `${entry.title.slice(0, 40)}.wav`, { type: entry.mimeType || 'audio/wav' });
+      if (entry) {
+        const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+        return new File(
+          [blob],
+          `${entry.title.slice(0, 40)}.wav`,
+          { type: entry.mimeType || 'audio/wav' },
+        );
+      }
     }
     return e.dataTransfer.files[0] || null;
   }, [libraryEntries]);
@@ -559,7 +566,7 @@ export const AdvancedGenPanel: React.FC<{
         {/* INIT AUDIO */}
         <div className="hardware-card flex flex-col"
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-          onDrop={(e) => { e.preventDefault(); const f = fileFromDrop(e); if (f) patch({ initAudioFile: f, initAudioEnabled: true }); }}>
+          onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ initAudioFile: f, initAudioEnabled: true }); }}>
           <div className="flex items-center gap-1.5 mb-2">
             <Mic2 className="w-3.5 h-3.5 text-purple-400" />
             <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">INIT AUDIO <InfoTip {...RICH_TOOLTIPS.initAudio} /></span>
@@ -608,7 +615,7 @@ export const AdvancedGenPanel: React.FC<{
         {/* INPAINTING */}
         <div className="hardware-card flex flex-col"
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-          onDrop={(e) => { e.preventDefault(); const f = fileFromDrop(e); if (f) patch({ inpaintAudioFile: f, inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); }}>
+          onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ inpaintAudioFile: f, inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); }}>
           <div className="flex items-center gap-1.5 mb-2">
             <Scissors className="w-3.5 h-3.5 text-purple-400" />
             <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">INPAINTING <InfoTip {...RICH_TOOLTIPS.inpainting} /></span>

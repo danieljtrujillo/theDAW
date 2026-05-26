@@ -27,9 +27,9 @@ def test_encode_decode(autoencoder):
     similarity = F.cosine_similarity(
         orig_flat.unsqueeze(0), recon_flat.unsqueeze(0)
     ).item()
-    assert (
-        similarity > 0.5
-    ), f"Reconstruction cosine similarity too low: {similarity:.3f}"
+    assert similarity > 0.5, (
+        f"Reconstruction cosine similarity too low: {similarity:.3f}"
+    )
 
 
 def test_preprocess_for_encoder(autoencoder):

@@ -1,0 +1,10 @@
+{
+  "name": "library",
+  "label": "Library",
+  "enabled": true,
+  "icon": "Database",
+  "sidebar": false,
+  "api_prefix": "/api/library",
+  "backend": true,
+  "description": "Disk-backed library: lists, streams, updates, deletes user-saved generations and imports. The single source of truth for library entries — replaces the browser-IDB cache."
+}

@@ -1,96 +1,18 @@
+/**
+ * Zustand store wrapping the active StorageProvider.
+ *
+ * The provider is the source of truth — this store is just an in-memory
+ * cache + React-reactive surface. No IndexedDB, no Cache API, no blob
+ * lifetimes: all of that moved to the backend. The local-dev default
+ * provider talks to `/api/library/*` and stores audio on disk.
+ */
+
 import { create } from 'zustand';
 import { logError, logInfo } from './logStore';
+import type { LibraryEntry, LibraryEntryPatch, ImportRequest } from './libraryEntry';
+import { getStorageProvider } from '../lib/backendLocalProvider';
 
-export interface LibraryEntry {
-  id: string;
-  title: string;
-  prompt: string;
-  negativePrompt: string;
-  model: string;
-  duration: number;
-  steps: number;
-  cfg: number;
-  seed: number;
-  audioBlob: Blob;
-  mimeType: string;
-  timestamp: string;
-  favorite: boolean;
-  rating: 'like' | 'dislike' | null;
-  tags: string[];
-  notes: string;
-  source: 'generate' | 'studio' | 'import';
-}
-
-const DB_NAME = 'sa3-library';
-const DB_VERSION = 2;
-const STORE_NAME = 'generations';
-
-const openDB = (): Promise<IDBDatabase> =>
-  new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (event) => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-        store.createIndex('timestamp', 'timestamp', { unique: false });
-        store.createIndex('favorite', 'favorite', { unique: false });
-      } else if (event.oldVersion < 2) {
-        // No-op; version bump for any future migration hooks.
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-
-const getAllEntries = async (): Promise<LibraryEntry[]> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result as LibraryEntry[]);
-    req.onerror = () => reject(req.error);
-  });
-};
-
-const putEntry = async (entry: LibraryEntry): Promise<void> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(entry);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-};
-
-const deleteEntry = async (id: string): Promise<void> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-};
-
-// Blob URL rehydration cache — one URL per entry id for the lifetime of the page.
-const blobUrlCache = new Map<string, string>();
-
-const urlFor = (entry: LibraryEntry): string => {
-  const existing = blobUrlCache.get(entry.id);
-  if (existing) return existing;
-  const url = URL.createObjectURL(entry.audioBlob);
-  blobUrlCache.set(entry.id, url);
-  return url;
-};
-
-const releaseUrl = (id: string): void => {
-  const url = blobUrlCache.get(id);
-  if (url) {
-    URL.revokeObjectURL(url);
-    blobUrlCache.delete(id);
-  }
-};
+export type { LibraryEntry, LibraryEntryPatch, ImportRequest } from './libraryEntry';
 
 export interface LibraryState {
   entries: LibraryEntry[];
@@ -103,9 +25,16 @@ export interface LibraryState {
   selectedEntryId: string | null;
 
   load: () => Promise<void>;
-  addEntry: (entry: LibraryEntry) => Promise<void>;
+  refresh: () => Promise<void>;
+  /** Add an entry that's already been persisted server-side (e.g. just
+   * fetched a single record by id). Inserts at the head if new. */
+  upsertEntry: (entry: LibraryEntry) => void;
+  /** Upload a blob via the active provider. */
+  importEntry: (req: ImportRequest) => Promise<LibraryEntry>;
   removeEntry: (id: string) => Promise<void>;
-  updateEntry: (id: string, updates: Partial<LibraryEntry>) => Promise<void>;
+  removeMany: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
+  clearAll: () => Promise<{ deleted: number; failed: number }>;
+  updateEntry: (id: string, updates: LibraryEntryPatch) => Promise<void>;
   toggleFavorite: (id: string) => Promise<void>;
   setRating: (id: string, rating: 'like' | 'dislike' | null) => Promise<void>;
   setSearchQuery: (q: string) => void;
@@ -114,6 +43,7 @@ export interface LibraryState {
   setPlayingId: (id: string | null) => void;
   setSelectedEntry: (id: string | null) => void;
   getAudioUrl: (entry: LibraryEntry) => string;
+  fetchAudioBlob: (entry: LibraryEntry) => Promise<Blob>;
   getFiltered: () => LibraryEntry[];
 }
 
@@ -131,9 +61,9 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
     if (get().loading) return;
     set({ loading: true });
     try {
-      const entries = await getAllEntries();
+      const entries = await getStorageProvider().list();
       set({ entries, loaded: true, loading: false });
-      logInfo('library', `Loaded ${entries.length} entries from IndexedDB`);
+      logInfo('library', `Loaded ${entries.length} entries from ${getStorageProvider().name}`);
     } catch (e) {
       set({ loading: false });
       const msg = e instanceof Error ? e.message : 'Unknown error';
@@ -141,24 +71,43 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
     }
   },
 
-  addEntry: async (entry) => {
+  refresh: async () => {
     try {
-      await putEntry(entry);
-      set((s) => ({ entries: [entry, ...s.entries] }));
-      logInfo('library', `Saved: ${entry.title} (${Math.round(entry.audioBlob.size / 1024)}KB)`);
+      const entries = await getStorageProvider().list();
+      set({ entries, loaded: true });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
-      logError('library', `Save failed: ${msg}`);
+      logError('library', `refresh failed: ${msg}`);
     }
+  },
+
+  upsertEntry: (entry) => {
+    set((s) => {
+      const existing = s.entries.find((e) => e.id === entry.id);
+      if (existing) {
+        return { entries: s.entries.map((e) => (e.id === entry.id ? entry : e)) };
+      }
+      return { entries: [entry, ...s.entries] };
+    });
+  },
+
+  importEntry: async (req) => {
+    const entry = await getStorageProvider().import(req);
+    set((s) => ({ entries: [entry, ...s.entries.filter((e) => e.id !== entry.id)] }));
+    logInfo(
+      'library',
+      `Imported: ${entry.title} (${Math.round(entry.fileSizeBytes / 1024)}KB, ${entry.source})`,
+    );
+    return entry;
   },
 
   removeEntry: async (id) => {
     try {
-      await deleteEntry(id);
-      releaseUrl(id);
+      await getStorageProvider().delete(id);
       set((s) => ({
         entries: s.entries.filter((e) => e.id !== id),
         playingId: s.playingId === id ? null : s.playingId,
+        selectedEntryId: s.selectedEntryId === id ? null : s.selectedEntryId,
       }));
       logInfo('library', `Removed entry: ${id.slice(0, 8)}`);
     } catch (e) {
@@ -167,13 +116,43 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
     }
   },
 
+  removeMany: async (ids) => {
+    const provider = getStorageProvider();
+    let deleted = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await provider.delete(id);
+        deleted += 1;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logError('library', `removeMany: failed to delete ${id}: ${msg}`);
+        failed += 1;
+      }
+    }
+    set((s) => ({
+      entries: s.entries.filter((e) => !ids.includes(e.id)),
+      playingId: s.playingId && ids.includes(s.playingId) ? null : s.playingId,
+      selectedEntryId:
+        s.selectedEntryId && ids.includes(s.selectedEntryId)
+          ? null
+          : s.selectedEntryId,
+    }));
+    logInfo(
+      'library',
+      `removeMany: ${deleted} deleted, ${failed} failed (of ${ids.length} requested)`,
+    );
+    return { deleted, failed };
+  },
+
+  clearAll: async () => {
+    const ids = get().entries.map((e) => e.id);
+    return get().removeMany(ids);
+  },
+
   updateEntry: async (id, updates) => {
-    const state = get();
-    const entry = state.entries.find((e) => e.id === id);
-    if (!entry) return;
-    const updated = { ...entry, ...updates };
     try {
-      await putEntry(updated);
+      const updated = await getStorageProvider().update(id, updates);
       set((s) => ({ entries: s.entries.map((e) => (e.id === id ? updated : e)) }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
@@ -182,22 +161,24 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
   },
 
   toggleFavorite: async (id) => {
-    const entry = get().entries.find((e) => e.id === id);
-    if (!entry) return;
-    await get().updateEntry(id, { favorite: !entry.favorite });
+    const current = get().entries.find((e) => e.id === id);
+    if (!current) return;
+    await get().updateEntry(id, { favorite: !current.favorite });
   },
 
   setRating: async (id, rating) => {
     await get().updateEntry(id, { rating });
   },
 
-  setSearchQuery: (searchQuery) => set({ searchQuery }),
-  setOnlyFavorites: (onlyFavorites) => set({ onlyFavorites }),
-  setSortBy: (sortBy) => set({ sortBy }),
-  setPlayingId: (playingId) => set({ playingId }),
-  setSelectedEntry: (selectedEntryId) => set({ selectedEntryId }),
+  setSearchQuery: (q) => set({ searchQuery: q }),
+  setOnlyFavorites: (v) => set({ onlyFavorites: v }),
+  setSortBy: (s) => set({ sortBy: s }),
+  setPlayingId: (id) => set({ playingId: id }),
+  setSelectedEntry: (id) => set({ selectedEntryId: id }),
 
-  getAudioUrl: (entry) => urlFor(entry),
+  getAudioUrl: (entry) => getStorageProvider().getAudioUrl(entry),
+
+  fetchAudioBlob: (entry) => getStorageProvider().fetchAudioBlob(entry),
 
   getFiltered: () => {
     const { entries, searchQuery, onlyFavorites, sortBy } = get();

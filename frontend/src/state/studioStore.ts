@@ -146,31 +146,33 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
       useStatusBarStore.getState().setText(`STUDIO PROCESS COMPLETE: ${effect}`);
 
       if (!skipLibrary) {
+        const fmt = get().outputFormat;
+        const title = `studio-${effect}.${fmt}`;
         try {
-          const entryId = uuid();
-          const fmt = get().outputFormat;
-          const title = `studio-${effect}.${fmt}`;
-          await useLibraryStore.getState().addEntry({
-            id: entryId,
-            title,
-            prompt: `Effect: ${effect}`,
-            negativePrompt: '',
-            model: effect,
-            duration: 0,
-            steps: 0,
-            cfg: 0,
-            seed: 0,
-            audioBlob: blob,
+          const entry = await useLibraryStore.getState().importEntry({
+            blob,
+            filename: title,
             mimeType: blob.type || 'audio/wav',
-            timestamp: new Date().toISOString(),
-            favorite: false,
-            rating: null,
-            tags: ['studio', effect],
-            notes: '',
-            source: 'studio',
+            metadata: {
+              title,
+              prompt: `Effect: ${effect}`,
+              model: effect,
+              source: 'studio',
+              tags: ['studio', effect],
+            },
           });
-          await usePlayerStore.getState().load(blob, { label: title, entryId });
-        } catch { /* non-fatal */ }
+          await usePlayerStore.getState().load(blob, { label: title, entryId: entry.id });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logError('studio', `Library save failed: ${msg}`);
+          useStatusBarStore
+            .getState()
+            .setText(`STUDIO LIBRARY SAVE FAILED — check Processing Log: ${msg}`);
+          // Best-effort: still play it in the footer so user can review.
+          try {
+            await usePlayerStore.getState().load(blob, { label: title, entryId: `studio-fail-${Date.now()}` });
+          } catch { /* swallow */ }
+        }
       }
     } catch (error) {
       let message: string;

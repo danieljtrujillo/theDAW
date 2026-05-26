@@ -3,7 +3,8 @@ import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
 import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
-import type { GenerateParamsState } from './generateParamsStore';
+import { useGenerateParamsStore, type GenerateParamsState } from './generateParamsStore';
+import { renderChimeraOnce } from '../lib/chimeraClient';
 
 export interface GenerateParams {
   prompt: string;
@@ -260,6 +261,9 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
     }
 
     const nextRunId = get().pollRunId + 1;
+    // Wall-clock anchor for elapsed-time logging across the whole generate flow.
+    const t0 = performance.now();
+    const elapsed = () => `+${((performance.now() - t0) / 1000).toFixed(1)}s`;
 
     set({
       isGenerating: true,
@@ -274,12 +278,47 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       pollRunId: nextRunId,
     });
     useStatusBarStore.getState().setText('GENERATION STARTED');
-    logInfo('generate', `Submitting job: model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed} prompt="${prompt.slice(0, 60)}${prompt.length > 60 ? '...' : ''}"`);
+    logInfo('generate', `[${elapsed()}] CREATE pressed: model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed} prompt="${prompt.slice(0, 60)}${prompt.length > 60 ? '...' : ''}"`);
 
-    const formData = buildGenerateJobFormData(params, prompt);
+    let effectiveParams = params;
+    let chimeraSourceLabels: string[] | undefined;
+    const chimeraStack = useGenerateParamsStore.getState().chimera;
+    if (chimeraStack.clips.length >= 2) {
+      try {
+        const chimeraT0 = performance.now();
+        logInfo('generate', `[${elapsed()}] Chimera: starting mashup render (${chimeraStack.clips.length} clips, mode=${chimeraStack.alignMode}, target_bpm=${chimeraStack.targetBpm})`);
+        useStatusBarStore.getState().setText(`CHIMERA: rendering ${chimeraStack.clips.length} clips...`);
+        const { file, meta } = await renderChimeraOnce(chimeraStack);
+        chimeraSourceLabels = chimeraStack.clips.map((c) => c.label);
+        const chimeraDt = ((performance.now() - chimeraT0) / 1000).toFixed(1);
+        logInfo('generate', `[${elapsed()}] Chimera: mashup done in ${chimeraDt}s — ${meta.duration_sec.toFixed(1)}s @ ${meta.target_bpm_used.toFixed(1)} BPM, ${Math.round(file.size / 1024)}KB`);
+        useGenerateParamsStore.getState().patch({
+          initAudioFile: file,
+          initAudioEnabled: true,
+          initAudioSourceLabel: `Chimera · ${chimeraStack.clips.length} clips · @${meta.target_bpm_used.toFixed(1)} BPM (${meta.align_mode_used})`,
+          initAudioSourceClipLabels: chimeraSourceLabels,
+        });
+        useGenerateParamsStore.getState().setChimeraField('lastMeta', meta);
+        effectiveParams = { ...params, initAudioFile: file, initAudioEnabled: true };
+        useStatusBarStore.getState().setText('CHIMERA READY — submitting job');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logError('generate', `Chimera mashup failed; aborting generation: ${msg}`);
+        useStatusBarStore.getState().setText(`CHIMERA FAILED: ${msg}`);
+        set({
+          isGenerating: false,
+          jobStatus: 'idle',
+          statusLabel: 'IDLE',
+          error: `Chimera mashup failed: ${msg}`,
+        });
+        return;
+      }
+    }
+
+    const formData = buildGenerateJobFormData(effectiveParams, prompt);
 
     try {
-      logInfo('generate', `POST /api/generate-jobs — model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed}`);
+      logInfo('generate', `[${elapsed()}] POST /api/generate-jobs — model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed}`);
       const response = await fetch('/api/generate-jobs', {
         method: 'POST',
         body: formData,
@@ -304,14 +343,14 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
         throw new Error('Backend did not return a job id for /api/generate-jobs.');
       }
 
-      logInfo('generate', `POST /api/generate-jobs → 200 OK — job_id=${jobId.slice(0, 8)}`);
+      logInfo('generate', `[${elapsed()}] POST /api/generate-jobs → 200 OK — job_id=${jobId.slice(0, 8)} (server received the job)`);
       set({
         currentJobId: jobId,
         jobStatus: 'queued',
         statusLabel: 'QUEUED...',
       });
       useStatusBarStore.getState().setText(`GENERATION QUEUED: ${jobId.slice(0, 8)}`);
-      logInfo('generate', `Job queued: ${jobId.slice(0, 8)}`);
+      logInfo('generate', `[${elapsed()}] Job queued: ${jobId.slice(0, 8)} — waiting for backend to start sampling`);
 
       while (true) {
         const state = get();
@@ -362,8 +401,8 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
           const previousStatus = get().jobStatus;
           if (previousStatus !== job.status) {
             logInfo('generate', job.status === 'running'
-              ? `Job running: ${jobId.slice(0, 8)} (sampler engaged)`
-              : `Job still queued: ${jobId.slice(0, 8)}`);
+              ? `[${elapsed()}] Job running: ${jobId.slice(0, 8)} — sampler started (${totalSteps} steps requested)`
+              : `[${elapsed()}] Job still queued: ${jobId.slice(0, 8)}`);
           }
           set({
             jobStatus: job.status,
@@ -397,65 +436,60 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
             lastModelName: params.model,
             error: null,
           });
-          useStatusBarStore.getState().setText('GENERATION COMPLETE & SAVED TO LIBRARY');
-          logInfo('generate', `Completed: ${resultItem.filename || 'output.wav'} (${params.duration}s, ${Math.round(resultBlob.size / 1024)}KB)`);
+          useStatusBarStore.getState().setText('Decoded — registering library entries...');
+          logInfo('generate', `[${elapsed()}] Sampler finished — ${resultItem.filename || 'output.wav'} (${params.duration}s, ${Math.round(resultBlob.size / 1024)}KB). Audio was written to disk server-side; pulling the entries.`);
 
-          // Auto-add all returned items (handles batch) to the library, and
-          // auto-load the first one into the global footer player.
-          let firstSavedBlob: Blob | null = null;
-          let firstSavedTitle: string | null = null;
-          let firstSavedId: string | null = null;
-          try {
-            const nowIso = new Date().toISOString();
-            const library = useLibraryStore.getState();
+          // The backend already wrote each item to disk via _save_generation_artifacts_sync.
+          // Refresh the library to surface the new entries via /api/library/entries.
+          const isChimeraRun = !!(chimeraSourceLabels && chimeraSourceLabels.length > 0);
+          const library = useLibraryStore.getState();
+          await library.refresh();
+
+          // Backend doesn't know the user-facing Chimera source labels, so
+          // PATCH them in after refresh. Entry ID format matches what the
+          // backend writes: `<job_id>_<index:02d>`.
+          if (isChimeraRun && chimeraSourceLabels) {
+            const newEntries = useLibraryStore.getState().entries;
             for (let i = 0; i < items.length; i += 1) {
-              const it = items[i];
-              if (!it?.audio_base64) continue;
-              const mime = it.mime_type || 'audio/wav';
-              const blob = base64ToBlob(it.audio_base64, mime);
-              const entryId = items.length > 1 ? `${jobId}_${i}` : jobId;
-              const title = it.filename || `gen_${entryId.slice(0, 8)}.wav`;
-              await library.addEntry({
-                id: entryId,
-                title,
-                prompt,
-                negativePrompt: params.negativePrompt || '',
-                model: params.model,
-                duration: params.duration,
-                steps: params.steps,
-                cfg: params.cfg,
-                seed: params.seed,
-                audioBlob: blob,
-                mimeType: mime,
-                timestamp: nowIso,
-                favorite: false,
-                rating: null,
-                tags: [],
-                notes: '',
-                source: 'generate',
-              });
-              if (i === 0) {
-                firstSavedBlob = blob;
-                firstSavedTitle = title;
-                firstSavedId = entryId;
+              if (!items[i]?.audio_base64) continue;
+              const entryId = `${jobId}_${String(i).padStart(2, '0')}`;
+              const exists = newEntries.find((e) => e.id === entryId);
+              if (!exists) {
+                logError('library', `Chimera-sources PATCH skipped: entry ${entryId} not found in refresh.`);
+                continue;
               }
-            }
-          } catch (libErr) {
-            const msg = libErr instanceof Error ? libErr.message : 'Unknown error';
-            logError('library', `Auto-save skipped: ${msg}`);
-          }
-
-          if (firstSavedBlob && firstSavedTitle) {
-            try {
-              await usePlayerStore.getState().load(firstSavedBlob, {
-                label: firstSavedTitle,
-                entryId: firstSavedId ?? undefined,
+              await useLibraryStore.getState().updateEntry(entryId, {
+                tags: Array.from(new Set([...(exists.tags ?? []), 'chimera'])),
+                chimeraSources: chimeraSourceLabels,
               });
-            } catch {
-              /* non-fatal */
             }
           }
 
+          // Load the first new entry into the player so playback works
+          // immediately. The blob comes from the backend streaming URL.
+          const after = useLibraryStore.getState().entries;
+          const firstEntry = items[0]?.audio_base64
+            ? after.find((e) => e.id === `${jobId}_00`) ?? after.find((e) => e.id === jobId)
+            : null;
+          if (firstEntry) {
+            try {
+              const loadT0 = performance.now();
+              const blob = await useLibraryStore.getState().fetchAudioBlob(firstEntry);
+              await usePlayerStore.getState().load(blob, {
+                label: firstEntry.title,
+                entryId: firstEntry.id,
+              });
+              logInfo('generate', `[${elapsed()}] Loaded into player bar (${Math.round(performance.now() - loadT0)}ms).`);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              logError('generate', `Player load failed: ${msg}`);
+            }
+          } else {
+            logError('generate', `Could not find freshly-saved entry for job ${jobId}; library may need a manual reload.`);
+          }
+
+          useStatusBarStore.getState().setText('GENERATION COMPLETE');
+          logInfo('generate', `[${elapsed()}] Generation pipeline complete.`);
           return;
         }
 

@@ -1,0 +1,10 @@
+{
+  "name": "settings",
+  "label": "Settings",
+  "enabled": true,
+  "icon": "Settings",
+  "sidebar": false,
+  "api_prefix": "/api/settings",
+  "backend": true,
+  "description": "App-wide feature toggles (analysis, stems, midi, idle gate)"
+}

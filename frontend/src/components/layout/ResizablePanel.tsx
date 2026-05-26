@@ -11,6 +11,13 @@ interface ResizablePanelProps {
   title?: string;
   isOpen?: boolean;
   onToggle?: () => void;
+  /**
+   * When provided, the panel becomes a controlled component: ``width`` is
+   * the source of truth and resize events fire ``onWidthChange``. Parents
+   * use this to persist width across sessions.
+   */
+  width?: number;
+  onWidthChange?: (width: number) => void;
 }
 
 export const ResizablePanel: React.FC<ResizablePanelProps> = ({
@@ -22,22 +29,30 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
   title,
   isOpen = true,
   onToggle,
+  width: controlledWidth,
+  onWidthChange,
 }) => {
-  const [width, setWidth] = useState(defaultWidth);
+  const [internalWidth, setInternalWidth] = useState(defaultWidth);
+  const isControlled = controlledWidth != null;
+  const width = isControlled ? (controlledWidth as number) : internalWidth;
+  const setWidth = (next: number) => {
+    if (isControlled) onWidthChange?.(next);
+    else setInternalWidth(next);
+  };
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
-      
+
       let newWidth = width;
       if (position === 'left') {
         newWidth = e.clientX - (resizeRef.current?.getBoundingClientRect().left || 0);
       } else {
         newWidth = window.innerWidth - e.clientX;
       }
-      
+
       if (newWidth >= minWidth && newWidth <= maxWidth) {
         setWidth(newWidth);
       }
