@@ -1,0 +1,10 @@
+{
+  "name": "stems",
+  "label": "Stems",
+  "enabled": false,
+  "icon": "Scissors",
+  "sidebar": false,
+  "api_prefix": "/api/stems",
+  "backend": true,
+  "description": "Stem separation via Demucs sidecar (integration-package). 2/4/6/12-stem modes; LARSNET drum decomposition for 12-stem. Disabled by default — flip on in Settings once the integration-package is configured."
+}
