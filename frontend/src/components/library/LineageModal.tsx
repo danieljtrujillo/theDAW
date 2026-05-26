@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize } from 'lucide-react';
 
 const ForceGraph3D = lazy(() => import('react-force-graph-3d').then((m) => ({ default: m.default })));
+const ForceGraph2D = lazy(() => import('react-force-graph-2d').then((m) => ({ default: m.default })));
 
 interface GraphNode {
   id: string;
@@ -34,6 +35,7 @@ interface LineageModalProps {
 }
 
 interface GraphAppearance {
+  renderMode: '2d' | '3d';     // ForceGraph2D vs ForceGraph3D
   nodeSizeScale: number;       // 0.5 – 3
   linkWidth: number;           // 1 – 6
   linkOpacity: number;         // 0.2 – 1
@@ -46,6 +48,7 @@ interface GraphAppearance {
 }
 
 const DEFAULT_APPEARANCE: GraphAppearance = {
+  renderMode: '3d',
   nodeSizeScale: 1.0,
   linkWidth: 2.5,
   linkOpacity: 0.85,
@@ -430,27 +433,28 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
   }, [connected, nodeMap, layers, parentsOf, childrenOf]);
 
   // -- Step 3: coordinate assignment ----------------------------------
+  // Layout is LEFT→RIGHT: each generation is a vertical column, and
+  // descendants stack within that column. This uses vertical space
+  // instead of running off the right edge for libraries with wide
+  // generations.
   const NODE_W = 200;
-  const NODE_H = 60;
-  const COL_GAP = 28;
-  const ROW_GAP = 90;
+  const NODE_H = 56;
+  const COL_GAP = 110; // horizontal gap between generations
+  const ROW_GAP = 18;  // vertical gap between nodes in the same generation
   const PAD = 40;
 
   const positions = useMemo(() => {
     const pos: Record<string, { x: number; y: number }> = {};
-    // Find the widest row to center smaller rows under it.
-    const widestCount = Math.max(
-      1,
-      ...orderedRows.map((r) => r.ids.length),
-    );
-    const widestPx = widestCount * NODE_W + (widestCount - 1) * COL_GAP;
-    orderedRows.forEach((row, rowIdx) => {
-      const rowPx = row.ids.length * NODE_W + (row.ids.length - 1) * COL_GAP;
-      const startX = PAD + (widestPx - rowPx) / 2;
-      row.ids.forEach((id, colIdx) => {
+    // Find the tallest column so smaller columns can vertically center.
+    const tallestCount = Math.max(1, ...orderedRows.map((r) => r.ids.length));
+    const tallestPx = tallestCount * NODE_H + (tallestCount - 1) * ROW_GAP;
+    orderedRows.forEach((row, colIdx) => {
+      const colPx = row.ids.length * NODE_H + (row.ids.length - 1) * ROW_GAP;
+      const startY = PAD + (tallestPx - colPx) / 2;
+      row.ids.forEach((id, rowIdx) => {
         pos[id] = {
-          x: startX + colIdx * (NODE_W + COL_GAP),
-          y: PAD + rowIdx * (NODE_H + ROW_GAP),
+          x: PAD + colIdx * (NODE_W + COL_GAP),
+          y: startY + rowIdx * (NODE_H + ROW_GAP),
         };
       });
     });
@@ -514,11 +518,21 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
     );
   }
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    setView((v) => ({ ...v, k: Math.max(0.2, Math.min(4, v.k * factor)) }));
-  };
+  // Wheel listener must be attached non-passively so we can preventDefault
+  // and stop the parent (Shell) from scrolling. React's JSX wheel handler
+  // is registered as passive by default → console fires
+  // "Unable to preventDefault inside passive event listener invocation".
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onNativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      setView((v) => ({ ...v, k: Math.max(0.2, Math.min(4, v.k * factor)) }));
+    };
+    el.addEventListener('wheel', onNativeWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onNativeWheel);
+  }, []);
 
   const onPointerDown = (e: React.PointerEvent) => {
     draggingRef.current = { x: e.clientX - view.x, y: e.clientY - view.y };
@@ -542,7 +556,6 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
     <div
       ref={containerRef}
       className="absolute inset-0 bg-[#06030c] overflow-hidden cursor-grab active:cursor-grabbing"
-      onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -576,19 +589,19 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
           viewBox={`${bounds.minX} ${bounds.minY} ${bounds.maxX - bounds.minX} ${bounds.maxY - bounds.minY}`}
           style={{ display: 'block' }}
         >
-          {/* Edges first so nodes paint on top. */}
+          {/* Edges first so nodes paint on top. Flow is left-to-right:
+              parent on the left, child on the right of the next column. */}
           {connected.edges.map((edge, i) => {
             const from = positions[edge.from_id];
             const to = positions[edge.to_id];
             if (!from || !to) return null;
-            const x1 = from.x + NODE_W / 2;
-            const y1 = from.y + NODE_H;
-            const x2 = to.x + NODE_W / 2;
-            const y2 = to.y;
-            // Smooth cubic Bezier — feels more like a real genealogy
-            // chart than the harsh right-angled bend my first pass had.
-            const dy = (y2 - y1) * 0.5;
-            const d = `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
+            const x1 = from.x + NODE_W;          // parent's right edge
+            const y1 = from.y + NODE_H / 2;
+            const x2 = to.x;                      // child's left edge
+            const y2 = to.y + NODE_H / 2;
+            // Smooth cubic Bezier curving across the column gap.
+            const dx = (x2 - x1) * 0.5;
+            const d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
             const color = EDGE_COLOR_BY_KIND[edge.kind] ?? '#71717a';
             return (
               <g key={i}>
@@ -600,7 +613,7 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
                   opacity={0.7}
                 />
                 <polygon
-                  points={`${x2 - 4},${y2 - 7} ${x2 + 4},${y2 - 7} ${x2},${y2}`}
+                  points={`${x2 - 7},${y2 - 4} ${x2 - 7},${y2 + 4} ${x2},${y2}`}
                   fill={color}
                   opacity={0.9}
                 />
@@ -668,16 +681,19 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
         </svg>
       </div>
 
-      {/* Generation gutter labels. */}
-      <div className="absolute top-0 left-2 z-10 text-[8px] font-mono uppercase tracking-widest text-zinc-600 pointer-events-none">
+      {/* Generation column headers — labels above each column header in
+          screen-space so they don't pan/zoom with the canvas. */}
+      <div className="absolute top-0 left-0 z-10 text-[9px] font-mono uppercase tracking-widest text-zinc-500 pointer-events-none">
         {orderedRows.map((row, i) => (
           <div
             key={row.layer}
             style={{
               position: 'absolute',
-              top: (PAD + i * (NODE_H + ROW_GAP)) * view.k + view.y + 8,
-              left: 0,
+              left: (PAD + i * (NODE_W + COL_GAP) + NODE_W / 2) * view.k + view.x,
+              top: 8,
+              transform: 'translateX(-50%)',
             }}
+            className="bg-purple-500/20 border border-purple-500/40 rounded px-2 py-0.5 text-purple-200"
           >
             gen {row.layer}
           </div>
@@ -727,6 +743,25 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
           </button>
         </div>
       </div>
+
+      <SelectRow
+        label="Render mode"
+        value={value.renderMode}
+        options={[
+          { value: '3d', label: '3D (force)' },
+          { value: '2d', label: '2D (canvas)' },
+        ]}
+        onChange={(v) => patch({ renderMode: v as GraphAppearance['renderMode'] })}
+      />
+      <SelectRow
+        label="Labels"
+        value={value.labelMode}
+        options={[
+          { value: 'hover', label: 'On hover only' },
+          { value: 'always', label: 'Always visible (2D)' },
+        ]}
+        onChange={(v) => patch({ labelMode: v as GraphAppearance['labelMode'] })}
+      />
 
       <SliderRow
         label={`Node size ${value.nodeSizeScale.toFixed(1)}×`}
@@ -883,15 +918,23 @@ const Graph3DView: React.FC<{
 
   const fgRef = useRef<unknown>(null);
 
-  // After the force layout has a chance to settle, zoom-to-fit so the
-  // user lands on a useful framing.
+  // Fit-to-view at two checkpoints so we catch both early- and late-
+  // settling force layouts. Without this the camera lingers at its
+  // default position and the user sees one disconnected dot far off
+  // in z-space.
   useEffect(() => {
-    const t = setTimeout(() => {
-      const ref = fgRef.current as { zoomToFit?: (ms: number, pad: number) => void } | null;
-      if (ref?.zoomToFit) ref.zoomToFit(800, 60);
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [data]);
+    const timeouts = [400, 1500, 3000].map((ms) =>
+      setTimeout(() => {
+        const ref = fgRef.current as {
+          zoomToFit?: (ms: number, pad: number) => void;
+          centerAt?: (x: number, y: number, ms: number) => void;
+        } | null;
+        if (ref?.zoomToFit) ref.zoomToFit(600, 80);
+        if (ref?.centerAt) ref.centerAt(0, 0, 600);
+      }, ms),
+    );
+    return () => timeouts.forEach(clearTimeout);
+  }, [data, appearance.renderMode]);
 
   if (connected.nodes.length === 0) {
     return (
@@ -904,36 +947,82 @@ const Graph3DView: React.FC<{
 
   const bgColor = BG_COLORS[appearance.background];
 
+  const labelHtml = (n: { name: string; source: string; model: string }) =>
+    `<div style="font-family: monospace; font-size: 11px; padding: 6px 8px; background: rgba(12,8,24,0.95); border: 1px solid rgba(168,85,247,0.5); border-radius: 4px; max-width: 280px; word-wrap: break-word; overflow-wrap: anywhere; white-space: normal; line-height: 1.3;">
+        <div style="color: #e5e5e5; font-weight: 700; word-wrap: break-word;">${escapeHtml(n.name)}</div>
+        <div style="color: #a3a3a3; font-size: 10px;">${escapeHtml(n.source)} · ${escapeHtml(n.model)}</div>
+      </div>`;
+
   return (
     <div className="absolute inset-0" style={{ background: bgColor }}>
-      <ForceGraph3D
-        ref={fgRef as React.MutableRefObject<unknown>}
-        graphData={data}
-        nodeAutoColorBy="source"
-        nodeRelSize={5}
-        backgroundColor={bgColor}
-        showNavInfo={false}
-        controlType={appearance.controlType}
-        cameraPosition={{ z: 280 }}
-        linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
-        linkOpacity={appearance.linkOpacity}
-        linkWidth={appearance.linkWidth}
-        linkCurvature={appearance.edgeCurve}
-        linkDirectionalArrowLength={5}
-        linkDirectionalArrowRelPos={0.92}
-        linkDirectionalArrowColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
-        linkDirectionalParticles={appearance.particles ? 2 : 0}
-        linkDirectionalParticleWidth={1.5}
-        linkDirectionalParticleSpeed={appearance.particleSpeed}
-        nodeLabel={(n: { name: string; source: string; model: string }) =>
-          `<div style="font-family: monospace; font-size: 11px; padding: 6px 8px; background: rgba(12,8,24,0.95); border: 1px solid rgba(168,85,247,0.5); border-radius: 4px; max-width: 280px; word-wrap: break-word; overflow-wrap: anywhere; white-space: normal; line-height: 1.3;">
-            <div style="color: #e5e5e5; font-weight: 700; word-wrap: break-word;">${escapeHtml(n.name)}</div>
-            <div style="color: #a3a3a3; font-size: 10px;">${escapeHtml(n.source)} · ${escapeHtml(n.model)}</div>
-          </div>`
-        }
-      />
+      {appearance.renderMode === '3d' ? (
+        <ForceGraph3D
+          ref={fgRef as React.MutableRefObject<unknown>}
+          graphData={data}
+          nodeAutoColorBy="source"
+          nodeRelSize={5}
+          backgroundColor={bgColor}
+          showNavInfo={false}
+          controlType={appearance.controlType}
+          cameraPosition={{ z: 280 }}
+          linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+          linkOpacity={appearance.linkOpacity}
+          linkWidth={appearance.linkWidth}
+          linkCurvature={appearance.edgeCurve}
+          linkDirectionalArrowLength={5}
+          linkDirectionalArrowRelPos={0.92}
+          linkDirectionalArrowColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+          linkDirectionalParticles={appearance.particles ? 2 : 0}
+          linkDirectionalParticleWidth={1.5}
+          linkDirectionalParticleSpeed={appearance.particleSpeed}
+          nodeLabel={labelHtml}
+        />
+      ) : (
+        <ForceGraph2D
+          ref={fgRef as React.MutableRefObject<unknown>}
+          graphData={data}
+          nodeRelSize={5}
+          backgroundColor={bgColor}
+          linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+          linkLineDash={() => null}
+          linkWidth={appearance.linkWidth}
+          linkCurvature={appearance.edgeCurve}
+          linkDirectionalArrowLength={6}
+          linkDirectionalArrowRelPos={1}
+          linkDirectionalArrowColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+          linkDirectionalParticles={appearance.particles ? 2 : 0}
+          linkDirectionalParticleWidth={2}
+          linkDirectionalParticleSpeed={appearance.particleSpeed}
+          nodeCanvasObjectMode={() =>
+            appearance.labelMode === 'always' ? 'after' : undefined
+          }
+          nodeCanvasObject={(node: { x: number; y: number; name: string; color: string; val: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
+            if (appearance.labelMode !== 'always') return;
+            const label = node.name;
+            const fontSize = 11 / globalScale;
+            ctx.font = `${fontSize}px ui-monospace, monospace`;
+            const textWidth = ctx.measureText(label).width;
+            const padding = 4 / globalScale;
+            ctx.fillStyle = 'rgba(12,8,24,0.85)';
+            ctx.fillRect(
+              node.x - textWidth / 2 - padding,
+              node.y + node.val + 2 / globalScale,
+              textWidth + padding * 2,
+              fontSize + padding,
+            );
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = '#e5e5e5';
+            ctx.fillText(label, node.x, node.y + node.val + 2 / globalScale + padding / 2);
+          }}
+          nodeLabel={labelHtml}
+        />
+      )}
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
-        click-drag rotate · right-click-drag pan · wheel zoom · {connected.nodes.length} connected nodes · {connected.edges.length} relationships
+        {appearance.renderMode === '3d'
+          ? 'click-drag rotate · right-click-drag pan · wheel zoom'
+          : 'click-drag pan · wheel zoom'}
+        {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
       </div>
     </div>
   );

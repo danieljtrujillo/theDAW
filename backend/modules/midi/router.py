@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 from backend.modules.library.router import get_store as get_library_store
 
@@ -62,6 +63,30 @@ def midi_install(engine: str = "basic_pitch") -> dict:
             get_idle_manager().release("midi-install")
         except Exception:
             pass
+
+
+@router.get("/file/{midi_id}")
+def get_midi_file(midi_id: str) -> FileResponse:
+    """Stream the actual .mid bytes for a given midis-row id so the
+    frontend can fetch + parse it (e.g. into the piano roll / sequencer).
+    """
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    # Brute-force lookup since midis is keyed per entry; the row id is
+    # globally unique so we scan entries until we find it.
+    for entry in store.db.list_entries():
+        for midi in store.db.list_midis(entry["id"]):
+            if midi.get("id") == midi_id:
+                path = Path(midi.get("midi_path") or "")
+                if not path.is_file():
+                    raise HTTPException(404, f"midi file missing on disk: {path}")
+                return FileResponse(
+                    path=str(path),
+                    media_type="audio/midi",
+                    filename=path.name,
+                )
+    raise HTTPException(404, f"midi row {midi_id!r} not found")
 
 
 @router.get("/{entry_id}")
