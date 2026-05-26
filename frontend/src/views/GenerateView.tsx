@@ -90,6 +90,8 @@ export const GenerateView: React.FC = () => {
       <Section title="PRIMARY SYNTHESIS / PROMPT" icon={Command} defaultOpen={true} rightNode={<span className="mono-tag bg-purple-600/20! border-purple-500/30! text-purple-300!">RF-ENGINE</span>}>
          <div className="bg-black/40 rounded border border-white/5 focus-within:border-purple-500/50 transition-colors relative group flex flex-col flex-1">
             <textarea
+              id="generate-prompt"
+              name="generate-prompt"
               className="w-full flex-1 bg-transparent border-none outline-none resize-none p-3 text-[12px] text-zinc-200 placeholder:text-zinc-600 min-h-20"
               placeholder="PROMPT / Describe your soundscape, instrument, or atmosphere..."
               value={p.prompt}
@@ -108,6 +110,8 @@ export const GenerateView: React.FC = () => {
          </div>
          <div className="relative group">
            <input
+             id="generate-negative-prompt"
+             name="generate-negative-prompt"
              type="text"
              className="compact-input w-full pr-8"
              placeholder="NEGATIVE PROMPT / Avoid specific frequencies, instruments..."

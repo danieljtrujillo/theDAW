@@ -76,22 +76,57 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     // For stems, poll /progress every ~1.5s while the /run request is
     // in-flight so the user sees install/download/separate phases in
     // the ProcessingLog instead of an opaque 5-minute "running…".
+    // Includes a 30-second heartbeat that logs elapsed time even when
+    // the sidecar phase / message hasn't changed (demucs can sit at a
+    // single percentage point for minutes while it processes shifts).
     let stemsPoller: ReturnType<typeof setInterval> | null = null;
     if (kind === 'stems') {
       let lastPhase = '';
       let lastMessage = '';
+      let lastProgress = -1;
+      let lastChangeAt = Date.now();
+      let lastHeartbeatAt = Date.now();
+      const runStartedAt = Date.now();
       stemsPoller = setInterval(() => {
         void fetch(`/api/stems/${entryId}/progress`)
           .then((r) => r.json())
           .then((p: { phase?: string; message?: string; progress?: number }) => {
             const phase = p.phase || 'idle';
             const message = p.message || '';
+            const progress = typeof p.progress === 'number' ? p.progress : -1;
             if (phase === 'idle') return;
-            if (phase === lastPhase && message === lastMessage) return;
-            lastPhase = phase;
-            lastMessage = message;
-            const pct = typeof p.progress === 'number' ? ` ${Math.round(p.progress)}%` : '';
-            logInfo('library', `stems[${entryId.slice(0, 8)}] ${phase}${pct}: ${message.slice(0, 200)}`);
+            const now = Date.now();
+            const elapsedTotal = Math.round((now - runStartedAt) / 1000);
+            const fmtElapsed = (s: number) =>
+              s >= 60 ? `${Math.floor(s / 60)}m${(s % 60).toString().padStart(2, '0')}s` : `${s}s`;
+            const pctText = progress >= 0 ? ` ${Math.round(progress)}%` : '';
+
+            const changed =
+              phase !== lastPhase || message !== lastMessage || progress !== lastProgress;
+            if (changed) {
+              lastPhase = phase;
+              lastMessage = message;
+              lastProgress = progress;
+              lastChangeAt = now;
+              lastHeartbeatAt = now;
+              logInfo(
+                'library',
+                `stems[${entryId.slice(0, 8)}] ${phase}${pctText} @ ${fmtElapsed(elapsedTotal)}: ${message.slice(0, 200)}`,
+              );
+              return;
+            }
+
+            // No change since last poll. Emit a heartbeat every 30s so
+            // the user knows the run is still alive (demucs commonly
+            // pauses ~minutes at a single percent during shifts).
+            if (now - lastHeartbeatAt >= 30_000) {
+              lastHeartbeatAt = now;
+              const stuckFor = Math.round((now - lastChangeAt) / 1000);
+              logInfo(
+                'library',
+                `stems[${entryId.slice(0, 8)}] still ${phase}${pctText} — no update for ${fmtElapsed(stuckFor)} (total ${fmtElapsed(elapsedTotal)})`,
+              );
+            }
           })
           .catch(() => {
             /* swallow — poll loop continues */
@@ -426,11 +461,14 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
             <input
-              type="text"
+              id="library-search"
+              name="library-search"
+              type="search"
               className="compact-input w-full pl-7"
-              placeholder="SEARCH PROMPTS / TITLES / TAGS..."
+              placeholder="SEARCH titles / prompts / tags / model / bpm / key / genre…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search the library"
             />
           </div>
 
