@@ -656,24 +656,25 @@ const Graph3DView: React.FC<{ payload: GraphPayload; highlight: string | null }>
         backgroundColor="#06030c"
         showNavInfo={false}
         controlType="orbit"
-        // Tame the default trackball / orbit sensitivity which feels
-        // hair-trigger on laptop trackpads.
         cameraPosition={{ z: 280 }}
-        linkColor={(l: { color?: string }) => l.color ?? '#71717a'}
-        linkOpacity={0.5}
-        linkWidth={1.2}
-        linkDirectionalArrowLength={3}
-        linkDirectionalArrowRelPos={0.9}
-        linkDirectionalParticles={0}
+        linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+        linkOpacity={0.85}
+        linkWidth={2.5}
+        linkDirectionalArrowLength={5}
+        linkDirectionalArrowRelPos={0.92}
+        linkDirectionalArrowColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+        linkDirectionalParticles={2}
+        linkDirectionalParticleWidth={1.5}
+        linkDirectionalParticleSpeed={0.006}
         nodeLabel={(n: { name: string; source: string; model: string }) =>
-          `<div style="font-family: monospace; font-size: 11px; padding: 4px 8px; background: rgba(12,8,24,0.92); border: 1px solid rgba(168,85,247,0.4); border-radius: 4px;">
-            <div style="color: #e5e5e5; font-weight: 700;">${escapeHtml(n.name)}</div>
-            <div style="color: #a3a3a3;">${escapeHtml(n.source)} · ${escapeHtml(n.model)}</div>
+          `<div style="font-family: monospace; font-size: 11px; padding: 6px 8px; background: rgba(12,8,24,0.95); border: 1px solid rgba(168,85,247,0.5); border-radius: 4px; max-width: 280px; word-wrap: break-word; overflow-wrap: anywhere; white-space: normal; line-height: 1.3;">
+            <div style="color: #e5e5e5; font-weight: 700; word-wrap: break-word;">${escapeHtml(n.name)}</div>
+            <div style="color: #a3a3a3; font-size: 10px;">${escapeHtml(n.source)} · ${escapeHtml(n.model)}</div>
           </div>`
         }
       />
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
-        click-drag rotate · right-click-drag pan · wheel zoom · {connected.nodes.length} connected nodes
+        click-drag rotate · right-click-drag pan · wheel zoom · {connected.nodes.length} connected nodes · {connected.edges.length} relationships
       </div>
     </div>
   );

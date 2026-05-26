@@ -59,11 +59,29 @@ class SidecarConfig:
     extra_args: list[str] = field(default_factory=list)
 
 
+SIDECAR_VENV_DIRNAME = ".sidecar_venv"
+
+
+def _sidecar_venv_python(package_path: Path) -> Path:
+    venv_dir = package_path / SIDECAR_VENV_DIRNAME
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
 def resolve_config() -> SidecarConfig:
     pkg = os.getenv("STABLEDAW_STEMS_PACKAGE")
     package_path = Path(pkg).expanduser().resolve() if pkg else DEFAULT_PACKAGE_PATH
     py = os.getenv("STABLEDAW_STEMS_PYTHON")
-    python_exe = Path(py).expanduser().resolve() if py else Path(sys.executable)
+    if py:
+        python_exe = Path(py).expanduser().resolve()
+    else:
+        # Default to the package's dedicated, isolated venv. We create it
+        # on demand (see _bootstrap_sidecar_venv) so the sidecar's heavy
+        # ML deps never collide with the main app's environment. The
+        # integration-package's requirements.txt pins scipy==1.11.4 etc.
+        # which is incompatible with our main venv's numpy/scipy stack.
+        python_exe = _sidecar_venv_python(package_path)
     port_env = os.getenv("STABLEDAW_STEMS_PORT")
     port = int(port_env) if (port_env and port_env.isdigit()) else None
     return SidecarConfig(
@@ -72,6 +90,47 @@ def resolve_config() -> SidecarConfig:
         auto_port=port is None,
         port=port,
     )
+
+
+def _bootstrap_sidecar_venv(cfg: SidecarConfig) -> dict:
+    """Create the integration-package's isolated venv if it doesn't
+    exist yet. Returns ``{ok, created, tool, stderr?}``.
+
+    Uses ``uv venv`` (fast, the host project already uses uv) and falls
+    back to stdlib ``python -m venv`` if uv isn't on PATH.
+    """
+    venv_dir = cfg.python_exe.parent.parent  # <pkg>/.sidecar_venv
+    if cfg.python_exe.is_file():
+        return {"ok": True, "created": False, "tool": "existing"}
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Prefer uv venv — fast + already on PATH for this repo.
+    try:
+        result = subprocess.run(
+            ["uv", "venv", str(venv_dir), "--python", sys.executable, "--seed"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode == 0 and cfg.python_exe.is_file():
+            return {"ok": True, "created": True, "tool": "uv"}
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.info("stems.sidecar: uv venv unavailable (%s), falling back", e)
+    # Fall back to stdlib venv (slower; includes pip via --seed-equivalent).
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "created": False, "tool": "venv", "error": repr(e)}
+    return {
+        "ok": result.returncode == 0 and cfg.python_exe.is_file(),
+        "created": True,
+        "tool": "venv",
+        "stderr": result.stderr[-2000:],
+    }
 
 
 def _port_file(cfg: SidecarConfig) -> Path:
@@ -91,10 +150,14 @@ def _is_port_in_use(host: str, port: int) -> bool:
 def probe(cfg: Optional[SidecarConfig] = None) -> dict:
     """Non-spawning health snapshot used by /api/stems/probe."""
     cfg = cfg or resolve_config()
+    venv_dir = cfg.python_exe.parent.parent
     out: dict = {
         "ok": False,
         "package_path": str(cfg.package_path),
         "python_exe": str(cfg.python_exe),
+        "python_exe_exists": cfg.python_exe.is_file(),
+        "sidecar_venv": str(venv_dir),
+        "sidecar_venv_exists": venv_dir.exists(),
         "package_exists": cfg.package_path.is_dir(),
         "run_backend_exists": (cfg.package_path / "run_backend.py").is_file(),
         "demucs_importable": False,
@@ -398,9 +461,29 @@ def _tail_log(path: Optional[Path], n_bytes: int = 1024) -> str:
 
 def _stems_install_cmd(python_exe: Path, req: Path) -> tuple[list[str], str]:
     """Pick the right pip-install invocation for ``python_exe``.
-    See backend.modules.midi.engine._pip_install_cmd for the same logic
-    — duplicated here to keep the two modules import-independent.
+
+    Prefer ``uv pip install --python <exe>`` because the host project
+    is uv-based and uv resolves conflicts that classic pip rejects with
+    ResolutionImpossible (matters here because integration-package's
+    requirements.txt pins old scipy/numpy that pip refuses to reconcile
+    against the main env's modern versions, but uv handles via a fresh
+    resolver pass when targeting a clean venv).
     """
+    # Prefer uv when available — it's the host project's package manager
+    # and side-steps pip's classic resolver entirely.
+    try:
+        uv_check = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True, timeout=10
+        )
+        if uv_check.returncode == 0:
+            return (
+                ["uv", "pip", "install", "--python", str(python_exe), "-r", str(req)],
+                "uv-pip",
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Fall back to pip / ensurepip if uv isn't on PATH.
     pip_check = subprocess.run(
         [str(python_exe), "-c", "import pip"],
         capture_output=True,
@@ -421,19 +504,18 @@ def _stems_install_cmd(python_exe: Path, req: Path) -> tuple[list[str], str]:
             "pip-after-ensurepip",
         )
     return (
-        ["uv", "pip", "install", "--python", str(python_exe), "-r", str(req)],
-        "uv-pip",
+        [str(python_exe), "-m", "pip", "install", "-r", str(req)],
+        "pip-no-bootstrap",
     )
 
 
 def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
-    """Run pip install for the integration-package's requirements.txt
-    against the configured Python. Returns ``{ok, output}``. Used by the
-    /install endpoint when the user wants to download deps proactively
-    rather than waiting for the sidecar's first-spawn auto-install.
+    """Bootstrap the dedicated sidecar venv if needed, then install
+    the integration-package's requirements.txt into it.
 
-    Handles uv-managed venvs that lack pip by ensurepip-bootstrapping
-    or falling back to `uv pip install --python <exe>`.
+    Returns a dict with ``ok, install_mode, stdout, stderr, returncode``
+    plus an optional ``venv_bootstrap`` block describing the venv-
+    creation step.
     """
     cfg = cfg or resolve_config()
     req = cfg.package_path / "requirements.txt"
@@ -441,6 +523,17 @@ def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
     if not req.is_file():
         out["error"] = f"requirements.txt not found at {req}"
         return out
+
+    # Bootstrap the venv first so install lands in an isolated environment.
+    bootstrap = _bootstrap_sidecar_venv(cfg)
+    out["venv_bootstrap"] = bootstrap
+    if not bootstrap.get("ok"):
+        out["error"] = (
+            "could not create sidecar venv at "
+            f"{cfg.python_exe.parent.parent}: {bootstrap.get('stderr', bootstrap.get('error', '?'))}"
+        )
+        return out
+
     try:
         argv, install_mode = _stems_install_cmd(cfg.python_exe, req)
         out["install_mode"] = install_mode

@@ -23,12 +23,17 @@ from backend.modules.stems.sidecar import (
 )
 
 
-def test_resolve_config_defaults_to_main_python(monkeypatch):
+def test_resolve_config_defaults_to_sidecar_venv(monkeypatch):
+    """Without STABLEDAW_STEMS_PYTHON the config points at the
+    integration-package's dedicated .sidecar_venv (auto-created on
+    first install). The exe may not exist yet — we only assert the path
+    shape so we don't accidentally test against an already-populated
+    venv on the dev machine."""
     monkeypatch.delenv("STABLEDAW_STEMS_PYTHON", raising=False)
     monkeypatch.delenv("STABLEDAW_STEMS_PORT", raising=False)
     cfg = resolve_config()
     assert isinstance(cfg, SidecarConfig)
-    assert cfg.python_exe.is_file()
+    assert ".sidecar_venv" in str(cfg.python_exe)
     assert cfg.port is None
     assert cfg.auto_port is True
 
