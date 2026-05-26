@@ -198,6 +198,23 @@ class StemsSidecar:
         if not run_backend.is_file():
             raise RuntimeError(f"stems sidecar launcher missing: {run_backend}")
 
+        # If demucs isn't importable in the configured Python, install
+        # deps ourselves rather than letting run_backend.py try (it uses
+        # plain `python -m pip` which fails in uv-managed venvs that
+        # ship without pip). We use ensurepip / uv-pip fallback.
+        if not probe(self.cfg).get("demucs_importable"):
+            log.info("stems.sidecar: demucs not importable — installing deps first")
+            install_result = install_dependencies(self.cfg)
+            if not install_result.get("ok"):
+                err_blob = (
+                    install_result.get("stderr") or install_result.get("error") or ""
+                )
+                raise RuntimeError(
+                    "stems sidecar dep install failed "
+                    f"({install_result.get('install_mode', 'unknown')}): "
+                    f"{err_blob[:600]}"
+                )
+
         # Clear any stale port file.
         port_file = _port_file(self.cfg)
         if port_file.exists():
@@ -233,19 +250,24 @@ class StemsSidecar:
 
         port = self._wait_for_port(port_file)
         if port is None:
-            tail = _tail_log(self._stderr_log)
+            stdout_tail = _tail_log(self._stdout_log)
+            stderr_tail = _tail_log(self._stderr_log)
             self.stop()
             raise RuntimeError(
                 f"stems sidecar didn't write {PORT_FILENAME} within "
-                f"{HEALTH_TIMEOUT_SEC}s. Last stderr: {tail}"
+                f"{HEALTH_TIMEOUT_SEC}s.\n"
+                f"stdout tail: {stdout_tail[:500]}\n"
+                f"stderr tail: {stderr_tail[:500]}"
             )
 
         if not self._wait_for_health(port):
-            tail = _tail_log(self._stderr_log)
+            stdout_tail = _tail_log(self._stdout_log)
+            stderr_tail = _tail_log(self._stderr_log)
             self.stop()
             raise RuntimeError(
-                f"stems sidecar on port {port} didn't return healthy. "
-                f"Last stderr: {tail}"
+                f"stems sidecar on port {port} didn't return healthy.\n"
+                f"stdout tail: {stdout_tail[:500]}\n"
+                f"stderr tail: {stderr_tail[:500]}"
             )
 
         self._port = port
@@ -374,11 +396,44 @@ def _tail_log(path: Optional[Path], n_bytes: int = 1024) -> str:
         return ""
 
 
+def _stems_install_cmd(python_exe: Path, req: Path) -> tuple[list[str], str]:
+    """Pick the right pip-install invocation for ``python_exe``.
+    See backend.modules.midi.engine._pip_install_cmd for the same logic
+    — duplicated here to keep the two modules import-independent.
+    """
+    pip_check = subprocess.run(
+        [str(python_exe), "-c", "import pip"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if pip_check.returncode == 0:
+        return ([str(python_exe), "-m", "pip", "install", "-r", str(req)], "pip")
+    ensurepip = subprocess.run(
+        [str(python_exe), "-m", "ensurepip", "--upgrade", "--default-pip"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if ensurepip.returncode == 0:
+        return (
+            [str(python_exe), "-m", "pip", "install", "-r", str(req)],
+            "pip-after-ensurepip",
+        )
+    return (
+        ["uv", "pip", "install", "--python", str(python_exe), "-r", str(req)],
+        "uv-pip",
+    )
+
+
 def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
     """Run pip install for the integration-package's requirements.txt
     against the configured Python. Returns ``{ok, output}``. Used by the
     /install endpoint when the user wants to download deps proactively
     rather than waiting for the sidecar's first-spawn auto-install.
+
+    Handles uv-managed venvs that lack pip by ensurepip-bootstrapping
+    or falling back to `uv pip install --python <exe>`.
     """
     cfg = cfg or resolve_config()
     req = cfg.package_path / "requirements.txt"
@@ -387,8 +442,10 @@ def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
         out["error"] = f"requirements.txt not found at {req}"
         return out
     try:
+        argv, install_mode = _stems_install_cmd(cfg.python_exe, req)
+        out["install_mode"] = install_mode
         result = subprocess.run(
-            [str(cfg.python_exe), "-m", "pip", "install", "-r", str(req)],
+            argv,
             capture_output=True,
             text=True,
             timeout=15 * 60,

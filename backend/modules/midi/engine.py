@@ -60,11 +60,51 @@ PACKAGE_FOR_ENGINE: dict[str, str] = {
 }
 
 
+def _pip_install_cmd(python_exe: str, packages: list[str]) -> tuple[list[str], str]:
+    """Return ``(argv, mode)`` for installing ``packages`` into the venv
+    rooted at ``python_exe``.
+
+    Falls back across three install paths because uv-managed venvs don't
+    include pip by default:
+
+      - `python -m pip install ...` (works in pip-bootstrapped venvs)
+      - `python -m ensurepip --default-pip` then pip (bootstraps pip)
+      - `uv pip install --python <python_exe> ...` (no pip required in target)
+    """
+    pip_check = subprocess.run(
+        [python_exe, "-c", "import pip"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if pip_check.returncode == 0:
+        return ([python_exe, "-m", "pip", "install", *packages], "pip")
+
+    # Try to bootstrap pip via ensurepip.
+    ensurepip = subprocess.run(
+        [python_exe, "-m", "ensurepip", "--upgrade", "--default-pip"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if ensurepip.returncode == 0:
+        return ([python_exe, "-m", "pip", "install", *packages], "pip-after-ensurepip")
+
+    # Fall back to uv pip.
+    return (
+        ["uv", "pip", "install", "--python", python_exe, *packages],
+        "uv-pip",
+    )
+
+
 def install_engine(engine: str) -> dict:
     """Pip-install one of the MIDI conversion engines into the current
     Python. Returns ``{ok, stdout, stderr, returncode}``. Blocking; can
     take ~minute for basic-pitch (pulls tensorflow), longer for
     piano-transcription-inference (~100 MB model on first import).
+
+    Handles uv-managed venvs that lack pip by ensurepip-bootstrapping or
+    falling back to `uv pip install --python <exe>`.
     """
     package = PACKAGE_FOR_ENGINE.get(engine)
     out: dict = {"ok": False, "engine": engine, "python_exe": sys.executable}
@@ -72,8 +112,10 @@ def install_engine(engine: str) -> dict:
         out["error"] = f"unknown engine: {engine}"
         return out
     try:
+        argv, install_mode = _pip_install_cmd(sys.executable, [package])
+        out["install_mode"] = install_mode
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", package],
+            argv,
             capture_output=True,
             text=True,
             timeout=15 * 60,

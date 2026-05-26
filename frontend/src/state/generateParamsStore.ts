@@ -48,6 +48,7 @@ export interface ChimeraState {
   alignMode: ChimeraAlignMode;
   weaveBars: number;
   weaveTotalBars: number;
+  weaveMaxPolyphony: number;
   lastMeta: ChimeraMashupMeta | null;
 }
 
@@ -118,6 +119,8 @@ interface ParamsStore extends GenerateParamsState {
   removeChimeraClip: (id: string) => void;
   updateChimeraClip: (id: string, patch: Partial<Omit<ChimeraClip, 'id'>>) => void;
   setChimeraField: <K extends keyof ChimeraState>(key: K, value: ChimeraState[K]) => void;
+  moveChimeraClip: (id: string, direction: 'up' | 'down') => void;
+  reorderChimeraClips: (orderedIds: string[]) => void;
   clearChimera: () => void;
 }
 
@@ -184,6 +187,7 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
     alignMode: 'weave',
     weaveBars: 8,
     weaveTotalBars: 90,
+    weaveMaxPolyphony: 3,
     lastMeta: null,
   },
 
@@ -226,6 +230,29 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
   setChimeraField: (key, value) => set((state) => ({
     chimera: { ...state.chimera, [key]: value },
   })),
+
+  moveChimeraClip: (id, direction) => set((state) => {
+    const clips = [...state.chimera.clips];
+    const idx = clips.findIndex((c) => c.id === id);
+    if (idx === -1) return state;
+    const target = direction === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= clips.length) return state;
+    [clips[idx], clips[target]] = [clips[target], clips[idx]];
+    return { chimera: { ...state.chimera, clips } };
+  }),
+
+  reorderChimeraClips: (orderedIds) => set((state) => {
+    const byId = new Map(state.chimera.clips.map((c) => [c.id, c]));
+    const reordered = orderedIds
+      .map((id) => byId.get(id))
+      .filter((c): c is ChimeraClip => Boolean(c));
+    // Append any not in orderedIds (defensive).
+    const seen = new Set(orderedIds);
+    state.chimera.clips.forEach((c) => {
+      if (!seen.has(c.id)) reordered.push(c);
+    });
+    return { chimera: { ...state.chimera, clips: reordered } };
+  }),
 
   clearChimera: () => set((state) => ({
     chimera: { ...state.chimera, clips: [], lastMeta: null },

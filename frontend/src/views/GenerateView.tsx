@@ -202,7 +202,7 @@ export const GenerateView: React.FC = () => {
       </Section>
 
       <Section title="INIT SIGNAL / CONDITIONING" icon={Mic2} defaultOpen={false} rightNode={<span className="mono-tag text-zinc-500!">BYPASS</span>}>
-         <div className="relative border border-dashed border-white/10 rounded p-4 flex flex-col items-center justify-center gap-2 hover:border-purple-500/30 hover:bg-purple-500/5 transition-all">
+         <div className="relative border border-dashed border-white/10 rounded px-2 py-1.5 flex items-center gap-2 hover:border-purple-500/30 hover:bg-purple-500/5 transition-all">
             <input
               ref={initAudioInputRef}
               type="file"
@@ -220,11 +220,11 @@ export const GenerateView: React.FC = () => {
               title={p.initAudioFile ? 'Replace init audio' : 'Choose init audio'}
             />
             {p.initAudioSourceClipLabels.length > 1 ? (
-              <Layers className="w-5 h-5 text-purple-400 pointer-events-none" />
+              <Layers className="w-3.5 h-3.5 text-purple-400 pointer-events-none shrink-0" />
             ) : (
-              <FileAudio className="w-5 h-5 text-zinc-600 pointer-events-none" />
+              <FileAudio className="w-3.5 h-3.5 text-zinc-600 pointer-events-none shrink-0" />
             )}
-            <span className="text-[9px] text-zinc-300 font-mono tracking-widest uppercase pointer-events-none text-center px-2">
+            <span className="text-[9px] text-zinc-300 font-mono tracking-widest uppercase pointer-events-none truncate flex-1">
               {p.initAudioSourceLabel
                 ? p.initAudioSourceLabel
                 : p.initAudioFile ? `Loaded: ${p.initAudioFile.name}` : 'Drop or click to load source audio'}
@@ -237,7 +237,7 @@ export const GenerateView: React.FC = () => {
                   initAudioSourceLabel: null,
                   initAudioSourceClipLabels: [],
                 })}
-                className="absolute top-1 right-1 z-20 p-0.5 rounded bg-black/40 hover:bg-red-500/40 text-zinc-400 hover:text-red-300 transition-colors"
+                className="relative z-20 p-0.5 rounded bg-black/40 hover:bg-red-500/40 text-zinc-400 hover:text-red-300 transition-colors shrink-0"
                 title="Clear init audio"
               >
                 <X className="w-3 h-3" />

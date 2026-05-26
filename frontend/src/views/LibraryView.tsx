@@ -12,6 +12,7 @@ import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
+import { useStatusBarStore } from '../state/statusBarStore';
 import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { setAudioDragData } from '../lib/audioDnD';
@@ -177,9 +178,15 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
   const getFiltered = useLibraryStore((s) => s.getFiltered);
 
+  // Gate the library fetch on backend readiness. The Shell mounts
+  // immediately (so state stores initialize), but a /api/library/entries
+  // call before uvicorn binds returns ECONNREFUSED and leaves the panel
+  // stuck empty until the user hard-refreshes. We watch isBackendReady
+  // and auto-fetch as soon as it flips true.
+  const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   useEffect(() => {
-    if (!loaded) void load();
-  }, [loaded, load]);
+    if (isBackendReady && !loaded) void load();
+  }, [isBackendReady, loaded, load]);
 
   const filteredEntries = getFiltered();
   const selectedEntries = filteredEntries.filter((entry) => selectedEntryIds.includes(entry.id));

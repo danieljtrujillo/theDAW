@@ -14,6 +14,7 @@ export const ChimeraControls: React.FC = () => {
   const alignMode = useGenerateParamsStore((s) => s.chimera.alignMode);
   const weaveBars = useGenerateParamsStore((s) => s.chimera.weaveBars);
   const weaveTotalBars = useGenerateParamsStore((s) => s.chimera.weaveTotalBars);
+  const weaveMaxPolyphony = useGenerateParamsStore((s) => s.chimera.weaveMaxPolyphony);
   const setChimeraField = useGenerateParamsStore((s) => s.setChimeraField);
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
   const clips = useGenerateParamsStore((s) => s.chimera.clips);
@@ -123,6 +124,28 @@ export const ChimeraControls: React.FC = () => {
               }}
               className="compact-input w-14"
               title="Minimum song length in bars. 0 = auto (90)."
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            <span
+              className="text-zinc-400 uppercase tracking-widest"
+              title="Polyphony cap: how many source clips may overlap at any output moment (1-8). Lower = sparser; higher = denser."
+            >
+              Poly
+            </span>
+            <input
+              type="number"
+              min={1}
+              max={8}
+              step={1}
+              value={weaveMaxPolyphony}
+              onChange={(e) => {
+                const n = parseInt(e.target.value);
+                const clamped = Math.max(1, Math.min(8, Number.isFinite(n) ? n : 3));
+                setChimeraField('weaveMaxPolyphony', clamped);
+              }}
+              className="compact-input w-10"
+              title="Polyphony cap (1-8). Default 3."
             />
           </div>
         </>
