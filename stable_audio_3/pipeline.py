@@ -404,9 +404,7 @@ class StableAudioPipeline:
             # For chunked attention with latent space, align to chunk size after downsampling
             latent_align = chunk_size // stride
             align = ds_ratio * latent_align
-            target_audio_samples = (
-                (target_audio_samples + align - 1) // align
-            ) * align
+            target_audio_samples = ((target_audio_samples + align - 1) // align) * align
 
         return min(target_audio_samples, sample_size)
 
