@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from .db import LibraryDB
+
 log = logging.getLogger(__name__)
 
 
@@ -224,15 +226,40 @@ def _record_from_metadata(
 
 
 class LibraryStore:
-    """Filesystem-backed library. Thread-safe enough for FastAPI's
-    threadpool — every operation re-reads the relevant directory.
-    For a long-running server with thousands of entries we would add an
-    in-memory index, but at the current scale this is fine."""
+    """Filesystem-backed library with an attached SQLite query layer.
 
-    def __init__(self, root: Path, api_prefix: str = "/api/library") -> None:
+    Filesystem (``<root>/<entry_id>/metadata.json`` + audio) remains the
+    durable source of truth. SQLite at ``<root>/library.db`` (overridable
+    via ``db_path``) is a write-through query accelerator + the home for
+    analysis / stems / midi / relations tables that have no filesystem
+    representation.
+
+    On init we open the DB, run schema migrations, and — if the DB is
+    empty but filesystem entries exist — auto-``reindex()`` so the query
+    layer is immediately useful without a manual step. Setting
+    ``db_path=False`` disables the DB entirely (only for unit tests that
+    pre-date the DB; the default tests run with the DB in tmp_path)."""
+
+    def __init__(
+        self,
+        root: Path,
+        api_prefix: str = "/api/library",
+        db_path: Optional[Path] | bool = None,
+    ) -> None:
         self.root = root
         self.api_prefix = api_prefix
         self.root.mkdir(parents=True, exist_ok=True)
+
+        if db_path is False:
+            self.db: Optional[LibraryDB] = None
+        else:
+            resolved_db_path = (
+                db_path if isinstance(db_path, Path) else self.root / "library.db"
+            )
+            self.db = LibraryDB(resolved_db_path)
+            # Auto-reindex on a fresh DB so the query layer is hot.
+            if self.db.count_entries() == 0:
+                self.reindex()
 
     # ---- Read ---------------------------------------------------------------
 
@@ -320,7 +347,10 @@ class LibraryStore:
         if meta.get("rating") not in ("like", "dislike", None):
             meta["rating"] = None
         _write_metadata(entry_dir, meta)
-        return self.get_entry(entry_id)
+        record = self.get_entry(entry_id)
+        if record is not None:
+            self._sync_record_to_db(record, meta)
+        return record
 
     def delete_entry(self, entry_id: str) -> bool:
         entry_dir = self._dir_for(entry_id)
@@ -328,10 +358,12 @@ class LibraryStore:
             return False
         try:
             shutil.rmtree(entry_dir)
-            return True
         except OSError as e:
             log.warning("library.store: failed to delete %s: %s", entry_dir, e)
             return False
+        if self.db is not None:
+            self.db.delete_entry(entry_id)
+        return True
 
     def import_blob(
         self,
@@ -378,7 +410,77 @@ class LibraryStore:
         assert record is not None, "freshly imported entry must resolve"
         record.id = entry_id
         record.audio_url = _audio_url_for(self.api_prefix, entry_id)
+        self._sync_record_to_db(record, record_meta)
         return record
+
+    # ---- DB sync / reindex --------------------------------------------------
+
+    def _sync_record_to_db(
+        self,
+        record: LibraryRecord,
+        meta: dict[str, Any],
+    ) -> None:
+        if self.db is None:
+            return
+        payload: dict[str, Any] = {
+            "id": record.id,
+            "kind": "audio",
+            "title": record.title,
+            "prompt": record.prompt,
+            "negative_prompt": record.negative_prompt,
+            "model": record.model,
+            "duration": record.duration,
+            "steps": record.steps,
+            "cfg": record.cfg,
+            "seed": record.seed,
+            "mime_type": record.mime_type,
+            "audio_filename": record.audio_filename,
+            "file_size_bytes": record.file_size_bytes,
+            "source": record.source,
+            "favorite": record.favorite,
+            "rating": record.rating,
+            "notes": record.notes,
+            "timestamp": record.timestamp,
+            "tags": list(record.tags),
+            "metadata_json": meta,
+        }
+        try:
+            self.db.upsert_entry(payload)
+        except Exception as e:
+            log.warning("library.store: db upsert failed for %s: %s", record.id, e)
+
+        # Chimera sources → directed lineage edges.
+        sources = meta.get("chimera_sources") or []
+        if isinstance(sources, list) and sources:
+            for source_label in sources:
+                if not source_label:
+                    continue
+                try:
+                    self.db.add_relation(
+                        from_id=str(source_label),
+                        to_id=record.id,
+                        kind="chimera_source_of",
+                    )
+                except Exception as e:
+                    log.debug(
+                        "library.store: relation insert failed for %s→%s: %s",
+                        source_label,
+                        record.id,
+                        e,
+                    )
+
+    def reindex(self) -> int:
+        """Walk the filesystem and upsert every entry into the DB.
+        Returns the number of entries indexed. Idempotent."""
+        if self.db is None:
+            return 0
+        count = 0
+        for record in self.list_entries():
+            entry_dir = self._dir_for(record.id)
+            meta = _read_metadata(entry_dir) if entry_dir else None
+            self._sync_record_to_db(record, meta or {})
+            count += 1
+        return count
 
     # ---- Helpers ------------------------------------------------------------
 

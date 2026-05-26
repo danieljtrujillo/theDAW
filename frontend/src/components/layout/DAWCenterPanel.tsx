@@ -17,12 +17,13 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'spectral',   label: 'Real-time Spectral', icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
   { id: 'details',    label: 'Details',            icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'piano-roll', label: 'Piano Roll',         icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'step-seq',   label: 'Step Sequencer',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
   { id: 'bucket',     label: 'Media Bucket',       icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
 ];
 
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'sequencer' | 'advanced' | 'effects'>('editor');
+  const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'advanced' | 'effects'>('editor');
   const [bottomHeight, setBottomHeight] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
@@ -77,14 +78,6 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <span className="text-[10px] font-black uppercase tracking-widest">Waveform Editor</span>
            </button>
            <button
-             onClick={() => setWorkspaceMode('sequencer')}
-             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
-               ${workspaceMode === 'sequencer' ? 'bg-cyan-600/20 border-cyan-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
-           >
-              <Layers className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-black uppercase tracking-widest">Step Sequencer</span>
-           </button>
-           <button
              onClick={() => setWorkspaceMode('advanced')}
              className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
                ${workspaceMode === 'advanced' ? 'bg-rose-600/20 border-rose-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
@@ -105,7 +98,6 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         {/* Timeline body */}
         <div className="flex-1 min-h-0 relative">
            {workspaceMode === 'editor' && <WaveformEditor onSwitchTab={onSwitchTab} />}
-           {workspaceMode === 'sequencer' && <StepSequencer />}
            {workspaceMode === 'advanced' && <div className="absolute inset-0 overflow-hidden"><AdvancedView /></div>}
            {workspaceMode === 'effects' && <div className="absolute inset-0 overflow-y-auto"><AdvancedEditorPanel /></div>}
         </div>
@@ -180,6 +172,11 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 {activeTab === 'piano-roll' && (
                   <div className="absolute inset-0">
                     <PianoRoll />
+                  </div>
+                )}
+                {activeTab === 'step-seq' && (
+                  <div className="absolute inset-0 overflow-y-auto">
+                    <StepSequencer />
                   </div>
                 )}
                 {activeTab === 'bucket' && (

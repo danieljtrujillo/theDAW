@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type BottomPanelTab = 'spectral' | 'details' | 'piano-roll' | 'bucket';
+export type BottomPanelTab = 'spectral' | 'details' | 'piano-roll' | 'step-seq' | 'bucket';
 
 interface BottomPanelState {
   activeTab: BottomPanelTab;

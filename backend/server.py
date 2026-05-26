@@ -628,6 +628,27 @@ async def load_model():
     except Exception as e:
         _logger.warning("RAG initialization failed (non-fatal): %s", e)
 
+    # Spin up the idle-gated background worker queue. It stays empty
+    # until a feature (analysis / stems / midi) enqueues work.
+    try:
+        from backend.core.background_workers import get_background_queue
+
+        get_background_queue().start()
+        _logger.info("startup: background worker queue started")
+    except Exception as e:
+        _logger.warning("startup: background worker queue failed to start: %s", e)
+
+
+@app.on_event("shutdown")
+async def stop_background_workers() -> None:
+    try:
+        from backend.core.background_workers import get_background_queue
+
+        await get_background_queue().stop()
+    except Exception:
+        # Shutdown is best-effort; never block process exit.
+        pass
+
 
 @app.get("/api/modules")
 async def get_modules():
@@ -1134,6 +1155,13 @@ async def _run_generate_job(
     finally:
         if lora_temp_dir is not None:
             shutil.rmtree(lora_temp_dir, ignore_errors=True)
+        # Release the idle gate so background workers can resume.
+        try:
+            from backend.core.idle import get_idle_manager
+
+            get_idle_manager().release("generate")
+        except Exception:
+            pass
 
 
 @app.post("/api/generate-jobs")
@@ -1183,6 +1211,12 @@ async def generate_jobs(
 ):
     if not pipeline:
         raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Hold the idle gate open until the generation task completes so
+    # background workers don't compete for the GPU.
+    from backend.core.idle import get_idle_manager
+
+    get_idle_manager().bump_activity(tag="generate")
 
     normalized_model_name = _normalize_generation_model(model_name)
     generation_pipeline = _get_or_load_generation_pipeline(normalized_model_name)
