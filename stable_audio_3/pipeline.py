@@ -1,4 +1,5 @@
 import json
+
 import numpy as np
 import torch
 import typing as tp
@@ -9,8 +10,8 @@ from stable_audio_3.inference.sampling import sample_diffusion
 from stable_audio_3.loading_utils import load_autoencoder, load_diffusion_cond
 from stable_audio_3.model_configs import ae_models, all_models
 from stable_audio_3.models.lora import (
-    set_lora_strength as _set_lora_strength,
     load_and_apply_loras,
+    set_lora_strength as _set_lora_strength,
 )
 
 
@@ -131,7 +132,7 @@ class StableAudioPipeline:
             seed: The random seed to use for generation, or -1 to use a random seed.
             init_audio: A tuple of (sample_rate, audio) to use as the initial audio for generation.
             init_noise_level: The noise level to use when generating from an initial audio sample.
-            inpaint_audio: A tuple of (sample_rate, audio) to use as the source audio for inpainting. The inpaint region will be determined by the inpaint_mask or inpaint_mask_start_seconds/inpaint_mask_end_seconds parameters.
+            inpaint_audio: A tuple of (sample_rate, audio) to use as the source audio for inpainting. The inpaint region will be determined by the inpaint_mask or inpaint_mask_start_seconds/inpai[...]
             inpaint_mask: A prebuilt mask tensor for inpainting. Shape should be [batch_size, sample_size].
                 Ignored if inpaint_mask_start_seconds/inpaint_mask_end_seconds are provided.
             inpaint_mask_start_seconds: Start of the inpaint region in seconds.
@@ -403,7 +404,9 @@ class StableAudioPipeline:
             # For chunked attention with latent space, align to chunk size after downsampling
             latent_align = chunk_size // stride
             align = ds_ratio * latent_align
-            target_audio_samples = ((target_audio_samples + align - 1) // align) * align
+            target_audio_samples = (
+                (target_audio_samples + align - 1) // align
+            ) * align
 
         return min(target_audio_samples, sample_size)
 
