@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException
 from backend.modules.library.router import get_store as get_library_store
 
 from .engine import separate_entry
-from .sidecar import get_sidecar, probe, reset_sidecar
+from .sidecar import get_sidecar, install_dependencies, probe, reset_sidecar
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,31 @@ def stems_start() -> dict:
         return {"ok": True, "port": port}
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+
+
+@router.post("/install")
+def stems_install() -> dict:
+    """Pip-install the integration-package's requirements (demucs,
+    torchcrepe, audio-separator, …) into the configured Python.
+    Blocking; can take several minutes the first time."""
+    try:
+        from backend.core.idle import get_idle_manager
+
+        get_idle_manager().bump_activity(tag="stems-install")
+    except Exception:
+        pass
+    try:
+        result = install_dependencies()
+        if not result.get("ok"):
+            raise HTTPException(500, result)
+        return result
+    finally:
+        try:
+            from backend.core.idle import get_idle_manager
+
+            get_idle_manager().release("stems-install")
+        except Exception:
+            pass
 
 
 @router.post("/stop")

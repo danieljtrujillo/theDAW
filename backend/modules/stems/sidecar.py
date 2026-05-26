@@ -44,7 +44,9 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PACKAGE_PATH = Path(r"D:/StableAudio/JoshOG/integration-package/backend")
 PORT_FILENAME = "backend_port.txt"
-HEALTH_TIMEOUT_SEC = 60.0
+# run_backend.py does a dependency check + possible pip install on first
+# spawn — that can take minutes. Give it five before we give up.
+HEALTH_TIMEOUT_SEC = 300.0
 HEALTH_POLL_INTERVAL_SEC = 1.0
 
 
@@ -153,6 +155,16 @@ class StemsSidecar:
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._client: Optional[httpx.AsyncClient] = None
+        self._stdout_log: Optional[Path] = None
+        self._stderr_log: Optional[Path] = None
+
+    @property
+    def stdout_log(self) -> Optional[Path]:
+        return self._stdout_log
+
+    @property
+    def stderr_log(self) -> Optional[Path]:
+        return self._stderr_log
 
     @property
     def port(self) -> Optional[int]:
@@ -167,14 +179,20 @@ class StemsSidecar:
     def ensure_running(self) -> int:
         """Spawn the sidecar if it isn't already running, return its port.
 
-        Raises ``RuntimeError`` if the package isn't installed or fails
-        to come up within HEALTH_TIMEOUT_SEC."""
+        If demucs (or other heavy deps) aren't installed in the configured
+        Python, the integration-package's ``run_backend.py`` will pip-
+        install them as part of its boot sequence. That can take several
+        minutes on first run; HEALTH_TIMEOUT_SEC is sized to allow it.
+        Raises only if the install actually fails or never produces a
+        port file.
+        """
         if self.running and self._port:
             return self._port
 
         if not self.cfg.package_path.is_dir():
             raise RuntimeError(
-                f"stems integration-package not found at {self.cfg.package_path}"
+                f"stems integration-package not found at {self.cfg.package_path}. "
+                f"Set STABLEDAW_STEMS_PACKAGE to point at the package's backend/ dir."
             )
         run_backend = self.cfg.package_path / "run_backend.py"
         if not run_backend.is_file():
@@ -194,26 +212,41 @@ class StemsSidecar:
         cmd.extend(self.cfg.extra_args)
 
         log.info("stems.sidecar: spawning %s", " ".join(cmd))
+        # Capture stdout/stderr to log files in the package dir so the
+        # user can see what the launcher is doing (dependency install,
+        # model download, etc.).
+        log_dir = self.cfg.package_path / ".sidecar_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._stdout_log = log_dir / "stdout.log"
+        self._stderr_log = log_dir / "stderr.log"
         try:
+            stdout_fp = open(self._stdout_log, "wb")
+            stderr_fp = open(self._stderr_log, "wb")
             self._process = subprocess.Popen(
                 cmd,
                 cwd=str(self.cfg.package_path),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=stdout_fp,
+                stderr=stderr_fp,
             )
         except OSError as e:
             raise RuntimeError(f"failed to spawn stems sidecar: {e}") from e
 
         port = self._wait_for_port(port_file)
         if port is None:
+            tail = _tail_log(self._stderr_log)
             self.stop()
             raise RuntimeError(
-                f"stems sidecar didn't write {PORT_FILENAME} within {HEALTH_TIMEOUT_SEC}s"
+                f"stems sidecar didn't write {PORT_FILENAME} within "
+                f"{HEALTH_TIMEOUT_SEC}s. Last stderr: {tail}"
             )
 
         if not self._wait_for_health(port):
+            tail = _tail_log(self._stderr_log)
             self.stop()
-            raise RuntimeError(f"stems sidecar on port {port} didn't return healthy")
+            raise RuntimeError(
+                f"stems sidecar on port {port} didn't return healthy. "
+                f"Last stderr: {tail}"
+            )
 
         self._port = port
         log.info("stems.sidecar: healthy on port %d", port)
@@ -326,11 +359,56 @@ def reset_sidecar() -> None:
     _singleton = None
 
 
+def _tail_log(path: Optional[Path], n_bytes: int = 1024) -> str:
+    """Return the last ``n_bytes`` of a log file as a short string, for
+    error messages. Returns '' if the file is missing / unreadable."""
+    if path is None or not path.is_file():
+        return ""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > n_bytes:
+                f.seek(size - n_bytes)
+            return f.read().decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
+    """Run pip install for the integration-package's requirements.txt
+    against the configured Python. Returns ``{ok, output}``. Used by the
+    /install endpoint when the user wants to download deps proactively
+    rather than waiting for the sidecar's first-spawn auto-install.
+    """
+    cfg = cfg or resolve_config()
+    req = cfg.package_path / "requirements.txt"
+    out: dict = {"ok": False, "python_exe": str(cfg.python_exe)}
+    if not req.is_file():
+        out["error"] = f"requirements.txt not found at {req}"
+        return out
+    try:
+        result = subprocess.run(
+            [str(cfg.python_exe), "-m", "pip", "install", "-r", str(req)],
+            capture_output=True,
+            text=True,
+            timeout=15 * 60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        out["error"] = repr(e)
+        return out
+    out["returncode"] = result.returncode
+    out["stdout"] = result.stdout[-4000:]
+    out["stderr"] = result.stderr[-4000:]
+    out["ok"] = result.returncode == 0
+    return out
+
+
 __all__ = [
     "DEFAULT_PACKAGE_PATH",
     "SidecarConfig",
     "StemsSidecar",
     "get_sidecar",
+    "install_dependencies",
     "probe",
     "reset_sidecar",
     "resolve_config",

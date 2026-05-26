@@ -1129,6 +1129,7 @@ async def _run_generate_job(
                         )
                         from backend.modules.library.store import (
                             _maybe_enqueue_analysis,
+                            _maybe_enqueue_midi,
                             _maybe_enqueue_stems,
                         )
 
@@ -1152,6 +1153,9 @@ async def _run_generate_job(
                                 _lib_store, _entry_id, source="generate"
                             )
                             _maybe_enqueue_stems(
+                                _lib_store, _entry_id, source="generate"
+                            )
+                            _maybe_enqueue_midi(
                                 _lib_store, _entry_id, source="generate"
                             )
                     except Exception as _e:

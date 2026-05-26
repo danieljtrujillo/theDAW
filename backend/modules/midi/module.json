@@ -1,0 +1,10 @@
+{
+  "name": "midi",
+  "label": "MIDI",
+  "enabled": true,
+  "icon": "Music",
+  "sidebar": false,
+  "api_prefix": "/api/midi",
+  "backend": true,
+  "description": "Convert audio (full tracks + stems) to MIDI via basic-pitch (default) and piano-transcription-inference (piano stems). Install: pip install basic-pitch piano-transcription-inference"
+}

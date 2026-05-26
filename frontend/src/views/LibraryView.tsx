@@ -1,16 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
   Music, Star, Tag, Filter, ArrowUpDown,
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
+  Package, Network, FileMusic, Loader2,
 } from 'lucide-react';
+import { LineageModal } from '../components/library/LineageModal';
 import { Section } from '../components/ui/Section';
 import { useLibraryStore, type LibraryEntry } from '../state/libraryStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
-import { logError } from '../state/logStore';
+import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { setAudioDragData } from '../lib/audioDnD';
 
@@ -47,9 +49,117 @@ const downloadEntry = (entry: LibraryEntry, url: string) => {
 
 export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [subTab, setSubTab] = useState<'tracks' | 'stems' | 'midi'>('tracks');
+  const [lineageOpen, setLineageOpen] = useState<string | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
+  const [allStems, setAllStems] = useState<Array<Record<string, unknown>> | null>(null);
+  const [allMidis, setAllMidis] = useState<Array<Record<string, unknown>> | null>(null);
+  const [runningKind, setRunningKind] = useState<{ id: string; kind: 'analysis' | 'stems' | 'midi' } | null>(null);
+
+  const runJobForEntry = async (
+    entryId: string,
+    kind: 'analysis' | 'stems' | 'midi',
+  ) => {
+    setRunningKind({ id: entryId, kind });
+    const labels: Record<typeof kind, string> = {
+      analysis: 'analysis',
+      stems: 'stem separation',
+      midi: 'MIDI conversion',
+    };
+    logInfo('library', `Running ${labels[kind]} on ${entryId.slice(0, 8)}…`);
+    try {
+      const res = await fetch(`/api/${kind}/${entryId}/run`, { method: 'POST' });
+      const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) {
+        const detail =
+          (payload && (payload as Record<string, unknown>).detail) ??
+          (payload as Record<string, unknown>).error ??
+          `HTTP ${res.status}`;
+        logError('library', `${labels[kind]} failed: ${detail}`);
+        return;
+      }
+
+      // The MIDI runner returns a top-level status of failed | partial |
+      // complete with per-target results. Stems / analysis use their own
+      // shapes. Surface the real outcome rather than a flat "done".
+      const status = String((payload as Record<string, unknown>).status ?? '');
+      if (kind === 'midi') {
+        const results = ((payload as { results?: Array<Record<string, unknown>> }).results) ?? [];
+        const failed = results.filter((r) => !r.ok);
+        if (status === 'failed') {
+          const firstErr = failed[0]?.error ?? 'no engine installed (try: pip install basic-pitch)';
+          logError('library', `MIDI conversion FAILED for ${entryId.slice(0, 8)}: ${firstErr}`);
+        } else if (status === 'partial') {
+          logError(
+            'library',
+            `MIDI conversion partial for ${entryId.slice(0, 8)}: ${failed.length}/${results.length} target(s) failed; first error: ${failed[0]?.error ?? '—'}`,
+          );
+        } else {
+          logInfo('library', `MIDI conversion done for ${entryId.slice(0, 8)} (${results.length} targets)`);
+        }
+      } else if (kind === 'stems') {
+        const written = (payload as Record<string, unknown>).written ?? 0;
+        const stat = status || 'completed';
+        logInfo('library', `stem separation ${stat} for ${entryId.slice(0, 8)}: ${written} stem(s) written`);
+      } else {
+        // analysis — surface bpm / key / pitch summary in the log so
+        // the user can verify at a glance without opening Details.
+        const a = payload as Record<string, unknown>;
+        const bits: string[] = [];
+        if (a.bpm != null) bits.push(`bpm=${Number(a.bpm).toFixed(1)}`);
+        if (a.key) bits.push(`key=${a.key}${a.scale ? ' ' + a.scale : ''}`);
+        if (a.pitch_mean_hz != null) bits.push(`pitch=${Number(a.pitch_mean_hz).toFixed(0)}Hz`);
+        if (a.bars_estimated != null) bits.push(`bars=${Number(a.bars_estimated).toFixed(1)}`);
+        if (a.rms_db != null) bits.push(`rms=${Number(a.rms_db).toFixed(1)}dB`);
+        logInfo('library', `analysis done for ${entryId.slice(0, 8)}: ${bits.join(', ') || 'no useful data'}`);
+      }
+      // Invalidate sub-tab caches so the new stems/midi show up.
+      if (kind === 'stems') setAllStems(null);
+      if (kind === 'midi') setAllMidis(null);
+    } catch (e) {
+      logError('library', `${labels[kind]} request failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRunningKind(null);
+    }
+  };
+
+  // Fetch stems / midi indexes lazily when their sub-tab opens.
+  useEffect(() => {
+    if (subTab === 'stems' && allStems === null) {
+      void fetch('/api/library/_all/stems')
+        .then((r) => r.json())
+        .then((j) => setAllStems(j.stems || []))
+        .catch(() => setAllStems([]));
+    }
+    if (subTab === 'midi' && allMidis === null) {
+      void fetch('/api/library/_all/midi')
+        .then((r) => r.json())
+        .then((j) => setAllMidis(j.midis || []))
+        .catch(() => setAllMidis([]));
+    }
+  }, [subTab, allStems, allMidis]);
+
+  const stemsByParent = useMemo(() => {
+    const map: Record<string, Array<Record<string, unknown>>> = {};
+    (allStems || []).forEach((s) => {
+      const pid = String(s.parent_id ?? '');
+      if (!map[pid]) map[pid] = [];
+      map[pid].push(s);
+    });
+    return map;
+  }, [allStems]);
+
+  const midisByParent = useMemo(() => {
+    const map: Record<string, Array<Record<string, unknown>>> = {};
+    (allMidis || []).forEach((m) => {
+      const pid = String(m.parent_id ?? '');
+      if (!map[pid]) map[pid] = [];
+      map[pid].push(m);
+    });
+    return map;
+  }, [allMidis]);
 
   const entries = useLibraryStore((s) => s.entries);
   const loaded = useLibraryStore((s) => s.loaded);
@@ -306,6 +416,28 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           </div>
         </div>
 
+        {/* Sub-tabs: Tracks / Stems / MIDI */}
+        <div className="flex items-center gap-1 mb-2 border-b border-white/5 pb-1">
+          <SubTabButton active={subTab === 'tracks'} onClick={() => setSubTab('tracks')} icon={<Music className="w-3 h-3" />}>
+            Tracks ({entries.length})
+          </SubTabButton>
+          <SubTabButton active={subTab === 'stems'} onClick={() => setSubTab('stems')} icon={<Scissors className="w-3 h-3" />}>
+            Stems ({allStems?.length ?? '…'})
+          </SubTabButton>
+          <SubTabButton active={subTab === 'midi'} onClick={() => setSubTab('midi')} icon={<FileMusic className="w-3 h-3" />}>
+            MIDI ({allMidis?.length ?? '…'})
+          </SubTabButton>
+          <button
+            onClick={() => setLineageOpen('__library__')}
+            className="ml-auto p-1 rounded hover:bg-purple-500/15 text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-1"
+            title="Open the library-wide lineage / knowledge graph"
+          >
+            <Network className="w-3 h-3" />
+            <span className="text-[8px] font-mono uppercase tracking-widest">Graph</span>
+          </button>
+        </div>
+
+        {subTab === 'tracks' && (<>
         <div className="flex items-center justify-between px-1 mb-1 text-[8px] font-mono text-zinc-600 uppercase border-b border-white/5 pb-1">
           <button className="flex items-center gap-1 hover:text-zinc-300" onClick={() => setSortBy('title')}>
             <ArrowUpDown className="w-2 h-2" /> NAME
@@ -460,6 +592,24 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
             )}
           </div>
         )}
+        </>)}
+
+        {subTab === 'stems' && (
+          <SubTabList
+            byParent={stemsByParent}
+            parentTitles={Object.fromEntries(entries.map((e) => [e.id, e.title]))}
+            kind="stem"
+            placeholder={allStems === null ? 'Loading stems…' : 'No stems yet. Enable auto-stems in Settings or right-click a track → Separate stems.'}
+          />
+        )}
+        {subTab === 'midi' && (
+          <SubTabList
+            byParent={midisByParent}
+            parentTitles={Object.fromEntries(entries.map((e) => [e.id, e.title]))}
+            kind="midi"
+            placeholder={allMidis === null ? 'Loading MIDI…' : 'No MIDI yet. Enable auto-MIDI in Settings or right-click a track → Convert to MIDI.'}
+          />
+        )}
       </Section>
 
       {contextMenu && (
@@ -482,8 +632,93 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
               {selectedEntries.length > 1 ? `${selectedEntries.length} → Chimera` : 'single'}
             </span>
           </button>
+          <div className="my-1 border-t border-white/5" />
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-50"
+            disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'analysis'}
+            onClick={() => {
+              const id = contextMenu.entryId;
+              setContextMenu(null);
+              void runJobForEntry(id, 'analysis');
+            }}
+          >
+            <span className="flex items-center gap-1.5">
+              {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'analysis'
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Activity className="w-3 h-3" />}
+              Run analysis
+            </span>
+            <span className="text-zinc-600 text-[8px]">bpm/key/pitch</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-50"
+            disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'stems'}
+            onClick={() => {
+              const id = contextMenu.entryId;
+              setContextMenu(null);
+              void runJobForEntry(id, 'stems');
+            }}
+          >
+            <span className="flex items-center gap-1.5">
+              {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'stems'
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Scissors className="w-3 h-3" />}
+              Separate stems
+            </span>
+            <span className="text-zinc-600 text-[8px]">demucs</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-50"
+            disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'midi'}
+            onClick={() => {
+              const id = contextMenu.entryId;
+              setContextMenu(null);
+              void runJobForEntry(id, 'midi');
+            }}
+          >
+            <span className="flex items-center gap-1.5">
+              {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'midi'
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <FileMusic className="w-3 h-3" />}
+              Convert to MIDI
+            </span>
+            <span className="text-zinc-600 text-[8px]">basic-pitch</span>
+          </button>
+          <div className="my-1 border-t border-white/5" />
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between"
+            onClick={() => {
+              const url = `/api/library/${contextMenu.entryId}/bundle`;
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = '';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setContextMenu(null);
+            }}
+          >
+            <span className="flex items-center gap-1.5"><Package className="w-3 h-3" /> Download bundle</span>
+            <span className="text-zinc-600 text-[8px]">.zip</span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between"
+            onClick={() => {
+              setLineageOpen(contextMenu.entryId);
+              setContextMenu(null);
+            }}
+          >
+            <span className="flex items-center gap-1.5"><Network className="w-3 h-3" /> Show lineage</span>
+            <span className="text-zinc-600 text-[8px]">graph</span>
+          </button>
         </div>
       )}
+
+      <LineageModal
+        open={lineageOpen !== null}
+        rootEntryId={lineageOpen === '__library__' ? null : lineageOpen}
+        onClose={() => setLineageOpen(null)}
+      />
 
       <Section title="LIBRARY ANALYSIS [WIP]" icon={Activity} defaultOpen={false}>
         <div className="space-y-2 text-[10px] font-mono text-zinc-500">
@@ -547,6 +782,71 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         </div>
       </Section>
 
+    </div>
+  );
+};
+
+
+interface SubTabButtonProps {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}
+
+const SubTabButton: React.FC<SubTabButtonProps> = ({ active, onClick, icon, children }) => (
+  <button
+    onClick={onClick}
+    className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
+      active
+        ? 'bg-purple-500/15 border-purple-500/40 text-purple-200'
+        : 'border-white/5 text-zinc-500 hover:text-zinc-300'
+    }`}
+  >
+    {icon}
+    {children}
+  </button>
+);
+
+
+interface SubTabListProps {
+  byParent: Record<string, Array<Record<string, unknown>>>;
+  parentTitles: Record<string, string>;
+  kind: 'stem' | 'midi';
+  placeholder: string;
+}
+
+const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder }) => {
+  const parentIds = Object.keys(byParent);
+  if (parentIds.length === 0) {
+    return <p className="text-[10px] text-zinc-500 italic py-4 text-center">{placeholder}</p>;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {parentIds.map((pid) => (
+        <div key={pid} className="border border-white/5 rounded p-2 bg-white/3">
+          <div className="text-[9px] font-black uppercase tracking-widest text-purple-300 mb-1 truncate">
+            {parentTitles[pid] ?? pid}
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {byParent[pid].map((row, idx) => (
+              <div
+                key={String(row.id ?? idx)}
+                className="flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded"
+              >
+                <span className="truncate">
+                  {kind === 'stem' ? String(row.stem_name ?? 'stem') : String(row.source ?? 'midi')}
+                </span>
+                <span className="text-[8px] text-zinc-600 ml-2">
+                  {kind === 'stem'
+                    ? `${row.model ?? ''} ${row.model_variant ?? ''}`.trim()
+                    : `${row.engine ?? ''}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 };

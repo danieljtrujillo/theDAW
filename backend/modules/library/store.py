@@ -427,10 +427,11 @@ class LibraryStore:
         record.id = entry_id
         record.audio_url = _audio_url_for(self.api_prefix, entry_id)
         self._sync_record_to_db(record, record_meta)
-        # Opt-in: enqueue background analysis + stems if the user has
-        # those toggles on (defaults are all OFF).
+        # Opt-in: enqueue background analysis / stems / midi if the
+        # user has those toggles on (defaults are all OFF).
         _maybe_enqueue_analysis(self, entry_id, source="import")
         _maybe_enqueue_stems(self, entry_id, source="import")
+        _maybe_enqueue_midi(self, entry_id, source="import")
         return record
 
     # ---- DB sync / reindex --------------------------------------------------
@@ -622,3 +623,55 @@ def _maybe_enqueue_stems(
         get_background_queue().enqueue(f"stems:{entry_id}", _run)
     except Exception as e:
         log.debug("library.store: failed to enqueue stems for %s: %s", entry_id, e)
+
+
+def _maybe_enqueue_midi(
+    store: "LibraryStore",
+    entry_id: str,
+    *,
+    source: str,
+) -> None:
+    """If feature settings have ``midi.auto_on_<source>`` enabled, queue
+    a background MIDI-conversion job. Reads ``midi.from_stems`` to
+    decide whether to also convert each stem."""
+    if store.db is None:
+        return
+    try:
+        from backend.core.background_workers import get_background_queue
+        from backend.modules.settings.router import get_store as get_settings_store
+    except ImportError:
+        return
+
+    try:
+        settings = get_settings_store().get_section("midi")
+    except Exception:
+        return
+
+    key = f"auto_on_{source}"
+    if not settings.get(key, False):
+        return
+
+    audio_path = store.get_audio_path(entry_id)
+    entry_dir = store._dir_for(entry_id)
+    if audio_path is None or entry_dir is None:
+        return
+
+    from_stems_flag = bool(settings.get("from_stems", True))
+
+    async def _run() -> None:
+        from backend.modules.midi.runner import convert_entry
+
+        # convert_entry is sync but cheap (just CPU-bound model
+        # inference) — fine inside the background worker's event loop.
+        convert_entry(
+            store.db,  # type: ignore[arg-type]
+            entry_id,
+            audio_path,
+            entry_dir,
+            from_stems=from_stems_flag,
+        )
+
+    try:
+        get_background_queue().enqueue(f"midi:{entry_id}", _run)
+    except Exception as e:
+        log.debug("library.store: failed to enqueue midi for %s: %s", entry_id, e)
