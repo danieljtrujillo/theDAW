@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Layers, X, Music } from 'lucide-react';
+import { Layers, X, Music, ChevronUp, ChevronDown, GripVertical } from 'lucide-react';
 import { useGenerateParamsStore, type ChimeraClip } from '../../state/generateParamsStore';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { hasAudioDragData, readAudioDragData } from '../../lib/audioDnD';
@@ -25,6 +25,10 @@ export const ChimeraStack: React.FC = () => {
   const lastMeta = useGenerateParamsStore((s) => s.chimera.lastMeta);
   const removeChimeraClip = useGenerateParamsStore((s) => s.removeChimeraClip);
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
+  const moveChimeraClip = useGenerateParamsStore((s) => s.moveChimeraClip);
+  const reorderChimeraClips = useGenerateParamsStore((s) => s.reorderChimeraClips);
+  const [dragSrc, setDragSrc] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -115,16 +119,58 @@ export const ChimeraStack: React.FC = () => {
 
       {clips.length > 0 && (
         <div className="flex flex-col gap-1">
-          {clips.map((clip) => (
-            <ChimeraRow
+          {clips.map((clip, idx) => (
+            <div
               key={clip.id}
-              clip={clip}
-              clipsAll={clips}
-              detectedBpm={metaByLabel.get(clip.label)?.detected_bpm ?? clip.detectedBpm ?? null}
-              stretchRatio={metaByLabel.get(clip.label)?.stretch_ratio ?? clip.stretchRatio}
-              onRemove={() => removeChimeraClip(clip.id)}
-              onNoiseChange={(v) => updateChimeraClip(clip.id, { noise: v })}
-            />
+              draggable
+              onDragStart={(e) => {
+                setDragSrc(clip.id);
+                e.dataTransfer.effectAllowed = 'move';
+                // Use a custom MIME so the cross-component external-drag
+                // bus doesn't pick this up as an audio drop.
+                e.dataTransfer.setData('application/x-stabledaw-chimera-row', clip.id);
+              }}
+              onDragOver={(e) => {
+                if (!dragSrc || dragSrc === clip.id) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                setDragOverId(clip.id);
+              }}
+              onDragLeave={() => {
+                if (dragOverId === clip.id) setDragOverId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (!dragSrc || dragSrc === clip.id) return;
+                const order = clips.map((c) => c.id);
+                const fromIdx = order.indexOf(dragSrc);
+                const toIdx = order.indexOf(clip.id);
+                if (fromIdx === -1 || toIdx === -1) return;
+                order.splice(fromIdx, 1);
+                order.splice(toIdx, 0, dragSrc);
+                reorderChimeraClips(order);
+                setDragSrc(null);
+                setDragOverId(null);
+              }}
+              onDragEnd={() => {
+                setDragSrc(null);
+                setDragOverId(null);
+              }}
+              className={dragOverId === clip.id ? 'ring-1 ring-purple-400/60 rounded' : ''}
+            >
+              <ChimeraRow
+                clip={clip}
+                clipsAll={clips}
+                detectedBpm={metaByLabel.get(clip.label)?.detected_bpm ?? clip.detectedBpm ?? null}
+                stretchRatio={metaByLabel.get(clip.label)?.stretch_ratio ?? clip.stretchRatio}
+                index={idx}
+                total={clips.length}
+                onRemove={() => removeChimeraClip(clip.id)}
+                onNoiseChange={(v) => updateChimeraClip(clip.id, { noise: v })}
+                onMoveUp={() => moveChimeraClip(clip.id, 'up')}
+                onMoveDown={() => moveChimeraClip(clip.id, 'down')}
+              />
+            </div>
           ))}
         </div>
       )}
@@ -173,8 +219,12 @@ interface ChimeraRowProps {
   clipsAll: ChimeraClip[];
   detectedBpm: number | null;
   stretchRatio: number | undefined;
+  index: number;
+  total: number;
   onRemove: () => void;
   onNoiseChange: (v: number) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
 }
 
 const ChimeraRow: React.FC<ChimeraRowProps> = ({
@@ -182,8 +232,12 @@ const ChimeraRow: React.FC<ChimeraRowProps> = ({
   clipsAll,
   detectedBpm,
   stretchRatio,
+  index,
+  total,
   onRemove,
   onNoiseChange,
+  onMoveUp,
+  onMoveDown,
 }) => {
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
   const setChimeraField = useGenerateParamsStore((s) => s.setChimeraField);
@@ -214,6 +268,27 @@ const ChimeraRow: React.FC<ChimeraRowProps> = ({
         ? 'bg-purple-500/10 border-purple-400/40'
         : 'bg-black/30 border-white/5'
     }`}>
+      <GripVertical className="w-3 h-3 text-zinc-600 shrink-0 cursor-grab active:cursor-grabbing" />
+      <div className="flex flex-col shrink-0">
+        <button
+          type="button"
+          onClick={onMoveUp}
+          disabled={index === 0}
+          className="p-0 leading-none text-zinc-500 hover:text-purple-300 disabled:opacity-25 disabled:cursor-not-allowed"
+          title="Move up"
+        >
+          <ChevronUp className="w-2.5 h-2.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onMoveDown}
+          disabled={index >= total - 1}
+          className="p-0 leading-none text-zinc-500 hover:text-purple-300 disabled:opacity-25 disabled:cursor-not-allowed"
+          title="Move down"
+        >
+          <ChevronDown className="w-2.5 h-2.5" />
+        </button>
+      </div>
       <Music className="w-2.5 h-2.5 text-purple-400 shrink-0" />
       <span className="text-zinc-200 truncate flex-1 min-w-0" title={clip.label}>
         {clip.label}

@@ -72,6 +72,7 @@ export const renderChimeraOnce = async (chimera: ChimeraState): Promise<ChimeraR
   if (chimera.alignMode === 'weave') {
     form.append('weave_bars', String(chimera.weaveBars || 0));
     form.append('weave_total_bars', String(chimera.weaveTotalBars || 0));
+    form.append('weave_max_polyphony', String(chimera.weaveMaxPolyphony || 0));
   }
 
   logInfo('chimera', `POST /api/chimera/mashup — ${chimera.clips.length} clips, mode=${chimera.alignMode}, target_bpm=${chimera.targetBpm}`);

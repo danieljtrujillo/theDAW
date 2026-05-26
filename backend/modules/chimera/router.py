@@ -108,6 +108,7 @@ async def chimera_mashup(
     out_sr: int = Form(44100),
     weave_bars: int = Form(0),
     weave_total_bars: int = Form(0),
+    weave_max_polyphony: int = Form(0),
 ) -> dict[str, Any]:
     tools = probe()
     if not tools["aubio"] or not tools["ffmpeg"]:
@@ -249,11 +250,15 @@ async def chimera_mashup(
                 )
                 clip_chunks_seq.append(list(seq))
 
+            polyphony_cap = (
+                weave_max_polyphony if weave_max_polyphony > 0 else MAX_POLYPHONY
+            )
+            polyphony_cap = max(1, min(8, int(polyphony_cap)))
             arc_schedule = schedule_song_arc(
                 clip_chunks_seq,
                 total_sec_target,
                 chunk_sec,
-                max_polyphony=MAX_POLYPHONY,
+                max_polyphony=polyphony_cap,
             )
 
             expanded_paths: list[Path] = []
@@ -307,7 +312,7 @@ async def chimera_mashup(
                     f"Phrase Weave (song arc): {chunk_bars} bars/chunk ({chunk_sec:.2f}s), "
                     f"{total_bars} bars total from {length_source} ({total_sec_target:.2f}s), "
                     f"{total_placements} placements across {n_clips} clips, "
-                    f"polyphony cap {MAX_POLYPHONY}, "
+                    f"polyphony cap {polyphony_cap}, "
                     f"final length {last_end:.2f}s"
                 )
             else:

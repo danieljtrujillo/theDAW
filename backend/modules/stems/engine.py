@@ -88,14 +88,18 @@ async def separate_entry(
                 )
                 continue
             out_path = stems_dir / filename
-            out_path.write_bytes(data)
+            # Re-encode 32-bit-float WAV (what demucs emits) to PCM_16
+            # WAV to halve the on-disk footprint. Stems are perceptually
+            # indistinguishable at 16-bit and the user explicitly asked
+            # for smaller files.
+            written_bytes = _write_stem_compact(data, out_path)
             stem_name = Path(filename).stem
             db.add_stem(
                 stem_id=f"{entry_id}__{stem_name}",
                 entry_id=entry_id,
                 stem_name=stem_name,
                 audio_path=str(out_path),
-                file_size_bytes=len(data),
+                file_size_bytes=written_bytes,
                 model="demucs",
                 model_variant=f"{stems}-stem",
             )
@@ -136,3 +140,27 @@ def _stem_uuid() -> str:
     by name. Currently unused — kept for future ``add_stem`` cases that
     need it."""
     return uuid.uuid4().hex[:12]
+
+
+def _write_stem_compact(wav_bytes: bytes, out_path: Path) -> int:
+    """Write demucs's float WAV out as PCM_16. Falls back to writing
+    the original bytes if soundfile isn't available."""
+    try:
+        import io
+
+        import soundfile as sf
+    except ImportError:
+        out_path.write_bytes(wav_bytes)
+        return len(wav_bytes)
+    try:
+        audio, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
+        sf.write(str(out_path), audio, sr, subtype="PCM_16")
+        return out_path.stat().st_size
+    except Exception as e:
+        log.warning(
+            "stems.engine: PCM_16 reencode failed for %s, writing raw: %s",
+            out_path.name,
+            e,
+        )
+        out_path.write_bytes(wav_bytes)
+        return len(wav_bytes)

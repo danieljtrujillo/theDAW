@@ -999,7 +999,10 @@ async def generate(
         fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
 
         buf = io.BytesIO()
-        torchaudio.save(buf, gen_audio, sample_rate, format=fmt)
+        save_kwargs: dict = {}
+        if fmt == "wav":
+            save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
+        torchaudio.save(buf, gen_audio, sample_rate, format=fmt, **save_kwargs)
         buf.seek(0)
         return buf, fmt
 
@@ -1035,7 +1038,13 @@ def _generate_to_bytes(
         generation_pipeline.model_config.get("sample_rate", sample_rate)
     )
     buf = io.BytesIO()
-    torchaudio.save(buf, audio, output_sample_rate, format=fmt)
+    # Save as PCM_16 instead of the default 32-bit float for WAV outputs —
+    # halves the on-disk footprint with no perceptible quality cost on
+    # generative audio. FLAC handles its own efficient encoding.
+    save_kwargs: dict = {}
+    if fmt == "wav":
+        save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
+    torchaudio.save(buf, audio, output_sample_rate, format=fmt, **save_kwargs)
     return buf.getvalue(), fmt
 
 

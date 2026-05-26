@@ -1,5 +1,5 @@
-import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { Network, X, GitBranch, Trees, Workflow } from 'lucide-react';
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Network, X, GitBranch, GitFork, Workflow } from 'lucide-react';
 
 const ForceGraph3D = lazy(() => import('react-force-graph-3d').then((m) => ({ default: m.default })));
 
@@ -24,7 +24,7 @@ interface GraphPayload {
   edges: GraphEdge[];
 }
 
-type LineageTab = 'track' | 'family' | 'graph3d';
+type LineageTab = 'track' | 'genealogy' | 'graph3d';
 
 interface LineageModalProps {
   open: boolean;
@@ -52,7 +52,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   // When opened library-wide, jump straight to the 3D graph.
   useEffect(() => {
     if (!open) return;
-    setTab(rootEntryId ? 'track' : 'graph3d');
+    setTab(rootEntryId ? 'track' : 'genealogy');
   }, [open, rootEntryId]);
 
   // Fetch the per-track BFS.
@@ -70,7 +70,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   // Fetch the full library graph for the family-tree + 3D-graph views.
   useEffect(() => {
     if (!open) return;
-    if (tab !== 'family' && tab !== 'graph3d') return;
+    if (tab !== 'genealogy' && tab !== 'graph3d') return;
     if (libraryGraph !== null) return;
     setLoading(true);
     void fetch('/api/library/_graph/all')
@@ -103,8 +103,8 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
                 Track
               </TabButton>
             )}
-            <TabButton active={tab === 'family'} onClick={() => setTab('family')} icon={<Trees className="w-3 h-3" />}>
-              Family tree
+            <TabButton active={tab === 'genealogy'} onClick={() => setTab('genealogy')} icon={<GitFork className="w-3 h-3" />}>
+              Genealogy
             </TabButton>
             <TabButton active={tab === 'graph3d'} onClick={() => setTab('graph3d')} icon={<Workflow className="w-3 h-3" />}>
               3D graph
@@ -125,8 +125,8 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
           {tab === 'track' && rootEntryId && perTrack && (
             <TrackTreeView root={rootEntryId} payload={perTrack} />
           )}
-          {tab === 'family' && libraryGraph && (
-            <FamilyTreeView payload={libraryGraph} />
+          {tab === 'genealogy' && libraryGraph && (
+            <GenealogyView payload={libraryGraph} />
           )}
           {tab === 'graph3d' && libraryGraph && (
             <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-zinc-500">Loading 3D engine…</div>}>
@@ -228,84 +228,159 @@ const Column: React.FC<{ title: string; nodes: GraphNode[]; accent: string; high
 );
 
 
-/** Library-wide ancestry/family-tree view. Each generation (depth from
- *  any root) gets its own horizontal row; nodes are auto-laid-out left-
- *  to-right within their row; SVG paths draw the parent→child edges.
- *  Pan/zoom via pointer-drag + wheel. */
-const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
-  // Build adjacency + node lookups.
+/** Library-wide genealogy: a layered DAG layout (Sugiyama-style).
+ *
+ *  1. Filter to nodes that participate in at least one relation —
+ *     isolated tracks aren't "genealogy", they're just unrelated entries.
+ *  2. Assign each node to a generation = longest path from any root.
+ *  3. Within each generation, order nodes via the median heuristic to
+ *     minimize parent↔child edge crossings (cheap, gives a clearly
+ *     readable layout even at 30+ nodes).
+ *  4. Render rounded-rect cards with orthogonal connecting lines drawn
+ *     as SVG paths, color-coded by relation kind, with arrowheads at
+ *     the child end.
+ *  5. Pan via mouse drag, zoom via wheel, Reset View button.
+ */
+const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
+  // -- Filter to the connected subgraph --------------------------------
+  const connected = useMemo(() => {
+    const involved = new Set<string>();
+    payload.edges.forEach((e) => {
+      involved.add(e.from_id);
+      involved.add(e.to_id);
+    });
+    const nodes = payload.nodes.filter((n) => involved.has(n.id));
+    // Also keep any edges whose endpoints both still exist (defensive).
+    const idSet = new Set(nodes.map((n) => n.id));
+    const edges = payload.edges.filter(
+      (e) => idSet.has(e.from_id) && idSet.has(e.to_id),
+    );
+    return { nodes, edges };
+  }, [payload]);
+
+  // -- Build adjacency -------------------------------------------------
   const { nodeMap, childrenOf, parentsOf } = useMemo(() => {
     const nm: Record<string, GraphNode> = {};
-    payload.nodes.forEach((n) => {
+    connected.nodes.forEach((n) => {
       nm[n.id] = n;
     });
     const co: Record<string, string[]> = {};
     const po: Record<string, string[]> = {};
-    payload.edges.forEach((e) => {
+    connected.edges.forEach((e) => {
       (co[e.from_id] = co[e.from_id] || []).push(e.to_id);
       (po[e.to_id] = po[e.to_id] || []).push(e.from_id);
     });
     return { nodeMap: nm, childrenOf: co, parentsOf: po };
-  }, [payload]);
+  }, [connected]);
 
-  // Compute depth = longest path from any root. Roots = nodes with no
-  // parents. Orphan nodes (no edges) all sit on row 0.
-  const depths = useMemo(() => {
+  // -- Step 1: assign layer = longest path from any root --------------
+  const layers = useMemo(() => {
     const out: Record<string, number> = {};
-    // Topological-ish via BFS from roots; for cycles we cap at 16.
-    const roots = payload.nodes.filter((n) => !(parentsOf[n.id] && parentsOf[n.id].length));
-    const queue: Array<[string, number]> = roots.map((r) => [r.id, 0]);
-    while (queue.length) {
-      const [id, d] = queue.shift()!;
-      if (out[id] != null && out[id] >= d) continue;
-      out[id] = d;
-      if (d > 16) continue;
-      for (const child of childrenOf[id] || []) queue.push([child, d + 1]);
+    const roots = connected.nodes.filter(
+      (n) => !(parentsOf[n.id] && parentsOf[n.id].length),
+    );
+    // Multi-pass relaxation so that a node at the bottom of a long
+    // chain ends up at the deepest layer.
+    roots.forEach((r) => {
+      out[r.id] = 0;
+    });
+    let changed = true;
+    let safety = 0;
+    while (changed && safety < 50) {
+      changed = false;
+      safety += 1;
+      connected.edges.forEach((e) => {
+        const fromLayer = out[e.from_id] ?? 0;
+        const want = fromLayer + 1;
+        if ((out[e.to_id] ?? -1) < want) {
+          out[e.to_id] = want;
+          changed = true;
+        }
+      });
     }
-    // Any node not yet visited (cycle-only) → depth 0.
-    payload.nodes.forEach((n) => {
+    connected.nodes.forEach((n) => {
       if (out[n.id] == null) out[n.id] = 0;
     });
     return out;
-  }, [payload, childrenOf, parentsOf]);
+  }, [connected, parentsOf]);
 
-  // Group nodes by depth, sort within depth by title for stability.
-  const rows = useMemo(() => {
-    const grouped: Record<number, GraphNode[]> = {};
-    payload.nodes.forEach((n) => {
-      const d = depths[n.id] ?? 0;
-      (grouped[d] = grouped[d] || []).push(n);
+  // -- Step 2: order within layer via median heuristic ----------------
+  const orderedRows = useMemo(() => {
+    const grouped: Record<number, string[]> = {};
+    connected.nodes.forEach((n) => {
+      const d = layers[n.id] ?? 0;
+      (grouped[d] = grouped[d] || []).push(n.id);
     });
-    const keys = Object.keys(grouped).map((k) => Number(k)).sort((a, b) => a - b);
-    keys.forEach((d) => {
-      grouped[d].sort((a, b) => (a.title ?? a.id).localeCompare(b.title ?? b.id));
-    });
-    return keys.map((d) => ({ depth: d, nodes: grouped[d] }));
-  }, [payload, depths]);
+    const layerKeys = Object.keys(grouped)
+      .map((k) => Number(k))
+      .sort((a, b) => a - b);
 
-  // Layout constants.
-  const NODE_W = 180;
-  const NODE_H = 56;
-  const COL_GAP = 36;
-  const ROW_GAP = 80;
+    // Initial alphabetical order for stability.
+    layerKeys.forEach((d) => {
+      grouped[d].sort((a, b) =>
+        (nodeMap[a]?.title ?? a).localeCompare(nodeMap[b]?.title ?? b),
+      );
+    });
+
+    // Median-of-parents heuristic, sweeping top-down then bottom-up
+    // a few times. This is the simplest crossing-reduction step in
+    // the Sugiyama framework.
+    const positionInRow = (id: string, row: string[]): number => row.indexOf(id);
+    for (let iter = 0; iter < 12; iter += 1) {
+      const topDown = iter % 2 === 0;
+      const order = topDown ? layerKeys.slice(1) : layerKeys.slice(0, -1).reverse();
+      order.forEach((d) => {
+        const adjLayer = topDown ? d - 1 : d + 1;
+        const adjRow = grouped[adjLayer] || [];
+        const adjMap = topDown ? parentsOf : childrenOf;
+        const newRow = [...grouped[d]];
+        const medianOf = (id: string): number => {
+          const refs = (adjMap[id] || []).filter((n) => adjRow.includes(n));
+          if (refs.length === 0) return positionInRow(id, grouped[d]);
+          const positions = refs
+            .map((r) => positionInRow(r, adjRow))
+            .filter((p) => p >= 0)
+            .sort((a, b) => a - b);
+          if (positions.length === 0) return positionInRow(id, grouped[d]);
+          return positions[Math.floor(positions.length / 2)];
+        };
+        newRow.sort((a, b) => medianOf(a) - medianOf(b));
+        grouped[d] = newRow;
+      });
+    }
+
+    return layerKeys.map((d) => ({ layer: d, ids: grouped[d] }));
+  }, [connected, nodeMap, layers, parentsOf, childrenOf]);
+
+  // -- Step 3: coordinate assignment ----------------------------------
+  const NODE_W = 200;
+  const NODE_H = 60;
+  const COL_GAP = 28;
+  const ROW_GAP = 90;
   const PAD = 40;
 
-  // Compute x,y for every node.
   const positions = useMemo(() => {
     const pos: Record<string, { x: number; y: number }> = {};
-    rows.forEach((row, rowIdx) => {
-      const rowWidth = row.nodes.length * NODE_W + (row.nodes.length - 1) * COL_GAP;
-      row.nodes.forEach((n, colIdx) => {
-        pos[n.id] = {
-          x: PAD + colIdx * (NODE_W + COL_GAP) - rowWidth / 2,
+    // Find the widest row to center smaller rows under it.
+    const widestCount = Math.max(
+      1,
+      ...orderedRows.map((r) => r.ids.length),
+    );
+    const widestPx = widestCount * NODE_W + (widestCount - 1) * COL_GAP;
+    orderedRows.forEach((row, rowIdx) => {
+      const rowPx = row.ids.length * NODE_W + (row.ids.length - 1) * COL_GAP;
+      const startX = PAD + (widestPx - rowPx) / 2;
+      row.ids.forEach((id, colIdx) => {
+        pos[id] = {
+          x: startX + colIdx * (NODE_W + COL_GAP),
           y: PAD + rowIdx * (NODE_H + ROW_GAP),
         };
       });
     });
     return pos;
-  }, [rows]);
+  }, [orderedRows]);
 
-  // Computed bounding box for the SVG viewBox.
+  // -- Bounds for the SVG ---------------------------------------------
   const bounds = useMemo(() => {
     const ids = Object.keys(positions);
     if (ids.length === 0) return { minX: 0, maxX: 800, minY: 0, maxY: 400 };
@@ -319,14 +394,17 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
     };
   }, [positions]);
 
-  // Pan + zoom.
+  // -- Pan + zoom -----------------------------------------------------
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
-  const [dragging, setDragging] = useState<{ x: number; y: number } | null>(null);
+  const draggingRef = useRef<{ x: number; y: number } | null>(null);
 
-  if (payload.nodes.length === 0) {
+  if (connected.nodes.length === 0) {
     return (
-      <p className="absolute inset-0 flex items-center justify-center text-[10px] text-zinc-500 italic">
-        Library is empty.
+      <p className="absolute inset-0 flex items-center justify-center text-[10px] text-zinc-500 italic px-12 text-center">
+        No genealogy yet — entries become connected when you generate from
+        chimera sources, separate stems, convert to MIDI, or mark a
+        track as derived-from another. Right-click a track → "Show
+        lineage" to start populating relationships.
       </p>
     );
   }
@@ -338,16 +416,21 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
-    setDragging({ x: e.clientX - view.x, y: e.clientY - view.y });
+    draggingRef.current = { x: e.clientX - view.x, y: e.clientY - view.y };
     (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragging) return;
-    setView((v) => ({ ...v, x: e.clientX - dragging.x, y: e.clientY - dragging.y }));
+    const d = draggingRef.current;
+    if (!d) return;
+    setView((v) => ({ ...v, x: e.clientX - d.x, y: e.clientY - d.y }));
   };
   const onPointerUp = (e: React.PointerEvent) => {
-    setDragging(null);
-    try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId); } catch {/* */}
+    draggingRef.current = null;
+    try {
+      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* */
+    }
   };
 
   return (
@@ -358,7 +441,6 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >
-      {/* Reset button */}
       <button
         onClick={() => setView({ x: 0, y: 0, k: 1 })}
         className="absolute top-2 right-2 z-10 text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:text-zinc-200 bg-black/40 border border-white/10 px-2 py-1 rounded"
@@ -379,7 +461,7 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
           style={{ display: 'block' }}
         >
           {/* Edges first so nodes paint on top. */}
-          {payload.edges.map((edge, i) => {
+          {connected.edges.map((edge, i) => {
             const from = positions[edge.from_id];
             const to = positions[edge.to_id];
             if (!from || !to) return null;
@@ -387,25 +469,31 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
             const y1 = from.y + NODE_H;
             const x2 = to.x + NODE_W / 2;
             const y2 = to.y;
-            const midY = (y1 + y2) / 2;
-            // Right-angled connector that bends through the midpoint.
-            const d = `M ${x1} ${y1} V ${midY} H ${x2} V ${y2}`;
+            // Smooth cubic Bezier — feels more like a real genealogy
+            // chart than the harsh right-angled bend my first pass had.
+            const dy = (y2 - y1) * 0.5;
+            const d = `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
             const color = EDGE_COLOR_BY_KIND[edge.kind] ?? '#71717a';
             return (
               <g key={i}>
-                <path d={d} stroke={color} strokeWidth={1.5} fill="none" opacity={0.7} />
-                {/* Arrowhead at the child end. */}
+                <path
+                  d={d}
+                  stroke={color}
+                  strokeWidth={1.5}
+                  fill="none"
+                  opacity={0.7}
+                />
                 <polygon
-                  points={`${x2 - 4},${y2 - 6} ${x2 + 4},${y2 - 6} ${x2},${y2}`}
+                  points={`${x2 - 4},${y2 - 7} ${x2 + 4},${y2 - 7} ${x2},${y2}`}
                   fill={color}
-                  opacity={0.85}
+                  opacity={0.9}
                 />
               </g>
             );
           })}
 
           {/* Nodes. */}
-          {payload.nodes.map((n) => {
+          {connected.nodes.map((n) => {
             const p = positions[n.id];
             if (!p) return null;
             const sourceColor = pickNodeColor(n);
@@ -426,7 +514,7 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
                   rx={2}
                   ry={2}
                   fill={sourceColor}
-                  opacity={0.8}
+                  opacity={0.85}
                 />
                 <text
                   x={10}
@@ -436,7 +524,7 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
                   fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
                   fontWeight={700}
                 >
-                  {truncate(n.title ?? n.id, 24)}
+                  {truncate(n.title ?? n.id, 26)}
                 </text>
                 <text
                   x={10}
@@ -449,7 +537,7 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
                 </text>
                 <text
                   x={10}
-                  y={50}
+                  y={52}
                   fill="#71717a"
                   fontSize={8}
                   fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
@@ -464,11 +552,25 @@ const FamilyTreeView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
         </svg>
       </div>
 
-      {/* Generation labels down the left. */}
-      <div className="absolute top-2 left-2 z-10 flex flex-col gap-20 text-[8px] font-mono uppercase tracking-widest text-zinc-600 pointer-events-none">
-        {rows.map((row) => (
-          <div key={row.depth}>gen {row.depth}</div>
+      {/* Generation gutter labels. */}
+      <div className="absolute top-0 left-2 z-10 text-[8px] font-mono uppercase tracking-widest text-zinc-600 pointer-events-none">
+        {orderedRows.map((row, i) => (
+          <div
+            key={row.layer}
+            style={{
+              position: 'absolute',
+              top: (PAD + i * (NODE_H + ROW_GAP)) * view.k + view.y + 8,
+              left: 0,
+            }}
+          >
+            gen {row.layer}
+          </div>
         ))}
+      </div>
+
+      {/* Help hint */}
+      <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
+        drag to pan · wheel to zoom · {connected.nodes.length} connected entries · {connected.edges.length} relationships
       </div>
     </div>
   );
@@ -481,42 +583,88 @@ function truncate(s: string, n: number): string {
 }
 
 
-/** Interactive 3D force-directed graph using react-force-graph-3d. */
+/** Interactive 3D force-directed graph using react-force-graph-3d.
+ *  Camera auto-fits to the connected subgraph on first render so the
+ *  user lands on something usable instead of a dot in the distance.
+ *  Trackball controls run at a calmer pace than the library's defaults. */
 const Graph3DView: React.FC<{ payload: GraphPayload; highlight: string | null }> = ({ payload, highlight }) => {
+  // Same filter as Genealogy: drop nodes that don't participate in any
+  // relation, otherwise 100+ disconnected dots dominate the view.
+  const connected = useMemo(() => {
+    const involved = new Set<string>();
+    payload.edges.forEach((e) => {
+      involved.add(e.from_id);
+      involved.add(e.to_id);
+    });
+    const nodes = payload.nodes.filter((n) => involved.has(n.id));
+    const idSet = new Set(nodes.map((n) => n.id));
+    const edges = payload.edges.filter(
+      (e) => idSet.has(e.from_id) && idSet.has(e.to_id),
+    );
+    return { nodes, edges };
+  }, [payload]);
+
   const data = useMemo(
     () => ({
-      nodes: payload.nodes.map((n) => ({
+      nodes: connected.nodes.map((n) => ({
         id: n.id,
         name: n.title ?? n.id,
         title: n.title ?? '',
         source: n.source ?? '',
         model: n.model ?? '',
-        val: 1 + Math.log10(1 + (n.duration_sec ?? 1)),
+        val: 4 + Math.log10(1 + (n.duration_sec ?? 1)) * 6,
         color: n.id === highlight ? '#fbbf24' : pickNodeColor(n),
       })),
-      links: payload.edges.map((e) => ({
+      links: connected.edges.map((e) => ({
         source: e.from_id,
         target: e.to_id,
         kind: e.kind,
         color: EDGE_COLOR_BY_KIND[e.kind] ?? '#71717a',
       })),
     }),
-    [payload, highlight],
+    [connected, highlight],
   );
 
-  // Disable forwardRef warnings: the lib re-renders on every prop change which is fine here.
+  const fgRef = useRef<unknown>(null);
+
+  // After the force layout has a chance to settle, zoom-to-fit so the
+  // user lands on a useful framing.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const ref = fgRef.current as { zoomToFit?: (ms: number, pad: number) => void } | null;
+      if (ref?.zoomToFit) ref.zoomToFit(800, 60);
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [data]);
+
+  if (connected.nodes.length === 0) {
+    return (
+      <p className="absolute inset-0 flex items-center justify-center text-[10px] text-zinc-500 italic px-12 text-center">
+        No relationships yet. Generate a Chimera, separate stems, or convert
+        a track to MIDI to start populating the graph.
+      </p>
+    );
+  }
+
   return (
     <div className="absolute inset-0 bg-[#06030c]">
       <ForceGraph3D
+        ref={fgRef as React.MutableRefObject<unknown>}
         graphData={data}
         nodeAutoColorBy="source"
         nodeRelSize={5}
         backgroundColor="#06030c"
+        showNavInfo={false}
+        controlType="orbit"
+        // Tame the default trackball / orbit sensitivity which feels
+        // hair-trigger on laptop trackpads.
+        cameraPosition={{ z: 280 }}
         linkColor={(l: { color?: string }) => l.color ?? '#71717a'}
+        linkOpacity={0.5}
+        linkWidth={1.2}
         linkDirectionalArrowLength={3}
-        linkDirectionalArrowRelPos={0.85}
-        linkDirectionalParticles={1}
-        linkDirectionalParticleSpeed={0.005}
+        linkDirectionalArrowRelPos={0.9}
+        linkDirectionalParticles={0}
         nodeLabel={(n: { name: string; source: string; model: string }) =>
           `<div style="font-family: monospace; font-size: 11px; padding: 4px 8px; background: rgba(12,8,24,0.92); border: 1px solid rgba(168,85,247,0.4); border-radius: 4px;">
             <div style="color: #e5e5e5; font-weight: 700;">${escapeHtml(n.name)}</div>
@@ -524,6 +672,9 @@ const Graph3DView: React.FC<{ payload: GraphPayload; highlight: string | null }>
           </div>`
         }
       />
+      <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
+        click-drag rotate · right-click-drag pan · wheel zoom · {connected.nodes.length} connected nodes
+      </div>
     </div>
   );
 };
