@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music } from 'lucide-react';
+import { useFeatureToggleStore } from '../../state/featureToggleStore';
 
 interface ModuleConfig {
   name: string;
@@ -16,17 +17,21 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
+  const featureSettings = useFeatureToggleStore((s) => s.settings);
+  const refreshFeatures = useFeatureToggleStore((s) => s.refresh);
+  const patchFeatures = useFeatureToggleStore((s) => s.patch);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     setDirty(false);
+    void refreshFeatures();
     fetch('/api/modules/all')
       .then((r) => r.json() as Promise<ModuleConfig[]>)
       .then(setModules)
       .catch(() => setModules([]))
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, refreshFeatures]);
 
   const toggleModule = async (dirName: string, enabled: boolean) => {
     setToggling(dirName);
@@ -66,8 +71,48 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
 
-          {/* Section: Modules */}
+          {/* Section: Background features (auto-analysis / stems / midi) */}
           <div className="flex items-center gap-1.5 mb-2">
+            <Activity className="w-3 h-3 text-purple-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Background features</span>
+            <span className="text-[8px] font-mono text-zinc-600 ml-auto">runs during idle</span>
+          </div>
+          <p className="text-[9px] text-zinc-500 mb-3 leading-relaxed">
+            Opt-in enrichment runs in the background when the app is idle. Toggles default OFF and persist across reloads.
+          </p>
+
+          <div className="flex flex-col gap-1.5 mb-4">
+            <FeatureToggleGroup
+              icon={<Activity className="w-3 h-3 text-purple-400" />}
+              title="Auto-analysis"
+              desc="Detect BPM, key, pitch, bars, codec, embedded prompts. Local-only, CPU-friendly."
+              onImport={featureSettings.analysis.auto_on_import}
+              onGenerate={featureSettings.analysis.auto_on_generate}
+              onPatchImport={(v) => void patchFeatures({ analysis: { auto_on_import: v } })}
+              onPatchGenerate={(v) => void patchFeatures({ analysis: { auto_on_generate: v } })}
+            />
+            <FeatureToggleGroup
+              icon={<Scissors className="w-3 h-3 text-purple-400" />}
+              title="Auto-stems"
+              desc="Separate tracks into stems via Demucs sidecar. Requires the stems module + LARSNET weights for 12-stem."
+              onImport={featureSettings.stems.auto_on_import}
+              onGenerate={featureSettings.stems.auto_on_generate}
+              onPatchImport={(v) => void patchFeatures({ stems: { auto_on_import: v } })}
+              onPatchGenerate={(v) => void patchFeatures({ stems: { auto_on_generate: v } })}
+            />
+            <FeatureToggleGroup
+              icon={<Music className="w-3 h-3 text-purple-400" />}
+              title="Auto-MIDI"
+              desc="Convert tracks (and stems, if available) to MIDI via basic-pitch / piano-transcription."
+              onImport={featureSettings.midi.auto_on_import}
+              onGenerate={featureSettings.midi.auto_on_generate}
+              onPatchImport={(v) => void patchFeatures({ midi: { auto_on_import: v } })}
+              onPatchGenerate={(v) => void patchFeatures({ midi: { auto_on_generate: v } })}
+            />
+          </div>
+
+          {/* Section: Modules */}
+          <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
             <Package className="w-3 h-3 text-purple-400" />
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Backend Modules</span>
             <span className="text-[8px] font-mono text-zinc-600 ml-auto">restart required for changes</span>
@@ -142,3 +187,54 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
     </div>
   );
 };
+
+
+interface FeatureToggleGroupProps {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  onImport: boolean;
+  onGenerate: boolean;
+  onPatchImport: (next: boolean) => void;
+  onPatchGenerate: (next: boolean) => void;
+}
+
+const FeatureToggleGroup: React.FC<FeatureToggleGroupProps> = ({
+  icon, title, desc, onImport, onGenerate, onPatchImport, onPatchGenerate,
+}) => (
+  <div className="border border-white/5 rounded px-3 py-2.5 bg-white/3">
+    <div className="flex items-center gap-2 mb-1.5">
+      {icon}
+      <span className="text-[10px] font-bold text-zinc-100">{title}</span>
+    </div>
+    <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">{desc}</p>
+    <div className="flex items-center gap-4">
+      <ToggleRow label="on import" enabled={onImport} onToggle={() => onPatchImport(!onImport)} />
+      <ToggleRow label="on generate" enabled={onGenerate} onToggle={() => onPatchGenerate(!onGenerate)} />
+    </div>
+  </div>
+);
+
+
+interface ToggleRowProps {
+  label: string;
+  enabled: boolean;
+  onToggle: () => void;
+}
+
+const ToggleRow: React.FC<ToggleRowProps> = ({ label, enabled, onToggle }) => (
+  <button
+    onClick={onToggle}
+    className="flex items-center gap-1.5 group"
+    title={enabled ? `Disable: ${label}` : `Enable: ${label}`}
+  >
+    {enabled ? (
+      <ToggleRight className="w-5 h-5 text-purple-400 group-hover:text-purple-300" />
+    ) : (
+      <ToggleLeft className="w-5 h-5 text-zinc-600 group-hover:text-zinc-500" />
+    )}
+    <span className={`text-[9px] font-mono uppercase tracking-widest ${enabled ? 'text-purple-200' : 'text-zinc-500'}`}>
+      {label}
+    </span>
+  </button>
+);

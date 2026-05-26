@@ -381,29 +381,45 @@ class LibraryStore:
         target_path = entry_dir / target_name
         target_path.write_bytes(audio_bytes)
 
+        # Read any embedded metadata (e.g., ID3 TXXX:prompt from an
+        # AI-generated MP3) and merge with caller-supplied metadata.
+        # Caller wins for explicit fields; embedded fills the gaps.
+        from .tags import extract_embedded_tags
+
+        embedded = extract_embedded_tags(target_path)
+        meta_in = dict(metadata or {})
+
+        def _pick(field: str, embedded_keys: list[str], default: Any) -> Any:
+            if field in meta_in and meta_in[field] not in (None, ""):
+                return meta_in[field]
+            for ek in embedded_keys:
+                if ek in embedded and embedded[ek]:
+                    return embedded[ek]
+            return default
+
+        title_default = embedded.get("title") or target_name
         record_meta: dict[str, Any] = {
             "id": entry_id,
             "filename": target_name,
             "audio_filename": target_name,
             "mime_type": mime_type,
-            "title": metadata.get("title") if metadata else target_name,
-            "prompt": metadata.get("prompt", "") if metadata else "",
-            "negative_prompt": metadata.get("negative_prompt", "") if metadata else "",
-            "model": metadata.get("model", "import") if metadata else "import",
-            "duration": metadata.get("duration", 0.0) if metadata else 0.0,
-            "steps": metadata.get("steps", 0) if metadata else 0,
-            "cfg": metadata.get("cfg", 0.0) if metadata else 0.0,
-            "seed": metadata.get("seed", 0) if metadata else 0,
+            "title": _pick("title", ["title"], title_default),
+            "prompt": _pick("prompt", ["prompt"], ""),
+            "negative_prompt": _pick("negative_prompt", ["negative_prompt"], ""),
+            "model": _pick("model", ["model", "generator"], "import"),
+            "duration": meta_in.get("duration", 0.0),
+            "steps": meta_in.get("steps", 0),
+            "cfg": meta_in.get("cfg", 0.0),
+            "seed": meta_in.get("seed", 0),
             "favorite": False,
             "rating": None,
-            "tags": list(metadata.get("tags", [])) if metadata else [],
-            "notes": metadata.get("notes", "") if metadata else "",
-            "source": metadata.get("source", "import") if metadata else "import",
-            "chimera_sources": list(metadata.get("chimera_sources", []))
-            if metadata
-            else [],
+            "tags": list(meta_in.get("tags", [])),
+            "notes": meta_in.get("notes", ""),
+            "source": meta_in.get("source", "import"),
+            "chimera_sources": list(meta_in.get("chimera_sources", [])),
             "saved_at": time.time(),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "embedded_tags": embedded,
         }
         _write_metadata(entry_dir, record_meta)
         record = _record_from_metadata(entry_dir, record_meta, self.api_prefix)
@@ -411,6 +427,8 @@ class LibraryStore:
         record.id = entry_id
         record.audio_url = _audio_url_for(self.api_prefix, entry_id)
         self._sync_record_to_db(record, record_meta)
+        # Opt-in: enqueue background analysis if the user has it on.
+        _maybe_enqueue_analysis(self, entry_id, source="import")
         return record
 
     # ---- DB sync / reindex --------------------------------------------------
@@ -500,3 +518,55 @@ class LibraryStore:
     def all_ids(self) -> Iterable[str]:
         for record in self.list_entries():
             yield record.id
+
+
+def _maybe_enqueue_analysis(
+    store: "LibraryStore",
+    entry_id: str,
+    *,
+    source: str,
+) -> None:
+    """If feature settings have ``analysis.auto_on_<source>`` enabled,
+    queue a background analysis job. Failures here never block the
+    import / generate flow — analysis is opt-in enrichment.
+
+    ``source`` is either ``"import"`` or ``"generate"``.
+    """
+    if store.db is None:
+        return
+    try:
+        from backend.core.background_workers import get_background_queue
+        from backend.modules.settings.router import get_store as get_settings_store
+    except ImportError:
+        return
+
+    try:
+        settings = get_settings_store().get_section("analysis")
+    except Exception:
+        return
+
+    key = f"auto_on_{source}"
+    if not settings.get(key, False):
+        return
+
+    audio_path = store.get_audio_path(entry_id)
+    if audio_path is None:
+        return
+    entry_dir = store._dir_for(entry_id)
+    metadata_path = (entry_dir / "metadata.json") if entry_dir else None
+
+    async def _run() -> None:
+        from backend.modules.analysis.engine import analyze_and_persist
+
+        analyze_and_persist(
+            store.db,  # type: ignore[arg-type]  # checked above
+            entry_id,
+            audio_path,
+            metadata_path=metadata_path,
+            settings=settings,
+        )
+
+    try:
+        get_background_queue().enqueue(f"analysis:{entry_id}", _run)
+    except Exception as e:
+        log.debug("library.store: failed to enqueue analysis for %s: %s", entry_id, e)

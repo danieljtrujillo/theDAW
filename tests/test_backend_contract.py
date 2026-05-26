@@ -13,7 +13,7 @@ from backend.server import (
     _safe_filename,
     _normalize_init_audio_type,
     _normalize_generation_model,
-    _save_generation_artifacts,
+    _save_generation_artifacts_sync as _save_generation_artifacts,
     _validate_init_audio_mode,
 )
 from fastapi import HTTPException

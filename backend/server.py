@@ -1119,6 +1119,45 @@ async def _run_generate_job(
                         None, _do_specs_and_save
                     )
 
+                    # Post-save library sync: the generation flow writes
+                    # the entry's files directly (not via LibraryStore),
+                    # so we mirror it into SQLite here and enqueue
+                    # background analysis if the user has the toggle on.
+                    try:
+                        from backend.modules.library.router import (
+                            get_store as _get_library_store,
+                        )
+                        from backend.modules.library.store import (
+                            _maybe_enqueue_analysis,
+                        )
+
+                        _lib_store = _get_library_store()
+                        _entry_id = f"{job_id}_{i:02d}"
+                        _record = _lib_store.get_entry(_entry_id)
+                        if _record is not None and _lib_store.db is not None:
+                            _entry_dir = _lib_store._dir_for(_entry_id)
+                            _meta = (
+                                json.loads(
+                                    (_entry_dir / "metadata.json").read_text(
+                                        encoding="utf-8"
+                                    )
+                                )
+                                if _entry_dir
+                                and (_entry_dir / "metadata.json").is_file()
+                                else {}
+                            )
+                            _lib_store._sync_record_to_db(_record, _meta)
+                            _maybe_enqueue_analysis(
+                                _lib_store, _entry_id, source="generate"
+                            )
+                    except Exception as _e:
+                        logger.debug(
+                            "post-save library sync failed for %s_%02d: %s",
+                            job_id,
+                            i,
+                            _e,
+                        )
+
                     _add_to_spec_cache(f"{job_id}:{i}", spectrograms)
                     if i == 0:
                         _add_to_spec_cache(job_id, spectrograms)
