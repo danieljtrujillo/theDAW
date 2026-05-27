@@ -1094,7 +1094,8 @@ const Graph3DView: React.FC<{
     [connected, highlight, appearance.nodeSizeScale],
   );
 
-  const fgRef = useRef<unknown>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fgRef = useRef<any>(null);
 
   // Fit-to-view at two checkpoints so we catch both early- and late-
   // settling force layouts. Without this the camera lingers at its
@@ -1359,14 +1360,13 @@ const Graph3DView: React.FC<{
     <div className="absolute inset-0" style={{ background: bgColor }}>
       {appearance.renderMode === '3d' ? (
         <ForceGraph3D
-          ref={fgRef as React.MutableRefObject<unknown>}
+          ref={fgRef}
           graphData={data}
           nodeAutoColorBy="source"
           nodeRelSize={5}
           backgroundColor={bgColor}
           showNavInfo={false}
           controlType={appearance.controlType}
-          cameraPosition={{ z: 280 }}
           linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
           linkOpacity={appearance.linkOpacity}
           linkWidth={appearance.linkWidth}
@@ -1382,7 +1382,7 @@ const Graph3DView: React.FC<{
         />
       ) : (
         <ForceGraph2D
-          ref={fgRef as React.MutableRefObject<unknown>}
+          ref={fgRef}
           graphData={data}
           nodeRelSize={5}
           backgroundColor={bgColor}
