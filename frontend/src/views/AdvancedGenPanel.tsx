@@ -782,7 +782,7 @@ export const AdvancedGenPanel: React.FC<{
               </div>
             </>
           ) : (
-            <div className="rounded border border-dashed border-white/10 bg-zinc-900/50 h-[140px] flex flex-col items-center justify-center gap-1">
+            <div className="rounded border border-dashed border-white/10 bg-zinc-900/50 h-35 flex flex-col items-center justify-center gap-1">
               <Music className="w-5 h-5 text-zinc-700" />
               <span className="text-[10px] text-zinc-600">Generate audio to view</span>
             </div>
@@ -804,7 +804,7 @@ export const AdvancedGenPanel: React.FC<{
             </div>
             {specLoading && <span className="text-[8px] text-zinc-600 ml-auto animate-pulse font-mono">computing...</span>}
           </div>
-          <div className="flex gap-1.5 h-[140px]">
+          <div className="flex gap-1.5 h-35">
             <div className="flex-1 rounded overflow-hidden bg-black/60 border border-white/5 flex items-center justify-center">
               {spectrograms && spectrograms[specTab] ? (
                 <img src={`data:image/png;base64,${spectrograms[specTab]}`} alt={`${specTab} spectrogram`} className="w-full h-full object-cover" />

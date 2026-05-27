@@ -34,8 +34,26 @@ interface LineageModalProps {
   onClose: () => void;
 }
 
+type VizPreset =
+  | 'default'           // glossy spheres + curved bezier links + particles
+  | 'wireframe-grid'    // neon wireframe icosahedrons + straight tight links
+  | 'particle-cloud'    // tiny billboard sprites + faint lines (codepen 'm00nb0y')
+  | 'constellation'     // bright spheres with cyan haze, no particles (codepen 'hiteshsahu')
+  | 'matrix-cube'       // wireframe cubes + arrow-only edges
+  | 'plasma';           // glowy octahedrons with thick particle streams
+
+type NodeShape =
+  | 'sphere'
+  | 'cube'
+  | 'octahedron'
+  | 'tetrahedron'
+  | 'icosahedron'
+  | 'torus';
+
 interface GraphAppearance {
-  renderMode: '2d' | '3d';     // ForceGraph2D vs ForceGraph3D
+  renderMode: '2d' | '3d';
+  vizPreset: VizPreset;
+  nodeShape: NodeShape;
   nodeSizeScale: number;       // 0.5 – 3
   linkWidth: number;           // 1 – 6
   linkOpacity: number;         // 0.2 – 1
@@ -45,10 +63,13 @@ interface GraphAppearance {
   labelMode: 'hover' | 'always';
   background: 'dark' | 'midnight' | 'pure-black';
   controlType: 'orbit' | 'trackball' | 'fly';
+  wireframe: boolean;
 }
 
 const DEFAULT_APPEARANCE: GraphAppearance = {
   renderMode: '3d',
+  vizPreset: 'default',
+  nodeShape: 'sphere',
   nodeSizeScale: 1.0,
   linkWidth: 2.5,
   linkOpacity: 0.85,
@@ -57,7 +78,78 @@ const DEFAULT_APPEARANCE: GraphAppearance = {
   edgeCurve: 0.0,
   labelMode: 'hover',
   background: 'midnight',
-  controlType: 'orbit',
+  // Trackball is the library's default and avoids the bug in
+  // react-force-graph-3d where OrbitControls + DragControls can race
+  // on pointer-cancel and throw `Cannot read properties of undefined
+  // (reading 'x')`. Orbit / Fly are still selectable in the panel.
+  controlType: 'trackball',
+  wireframe: false,
+};
+
+/** Preset bundles — selecting a preset swaps a coordinated set of
+ *  rendering choices for a distinct visual style (inspired by the
+ *  CodePen graph demos the user pointed at). */
+const PRESET_BUNDLES: Record<VizPreset, Partial<GraphAppearance>> = {
+  'default': {
+    nodeShape: 'sphere',
+    wireframe: false,
+    linkWidth: 2.5,
+    linkOpacity: 0.85,
+    edgeCurve: 0.0,
+    particles: true,
+    particleSpeed: 0.006,
+    background: 'midnight',
+  },
+  'wireframe-grid': {
+    nodeShape: 'icosahedron',
+    wireframe: true,
+    linkWidth: 1.2,
+    linkOpacity: 0.6,
+    edgeCurve: 0.0,
+    particles: false,
+    background: 'pure-black',
+  },
+  'particle-cloud': {
+    nodeShape: 'sphere',
+    wireframe: false,
+    nodeSizeScale: 0.7,
+    linkWidth: 1.0,
+    linkOpacity: 0.35,
+    edgeCurve: 0.15,
+    particles: true,
+    particleSpeed: 0.004,
+    background: 'pure-black',
+  },
+  'constellation': {
+    nodeShape: 'sphere',
+    wireframe: false,
+    nodeSizeScale: 1.2,
+    linkWidth: 1.2,
+    linkOpacity: 0.5,
+    edgeCurve: 0.0,
+    particles: false,
+    background: 'midnight',
+  },
+  'matrix-cube': {
+    nodeShape: 'cube',
+    wireframe: true,
+    linkWidth: 1.0,
+    linkOpacity: 0.7,
+    edgeCurve: 0.0,
+    particles: false,
+    background: 'pure-black',
+  },
+  'plasma': {
+    nodeShape: 'octahedron',
+    wireframe: false,
+    nodeSizeScale: 1.4,
+    linkWidth: 3.5,
+    linkOpacity: 0.95,
+    edgeCurve: 0.25,
+    particles: true,
+    particleSpeed: 0.012,
+    background: 'midnight',
+  },
 };
 
 const BG_COLORS: Record<GraphAppearance['background'], string> = {
@@ -433,33 +525,80 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
   }, [connected, nodeMap, layers, parentsOf, childrenOf]);
 
   // -- Step 3: coordinate assignment ----------------------------------
-  // Layout is LEFT→RIGHT: each generation is a vertical column, and
-  // descendants stack within that column. This uses vertical space
-  // instead of running off the right edge for libraries with wide
-  // generations.
-  const NODE_W = 200;
-  const NODE_H = 56;
-  const COL_GAP = 110; // horizontal gap between generations
-  const ROW_GAP = 18;  // vertical gap between nodes in the same generation
-  const PAD = 40;
+  // Layout is LEFT→RIGHT: each generation is a vertical column of
+  // stacked sub-rows. When a generation has many nodes we split it
+  // across multiple SUB-COLUMNS (brick pattern) so a single generation
+  // doesn't run off the bottom of the modal. Alternating sub-columns
+  // are offset vertically by NODE_H/2 to stagger like the user's
+  // reference screenshot.
+  const NODE_W = 190;
+  const NODE_H = 54;
+  const COL_GAP = 90;     // gap between separate GENERATIONS
+  const SUBCOL_GAP = 28;  // gap between sub-columns within a generation
+  const ROW_GAP = 14;     // gap between stacked nodes in the same sub-column
+  const PAD = 32;
+  const STAGGER_PX = NODE_H * 0.5;
+  const MAX_NODES_PER_SUBCOL = 14;
+
+  const generationLayouts = useMemo(() => {
+    type SubCol = { startX: number; ids: string[]; offset: number };
+    const layouts: Array<{
+      layer: number;
+      subCols: SubCol[];
+      genStartX: number;
+      genEndX: number;
+      colCount: number;
+    }> = [];
+    let cursorX = PAD;
+    orderedRows.forEach((row) => {
+      // Split row.ids across N sub-columns; brick-stagger alternating
+      // sub-columns by half a node height so neighbors don't form a
+      // perfect grid.
+      const nSub = Math.max(1, Math.ceil(row.ids.length / MAX_NODES_PER_SUBCOL));
+      const perSub = Math.ceil(row.ids.length / nSub);
+      const subCols: SubCol[] = [];
+      for (let s = 0; s < nSub; s += 1) {
+        const slice = row.ids.slice(s * perSub, (s + 1) * perSub);
+        subCols.push({
+          startX: cursorX + s * (NODE_W + SUBCOL_GAP),
+          ids: slice,
+          offset: s % 2 === 1 ? STAGGER_PX : 0,
+        });
+      }
+      const colCount = nSub;
+      const genStartX = cursorX;
+      const genEndX = cursorX + colCount * NODE_W + (colCount - 1) * SUBCOL_GAP;
+      layouts.push({ layer: row.layer, subCols, genStartX, genEndX, colCount });
+      cursorX = genEndX + COL_GAP;
+    });
+    return layouts;
+  }, [orderedRows]);
 
   const positions = useMemo(() => {
     const pos: Record<string, { x: number; y: number }> = {};
-    // Find the tallest column so smaller columns can vertically center.
-    const tallestCount = Math.max(1, ...orderedRows.map((r) => r.ids.length));
-    const tallestPx = tallestCount * NODE_H + (tallestCount - 1) * ROW_GAP;
-    orderedRows.forEach((row, colIdx) => {
-      const colPx = row.ids.length * NODE_H + (row.ids.length - 1) * ROW_GAP;
-      const startY = PAD + (tallestPx - colPx) / 2;
-      row.ids.forEach((id, rowIdx) => {
-        pos[id] = {
-          x: PAD + colIdx * (NODE_W + COL_GAP),
-          y: startY + rowIdx * (NODE_H + ROW_GAP),
-        };
+    // Vertical centering: find the tallest sub-column across the
+    // whole layout, then center smaller sub-columns to it.
+    let tallestPx = 0;
+    generationLayouts.forEach((g) =>
+      g.subCols.forEach((sc) => {
+        const px = sc.ids.length * NODE_H + (sc.ids.length - 1) * ROW_GAP;
+        if (px > tallestPx) tallestPx = px;
+      }),
+    );
+    generationLayouts.forEach((g) => {
+      g.subCols.forEach((sc) => {
+        const colPx = sc.ids.length * NODE_H + (sc.ids.length - 1) * ROW_GAP;
+        const startY = PAD + (tallestPx - colPx) / 2 + sc.offset;
+        sc.ids.forEach((id, rowIdx) => {
+          pos[id] = {
+            x: sc.startX,
+            y: startY + rowIdx * (NODE_H + ROW_GAP),
+          };
+        });
       });
     });
     return pos;
-  }, [orderedRows]);
+  }, [generationLayouts]);
 
   // -- Bounds for the SVG ---------------------------------------------
   const bounds = useMemo(() => {
@@ -681,23 +820,27 @@ const GenealogyView: React.FC<{ payload: GraphPayload }> = ({ payload }) => {
         </svg>
       </div>
 
-      {/* Generation column headers — labels above each column header in
-          screen-space so they don't pan/zoom with the canvas. */}
+      {/* Generation column headers — each one spans its (possibly
+          multi-sub-column) generation width and follows the canvas in
+          screen-space so they don't pan/zoom with content. */}
       <div className="absolute top-0 left-0 z-10 text-[9px] font-mono uppercase tracking-widest text-zinc-500 pointer-events-none">
-        {orderedRows.map((row, i) => (
-          <div
-            key={row.layer}
-            style={{
-              position: 'absolute',
-              left: (PAD + i * (NODE_W + COL_GAP) + NODE_W / 2) * view.k + view.x,
-              top: 8,
-              transform: 'translateX(-50%)',
-            }}
-            className="bg-purple-500/20 border border-purple-500/40 rounded px-2 py-0.5 text-purple-200"
-          >
-            gen {row.layer}
-          </div>
-        ))}
+        {generationLayouts.map((g) => {
+          const centerWorldX = (g.genStartX + g.genEndX) / 2;
+          return (
+            <div
+              key={g.layer}
+              style={{
+                position: 'absolute',
+                left: centerWorldX * view.k + view.x,
+                top: 8,
+                transform: 'translateX(-50%)',
+              }}
+              className="bg-purple-500/20 border border-purple-500/40 rounded px-2 py-0.5 text-purple-200"
+            >
+              gen {g.layer}
+            </div>
+          );
+        })}
       </div>
 
       {/* Help hint */}
@@ -752,6 +895,41 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
           { value: '2d', label: '2D (canvas)' },
         ]}
         onChange={(v) => patch({ renderMode: v as GraphAppearance['renderMode'] })}
+      />
+      <SelectRow
+        label="Style preset"
+        value={value.vizPreset}
+        options={[
+          { value: 'default',         label: 'Default spheres' },
+          { value: 'wireframe-grid',  label: 'Wireframe grid' },
+          { value: 'particle-cloud',  label: 'Particle cloud' },
+          { value: 'constellation',   label: 'Constellation' },
+          { value: 'matrix-cube',     label: 'Matrix cubes' },
+          { value: 'plasma',          label: 'Plasma' },
+        ]}
+        onChange={(v) => {
+          const next = v as VizPreset;
+          // Applying a preset swaps a coordinated bundle of options.
+          onChange({ ...value, vizPreset: next, ...PRESET_BUNDLES[next] });
+        }}
+      />
+      <SelectRow
+        label="Node shape"
+        value={value.nodeShape}
+        options={[
+          { value: 'sphere',       label: 'Sphere' },
+          { value: 'cube',         label: 'Cube' },
+          { value: 'octahedron',   label: 'Octahedron' },
+          { value: 'tetrahedron',  label: 'Tetrahedron' },
+          { value: 'icosahedron',  label: 'Icosahedron' },
+          { value: 'torus',        label: 'Torus' },
+        ]}
+        onChange={(v) => patch({ nodeShape: v as NodeShape })}
+      />
+      <ToggleRow
+        label="Wireframe"
+        on={value.wireframe}
+        onChange={(on) => patch({ wireframe: on })}
       />
       <SelectRow
         label="Labels"
@@ -936,6 +1114,102 @@ const Graph3DView: React.FC<{
     return () => timeouts.forEach(clearTimeout);
   }, [data, appearance.renderMode]);
 
+  // Inject a starfield + ambient/point lights into the underlying
+  // Three.js scene once it exists. Used by every 3D preset, so the
+  // graph never looks like it's floating in a black void.
+  //
+  // Wrapped in a deferred handle so the heavy 1500-point geometry build
+  // doesn't block the React commit phase — that pile-on is what triggers
+  // "[Violation] 'message' handler took Xms" on initial modal open.
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    let teardown: (() => void) | null = null;
+    let cancelled = false;
+    type IdleCb = (cb: () => void, opts?: { timeout: number }) => number;
+    const ric = (window as unknown as { requestIdleCallback?: IdleCb }).requestIdleCallback;
+    const schedule = (fn: () => void) => {
+      if (typeof ric === 'function') ric(fn, { timeout: 500 });
+      else setTimeout(fn, 0);
+    };
+    schedule(() => {
+      if (cancelled) return;
+      const setup = setupStarfield();
+      if (setup) teardown = setup;
+    });
+    return () => {
+      cancelled = true;
+      teardown?.();
+    };
+
+    function setupStarfield(): (() => void) | null {
+    const THREE = threeRef.current;
+    const ref = fgRef.current as { scene?: () => unknown } | null;
+    if (!THREE || !ref?.scene) return null;
+    const scene = ref.scene() as import('three').Scene;
+    if (!scene) return null;
+
+    // Wipe any prior starfield from a previous mount.
+    const prior = scene.getObjectByName('__lineage_stars__');
+    if (prior) scene.remove(prior);
+    const priorLight = scene.getObjectByName('__lineage_ambient__');
+    if (priorLight) scene.remove(priorLight);
+
+    const starsGeo = new THREE.BufferGeometry();
+    const STAR_COUNT = 1500;
+    const positions = new Float32Array(STAR_COUNT * 3);
+    const colors = new Float32Array(STAR_COUNT * 3);
+    const palette = [
+      new THREE.Color('#a78bfa'),
+      new THREE.Color('#60a5fa'),
+      new THREE.Color('#34d399'),
+      new THREE.Color('#f472b6'),
+      new THREE.Color('#fbbf24'),
+      new THREE.Color('#ffffff'),
+    ];
+    for (let i = 0; i < STAR_COUNT; i += 1) {
+      // Sphere of radius 1200 around origin — far enough that nodes
+      // never visually overlap the starfield.
+      const r = 800 + Math.random() * 800;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      positions[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
+      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      positions[i * 3 + 2] = r * Math.cos(phi);
+      const c = palette[Math.floor(Math.random() * palette.length)];
+      colors[i * 3 + 0] = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    }
+    starsGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    starsGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const starsMat = new THREE.PointsMaterial({
+      size: 1.8,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.85,
+      sizeAttenuation: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const stars = new THREE.Points(starsGeo, starsMat);
+    stars.name = '__lineage_stars__';
+    scene.add(stars);
+
+    // Soft ambient + a colored point light so emissive haloes pop a
+    // little even when the camera is far away.
+    const ambient = new THREE.AmbientLight(0x9580ff, 0.55);
+    ambient.name = '__lineage_ambient__';
+    scene.add(ambient);
+
+    return () => {
+      scene.remove(stars);
+      scene.remove(ambient);
+      starsGeo.dispose();
+      starsMat.dispose();
+    };
+    }
+  }, [appearance.renderMode, appearance.vizPreset, data]);
+
   if (connected.nodes.length === 0) {
     return (
       <p className="absolute inset-0 flex items-center justify-center text-[10px] text-zinc-500 italic px-12 text-center">
@@ -952,6 +1226,134 @@ const Graph3DView: React.FC<{
         <div style="color: #e5e5e5; font-weight: 700; word-wrap: break-word;">${escapeHtml(n.name)}</div>
         <div style="color: #a3a3a3; font-size: 10px;">${escapeHtml(n.source)} · ${escapeHtml(n.model)}</div>
       </div>`;
+
+  // Build a Three.js mesh per node based on the chosen shape +
+  // wireframe flag. Lazy-imports three only when the 3D mode is on
+  // so 2D users don't pay the bundle cost.
+  const buildNodeObject = useMemo(() => {
+    let THREE: typeof import('three') | null = null;
+    return async (
+      node: { color?: string; val?: number },
+    ): Promise<unknown> => {
+      if (!THREE) {
+        THREE = await import('three');
+      }
+      const t = THREE;
+      const size = Math.cbrt(node.val ?? 4);
+      let geometry: import('three').BufferGeometry;
+      switch (appearance.nodeShape) {
+        case 'cube':
+          geometry = new t.BoxGeometry(size, size, size);
+          break;
+        case 'octahedron':
+          geometry = new t.OctahedronGeometry(size * 0.85);
+          break;
+        case 'tetrahedron':
+          geometry = new t.TetrahedronGeometry(size);
+          break;
+        case 'icosahedron':
+          geometry = new t.IcosahedronGeometry(size * 0.85);
+          break;
+        case 'torus':
+          geometry = new t.TorusGeometry(size * 0.7, size * 0.25, 8, 16);
+          break;
+        case 'sphere':
+        default:
+          geometry = new t.SphereGeometry(size, 12, 12);
+          break;
+      }
+      const color = new t.Color(node.color ?? '#a78bfa');
+      const material = new t.MeshBasicMaterial({
+        color,
+        wireframe: appearance.wireframe,
+        transparent: true,
+        opacity: appearance.wireframe ? 0.95 : 0.9,
+      });
+      const mesh = new t.Mesh(geometry, material);
+      return mesh;
+    };
+    // Re-build when shape OR wireframe toggle changes.
+  }, [appearance.nodeShape, appearance.wireframe]);
+
+  // Synchronous wrapper: react-force-graph calls nodeThreeObject
+  // synchronously, so we cache the lazy-import promise + render with
+  // a placeholder until three is loaded. In practice three loads in
+  // <100ms once the user opens the 3D tab.
+  const threeRef = useRef<typeof import('three') | null>(null);
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    void import('three').then((mod) => {
+      threeRef.current = mod;
+    });
+  }, [appearance.renderMode]);
+
+  const nodeThreeObject = (node: { color?: string; val?: number }): unknown => {
+    void buildNodeObject;
+    const THREE = threeRef.current;
+    if (!THREE) return undefined; // first frame: fall through to default sphere
+    const size = Math.cbrt(node.val ?? 4);
+    let geometry: import('three').BufferGeometry;
+    switch (appearance.nodeShape) {
+      case 'cube':
+        geometry = new THREE.BoxGeometry(size, size, size);
+        break;
+      case 'octahedron':
+        geometry = new THREE.OctahedronGeometry(size * 0.85);
+        break;
+      case 'tetrahedron':
+        geometry = new THREE.TetrahedronGeometry(size);
+        break;
+      case 'icosahedron':
+        geometry = new THREE.IcosahedronGeometry(size * 0.85);
+        break;
+      case 'torus':
+        geometry = new THREE.TorusGeometry(size * 0.7, size * 0.25, 8, 16);
+        break;
+      case 'sphere':
+      default:
+        geometry = new THREE.SphereGeometry(size, 16, 16);
+        break;
+    }
+    const colorHex = node.color ?? '#a78bfa';
+    const baseColor = new THREE.Color(colorHex);
+    // Build a Group so we can stack a wireframe halo + inner solid for
+    // the glossy "neon" look the codepens go for.
+    const group = new THREE.Group();
+    if (appearance.wireframe) {
+      const wire = new THREE.Mesh(
+        geometry,
+        new THREE.MeshBasicMaterial({
+          color: baseColor,
+          wireframe: true,
+          transparent: true,
+          opacity: 0.95,
+        }),
+      );
+      group.add(wire);
+    } else {
+      // Solid inner core + slightly larger translucent "halo" that
+      // approximates a glow without needing a postprocessing pass.
+      const inner = new THREE.Mesh(
+        geometry,
+        new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity: 0.95 }),
+      );
+      group.add(inner);
+      const haloGeo = geometry.clone();
+      haloGeo.scale(1.45, 1.45, 1.45);
+      const halo = new THREE.Mesh(
+        haloGeo,
+        new THREE.MeshBasicMaterial({
+          color: baseColor,
+          transparent: true,
+          opacity: 0.22,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      group.add(halo);
+    }
+    return group;
+  };
 
   return (
     <div className="absolute inset-0" style={{ background: bgColor }}>
@@ -975,6 +1377,7 @@ const Graph3DView: React.FC<{
           linkDirectionalParticles={appearance.particles ? 2 : 0}
           linkDirectionalParticleWidth={1.5}
           linkDirectionalParticleSpeed={appearance.particleSpeed}
+          nodeThreeObject={nodeThreeObject}
           nodeLabel={labelHtml}
         />
       ) : (
@@ -983,6 +1386,12 @@ const Graph3DView: React.FC<{
           graphData={data}
           nodeRelSize={5}
           backgroundColor={bgColor}
+          // Node drag is on by default in ForceGraph2D — being explicit
+          // here so a refactor doesn't silently disable it. Each node is
+          // grabbable; the force layout updates around it in real time.
+          enableNodeDrag={true}
+          enablePanInteraction={true}
+          enableZoomInteraction={true}
           linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
           linkLineDash={() => null}
           linkWidth={appearance.linkWidth}

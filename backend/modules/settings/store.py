@@ -23,7 +23,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -42,6 +42,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_on_import": False,
         "auto_on_generate": False,
         "default_count": 4,
+        # 'cuda' | 'cpu' | 'auto'. The integration-package's sidecar
+        # respects this query param. Default cuda because demucs on cpu
+        # is multiple-minutes-per-track even on fast hosts.
+        "device": "cuda",
+        # 'fast' | 'balanced' | 'hq'. Forwarded to the sidecar's `quality`
+        # query param. Default 'balanced' because the integration-package's
+        # 'hq' preset (overlap=0.9, shifts=10) commonly takes 10+ minutes
+        # per track on a 6 GB GPU and frequently hangs at single percent
+        # points while it grinds through individual shifts.
+        "quality": "balanced",
     },
     "midi": {
         # Requires basic-pitch / piano-transcription-inference. Opt-in.
@@ -100,6 +110,17 @@ def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         # flip it back via Settings → Background features.
         merged["analysis"]["auto_on_import"] = True
         merged["analysis"]["auto_on_generate"] = True
+    if old_version < 3:
+        # Migration v2 → v3: stems gain an explicit `device` field;
+        # default cuda so a user who already enabled stems doesn't
+        # silently fall through to cpu.
+        merged["stems"]["device"] = "cuda"
+    if old_version < 4:
+        # Migration v3 → v4: stems gain a `quality` preset (default
+        # 'balanced'). hq is the integration-package's old default but
+        # it routinely hangs at ~5-10 min per track even on GPU; users
+        # who want max quality can opt in via Settings → Stems.
+        merged["stems"]["quality"] = "balanced"
 
     merged["schema_version"] = SCHEMA_VERSION
     return merged

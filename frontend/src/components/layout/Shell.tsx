@@ -11,6 +11,7 @@ import { ProcessingLog } from './ProcessingLog';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
+import { useLibraryStore } from '../../state/libraryStore';
 
 export const Shell: React.FC = () => {
   const activeView = useAppUiStore((state) => state.activeView);
@@ -23,6 +24,24 @@ export const Shell: React.FC = () => {
   const setRightPanelWidth = useAppUiStore((state) => state.setRightPanelWidth);
   const docsOpen = useAppUiStore((state) => state.docsOpen);
   const setDocsOpen = useAppUiStore((state) => state.setDocsOpen);
+  const setLibrarySearch = useLibraryStore((s) => s.setSearchQuery);
+  const librarySearch = useLibraryStore((s) => s.searchQuery);
+  const globalSearchInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  // Cmd-K / Ctrl-K focuses the global search bar. Matches the keybinding
+  // convention used by VS Code / Notion / Linear so users have one less
+  // thing to learn.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        globalSearchInputRef.current?.focus();
+        globalSearchInputRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {
@@ -111,7 +130,28 @@ export const Shell: React.FC = () => {
         <div className="flex items-center gap-2.5">
           <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
             <Search className="w-3 h-3 text-zinc-600" />
-            <input type="text" placeholder="G-SEARCH..." className="bg-transparent border-none outline-none text-[9px] text-zinc-500 w-32 font-mono" />
+            <input
+              id="global-search"
+              name="global-search"
+              ref={globalSearchInputRef}
+              type="search"
+              aria-label="Global library search (Ctrl-K / Cmd-K)"
+              placeholder="G-SEARCH (ctrl-k)"
+              className="bg-transparent border-none outline-none text-[9px] text-zinc-300 w-32 font-mono placeholder:text-zinc-500"
+              value={librarySearch}
+              onChange={(e) => {
+                setLibrarySearch(e.target.value);
+                // Typing into G-Search auto-opens the right-side
+                // Library panel so the filtered list is visible.
+                if (e.target.value && !isRightPanelOpen) setIsRightPanelOpen(true);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setLibrarySearch('');
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
           </div>
           <button
             onClick={() => setDocsOpen(true)}

@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.modules.library.router import get_store as get_library_store
 
-from .engine import get_progress, separate_entry
+from .engine import get_progress, request_abort, separate_entry
 from .sidecar import get_sidecar, install_dependencies, probe, reset_sidecar
 
 log = logging.getLogger(__name__)
@@ -89,6 +89,14 @@ def stems_stop() -> dict:
     return {"ok": True, "running": False}
 
 
+@router.post("/{entry_id}/abort")
+def abort_run(entry_id: str) -> dict:
+    """Signal an in-flight separation to bail out. The actual cancel
+    happens at the next poll tick (≤2s)."""
+    ok = request_abort(entry_id)
+    return {"ok": ok, "entry_id": entry_id}
+
+
 @router.get("/{entry_id}/progress")
 def get_entry_progress(entry_id: str) -> dict:
     """Current progress snapshot for an in-flight separation. Returns
@@ -119,6 +127,7 @@ async def run_separation(
     entry_id: str,
     stems: int = 4,
     device: Optional[str] = None,
+    quality: Optional[str] = None,
 ) -> dict:
     if stems not in (2, 4, 6, 12):
         raise HTTPException(400, "stems must be 2, 4, 6, or 12")
@@ -150,6 +159,7 @@ async def run_separation(
             entry_dir,
             stems=stems,
             device=device,
+            quality=quality,
         )
         return result
     except RuntimeError as e:

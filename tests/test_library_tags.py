@@ -33,17 +33,64 @@ def test_stringify_handles_lists():
 
 
 def test_known_ai_tags_routes_aliases():
-    # Sanity-check the alias map: every value should be one of the
-    # canonical names we surface at the top level.
+    # Sanity-check the alias map: every value should map to one of the
+    # canonical field names we surface at the top level. New canonical
+    # names land here when the metadata extractor adds new aliases per
+    # docs/guides/AUDIO_VS_NONAUDIO_FIELD_GUIDE.md.
     canonical = {
+        # Prompt + lyrics
         "prompt",
         "negative_prompt",
+        "lyrics",
+        "style_prompt",
+        "style",
+        "tags",
+        "control_tags",
+        # Model / generator identity
         "model",
+        "model_version",
+        "generator",
+        "artist",
+        "creator",
+        "creator_id",
+        "creator_handle",
+        # Generation knobs
         "seed",
         "cfg",
         "steps",
-        "generator",
-        "lyrics",
+        "audio_weight",
+        "style_weight",
+        "weirdness",
+        "make_instrumental",
+        "is_instrumental",
+        "infill",
+        "has_vocal",
+        "has_stem",
+        "persona_id",
+        # Musical features
+        "bpm",
+        "bpm_min",
+        "bpm_max",
+        "key",
+        "scale",
+        "genre",
+        "genres",
+        "mood",
+        "moods",
+        "energy",
+        "vocal_type",
+        "instruments",
+        # Identity / lineage
+        "source_id",
+        "parent_id",
+        "root_id",
+        "title",
+        # Engagement
+        "play_count",
+        "upvote_count",
+        "skip_rate",
+        "engagement_score",
+        "popularity_class",
     }
     for key, target in KNOWN_AI_TAGS.items():
         assert target in canonical, f"{key} -> {target} not in canonical set"

@@ -39,6 +39,33 @@ JOB_TIMEOUT_SEC = 30 * 60  # 30 minutes — Demucs on CPU can be slow
 # happening (installing deps / launching sidecar / separating / writing).
 _PROGRESS_LOCK = threading.Lock()
 _PROGRESS: dict[str, dict[str, Any]] = {}
+# entry_ids the user has asked to abort. ``separate_entry`` checks this
+# on every poll iteration and raises if its id is in the set.
+_ABORT_REQUESTS: set[str] = set()
+
+
+def request_abort(entry_id: str) -> bool:
+    """Signal an in-flight separation to bail at the next poll tick.
+    Returns True if the entry was in-flight."""
+    with _PROGRESS_LOCK:
+        snap = _PROGRESS.get(entry_id)
+        if snap is None:
+            return False
+        _ABORT_REQUESTS.add(entry_id)
+        snap["phase"] = "aborting"
+        snap["message"] = "Abort requested — will stop at next poll tick"
+        snap["updated_at"] = time.time()
+        return True
+
+
+def _should_abort(entry_id: str) -> bool:
+    with _PROGRESS_LOCK:
+        return entry_id in _ABORT_REQUESTS
+
+
+def _clear_abort(entry_id: str) -> None:
+    with _PROGRESS_LOCK:
+        _ABORT_REQUESTS.discard(entry_id)
 
 
 def _set_progress(entry_id: str, **fields: Any) -> None:
@@ -67,6 +94,7 @@ async def separate_entry(
     *,
     stems: int = 4,
     device: Optional[str] = None,
+    quality: Optional[str] = None,
     sidecar: Optional[StemsSidecar] = None,
 ) -> dict:
     """Run separation for one entry. Returns the final task payload.
@@ -81,12 +109,20 @@ async def separate_entry(
     sc = sidecar or get_sidecar()
 
     _set_status(db, entry_id, "running")
+    device_label = device or "auto (sidecar picks)"
+    quality_label = quality or "hq (sidecar default)"
+    # Stash the device + quality + stems so every later progress tick
+    # can include them in its message — the sidecar's own status updates
+    # don't carry them.
+    _ctx = f"device={device_label}, quality={quality_label}, stems={stems}"
     _set_progress(
         entry_id,
         phase="starting",
-        message="Preparing sidecar…",
+        message=f"Preparing sidecar… ({_ctx})",
         progress=0,
         stems=stems,
+        device=device_label,
+        quality=quality_label,
     )
     try:
         _set_progress(
@@ -97,15 +133,18 @@ async def separate_entry(
                 "while demucs + torch + dependencies download)…"
             ),
         )
-        submit = await sc.submit_separation(audio_path, stems=stems, device=device)
+        submit = await sc.submit_separation(
+            audio_path, stems=stems, device=device, quality=quality
+        )
         task_id = submit.get("task_id")
         if not task_id:
             raise RuntimeError(f"sidecar didn't return a task_id: {submit}")
+        sidecar_msg = submit.get("message") or "Queued in sidecar"
         _set_progress(
             entry_id,
             phase="queued",
             task_id=task_id,
-            message=submit.get("message") or "Queued in sidecar",
+            message=f"{sidecar_msg} ({_ctx})",
             progress=0,
         )
 
@@ -113,14 +152,23 @@ async def separate_entry(
         last_status: dict = {}
         last_logged_phase = ""
         while time.monotonic() < deadline:
+            if _should_abort(entry_id):
+                _clear_abort(entry_id)
+                raise RuntimeError(f"stem separation aborted by user for {entry_id}")
             last_status = await sc.poll_status(task_id)
             sidecar_status = last_status.get("status") or "running"
             sidecar_message = last_status.get("message") or ""
             sidecar_progress = last_status.get("progress")
+            # Always include the device/quality context so the frontend
+            # log line tells the user what's actually running — the
+            # sidecar's own status response doesn't carry these.
+            full_message = (
+                f"{sidecar_message} ({_ctx})" if sidecar_message else f"({_ctx})"
+            )
             _set_progress(
                 entry_id,
                 phase=sidecar_status,
-                message=sidecar_message,
+                message=full_message,
                 progress=sidecar_progress,
                 task_id=task_id,
             )
@@ -203,8 +251,14 @@ async def separate_entry(
             "files": files,
         }
     except Exception as e:
-        _set_status(db, entry_id, "failed")
-        _set_progress(entry_id, phase="failed", message=str(e))
+        aborted = "aborted by user" in str(e)
+        _set_status(db, entry_id, "aborted" if aborted else "failed")
+        _set_progress(
+            entry_id,
+            phase="aborted" if aborted else "failed",
+            message=str(e),
+        )
+        _clear_abort(entry_id)
         raise
 
 

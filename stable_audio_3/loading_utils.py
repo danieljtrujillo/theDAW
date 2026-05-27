@@ -10,6 +10,20 @@ from stable_audio_3.factory import (
 )
 
 
+def _is_weight_norm_residue(key: str) -> bool:
+    """A weight_norm-shaped key (legacy weight_g/v OR new parametrizations.
+    weight.original0/1) is benignly ignorable when the model has no
+    matching layer — that happens when the layer became ``nn.Identity()``
+    at the current channel widths, while the checkpoint was saved when
+    it was still a weight-normed conv. These are NOT real load failures."""
+    return (
+        key.endswith(".weight_g")
+        or key.endswith(".weight_v")
+        or key.endswith(".parametrizations.weight.original0")
+        or key.endswith(".parametrizations.weight.original1")
+    )
+
+
 def copy_state_dict(model, state_dict):
     """Load state_dict to model, but only for keys that match exactly.
 
@@ -19,7 +33,8 @@ def copy_state_dict(model, state_dict):
     """
     model_state_dict = model.state_dict()
     state_dict = remap_state_dict_keys(state_dict, model_state_dict)
-    ignored_params = []
+    ignored_params: list[str] = []
+    skipped_weight_norm_residue = 0
     for key in state_dict:
         if (
             key in model_state_dict
@@ -30,10 +45,21 @@ def copy_state_dict(model, state_dict):
                 # backwards compatibility for serialized parameters
                 state_dict[key] = state_dict[key].data
             model_state_dict[key] = state_dict[key]
+        elif _is_weight_norm_residue(key) and key not in model_state_dict:
+            # Identity-shadowed weight_norm tensor — silently skip. Counted
+            # so we surface a single summary line at end of load rather
+            # than ~N "Key not found" warnings.
+            skipped_weight_norm_residue += 1
         else:
             print(
                 f"Key {key} not found in target state_dict or shape mismatch. Skipping."
             )
+
+    if skipped_weight_norm_residue:
+        print(
+            f"[LOAD] {skipped_weight_norm_residue} weight_norm tensor(s) ignored "
+            f"(layer became nn.Identity() at current channel widths — benign)."
+        )
 
     model.load_state_dict(model_state_dict, strict=False)
 
@@ -132,17 +158,55 @@ def load_ckpt_state_dict(ckpt_path):
 def remap_state_dict_keys(state_dict, model_state_dict):
     """Remap state_dict keys to match model_state_dict keys.
 
-    Handles cases where checkpoint keys have extra nesting (e.g. pretransform.model.* -> pretransform.*).
+    Handles:
+
+    1. **weight_norm migration** — legacy ``torch.nn.utils.weight_norm``
+       stores parameters as ``<module>.weight_g`` (magnitude) and
+       ``<module>.weight_v`` (direction). The new
+       ``torch.nn.utils.parametrizations.weight_norm`` stores them as
+       ``<module>.parametrizations.weight.original0`` /
+       ``original1``. Checkpoints saved with either API now load against
+       a model built with either API: we translate either direction so
+       whichever side has the legacy form gets rewritten to match the
+       model.
+
+    2. **Extra nesting strip** (legacy behavior) — ``pretransform.model.*
+       → pretransform.*`` and similar one-level prefix peels.
     """
     remapped = {}
     for key, value in state_dict.items():
-        if key not in model_state_dict:
+        if key in model_state_dict:
+            remapped[key] = value
+            continue
+
+        # weight_norm legacy → parametrizations
+        new_key = None
+        if key.endswith(".weight_g"):
+            cand = key[: -len(".weight_g")] + ".parametrizations.weight.original0"
+            if cand in model_state_dict:
+                new_key = cand
+        elif key.endswith(".weight_v"):
+            cand = key[: -len(".weight_v")] + ".parametrizations.weight.original1"
+            if cand in model_state_dict:
+                new_key = cand
+        # weight_norm parametrizations → legacy (opposite direction)
+        elif key.endswith(".parametrizations.weight.original0"):
+            cand = key[: -len(".parametrizations.weight.original0")] + ".weight_g"
+            if cand in model_state_dict:
+                new_key = cand
+        elif key.endswith(".parametrizations.weight.original1"):
+            cand = key[: -len(".parametrizations.weight.original1")] + ".weight_v"
+            if cand in model_state_dict:
+                new_key = cand
+
+        if new_key is None:
             # Try stripping one level of nesting from each prefix segment
             parts = key.split(".")
             for i in range(1, len(parts)):
                 candidate = ".".join(parts[:i]) + "." + ".".join(parts[i + 1 :])
                 if candidate in model_state_dict:
-                    key = candidate
+                    new_key = candidate
                     break
-        remapped[key] = value
+
+        remapped[new_key if new_key is not None else key] = value
     return remapped
