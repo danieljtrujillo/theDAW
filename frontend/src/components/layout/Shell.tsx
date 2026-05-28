@@ -204,7 +204,7 @@ export const Shell: React.FC = () => {
           the whole rail narrows to RIGHT_RAIL_COLLAPSED with a 45°
           beveled left edge so the strip reads as deliberate. */}
       <aside
-        className="h-full shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
+        className="h-full min-h-0 shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
         style={{
           width: railWidth,
           transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',

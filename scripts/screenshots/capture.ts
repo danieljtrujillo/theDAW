@@ -1,0 +1,334 @@
+/**
+ * Capture SA3 feature screenshots — in action, not just the chrome.
+ *
+ * Each scene is a real interaction sequence that lands the app on a
+ * state worth showing (entry selected, library context menu open,
+ * graph node right-click visible, etc). Screenshots write to
+ * `docs/screenshots/` so they can be linked from the README / docs.
+ *
+ * Prereqs:
+ *   1. SA3 backend is up on http://localhost:8600
+ *   2. SA3 frontend is up on http://localhost:5173 (start-dev.bat
+ *      does both via the supervisor)
+ *   3. A library entry titled "Chungus 9003" exists (or override via
+ *      `SA3_SHOWCASE_TRACK=...` env var to pick something else)
+ *
+ * Usage:
+ *   npm --prefix frontend exec -- tsx ../scripts/screenshots/capture.ts
+ *
+ * One scene, multiple scenes, or all — controlled by the SCENES env
+ * var. Empty (default) = run all.
+ *
+ *   SCENES=library-toolbar,graph-right-click \
+ *     npm --prefix frontend exec -- tsx ../scripts/screenshots/capture.ts
+ */
+
+import { chromium, type Page } from 'playwright';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { pickShowcaseTrack, pickCohort } from './pickShowcaseTrack.js';
+
+const FRONTEND = process.env.SA3_FRONTEND_URL ?? 'http://localhost:5173';
+const BACKEND = process.env.SA3_BACKEND_URL ?? 'http://localhost:8600';
+const OUT_DIR = path.resolve(
+  process.cwd().endsWith('frontend')
+    ? '../docs/screenshots'
+    : 'docs/screenshots',
+);
+const SELECTED = (process.env.SCENES ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const VIEWPORT = { width: 1920, height: 1080 };
+
+const log = (msg: string) =>
+  console.log(`[screenshots] ${new Date().toISOString().slice(11, 19)}  ${msg}`);
+
+async function ensureOutDir(): Promise<void> {
+  await fs.mkdir(OUT_DIR, { recursive: true });
+}
+
+async function snap(page: Page, name: string): Promise<void> {
+  const file = path.join(OUT_DIR, `${name}.png`);
+  await page.screenshot({ path: file, fullPage: false });
+  log(`✓ ${name}.png`);
+}
+
+interface Scene {
+  name: string;
+  description: string;
+  run: (page: Page) => Promise<void>;
+}
+
+/**
+ * The app shows a fullscreen LoadingScreen overlay (z-200) until the
+ * backend health poll succeeds. Every interaction must wait for it
+ * to vanish or clicks land on the overlay instead of the actual UI.
+ * Also handles the case where the overlay has a "Skip" button after
+ * 15s — we click it as a safety net if the backend never reports
+ * ready (e.g. in a test scenario).
+ */
+async function waitForReady(page: Page): Promise<void> {
+  const overlay = page.locator('div.fixed.inset-0.bg-\\[\\#07050a\\].z-200').first();
+  // Wait up to 25s for the overlay to disappear naturally.
+  try {
+    await overlay.waitFor({ state: 'hidden', timeout: 25000 });
+  } catch {
+    // Fallback: click the Skip button if it appeared.
+    const skip = page.getByRole('button', { name: /skip/i }).first();
+    if (await skip.isVisible().catch(() => false)) {
+      await skip.click();
+      await overlay.waitFor({ state: 'hidden', timeout: 5000 });
+    }
+  }
+  // Tiny settle delay so the post-loading-screen layout finishes
+  // mounting (Shell's resize observers, persistent stores rehydrating).
+  await page.waitForTimeout(300);
+}
+
+/** Click the named center-bar tab. */
+async function clickTab(page: Page, label: string): Promise<void> {
+  await page.locator(`button[title="${label}"]`).first().click({ timeout: 5000 });
+  await page.waitForTimeout(400);
+}
+
+/** Open the right-side library panel if it isn't already. */
+async function openLibrary(page: Page): Promise<void> {
+  const lib = page.locator('button[title*="library" i]').first();
+  await lib.click({ timeout: 5000 });
+  await page.waitForTimeout(300);
+}
+
+/** Type into the global library search and wait for the filter to settle. */
+async function librarySearch(page: Page, query: string): Promise<void> {
+  const input = page.locator('input[name="library-search"]').first();
+  await input.click();
+  await input.fill(query);
+  await page.waitForTimeout(300);
+}
+
+/** Find the library entry row matching `id` and return its locator. */
+function entryRow(page: Page, id: string) {
+  return page.locator(`[data-library-entry-id="${id}"]`).first();
+}
+
+const SCENES: Scene[] = [
+  {
+    name: '01-shell-make',
+    description: 'App opened on MAKE tab — top bar + tabs + library closed',
+    run: async (page) => {
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await page.waitForTimeout(800);
+      await clickTab(page, 'Make');
+      await snap(page, '01-shell-make');
+    },
+  },
+  {
+    name: '02-library-with-showcase-selected',
+    description: 'Library panel open with Chungus 9003 selected + details visible',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      log(`showcase track: ${seed.title} (${seed.id.slice(0, 8)})`);
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await openLibrary(page);
+      // Search by the showcase title so it scrolls into view.
+      await librarySearch(page, seed.title);
+      const row = entryRow(page, seed.id);
+      await row.click({ timeout: 5000 });
+      await page.waitForTimeout(400);
+      await snap(page, '02-library-with-showcase-selected');
+    },
+  },
+  {
+    name: '03-library-actions-toolbar',
+    description: 'Icon-only toolbar above entry list, with selection',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await openLibrary(page);
+      await librarySearch(page, seed.title);
+      const row = entryRow(page, seed.id);
+      await row.click();
+      await page.waitForTimeout(300);
+      // Hover the DOWNLOAD button so its tooltip shows.
+      await page.locator('button[aria-label="Download menu"]').first().hover();
+      await page.waitForTimeout(200);
+      await snap(page, '03-library-actions-toolbar');
+    },
+  },
+  {
+    name: '04-library-download-submenu',
+    description: 'DOWNLOAD submenu open showing Songs/MIDI/JSON/Bundle/Lineage',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await openLibrary(page);
+      await librarySearch(page, seed.title);
+      await entryRow(page, seed.id).click();
+      await page.locator('button[aria-label="Download menu"]').first().click();
+      await page.waitForTimeout(300);
+      await snap(page, '04-library-download-submenu');
+    },
+  },
+  {
+    name: '05-library-entry-right-click',
+    description: 'Right-clicked an entry to reveal the per-row context menu',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await openLibrary(page);
+      await librarySearch(page, seed.title);
+      const row = entryRow(page, seed.id);
+      await row.click({ button: 'right' });
+      await page.waitForTimeout(300);
+      await snap(page, '05-library-entry-right-click');
+    },
+  },
+  {
+    name: '06-learn-tab-3d-graph',
+    description: 'LEARN tab — 3D lineage graph with showcase node highlighted',
+    run: async (page) => {
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await clickTab(page, 'Learn');
+      // 3D graph needs a beat to settle the force layout.
+      await page.waitForTimeout(3000);
+      await snap(page, '06-learn-tab-3d-graph');
+    },
+  },
+  {
+    name: '07-settings-modal-with-shutdown',
+    description: 'SETTINGS modal open showing pinned Restart + Shutdown footer',
+    run: async (page) => {
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      // Click the gear icon top-right.
+      await page.locator('button[title="Settings"]').first().click();
+      await page.waitForTimeout(500);
+      await snap(page, '07-settings-modal-with-shutdown');
+    },
+  },
+  {
+    name: '08-vj-tab-loading',
+    description: 'VJ tab — either loading state OR iframe ready (whichever the sidecar is in)',
+    run: async (page) => {
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await clickTab(page, 'VJ');
+      // Give the iframe a beat to either load or show the loading
+      // spinner — whichever state we're in is what's worth capturing.
+      await page.waitForTimeout(2500);
+      await snap(page, '08-vj-tab-loading');
+    },
+  },
+  {
+    name: '09-chimera-cohort-multi-select',
+    description: 'Library with a multi-track cohort selected (chimera-ready)',
+    run: async (page) => {
+      const cohort = await pickCohort(BACKEND, 3);
+      if (cohort.length === 0) throw new Error('no library entries');
+      await page.goto(FRONTEND);
+      await waitForReady(page);
+      await openLibrary(page);
+      // Select via Ctrl+click so multi-select kicks in.
+      for (let i = 0; i < cohort.length; i++) {
+        const row = entryRow(page, cohort[i].id);
+        // First scroll into view via the same custom event the graph
+        // right-click uses.
+        await page.evaluate((id: string) => {
+          window.dispatchEvent(
+            new CustomEvent('stabledaw:reveal-library-entry', {
+              detail: { entryId: id },
+            }),
+          );
+        }, cohort[i].id);
+        await page.waitForTimeout(150);
+        await row.click({ modifiers: i === 0 ? [] : ['Control'] });
+      }
+      await page.waitForTimeout(400);
+      await snap(page, '09-chimera-cohort-multi-select');
+    },
+  },
+];
+
+async function main(): Promise<void> {
+  await ensureOutDir();
+  log(`out dir: ${OUT_DIR}`);
+  log(`frontend: ${FRONTEND}`);
+  log(`backend:  ${BACKEND}`);
+  if (SELECTED.length > 0) {
+    log(`scenes:   ${SELECTED.join(', ')}`);
+  } else {
+    log(`scenes:   all (${SCENES.length})`);
+  }
+
+  // Wait for the backend health endpoint before launching the browser
+  // — saves a wasted run if start-dev.bat is still spinning up.
+  log('waiting for backend health…');
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`${BACKEND}/api/health`);
+      if (r.ok) break;
+    } catch {
+      /* still booting */
+    }
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+
+  // Headless by default; flip via `HEADED=1` env var to watch the
+  // browser drive through the scenes live (useful for debugging a
+  // flaky scene or just visually verifying the capture sequence).
+  const headed = process.env.HEADED === '1' || process.env.HEADED === 'true';
+  if (headed) log('headed mode — browser window will be visible');
+  const browser = await chromium.launch({
+    headless: !headed,
+    slowMo: headed ? 250 : 0,
+  });
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  const page = await context.newPage();
+  // Surface page console errors so we know if a scene is screenshooting
+  // a broken state.
+  page.on('pageerror', (err) => log(`PAGE ERROR: ${err.message}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error') log(`console.error: ${m.text()}`);
+  });
+
+  const toRun = SELECTED.length > 0 ? SCENES.filter((s) => SELECTED.includes(s.name)) : SCENES;
+  let okCount = 0;
+  let failCount = 0;
+  for (const scene of toRun) {
+    log(`▶ ${scene.name} — ${scene.description}`);
+    try {
+      await scene.run(page);
+      okCount += 1;
+    } catch (e) {
+      failCount += 1;
+      log(`✗ ${scene.name} FAILED: ${e instanceof Error ? e.message : String(e)}`);
+      // Still snap whatever state we're in so the user can debug.
+      try {
+        await snap(page, `${scene.name}-FAILED`);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+  await browser.close();
+  log(`done. ${okCount} ok, ${failCount} failed.`);
+  if (failCount > 0) process.exit(1);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

@@ -10,16 +10,23 @@ interface SectionProps {
   children: React.ReactNode;
   resizable?: boolean;
   minHeight?: number;
+  /** Cap the inner scroll area's height. Defaults to 800px to keep
+   *  Sections in long pages compact. Pass `null` to disable — the
+   *  Section grows to fit its content and lets the parent's scroll
+   *  handle overflow (used by the Library panel to avoid a
+   *  double-scroll inside the right rail). */
+  maxContentHeight?: number | null;
 }
 
-export const Section: React.FC<SectionProps> = ({ 
-  title, 
-  icon: Icon, 
-  rightNode, 
-  defaultOpen = false, 
+export const Section: React.FC<SectionProps> = ({
+  title,
+  icon: Icon,
+  rightNode,
+  defaultOpen = false,
   children,
   resizable = true,
-  minHeight = 80
+  minHeight = 80,
+  maxContentHeight = 800,
 }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [height, setHeight] = useState<number | string>('auto');
@@ -75,9 +82,9 @@ export const Section: React.FC<SectionProps> = ({
              className="overflow-hidden flex flex-col"
              ref={containerRef}
            >
-              <div 
-                className="flex flex-col gap-2 pt-2 border-t border-white/5 overflow-y-auto p-2 flex-1 no-scrollbar overflow-x-hidden" 
-                style={{ maxHeight: '800px' }}
+              <div
+                className={`flex flex-col gap-2 pt-2 border-t border-white/5 p-2 flex-1 no-scrollbar overflow-x-hidden ${maxContentHeight !== null ? 'overflow-y-auto' : ''}`}
+                style={maxContentHeight !== null ? { maxHeight: `${maxContentHeight}px` } : undefined}
               >
                 {children}
               </div>
