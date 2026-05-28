@@ -13,8 +13,9 @@ import { useAppUiStore } from '../../state/appUiStore';
  * The center workspace — CenterTabBar at the top + the active tab's
  * view filling the rest. The bottom multi-tab panel was extracted to
  * BottomMultiTabPanel.tsx and now lives in the global footer
- * (Shell.tsx) side-by-side with ProcessingLog. Heights stay synced
- * via useBottomPanelStore.bottomHeight.
+ * (Shell.tsx) side-by-side with ProcessingLog. Each panel has its
+ * own independent height (multiHeight / logHeight in bottomPanelStore)
+ * and its own resize handle.
  */
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const centerTab = useAppUiStore((s) => s.centerTab);
