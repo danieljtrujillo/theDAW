@@ -16,6 +16,7 @@ import { HoverTip, InfoTip } from '../components/ui/Tooltip';
 import { RICH_TOOLTIPS, HOVER_TOOLTIPS } from '../components/ui/tooltips';
 import { GENERATION_PRESETS, type GenerationPreset } from '../data/generationPresets';
 import { enhanceStableAudioPrompt } from '../orb-kit/promptEnhancer';
+import { ChimeraStack } from '../components/chimera/ChimeraStack';
 
 /* ── SField: label / slider / number / default ────────────────────── */
 function SField({ label, value, onChange, min, max, step = 0.01, hint, defaultValue, tipKey }: {
@@ -592,6 +593,14 @@ export const AdvancedGenPanel: React.FC<{
               <span className="text-[9px] text-zinc-600">No audio loaded</span>
             </div>
           )}
+          {/* ChimeraStack — multi-source init audio builder (Pass 3:
+              CREATE → MAKE content move). Lets the user stack
+              multiple library clips / dropped files into one fused
+              init signal, matching the affordance that used to live
+              in the (now-merged) CREATE / GenerateView. */}
+          <div className="mb-2">
+            <ChimeraStack />
+          </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-zinc-400">Type</span>

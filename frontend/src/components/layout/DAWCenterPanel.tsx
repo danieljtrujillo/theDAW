@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { AdvancedView } from '../../views/AdvancedView';
 import { AdvancedEditorPanel } from '../../views/AdvancedEditorPanel';
+import { StudioView } from '../../views/StudioView';
 import { TrainingView } from '../../views/TrainingView';
 import { LineageView } from '../library/LineageModal';
 import { VJView } from '../../views/VJView';
@@ -111,8 +112,19 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <WaveformEditor onSwitchTab={onSwitchTab} />
           )}
           {centerTab === 'mix' && (
-            <div className="absolute inset-0 overflow-y-auto">
-              <AdvancedEditorPanel />
+            // PROCESS → MIX content move (Pass 3): StudioView's macros
+            // + process history sit at the top (natural height, in the
+            // outer scroll), AdvancedEditorPanel's full effects-chain
+            // editor takes the remaining viewport height below. Both
+            // operate on the same source (shared via useStudioStore /
+            // useAdvancedEditorSourceStore) so the user can mix macro
+            // quick-processing with chain-based detailed processing on
+            // the same loaded audio.
+            <div className="absolute inset-0 overflow-y-auto flex flex-col gap-2">
+              <StudioView />
+              <div className="shrink-0" style={{ minHeight: '720px' }}>
+                <AdvancedEditorPanel />
+              </div>
             </div>
           )}
           {centerTab === 'learn' && (
