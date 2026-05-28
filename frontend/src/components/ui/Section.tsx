@@ -16,6 +16,11 @@ interface SectionProps {
    *  handle overflow (used by the Library panel to avoid a
    *  double-scroll inside the right rail). */
   maxContentHeight?: number | null;
+  /** When false, the Section is always open and never shows a
+   *  collapse chevron. Used for the LIBRARY section in the right
+   *  rail, which already has the rail-level collapse button — the
+   *  inner chevron was a confusing duplicate handle. */
+  collapsible?: boolean;
 }
 
 export const Section: React.FC<SectionProps> = ({
@@ -27,8 +32,11 @@ export const Section: React.FC<SectionProps> = ({
   resizable = true,
   minHeight = 80,
   maxContentHeight = 800,
+  collapsible = true,
 }) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  // When collapsible=false the Section is locked open. defaultOpen
+  // is ignored in that mode.
+  const [isOpen, setIsOpen] = useState(collapsible ? defaultOpen : true);
   const [height, setHeight] = useState<number | string>('auto');
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -60,9 +68,11 @@ export const Section: React.FC<SectionProps> = ({
 
   return (
     <div className="hardware-card flex flex-col shrink-0 relative mb-1 last:mb-0">
-       <div 
-         className="flex items-center justify-between px-2 py-1.5 cursor-pointer select-none bg-white/2 hover:bg-white/5 transition-colors" 
-         onClick={() => setIsOpen(!isOpen)}
+       <div
+         className={`flex items-center justify-between px-2 py-1.5 select-none bg-white/2 transition-colors ${
+           collapsible ? 'cursor-pointer hover:bg-white/5' : ''
+         }`}
+         onClick={collapsible ? () => setIsOpen(!isOpen) : undefined}
        >
           <div className="flex items-center gap-2">
              {Icon && <Icon className="w-3.5 h-3.5 text-purple-400" />}
@@ -70,7 +80,9 @@ export const Section: React.FC<SectionProps> = ({
           </div>
           <div className="flex items-center gap-2">
              {rightNode}
-             <ChevronDown className={`w-3.5 h-3.5 text-zinc-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+             {collapsible && (
+               <ChevronDown className={`w-3.5 h-3.5 text-zinc-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+             )}
           </div>
        </div>
        <AnimatePresence>

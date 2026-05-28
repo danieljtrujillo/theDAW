@@ -683,7 +683,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         }}
       />
 
-      <Section title="LIBRARY" icon={Database} defaultOpen={true} resizable={false} maxContentHeight={null} rightNode={
+      <Section title="LIBRARY" icon={Database} defaultOpen={true} resizable={false} collapsible={false} maxContentHeight={null} rightNode={
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <span className="text-[8px] font-mono text-zinc-600">{entries.length} TRACKS</span>
           <button
