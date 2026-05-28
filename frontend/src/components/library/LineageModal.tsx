@@ -32,6 +32,12 @@ interface LineageModalProps {
   open: boolean;
   rootEntryId: string | null;
   onClose: () => void;
+  /** 'modal' = current behaviour (portal, backdrop, close button, sized
+   *  card). 'embedded' = render inline at parent's full size, no portal,
+   *  no backdrop, no close button — for use as the LEARN tab in the
+   *  new center bar. Defaults to 'modal' so existing callers don't
+   *  change behaviour. */
+  mode?: 'modal' | 'embedded';
 }
 
 type VizPreset =
@@ -190,7 +196,8 @@ const EDGE_COLOR_BY_KIND: Record<string, string> = {
   used_in_lora: '#fb7185',
 };
 
-export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, onClose }) => {
+export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, onClose, mode = 'modal' }) => {
+  const embedded = mode === 'embedded';
   const [tab, setTab] = useState<LineageTab>('track');
   const [perTrack, setPerTrack] = useState<GraphPayload | null>(null);
   const [libraryGraph, setLibraryGraph] = useState<GraphPayload | null>(null);
@@ -214,16 +221,21 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
     }
   }, [appearance]);
 
+  // "active" gates open-only side effects. In embedded mode the view
+  // is always live (no open/close lifecycle), so we keep effects firing
+  // whenever the component is mounted.
+  const active = open || embedded;
+
   // When the modal opens for a specific track, default to that view.
   // When opened library-wide, jump straight to the genealogy view.
   useEffect(() => {
-    if (!open) return;
+    if (!active) return;
     setTab(rootEntryId ? 'track' : 'genealogy');
-  }, [open, rootEntryId]);
+  }, [active, rootEntryId]);
 
   // Fetch the per-track BFS.
   useEffect(() => {
-    if (!open || !rootEntryId) return;
+    if (!active || !rootEntryId) return;
     setLoading(true);
     setPerTrack(null);
     void fetch(`/api/library/${rootEntryId}/lineage?depth=4`)
@@ -231,11 +243,11 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
       .then((j: GraphPayload) => setPerTrack(j))
       .catch(() => setPerTrack({ nodes: [], edges: [] }))
       .finally(() => setLoading(false));
-  }, [open, rootEntryId]);
+  }, [active, rootEntryId]);
 
   // Fetch the full library graph for the family-tree + 3D-graph views.
   useEffect(() => {
-    if (!open) return;
+    if (!active) return;
     if (tab !== 'genealogy' && tab !== 'graph3d') return;
     if (libraryGraph !== null) return;
     setLoading(true);
@@ -244,9 +256,9 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
       .then((j: GraphPayload) => setLibraryGraph(j))
       .catch(() => setLibraryGraph({ nodes: [], edges: [] }))
       .finally(() => setLoading(false));
-  }, [open, tab, libraryGraph]);
+  }, [active, tab, libraryGraph]);
 
-  if (!open) return null;
+  if (!active) return null;
 
   // The modal renders via a portal mounted at document.body so it
   // escapes the `.dense-layout { zoom: 0.85 }` ancestor on <Shell>.
@@ -255,13 +267,20 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   // up landed several centimetres away from the cursor. Portalling out
   // of the zoomed subtree fixes that for both the genealogy SVG and
   // the 3D-graph WebGL canvas.
-  const modalShellClass = fullscreen
+  //
+  // In embedded mode there's no portal and no card — the view fills
+  // its parent (e.g. the LEARN tab's content area).
+  const modalShellClass = embedded
+    ? 'relative w-full h-full bg-[#0c0a14] flex flex-col overflow-hidden'
+    : fullscreen
     ? 'relative w-full h-full bg-[#0c0a14] flex flex-col overflow-hidden'
     : 'relative w-[min(1100px,92vw)] h-[min(720px,86vh)] bg-[#0c0a14] border border-purple-500/30 rounded-lg shadow-2xl flex flex-col overflow-hidden';
 
   const content = (
-    <div className="fixed inset-0 z-200 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+    <div className={embedded ? 'absolute inset-0 flex' : 'fixed inset-0 z-200 flex items-center justify-center'}>
+      {!embedded && (
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      )}
       <div className={modalShellClass}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
@@ -295,16 +314,20 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
                 <Sliders className="w-3.5 h-3.5" />
               </button>
             )}
-            <button
-              onClick={() => setFullscreen((v) => !v)}
-              className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
-              title={fullscreen ? 'Exit full screen' : 'Full screen'}
-            >
-              {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-            </button>
-            <button onClick={onClose} className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
-              <X className="w-3.5 h-3.5" />
-            </button>
+            {!embedded && (
+              <button
+                onClick={() => setFullscreen((v) => !v)}
+                className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
+                title={fullscreen ? 'Exit full screen' : 'Full screen'}
+              >
+                {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              </button>
+            )}
+            {!embedded && (
+              <button onClick={onClose} className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -353,9 +376,24 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
     </div>
   );
 
+  if (embedded) return content;
   if (typeof document === 'undefined') return content;
   return createPortal(content, document.body);
 };
+
+/** Embedded variant of LineageModal — mounts the lineage UI inline
+ *  (no backdrop, no portal, no close button) for use as the LEARN tab
+ *  in the new center bar. Always-live; doesn't take an `open` prop. */
+export const LineageView: React.FC<{ rootEntryId?: string | null }> = ({ rootEntryId = null }) => (
+  <LineageModal
+    mode="embedded"
+    open={true}
+    rootEntryId={rootEntryId}
+    onClose={() => {
+      /* no-op in embedded mode */
+    }}
+  />
+);
 
 
 interface TabButtonProps {
@@ -1161,19 +1199,45 @@ const Graph3DView: React.FC<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
-  // Fit-to-view at two checkpoints so we catch both early- and late-
+  // Hover state lives in a ref (NOT useState) so onNodeHover doesn't
+  // trigger a React render — instead we tell react-force-graph to
+  // refresh its canvas via fgRef.refresh(). The linkColor/linkWidth
+  // callbacks read this ref each frame.
+  const hoverIdRef = useRef<string | null>(null);
+  const handleNodeHover = (node: { id?: string } | null) => {
+    hoverIdRef.current = node?.id ?? null;
+    const r = fgRef.current as { refresh?: () => void } | null;
+    r?.refresh?.();
+  };
+
+  // Fit-to-view at three checkpoints so we catch both early- and late-
   // settling force layouts. Without this the camera lingers at its
   // default position and the user sees one disconnected dot far off
   // in z-space.
+  //
+  // Tighter padding (was 80 → 12) so the cluster fills the viewport.
+  // d3Force tweaks pull nodes closer: weaker repulsive charge (was
+  // ~-300 default → -90) and shorter link distance (was ~30 default →
+  // 18) trade out-of-cluster breathing room for in-cluster density.
   useEffect(() => {
-    const timeouts = [400, 1500, 3000].map((ms) =>
+    const ref = fgRef.current as {
+      d3Force?: (forceName: string) => {
+        strength?: (n: number) => void;
+        distance?: (n: number | ((l: unknown) => number)) => void;
+      } | null;
+    } | null;
+    if (ref?.d3Force) {
+      ref.d3Force('charge')?.strength?.(-90);
+      ref.d3Force('link')?.distance?.(18);
+    }
+    const timeouts = [350, 1200, 2500].map((ms) =>
       setTimeout(() => {
-        const ref = fgRef.current as {
+        const r = fgRef.current as {
           zoomToFit?: (ms: number, pad: number) => void;
           centerAt?: (x: number, y: number, ms: number) => void;
         } | null;
-        if (ref?.zoomToFit) ref.zoomToFit(600, 80);
-        if (ref?.centerAt) ref.centerAt(0, 0, 600);
+        if (r?.zoomToFit) r.zoomToFit(600, 12);
+        if (r?.centerAt) r.centerAt(0, 0, 600);
       }, ms),
     );
     return () => timeouts.forEach(clearTimeout);
@@ -1431,9 +1495,25 @@ const Graph3DView: React.FC<{
           backgroundColor={bgColor}
           showNavInfo={false}
           controlType={appearance.controlType}
-          linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+          onNodeHover={handleNodeHover}
+          linkColor={(l: { color?: string; source?: { id?: string } | string; target?: { id?: string } | string }) => {
+            const hov = hoverIdRef.current;
+            if (!hov) return l.color ?? '#a78bfa';
+            const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
+            const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
+            const incident = srcId === hov || tgtId === hov;
+            return incident ? (l.color ?? '#a78bfa') : '#1c1828';
+          }}
           linkOpacity={appearance.linkOpacity}
-          linkWidth={appearance.linkWidth}
+          linkWidth={(l: { source?: { id?: string } | string; target?: { id?: string } | string }) => {
+            const hov = hoverIdRef.current;
+            if (!hov) return appearance.linkWidth;
+            const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
+            const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
+            return srcId === hov || tgtId === hov
+              ? appearance.linkWidth * 2.2
+              : appearance.linkWidth * 0.5;
+          }}
           linkCurvature={appearance.edgeCurve}
           linkDirectionalArrowLength={5}
           linkDirectionalArrowRelPos={0.92}
@@ -1456,9 +1536,24 @@ const Graph3DView: React.FC<{
           enableNodeDrag={true}
           enablePanInteraction={true}
           enableZoomInteraction={true}
-          linkColor={(l: { color?: string }) => l.color ?? '#a78bfa'}
+          onNodeHover={handleNodeHover}
+          linkColor={(l: { color?: string; source?: { id?: string } | string; target?: { id?: string } | string }) => {
+            const hov = hoverIdRef.current;
+            if (!hov) return l.color ?? '#a78bfa';
+            const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
+            const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
+            return srcId === hov || tgtId === hov ? (l.color ?? '#a78bfa') : '#1c1828';
+          }}
           linkLineDash={() => null}
-          linkWidth={appearance.linkWidth}
+          linkWidth={(l: { source?: { id?: string } | string; target?: { id?: string } | string }) => {
+            const hov = hoverIdRef.current;
+            if (!hov) return appearance.linkWidth;
+            const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
+            const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
+            return srcId === hov || tgtId === hov
+              ? appearance.linkWidth * 2.2
+              : appearance.linkWidth * 0.5;
+          }}
           linkCurvature={appearance.edgeCurve}
           linkDirectionalArrowLength={6}
           linkDirectionalArrowRelPos={1}
