@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 
 interface ModuleConfig {
@@ -101,6 +101,33 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               onPatchGenerate={(v) => void patchFeatures({ stems: { auto_on_generate: v } })}
               extra={
                 <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-white/5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Stems:</span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[
+                        { value: 2,  label: '2',  hint: 'vocals + accompaniment' },
+                        { value: 4,  label: '4',  hint: 'vocals, drums, bass, other' },
+                        { value: 6,  label: '6',  hint: '+ guitar, piano' },
+                        { value: 12, label: '12', hint: '+ LARSNET drum sub-stems' },
+                      ].map((opt) => {
+                        const active = featureSettings.stems.default_count === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            onClick={() => void patchFeatures({ stems: { default_count: opt.value } })}
+                            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                              active
+                                ? 'bg-purple-500/25 border-purple-400/60 text-purple-100'
+                                : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                            }`}
+                            title={opt.hint}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Device:</span>
                     <div className="flex items-center gap-1 flex-wrap">
@@ -246,8 +273,116 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               })}
             </div>
           )}
+
+          {/* Section: Admin actions */}
+          <div className="flex items-center gap-1.5 mt-6 mb-2 pt-2 border-t border-white/5">
+            <Power className="w-3 h-3 text-purple-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Admin</span>
+            <span className="text-[8px] font-mono text-zinc-600 ml-auto">SA3 Backend window stays open</span>
+          </div>
+          <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">
+            Re-launches the backend inside the same SA3 Backend console (requires the dev launcher to be using <code className="text-purple-300/80">backend._supervisor</code>; start-dev.bat does this by default).
+          </p>
+          <RestartServerButton />
         </div>
       </div>
+    </div>
+  );
+};
+
+/** Restarts the backend by hitting POST /api/admin/restart and then
+ *  polling /api/health until the new process answers. The button
+ *  surfaces three states: idle, restarting (spinner), and a short
+ *  success/error flash that auto-resets after 4s. */
+const RestartServerButton: React.FC = () => {
+  type Status = 'idle' | 'restarting' | 'success' | 'error';
+  const [status, setStatus] = useState<Status>('idle');
+  const [detail, setDetail] = useState<string>('');
+
+  const handle = async () => {
+    if (status === 'restarting') return;
+    setStatus('restarting');
+    setDetail('Sending restart signal…');
+    try {
+      const r = await fetch('/api/admin/restart', { method: 'POST' });
+      if (!r.ok) throw new Error(`restart endpoint returned ${r.status}`);
+      // Wait a beat for the process to exit, then poll /api/health.
+      setDetail('Waiting for backend to come back…');
+      const deadline = Date.now() + 30_000;
+      // Brief initial sleep so we don't race the still-alive old
+      // process before the supervisor re-spawns.
+      await new Promise((res) => setTimeout(res, 1200));
+      while (Date.now() < deadline) {
+        try {
+          const h = await fetch('/api/health', { cache: 'no-store' });
+          if (h.ok) {
+            setStatus('success');
+            setDetail('Backend restarted.');
+            setTimeout(() => {
+              setStatus('idle');
+              setDetail('');
+            }, 4000);
+            return;
+          }
+        } catch {
+          // expected during the offline window
+        }
+        await new Promise((res) => setTimeout(res, 500));
+      }
+      throw new Error("backend didn't come back within 30s");
+    } catch (e) {
+      setStatus('error');
+      setDetail(e instanceof Error ? e.message : 'restart failed');
+      setTimeout(() => {
+        setStatus('idle');
+        setDetail('');
+      }, 6000);
+    }
+  };
+
+  const baseCls =
+    'flex items-center justify-center gap-2 w-full px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+  const stateCls: Record<Status, string> = {
+    idle: 'border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/60',
+    restarting: 'border-amber-500/40 bg-amber-500/10 text-amber-200 cursor-wait',
+    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 cursor-default',
+    error: 'border-rose-500/40 bg-rose-500/10 text-rose-200 cursor-default',
+  };
+
+  const icon =
+    status === 'restarting' ? (
+      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+    ) : status === 'success' ? (
+      <CheckCircle2 className="w-3.5 h-3.5" />
+    ) : status === 'error' ? (
+      <AlertCircle className="w-3.5 h-3.5" />
+    ) : (
+      <Power className="w-3.5 h-3.5" />
+    );
+
+  const label =
+    status === 'restarting'
+      ? 'Restarting…'
+      : status === 'success'
+      ? 'Back online'
+      : status === 'error'
+      ? 'Restart failed'
+      : 'Restart Server';
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={handle}
+        disabled={status === 'restarting'}
+        className={`${baseCls} ${stateCls[status]}`}
+      >
+        {icon}
+        <span>{label}</span>
+      </button>
+      {detail && (
+        <span className="text-[9px] font-mono text-zinc-500 px-1 leading-tight">{detail}</span>
+      )}
     </div>
   );
 };
