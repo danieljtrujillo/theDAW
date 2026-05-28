@@ -5,6 +5,7 @@ import {
   Scissors,
   Zap,
   Workflow,
+  Tv2,
   ChevronLeft,
   ChevronRight,
   PanelRightOpen,
@@ -86,6 +87,17 @@ const TABS: Array<{
       bg: 'bg-rose-500/15',
       text: 'text-rose-100',
       iconText: 'text-rose-300',
+    },
+  },
+  {
+    id: 'vj',
+    label: 'VJ',
+    icon: Tv2,
+    accent: {
+      border: 'border-fuchsia-500/50',
+      bg: 'bg-fuchsia-500/15',
+      text: 'text-fuchsia-100',
+      iconText: 'text-fuchsia-300',
     },
   },
 ];

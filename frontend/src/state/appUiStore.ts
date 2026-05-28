@@ -10,10 +10,10 @@ export function normalizeStableDAWView(value: unknown): StableDAWView | null {
     : null;
 }
 
-/** The new center-bar tabs introduced in the top-bar restructure
- *  (plan step 3a). All workspaces live here; the legacy left-side
- *  tabs (CREATE/PROCESS/TRAIN) are subsumed by these. */
-export const CENTER_TABS = ['train', 'make', 'edit', 'mix', 'learn'] as const;
+/** The center-bar tabs in user-locked order MAKE / EDIT / MIX / TRAIN
+ *  / LEARN / VJ. All workspaces live here; the legacy left-side tabs
+ *  (CREATE/PROCESS/TRAIN) are subsumed by these. */
+export const CENTER_TABS = ['make', 'edit', 'mix', 'train', 'learn', 'vj'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
 
 /** Translate legacy navigation targets (used by orb-kit, library row

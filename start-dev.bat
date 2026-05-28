@@ -15,6 +15,12 @@ for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8600 " ^| findstr "L
     echo   Killing PID %%a on port 8600
     taskkill /F /PID %%a >nul 2>&1
 )
+:: VJ sidecar (default port 5187). Kill stale instances so the
+:: backend's vj module can spawn a fresh one on startup.
+for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5187 " ^| findstr "LISTENING"') do (
+    echo   Killing PID %%a on port 5187 ^(VJ sidecar^)
+    taskkill /F /PID %%a >nul 2>&1
+)
 timeout /t 1 /nobreak >nul
 
 :: Start the backend API server (port 8600) under the supervisor so
@@ -41,6 +47,7 @@ echo.
 echo All servers starting:
 echo   Backend API:    http://localhost:8600
 echo   Frontend UI:    http://localhost:5173
+echo   VJ sidecar:     http://localhost:5187  ^(auto-spawned by backend^)
 echo   Public Link:    https://stabledaw.localtunnel.me
 echo.
 echo   Each browser/tab gets independent app state.

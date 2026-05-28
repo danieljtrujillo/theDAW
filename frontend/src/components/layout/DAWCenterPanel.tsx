@@ -13,6 +13,7 @@ import { AdvancedView } from '../../views/AdvancedView';
 import { AdvancedEditorPanel } from '../../views/AdvancedEditorPanel';
 import { TrainingView } from '../../views/TrainingView';
 import { LineageView } from '../library/LineageModal';
+import { VJView } from '../../views/VJView';
 import { CenterTabBar } from './CenterTabBar';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
@@ -116,6 +117,9 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           )}
           {centerTab === 'learn' && (
             <LineageView rootEntryId={null} />
+          )}
+          {centerTab === 'vj' && (
+            <VJView />
           )}
         </div>
       </div>
