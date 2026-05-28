@@ -320,19 +320,25 @@ export const Shell: React.FC = () => {
 };
 
 /**
- * Brand logo — isometric stacked-cube glyph in a rounded square,
- * matching the SUBSTRATA reference screenshot. Self-contained SVG so
- * it scales crisply at any size and doesn't depend on a raster asset.
+ * Brand logo — the same SVG mark used as the site favicon
+ * (frontend/public/favicon.svg). Inlined here so the header logo and
+ * the browser-tab icon stay visually identical without an extra
+ * fetch on every render. Shown alongside the 'The DAW / by Gantasmo'
+ * title in the header.
  */
 const BrandLogo: React.FC = () => (
-  <div className="w-7 h-7 rounded-md bg-linear-to-br from-purple-600/40 via-fuchsia-700/30 to-cyan-700/25 border border-purple-500/30 flex items-center justify-center shadow-[0_0_12px_rgba(168,85,247,0.25)] shrink-0">
-    <svg viewBox="0 0 24 24" className="w-5 h-5 text-purple-100" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      {/* Three stacked isometric squares — a layered "stack" glyph. */}
-      <path d="M12 3l8 4.5-8 4.5-8-4.5L12 3z" />
-      <path d="M4 12l8 4.5 8-4.5" />
-      <path d="M4 16.5l8 4.5 8-4.5" />
-    </svg>
-  </div>
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 32 32"
+    className="w-7 h-7 shrink-0 shadow-[0_0_12px_rgba(124,58,237,0.35)] rounded-md"
+    aria-hidden
+  >
+    <rect width="32" height="32" rx="6" fill="#7c3aed" />
+    <rect x="7"  y="13" width="3" height="6"  rx="1.5" fill="white" opacity="0.8" />
+    <rect x="12" y="9"  width="3" height="14" rx="1.5" fill="white" />
+    <rect x="17" y="11" width="3" height="10" rx="1.5" fill="white" opacity="0.85" />
+    <rect x="22" y="14" width="3" height="4"  rx="1.5" fill="white" opacity="0.7" />
+  </svg>
 );
 
 /**
