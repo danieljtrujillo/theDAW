@@ -320,25 +320,20 @@ export const Shell: React.FC = () => {
 };
 
 /**
- * Brand logo — the same SVG mark used as the site favicon
- * (frontend/public/favicon.svg). Inlined here so the header logo and
- * the browser-tab icon stay visually identical without an extra
- * fetch on every render. Shown alongside the 'The DAW / by Gantasmo'
- * title in the header.
+ * Brand logo — references the SAME SVG that index.html wires up as
+ * the browser-tab favicon (frontend/public/favicon.svg). Browser
+ * caches it after the first paint so the header logo, the tab icon,
+ * and any other site reference all stay byte-identical with no
+ * inline duplication. The file is too detailed (2723×2723 viewBox,
+ * ~40KB) to inline cheaply, hence the <img> reference.
  */
 const BrandLogo: React.FC = () => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 32 32"
-    className="w-7 h-7 shrink-0 shadow-[0_0_12px_rgba(124,58,237,0.35)] rounded-md"
-    aria-hidden
-  >
-    <rect width="32" height="32" rx="6" fill="#7c3aed" />
-    <rect x="7"  y="13" width="3" height="6"  rx="1.5" fill="white" opacity="0.8" />
-    <rect x="12" y="9"  width="3" height="14" rx="1.5" fill="white" />
-    <rect x="17" y="11" width="3" height="10" rx="1.5" fill="white" opacity="0.85" />
-    <rect x="22" y="14" width="3" height="4"  rx="1.5" fill="white" opacity="0.7" />
-  </svg>
+  <img
+    src="/favicon.svg"
+    alt="The DAW logo"
+    className="w-7 h-7 shrink-0 rounded-md shadow-[0_0_12px_rgba(124,58,237,0.35)]"
+    draggable={false}
+  />
 );
 
 /**
