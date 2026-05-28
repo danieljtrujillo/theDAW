@@ -91,6 +91,13 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    # 🚨 HARD RULE: ruff is pinned EXACTLY. The same version literal also
+    # appears in .github/workflows/lint.yml as the `RUFF_VERSION` env var.
+    # Bumping ruff REQUIRES updating BOTH places in the same commit and
+    # running `uv sync --group dev` + `uv run ruff format .` in that same
+    # commit. Never run a different ruff (global pip, pipx, system) against
+    # this repo — version drift silently corrupts formatting. See CLAUDE.md
+    # → "🚨 HARD RULES" for the full rule.
     "ruff==0.15.14",
 ]
 

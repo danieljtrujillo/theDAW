@@ -2,6 +2,36 @@
 """
 Assistant Chat Routes - Multi-provider LLM streaming with model discovery.
 
+==============================================================================
+🚨 IF YOU ARE AN AI ASSISTANT EDITING THIS FILE — READ THIS FIRST 🚨
+
+DO NOT downgrade, remove, or "clean up" entries in the model catalogs below
+(GEMINI_MODELS, CLAUDE_MODELS, OPENAI_CAPS, GROK_CAPS, GROQ_CAPS, etc.)
+because the model id looks unfamiliar to you. Your training cutoff is older
+than the user's reality. The user has working API keys for Gemini 3.x,
+Claude 4.x / 5.x, GPT-5 variants, and other models you may not know exist.
+
+Rules:
+  1. Never delete a model entry just because you don't recognize its id.
+  2. Never replace a "-preview" / "-latest" / "-experimental" id with a
+     stable id you remember from training.
+  3. If the user reports a model is missing, FETCH the live docs first
+     (e.g. WebFetch https://ai.google.dev/gemini-api/docs/models) before
+     editing this file. Write from the docs, not from memory.
+  4. The dynamic /v1beta/models fetch is the runtime source of truth —
+     this hard-coded list is just a fallback + capability enrichment
+     source. Adding speculative models here is FINE; removing real ones
+     is NOT.
+  5. If you do need to remove an entry (e.g. an explicit user request
+     or because Google EOL'd it), tag it `deprecated` first so the UI
+     warns; only delete after the user confirms.
+
+The user has explicitly burned-in this rule: "I AM A WORLD CLASS GIGACHAD
+IN THE DEV WORLD AND HAVE ACCESS TO THE NEWEST SHIT". Assume that.
+
+See CLAUDE.md → "🚨 HARD RULES" for the canonical version of this rule.
+==============================================================================
+
 Provides:
 - /api/assistant/chat       POST  - Stream chat completions (SSE) from any provider
 - /api/assistant/providers   GET  - List all available providers
@@ -2242,74 +2272,119 @@ GEMINI_MODELS = [
         "id": "gemini-3.5-flash",
         "name": "Gemini 3.5 Flash",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "agentic", "fast",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "agentic",
+            "fast",
         ],
     },
     {
         "id": "gemini-3.1-pro-preview",
         "name": "Gemini 3.1 Pro (Preview)",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "agentic",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "agentic",
         ],
     },
     {
         "id": "gemini-3-flash-preview",
         "name": "Gemini 3 Flash (Preview)",
         "capabilities": [
-            "tools", "vision", "audio_in", "video_in",
-            "code", "long_context", "fast",
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
         ],
     },
     {
         "id": "gemini-3.1-flash-lite",
         "name": "Gemini 3.1 Flash-Lite",
         "capabilities": [
-            "tools", "vision", "audio_in", "video_in", "code", "fast",
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
         ],
     },
     {
         "id": "gemini-3.1-flash-live-preview",
         "name": "Gemini 3.1 Flash Live (Preview)",
         "capabilities": [
-            "live", "audio_in", "audio_out", "video_in", "tools", "fast",
+            "live",
+            "audio_in",
+            "audio_out",
+            "video_in",
+            "tools",
+            "fast",
         ],
     },
     {
         "id": "gemini-3.1-flash-tts-preview",
         "name": "Gemini 3.1 Flash TTS (Preview)",
         "capabilities": [
-            "tts", "audio_out", "fast",
+            "tts",
+            "audio_out",
+            "fast",
         ],
     },
     {
         "id": "gemini-3.1-flash-image-preview",
         "name": "Nano Banana 2 (Gemini 3.1 Flash Image)",
         "capabilities": [
-            "image_gen", "vision", "fast",
+            "image_gen",
+            "vision",
+            "fast",
         ],
     },
     {
         "id": "gemini-3-pro-image-preview",
         "name": "Nano Banana Pro (Gemini 3 Pro Image)",
         "capabilities": [
-            "image_gen", "vision", "long_context",
+            "image_gen",
+            "vision",
+            "long_context",
         ],
     },
     {
         "id": "gemini-3-pro-preview",
         "name": "Gemini 3 Pro (Preview, shutting down)",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "deprecated",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "deprecated",
         ],
     },
     {
         "id": "gemini-3.1-flash-lite-preview",
         "name": "Gemini 3.1 Flash-Lite (Preview, shutting down)",
         "capabilities": [
-            "tools", "vision", "audio_in", "video_in", "code", "fast",
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
             "deprecated",
         ],
     },
@@ -2318,58 +2393,87 @@ GEMINI_MODELS = [
         "id": "gemini-2.5-pro",
         "name": "Gemini 2.5 Pro",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
         ],
     },
     {
         "id": "gemini-2.5-flash",
         "name": "Gemini 2.5 Flash",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "fast",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
         ],
     },
     {
         "id": "gemini-2.5-flash-lite",
         "name": "Gemini 2.5 Flash-Lite",
         "capabilities": [
-            "tools", "vision", "audio_in", "video_in", "code", "fast",
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
         ],
     },
     {
         "id": "gemini-2.5-flash-native-audio-preview",
         "name": "Gemini 2.5 Flash Live (native audio, Preview)",
         "capabilities": [
-            "live", "audio_in", "audio_out", "video_in", "tools", "fast",
+            "live",
+            "audio_in",
+            "audio_out",
+            "video_in",
+            "tools",
+            "fast",
         ],
     },
     {
         "id": "gemini-2.5-flash-preview-tts",
         "name": "Gemini 2.5 Flash TTS (Preview)",
         "capabilities": [
-            "tts", "audio_out", "fast",
+            "tts",
+            "audio_out",
+            "fast",
         ],
     },
     {
         "id": "gemini-2.5-pro-preview-tts",
         "name": "Gemini 2.5 Pro TTS (Preview)",
         "capabilities": [
-            "tts", "audio_out",
+            "tts",
+            "audio_out",
         ],
     },
     {
         "id": "gemini-2.5-flash-image",
         "name": "Nano Banana (Gemini 2.5 Flash Image)",
         "capabilities": [
-            "image_gen", "vision", "fast",
+            "image_gen",
+            "vision",
+            "fast",
         ],
     },
     {
         "id": "gemini-2.5-computer-use-preview",
         "name": "Gemini Computer Use (Preview)",
         "capabilities": [
-            "tools", "vision", "code", "agentic",
+            "tools",
+            "vision",
+            "code",
+            "agentic",
         ],
     },
     # ── 2.0 family (deprecated but still answers) ───────────────────
@@ -2377,7 +2481,12 @@ GEMINI_MODELS = [
         "id": "gemini-2.0-flash",
         "name": "Gemini 2.0 Flash (deprecated)",
         "capabilities": [
-            "tools", "vision", "audio_in", "video_in", "code", "fast",
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
             "deprecated",
         ],
     },
@@ -2385,7 +2494,11 @@ GEMINI_MODELS = [
         "id": "gemini-2.0-flash-lite",
         "name": "Gemini 2.0 Flash-Lite (deprecated)",
         "capabilities": [
-            "vision", "audio_in", "code", "fast", "deprecated",
+            "vision",
+            "audio_in",
+            "code",
+            "fast",
+            "deprecated",
         ],
     },
     # ── Research / agentic preview endpoints ────────────────────────
@@ -2393,21 +2506,32 @@ GEMINI_MODELS = [
         "id": "deep-research-preview",
         "name": "Gemini Deep Research (Preview)",
         "capabilities": [
-            "research", "agentic", "tools", "long_context", "reasoning",
+            "research",
+            "agentic",
+            "tools",
+            "long_context",
+            "reasoning",
         ],
     },
     {
         "id": "deep-research-max-preview",
         "name": "Gemini Deep Research Max (Preview)",
         "capabilities": [
-            "research", "agentic", "tools", "long_context", "reasoning",
+            "research",
+            "agentic",
+            "tools",
+            "long_context",
+            "reasoning",
         ],
     },
     {
         "id": "antigravity-preview",
         "name": "Antigravity Agent (Preview)",
         "capabilities": [
-            "agentic", "tools", "code", "long_context",
+            "agentic",
+            "tools",
+            "code",
+            "long_context",
         ],
     },
     # ── Specialized: embeddings + robotics ──────────────────────────
@@ -2415,7 +2539,10 @@ GEMINI_MODELS = [
         "id": "gemini-embedding-2",
         "name": "Gemini Embedding 2 (multimodal)",
         "capabilities": [
-            "embeddings", "vision", "audio_in", "video_in",
+            "embeddings",
+            "vision",
+            "audio_in",
+            "video_in",
         ],
     },
     {
@@ -2429,7 +2556,10 @@ GEMINI_MODELS = [
         "id": "gemini-robotics-er-1.6-preview",
         "name": "Gemini Robotics-ER 1.6 (Preview)",
         "capabilities": [
-            "robotics", "vision", "reasoning", "tools",
+            "robotics",
+            "vision",
+            "reasoning",
+            "tools",
         ],
     },
     # ── Media generation siblings (separate APIs but exposed via the
@@ -2439,14 +2569,18 @@ GEMINI_MODELS = [
         "id": "veo-3.1-generate-preview",
         "name": "Veo 3.1 (video gen + audio)",
         "capabilities": [
-            "video_gen", "audio_out", "vision",
+            "video_gen",
+            "audio_out",
+            "vision",
         ],
     },
     {
         "id": "veo-3.1-lite-generate-preview",
         "name": "Veo 3.1 Lite (video gen)",
         "capabilities": [
-            "video_gen", "vision", "fast",
+            "video_gen",
+            "vision",
+            "fast",
         ],
     },
     {
@@ -2460,21 +2594,28 @@ GEMINI_MODELS = [
         "id": "lyria-3-pro-preview",
         "name": "Lyria 3 Pro (music gen, full songs)",
         "capabilities": [
-            "music_gen", "audio_out", "long_context",
+            "music_gen",
+            "audio_out",
+            "long_context",
         ],
     },
     {
         "id": "lyria-3-clip-preview",
         "name": "Lyria 3 Clip (music gen, ≤30s)",
         "capabilities": [
-            "music_gen", "audio_out", "fast",
+            "music_gen",
+            "audio_out",
+            "fast",
         ],
     },
     {
         "id": "lyria-realtime-exp",
         "name": "Lyria RealTime (streaming music)",
         "capabilities": [
-            "music_gen", "audio_out", "live", "fast",
+            "music_gen",
+            "audio_out",
+            "live",
+            "fast",
         ],
     },
     # ── Sliding "latest" aliases (Google updates the target on a
@@ -2483,23 +2624,40 @@ GEMINI_MODELS = [
         "id": "gemini-flash-latest",
         "name": "Gemini Flash (latest)",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "fast",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
         ],
     },
     {
         "id": "gemini-flash-lite-latest",
         "name": "Gemini Flash-Lite (latest)",
         "capabilities": [
-            "tools", "vision", "audio_in", "video_in", "code", "fast",
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
         ],
     },
     {
         "id": "gemini-pro-latest",
         "name": "Gemini Pro (latest)",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "agentic",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "agentic",
         ],
     },
     # ── back-compat alias kept for any UI / stored prefs ────────────
@@ -2507,8 +2665,14 @@ GEMINI_MODELS = [
         "id": "gemini-flash-recent",
         "name": "Gemini Flash (Latest)",
         "capabilities": [
-            "tools", "reasoning", "vision", "audio_in", "video_in",
-            "code", "long_context", "fast",
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
         ],
     },
 ]
