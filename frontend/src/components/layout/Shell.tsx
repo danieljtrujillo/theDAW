@@ -1,19 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Settings, ChevronRight, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
+import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
+import { BottomMultiTabPanel } from './BottomMultiTabPanel';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useBottomPanelStore } from '../../state/bottomPanelStore';
+import { GripHorizontal } from 'lucide-react';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
-/** Width the right rail collapses to when the user hides the Library.
- *  Big enough to fit the LOG / ACTION buttons in ProcessingLog without
- *  truncating; the 45° clip-path runs in the leftmost ~56px. */
-const RIGHT_RAIL_COLLAPSED = 288;
 
 export const Shell: React.FC = () => {
   const setActiveView = useAppUiStore((state) => state.setActiveView);
@@ -112,24 +111,25 @@ export const Shell: React.FC = () => {
     };
   }, [isResizingRail, setRightPanelWidth]);
 
-  const railWidth = isRightPanelOpen ? rightPanelWidth : RIGHT_RAIL_COLLAPSED;
-
   return (
     <div
       className="flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
       style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))' }}
     >
       {/* Full-width header — spans entire window including over the left panel */}
-      <header className="h-10 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
-        {/* Centered App Name */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-          <span className="font-semibold text-[15px] font-sans text-zinc-100 tracking-wide">StableDAW</span>
+      <header className="h-10 border-b border-white/5 flex items-center justify-between px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
+        {/* Logo block — user moved "StableDAW" branding out of the
+            header center into this two-line logo at the left edge.
+            Matches the SUBSTRATA / BY GANTASMO reference screenshot:
+            an isometric stacked-cube icon + a chunky title + a
+            mono-style "by GANTASMO" subtitle. */}
+        <div className="flex items-center gap-2 relative z-10 select-none">
+          <BrandLogo />
+          <div className="flex flex-col leading-none">
+            <span className="text-[13px] font-black uppercase tracking-widest text-zinc-100">The DAW</span>
+            <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by Gantasmo</span>
+          </div>
         </div>
-        {/* Left side of the header is intentionally empty now —
-            the side-panel collapse arrows live in the CenterTabBar
-            below (plan step 3a). The legacy chevron here was the only
-            inhabitant; removing it tightens the header. */}
-        <div className="flex items-center gap-6 relative z-10" />
         <div className="flex items-center gap-2.5">
           <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
             <Search className="w-3 h-3 text-zinc-600" />
@@ -171,16 +171,10 @@ export const Shell: React.FC = () => {
             title="Open mobile access QR/link"
             accent="emerald"
           />
-          <TopBarButton
-            onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-            icon={<LibraryIcon className="w-3.5 h-3.5" />}
-            label="Library"
-            hideLabelBelowMd
-            title={isRightPanelOpen ? 'Hide library' : 'Show library'}
-            accent="purple"
-            active={isRightPanelOpen}
-            trailing={<ChevronRight className="w-3 h-3" />}
-          />
+          {/* Library toggle removed from the header — the only library
+              show/hide handle now lives at the right edge of the
+              CenterTabBar (the PanelRightOpen/Close arrow), matching
+              the user's "one handle, one place" preference. */}
           <TopBarButton
             onClick={() => setSettingsOpen(true)}
             icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}
@@ -197,25 +191,19 @@ export const Shell: React.FC = () => {
         <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
 
-      {/* Right rail — single column on the right side of the app.
-          Library section sits on top (collapsible via the CenterTabBar
-          toggle). Log section is pinned to the bottom and stays
-          visible even when the Library is collapsed. When collapsed
-          the whole rail narrows to RIGHT_RAIL_COLLAPSED with a 45°
-          beveled left edge so the strip reads as deliberate. */}
-      <aside
-        className="h-full shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
-        style={{
-          width: railWidth,
-          transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
-          clipPath: isRightPanelOpen
-            ? undefined
-            : 'polygon(56px 0, 100% 0, 100% 100%, 0 100%)',
-        }}
-      >
-        {/* Resize handle — only when the Library is showing; the
-            collapsed-rail width is fixed. */}
-        {isRightPanelOpen && (
+      {/* Library rail — ONLY mounts when isRightPanelOpen. The
+          ProcessingLog is NOT inside this rail (it's the global
+          bottom strip below) — user explicitly flagged that the log
+          must stay anchored regardless of library state. */}
+      {isRightPanelOpen && (
+        <aside
+          className="h-full min-h-0 shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
+          style={{
+            width: rightPanelWidth,
+            transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
+          }}
+        >
+          {/* Resize handle at the left edge of the rail. */}
           <div
             className="absolute top-0 bottom-0 -left-1 w-2 cursor-col-resize z-30 group"
             onMouseDown={(e) => {
@@ -225,38 +213,21 @@ export const Shell: React.FC = () => {
           >
             <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/10 group-hover:bg-purple-500/50 rounded-full transition-colors" />
           </div>
-        )}
 
-        {/* Library section — collapsed when isRightPanelOpen is false. */}
-        {isRightPanelOpen && (
-          <>
-            <div className="h-9 flex items-center justify-between border-b border-white/5 px-3 bg-[#0a080f] shrink-0">
-              <div className="flex items-center gap-2">
-                <LibraryIcon className="w-3 h-3 text-purple-400" />
-                <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
-              </div>
-              <button
-                onClick={() => setIsRightPanelOpen(false)}
-                className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors"
-                title="Collapse library"
-              >
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-hidden relative min-h-0">
-              <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
-            </div>
-          </>
-        )}
-
-        {/* Log section — always visible. Sits at the bottom of the
-            rail. ProcessingLog itself is shrink-0 with its own internal
-            collapsible body, so this is just the dock. */}
-        <div className="shrink-0">
-          <ProcessingLog />
-        </div>
-      </aside>
+          <div className="flex-1 overflow-hidden relative min-h-0">
+            <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
+          </div>
+        </aside>
+      )}
       </div>
+
+      {/* Global bottom dock — BottomMultiTabPanel (left, flex-1) and
+          ProcessingLog (right, fixed width = rightPanelWidth) live
+          side-by-side at the bottom of the app. Both INDEPENDENT of
+          the library panel state. Heights are synced via
+          useBottomPanelStore.bottomHeight; a single resize handle at
+          the top of the footer drags both. */}
+      <ShellBottomDock />
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center">
@@ -325,6 +296,93 @@ export const Shell: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Global bottom dock — BottomMultiTabPanel (left) + ProcessingLog
+ * (right). Both render with `height = bottomHeight`. A single resize
+ * handle at the top edge drags `bottomHeight` and both panels follow.
+ * Independent of the library rail's collapsed/expanded state.
+ */
+const ShellBottomDock: React.FC = () => {
+  const bottomHeight = useBottomPanelStore((s) => s.bottomHeight);
+  const setBottomHeight = useBottomPanelStore((s) => s.setBottomHeight);
+  const rightPanelWidth = useAppUiStore((s) => s.rightPanelWidth);
+  const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
+  const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
+  const [isResizing, setIsResizing] = useState(false);
+
+  // Total dock height: when both panels are collapsed, just the
+  // small toggle row each renders (~38px). When either is open, the
+  // user-controlled bottomHeight applies.
+  const anyOpen = isBottomOpen || isLogOpen;
+  const dockHeight = anyOpen ? bottomHeight : 38;
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const next = window.innerHeight - e.clientY;
+      const clamped = Math.max(80, Math.min(window.innerHeight - 200, next));
+      setBottomHeight(clamped);
+    };
+    const onUp = () => setIsResizing(false);
+    document.body.style.cursor = 'row-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      document.body.style.cursor = 'default';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizing, setBottomHeight]);
+
+  return (
+    <div
+      className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30 flex flex-col"
+      style={{ height: `${dockHeight}px` }}
+    >
+      {/* Resize handle — only when at least one of the two panels is
+          open. Drag to set bottomHeight (synced via store). */}
+      {anyOpen && (
+        <div
+          className="h-1.5 -mt-1 cursor-row-resize flex items-center justify-center group relative z-40"
+          onMouseDown={(e) => { e.preventDefault(); setIsResizing(true); }}
+          title="Drag to resize"
+        >
+          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
+          <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
+      )}
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0 border-r border-purple-500/15">
+          <BottomMultiTabPanel />
+        </div>
+        <div
+          className="shrink-0 min-w-72"
+          style={{ width: rightPanelWidth }}
+        >
+          <ProcessingLog />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Brand logo — references the SAME SVG that index.html wires up as
+ * the browser-tab favicon (frontend/public/favicon.svg). Browser
+ * caches it after the first paint so the header logo, the tab icon,
+ * and any other site reference all stay byte-identical with no
+ * inline duplication. The file is too detailed (2723×2723 viewBox,
+ * ~40KB) to inline cheaply, hence the <img> reference.
+ */
+const BrandLogo: React.FC = () => (
+  <img
+    src="/favicon.svg?v=4"
+    alt="The DAW logo"
+    className="w-7 h-7 shrink-0 rounded-md shadow-[0_0_12px_rgba(124,58,237,0.35)]"
+    draggable={false}
+  />
+);
 
 /**
  * Shared top-bar button used by the header strip. Unifies the

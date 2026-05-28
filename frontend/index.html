@@ -3,8 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Stable Audio 3 - StableDAW</title>
+    <!-- ?v=3 busts browser cache after the favicon mark changes —
+         browsers cache favicons aggressively (across reloads, even
+         across sessions) so the version query is the cleanest
+         "please refetch" signal. Bump when /favicon.svg changes. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4" />
+    <title>The DAW · by Gantasmo</title>
   </head>
   <body>
     <div id="root"></div>

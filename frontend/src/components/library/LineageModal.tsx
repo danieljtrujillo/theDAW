@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize } from 'lucide-react';
+import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon } from 'lucide-react';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const ForceGraph3D = lazy(() => import('react-force-graph-3d').then((m) => ({ default: m.default })));
 const ForceGraph2D = lazy(() => import('react-force-graph-2d').then((m) => ({ default: m.default })));
@@ -1266,6 +1267,25 @@ const Graph3DView: React.FC<{
     if (!node?.id) return;
     setSelectedId((cur) => (cur === node.id ? null : node.id ?? null));
   };
+
+  // Right-click on a graph node opens the shared ContextMenu primitive
+  // (plan step 3d rollout to graph nodes). Actions are navigation +
+  // routing — "go to / open / send" — kept distinct from the per-entry
+  // library row menu which has analysis / stems / midi processing
+  // actions. Re-using react-force-graph's onNodeRightClick which
+  // hands us both the node and the underlying DOM MouseEvent.
+  const nodeMenu = useContextMenu<{ nodeId: string; nodeName: string }>();
+  const handleNodeRightClick = (
+    node: { id?: string; name?: string } | null,
+    event: MouseEvent,
+  ) => {
+    if (!node?.id) return;
+    event.preventDefault();
+    nodeMenu.open(event, {
+      nodeId: node.id,
+      nodeName: node.name ?? node.id,
+    });
+  };
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
     return connected.nodes.find((n) => n.id === selectedId) ?? null;
@@ -1746,6 +1766,7 @@ const Graph3DView: React.FC<{
           controlType={appearance.controlType}
           onNodeHover={handleNodeHover}
           onNodeClick={handleNodeClick}
+          onNodeRightClick={handleNodeRightClick}
           linkColor={(l: { color?: string; source?: { id?: string } | string; target?: { id?: string } | string }) => {
             const hov = hoveredId;
             if (!hov) return l.color ?? '#a78bfa';
@@ -1794,6 +1815,7 @@ const Graph3DView: React.FC<{
           enableZoomInteraction={true}
           onNodeHover={handleNodeHover}
           onNodeClick={handleNodeClick}
+          onNodeRightClick={handleNodeRightClick}
           linkColor={(l: { color?: string; source?: { id?: string } | string; target?: { id?: string } | string }) => {
             const hov = hoveredId;
             if (!hov) return l.color ?? '#a78bfa';
@@ -1871,10 +1893,132 @@ const Graph3DView: React.FC<{
       />
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
         {appearance.renderMode === '3d'
-          ? 'click-drag rotate · right-click-drag pan · wheel zoom · click node for details'
-          : 'click-drag pan · wheel zoom · click node for details'}
+          ? 'click-drag rotate · right-click-drag pan · wheel zoom · click node for details · right-click node for actions'
+          : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
         {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
       </div>
+
+      {/* Right-click context menu for graph nodes (plan step 3d). */}
+      {(() => {
+        const payload = nodeMenu.payload;
+        if (!payload) return null;
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            label: 'Inspect (open details panel)',
+            icon: <Sliders className="w-3 h-3" />,
+            onSelect: () => setSelectedId(payload.nodeId),
+          },
+          {
+            type: 'item',
+            label: 'Center camera here',
+            icon: <Crosshair className="w-3 h-3" />,
+            hint: appearance.renderMode === '3d' ? '3D' : '2D',
+            onSelect: () => {
+              type PositionedNode = { x?: number; y?: number; z?: number };
+              const node = (data.nodes as unknown as Array<PositionedNode & { id?: string }>).find(
+                (n) => n.id === payload.nodeId,
+              );
+              const x = node?.x ?? 0;
+              const y = node?.y ?? 0;
+              const z = node?.z ?? 0;
+              const r = fgRef.current as {
+                centerAt?: (x: number, y: number, ms: number) => void;
+                cameraPosition?: (
+                  pos: { x: number; y: number; z: number },
+                  lookAt?: { x: number; y: number; z: number },
+                  ms?: number,
+                ) => void;
+              } | null;
+              if (appearance.renderMode === '3d' && r?.cameraPosition) {
+                // Pull camera to a point offset along +z from the node so
+                // the user sees the node from a sensible distance.
+                const dist = 120;
+                const nx = x + dist * 0.6;
+                const ny = y + dist * 0.4;
+                const nz = z + dist;
+                r.cameraPosition({ x: nx, y: ny, z: nz }, { x, y, z }, 800);
+              } else if (r?.centerAt) {
+                r.centerAt(x, y, 800);
+              }
+            },
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Copy node ID',
+            icon: <Copy className="w-3 h-3" />,
+            hint: payload.nodeId.slice(0, 8),
+            onSelect: () => {
+              void navigator.clipboard?.writeText(payload.nodeId).catch(() => {
+                /* clipboard unavailable; silent */
+              });
+            },
+          },
+          {
+            type: 'item',
+            label: 'Open in Library',
+            icon: <LibraryIcon className="w-3 h-3" />,
+            hint: 'reveal row',
+            onSelect: () => {
+              // Open the right-side library panel and dispatch a custom
+              // event the LibraryView listens for to scroll-to + select
+              // the named entry. Falls back to opening the panel only
+              // if the listener isn't installed.
+              window.dispatchEvent(
+                new CustomEvent('stabledaw:set-left-panel', {
+                  detail: { open: false },
+                }),
+              );
+              window.dispatchEvent(
+                new CustomEvent('stabledaw:reveal-library-entry', {
+                  detail: { entryId: payload.nodeId },
+                }),
+              );
+            },
+          },
+          {
+            type: 'item',
+            label: 'Download bundle',
+            icon: <Package className="w-3 h-3" />,
+            hint: '.zip',
+            onSelect: () => {
+              const a = document.createElement('a');
+              a.href = `/api/library/${payload.nodeId}/bundle`;
+              a.download = '';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            },
+          },
+          {
+            type: 'item',
+            label: 'Open lineage rooted here',
+            icon: <GitMerge className="w-3 h-3" />,
+            hint: 'modal',
+            onSelect: () => {
+              // Fire a custom event the rest of the app listens for to
+              // open a fresh LineageModal rooted at this node. Self-
+              // contained so this Graph3DView doesn't need a setter
+              // prop threaded down.
+              window.dispatchEvent(
+                new CustomEvent('stabledaw:open-lineage', {
+                  detail: { entryId: payload.nodeId },
+                }),
+              );
+            },
+          },
+        ];
+        return (
+          <ContextMenu
+            position={nodeMenu.position}
+            onClose={nodeMenu.close}
+            items={items}
+            title={`Node · ${payload.nodeName.slice(0, 40)}${payload.nodeName.length > 40 ? '…' : ''}`}
+            minWidth="14rem"
+          />
+        );
+      })()}
     </div>
   );
 };

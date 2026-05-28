@@ -10,18 +10,33 @@ interface SectionProps {
   children: React.ReactNode;
   resizable?: boolean;
   minHeight?: number;
+  /** Cap the inner scroll area's height. Defaults to 800px to keep
+   *  Sections in long pages compact. Pass `null` to disable — the
+   *  Section grows to fit its content and lets the parent's scroll
+   *  handle overflow (used by the Library panel to avoid a
+   *  double-scroll inside the right rail). */
+  maxContentHeight?: number | null;
+  /** When false, the Section is always open and never shows a
+   *  collapse chevron. Used for the LIBRARY section in the right
+   *  rail, which already has the rail-level collapse button — the
+   *  inner chevron was a confusing duplicate handle. */
+  collapsible?: boolean;
 }
 
-export const Section: React.FC<SectionProps> = ({ 
-  title, 
-  icon: Icon, 
-  rightNode, 
-  defaultOpen = false, 
+export const Section: React.FC<SectionProps> = ({
+  title,
+  icon: Icon,
+  rightNode,
+  defaultOpen = false,
   children,
   resizable = true,
-  minHeight = 80
+  minHeight = 80,
+  maxContentHeight = 800,
+  collapsible = true,
 }) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  // When collapsible=false the Section is locked open. defaultOpen
+  // is ignored in that mode.
+  const [isOpen, setIsOpen] = useState(collapsible ? defaultOpen : true);
   const [height, setHeight] = useState<number | string>('auto');
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -53,9 +68,11 @@ export const Section: React.FC<SectionProps> = ({
 
   return (
     <div className="hardware-card flex flex-col shrink-0 relative mb-1 last:mb-0">
-       <div 
-         className="flex items-center justify-between px-2 py-1.5 cursor-pointer select-none bg-white/2 hover:bg-white/5 transition-colors" 
-         onClick={() => setIsOpen(!isOpen)}
+       <div
+         className={`flex items-center justify-between px-2 py-1.5 select-none bg-white/2 transition-colors ${
+           collapsible ? 'cursor-pointer hover:bg-white/5' : ''
+         }`}
+         onClick={collapsible ? () => setIsOpen(!isOpen) : undefined}
        >
           <div className="flex items-center gap-2">
              {Icon && <Icon className="w-3.5 h-3.5 text-purple-400" />}
@@ -63,7 +80,9 @@ export const Section: React.FC<SectionProps> = ({
           </div>
           <div className="flex items-center gap-2">
              {rightNode}
-             <ChevronDown className={`w-3.5 h-3.5 text-zinc-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+             {collapsible && (
+               <ChevronDown className={`w-3.5 h-3.5 text-zinc-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+             )}
           </div>
        </div>
        <AnimatePresence>
@@ -75,9 +94,9 @@ export const Section: React.FC<SectionProps> = ({
              className="overflow-hidden flex flex-col"
              ref={containerRef}
            >
-              <div 
-                className="flex flex-col gap-2 pt-2 border-t border-white/5 overflow-y-auto p-2 flex-1 no-scrollbar overflow-x-hidden" 
-                style={{ maxHeight: '800px' }}
+              <div
+                className={`flex flex-col gap-2 pt-2 border-t border-white/5 p-2 flex-1 no-scrollbar overflow-x-hidden ${maxContentHeight !== null ? 'overflow-y-auto' : ''}`}
+                style={maxContentHeight !== null ? { maxHeight: `${maxContentHeight}px` } : undefined}
               >
                 {children}
               </div>

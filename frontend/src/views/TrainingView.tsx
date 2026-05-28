@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   Zap, Brain, Activity, Terminal,
   Layers, Cpu, Database,
-  BarChart3, UploadCloud
+  BarChart3, UploadCloud,
 } from 'lucide-react';
 import { Section } from '../components/ui/Section';
 import { useTrainingStore } from '../state/trainingStore';
@@ -48,8 +48,53 @@ export const TrainingView: React.FC = () => {
   }, [params]);
 
   return (
-    <div className="flex flex-col gap-2 h-full text-[11px] pb-4 px-2 pt-2">
-      
+    <div className="flex flex-col gap-2 h-full text-[11px] pb-4 px-2 pt-2 overflow-y-auto">
+
+      {/* Hero banner — gives TRAIN a visual identity in line with the
+          other center tabs instead of opening cold on bare form fields.
+          Animated brain icon + LoRA status badge. */}
+      <div className="relative overflow-hidden rounded border border-cyan-500/25 bg-linear-to-br from-cyan-900/15 via-[#0c0a14] to-purple-900/10 px-4 py-3 shrink-0">
+        <div className="flex items-center gap-3">
+          <motion.div
+            animate={{
+              boxShadow: isTraining
+                ? ['0 0 0 0 rgba(34,211,238,0.45)', '0 0 0 14px rgba(34,211,238,0)']
+                : '0 0 0 0 rgba(34,211,238,0)',
+            }}
+            transition={{ duration: 1.6, repeat: isTraining ? Infinity : 0 }}
+            className="w-10 h-10 rounded-full border border-cyan-500/40 bg-cyan-500/10 flex items-center justify-center shrink-0"
+          >
+            <Brain className="w-5 h-5 text-cyan-300" />
+          </motion.div>
+          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-black uppercase tracking-widest text-cyan-100">Train Workshop</span>
+              <span className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border ${
+                isTraining
+                  ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-200 animate-pulse'
+                  : modelInfo?.device
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  : 'border-white/10 bg-white/3 text-zinc-500'
+              }`}>
+                {isTraining ? 'TRAINING' : modelInfo?.device ? `READY · ${modelInfo.device}` : 'IDLE'}
+              </span>
+            </div>
+            <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-500">
+              LoRA fine-tuning · Autoencoder test bench · Live telemetry
+            </span>
+          </div>
+          <div className="hidden md:flex flex-col gap-1 shrink-0 text-right">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Pending</span>
+            <span className="text-[10px] font-mono text-cyan-200">
+              {params.moduleName || '—'}
+            </span>
+            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">
+              {params.epochs} ep · rank {params.rank}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <Section title="TARGET ARCHITECTURE" icon={Layers} defaultOpen={true} rightNode={<span className="mono-tag bg-blue-600/20! border-blue-500/30! text-blue-300!">L4-ACCEL</span>}>
          <div className="flex flex-col gap-3">
              <div className="flex flex-col gap-1">

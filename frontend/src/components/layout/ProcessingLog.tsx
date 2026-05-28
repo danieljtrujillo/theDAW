@@ -12,6 +12,7 @@ import { useStudioStore } from '../../state/studioStore';
 import { useTrainingStore } from '../../state/trainingStore';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useStatusBarStore } from '../../state/statusBarStore';
+import { useBottomPanelStore } from '../../state/bottomPanelStore';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -92,7 +93,12 @@ export const ProcessingLog: React.FC = () => {
   // Log
   const entries   = useLogStore((s) => s.entries);
   const clear     = useLogStore((s) => s.clear);
-  const [isOpen, setIsOpen] = useState(false);
+  // Open/closed state lives in the shared bottomPanelStore so the
+  // ShellBottomDock can sync heights with the BottomMultiTabPanel —
+  // both surfaces' "expanded" state contributes to whether the dock
+  // is at full height or just the toggle row.
+  const isOpen      = useBottomPanelStore((s) => s.isLogOpen);
+  const setIsOpen   = useBottomPanelStore((s) => s.setLogOpen);
   const bodyRef   = useRef<HTMLDivElement>(null);
 
   // Player
@@ -209,18 +215,57 @@ export const ProcessingLog: React.FC = () => {
   })();
 
   return (
-    <div className="shrink-0 flex flex-col">
-      {/* Log body — expands ABOVE the handle row */}
+    // Outer fills the ShellBottomDock's right column. When isOpen the
+    // body section takes the available flex space; when closed only
+    // the section header + action button remain visible.
+    <div className="h-full flex flex-col min-h-0">
+      {/* Section-style header at top — Terminal icon, LOG label,
+          entry-count chip, body controls when open, collapse arrow.
+          Matches the visual rhythm of other section headers in the
+          right-rail / DAW so the log doesn't look like a stranger. */}
+      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-purple-500/20 bg-purple-500/4 shrink-0">
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex items-center gap-1.5 group flex-1 min-w-0 text-left"
+          title={isOpen ? 'Collapse log' : 'Expand log'}
+        >
+          <Terminal className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">LOG</span>
+          <span className="text-[9px] font-mono text-zinc-600">[{entries.length}]</span>
+          {!isOpen && compactTelemetry && (
+            <span className="text-[8px] font-mono text-zinc-600 ml-1 truncate">{compactTelemetry}</span>
+          )}
+          <span className="ml-auto text-zinc-500 group-hover:text-purple-200 transition-colors">
+            {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+          </span>
+        </button>
+        {/* Body controls — only visible when expanded. */}
+        {isOpen && (
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => downloadLog(entries)}
+              className="p-1 text-zinc-600 hover:text-purple-300 transition-colors"
+              title="Download log"
+            >
+              <Download className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => clear()}
+              className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
+              title="Clear log"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Body — flex-1 fills the dock's height (synced with bottom
+          panel via bottomPanelStore.bottomHeight). Hidden when log
+          is collapsed. */}
       {isOpen && (
-        <div className="relative bg-black/70 border-t-2 border-purple-500/40" style={{ height: '180px' }}>
-          <button
-            type="button"
-            onClick={() => setIsOpen(false)}
-            className="absolute top-1 right-2 z-20 p-0.5 text-zinc-600 hover:text-zinc-300 transition-colors"
-            title="Collapse log"
-          >
-            <ChevronDown className="w-3 h-3" />
-          </button>
+        <div className="relative bg-black/40 flex-1 min-h-0">
           <div
             ref={bodyRef}
             className="h-full overflow-y-auto px-2 py-1 font-mono text-[9px] space-y-0.5 pr-22"
@@ -278,88 +323,39 @@ export const ProcessingLog: React.FC = () => {
         </div>
       )}
 
-      {/* ── Single-row handle: [LOG toggle | ACTION button] ── */}
-      <div className={`flex shrink-0 border-t-2 ${isOpen ? 'border-purple-500/20' : 'border-purple-500/30'}`}>
+      {/* Track controls strip — shown ONLY when a track is loaded.
+          Sits between the log body and the action button as a thin
+          Play/Pause + Download row. */}
+      {hasTrack && (
+        <div className="flex items-center gap-1 px-2 py-1 border-t border-white/5 shrink-0 bg-black/20">
+          <button
+            type="button"
+            onClick={() => toggle()}
+            className={`p-1 transition-colors ${isPlaying ? 'text-purple-300 hover:text-purple-200' : 'text-zinc-500 hover:text-purple-300'}`}
+            title={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadCurrentTrack()}
+            className="p-1 text-zinc-500 hover:text-purple-300 transition-colors"
+            title="Download current track"
+          >
+            <FileDown className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
-        {/* Left: LOG toggle — takes 2/3 of bar */}
-        <button
-          type="button"
-          onClick={() => setIsOpen((v) => !v)}
-          className={`flex-1 flex items-center gap-1.5 px-3 py-2 border-r border-purple-500/20 transition-colors whitespace-nowrap ${
-            isOpen ? 'bg-black/50 hover:bg-black/70' : 'bg-purple-500/10 hover:bg-purple-500/20'
-          }`}
-        >
-          <Terminal className={`w-3.5 h-3.5 shrink-0 ${isOpen ? 'text-zinc-400' : 'text-purple-400'}`} />
-          <span className={`text-[10px] font-black uppercase tracking-widest ${isOpen ? 'text-zinc-300' : 'text-purple-200'}`}>
-            LOG
-          </span>
-          <span className="text-[9px] font-mono text-zinc-600">[{entries.length}]</span>
-
-          {/* Compact telemetry when collapsed */}
-          {!isOpen && compactTelemetry && (
-            <span className="text-[8px] font-mono text-zinc-600 ml-1 hidden sm:inline">{compactTelemetry}</span>
-          )}
-
-          {/* Track controls — always visible when loaded */}
-          {hasTrack && (
-            <>
-              <span className="w-px h-3 bg-white/10 mx-0.5" />
-              <span
-                role="button" tabIndex={0}
-                onClick={(e) => { e.stopPropagation(); toggle(); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggle(); } }}
-                className={`p-0.5 transition-colors cursor-pointer ${isPlaying ? 'text-purple-300 hover:text-purple-200' : 'text-zinc-500 hover:text-purple-300'}`}
-                title={isPlaying ? 'Pause' : 'Play'}
-              >
-                {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
-              </span>
-              <span
-                role="button" tabIndex={0}
-                onClick={(e) => { e.stopPropagation(); downloadCurrentTrack(); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); downloadCurrentTrack(); } }}
-                className="p-0.5 text-zinc-500 hover:text-purple-300 transition-colors cursor-pointer"
-                title="Download current track"
-              >
-                <FileDown className="w-3 h-3" />
-              </span>
-            </>
-          )}
-
-          {/* Log controls — only when open */}
-          {isOpen && (
-            <>
-              <span className="w-px h-3 bg-white/10 mx-0.5" />
-              <span
-                role="button" tabIndex={0}
-                onClick={(e) => { e.stopPropagation(); downloadLog(entries); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); downloadLog(entries); } }}
-                className="p-0.5 text-zinc-600 hover:text-purple-400 transition-colors cursor-pointer"
-                title="Download log"
-              >
-                <Download className="w-3 h-3" />
-              </span>
-              <span
-                role="button" tabIndex={0}
-                onClick={(e) => { e.stopPropagation(); clear(); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); clear(); } }}
-                className="p-0.5 text-zinc-600 hover:text-red-400 transition-colors cursor-pointer"
-                title="Clear log"
-              >
-                <Trash2 className="w-3 h-3" />
-              </span>
-            </>
-          )}
-
-          {isOpen
-            ? <ChevronDown className="w-3 h-3 text-zinc-500 ml-0.5" />
-            : <ChevronUp   className="w-3 h-3 text-purple-300 ml-0.5" />}
-        </button>
-
-        {/* Right: action button — 1/3 of bar */}
+      {/* Action button — always visible at the very bottom. Same
+          chunky CREATE / PROCESS / TRAIN / ABORT affordance the user
+          relies on; lives outside the collapsible body so it never
+          gets hidden. */}
+      <div className="flex shrink-0">
         <button
           type="button"
           onClick={handleAction}
-          className={`relative w-1/3 shrink-0 overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors py-2 ${
+          className={`relative flex-1 overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors py-2 ${
             isActive ? cfg.activeColor : cfg.idleColor
           }`}
           title={

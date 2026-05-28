@@ -16,6 +16,65 @@ import { HoverTip, InfoTip } from '../components/ui/Tooltip';
 import { RICH_TOOLTIPS, HOVER_TOOLTIPS } from '../components/ui/tooltips';
 import { GENERATION_PRESETS, type GenerationPreset } from '../data/generationPresets';
 import { enhanceStableAudioPrompt } from '../orb-kit/promptEnhancer';
+import { ChimeraStack } from '../components/chimera/ChimeraStack';
+
+/* ── ChimeraQuickBanner: top-of-MAKE always-visible chimera status ─ */
+function ChimeraQuickBanner() {
+  const clips = useGenerateParamsStore((s) => s.chimera.clips);
+  const lastMeta = useGenerateParamsStore((s) => s.chimera.lastMeta);
+  // Scrolls the surrounding scroll container to the INIT AUDIO card.
+  const onJump = () => {
+    const el = document.querySelector('[data-chimera-anchor="init-audio"]');
+    if (el && 'scrollIntoView' in el) {
+      (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+  const empty = clips.length === 0;
+  return (
+    <div
+      className={`relative flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] font-mono uppercase tracking-widest shrink-0 ${
+        empty
+          ? 'border-purple-500/15 bg-purple-500/5 text-zinc-500'
+          : 'border-purple-500/40 bg-purple-500/10 text-purple-200'
+      }`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${empty ? 'bg-zinc-700' : 'bg-purple-400 animate-pulse'}`} />
+      <span className="font-black">CHIMERA</span>
+      <span className="text-zinc-600">·</span>
+      {empty ? (
+        <>
+          <span className="text-zinc-500">stack 2+ tracks into one fused init signal</span>
+          <button
+            type="button"
+            onClick={onJump}
+            className="ml-auto px-2 py-0.5 rounded border border-purple-500/30 hover:border-purple-400/60 hover:bg-purple-500/15 text-purple-300 hover:text-purple-100"
+            title="Jump to the INIT AUDIO card below"
+          >
+            ADD →
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="text-purple-200 font-black">{clips.length}</span>
+          <span className="text-zinc-400">{clips.length === 1 ? 'track loaded' : 'tracks stacked'}</span>
+          {lastMeta && (
+            <span className="text-zinc-500 normal-case tracking-normal">
+              · last: {lastMeta.duration_sec.toFixed(1)}s @ {lastMeta.target_bpm_used.toFixed(0)} BPM
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onJump}
+            className="ml-auto px-2 py-0.5 rounded border border-purple-500/40 hover:border-purple-400/60 hover:bg-purple-500/20 text-purple-200 hover:text-purple-100"
+            title="Scroll to the chimera controls in INIT AUDIO"
+          >
+            OPEN →
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
 
 /* ── SField: label / slider / number / default ────────────────────── */
 function SField({ label, value, onChange, min, max, step = 0.01, hint, defaultValue, tipKey }: {
@@ -398,6 +457,14 @@ export const AdvancedGenPanel: React.FC<{
       {/* ═══ LEFT MAIN COLUMN ═══ */}
       <div className="overflow-y-auto flex flex-col gap-2 pr-1">
 
+      {/* Chimera status banner — sits ABOVE the prompt row so the user
+          always sees the chimera state at a glance. Shows the clip
+          count, a "scroll to INIT AUDIO" jump, and a hint when empty.
+          Visibility was a user complaint — the ChimeraStack itself
+          lives inside the INIT AUDIO card (ROW 2 below) and that
+          card scrolls out of sight on smaller viewports. */}
+      <ChimeraQuickBanner />
+
       {/* ═══ ROW 1: PROMPTING | TEMPLATES+LORA | CONTROLS+GENERATE | OUTPUT SETTINGS ═══ */}
       <div className="grid grid-cols-[1.4fr_220px_280px_240px] gap-2">
 
@@ -564,7 +631,7 @@ export const AdvancedGenPanel: React.FC<{
       <div className="grid grid-cols-2 gap-2">
 
         {/* INIT AUDIO */}
-        <div className="hardware-card flex flex-col"
+        <div data-chimera-anchor="init-audio" className="hardware-card flex flex-col"
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
           onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ initAudioFile: f, initAudioEnabled: true }); }}>
           <div className="flex items-center gap-1.5 mb-2">
@@ -580,8 +647,29 @@ export const AdvancedGenPanel: React.FC<{
             ) : (
               <button className="btn-ghost cursor-pointer text-[9px]" onClick={() => initRef.current?.click()}>LOAD</button>
             )}
-            <input ref={initRef} type="file" accept="audio/*" className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) patch({ initAudioFile: e.target.files[0], initAudioEnabled: true }); e.target.value = ''; }} />
+            <input ref={initRef} type="file" accept="audio/*" multiple className="hidden"
+              onChange={async (e) => {
+                const files = Array.from(e.target.files ?? []);
+                e.target.value = '';
+                if (files.length === 0) return;
+                if (files.length === 1) {
+                  // Single file → standard init audio.
+                  patch({ initAudioFile: files[0], initAudioEnabled: true });
+                  return;
+                }
+                // Multi-select → push them all into the chimera stack
+                // (one fused init signal from 2+ tracks). Matches the
+                // "select multiple library entries → send to init" flow.
+                const items = await Promise.all(
+                  files.map(async (f) => ({
+                    blob: f,
+                    mimeType: f.type || 'audio/wav',
+                    label: f.name,
+                  })),
+                );
+                const { addBlobsToChimera } = await import('../lib/chimeraClient');
+                addBlobsToChimera(items);
+              }} />
           </div>
           {initAudioUrl ? (
             <div className="rounded overflow-hidden border border-white/5 bg-black/40 h-27.5 mb-2">
@@ -592,6 +680,14 @@ export const AdvancedGenPanel: React.FC<{
               <span className="text-[9px] text-zinc-600">No audio loaded</span>
             </div>
           )}
+          {/* ChimeraStack — multi-source init audio builder (Pass 3:
+              CREATE → MAKE content move). Lets the user stack
+              multiple library clips / dropped files into one fused
+              init signal, matching the affordance that used to live
+              in the (now-merged) CREATE / GenerateView. */}
+          <div className="mb-2">
+            <ChimeraStack />
+          </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-zinc-400">Type</span>

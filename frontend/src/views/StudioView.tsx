@@ -71,8 +71,14 @@ export const StudioView: React.FC = () => {
   }, [selectedEffect, macros]);
 
   return (
-    <div className="flex flex-col gap-2 h-full text-[11px] pb-4 px-2 pt-2">
-      
+    // No h-full here — when StudioView is stacked above
+    // AdvancedEditorPanel inside MIX (Pass 3 PROCESS → MIX content
+    // move), each panel takes its natural height and the outer MIX
+    // wrapper scrolls. Standalone use (e.g. a future "process
+    // workspace" route) can wrap this in an h-full container if
+    // it wants the panel to fill the screen.
+    <div className="flex flex-col gap-2 text-[11px] pb-4 px-2 pt-2 shrink-0">
+
       <Section title="STUDIO MACROS" icon={SlidersHorizontal} defaultOpen={true}>
          <div className="space-y-4">
              <div className="flex flex-col gap-1">

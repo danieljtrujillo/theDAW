@@ -54,6 +54,20 @@ const triggerPianoNote = (midi: number, velocity: number, when: number, duration
   triggerPianoNoteOn(ctx, getMasterGain(), midi, velocity, when, duration, master);
 };
 
+/**
+ * Public alias used by the global Web MIDI listener in App.tsx.
+ * Defaults `when` to the engine's current time + a tiny lookahead,
+ * `duration` to a comfortable 180ms decay, and `master` to 0.8 so
+ * controller-driven notes feel uniform without callers having to
+ * know the synth's internals. The PianoRoll component itself still
+ * uses the bare `triggerPianoNote` for its own scheduling.
+ */
+export const triggerPianoNoteFromMidi = (midi: number, velocity = 100, duration = 0.18) => {
+  const ctx = getEngineCtx();
+  if (ctx.state === 'suspended') void ctx.resume();
+  triggerPianoNote(midi, velocity, ctx.currentTime + 0.02, duration, 0.8);
+};
+
 // --- WAV encoder (16-bit PCM, mirrors WaveformEditor.encodeWav) ---
 const encodeWavBlob = (audioBuf: AudioBuffer): Blob => {
   const numCh = audioBuf.numberOfChannels;

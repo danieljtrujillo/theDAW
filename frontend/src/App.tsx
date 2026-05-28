@@ -10,9 +10,10 @@ import { PlayerFooter } from './components/audio/PlayerFooter';
 import { LoadingScreen } from './components/layout/LoadingScreen';
 import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
 import { AssistantPanel } from './orb-kit/AssistantPanel';
-import { logInfo } from './state/logStore';
+import { logInfo, logWarn } from './state/logStore';
 import { handleStableDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
+import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
@@ -57,6 +58,75 @@ export default function App() {
 
   useEffect(() => {
     logInfo('system', 'StableDAW UI initialized');
+  }, []);
+
+  // ── Global Web MIDI listener ───────────────────────────────────
+  // Any connected MIDI controller's note-on messages trigger the
+  // synthesizer voice exposed by PianoRoll (triggerPianoNoteFromMidi).
+  // Velocity is preserved 0-127. note-off events stop nothing —
+  // the synth voice has its own envelope that naturally decays.
+  // Hot-plug aware via MIDIAccess.onstatechange.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
+    let access: MIDIAccess | null = null;
+    let cancelled = false;
+
+    const onMidiMessage = (e: MIDIMessageEvent) => {
+      if (!e.data) return;
+      const [status, data1, data2] = e.data;
+      const command = status & 0xf0;
+      // note-on with velocity > 0 → synth voice. note-on velocity=0
+      // is the alternate note-off encoding some controllers use; we
+      // skip it since our voices auto-decay.
+      if (command === 0x90 && data2 > 0) {
+        try {
+          triggerPianoNoteFromMidi(data1, data2);
+        } catch (err) {
+          /* a single failed voice should not silence the whole bus */
+          console.error('[midi] note trigger failed:', err);
+        }
+      }
+    };
+
+    const attach = (a: MIDIAccess) => {
+      a.inputs.forEach((input) => {
+        input.onmidimessage = onMidiMessage;
+      });
+    };
+
+    (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
+      .requestMIDIAccess()
+      .then((a) => {
+        if (cancelled) return;
+        access = a;
+        attach(a);
+        const count = a.inputs.size;
+        if (count > 0) {
+          const names: string[] = [];
+          a.inputs.forEach((i) => names.push(i.name ?? 'unnamed'));
+          logInfo('midi', `Web MIDI ready — ${count} input${count === 1 ? '' : 's'}: ${names.join(', ')}`);
+        } else {
+          logInfo('midi', 'Web MIDI ready — no inputs connected');
+        }
+        a.onstatechange = () => {
+          if (cancelled || !access) return;
+          attach(access);
+        };
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        logWarn('midi', `Web MIDI unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      });
+
+    return () => {
+      cancelled = true;
+      if (access) {
+        access.inputs.forEach((input) => {
+          input.onmidimessage = null;
+        });
+        access.onstatechange = null;
+      }
+    };
   }, []);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {

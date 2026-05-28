@@ -160,7 +160,7 @@ export const MediaBucketView: React.FC = () => {
               ref={fileInputRef}
               type="file"
               multiple
-              accept="audio/*,.mid,.midi,image/*"
+              accept="audio/*,.mid,.midi,image/*,video/*"
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               onChange={(e) => {
                 if (e.target.files && e.target.files.length > 0) addMany(e.target.files);

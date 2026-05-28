@@ -143,6 +143,34 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                     f"VJ project not found at {cfg.project_path}. Set "
                     "STABLEDAW_VJ_PROJECT to override."
                 )
+            # First-run bootstrap: if node_modules is missing, npm run
+            # dev exits with rc=1 immediately ("vite: not found"). Do
+            # an `npm install` first. This can take a couple of minutes
+            # on a fresh checkout — the readiness deadline below is
+            # generous enough to cover it, and the frontend's VJView
+            # already shows a "first launch can take a minute" hint.
+            node_modules = cfg.project_path / "node_modules"
+            if not node_modules.is_dir():
+                log.info("vj.sidecar: node_modules missing — running npm install")
+                install_cmd = [cfg.npm_path, "install"]
+                try:
+                    rc = subprocess.call(
+                        install_cmd,
+                        cwd=str(cfg.project_path),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        shell=False,
+                    )
+                except FileNotFoundError as e:
+                    raise RuntimeError(
+                        f"VJ sidecar: npm not found ({e}). Install Node.js."
+                    ) from e
+                if rc != 0:
+                    raise RuntimeError(
+                        f"npm install failed in {cfg.project_path} (rc={rc}). "
+                        "Run it manually to see the full error output, then retry."
+                    )
+                log.info("vj.sidecar: npm install complete")
             cmd = [cfg.npm_path, "run", "dev", "--", "--port", str(cfg.port)]
             log.info(
                 "vj.sidecar: spawning %s (cwd=%s)",

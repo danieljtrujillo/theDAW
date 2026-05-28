@@ -361,6 +361,39 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   // Shared ContextMenu handles outside-click / Esc / wheel close, so
   // the old per-mount global listener block is gone.
 
+  // Listen for the graph-node right-click actions that fire window
+  // events the rest of the app picks up (see LineageModal.tsx graph
+  // node ContextMenu). Open-lineage opens our embedded LineageModal
+  // at the requested entry; reveal-library-entry selects + scrolls.
+  useEffect(() => {
+    const onOpenLineage = (e: Event) => {
+      const id = (e as CustomEvent).detail?.entryId;
+      if (typeof id === 'string') setLineageOpen(id);
+    };
+    const onReveal = (e: Event) => {
+      const id = (e as CustomEvent).detail?.entryId;
+      if (typeof id !== 'string') return;
+      setSelectedEntryIds([id]);
+      setSelectionAnchorId(id);
+      setSelectedEntry(id);
+      showBottomTab('details');
+      // Schedule a scrollIntoView after the next paint so the entry
+      // row exists in the DOM by the time we look for it.
+      window.requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-library-entry-id="${id}"]`);
+        if (el && 'scrollIntoView' in el) {
+          (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+    };
+    window.addEventListener('stabledaw:open-lineage', onOpenLineage);
+    window.addEventListener('stabledaw:reveal-library-entry', onReveal);
+    return () => {
+      window.removeEventListener('stabledaw:open-lineage', onOpenLineage);
+      window.removeEventListener('stabledaw:reveal-library-entry', onReveal);
+    };
+  }, [setSelectedEntry, showBottomTab]);
+
   const handleSelectEntry = (entry: LibraryEntry, event?: React.MouseEvent) => {
     const additive = !!(event?.ctrlKey || event?.metaKey);
     const range = !!event?.shiftKey;
@@ -636,21 +669,24 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
 
       {/* Hidden file picker — used by the "Import MIDI" toolbar button.
           Drives loadMidiIntoPianoRoll() so users can pull a .mid off
-          disk straight into the piano roll without running basic-pitch. */}
+          disk straight into the piano roll without running basic-pitch.
+          `multiple` lets the user batch-import several .mid files in
+          one go; each is loaded sequentially. */}
       <input
         ref={midiFileInputRef}
         type="file"
         accept=".mid,.midi,audio/midi"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) void onLoadMidiFile(file);
-          // Reset so picking the same file twice re-fires onChange.
+          const files = Array.from(e.target.files ?? []);
+          for (const file of files) void onLoadMidiFile(file);
+          // Reset so picking the same file(s) twice re-fires onChange.
           e.target.value = '';
         }}
       />
 
-      <Section title="LIBRARY" icon={Database} defaultOpen={true} rightNode={
+      <Section title="LIBRARY" icon={Database} defaultOpen={true} resizable={false} collapsible={false} maxContentHeight={null} rightNode={
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <span className="text-[8px] font-mono text-zinc-600">{entries.length} TRACKS</span>
           <button
@@ -673,6 +709,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           <button onClick={() => setViewMode('grid')} className={`p-1 rounded ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-zinc-600'}`} title="Grid view">
             <LayoutGrid className="w-3 h-3" />
           </button>
+          {/* Collapse handle removed — the ONLY library toggle now
+              lives at the right edge of the CenterTabBar (the
+              PanelRightOpen/Close icon). User flagged that the
+              in-panel chevron was a duplicate. */}
         </div>
       }>
         {/* Mic-in recorder. Hidden by default; toggled from the LIBRARY
@@ -809,6 +849,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           {filteredEntries.map((entry) => (
             <div
               key={entry.id}
+              data-library-entry-id={entry.id}
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.setData('application/x-stabledaw-library-id', entry.id);
