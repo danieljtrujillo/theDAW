@@ -361,6 +361,39 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   // Shared ContextMenu handles outside-click / Esc / wheel close, so
   // the old per-mount global listener block is gone.
 
+  // Listen for the graph-node right-click actions that fire window
+  // events the rest of the app picks up (see LineageModal.tsx graph
+  // node ContextMenu). Open-lineage opens our embedded LineageModal
+  // at the requested entry; reveal-library-entry selects + scrolls.
+  useEffect(() => {
+    const onOpenLineage = (e: Event) => {
+      const id = (e as CustomEvent).detail?.entryId;
+      if (typeof id === 'string') setLineageOpen(id);
+    };
+    const onReveal = (e: Event) => {
+      const id = (e as CustomEvent).detail?.entryId;
+      if (typeof id !== 'string') return;
+      setSelectedEntryIds([id]);
+      setSelectionAnchorId(id);
+      setSelectedEntry(id);
+      showBottomTab('details');
+      // Schedule a scrollIntoView after the next paint so the entry
+      // row exists in the DOM by the time we look for it.
+      window.requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-library-entry-id="${id}"]`);
+        if (el && 'scrollIntoView' in el) {
+          (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+    };
+    window.addEventListener('stabledaw:open-lineage', onOpenLineage);
+    window.addEventListener('stabledaw:reveal-library-entry', onReveal);
+    return () => {
+      window.removeEventListener('stabledaw:open-lineage', onOpenLineage);
+      window.removeEventListener('stabledaw:reveal-library-entry', onReveal);
+    };
+  }, [setSelectedEntry, showBottomTab]);
+
   const handleSelectEntry = (entry: LibraryEntry, event?: React.MouseEvent) => {
     const additive = !!(event?.ctrlKey || event?.metaKey);
     const range = !!event?.shiftKey;
@@ -809,6 +842,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           {filteredEntries.map((entry) => (
             <div
               key={entry.id}
+              data-library-entry-id={entry.id}
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.setData('application/x-stabledaw-library-id', entry.id);
