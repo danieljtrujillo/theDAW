@@ -293,7 +293,13 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
 /** Restarts the backend by hitting POST /api/admin/restart and then
  *  polling /api/health until the new process answers. The button
  *  surfaces three states: idle, restarting (spinner), and a short
- *  success/error flash that auto-resets after 4s. */
+ *  success/error flash that auto-resets after a few seconds.
+ *
+ *  Deadline is 90s because the backend's startup includes torch + CUDA
+ *  module loading + ML model init, which on slower GPUs can comfortably
+ *  push past a tighter window. We flash success as soon as /api/health
+ *  returns 200 (which is decoupled from model loading on the backend
+ *  side — health responds the moment uvicorn is up). */
 const RestartServerButton: React.FC = () => {
   type Status = 'idle' | 'restarting' | 'success' | 'error';
   const [status, setStatus] = useState<Status>('idle');
@@ -305,13 +311,25 @@ const RestartServerButton: React.FC = () => {
     setDetail('Sending restart signal…');
     try {
       const r = await fetch('/api/admin/restart', { method: 'POST' });
+      if (r.status === 412) {
+        // Backend isn't running under the supervisor — show its detail
+        // verbatim so the user knows how to enable restart.
+        const body = await r.json().catch(() => ({ detail: '' }));
+        setStatus('error');
+        setDetail(body.detail || 'Supervisor not detected. Launch via start-dev.bat to enable restart.');
+        setTimeout(() => {
+          setStatus('idle');
+          setDetail('');
+        }, 10_000);
+        return;
+      }
       if (!r.ok) throw new Error(`restart endpoint returned ${r.status}`);
       // Wait a beat for the process to exit, then poll /api/health.
       setDetail('Waiting for backend to come back…');
-      const deadline = Date.now() + 30_000;
+      const deadline = Date.now() + 90_000;
       // Brief initial sleep so we don't race the still-alive old
       // process before the supervisor re-spawns.
-      await new Promise((res) => setTimeout(res, 1200));
+      await new Promise((res) => setTimeout(res, 1500));
       while (Date.now() < deadline) {
         try {
           const h = await fetch('/api/health', { cache: 'no-store' });
@@ -327,16 +345,18 @@ const RestartServerButton: React.FC = () => {
         } catch {
           // expected during the offline window
         }
+        const remaining = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+        setDetail(`Waiting for backend to come back… ${remaining}s left`);
         await new Promise((res) => setTimeout(res, 500));
       }
-      throw new Error("backend didn't come back within 30s");
+      throw new Error("backend didn't respond within 90s — it may still be loading; try refreshing the page");
     } catch (e) {
       setStatus('error');
       setDetail(e instanceof Error ? e.message : 'restart failed');
       setTimeout(() => {
         setStatus('idle');
         setDetail('');
-      }, 6000);
+      }, 10_000);
     }
   };
 

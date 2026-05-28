@@ -14,13 +14,14 @@ import os
 import threading
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 RESTART_EXIT_CODE = 88
+SUPERVISOR_ENV_FLAG = "SA3_SUPERVISOR_PRESENT"
 
 
 def _delayed_exit(delay_seconds: float, code: int) -> None:
@@ -32,6 +33,17 @@ def _delayed_exit(delay_seconds: float, code: int) -> None:
     os._exit(code)
 
 
+@router.get("/restart-status")
+def restart_status() -> dict:
+    """Surface whether this backend is running under the supervisor —
+    the frontend can use this to enable / disable the Restart button
+    instead of letting users hit a no-op."""
+    return {
+        "supervisor_present": os.environ.get(SUPERVISOR_ENV_FLAG) == "1",
+        "exit_code_on_restart": RESTART_EXIT_CODE,
+    }
+
+
 @router.post("/restart")
 def restart() -> dict:
     """Schedule a backend restart and return 202.
@@ -39,7 +51,21 @@ def restart() -> dict:
     The supervisor parent (backend._supervisor) sees the sentinel exit
     code and re-launches backend.run inside the same console. The
     frontend should poll /api/health until it responds again.
+
+    Refuses with 412 if the supervisor isn't in the process tree —
+    without it, os._exit(88) would just kill the backend permanently
+    and the user would have to launch it again manually.
     """
+    if os.environ.get(SUPERVISOR_ENV_FLAG) != "1":
+        raise HTTPException(
+            status_code=412,
+            detail=(
+                "Restart unavailable: backend not running under the "
+                "supervisor. Launch via start-dev.bat (which invokes "
+                "`python -m backend._supervisor`) instead of "
+                "`python -m backend.run`, then try again."
+            ),
+        )
     # 600ms gives uvicorn time to flush the response and the client
     # time to read it before the process disappears.
     t = threading.Thread(
@@ -49,9 +75,5 @@ def restart() -> dict:
     return {
         "ok": True,
         "scheduled": True,
-        "supervisor_required": True,
         "exit_code": RESTART_EXIT_CODE,
-        "hint": "If the supervisor isn't running (backend launched via "
-        "python -m backend.run instead of backend._supervisor), the "
-        "process will exit and you'll have to start it again manually.",
     }

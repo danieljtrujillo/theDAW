@@ -20,13 +20,19 @@ RESTART_EXIT_CODE = 88
 
 def main() -> int:
     inner_cmd = [sys.executable, "-m", "backend.run"]
+    # Pass an env var the inner can sense, so /api/admin/restart knows
+    # it's safe to schedule os._exit(88). If the user launches
+    # backend.run directly (without this supervisor), the var won't be
+    # present and the restart endpoint refuses with 412.
+    inner_env = os.environ.copy()
+    inner_env["SA3_SUPERVISOR_PRESENT"] = "1"
     while True:
         print(
             f"[supervisor] launching: {' '.join(inner_cmd)}",
             flush=True,
         )
         try:
-            rc = subprocess.call(inner_cmd, cwd=os.getcwd())
+            rc = subprocess.call(inner_cmd, cwd=os.getcwd(), env=inner_env)
         except KeyboardInterrupt:
             print("[supervisor] KeyboardInterrupt — exiting", flush=True)
             return 130
