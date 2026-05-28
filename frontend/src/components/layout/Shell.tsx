@@ -212,7 +212,10 @@ export const Shell: React.FC = () => {
         onWidthChange={setRightPanelWidth}
       >
         <div className="h-full flex flex-col bg-[#07050a] relative">
-          <div className="flex items-center justify-between border-b border-white/5 px-3 py-2 bg-[#0a080f] shrink-0">
+          {/* Library header height matches the CenterTabBar (h-9) so the
+              top horizontal "line" — the bottom border of both — lands at
+              the same Y across panes (plan step 3a polish). */}
+          <div className="h-9 flex items-center justify-between border-b border-white/5 px-3 bg-[#0a080f] shrink-0">
             <div className="flex items-center gap-2">
               <LibraryIcon className="w-3 h-3 text-purple-400" />
               <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
@@ -234,11 +237,12 @@ export const Shell: React.FC = () => {
       {/* Persistent right rail — ProcessingLog lives here. Plan step 3c:
           stays in the UI even when the Library above is collapsed, and
           gets a sleek 45° beveled left edge when standalone so it reads
-          as a deliberate panel rather than an awkward strip. */}
+          as a deliberate panel rather than an awkward strip. Step 3a
+          polish: justify-end pins the ProcessingLog to the BOTTOM of
+          the rail so its action button shares a Y with the row bottom
+          regardless of which workspace tab is active. */}
       <aside
-        className={`h-full shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 ${
-          isRightPanelOpen ? 'w-72' : 'w-72'
-        }`}
+        className="h-full w-72 shrink-0 flex flex-col justify-end bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20"
         style={
           isRightPanelOpen
             ? undefined

@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize } from 'lucide-react';
 
@@ -1175,8 +1175,23 @@ const Graph3DView: React.FC<{
   // whose name/prompt/model don't substring-match are visually muted
   // (gray, low alpha) and their incident edges are dimmed. Empty query
   // disables the filter. Matching is case-insensitive.
+  //
+  // The needle is debounced (~150ms) so per-keystroke typing doesn't
+  // re-mount Three.js node groups via the `data` useMemo below — on
+  // larger graphs that mid-typing churn is what causes the search input
+  // to feel sluggish. Empty query clears immediately so the user sees
+  // the unfiltered graph as soon as they hit backspace through the box.
   const [searchQuery, setSearchQuery] = useState('');
-  const searchNeedle = searchQuery.trim().toLowerCase();
+  const [searchNeedle, setSearchNeedle] = useState('');
+  useEffect(() => {
+    const trimmed = searchQuery.trim().toLowerCase();
+    if (!trimmed) {
+      setSearchNeedle('');
+      return;
+    }
+    const handle = window.setTimeout(() => setSearchNeedle(trimmed), 150);
+    return () => window.clearTimeout(handle);
+  }, [searchQuery]);
   const matchSet = useMemo(() => {
     if (!searchNeedle) return null;
     const out = new Set<string>();
@@ -1345,13 +1360,88 @@ const Graph3DView: React.FC<{
 
   // Cluster tint: when ON (and 3D), add a translucent halo sphere
   // centered on each per-source centroid so the user can see source-
-  // grouping at a glance. Recomputed after a settle delay so we
-  // capture the force-layout's stable positions. Toggling OFF or
-  // unmounting removes the spheres. The sphere materials inherit
-  // dim-treatment from the hover effect by including baseOpacity in
-  // userData; they're tagged with a special nodeId='__cluster__' so
-  // hover-dim treats them as 'always visible' (skipped because they
-  // share the same baseOpacity restoration logic).
+  // grouping at a glance. Recomputed after a settle delay AND on every
+  // engine stop event (see `onEngineStop` on ForceGraph3D below) so the
+  // halos re-anchor after the user drags nodes around or after a
+  // relayout. Toggling OFF or unmounting removes the spheres.
+  const rebuildClusterHalos = useCallback(async () => {
+    if (appearance.renderMode !== '3d') return;
+    if (!appearance.clusterColoring) return;
+    const THREE = threeRef.current ?? (await import('three'));
+    threeRef.current = THREE;
+    const ref = fgRef.current as { scene?: () => unknown } | null;
+    const scene = (ref?.scene?.() ?? null) as
+      | (import('three').Object3D & {
+          getObjectByName?: (n: string) => import('three').Object3D | undefined;
+          remove?: (o: import('three').Object3D) => void;
+          add?: (o: import('three').Object3D) => void;
+        })
+      | null;
+    if (!scene?.add) return;
+    const prior = scene.getObjectByName?.('__lineage_clusters__');
+    if (prior) scene.remove?.(prior);
+
+    // react-force-graph stores resolved positions on the node objects
+    // themselves (x/y/z). After settle they're populated.
+    type PositionedNode = {
+      id?: string;
+      source?: string;
+      x?: number;
+      y?: number;
+      z?: number;
+    };
+    const positions: PositionedNode[] = (
+      data.nodes as unknown as PositionedNode[]
+    ).filter((n) => typeof n.x === 'number' && typeof n.y === 'number');
+    if (positions.length === 0) return;
+
+    const groups = new Map<string, PositionedNode[]>();
+    for (const n of positions) {
+      const src = n.source || 'other';
+      if (!groups.has(src)) groups.set(src, []);
+      groups.get(src)!.push(n);
+    }
+
+    const group = new THREE.Group();
+    group.name = '__lineage_clusters__';
+    for (const [source, members] of groups) {
+      if (members.length < 2) continue;
+      let cx = 0,
+        cy = 0,
+        cz = 0;
+      for (const m of members) {
+        cx += m.x ?? 0;
+        cy += m.y ?? 0;
+        cz += m.z ?? 0;
+      }
+      cx /= members.length;
+      cy /= members.length;
+      cz /= members.length;
+      let maxR = 0;
+      for (const m of members) {
+        const dx = (m.x ?? 0) - cx;
+        const dy = (m.y ?? 0) - cy;
+        const dz = (m.z ?? 0) - cz;
+        maxR = Math.max(maxR, Math.sqrt(dx * dx + dy * dy + dz * dz));
+      }
+      const radius = Math.max(20, maxR * 1.15);
+      const tintHex = CLUSTER_TINT_BY_SOURCE[source] ?? '#7c3aed';
+      const geo = new THREE.SphereGeometry(radius, 24, 16);
+      const mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(tintHex),
+        transparent: true,
+        opacity: 0.07,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      mat.userData.baseOpacity = 0.07;
+      const sphere = new THREE.Mesh(geo, mat);
+      sphere.position.set(cx, cy, cz);
+      group.add(sphere);
+    }
+    scene.add(group);
+  }, [appearance.clusterColoring, appearance.renderMode, data]);
+
   useEffect(() => {
     if (appearance.renderMode !== '3d') return;
     if (!appearance.clusterColoring) {
@@ -1370,82 +1460,9 @@ const Graph3DView: React.FC<{
       return;
     }
     let cancelled = false;
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       if (cancelled) return;
-      const THREE = threeRef.current ?? (await import('three'));
-      threeRef.current = THREE;
-      if (cancelled) return;
-      const ref = fgRef.current as { scene?: () => unknown } | null;
-      const scene = (ref?.scene?.() ?? null) as
-        | (import('three').Object3D & {
-            getObjectByName?: (n: string) => import('three').Object3D | undefined;
-            remove?: (o: import('three').Object3D) => void;
-            add?: (o: import('three').Object3D) => void;
-          })
-        | null;
-      if (!scene?.add) return;
-      const prior = scene.getObjectByName?.('__lineage_clusters__');
-      if (prior) scene.remove?.(prior);
-
-      // react-force-graph stores resolved positions on the node
-      // objects themselves (x/y/z). After settle they're populated.
-      type PositionedNode = {
-        id?: string;
-        source?: string;
-        x?: number;
-        y?: number;
-        z?: number;
-      };
-      const positions: PositionedNode[] = (
-        data.nodes as unknown as PositionedNode[]
-      ).filter((n) => typeof n.x === 'number' && typeof n.y === 'number');
-      if (positions.length === 0) return;
-
-      const groups = new Map<string, PositionedNode[]>();
-      for (const n of positions) {
-        const src = n.source || 'other';
-        if (!groups.has(src)) groups.set(src, []);
-        groups.get(src)!.push(n);
-      }
-
-      const group = new THREE.Group();
-      group.name = '__lineage_clusters__';
-      for (const [source, members] of groups) {
-        if (members.length < 2) continue;
-        let cx = 0,
-          cy = 0,
-          cz = 0;
-        for (const m of members) {
-          cx += m.x ?? 0;
-          cy += m.y ?? 0;
-          cz += m.z ?? 0;
-        }
-        cx /= members.length;
-        cy /= members.length;
-        cz /= members.length;
-        let maxR = 0;
-        for (const m of members) {
-          const dx = (m.x ?? 0) - cx;
-          const dy = (m.y ?? 0) - cy;
-          const dz = (m.z ?? 0) - cz;
-          maxR = Math.max(maxR, Math.sqrt(dx * dx + dy * dy + dz * dz));
-        }
-        const radius = Math.max(20, maxR * 1.15);
-        const tintHex = CLUSTER_TINT_BY_SOURCE[source] ?? '#7c3aed';
-        const geo = new THREE.SphereGeometry(radius, 24, 16);
-        const mat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(tintHex),
-          transparent: true,
-          opacity: 0.07,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-        });
-        mat.userData.baseOpacity = 0.07;
-        const sphere = new THREE.Mesh(geo, mat);
-        sphere.position.set(cx, cy, cz);
-        group.add(sphere);
-      }
-      scene.add(group);
+      void rebuildClusterHalos();
     }, 2800);
     return () => {
       cancelled = true;
@@ -1460,7 +1477,7 @@ const Graph3DView: React.FC<{
       const prior = scene?.getObjectByName?.('__lineage_clusters__');
       if (prior && scene?.remove) scene.remove(prior);
     };
-  }, [appearance.clusterColoring, appearance.renderMode, data]);
+  }, [appearance.clusterColoring, appearance.renderMode, rebuildClusterHalos]);
 
   // Inject a starfield + ambient/point lights into the underlying
   // Three.js scene once it exists. Used by every 3D preset, so the
@@ -1746,6 +1763,12 @@ const Graph3DView: React.FC<{
           linkDirectionalParticleSpeed={appearance.particleSpeed}
           nodeThreeObject={nodeThreeObject}
           nodeLabel={labelHtml}
+          onEngineStop={() => {
+            // Re-anchor cluster halos around the new settled positions.
+            // The callback short-circuits if cluster coloring is off, so
+            // this is a no-op cost when the user isn't using the tint.
+            void rebuildClusterHalos();
+          }}
         />
       ) : (
         <ForceGraph2D
