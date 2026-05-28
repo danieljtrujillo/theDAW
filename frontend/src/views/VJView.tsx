@@ -40,6 +40,24 @@ export const VJView: React.FC = () => {
   const [detail, setDetail] = useState<string>('');
   const [popped, setPopped] = useState(false);
   const [bridgeFps, setBridgeFps] = useState(0);
+  // Active VJ inputs — user toggles which signals feed the iframe.
+  // Invariant: at least one must stay active; clicking the last
+  // enabled chip is a no-op (prevents the user from accidentally
+  // muting all input). Each toggle posts a sa3-vj/toggle-{kind}
+  // message so the VJ side can mute/unmute its own bus.
+  const [vjInputs, setVjInputs] = useState<{ mic: boolean; audio: boolean; midi: boolean }>({
+    mic: true,
+    audio: true,
+    midi: true,
+  });
+  const toggleVjInput = (kind: 'mic' | 'audio' | 'midi') => {
+    setVjInputs((prev) => {
+      const next = { ...prev, [kind]: !prev[kind] };
+      // Min-1 invariant: refuse to disable the last active input.
+      if (!next.mic && !next.audio && !next.midi) return prev;
+      return next;
+    });
+  };
   const poppedWindowRef = useRef<Window | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
@@ -137,6 +155,70 @@ export const VJView: React.FC = () => {
     };
   }, [status, popped]);
 
+  // Forward input-toggle state to the iframe whenever it changes.
+  // VJ side listens for sa3-vj/inputs and mutes / unmutes its own
+  // mic-capture / audio-bridge / MIDI listener accordingly.
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    try {
+      iframe.contentWindow?.postMessage(
+        { type: 'sa3-vj/inputs', ...vjInputs },
+        '*',
+      );
+    } catch { /* ignored */ }
+  }, [status, popped, vjInputs]);
+
+  // Global Web MIDI → forward raw messages to the iframe when MIDI
+  // input is enabled. This is independent of the synthesizer trigger
+  // in App.tsx — both fire on the same note, the synth plays a
+  // voice, the iframe receives the event and can react visually.
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    if (!vjInputs.midi) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
+    let cancelled = false;
+    let access: MIDIAccess | null = null;
+
+    const onMessage = (e: MIDIMessageEvent) => {
+      if (!e.data || !iframe.contentWindow) return;
+      try {
+        iframe.contentWindow.postMessage(
+          {
+            type: 'sa3-vj/midi',
+            data: Array.from(e.data),
+            t: performance.now(),
+          },
+          '*',
+        );
+      } catch { /* ignored */ }
+    };
+
+    (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
+      .requestMIDIAccess()
+      .then((a) => {
+        if (cancelled) return;
+        access = a;
+        a.inputs.forEach((input) => { input.onmidimessage = onMessage; });
+        a.onstatechange = () => {
+          if (cancelled || !access) return;
+          access.inputs.forEach((input) => { input.onmidimessage = onMessage; });
+        };
+      })
+      .catch(() => { /* silent — App-level listener already logged */ });
+
+    return () => {
+      cancelled = true;
+      if (access) {
+        access.inputs.forEach((input) => { input.onmidimessage = null; });
+        access.onstatechange = null;
+      }
+    };
+  }, [status, popped, vjInputs.midi]);
+
   // Track-meta + BPM bridge: when the SA3 player loads a new entry
   // (or playback toggles), post the current track's metadata to the
   // iframe so VJ can sync its bpm slider, show the title in HUDs, etc.
@@ -219,36 +301,42 @@ export const VJView: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-1">
-          {/* Inputs hint chips — VJ accepts these via the in-iframe
-              controls. Mic permission is granted by the iframe itself
-              on first use; audio / MIDI plumbing from SA3 is a
-              follow-up. */}
-          <span
-            className="px-1.5 py-0.5 rounded border border-white/10 text-[8px] font-mono uppercase tracking-widest text-zinc-500 flex items-center gap-1"
-            title="VJ canvas can request mic access via its native UI"
-          >
-            <Mic className="w-2.5 h-2.5" /> Mic
-          </span>
-          <span
-            className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 ${
-              bridgeFps > 0
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                : 'border-white/10 text-zinc-500'
-            }`}
-            title={
+          {/* Input toggles — click to enable/disable each signal
+              feeding the VJ iframe. Minimum 1 must stay active. The
+              VJ side mutes/unmutes its own bus when it receives the
+              sa3-vj/inputs message. */}
+          <InputChip
+            active={vjInputs.mic}
+            onToggle={() => toggleVjInput('mic')}
+            label="Mic"
+            icon={<Mic className="w-2.5 h-2.5" />}
+            activeLabel="Microphone capture is enabled — VJ iframe will request browser permission on first use."
+            inactiveLabel="Microphone input is muted. Click to enable."
+            disabled={vjInputs.mic && !vjInputs.audio && !vjInputs.midi}
+          />
+          <InputChip
+            active={vjInputs.audio}
+            onToggle={() => toggleVjInput('audio')}
+            label={bridgeFps > 0 ? `Audio ${bridgeFps}` : 'Audio'}
+            icon={<MusicIcon className="w-2.5 h-2.5" />}
+            activeLabel={
               bridgeFps > 0
                 ? `Audio bridge live — forwarding SA3 player levels @ ${bridgeFps}fps`
-                : 'Audio bridge idle — load + play a track in SA3'
+                : 'Audio bridge enabled — load + play a track in SA3 to drive visuals.'
             }
-          >
-            <MusicIcon className="w-2.5 h-2.5" /> Audio{bridgeFps > 0 ? ` ${bridgeFps}` : ''}
-          </span>
-          <span
-            className="px-1.5 py-0.5 rounded border border-white/10 text-[8px] font-mono uppercase tracking-widest text-zinc-500 flex items-center gap-1"
-            title="MIDI events bridge from SA3 (TODO)"
-          >
-            <Piano className="w-2.5 h-2.5" /> MIDI
-          </span>
+            inactiveLabel="Audio bridge muted. Click to enable."
+            disabled={vjInputs.audio && !vjInputs.mic && !vjInputs.midi}
+            indicator={bridgeFps > 0 && vjInputs.audio ? 'live' : null}
+          />
+          <InputChip
+            active={vjInputs.midi}
+            onToggle={() => toggleVjInput('midi')}
+            label="MIDI"
+            icon={<Piano className="w-2.5 h-2.5" />}
+            activeLabel="MIDI events from your controller are forwarded into the VJ iframe."
+            inactiveLabel="MIDI forwarding is off. Click to enable."
+            disabled={vjInputs.midi && !vjInputs.mic && !vjInputs.audio}
+          />
           <button
             type="button"
             onClick={() => void loadUrl()}
@@ -364,3 +452,42 @@ export const VJView: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Tiny toggle chip for the VJ input row (Mic / Audio / MIDI). Lit
+ * emerald when active; faded zinc when disabled. `disabled` true
+ * means the chip can't be turned off because it's the last
+ * remaining active input (min-1 invariant).
+ */
+const InputChip: React.FC<{
+  active: boolean;
+  onToggle: () => void;
+  label: string;
+  icon: React.ReactNode;
+  activeLabel: string;
+  inactiveLabel: string;
+  disabled?: boolean;
+  indicator?: 'live' | null;
+}> = ({ active, onToggle, label, icon, activeLabel, inactiveLabel, disabled, indicator }) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    disabled={!!disabled && active}
+    className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors ${
+      active
+        ? indicator === 'live'
+          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+          : 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+        : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/3'
+    } disabled:cursor-not-allowed disabled:opacity-100`}
+    title={
+      disabled && active
+        ? `${activeLabel} — at least one input must stay enabled.`
+        : active
+        ? `${activeLabel} (click to mute)`
+        : inactiveLabel
+    }
+  >
+    {icon} {label}
+  </button>
+);
