@@ -5,8 +5,10 @@ import {
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
+import { useAppUiStore } from '../state/appUiStore';
 import { LineageModal } from '../components/library/LineageModal';
 import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
 import { MicRecorder } from '../components/audio/MicRecorder';
@@ -669,16 +671,19 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
 
       {/* Hidden file picker — used by the "Import MIDI" toolbar button.
           Drives loadMidiIntoPianoRoll() so users can pull a .mid off
-          disk straight into the piano roll without running basic-pitch. */}
+          disk straight into the piano roll without running basic-pitch.
+          `multiple` lets the user batch-import several .mid files in
+          one go; each is loaded sequentially. */}
       <input
         ref={midiFileInputRef}
         type="file"
         accept=".mid,.midi,audio/midi"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) void onLoadMidiFile(file);
-          // Reset so picking the same file twice re-fires onChange.
+          const files = Array.from(e.target.files ?? []);
+          for (const file of files) void onLoadMidiFile(file);
+          // Reset so picking the same file(s) twice re-fires onChange.
           e.target.value = '';
         }}
       />
@@ -705,6 +710,17 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           </button>
           <button onClick={() => setViewMode('grid')} className={`p-1 rounded ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-zinc-600'}`} title="Grid view">
             <LayoutGrid className="w-3 h-3" />
+          </button>
+          {/* Collapse-rail button — the ONLY library collapse handle
+              now that the outer rail header was removed. Lives at the
+              far right of the Section header. */}
+          <button
+            onClick={() => useAppUiStore.getState().setRightPanelOpen(false)}
+            className="p-1 rounded text-zinc-500 hover:bg-white/10 hover:text-white transition-colors ml-1 border-l border-white/5 pl-2"
+            title="Collapse library panel"
+            aria-label="Collapse library panel"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
       }>

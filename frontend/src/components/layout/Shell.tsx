@@ -227,26 +227,16 @@ export const Shell: React.FC = () => {
           </div>
         )}
 
-        {/* Library section — collapsed when isRightPanelOpen is false. */}
+        {/* Library section — collapsed when isRightPanelOpen is false.
+            The outer rail header was removed; the LIBRARY Section
+            inside LibraryView now serves as the ONLY library header
+            (its rightNode hosts the rail-collapse button). Eliminates
+            the duplicate "LIBRARY" header + duplicate collapse handle
+            the user flagged. */}
         {isRightPanelOpen && (
-          <>
-            <div className="h-9 flex items-center justify-between border-b border-white/5 px-3 bg-[#0a080f] shrink-0">
-              <div className="flex items-center gap-2">
-                <LibraryIcon className="w-3 h-3 text-purple-400" />
-                <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
-              </div>
-              <button
-                onClick={() => setIsRightPanelOpen(false)}
-                className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors"
-                title="Collapse library"
-              >
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-hidden relative min-h-0">
-              <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
-            </div>
-          </>
+          <div className="flex-1 overflow-hidden relative min-h-0">
+            <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
+          </div>
         )}
 
         {/* Log section — always visible. Sits at the bottom of the
