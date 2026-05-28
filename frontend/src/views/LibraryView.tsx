@@ -4,7 +4,9 @@ import {
   Music, Star, Tag, Filter, ArrowUpDown,
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
+  CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown,
 } from 'lucide-react';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { LineageModal } from '../components/library/LineageModal';
 import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
 import { MicRecorder } from '../components/audio/MicRecorder';
@@ -67,7 +69,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   const [lineageOpen, setLineageOpen] = useState<string | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
+  // Per-entry right-click menu now uses the shared ContextMenu
+  // primitive (zoom-compensated, closes on outside-click / Esc / wheel
+  // automatically). Payload carries the entryId of the right-clicked
+  // row so the menu's items can read it without re-finding the row.
+  const entryMenu = useContextMenu<{ entryId: string }>();
   const [allStems, setAllStems] = useState<Array<Record<string, unknown>> | null>(null);
   const [allMidis, setAllMidis] = useState<Array<Record<string, unknown>> | null>(null);
   const [runningKind, setRunningKind] = useState<{ id: string; kind: 'analysis' | 'stems' | 'midi' } | null>(null);
@@ -352,23 +358,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     setSelectedEntryIds((prev) => prev.filter((id) => entries.some((entry) => entry.id === id)));
   }, [entries]);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
-    };
-    window.addEventListener('click', close);
-    window.addEventListener('contextmenu', close, { capture: true });
-    window.addEventListener('blur', close);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('contextmenu', close, { capture: true } as EventListenerOptions);
-      window.removeEventListener('blur', close);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [contextMenu]);
+  // Shared ContextMenu handles outside-click / Esc / wheel close, so
+  // the old per-mount global listener block is gone.
 
   const handleSelectEntry = (entry: LibraryEntry, event?: React.MouseEvent) => {
     const additive = !!(event?.ctrlKey || event?.metaKey);
@@ -401,7 +392,6 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   };
 
   const handleEntryContextMenu = (event: React.MouseEvent, entry: LibraryEntry) => {
-    event.preventDefault();
     event.stopPropagation();
     if (!selectedEntryIds.includes(entry.id)) {
       setSelectedEntryIds([entry.id]);
@@ -409,7 +399,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       setSelectedEntry(entry.id);
       showBottomTab('details');
     }
-    setContextMenu({ x: event.clientX, y: event.clientY, entryId: entry.id });
+    entryMenu.open(event, { entryId: entry.id });
   };
 
   const sendEntryToTrack = async (
@@ -477,7 +467,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     const targets = selectedEntries.length > 0
       ? selectedEntries
       : (() => {
-          const ctxEntry = entries.find((entry) => entry.id === contextMenu?.entryId);
+          const ctxId = entryMenu.payload?.entryId;
+          const ctxEntry = entries.find((entry) => entry.id === ctxId);
           return ctxEntry ? [ctxEntry] : [];
         })();
     if (targets.length === 0) return;
@@ -497,7 +488,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         addBlobsToChimera(items);
       }
       onSwitchTab?.('create');
-      setContextMenu(null);
+      entryMenu.close();
     })();
   };
 
@@ -752,6 +743,57 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         </div>
 
         {subTab === 'tracks' && (<>
+        {/* Icon-only top-level actions toolbar (user request 2026-05-28).
+            All actions operate on selectedEntries; SELECT toggles
+            select-all-visible. Tooltips on hover (title attr) — names
+            are not visible inline. */}
+        <LibraryActionsToolbar
+          selectedEntries={selectedEntries}
+          visibleEntries={filteredEntries}
+          allEntries={entries}
+          onToggleSelectAll={() => {
+            const visIds = filteredEntries.map((e) => e.id);
+            const allVisSelected = visIds.length > 0 && visIds.every((id) => selectedEntryIds.includes(id));
+            setSelectedEntryIds(allVisSelected ? [] : visIds);
+            setSelectionAnchorId(allVisSelected ? null : visIds[0] ?? null);
+          }}
+          onDeleteSelected={async () => {
+            const targets = selectedEntries.length > 0 ? selectedEntries : [];
+            if (targets.length === 0) return;
+            const ok = window.confirm(
+              `Delete ${targets.length} entr${targets.length === 1 ? 'y' : 'ies'} from disk? This cannot be undone.`,
+            );
+            if (!ok) return;
+            const { deleted, failed } = await useLibraryStore.getState().removeMany(targets.map((t) => t.id));
+            window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
+            setSelectedEntryIds([]);
+          }}
+          onFuseSelected={handleSendSelectedToInit}
+          onInpaintSelected={() => {
+            const target = selectedEntries[0];
+            if (!target) return;
+            void handleSendToInpaint(target);
+            onSwitchTab?.('create');
+          }}
+          onClearNonFavorites={async () => {
+            const targets = entries.filter((e) => !e.favorite);
+            if (targets.length === 0) return;
+            const ok = window.confirm(
+              `Delete ${targets.length} non-favorite entr${targets.length === 1 ? 'y' : 'ies'} from disk? Favorites and their audio files are kept.`,
+            );
+            if (!ok) return;
+            const { deleted, failed } = await useLibraryStore.getState().removeMany(targets.map((t) => t.id));
+            window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
+          }}
+          onClearAll={async () => {
+            const ok = window.confirm(
+              `Delete ALL ${entries.length} library entr${entries.length === 1 ? 'y' : 'ies'} including favorites from disk?\n\nThis cannot be undone.`,
+            );
+            if (!ok) return;
+            const { deleted, failed } = await useLibraryStore.getState().clearAll();
+            window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
+          }}
+        />
         <div className="flex items-center justify-between px-1 mb-1 text-[8px] font-mono text-zinc-600 uppercase border-b border-white/5 pb-1">
           <button className="flex items-center gap-1 hover:text-zinc-300" onClick={() => setSortBy('title')}>
             <ArrowUpDown className="w-2 h-2" /> NAME
@@ -926,111 +968,87 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         )}
       </Section>
 
-      {contextMenu && (
-        <div
-          className="fixed z-200 min-w-48 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5">
-            {selectedEntries.length > 1 ? `${selectedEntries.length} selected` : '1 selected'}
-          </div>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between"
-            disabled={selectedEntries.length === 0}
-            onClick={handleSendSelectedToInit}
-          >
-            <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3" /> Send selected to Init</span>
-            <span className="text-zinc-600 text-[8px]">
-              {selectedEntries.length > 1 ? `${selectedEntries.length} → Chimera` : 'single'}
-            </span>
-          </button>
-          <div className="my-1 border-t border-white/5" />
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-50"
-            disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'analysis'}
-            onClick={() => {
-              const id = contextMenu.entryId;
-              setContextMenu(null);
-              void runJobForEntry(id, 'analysis');
-            }}
-          >
-            <span className="flex items-center gap-1.5">
-              {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'analysis'
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <Activity className="w-3 h-3" />}
-              Run analysis
-            </span>
-            <span className="text-zinc-600 text-[8px]">bpm/key/pitch</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-50"
-            disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'stems'}
-            onClick={() => {
-              const id = contextMenu.entryId;
-              const title = entries.find((e) => e.id === id)?.title ?? id;
-              setContextMenu(null);
-              // Open the modal so the user picks stem count / device /
-              // quality. Holding Shift skips the modal and uses the
-              // settings.json defaults for power users.
-              setStemsModal({ entryId: id, entryTitle: title });
-            }}
-          >
-            <span className="flex items-center gap-1.5">
-              {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'stems'
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <Scissors className="w-3 h-3" />}
-              Separate stems…
-            </span>
-            <span className="text-zinc-600 text-[8px]">demucs</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-50"
-            disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'midi'}
-            onClick={() => {
-              const id = contextMenu.entryId;
-              setContextMenu(null);
-              void runJobForEntry(id, 'midi');
-            }}
-          >
-            <span className="flex items-center gap-1.5">
-              {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'midi'
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <FileMusic className="w-3 h-3" />}
-              Convert to MIDI
-            </span>
-            <span className="text-zinc-600 text-[8px]">basic-pitch</span>
-          </button>
-          <div className="my-1 border-t border-white/5" />
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between"
-            onClick={() => {
-              const url = `/api/library/${contextMenu.entryId}/bundle`;
+      {(() => {
+        const ctxEntryId = entryMenu.payload?.entryId;
+        if (!ctxEntryId) return null;
+        const isRunning = (k: 'analysis' | 'stems' | 'midi') =>
+          runningKind?.id === ctxEntryId && runningKind?.kind === k;
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            label: 'Send selected to Init',
+            icon: <Wand2 className="w-3 h-3" />,
+            hint: selectedEntries.length > 1 ? `${selectedEntries.length} → Chimera` : 'single',
+            disabled: selectedEntries.length === 0,
+            onSelect: handleSendSelectedToInit,
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: isRunning('analysis') ? 'Running analysis…' : 'Run analysis',
+            icon: isRunning('analysis')
+              ? <Loader2 className="w-3 h-3 animate-spin" />
+              : <Activity className="w-3 h-3" />,
+            hint: 'bpm/key/pitch',
+            disabled: isRunning('analysis'),
+            onSelect: () => { void runJobForEntry(ctxEntryId, 'analysis'); },
+          },
+          {
+            type: 'item',
+            label: isRunning('stems') ? 'Running stems…' : 'Separate stems…',
+            icon: isRunning('stems')
+              ? <Loader2 className="w-3 h-3 animate-spin" />
+              : <Scissors className="w-3 h-3" />,
+            hint: 'demucs',
+            disabled: isRunning('stems'),
+            onSelect: () => {
+              const title = entries.find((e) => e.id === ctxEntryId)?.title ?? ctxEntryId;
+              setStemsModal({ entryId: ctxEntryId, entryTitle: title });
+            },
+          },
+          {
+            type: 'item',
+            label: isRunning('midi') ? 'Running MIDI…' : 'Convert to MIDI',
+            icon: isRunning('midi')
+              ? <Loader2 className="w-3 h-3 animate-spin" />
+              : <FileMusic className="w-3 h-3" />,
+            hint: 'basic-pitch',
+            disabled: isRunning('midi'),
+            onSelect: () => { void runJobForEntry(ctxEntryId, 'midi'); },
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Download bundle',
+            icon: <Package className="w-3 h-3" />,
+            hint: '.zip',
+            onSelect: () => {
               const a = document.createElement('a');
-              a.href = url;
+              a.href = `/api/library/${ctxEntryId}/bundle`;
               a.download = '';
               document.body.appendChild(a);
               a.click();
               document.body.removeChild(a);
-              setContextMenu(null);
-            }}
-          >
-            <span className="flex items-center gap-1.5"><Package className="w-3 h-3" /> Download bundle</span>
-            <span className="text-zinc-600 text-[8px]">.zip</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between"
-            onClick={() => {
-              setLineageOpen(contextMenu.entryId);
-              setContextMenu(null);
-            }}
-          >
-            <span className="flex items-center gap-1.5"><Network className="w-3 h-3" /> Show lineage</span>
-            <span className="text-zinc-600 text-[8px]">graph</span>
-          </button>
-        </div>
-      )}
+            },
+          },
+          {
+            type: 'item',
+            label: 'Show lineage',
+            icon: <Network className="w-3 h-3" />,
+            hint: 'graph',
+            onSelect: () => setLineageOpen(ctxEntryId),
+          },
+        ];
+        return (
+          <ContextMenu
+            position={entryMenu.position}
+            onClose={entryMenu.close}
+            items={items}
+            title={selectedEntries.length > 1 ? `${selectedEntries.length} selected` : '1 selected'}
+            minWidth="13rem"
+          />
+        );
+      })()}
 
       <LineageModal
         open={lineageOpen !== null}
@@ -1038,52 +1056,258 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         onClose={() => setLineageOpen(null)}
       />
 
-      {/* Stats moved to the compact chip strip at the top of the
-          panel. This section is now just maintenance actions. */}
-      <Section title="LIBRARY MAINTENANCE" icon={Activity} defaultOpen={false}>
-        <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1.5 justify-center self-start hover:bg-orange-500/15 hover:text-orange-200 border border-orange-500/30"
-            disabled={entries.filter((e) => !e.favorite).length === 0}
-            onClick={async () => {
-              const targets = entries.filter((e) => !e.favorite);
-              if (targets.length === 0) return;
-              const ok = window.confirm(
-                `Delete ${targets.length} non-favorite entr${targets.length === 1 ? 'y' : 'ies'} from disk? Favorites and their audio files are kept.`,
-              );
-              if (!ok) return;
-              const { deleted, failed } = await useLibraryStore.getState().removeMany(targets.map((t) => t.id));
-              window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
-            }}
-            title="Delete every non-favorite library entry from the server's data folder."
-          >
-            <Trash2 className="w-2.5 h-2.5" />
-            CLEAR NON-FAVORITES ({entries.filter((e) => !e.favorite).length})
-          </button>
-          <button
-            type="button"
-            className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1.5 justify-center self-start hover:bg-red-500/15 hover:text-red-200 border border-red-500/40"
-            disabled={entries.length === 0}
-            onClick={async () => {
-              const ok = window.confirm(
-                `Delete ALL ${entries.length} library entr${entries.length === 1 ? 'y' : 'ies'} including favorites from the server's data folder?\n\nThis cannot be undone.`,
-              );
-              if (!ok) return;
-              const { deleted, failed } = await useLibraryStore.getState().clearAll();
-              window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
-            }}
-            title="Nuke the library entirely. The audio files on disk are deleted by the backend."
-          >
-            <Trash2 className="w-2.5 h-2.5" />
-            CLEAR ALL ({entries.length})
-          </button>
-          <p className="text-[8px] font-mono text-zinc-700 leading-relaxed">
-            Library entries (and their audio) live on the server's filesystem now — the browser only holds metadata. Use these buttons to prune the on-disk collection.
-          </p>
-        </div>
-      </Section>
+      {/* Maintenance actions (Clear Non-Favorites / Clear All) moved
+          into the icon toolbar's OPTIONS submenu per user request
+          2026-05-28. Section removed entirely. */}
 
+    </div>
+  );
+};
+
+
+interface LibraryActionsToolbarProps {
+  selectedEntries: LibraryEntry[];
+  visibleEntries: LibraryEntry[];
+  allEntries: LibraryEntry[];
+  onToggleSelectAll: () => void;
+  onDeleteSelected: () => void | Promise<void>;
+  onFuseSelected: () => void;
+  onInpaintSelected: () => void;
+  onClearNonFavorites: () => void | Promise<void>;
+  onClearAll: () => void | Promise<void>;
+}
+
+/** Icon-only top-level library actions bar. Names render as tooltips
+ *  only (mouseover). DOWNLOAD + OPTIONS open ContextMenu submenus
+ *  anchored to the click. Empty selection disables destructive actions
+ *  (delete / fuse / inpaint) but leaves SELECT / DOWNLOAD / OPTIONS
+ *  usable so the user can act on the visible set without selecting
+ *  first. */
+const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
+  selectedEntries,
+  visibleEntries,
+  allEntries,
+  onToggleSelectAll,
+  onDeleteSelected,
+  onFuseSelected,
+  onInpaintSelected,
+  onClearNonFavorites,
+  onClearAll,
+}) => {
+  const downloadMenu = useContextMenu<'download'>();
+  const optionsMenu = useContextMenu<'options'>();
+  const selCount = selectedEntries.length;
+  const hasSelection = selCount > 0;
+  const visIds = visibleEntries.map((e) => e.id);
+  const selectedIds = new Set(selectedEntries.map((e) => e.id));
+  const allVisibleSelected = visIds.length > 0 && visIds.every((id) => selectedIds.has(id));
+
+  // For DOWNLOAD: the target set is selectedEntries when populated,
+  // otherwise the full visible set (so the user gets a "bulk download
+  // everything on screen" affordance without having to click SELECT
+  // first). DELETE always requires explicit selection — too destructive
+  // to default-target the visible set.
+  const downloadTargets = hasSelection ? selectedEntries : visibleEntries;
+
+  const downloadAll = (kind: 'song' | 'midi' | 'json' | 'bundle' | 'lineage') => {
+    for (const entry of downloadTargets) {
+      const a = document.createElement('a');
+      if (kind === 'song') {
+        // The entry's audio blob lives at this server-relative URL.
+        a.href = `/api/library/${entry.id}/audio`;
+        a.download = entry.title;
+      } else if (kind === 'midi') {
+        a.href = `/api/midi/file/${entry.id}`;
+        a.download = `${entry.title}.mid`;
+      } else if (kind === 'bundle') {
+        a.href = `/api/library/${entry.id}/bundle`;
+        a.download = `${entry.title}.zip`;
+      } else if (kind === 'lineage') {
+        a.href = `/api/library/${entry.id}/lineage?depth=8`;
+        a.download = `${entry.title}-lineage.json`;
+      } else if (kind === 'json') {
+        // Build a metadata JSON client-side from what the store already
+        // has cached — no backend round-trip. If the user needs the
+        // server's canonical view they can use Bundle.
+        const blob = new Blob([JSON.stringify(entry, null, 2)], {
+          type: 'application/json',
+        });
+        a.href = URL.createObjectURL(blob);
+        a.download = `${entry.title}.json`;
+      }
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      if (kind === 'json') {
+        // Revoke after a beat so the browser actually triggers the save.
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+    }
+  };
+
+  const downloadItems: ContextMenuItem[] = [
+    { type: 'header', label: `${downloadTargets.length} ${hasSelection ? 'selected' : 'visible'}` },
+    {
+      type: 'item',
+      label: 'Songs (audio file)',
+      icon: <Music className="w-3 h-3" />,
+      hint: downloadTargets.length > 0 ? `${downloadTargets.length} files` : undefined,
+      disabled: downloadTargets.length === 0,
+      onSelect: () => downloadAll('song'),
+    },
+    {
+      type: 'item',
+      label: 'MIDI (.mid)',
+      icon: <FileMusic className="w-3 h-3" />,
+      disabled: downloadTargets.length === 0,
+      onSelect: () => downloadAll('midi'),
+    },
+    {
+      type: 'item',
+      label: 'Metadata JSON',
+      icon: <FileText className="w-3 h-3" />,
+      disabled: downloadTargets.length === 0,
+      onSelect: () => downloadAll('json'),
+    },
+    {
+      type: 'item',
+      label: 'Bundle (.zip)',
+      icon: <Package className="w-3 h-3" />,
+      hint: 'audio+meta+midi',
+      disabled: downloadTargets.length === 0,
+      onSelect: () => downloadAll('bundle'),
+    },
+    {
+      type: 'item',
+      label: 'Lineage report',
+      icon: <Network className="w-3 h-3" />,
+      hint: 'JSON graph',
+      disabled: downloadTargets.length === 0,
+      onSelect: () => downloadAll('lineage'),
+    },
+  ];
+
+  const optionsItems: ContextMenuItem[] = [
+    { type: 'header', label: 'Library maintenance' },
+    {
+      type: 'item',
+      label: `Clear non-favorites (${allEntries.filter((e) => !e.favorite).length})`,
+      icon: <Trash2 className="w-3 h-3" />,
+      disabled: allEntries.filter((e) => !e.favorite).length === 0,
+      onSelect: () => void onClearNonFavorites(),
+    },
+    {
+      type: 'item',
+      label: `Clear ALL (${allEntries.length})`,
+      icon: <Trash2 className="w-3 h-3" />,
+      danger: true,
+      disabled: allEntries.length === 0,
+      onSelect: () => void onClearAll(),
+    },
+  ];
+
+  const baseBtn =
+    'p-1.5 rounded border transition-colors flex items-center gap-1 disabled:opacity-30 disabled:pointer-events-none';
+  const idleBtn = `${baseBtn} border-white/5 text-zinc-400 hover:text-zinc-100 hover:bg-white/5`;
+  const activeBtn = `${baseBtn} border-purple-500/40 text-purple-200 bg-purple-500/10 hover:bg-purple-500/20`;
+  const dangerBtn = `${baseBtn} border-red-500/30 text-red-300 hover:bg-red-500/15`;
+
+  return (
+    <div className="flex items-center justify-between gap-1 px-1 mb-1.5">
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={onToggleSelectAll}
+          className={allVisibleSelected ? activeBtn : idleBtn}
+          title={
+            allVisibleSelected
+              ? 'Clear selection'
+              : `Select all visible (${visIds.length})`
+          }
+          aria-label="Select all visible"
+        >
+          {allVisibleSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => downloadMenu.open(e, 'download')}
+          className={idleBtn}
+          title={`Download${hasSelection ? ` (${selCount} selected)` : ' (visible)'}…`}
+          aria-label="Download menu"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <ChevronDown className="w-2.5 h-2.5 opacity-60" />
+        </button>
+        <button
+          type="button"
+          onClick={() => void onDeleteSelected()}
+          disabled={!hasSelection}
+          className={hasSelection ? dangerBtn : idleBtn}
+          title={hasSelection ? `Delete ${selCount} selected` : 'Delete (select tracks first)'}
+          aria-label="Delete selected"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onFuseSelected}
+          disabled={!hasSelection}
+          className={idleBtn}
+          title={
+            hasSelection
+              ? selCount === 1
+                ? 'FUSE: Send to Init'
+                : `FUSE: Chimera-stack ${selCount} selected`
+              : 'FUSE (select tracks first)'
+          }
+          aria-label="Fuse selected"
+        >
+          <Combine className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onInpaintSelected}
+          disabled={!hasSelection}
+          className={idleBtn}
+          title={
+            hasSelection
+              ? selCount > 1
+                ? 'INPAINT (first selected only)'
+                : 'INPAINT this track'
+              : 'INPAINT (select a track first)'
+          }
+          aria-label="Inpaint selected"
+        >
+          <Paintbrush className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => optionsMenu.open(e, 'options')}
+          className={idleBtn}
+          title="More options…"
+          aria-label="More options"
+        >
+          <MoreHorizontal className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600 pr-1">
+        {hasSelection ? `${selCount}/${visIds.length} sel` : `${visIds.length} shown`}
+      </span>
+
+      <ContextMenu
+        position={downloadMenu.position}
+        onClose={downloadMenu.close}
+        items={downloadItems}
+        title="Download"
+        minWidth="14rem"
+      />
+      <ContextMenu
+        position={optionsMenu.position}
+        onClose={optionsMenu.close}
+        items={optionsItems}
+        title="Options"
+        minWidth="14rem"
+      />
     </div>
   );
 };
@@ -1118,29 +1342,108 @@ interface SubTabListProps {
   placeholder: string;
 }
 
-type SubTabContextMenu =
-  | { kind: 'midi'; x: number; y: number; midiId: string; label: string }
-  | { kind: 'stem'; x: number; y: number; row: Record<string, unknown> };
+type SubTabRowPayload =
+  | { kind: 'midi'; midiId: string; label: string }
+  | { kind: 'stem'; row: Record<string, unknown> };
 
 
 const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder }) => {
   const parentIds = Object.keys(byParent);
-  const [menu, setMenu] = useState<SubTabContextMenu | null>(null);
-
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener('click', close);
-    window.addEventListener('contextmenu', close, { capture: true });
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('contextmenu', close, { capture: true } as EventListenerOptions);
-    };
-  }, [menu]);
+  // Shared ContextMenu primitive — fixes drift under .dense-layout
+  // zoom and gives consistent close-on-outside behavior across the
+  // app (plan step 3d migration).
+  const rowMenu = useContextMenu<SubTabRowPayload>();
 
   if (parentIds.length === 0) {
     return <p className="text-[10px] text-zinc-500 italic py-4 text-center">{placeholder}</p>;
   }
+
+  const payload = rowMenu.payload;
+  let menuItems: ContextMenuItem[] = [];
+  let menuTitle = '';
+
+  if (payload?.kind === 'midi') {
+    menuTitle = `MIDI · ${payload.label}`;
+    menuItems = [
+      {
+        type: 'item',
+        label: 'Send to piano roll',
+        icon: <Piano className="w-3 h-3" />,
+        onSelect: () => { void sendMidiIdToTarget(payload.midiId, 'piano-roll'); },
+      },
+      {
+        type: 'item',
+        label: 'Send to step sequencer',
+        icon: <ListOrdered className="w-3 h-3" />,
+        onSelect: () => { void sendMidiIdToTarget(payload.midiId, 'step-seq'); },
+      },
+      {
+        type: 'item',
+        label: 'Download .mid',
+        icon: <Download className="w-3 h-3" />,
+        onSelect: () => {
+          const a = document.createElement('a');
+          a.href = `/api/midi/file/${payload.midiId}`;
+          a.download = '';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        },
+      },
+    ];
+  } else if (payload?.kind === 'stem') {
+    const stemId = String(payload.row.id ?? '');
+    const stemName = String(payload.row.stem_name ?? 'stem');
+    const sendable = stemRowToSendable(payload.row);
+    const audioUrl = `/api/library/stems/${stemId}/audio`;
+    menuTitle = `Stem · ${stemName}`;
+    menuItems = [
+      {
+        type: 'item',
+        label: 'Append to editor',
+        icon: <Scissors className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToEditor(sendable, 'editor-first-track'); },
+      },
+      {
+        type: 'item',
+        label: 'Send to editor (new track)',
+        icon: <Layers className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToEditor(sendable, 'editor-new-track'); },
+      },
+      {
+        type: 'item',
+        label: 'Send to Init audio',
+        icon: <Wand2 className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToInit(sendable); },
+      },
+      {
+        type: 'item',
+        label: 'Send to Inpaint',
+        icon: <PenLine className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToInpaint(sendable); },
+      },
+      {
+        type: 'item',
+        label: 'Add to Chimera',
+        icon: <Music className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToChimera([sendable]); },
+      },
+      {
+        type: 'item',
+        label: 'Download .wav',
+        icon: <Download className="w-3 h-3" />,
+        onSelect: () => {
+          const a = document.createElement('a');
+          a.href = audioUrl;
+          a.download = `${stemName}.wav`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        },
+      },
+    ];
+  }
+
   return (
     <div className="flex flex-col gap-2 relative">
       {parentIds.map((pid) => (
@@ -1158,12 +1461,11 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
                   key={String(row.id ?? idx)}
                   className="flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded cursor-context-menu"
                   onContextMenu={(e) => {
-                    e.preventDefault();
                     if (isMidi) {
                       if (!midiId) return;
-                      setMenu({ kind: 'midi', x: e.clientX, y: e.clientY, midiId, label });
+                      rowMenu.open(e, { kind: 'midi', midiId, label });
                     } else {
-                      setMenu({ kind: 'stem', x: e.clientX, y: e.clientY, row });
+                      rowMenu.open(e, { kind: 'stem', row });
                     }
                   }}
                   title="Right-click to send this anywhere"
@@ -1183,138 +1485,13 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         </div>
       ))}
 
-      {menu && menu.kind === 'midi' && (
-        <ContextMenu x={menu.x} y={menu.y} title={`MIDI · ${menu.label}`}>
-          <ContextItem
-            icon={<Piano className="w-3 h-3" />}
-            label="Send to piano roll"
-            onClick={() => { void sendMidiIdToTarget(menu.midiId, 'piano-roll'); setMenu(null); }}
-          />
-          <ContextItem
-            icon={<ListOrdered className="w-3 h-3" />}
-            label="Send to step sequencer"
-            onClick={() => { void sendMidiIdToTarget(menu.midiId, 'step-seq'); setMenu(null); }}
-          />
-          <ContextItem
-            icon={<Download className="w-3 h-3" />}
-            label="Download .mid"
-            onClick={() => {
-              const a = document.createElement('a');
-              a.href = `/api/midi/file/${menu.midiId}`;
-              a.download = '';
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              setMenu(null);
-            }}
-          />
-        </ContextMenu>
-      )}
-
-      {menu && menu.kind === 'stem' && (
-        <StemContextMenu
-          x={menu.x}
-          y={menu.y}
-          row={menu.row}
-          onClose={() => setMenu(null)}
-        />
-      )}
+      <ContextMenu
+        position={rowMenu.position}
+        onClose={rowMenu.close}
+        items={menuItems}
+        title={menuTitle}
+      />
     </div>
   );
 };
-
-
-/**
- * Right-click menu for one separated stem (e.g. bass.wav, drums.wav).
- * Same set of audio destinations the parent-track menu has — editor,
- * init, inpaint, chimera, download.
- */
-const StemContextMenu: React.FC<{
-  x: number;
-  y: number;
-  row: Record<string, unknown>;
-  onClose: () => void;
-}> = ({ x, y, row, onClose }) => {
-  const stemId = String(row.id ?? '');
-  const stemName = String(row.stem_name ?? 'stem');
-  const sendable = useMemo(() => stemRowToSendable(row), [row]);
-  const audioUrl = `/api/library/stems/${stemId}/audio`;
-  return (
-    <ContextMenu x={x} y={y} title={`Stem · ${stemName}`}>
-      <ContextItem
-        icon={<Scissors className="w-3 h-3" />}
-        label="Append to editor"
-        onClick={() => { void sendAudioToEditor(sendable, 'editor-first-track'); onClose(); }}
-      />
-      <ContextItem
-        icon={<Layers className="w-3 h-3" />}
-        label="Send to editor (new track)"
-        onClick={() => { void sendAudioToEditor(sendable, 'editor-new-track'); onClose(); }}
-      />
-      <ContextItem
-        icon={<Wand2 className="w-3 h-3" />}
-        label="Send to Init audio"
-        onClick={() => { void sendAudioToInit(sendable); onClose(); }}
-      />
-      <ContextItem
-        icon={<PenLine className="w-3 h-3" />}
-        label="Send to Inpaint"
-        onClick={() => { void sendAudioToInpaint(sendable); onClose(); }}
-      />
-      <ContextItem
-        icon={<Music className="w-3 h-3" />}
-        label="Add to Chimera"
-        onClick={() => { void sendAudioToChimera([sendable]); onClose(); }}
-      />
-      <ContextItem
-        icon={<Download className="w-3 h-3" />}
-        label="Download .wav"
-        onClick={() => {
-          const a = document.createElement('a');
-          a.href = audioUrl;
-          a.download = `${stemName}.wav`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          onClose();
-        }}
-      />
-    </ContextMenu>
-  );
-};
-
-
-const ContextMenu: React.FC<{
-  x: number;
-  y: number;
-  title: string;
-  children: React.ReactNode;
-}> = ({ x, y, title, children }) => (
-  <div
-    className="fixed z-200 min-w-48 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
-    style={{ left: x, top: y }}
-    onClick={(e) => e.stopPropagation()}
-    onContextMenu={(e) => e.preventDefault()}
-  >
-    <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5 truncate">
-      {title}
-    </div>
-    {children}
-  </div>
-);
-
-
-const ContextItem: React.FC<{
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-}> = ({ icon, label, onClick }) => (
-  <button
-    className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
-    onClick={onClick}
-  >
-    {icon}
-    {label}
-  </button>
-);
 

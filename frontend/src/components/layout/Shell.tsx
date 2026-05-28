@@ -156,42 +156,37 @@ export const Shell: React.FC = () => {
               }}
             />
           </div>
-          <button
+          <TopBarButton
             onClick={() => setDocsOpen(true)}
-            className="p-1.5 rounded hover:bg-purple-500/15 transition-colors border border-purple-500/20 group flex items-center gap-1.5"
+            icon={<BookOpen className="w-3.5 h-3.5" />}
+            label="Docs"
             title="Open documentation"
-          >
-            <BookOpen className="w-3.5 h-3.5 text-purple-300 group-hover:text-purple-200" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-purple-300 group-hover:text-purple-200 pr-1">Docs</span>
-          </button>
-          <button
+            accent="purple"
+          />
+          <TopBarButton
             onClick={() => setShareOpen(true)}
-            className="p-1.5 rounded hover:bg-emerald-500/15 transition-colors border border-emerald-500/20 group flex items-center gap-1.5"
+            icon={<Smartphone className="w-3.5 h-3.5" />}
+            label="Mobile"
+            hideLabelBelowMd
             title="Open mobile access QR/link"
-          >
-            <Smartphone className="w-3.5 h-3.5 text-emerald-300 group-hover:text-emerald-200" />
-            <span className="hidden md:inline text-[9px] font-black uppercase tracking-widest text-emerald-300 group-hover:text-emerald-200 pr-1">Mobile</span>
-          </button>
-          <button
+            accent="emerald"
+          />
+          <TopBarButton
             onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-            className={`p-1.5 rounded transition-colors border group flex items-center gap-1.5 ${
-              isRightPanelOpen
-                ? 'border-purple-500/40 bg-purple-500/15 text-purple-200'
-                : 'border-white/5 hover:bg-white/5 text-zinc-400'
-            }`}
+            icon={<LibraryIcon className="w-3.5 h-3.5" />}
+            label="Library"
+            hideLabelBelowMd
             title={isRightPanelOpen ? 'Hide library' : 'Show library'}
-          >
-            <LibraryIcon className="w-3.5 h-3.5" />
-            <span className="hidden md:inline text-[9px] font-black uppercase tracking-widest pr-1">Library</span>
-            <ChevronRight className="w-3 h-3" />
-          </button>
-          <button
+            accent="purple"
+            active={isRightPanelOpen}
+            trailing={<ChevronRight className="w-3 h-3" />}
+          />
+          <TopBarButton
             onClick={() => setSettingsOpen(true)}
-            className="p-1.5 rounded hover:bg-white/5 transition-colors border border-white/5 group"
+            icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}
             title="Settings"
-          >
-            <Settings className="w-3.5 h-3.5 text-zinc-500 group-hover:rotate-90 transition-transform duration-500" />
-          </button>
+            accent="neutral"
+          />
         </div>
       </header>
 
@@ -328,6 +323,87 @@ export const Shell: React.FC = () => {
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+  );
+};
+
+/**
+ * Shared top-bar button used by the header strip. Unifies the
+ * typography + hover/active treatment across Docs / Mobile / Library /
+ * Settings. Accent is one of the canonical hues; `active` flips on
+ * the filled treatment for toggle-style buttons (Library). Icon-only
+ * buttons (no label) get tighter padding.
+ */
+type TopBarAccent = 'purple' | 'emerald' | 'rose' | 'neutral';
+
+interface TopBarButtonProps {
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+  label?: string;
+  /** Hide the label on viewports narrower than md (matches the
+   *  existing Mobile / Library button behaviour). */
+  hideLabelBelowMd?: boolean;
+  accent?: TopBarAccent;
+  active?: boolean;
+  /** Trailing element (e.g. ChevronRight on Library). */
+  trailing?: React.ReactNode;
+}
+
+const ACCENT_CLS: Record<TopBarAccent, { idle: string; idleText: string; active: string }> = {
+  purple: {
+    idle: 'border-purple-500/20 hover:bg-purple-500/15',
+    idleText: 'text-purple-300 group-hover:text-purple-200',
+    active: 'border-purple-500/40 bg-purple-500/15 text-purple-200',
+  },
+  emerald: {
+    idle: 'border-emerald-500/20 hover:bg-emerald-500/15',
+    idleText: 'text-emerald-300 group-hover:text-emerald-200',
+    active: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200',
+  },
+  rose: {
+    idle: 'border-rose-500/20 hover:bg-rose-500/15',
+    idleText: 'text-rose-300 group-hover:text-rose-200',
+    active: 'border-rose-500/40 bg-rose-500/15 text-rose-200',
+  },
+  neutral: {
+    idle: 'border-white/5 hover:bg-white/5',
+    idleText: 'text-zinc-500 group-hover:text-zinc-200',
+    active: 'border-white/20 bg-white/10 text-zinc-100',
+  },
+};
+
+const TopBarButton: React.FC<TopBarButtonProps> = ({
+  onClick,
+  icon,
+  title,
+  label,
+  hideLabelBelowMd = false,
+  accent = 'neutral',
+  active = false,
+  trailing,
+}) => {
+  const cls = ACCENT_CLS[accent];
+  const stateCls = active ? cls.active : `${cls.idle} ${cls.idleText}`;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={`p-1.5 rounded border transition-colors group flex items-center gap-1.5 ${stateCls}`}
+    >
+      {icon}
+      {label && (
+        <span
+          className={`text-[9px] font-black uppercase tracking-widest pr-1 ${
+            hideLabelBelowMd ? 'hidden md:inline' : ''
+          }`}
+        >
+          {label}
+        </span>
+      )}
+      {trailing}
+    </button>
   );
 };
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 
 interface ModuleConfig {
@@ -61,7 +61,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
           <div className="flex items-center gap-2">
             <Settings className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">System Settings</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Settings</span>
           </div>
           <button onClick={onClose} className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
             <X className="w-3.5 h-3.5" />
@@ -274,16 +274,21 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             </div>
           )}
 
-          {/* Section: Admin actions */}
-          <div className="flex items-center gap-1.5 mt-6 mb-2 pt-2 border-t border-white/5">
+        </div>
+
+        {/* Pinned footer — Restart + Shutdown are ALWAYS visible no
+            matter how far down the user has scrolled in the module
+            list. Locked here per user request 2026-05-28. */}
+        <div className="shrink-0 border-t border-white/5 bg-[#0a080f] px-4 py-3 flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5">
             <Power className="w-3 h-3 text-purple-400" />
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Admin</span>
-            <span className="text-[8px] font-mono text-zinc-600 ml-auto">SA3 Backend window stays open</span>
+            <span className="text-[8px] font-mono text-zinc-600 ml-auto">supervisor required</span>
           </div>
-          <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">
-            Re-launches the backend inside the same SA3 Backend console (requires the dev launcher to be using <code className="text-purple-300/80">backend._supervisor</code>; start-dev.bat does this by default).
-          </p>
-          <RestartServerButton />
+          <div className="flex gap-2">
+            <RestartServerButton />
+            <ShutdownServerButton />
+          </div>
         </div>
       </div>
     </div>
@@ -361,7 +366,7 @@ const RestartServerButton: React.FC = () => {
   };
 
   const baseCls =
-    'flex items-center justify-center gap-2 w-full px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+    'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
   const stateCls: Record<Status, string> = {
     idle: 'border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/60',
     restarting: 'border-amber-500/40 bg-amber-500/10 text-amber-200 cursor-wait',
@@ -387,23 +392,78 @@ const RestartServerButton: React.FC = () => {
       ? 'Back online'
       : status === 'error'
       ? 'Restart failed'
-      : 'Restart Server';
+      : 'Restart';
 
   return (
-    <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        onClick={handle}
-        disabled={status === 'restarting'}
-        className={`${baseCls} ${stateCls[status]}`}
-      >
-        {icon}
-        <span>{label}</span>
-      </button>
-      {detail && (
-        <span className="text-[9px] font-mono text-zinc-500 px-1 leading-tight">{detail}</span>
-      )}
-    </div>
+    <button
+      type="button"
+      onClick={handle}
+      disabled={status === 'restarting'}
+      className={`${baseCls} ${stateCls[status]}`}
+      title={detail || label}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+};
+
+/** Cleanly stops the SA3 backend (rc=0). The supervisor sees a non-
+ *  restart exit code and terminates the loop, so the whole "SA3
+ *  Backend" console closes — the user has to relaunch via start-dev
+ *  to bring SA3 back up. Confirms before sending the shutdown signal
+ *  because this can't be reversed from the browser side once fired. */
+const ShutdownServerButton: React.FC = () => {
+  const [pending, setPending] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const handle = async () => {
+    if (pending || done) return;
+    const ok = window.confirm(
+      'Shut down the SA3 backend?\n\nThe browser will lose its connection. Relaunch via start-dev.bat to bring it back.',
+    );
+    if (!ok) return;
+    setPending(true);
+    try {
+      await fetch('/api/admin/shutdown', { method: 'POST' });
+      setDone(true);
+    } catch {
+      // The fetch may abort mid-shutdown — that's expected. Treat it
+      // as a successful trigger so the UI flips to the terminal state.
+      setDone(true);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const baseCls =
+    'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+  const cls = done
+    ? 'border-rose-500/50 bg-rose-500/15 text-rose-200 cursor-default'
+    : pending
+    ? 'border-amber-500/40 bg-amber-500/10 text-amber-200 cursor-wait'
+    : 'border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 hover:border-rose-400/60';
+
+  const icon = done ? (
+    <PowerOff className="w-3.5 h-3.5" />
+  ) : pending ? (
+    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+  ) : (
+    <PowerOff className="w-3.5 h-3.5" />
+  );
+  const label = done ? 'Offline' : pending ? 'Shutting down…' : 'Shutdown';
+
+  return (
+    <button
+      type="button"
+      onClick={handle}
+      disabled={pending || done}
+      className={`${baseCls} ${cls}`}
+      title="Stop the SA3 backend entirely (supervisor exits, no respawn)."
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   );
 };
 

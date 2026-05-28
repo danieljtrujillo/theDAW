@@ -5,6 +5,11 @@ Returns 202 immediately, then exits with sentinel code 88 so the
 backend._supervisor parent process respawns a fresh inner inside the
 same console window. The frontend polls /api/health until it comes
 back.
+
+POST /api/admin/shutdown — schedules a CLEAN exit with rc=0. The
+supervisor sees a non-restart exit code and terminates rather than
+respawning, so the whole SA3 backend console closes. Used by the
+SETTINGS modal's Shutdown button.
 """
 
 from __future__ import annotations
@@ -76,4 +81,22 @@ def restart() -> dict:
         "ok": True,
         "scheduled": True,
         "exit_code": RESTART_EXIT_CODE,
+    }
+
+
+@router.post("/shutdown")
+def shutdown() -> dict:
+    """Schedule a clean backend shutdown (rc=0).
+
+    The supervisor (backend._supervisor) only respawns on
+    RESTART_EXIT_CODE (88); any other exit code ends the loop and the
+    supervisor process exits normally. So rc=0 cleanly stops the whole
+    SA3 backend console — the user has to relaunch via start-dev.bat.
+    """
+    t = threading.Thread(target=_delayed_exit, args=(0.6, 0), daemon=True)
+    t.start()
+    return {
+        "ok": True,
+        "scheduled": True,
+        "exit_code": 0,
     }
