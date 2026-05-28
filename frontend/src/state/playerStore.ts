@@ -27,9 +27,22 @@ type EngineHandles = {
   audioEl: HTMLAudioElement;
 };
 
+// Was the engine first touched from inside a real user-gesture call
+// path (click/keydown/touchstart)? Until that happens the AudioContext
+// is constructed but kept suspended — calling .resume() before a gesture
+// prints "The AudioContext was not allowed to start" to the console on
+// every render. Flipped to true by the first user-input listener (see
+// the module-load auto-resume below) and by play().
+let _userGesture = false;
+
 export const ensureEngine = (): EngineHandles => {
   if (_ctx && _master && _analyser && _audioEl) {
-    if (_ctx.state === 'suspended') void _ctx.resume();
+    // Only resume once we know a user gesture has happened; otherwise
+    // the browser refuses + warns. ensureEngine() is also called from
+    // pure read paths (analyzer visualizer, getMasterGain, etc).
+    if (_userGesture && _ctx.state === 'suspended') {
+      void _ctx.resume().catch(() => { /* swallowed; will retry on next gesture */ });
+    }
     return { ctx: _ctx, master: _master, analyser: _analyser, audioEl: _audioEl };
   }
   const Ctor =
@@ -82,6 +95,28 @@ export const ensureEngine = (): EngineHandles => {
 export const getMasterGain = (): GainNode => ensureEngine().master;
 export const getAnalyser = (): AnalyserNode => ensureEngine().analyser;
 export const getEngineCtx = (): AudioContext => ensureEngine().ctx;
+
+// Auto-warm-up: the first time the user interacts with the page in
+// ANY way (click / keydown / pointerdown / touchstart), flip the gesture
+// flag and resume any suspended AudioContext. Eliminates the console
+// warning on initial load and means the visualizer is alive the instant
+// the user does anything.
+if (typeof window !== 'undefined') {
+  const onFirstGesture = () => {
+    _userGesture = true;
+    if (_ctx && _ctx.state === 'suspended') {
+      void _ctx.resume().catch(() => { /* swallowed */ });
+    }
+    window.removeEventListener('click', onFirstGesture);
+    window.removeEventListener('keydown', onFirstGesture);
+    window.removeEventListener('pointerdown', onFirstGesture);
+    window.removeEventListener('touchstart', onFirstGesture);
+  };
+  window.addEventListener('click', onFirstGesture, { once: false, passive: true });
+  window.addEventListener('keydown', onFirstGesture, { once: false, passive: true });
+  window.addEventListener('pointerdown', onFirstGesture, { once: false, passive: true });
+  window.addEventListener('touchstart', onFirstGesture, { once: false, passive: true });
+}
 
 interface PlayerStoreState {
   // Currently-loaded track meta
@@ -149,9 +184,15 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   play: () => {
+    // play() is always invoked from a user gesture (button click,
+    // keyboard shortcut, drag-drop). Mark the gesture so subsequent
+    // ensureEngine() calls are allowed to resume the suspended ctx.
+    _userGesture = true;
     const { audioEl, ctx } = ensureEngine();
     if (!audioEl.src) return;
-    if (ctx.state === 'suspended') void ctx.resume();
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => { /* swallowed; will retry */ });
+    }
     void audioEl.play().catch((err) => {
       logError('player', `Play rejected: ${err instanceof Error ? err.message : String(err)}`);
     });

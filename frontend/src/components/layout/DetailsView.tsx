@@ -83,16 +83,17 @@ export const DetailsView: React.FC = () => {
     void fetch(`/api/analysis/${selectedId}`)
       .then(async (r) => {
         if (cancelled) return;
-        if (r.status === 404) {
-          setAnalysis(null);
-          return;
-        }
         if (!r.ok) {
           setAnalysis(null);
           return;
         }
-        const payload = (await r.json()) as AnalysisRow;
-        if (!cancelled) setAnalysis(payload);
+        const payload = (await r.json()) as AnalysisRow & { status?: string };
+        // The backend returns `{entry_id, status: 'pending'}` instead of
+        // a 404 when nothing has analyzed this entry yet — treat that as
+        // "not analyzed" so the UI shows the empty hint.
+        if (!cancelled) {
+          setAnalysis(payload.status === 'pending' ? null : payload);
+        }
       })
       .catch(() => {
         if (!cancelled) setAnalysis(null);

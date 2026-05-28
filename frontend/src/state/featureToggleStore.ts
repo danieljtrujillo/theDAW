@@ -24,6 +24,12 @@ export interface StemsSettings {
   auto_on_import: boolean;
   auto_on_generate: boolean;
   default_count: number;
+  /** 'cuda' | 'cpu' | 'auto'. Default 'cuda' — demucs on CPU is glacial. */
+  device: string;
+  /** 'fast' | 'balanced' | 'hq'. Default 'balanced' — sidecar's old
+   *  default of 'hq' (overlap=0.9, shifts=10) routinely takes 10+ min
+   *  per track and stalls at single percent points. */
+  quality: string;
 }
 
 export interface MidiSettings {
@@ -57,6 +63,8 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
     auto_on_import: false,
     auto_on_generate: false,
     default_count: 4,
+    device: 'cuda',
+    quality: 'balanced',
   },
   midi: {
     auto_on_import: false,

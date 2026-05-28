@@ -29,24 +29,101 @@ log = logging.getLogger(__name__)
 # AI-tool tag keys we recognize (case-insensitive). When we see one of
 # these inside a TXXX / ----: / VORBIS_COMMENT frame, we surface it at
 # the top level under the canonical name on the right.
+# Expanded based on docs/guides/AUDIO_VS_NONAUDIO_FIELD_GUIDE.md +
+# LIVE_CACHE_FIELD_DICTIONARY.md so we capture Suno/Udio cache field
+# names as well as the bare AI-tool conventions.
 KNOWN_AI_TAGS: dict[str, str] = {
+    # Core prompt / lyrics
     "prompt": "prompt",
     "positive_prompt": "prompt",
     "negative_prompt": "negative_prompt",
     "negative prompt": "negative_prompt",
-    "model": "model",
-    "model_name": "model",
-    "seed": "seed",
-    "cfg": "cfg",
-    "cfg_scale": "cfg",
-    "steps": "steps",
-    "generator": "generator",
-    "tool": "generator",
+    "negative_tags": "negative_prompt",
     "udio_prompt": "prompt",
     "udio_lyrics": "lyrics",
     "suno_prompt": "prompt",
     "suno_lyrics": "lyrics",
     "riffusion_prompt": "prompt",
+    "lyrics": "lyrics",
+    "lyrics_prompt": "lyrics",
+    "style_prompt": "style_prompt",
+    "style": "style",
+    "tags": "tags",
+    "control_tags": "control_tags",
+    # Model / generator identity
+    "model": "model",
+    "model_name": "model",
+    "model_version": "model_version",
+    "major_model_version": "model_version",
+    "generator": "generator",
+    "tool": "generator",
+    "artist": "artist",
+    "display_name": "creator",
+    "user_id": "creator_id",
+    "handle": "creator_handle",
+    # Generation knobs
+    "seed": "seed",
+    "cfg": "cfg",
+    "cfg_scale": "cfg",
+    "steps": "steps",
+    "audio_weight": "audio_weight",
+    "style_weight": "style_weight",
+    "weirdness": "weirdness",
+    "weirdness_constraint": "weirdness",
+    "make_instrumental": "make_instrumental",
+    "is_instrumental": "is_instrumental",
+    "infill": "infill",
+    "has_vocal": "has_vocal",
+    "has_stem": "has_stem",
+    "persona_id": "persona_id",
+    # Musical features (often pre-computed by the source tool)
+    "bpm": "bpm",
+    "avg_bpm": "bpm",
+    "min_bpm": "bpm_min",
+    "max_bpm": "bpm_max",
+    "key": "key",
+    "musical_key": "key",
+    "scale": "scale",
+    "tempo": "bpm",
+    "genre": "genre",
+    "genres": "genres",
+    "mood": "mood",
+    "moods": "moods",
+    "energy": "energy",
+    "vocal_type": "vocal_type",
+    "instruments": "instruments",
+    # Identity / lineage
+    "id": "source_id",
+    "clip_id": "source_id",
+    "parent_id": "parent_id",
+    "root_id": "root_id",
+    "title": "title",
+    # Engagement (Suno-style)
+    "play_count": "play_count",
+    "upvote_count": "upvote_count",
+    "skip_rate": "skip_rate",
+    "engagement_score": "engagement_score",
+    "popularity_class": "popularity_class",
+}
+
+# Substrings on TXXX descriptors that signal which tool authored the
+# file. Detected generator gets surfaced as the canonical ``generator``
+# field even when the file doesn't have an explicit ``tool``/``generator``
+# tag.
+GENERATOR_SIGNATURES: dict[str, str] = {
+    "suno": "suno",
+    "udio": "udio",
+    "riffusion": "riffusion",
+    "musicgen": "musicgen",
+    "stable_audio": "stable-audio",
+    "stable-audio": "stable-audio",
+    "stabledaw": "stable-audio",
+    "audacity": "audacity",
+    "logic pro": "logic-pro",
+    "ableton": "ableton-live",
+    "fl studio": "fl-studio",
+    "reaper": "reaper",
+    "pro tools": "pro-tools",
 }
 
 
@@ -147,6 +224,43 @@ def _wav_payload(audio: Any) -> dict[str, str]:
     return out
 
 
+def _coerce_json(value: str) -> Any:
+    """If ``value`` parses as JSON, return the parsed object. Otherwise
+    return the string unchanged. Suno + Udio both stash structured blobs
+    inside text-only TXXX frames (e.g. ``control_sliders`` as JSON)."""
+    if not isinstance(value, str):
+        return value
+    s = value.strip()
+    if not s:
+        return s
+    if s[0] not in '{["':
+        return s
+    try:
+        import json
+
+        return json.loads(s)
+    except (ValueError, TypeError):
+        return s
+
+
+def _detect_generator(tags: dict[str, Any]) -> str | None:
+    """Best-guess which tool authored this file based on which tag keys
+    + values appear. Returns a canonical lowercase name or None."""
+    haystack = " ".join(
+        f"{k} {v}" for k, v in tags.items() if isinstance(v, (str, int, float))
+    ).lower()
+    for needle, canonical in GENERATOR_SIGNATURES.items():
+        if needle in haystack:
+            return canonical
+    # Heuristics: if Suno-specific fields are present (e.g. control_sliders)
+    # we call it Suno even if no explicit tool tag appears.
+    if any(k.startswith("control_sliders") for k in tags):
+        return "suno"
+    if any("udio" in k for k in tags):
+        return "udio"
+    return None
+
+
 def extract_embedded_tags(path: Path) -> dict[str, str]:
     """Return a flat dict of embedded tags from the audio file.
 
@@ -165,45 +279,62 @@ def extract_embedded_tags(path: Path) -> dict[str, str]:
         return {}
 
     suffix = p.suffix.lower()
+    result: dict[str, Any] = {}
     try:
         if suffix == ".mp3":
-            # Read ID3 directly rather than going through MP3() — the
-            # latter requires a valid MPEG sync frame, which fragile
-            # fixtures may lack.
             try:
                 from mutagen.id3 import ID3
 
                 tags = ID3(str(p))
-                return _id3_payload(tags)
+                result = _id3_payload(tags)
             except Exception:
-                # Fall through to mutagen.File sniff.
                 pass
-        if suffix in {".flac", ".ogg", ".opus", ".oga"}:
+        if not result and suffix in {".flac", ".ogg", ".opus", ".oga"}:
             audio = mutagen.File(str(p))  # type: ignore[attr-defined]
-            return _vorbis_payload(audio) if audio is not None else {}
-        if suffix in {".m4a", ".mp4", ".aac"}:
+            if audio is not None:
+                result = _vorbis_payload(audio)
+        if not result and suffix in {".m4a", ".mp4", ".aac"}:
             from mutagen.mp4 import MP4
 
-            audio = MP4(str(p))
-            return _mp4_payload(audio)
-        if suffix == ".wav":
+            try:
+                result = _mp4_payload(MP4(str(p)))
+            except Exception:
+                pass
+        if not result and suffix == ".wav":
             from mutagen.wave import WAVE
 
-            audio = WAVE(str(p))
-            return _wav_payload(audio)
-        # Fallback: let mutagen sniff.
-        audio = mutagen.File(str(p))  # type: ignore[attr-defined]
-        if audio is None:
-            return {}
-        # Best-effort dispatch on the loaded type.
-        type_name = type(audio).__name__
-        if "MP3" in type_name or "ID3" in type_name:
-            return _id3_payload(audio)
-        if "MP4" in type_name:
-            return _mp4_payload(audio)
-        if "Wave" in type_name or "WAVE" in type_name:
-            return _wav_payload(audio)
-        return _vorbis_payload(audio)
+            try:
+                result = _wav_payload(WAVE(str(p)))
+            except Exception:
+                pass
+        if not result:
+            audio = mutagen.File(str(p))  # type: ignore[attr-defined]
+            if audio is not None:
+                type_name = type(audio).__name__
+                if "MP3" in type_name or "ID3" in type_name:
+                    result = _id3_payload(audio)
+                elif "MP4" in type_name:
+                    result = _mp4_payload(audio)
+                elif "Wave" in type_name or "WAVE" in type_name:
+                    result = _wav_payload(audio)
+                else:
+                    result = _vorbis_payload(audio)
     except Exception as e:
         log.info("library.tags: tag read failed for %s (%s): %s", p.name, suffix, e)
         return {}
+
+    if not result:
+        return {}
+
+    # Promote any value that looks like JSON into a structured dict/list
+    # so downstream consumers can read fields like `control_sliders.audio_weight`.
+    cleaned: dict[str, Any] = {}
+    for k, v in result.items():
+        cleaned[k] = _coerce_json(v) if isinstance(v, str) else v
+    # Detect the source tool (suno / udio / audacity / etc) and surface
+    # it under the canonical `generator` field if we didn't already.
+    if "generator" not in cleaned:
+        detected = _detect_generator(cleaned)
+        if detected:
+            cleaned["generator"] = detected
+    return cleaned

@@ -1,6 +1,10 @@
 import torch
 
 from torch import nn
+# Uses the modern parametrizations API. Legacy checkpoints that saved
+# `weight_g`/`weight_v` keys are remapped to `parametrizations.weight.
+# original0/1` on load by `loading_utils.remap_state_dict_keys`, so both
+# old + new checkpoints work against this module.
 from torch.nn.utils.parametrizations import weight_norm
 from torchaudio import transforms as T
 from einops import rearrange

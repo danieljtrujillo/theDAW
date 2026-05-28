@@ -1,6 +1,8 @@
 import math
 import torch
 from torch import nn
+# Modern parametrizations API. Legacy `weight_g`/`weight_v` keys are
+# remapped on load — see loading_utils.remap_state_dict_keys.
 from torch.nn.utils.parametrizations import weight_norm
 
 

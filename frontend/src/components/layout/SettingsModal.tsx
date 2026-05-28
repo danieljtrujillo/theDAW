@@ -55,7 +55,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-[480px] max-h-[75vh] flex flex-col shadow-2xl">
+      <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-120 max-h-[75vh] flex flex-col shadow-2xl">
 
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
@@ -99,6 +99,70 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               onGenerate={featureSettings.stems.auto_on_generate}
               onPatchImport={(v) => void patchFeatures({ stems: { auto_on_import: v } })}
               onPatchGenerate={(v) => void patchFeatures({ stems: { auto_on_generate: v } })}
+              extra={
+                <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-white/5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Device:</span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[
+                        { value: 'cuda', label: 'GPU (cuda)', enabled: true },
+                        { value: 'cpu',  label: 'CPU',        enabled: true },
+                        { value: 'cloud-runpod',     label: 'RunPod',    enabled: false },
+                        { value: 'cloud-cloudflare', label: 'Cloudflare', enabled: false },
+                        { value: 'cloud-colab',      label: 'Colab',     enabled: false },
+                      ].map((opt) => {
+                        const active = featureSettings.stems.device === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            onClick={() => {
+                              if (!opt.enabled) return;
+                              void patchFeatures({ stems: { device: opt.value } });
+                            }}
+                            disabled={!opt.enabled}
+                            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                              active
+                                ? 'bg-purple-500/25 border-purple-400/60 text-purple-100'
+                                : opt.enabled
+                                  ? 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                                  : 'border-white/5 text-zinc-700 cursor-not-allowed line-through'
+                            }`}
+                            title={opt.enabled ? opt.label : `${opt.label} — coming soon`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Quality:</span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[
+                        { value: 'fast',     label: 'Fast',     hint: 'shifts=1, overlap=0.25 — ~30s per track' },
+                        { value: 'balanced', label: 'Balanced', hint: 'shifts=2, overlap=0.5 — ~1-2 min per track' },
+                        { value: 'hq',       label: 'HQ',       hint: 'shifts=10, overlap=0.9 — 5-15 min per track' },
+                      ].map((opt) => {
+                        const active = featureSettings.stems.quality === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            onClick={() => void patchFeatures({ stems: { quality: opt.value } })}
+                            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                              active
+                                ? 'bg-purple-500/25 border-purple-400/60 text-purple-100'
+                                : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                            }`}
+                            title={opt.hint}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              }
             />
             <FeatureToggleGroup
               icon={<Music className="w-3 h-3 text-purple-400" />}
@@ -197,10 +261,13 @@ interface FeatureToggleGroupProps {
   onGenerate: boolean;
   onPatchImport: (next: boolean) => void;
   onPatchGenerate: (next: boolean) => void;
+  /** Optional extra controls rendered below the on-import/on-generate
+   *  toggles — e.g. the stems device picker. */
+  extra?: React.ReactNode;
 }
 
 const FeatureToggleGroup: React.FC<FeatureToggleGroupProps> = ({
-  icon, title, desc, onImport, onGenerate, onPatchImport, onPatchGenerate,
+  icon, title, desc, onImport, onGenerate, onPatchImport, onPatchGenerate, extra,
 }) => (
   <div className="border border-white/5 rounded px-3 py-2.5 bg-white/3">
     <div className="flex items-center gap-2 mb-1.5">
@@ -212,6 +279,7 @@ const FeatureToggleGroup: React.FC<FeatureToggleGroupProps> = ({
       <ToggleRow label="on import" enabled={onImport} onToggle={() => onPatchImport(!onImport)} />
       <ToggleRow label="on generate" enabled={onGenerate} onToggle={() => onPatchGenerate(!onGenerate)} />
     </div>
+    {extra}
   </div>
 );
 

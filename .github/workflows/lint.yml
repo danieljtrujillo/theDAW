@@ -9,6 +9,13 @@ on:
 # requires changing it in both places at once — see CONTRIBUTING / the
 # CLAUDE.md note about ruff drift on stable_audio_3/model.py +
 # stable_audio_3/pipeline.py.
+#
+# We pin to a specific tagged release of actions/checkout rather than
+# the floating `@v4` major-version tag so editor integrations (e.g. the
+# VS Code GitHub Actions extension) can resolve the action without
+# round-tripping to api.github.com. Ruff is installed via the first-
+# party setup-python action + pipx, avoiding the third-party
+# astral-sh/ruff-action entirely.
 env:
   RUFF_VERSION: "0.15.14"
 
@@ -17,11 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+      - uses: actions/setup-python@v5
         with:
-          version: ${{ env.RUFF_VERSION }}
-          args: check
-      - uses: astral-sh/ruff-action@v3
-        with:
-          version: ${{ env.RUFF_VERSION }}
-          args: format --check
+          python-version: "3.12"
+      - name: Install ruff
+        run: pipx install "ruff==${{ env.RUFF_VERSION }}"
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .

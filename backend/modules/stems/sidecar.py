@@ -398,6 +398,7 @@ class StemsSidecar:
         *,
         stems: int = 4,
         device: Optional[str] = None,
+        quality: Optional[str] = None,
     ) -> dict:
         client = await self._ensure_client()
         with audio_path.open("rb") as f:
@@ -405,6 +406,8 @@ class StemsSidecar:
             params: dict = {"stems": stems}
             if device:
                 params["device"] = device
+            if quality:
+                params["quality"] = quality
             r = await client.post("/upload", files=files, params=params)
         r.raise_for_status()
         return r.json()

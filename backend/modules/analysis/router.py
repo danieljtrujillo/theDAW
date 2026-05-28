@@ -39,12 +39,18 @@ def get_capabilities() -> dict:
 
 @router.get("/{entry_id}")
 def get_analysis(entry_id: str) -> dict:
+    """Return the analysis row for an entry, or an empty payload with
+    ``status='pending'`` when nothing has analyzed it yet. We return 200
+    (not 404) for the empty case because the frontend Details panel
+    polls this on every entry select — a 404 here floods the browser
+    Network tab with red errors for entries that simply haven't been
+    analyzed yet, which is a normal state, not a failure."""
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     row = store.db.get_analysis(entry_id)
     if row is None:
-        raise HTTPException(404, f"no analysis for entry {entry_id!r}")
+        return {"entry_id": entry_id, "status": "pending"}
     return row
 
 

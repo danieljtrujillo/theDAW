@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
   Music, Star, Tag, Filter, ArrowUpDown,
@@ -14,6 +14,7 @@ import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { useStatusBarStore } from '../state/statusBarStore';
 import { usePianoRollStore } from '../state/pianoRollStore';
+import { useFeatureToggleStore } from '../state/featureToggleStore';
 import { parseMidi } from '../lib/midi';
 import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
@@ -60,6 +61,23 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   const [allStems, setAllStems] = useState<Array<Record<string, unknown>> | null>(null);
   const [allMidis, setAllMidis] = useState<Array<Record<string, unknown>> | null>(null);
   const [runningKind, setRunningKind] = useState<{ id: string; kind: 'analysis' | 'stems' | 'midi' } | null>(null);
+  const [stemsBanner, setStemsBanner] = useState<{ phase: string; progress: number; message: string } | null>(null);
+  const stemsAbortControllerRef = useRef<AbortController | null>(null);
+
+  const abortStems = async () => {
+    if (!runningKind || runningKind.kind !== 'stems') return;
+    logInfo('library', `Aborting stems for ${runningKind.id.slice(0, 8)}…`);
+    try {
+      await fetch(`/api/stems/${runningKind.id}/abort`, { method: 'POST' });
+    } catch (e) {
+      logError('library', `Abort request failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Also tear down the client-side fetch so the UI returns quickly.
+    if (stemsAbortControllerRef.current) {
+      stemsAbortControllerRef.current.abort();
+      stemsAbortControllerRef.current = null;
+    }
+  };
 
   const runJobForEntry = async (
     entryId: string,
@@ -94,6 +112,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
             const phase = p.phase || 'idle';
             const message = p.message || '';
             const progress = typeof p.progress === 'number' ? p.progress : -1;
+            // Banner state so the user can see + abort from anywhere
+            // in the right panel.
+            setStemsBanner({ phase, progress: progress >= 0 ? progress : 0, message });
             if (phase === 'idle') return;
             const now = Date.now();
             const elapsedTotal = Math.round((now - runStartedAt) / 1000);
@@ -111,7 +132,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
               lastHeartbeatAt = now;
               logInfo(
                 'library',
-                `stems[${entryId.slice(0, 8)}] ${phase}${pctText} @ ${fmtElapsed(elapsedTotal)}: ${message.slice(0, 200)}`,
+                `stems[${entryId.slice(0, 8)}] ${phase}${pctText} @ ${fmtElapsed(elapsedTotal)}: ${message}`,
               );
               return;
             }
@@ -134,8 +155,30 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       }, 1500);
     }
 
+    // Build the run URL — stems honours the user's device + count
+    // preferences from Settings → Background features.
+    let runUrl = `/api/${kind}/${entryId}/run`;
+    if (kind === 'stems') {
+      const stemsCfg = useFeatureToggleStore.getState().settings.stems;
+      const params = new URLSearchParams({
+        stems: String(stemsCfg.default_count || 4),
+      });
+      if (stemsCfg.device && stemsCfg.device !== 'auto') {
+        params.set('device', stemsCfg.device);
+      }
+      if (stemsCfg.quality) {
+        params.set('quality', stemsCfg.quality);
+      }
+      runUrl += `?${params.toString()}`;
+    }
+
+    // Wire an AbortController so the user-side Abort button can tear
+    // the in-flight fetch down promptly (the backend abort endpoint
+    // takes care of the actual demucs cancellation).
+    const ctrl = new AbortController();
+    if (kind === 'stems') stemsAbortControllerRef.current = ctrl;
     try {
-      const res = await fetch(`/api/${kind}/${entryId}/run`, { method: 'POST' });
+      const res = await fetch(runUrl, { method: 'POST', signal: ctrl.signal });
       const payload = await res.json().catch(() => ({} as Record<string, unknown>));
       if (!res.ok) {
         const detail =
@@ -184,9 +227,18 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       if (kind === 'stems') setAllStems(null);
       if (kind === 'midi') setAllMidis(null);
     } catch (e) {
-      logError('library', `${labels[kind]} request failed: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (kind === 'stems' && /aborted|AbortError/i.test(msg)) {
+        logInfo('library', `stem separation cancelled for ${entryId.slice(0, 8)}`);
+      } else {
+        logError('library', `${labels[kind]} request failed: ${msg}`);
+      }
     } finally {
       if (stemsPoller) clearInterval(stemsPoller);
+      if (kind === 'stems') {
+        stemsAbortControllerRef.current = null;
+        setStemsBanner(null);
+      }
       setRunningKind(null);
     }
   };
@@ -248,9 +300,21 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   // call before uvicorn binds returns ECONNREFUSED and leaves the panel
   // stuck empty until the user hard-refreshes. We watch isBackendReady
   // and auto-fetch as soon as it flips true.
+  //
+  // The actual load() is wrapped in requestIdleCallback (with a
+  // setTimeout fallback) so it doesn't pile on top of the vite HMR
+  // commit / first paint — that's what produces the "message handler
+  // took Xms" perf violations during initial connect.
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   useEffect(() => {
-    if (isBackendReady && !loaded) void load();
+    if (!isBackendReady || loaded) return;
+    type IdleCb = (cb: () => void, opts?: { timeout: number }) => number;
+    const ric = (window as unknown as { requestIdleCallback?: IdleCb }).requestIdleCallback;
+    if (typeof ric === 'function') {
+      ric(() => void load(), { timeout: 1500 });
+    } else {
+      setTimeout(() => void load(), 0);
+    }
   }, [isBackendReady, loaded, load]);
 
   const filteredEntries = getFiltered();
@@ -445,6 +509,33 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
 
   return (
     <div className="flex flex-col gap-2 h-full text-[11px] pb-0 px-2 pt-2">
+
+      {/* Stems running banner. Shows live phase + progress + an Abort
+          button so the user can bail without right-click-finding the
+          original entry. */}
+      {runningKind?.kind === 'stems' && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded border border-purple-500/40 bg-purple-500/15 text-[10px] font-mono">
+          <Loader2 className="w-3 h-3 text-purple-300 animate-spin shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-purple-200 truncate">
+              Stems · {runningKind.id.slice(0, 8)} · {stemsBanner?.phase ?? '…'}
+              {typeof stemsBanner?.progress === 'number' && stemsBanner.progress > 0
+                ? ` · ${Math.round(stemsBanner.progress)}%`
+                : ''}
+            </div>
+            {stemsBanner?.message && (
+              <div className="text-[8px] text-zinc-400 truncate">{stemsBanner.message}</div>
+            )}
+          </div>
+          <button
+            onClick={() => void abortStems()}
+            className="shrink-0 text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border border-red-500/40 text-red-300 hover:bg-red-500/15"
+            title="Abort the running stem separation"
+          >
+            Abort
+          </button>
+        </div>
+      )}
 
       <Section title="LIBRARY" icon={Database} defaultOpen={true} rightNode={
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
