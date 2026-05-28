@@ -222,11 +222,12 @@ export const Shell: React.FC = () => {
       </div>
 
       {/* Global bottom dock — BottomMultiTabPanel (left, flex-1) and
-          ProcessingLog (right, fixed width = rightPanelWidth) live
-          side-by-side at the bottom of the app. Both INDEPENDENT of
-          the library panel state. Heights are synced via
-          useBottomPanelStore.bottomHeight; a single resize handle at
-          the top of the footer drags both. */}
+          ProcessingLog (right, width = rightPanelWidth) live
+          side-by-side at the bottom of the app. INDEPENDENT of the
+          library panel state. Each column has its OWN height +
+          collapse toggle + resize handle (multiHeight / logHeight in
+          bottomPanelStore) — expanding or resizing one does NOT
+          affect the other. */}
       <ShellBottomDock />
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
@@ -298,38 +299,93 @@ export const Shell: React.FC = () => {
 };
 
 /**
- * Global bottom dock — BottomMultiTabPanel (left) + ProcessingLog
- * (right). Both render with `height = bottomHeight`. A single resize
- * handle at the top edge drags `bottomHeight` and both panels follow.
- * Independent of the library rail's collapsed/expanded state.
+ * Global bottom dock — BottomMultiTabPanel (left) and ProcessingLog
+ * (right). Each column has its OWN height (multiHeight, logHeight)
+ * and its OWN resize handle at the top edge. Expanding or resizing
+ * one column does NOT affect the other. When a column is collapsed
+ * it shrinks to a header-only strip (or header + pinned action
+ * button for the LOG). The dock container's overall height is the
+ * max of the two so both columns can sit at different heights and
+ * still bottom-align to the screen edge.
  */
+const MULTI_COLLAPSED_HEIGHT = 28;   // just the header chevron strip
+const LOG_COLLAPSED_HEIGHT = 76;     // header + always-visible action button (+track strip if track)
+const DOCK_MIN_HEIGHT = 60;
+const DOCK_MAX_FRACTION = 0.85;      // max 85% of viewport — leave room for top bar + canvas
+
 const ShellBottomDock: React.FC = () => {
-  const bottomHeight = useBottomPanelStore((s) => s.bottomHeight);
-  const setBottomHeight = useBottomPanelStore((s) => s.setBottomHeight);
+  const multiHeight = useBottomPanelStore((s) => s.multiHeight);
+  const setMultiHeight = useBottomPanelStore((s) => s.setMultiHeight);
+  const logHeight = useBottomPanelStore((s) => s.logHeight);
+  const setLogHeight = useBottomPanelStore((s) => s.setLogHeight);
   const rightPanelWidth = useAppUiStore((s) => s.rightPanelWidth);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
-  const [isResizing, setIsResizing] = useState(false);
 
-  // Dock height: when either panel is open, use the user-controlled
-  // bottomHeight (resize handle writes it). When both are collapsed,
-  // shrink to the LOG column's minimum (header strip + action button
-  // pinned at bottom) so the always-visible CREATE/PROCESS/TRAIN
-  // button never gets clipped. The MULTI-TAB column's collapsed
-  // strip slots in at the top of its column and lines up with the
-  // LOG's header. Each panel toggles independently.
-  const anyOpen = isBottomOpen || isLogOpen;
-  const COLLAPSED_DOCK_MIN = 76;
-  const dockHeight = anyOpen ? bottomHeight : COLLAPSED_DOCK_MIN;
+  const multiEffective = isBottomOpen ? multiHeight : MULTI_COLLAPSED_HEIGHT;
+  const logEffective = isLogOpen ? logHeight : LOG_COLLAPSED_HEIGHT;
+  const dockHeight = Math.max(multiEffective, logEffective);
 
+  return (
+    <div
+      className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30 flex items-end"
+      style={{ height: `${dockHeight}px` }}
+    >
+      {/* Multi-tab column — its own height + its own resize handle. */}
+      <div
+        className="flex-1 min-w-0 border-r border-purple-500/15 relative"
+        style={{ height: `${multiEffective}px` }}
+      >
+        {isBottomOpen && (
+          <ColumnResizeHandle
+            currentHeight={multiHeight}
+            onSet={setMultiHeight}
+            title="Drag to resize the bottom multi-tab panel"
+          />
+        )}
+        <BottomMultiTabPanel />
+      </div>
+      {/* LOG column — its own height + its own resize handle. */}
+      <div
+        className="shrink-0 min-w-72 relative"
+        style={{ width: rightPanelWidth, height: `${logEffective}px` }}
+      >
+        {isLogOpen && (
+          <ColumnResizeHandle
+            currentHeight={logHeight}
+            onSet={setLogHeight}
+            title="Drag to resize the log panel"
+          />
+        )}
+        <ProcessingLog />
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Per-column resize handle. Lives at the TOP edge of the column it
+ * controls. Dragging up grows that column only; the other column is
+ * untouched. Clamped to [DOCK_MIN_HEIGHT, viewport * DOCK_MAX_FRACTION].
+ */
+interface ColumnResizeHandleProps {
+  currentHeight: number;
+  onSet: (h: number) => void;
+  title: string;
+}
+const ColumnResizeHandle: React.FC<ColumnResizeHandleProps> = ({ currentHeight, onSet, title }) => {
+  const [dragging, setDragging] = useState(false);
+  const startY = React.useRef(0);
+  const startH = React.useRef(currentHeight);
   useEffect(() => {
-    if (!isResizing) return;
+    if (!dragging) return;
     const onMove = (e: MouseEvent) => {
-      const next = window.innerHeight - e.clientY;
-      const clamped = Math.max(80, Math.min(window.innerHeight - 200, next));
-      setBottomHeight(clamped);
+      const dy = startY.current - e.clientY; // up = positive
+      const max = Math.floor(window.innerHeight * DOCK_MAX_FRACTION);
+      const clamped = Math.max(DOCK_MIN_HEIGHT, Math.min(max, startH.current + dy));
+      onSet(clamped);
     };
-    const onUp = () => setIsResizing(false);
+    const onUp = () => setDragging(false);
     document.body.style.cursor = 'row-resize';
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -338,36 +394,21 @@ const ShellBottomDock: React.FC = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [isResizing, setBottomHeight]);
+  }, [dragging, onSet]);
 
   return (
     <div
-      className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30 flex flex-col"
-      style={{ height: `${dockHeight}px` }}
+      className="absolute inset-x-0 top-0 h-1.5 -mt-0.5 cursor-row-resize flex items-center justify-center group z-40"
+      onMouseDown={(e) => {
+        e.preventDefault();
+        startY.current = e.clientY;
+        startH.current = currentHeight;
+        setDragging(true);
+      }}
+      title={title}
     >
-      {/* Resize handle — only when at least one of the two panels is
-          open. Drag to set bottomHeight (synced via store). */}
-      {anyOpen && (
-        <div
-          className="h-1.5 -mt-1 cursor-row-resize flex items-center justify-center group relative z-40"
-          onMouseDown={(e) => { e.preventDefault(); setIsResizing(true); }}
-          title="Drag to resize"
-        >
-          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
-          <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-        </div>
-      )}
-      <div className="flex-1 min-h-0 flex">
-        <div className="flex-1 min-w-0 border-r border-purple-500/15">
-          <BottomMultiTabPanel />
-        </div>
-        <div
-          className="shrink-0 min-w-72"
-          style={{ width: rightPanelWidth }}
-        >
-          <ProcessingLog />
-        </div>
-      </div>
+      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
+      <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
     </div>
   );
 };

@@ -261,9 +261,9 @@ export const ProcessingLog: React.FC = () => {
         )}
       </div>
 
-      {/* Body — flex-1 fills the dock's height (synced with bottom
-          panel via bottomPanelStore.bottomHeight). Hidden when log
-          is collapsed. */}
+      {/* Body — flex-1 fills the LOG column's height (driven by
+          bottomPanelStore.logHeight, independent of the multi-tab
+          panel's height). Hidden when the log is collapsed. */}
       {isOpen && (
         <div className="relative bg-black/40 flex-1 min-h-0">
           <div

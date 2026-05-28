@@ -3,9 +3,11 @@
  * Media. Lives in the global footer (Shell.tsx) side-by-side with
  * ProcessingLog. Was previously embedded in DAWCenterPanel.
  *
- * Height is read from the shared bottomPanelStore so the panel and
- * the log resize in lock-step (the footer's resize handle writes
- * `bottomHeight` and both surfaces re-render at the new height).
+ * Height is the column's own `multiHeight` from bottomPanelStore.
+ * The LOG column has its own independent `logHeight`. Each panel
+ * has its own collapse toggle and its own resize handle at the top
+ * edge of its column — expanding or resizing the panel does NOT
+ * affect the LOG and vice versa.
  */
 import React from 'react';
 import {
