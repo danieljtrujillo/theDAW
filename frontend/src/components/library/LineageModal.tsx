@@ -70,6 +70,10 @@ interface GraphAppearance {
   background: 'dark' | 'midnight' | 'pure-black';
   controlType: 'orbit' | 'trackball' | 'fly';
   wireframe: boolean;
+  /** When ON (3D only), render a translucent halo sphere per-source
+   *  centered on each cluster's centroid — a lightweight "community
+   *  tint" so the user can see groupings at a glance. */
+  clusterColoring: boolean;
 }
 
 // Defaults are pinned to the "Particle cloud" preset — the values match
@@ -96,6 +100,7 @@ const DEFAULT_APPEARANCE: GraphAppearance = {
   // (reading 'x')`. Orbit / Fly are still selectable in the panel.
   controlType: 'trackball',
   wireframe: false,
+  clusterColoring: false,
 };
 
 const APPEARANCE_STORAGE_KEY = 'lineageGraphAppearance:v1';
@@ -194,6 +199,20 @@ const EDGE_COLOR_BY_KIND: Record<string, string> = {
   midi_of: '#f472b6',
   derived_from: '#94a3b8',
   used_in_lora: '#fb7185',
+};
+
+// Translucent halo tint per cluster (by node `source`). Used by the
+// cluster-coloring overlay; colors picked to be distinct from the
+// node colors so the halo reads as ambient backdrop, not as the
+// node itself.
+const CLUSTER_TINT_BY_SOURCE: Record<string, string> = {
+  generate: '#a855f7',
+  import: '#38bdf8',
+  studio: '#34d399',
+  chimera: '#f97316',
+  stem: '#60a5fa',
+  midi: '#f472b6',
+  other: '#94a3b8',
 };
 
 export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, onClose, mode = 'modal' }) => {
@@ -1074,6 +1093,11 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
         ]}
         onChange={(v) => patch({ background: v as GraphAppearance['background'] })}
       />
+      <ToggleRow
+        label="Cluster tint (by source)"
+        on={value.clusterColoring}
+        onChange={(on) => patch({ clusterColoring: on })}
+      />
     </div>
   );
 };
@@ -1199,16 +1223,92 @@ const Graph3DView: React.FC<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
-  // Hover state lives in a ref (NOT useState) so onNodeHover doesn't
-  // trigger a React render — instead we tell react-force-graph to
-  // refresh its canvas via fgRef.refresh(). The linkColor/linkWidth
-  // callbacks read this ref each frame.
-  const hoverIdRef = useRef<string | null>(null);
+  // Hover state. Stored as state so the useEffect below can run a
+  // Three.js scene traversal to dim per-node meshes on each hover
+  // change. Data useMemo intentionally does NOT depend on hoveredId,
+  // so changing hover doesn't restart the force layout — only the
+  // link callbacks and the mesh-dim effect run.
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const handleNodeHover = (node: { id?: string } | null) => {
-    hoverIdRef.current = node?.id ?? null;
-    const r = fgRef.current as { refresh?: () => void } | null;
-    r?.refresh?.();
+    setHoveredId(node?.id ?? null);
   };
+
+  // Click-to-select drives the node-details slide-out panel on the
+  // right edge of the graph container. null = no selection (panel
+  // hidden).
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const handleNodeClick = (node: { id?: string } | null) => {
+    if (!node?.id) return;
+    setSelectedId((cur) => (cur === node.id ? null : node.id ?? null));
+  };
+  const selectedNode = useMemo(() => {
+    if (!selectedId) return null;
+    return connected.nodes.find((n) => n.id === selectedId) ?? null;
+  }, [selectedId, connected.nodes]);
+  const selectedEdges = useMemo(() => {
+    if (!selectedId) return { incoming: [], outgoing: [] };
+    const incoming = connected.edges.filter((e) => e.to_id === selectedId);
+    const outgoing = connected.edges.filter((e) => e.from_id === selectedId);
+    return { incoming, outgoing };
+  }, [selectedId, connected.edges]);
+
+  // Neighbor adjacency for the mesh-dim effect below. Rebuilt only
+  // when data changes — cheap for small graphs.
+  const adjacency = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const l of data.links) {
+      const a = (typeof l.source === 'object' ? (l.source as { id?: string }).id : l.source) as string | undefined;
+      const b = (typeof l.target === 'object' ? (l.target as { id?: string }).id : l.target) as string | undefined;
+      if (!a || !b) continue;
+      if (!map.has(a)) map.set(a, new Set());
+      if (!map.has(b)) map.set(b, new Set());
+      map.get(a)!.add(b);
+      map.get(b)!.add(a);
+    }
+    return map;
+  }, [data]);
+
+  // Node-mesh dimming on hover. Walks the Three.js scene; each node
+  // group has been tagged with userData.nodeId by nodeThreeObject, and
+  // its materials carry userData.baseOpacity. When a node is hovered,
+  // non-neighbor groups drop to baseOpacity * 0.15; everything snaps
+  // back to baseOpacity when the cursor leaves.
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    const ref = fgRef.current as { scene?: () => unknown } | null;
+    if (!ref?.scene) return;
+    type SceneLike = {
+      traverse: (cb: (obj: unknown) => void) => void;
+    };
+    const scene = ref.scene() as SceneLike;
+    if (!scene || typeof scene.traverse !== 'function') return;
+
+    const neighbors = hoveredId ? adjacency.get(hoveredId) ?? new Set<string>() : null;
+
+    type MeshLike = {
+      isMesh?: boolean;
+      material?: {
+        opacity?: number;
+        userData?: { baseOpacity?: number };
+      };
+      parent?: { userData?: { nodeId?: string } };
+    };
+
+    scene.traverse((obj: unknown) => {
+      const m = obj as MeshLike;
+      if (!m.isMesh) return;
+      const base = m.material?.userData?.baseOpacity;
+      if (typeof base !== 'number') return;
+      const ownerId = m.parent?.userData?.nodeId;
+      if (!ownerId) return;
+      if (!hoveredId) {
+        if (m.material) m.material.opacity = base;
+        return;
+      }
+      const incident = ownerId === hoveredId || neighbors?.has(ownerId);
+      if (m.material) m.material.opacity = incident ? base : base * 0.15;
+    });
+  }, [hoveredId, adjacency, appearance.renderMode, data]);
 
   // Fit-to-view at three checkpoints so we catch both early- and late-
   // settling force layouts. Without this the camera lingers at its
@@ -1242,6 +1342,125 @@ const Graph3DView: React.FC<{
     );
     return () => timeouts.forEach(clearTimeout);
   }, [data, appearance.renderMode]);
+
+  // Cluster tint: when ON (and 3D), add a translucent halo sphere
+  // centered on each per-source centroid so the user can see source-
+  // grouping at a glance. Recomputed after a settle delay so we
+  // capture the force-layout's stable positions. Toggling OFF or
+  // unmounting removes the spheres. The sphere materials inherit
+  // dim-treatment from the hover effect by including baseOpacity in
+  // userData; they're tagged with a special nodeId='__cluster__' so
+  // hover-dim treats them as 'always visible' (skipped because they
+  // share the same baseOpacity restoration logic).
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    if (!appearance.clusterColoring) {
+      // Just clean any leftover.
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = (ref?.scene?.() ?? null) as
+        | (import('three').Object3D & {
+            getObjectByName?: (n: string) => import('three').Object3D | undefined;
+            remove?: (o: import('three').Object3D) => void;
+          })
+        | null;
+      if (scene) {
+        const prior = scene.getObjectByName?.('__lineage_clusters__');
+        if (prior) scene.remove?.(prior);
+      }
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      if (cancelled) return;
+      const THREE = threeRef.current ?? (await import('three'));
+      threeRef.current = THREE;
+      if (cancelled) return;
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = (ref?.scene?.() ?? null) as
+        | (import('three').Object3D & {
+            getObjectByName?: (n: string) => import('three').Object3D | undefined;
+            remove?: (o: import('three').Object3D) => void;
+            add?: (o: import('three').Object3D) => void;
+          })
+        | null;
+      if (!scene?.add) return;
+      const prior = scene.getObjectByName?.('__lineage_clusters__');
+      if (prior) scene.remove?.(prior);
+
+      // react-force-graph stores resolved positions on the node
+      // objects themselves (x/y/z). After settle they're populated.
+      type PositionedNode = {
+        id?: string;
+        source?: string;
+        x?: number;
+        y?: number;
+        z?: number;
+      };
+      const positions: PositionedNode[] = (
+        data.nodes as unknown as PositionedNode[]
+      ).filter((n) => typeof n.x === 'number' && typeof n.y === 'number');
+      if (positions.length === 0) return;
+
+      const groups = new Map<string, PositionedNode[]>();
+      for (const n of positions) {
+        const src = n.source || 'other';
+        if (!groups.has(src)) groups.set(src, []);
+        groups.get(src)!.push(n);
+      }
+
+      const group = new THREE.Group();
+      group.name = '__lineage_clusters__';
+      for (const [source, members] of groups) {
+        if (members.length < 2) continue;
+        let cx = 0,
+          cy = 0,
+          cz = 0;
+        for (const m of members) {
+          cx += m.x ?? 0;
+          cy += m.y ?? 0;
+          cz += m.z ?? 0;
+        }
+        cx /= members.length;
+        cy /= members.length;
+        cz /= members.length;
+        let maxR = 0;
+        for (const m of members) {
+          const dx = (m.x ?? 0) - cx;
+          const dy = (m.y ?? 0) - cy;
+          const dz = (m.z ?? 0) - cz;
+          maxR = Math.max(maxR, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        const radius = Math.max(20, maxR * 1.15);
+        const tintHex = CLUSTER_TINT_BY_SOURCE[source] ?? '#7c3aed';
+        const geo = new THREE.SphereGeometry(radius, 24, 16);
+        const mat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(tintHex),
+          transparent: true,
+          opacity: 0.07,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        mat.userData.baseOpacity = 0.07;
+        const sphere = new THREE.Mesh(geo, mat);
+        sphere.position.set(cx, cy, cz);
+        group.add(sphere);
+      }
+      scene.add(group);
+    }, 2800);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = (ref?.scene?.() ?? null) as
+        | (import('three').Object3D & {
+            getObjectByName?: (n: string) => import('three').Object3D | undefined;
+            remove?: (o: import('three').Object3D) => void;
+          })
+        | null;
+      const prior = scene?.getObjectByName?.('__lineage_clusters__');
+      if (prior && scene?.remove) scene.remove(prior);
+    };
+  }, [appearance.clusterColoring, appearance.renderMode, data]);
 
   // Inject a starfield + ambient/point lights into the underlying
   // Three.js scene once it exists. Used by every 3D preset, so the
@@ -1416,7 +1635,7 @@ const Graph3DView: React.FC<{
     });
   }, [appearance.renderMode]);
 
-  const nodeThreeObject = (node: { color?: string; val?: number }): unknown => {
+  const nodeThreeObject = (node: { id?: string; color?: string; val?: number }): unknown => {
     void buildNodeObject;
     const THREE = threeRef.current;
     if (!THREE) return undefined; // first frame: fall through to default sphere
@@ -1448,38 +1667,41 @@ const Graph3DView: React.FC<{
     // Build a Group so we can stack a wireframe halo + inner solid for
     // the glossy "neon" look the codepens go for.
     const group = new THREE.Group();
+    // Tag the group with the node id so the hover-dim effect (which
+    // traverses the scene) can find which child meshes belong to which
+    // graph node. Each material also carries userData.baseOpacity so
+    // the dim/restore math knows the un-dimmed target value.
+    group.userData.nodeId = node.id;
     if (appearance.wireframe) {
-      const wire = new THREE.Mesh(
-        geometry,
-        new THREE.MeshBasicMaterial({
-          color: baseColor,
-          wireframe: true,
-          transparent: true,
-          opacity: 0.95,
-        }),
-      );
-      group.add(wire);
+      const wireMat = new THREE.MeshBasicMaterial({
+        color: baseColor,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.95,
+      });
+      wireMat.userData.baseOpacity = 0.95;
+      group.add(new THREE.Mesh(geometry, wireMat));
     } else {
       // Solid inner core + slightly larger translucent "halo" that
       // approximates a glow without needing a postprocessing pass.
-      const inner = new THREE.Mesh(
-        geometry,
-        new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity: 0.95 }),
-      );
-      group.add(inner);
+      const innerMat = new THREE.MeshBasicMaterial({
+        color: baseColor,
+        transparent: true,
+        opacity: 0.95,
+      });
+      innerMat.userData.baseOpacity = 0.95;
+      group.add(new THREE.Mesh(geometry, innerMat));
       const haloGeo = geometry.clone();
       haloGeo.scale(1.45, 1.45, 1.45);
-      const halo = new THREE.Mesh(
-        haloGeo,
-        new THREE.MeshBasicMaterial({
-          color: baseColor,
-          transparent: true,
-          opacity: 0.22,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-        }),
-      );
-      group.add(halo);
+      const haloMat = new THREE.MeshBasicMaterial({
+        color: baseColor,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      haloMat.userData.baseOpacity = 0.22;
+      group.add(new THREE.Mesh(haloGeo, haloMat));
     }
     return group;
   };
@@ -1496,8 +1718,9 @@ const Graph3DView: React.FC<{
           showNavInfo={false}
           controlType={appearance.controlType}
           onNodeHover={handleNodeHover}
+          onNodeClick={handleNodeClick}
           linkColor={(l: { color?: string; source?: { id?: string } | string; target?: { id?: string } | string }) => {
-            const hov = hoverIdRef.current;
+            const hov = hoveredId;
             if (!hov) return l.color ?? '#a78bfa';
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
@@ -1506,7 +1729,7 @@ const Graph3DView: React.FC<{
           }}
           linkOpacity={appearance.linkOpacity}
           linkWidth={(l: { source?: { id?: string } | string; target?: { id?: string } | string }) => {
-            const hov = hoverIdRef.current;
+            const hov = hoveredId;
             if (!hov) return appearance.linkWidth;
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
@@ -1537,8 +1760,9 @@ const Graph3DView: React.FC<{
           enablePanInteraction={true}
           enableZoomInteraction={true}
           onNodeHover={handleNodeHover}
+          onNodeClick={handleNodeClick}
           linkColor={(l: { color?: string; source?: { id?: string } | string; target?: { id?: string } | string }) => {
-            const hov = hoverIdRef.current;
+            const hov = hoveredId;
             if (!hov) return l.color ?? '#a78bfa';
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
@@ -1546,7 +1770,7 @@ const Graph3DView: React.FC<{
           }}
           linkLineDash={() => null}
           linkWidth={(l: { source?: { id?: string } | string; target?: { id?: string } | string }) => {
-            const hov = hoverIdRef.current;
+            const hov = hoveredId;
             if (!hov) return appearance.linkWidth;
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
@@ -1606,11 +1830,107 @@ const Graph3DView: React.FC<{
           </span>
         )}
       </div>
+      <NodeDetailsPanel
+        node={selectedNode}
+        incoming={selectedEdges.incoming}
+        outgoing={selectedEdges.outgoing}
+        onClose={() => setSelectedId(null)}
+      />
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
         {appearance.renderMode === '3d'
-          ? 'click-drag rotate · right-click-drag pan · wheel zoom'
-          : 'click-drag pan · wheel zoom'}
+          ? 'click-drag rotate · right-click-drag pan · wheel zoom · click node for details'
+          : 'click-drag pan · wheel zoom · click node for details'}
         {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
+      </div>
+    </div>
+  );
+};
+
+/** Slide-out details panel that mounts on the right edge of the graph
+ *  container whenever a node is clicked. Read-only for now — Step 3b's
+ *  MAKE/MIX integration will wire up the "Open in Editor / Add Stems /
+ *  Send to MAKE" actions per the plan. */
+const NodeDetailsPanel: React.FC<{
+  node: GraphNode | null;
+  incoming: GraphEdge[];
+  outgoing: GraphEdge[];
+  onClose: () => void;
+}> = ({ node, incoming, outgoing, onClose }) => {
+  if (!node) return null;
+  return (
+    <div className="absolute top-2 right-2 bottom-2 z-10 w-72 bg-[#0c0a14]/95 backdrop-blur-sm border border-purple-500/30 rounded shadow-xl flex flex-col">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
+        <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Node details</span>
+        <button
+          onClick={onClose}
+          className="p-0.5 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
+          title="Close (click empty area or the node again)"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2">
+        <div>
+          <div className="text-[10px] font-bold text-zinc-100 wrap-break-word leading-snug">
+            {node.title || node.id}
+          </div>
+          <div className="text-[8px] font-mono text-zinc-600 break-all mt-0.5">{node.id}</div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {node.source && (
+            <span className="text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-purple-500/10 border border-purple-500/20 rounded text-purple-200">
+              {node.source}
+            </span>
+          )}
+          {node.kind && (
+            <span className="text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-zinc-500/10 border border-zinc-500/20 rounded text-zinc-300">
+              {node.kind}
+            </span>
+          )}
+          {node.model && (
+            <span className="text-[8px] font-mono px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-emerald-200">
+              {node.model}
+            </span>
+          )}
+          {typeof node.duration_sec === 'number' && (
+            <span className="text-[8px] font-mono px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded text-amber-200">
+              {node.duration_sec.toFixed(1)}s
+            </span>
+          )}
+        </div>
+        {incoming.length > 0 && (
+          <div className="flex flex-col gap-0.5 pt-1">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Incoming ({incoming.length})</span>
+            {incoming.slice(0, 12).map((e, i) => (
+              <div key={`in-${i}`} className="flex items-center gap-1.5 text-[9px] font-mono">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa' }} />
+                <span className="text-zinc-500 shrink-0">{e.kind}</span>
+                <span className="text-zinc-400 truncate">{e.from_id.slice(0, 16)}…</span>
+              </div>
+            ))}
+            {incoming.length > 12 && (
+              <span className="text-[8px] font-mono text-zinc-700 italic">+ {incoming.length - 12} more</span>
+            )}
+          </div>
+        )}
+        {outgoing.length > 0 && (
+          <div className="flex flex-col gap-0.5 pt-1">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Outgoing ({outgoing.length})</span>
+            {outgoing.slice(0, 12).map((e, i) => (
+              <div key={`out-${i}`} className="flex items-center gap-1.5 text-[9px] font-mono">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa' }} />
+                <span className="text-zinc-500 shrink-0">{e.kind}</span>
+                <span className="text-zinc-400 truncate">{e.to_id.slice(0, 16)}…</span>
+              </div>
+            ))}
+            {outgoing.length > 12 && (
+              <span className="text-[8px] font-mono text-zinc-700 italic">+ {outgoing.length - 12} more</span>
+            )}
+          </div>
+        )}
+        {incoming.length === 0 && outgoing.length === 0 && (
+          <span className="text-[9px] font-mono text-zinc-600 italic">No related nodes.</span>
+        )}
       </div>
     </div>
   );
