@@ -2,6 +2,56 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🚨 HARD RULES — read before touching anything 🚨
+
+These are non-negotiable. Violating them has burned the user before.
+
+### 1. NEVER downgrade external models, APIs, libraries, or capabilities
+Your training cutoff is older than the user's reality. The user is a
+working developer with access to the latest releases — Gemini 3.5,
+Claude 4.x, GPT-5 variants, whatever's actually current. If a model
+name, API endpoint, library version, or product feature looks unfamiliar
+or "doesn't exist," **assume YOUR knowledge is stale, not theirs**.
+
+Concrete rules:
+- **Do NOT remove model entries** from catalogs (e.g. `GEMINI_MODELS`,
+  Claude/OpenAI/Grok caps maps in `backend/assistant_routes.py`)
+  because you don't recognize them.
+- **Do NOT pin libraries down** to versions you "know" exist when a
+  newer one is in the lockfile.
+- **Do NOT replace a "preview" / "experimental" / "-latest" model id**
+  with a stable one you remember from training.
+- **If you genuinely need to update a model list**, fetch the source
+  of truth FIRST (WebFetch on `https://ai.google.dev/gemini-api/docs/models`,
+  `https://docs.anthropic.com/en/docs/about-claude/models`,
+  `https://platform.openai.com/docs/models`, etc.) — never write from
+  memory. Then if you're proposing a downgrade, ASK the user first and
+  let them confirm.
+
+If you accidentally do downgrade, immediately fetch the docs and
+restore the full catalog.
+
+### 2. NEVER allow ruff version drift
+Exactly ONE ruff version exists in this repo's tooling chain at all
+times. It's pinned in `pyproject.toml` (`dependency-groups.dev`) AND
+`.github/workflows/lint.yml` (the `RUFF_VERSION` env var) AND used via
+`uv run ruff …` so the project venv's ruff is what runs. Symptoms of a
+violation: `ruff format --check` complains about reformatting files
+that were clean last commit, with no semantic edits in between.
+
+Concrete rules:
+- **Never `pip install ruff` or `pipx install ruff`** globally without
+  matching the pinned version exactly.
+- **Never edit only one of the two pin sites** — always update both in
+  the same commit.
+- **Before committing**, run `uv run ruff check .` AND
+  `uv run ruff format --check .` from the repo root. Both must pass.
+- **If `ruff format` drifts** after a session where nothing semantic
+  changed, the FIRST suspect is a version mismatch — investigate
+  before you "fix" the drift.
+
+See the `## Ruff Configuration` section below for more detail.
+
 ## Project Overview
 
 Stable Audio 3 is a text-conditioned audio generation system. It generates audio from text prompts using a two-stage architecture: a DiT (diffusion transformer) generates latents, then the SAME autoencoder decodes them to 44.1kHz stereo audio.
@@ -69,16 +119,27 @@ The model supports variable-length sequences without wasting compute on padding.
 
 ## Ruff Configuration
 
-Ruff excludes `stable_audio_3/models`, `stable_audio_3/inference`, `stable_audio_3/interface`, and `stable_audio_3/data` from linting. Only top-level files (`pipeline.py`, `model.py`, `model_configs.py`, `loading_utils.py`, `verbose.py`) are checked.
+> ⚠️ **HARD RULE — RUFF VERSION:** Ruff is pinned to ONE exact version
+> in TWO places: `pyproject.toml` (`dependency-groups.dev`) and
+> `.github/workflows/lint.yml` (`RUFF_VERSION` env var). **NEVER allow
+> these to drift, NEVER downgrade, NEVER install an older ruff
+> "because it's still compatible," and NEVER let two ruff versions
+> coexist anywhere in this repo's tooling chain.** Upgrading is fine —
+> bump BOTH places in the SAME commit, then run `uv sync --group dev`
+> and `uv run ruff format .` in that same commit. If `ruff format
+> --check .` reports drift after the user reports a working tree was
+> previously clean, the FIRST thing to check is whether a different
+> ruff (older, newer, system-wide, pipx) snuck into the resolution
+> chain. Do NOT mask the issue by reformatting against a stale ruff.
 
-**Ruff version is pinned exactly.** Both `pyproject.toml` (`dependency-groups.dev`) and `.github/workflows/lint.yml` (the `RUFF_VERSION` env var) set the same version. When upgrading, change BOTH at once and run `uv sync --group dev` + `uv run ruff format .` in the same commit. Drift here typically shows up as `Would reformat: stable_audio_3/model.py` and `stable_audio_3/pipeline.py` failing CI even though local formatting looks clean — that's the smoking gun for a ruff version mismatch.
+Ruff excludes `stable_audio_3/models`, `stable_audio_3/inference`, `stable_audio_3/interface`, and `stable_audio_3/data` from linting. Only top-level files (`pipeline.py`, `model.py`, `model_configs.py`, `loading_utils.py`, `verbose.py`) are checked.
 
 **Always run from the repo root, never on a subset of dirs:**
 ```
 uv run ruff check .
 uv run ruff format .
 ```
-CI runs at the repo root, so `ruff format backend/ tests/` alone will silently miss `stable_audio_3/*.py` drift.
+CI runs at the repo root, so `ruff format backend/ tests/` alone will silently miss `stable_audio_3/*.py` drift. Local-dev workflow: run BOTH commands above before every commit; the pre-commit chain checks both.
 
 ## Testing
 

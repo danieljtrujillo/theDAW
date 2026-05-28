@@ -1,11 +1,6 @@
-import React, { useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Search, Settings, ChevronRight, ChevronLeft, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
-import { GenerateView } from '../../views/GenerateView';
-import { StudioView } from '../../views/StudioView';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Search, Settings, ChevronRight, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
-import { TrainingView } from '../../views/TrainingView';
-import { ResizablePanel } from './ResizablePanel';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
 import { DocsModal } from './DocsModal';
@@ -13,11 +8,15 @@ import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
 
+const RIGHT_RAIL_MIN = 280;
+const RIGHT_RAIL_MAX = 640;
+/** Width the right rail collapses to when the user hides the Library.
+ *  Big enough to fit the LOG / ACTION buttons in ProcessingLog without
+ *  truncating; the 45° clip-path runs in the leftmost ~56px. */
+const RIGHT_RAIL_COLLAPSED = 288;
+
 export const Shell: React.FC = () => {
-  const activeView = useAppUiStore((state) => state.activeView);
   const setActiveView = useAppUiStore((state) => state.setActiveView);
-  const isLeftPanelOpen = useAppUiStore((state) => state.isLeftPanelOpen);
-  const setIsLeftPanelOpen = useAppUiStore((state) => state.setLeftPanelOpen);
   const isRightPanelOpen = useAppUiStore((state) => state.isRightPanelOpen);
   const setIsRightPanelOpen = useAppUiStore((state) => state.setRightPanelOpen);
   const rightPanelWidth = useAppUiStore((state) => state.rightPanelWidth);
@@ -81,27 +80,39 @@ export const Shell: React.FC = () => {
     };
     const openDocsHandler = () => setDocsOpen(true);
     const closeDocsHandler = () => setDocsOpen(false);
-    const leftPanelHandler = (e: Event) => {
-      const open = (e as CustomEvent).detail?.open;
-      if (typeof open === 'boolean') setIsLeftPanelOpen(open);
-    };
     window.addEventListener('stabledaw:navigate', handler);
     window.addEventListener('stabledaw:open-docs', openDocsHandler);
     window.addEventListener('stabledaw:close-docs', closeDocsHandler);
-    window.addEventListener('stabledaw:set-left-panel', leftPanelHandler);
     return () => {
       window.removeEventListener('stabledaw:navigate', handler);
       window.removeEventListener('stabledaw:open-docs', openDocsHandler);
       window.removeEventListener('stabledaw:close-docs', closeDocsHandler);
-      window.removeEventListener('stabledaw:set-left-panel', leftPanelHandler);
     };
-  }, [setActiveView, setDocsOpen, setIsLeftPanelOpen]);
+  }, [setActiveView, setDocsOpen]);
 
-  const tabs = [
-    { id: 'create', label: 'CREATE' },
-    { id: 'edit', label: 'PROCESS' },
-    { id: 'train', label: 'TRAIN' },
-  ];
+  // ── Right rail drag-resize. When the Library is open, dragging the
+  // rail's left edge widens / narrows the rail. The collapsed-rail
+  // state is fixed-width (RIGHT_RAIL_COLLAPSED) and not resizable.
+  const [isResizingRail, setIsResizingRail] = useState(false);
+  useEffect(() => {
+    if (!isResizingRail) return;
+    const onMove = (e: MouseEvent) => {
+      const next = window.innerWidth - e.clientX;
+      const clamped = Math.max(RIGHT_RAIL_MIN, Math.min(RIGHT_RAIL_MAX, next));
+      setRightPanelWidth(clamped);
+    };
+    const onUp = () => setIsResizingRail(false);
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      document.body.style.cursor = 'default';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizingRail, setRightPanelWidth]);
+
+  const railWidth = isRightPanelOpen ? rightPanelWidth : RIGHT_RAIL_COLLAPSED;
 
   return (
     <div
@@ -114,19 +125,11 @@ export const Shell: React.FC = () => {
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
           <span className="font-semibold text-[15px] font-sans text-zinc-100 tracking-wide">StableDAW</span>
         </div>
-        <div className="flex items-center gap-6 relative z-10">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.4em] flex items-center gap-2.5">
-            {isLeftPanelOpen ? (
-              <button onClick={() => setIsLeftPanelOpen(false)} className="p-1 hover:bg-white/10 rounded mr-1 pointer-events-auto" title="Collapse left panel">
-                <ChevronRight className="w-4 h-4 text-zinc-500 hover:text-white transition-colors rotate-180" />
-              </button>
-            ) : (
-              <button onClick={() => setIsLeftPanelOpen(true)} className="p-1 hover:bg-white/10 rounded mr-1 pointer-events-auto" title="Open left panel">
-                <ChevronRight className="w-4 h-4 text-zinc-500 hover:text-white transition-colors" />
-              </button>
-            )}
-          </h2>
-        </div>
+        {/* Left side of the header is intentionally empty now —
+            the side-panel collapse arrows live in the CenterTabBar
+            below (plan step 3a). The legacy chevron here was the only
+            inhabitant; removing it tightens the header. */}
+        <div className="flex items-center gap-6 relative z-10" />
         <div className="flex items-center gap-2.5">
           <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
             <Search className="w-3 h-3 text-zinc-600" />
@@ -153,137 +156,106 @@ export const Shell: React.FC = () => {
               }}
             />
           </div>
-          <button
+          <TopBarButton
             onClick={() => setDocsOpen(true)}
-            className="p-1.5 rounded hover:bg-purple-500/15 transition-colors border border-purple-500/20 group flex items-center gap-1.5"
+            icon={<BookOpen className="w-3.5 h-3.5" />}
+            label="Docs"
             title="Open documentation"
-          >
-            <BookOpen className="w-3.5 h-3.5 text-purple-300 group-hover:text-purple-200" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-purple-300 group-hover:text-purple-200 pr-1">Docs</span>
-          </button>
-          <button
+            accent="purple"
+          />
+          <TopBarButton
             onClick={() => setShareOpen(true)}
-            className="p-1.5 rounded hover:bg-emerald-500/15 transition-colors border border-emerald-500/20 group flex items-center gap-1.5"
+            icon={<Smartphone className="w-3.5 h-3.5" />}
+            label="Mobile"
+            hideLabelBelowMd
             title="Open mobile access QR/link"
-          >
-            <Smartphone className="w-3.5 h-3.5 text-emerald-300 group-hover:text-emerald-200" />
-            <span className="hidden md:inline text-[9px] font-black uppercase tracking-widest text-emerald-300 group-hover:text-emerald-200 pr-1">Mobile</span>
-          </button>
-          <button
+            accent="emerald"
+          />
+          <TopBarButton
             onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-            className={`p-1.5 rounded transition-colors border group flex items-center gap-1.5 ${
-              isRightPanelOpen
-                ? 'border-purple-500/40 bg-purple-500/15 text-purple-200'
-                : 'border-white/5 hover:bg-white/5 text-zinc-400'
-            }`}
+            icon={<LibraryIcon className="w-3.5 h-3.5" />}
+            label="Library"
+            hideLabelBelowMd
             title={isRightPanelOpen ? 'Hide library' : 'Show library'}
-          >
-            <LibraryIcon className="w-3.5 h-3.5" />
-            <span className="hidden md:inline text-[9px] font-black uppercase tracking-widest pr-1">Library</span>
-            {isRightPanelOpen ? (
-              <ChevronRight className="w-3 h-3" />
-            ) : (
-              <ChevronLeft className="w-3 h-3" />
-            )}
-          </button>
-          <button
+            accent="purple"
+            active={isRightPanelOpen}
+            trailing={<ChevronRight className="w-3 h-3" />}
+          />
+          <TopBarButton
             onClick={() => setSettingsOpen(true)}
-            className="p-1.5 rounded hover:bg-white/5 transition-colors border border-white/5 group"
+            icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}
             title="Settings"
-          >
-            <Settings className="w-3.5 h-3.5 text-zinc-500 group-hover:rotate-90 transition-transform duration-500" />
-          </button>
+            accent="neutral"
+          />
         </div>
       </header>
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-      {/* Left Panel */}
-      <ResizablePanel
-        position="left"
-        isOpen={isLeftPanelOpen}
-        onToggle={() => setIsLeftPanelOpen(false)}
-        defaultWidth={400}
-        minWidth={300}
-        maxWidth={500}
-      >
-        <div className="h-full flex flex-col bg-[#07050a] relative">
-          
-          {/* Tabs */}
-          <div className="flex flex-col border-b border-white/5 pt-2 pb-0 px-3 bg-[#0a080f]">
-            {/* Horizontal Tabs */}
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar mb-2 px-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveView(tab.id)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border whitespace-nowrap
-                    ${activeView === tab.id ? 'bg-purple-600/20 border-purple-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
-                >
-                  <span className="text-[10px] font-black uppercase tracking-widest">{tab.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Render Active View */}
-          <div className="flex-1 overflow-hidden relative min-h-0">
-             <AnimatePresence mode="wait">
-               <motion.div
-                 key={activeView}
-                 initial={{ opacity: 0, x: 10 }}
-                 animate={{ opacity: 1, x: 0 }}
-                 exit={{ opacity: 0, x: -10 }}
-                 transition={{ duration: 0.15 }}
-                 className="h-full absolute inset-0 overflow-y-auto overflow-x-hidden"
-               >
-                 {activeView === 'create' && <GenerateView />}
-                 {activeView === 'edit' && <StudioView />}
-                 {activeView === 'train' && <TrainingView />}
-               </motion.div>
-             </AnimatePresence>
-          </div>
-
-          {/* Global Processing Log */}
-          <ProcessingLog />
-        </div>
-      </ResizablePanel>
-
-      {/* Main Canvas (DAW Center Panel) */}
+      {/* Main Canvas (DAW Center Panel) — no left panel; the user
+          removed it per layout invariant. */}
       <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
         <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
 
-      {/* Right Panel — permanent dock for the Library (collapsed by default,
-          drag-resizable, state persists across reloads). */}
-      <ResizablePanel
-        position="right"
-        isOpen={isRightPanelOpen}
-        onToggle={() => setIsRightPanelOpen(false)}
-        defaultWidth={380}
-        minWidth={280}
-        maxWidth={640}
-        width={rightPanelWidth}
-        onWidthChange={setRightPanelWidth}
+      {/* Right rail — single column on the right side of the app.
+          Library section sits on top (collapsible via the CenterTabBar
+          toggle). Log section is pinned to the bottom and stays
+          visible even when the Library is collapsed. When collapsed
+          the whole rail narrows to RIGHT_RAIL_COLLAPSED with a 45°
+          beveled left edge so the strip reads as deliberate. */}
+      <aside
+        className="h-full shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
+        style={{
+          width: railWidth,
+          transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
+          clipPath: isRightPanelOpen
+            ? undefined
+            : 'polygon(56px 0, 100% 0, 100% 100%, 0 100%)',
+        }}
       >
-        <div className="h-full flex flex-col bg-[#07050a] relative">
-          <div className="flex items-center justify-between border-b border-white/5 px-3 py-2 bg-[#0a080f] shrink-0">
-            <div className="flex items-center gap-2">
-              <LibraryIcon className="w-3 h-3 text-purple-400" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
+        {/* Resize handle — only when the Library is showing; the
+            collapsed-rail width is fixed. */}
+        {isRightPanelOpen && (
+          <div
+            className="absolute top-0 bottom-0 -left-1 w-2 cursor-col-resize z-30 group"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setIsResizingRail(true);
+            }}
+          >
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/10 group-hover:bg-purple-500/50 rounded-full transition-colors" />
+          </div>
+        )}
+
+        {/* Library section — collapsed when isRightPanelOpen is false. */}
+        {isRightPanelOpen && (
+          <>
+            <div className="h-9 flex items-center justify-between border-b border-white/5 px-3 bg-[#0a080f] shrink-0">
+              <div className="flex items-center gap-2">
+                <LibraryIcon className="w-3 h-3 text-purple-400" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
+              </div>
+              <button
+                onClick={() => setIsRightPanelOpen(false)}
+                className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors"
+                title="Collapse library"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <button
-              onClick={() => setIsRightPanelOpen(false)}
-              className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors"
-              title="Collapse library"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div className="flex-1 overflow-hidden relative min-h-0">
-            <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
-          </div>
+            <div className="flex-1 overflow-hidden relative min-h-0">
+              <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
+            </div>
+          </>
+        )}
+
+        {/* Log section — always visible. Sits at the bottom of the
+            rail. ProcessingLog itself is shrink-0 with its own internal
+            collapsible body, so this is just the dock. */}
+        <div className="shrink-0">
+          <ProcessingLog />
         </div>
-      </ResizablePanel>
+      </aside>
       </div>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
@@ -351,6 +323,87 @@ export const Shell: React.FC = () => {
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+  );
+};
+
+/**
+ * Shared top-bar button used by the header strip. Unifies the
+ * typography + hover/active treatment across Docs / Mobile / Library /
+ * Settings. Accent is one of the canonical hues; `active` flips on
+ * the filled treatment for toggle-style buttons (Library). Icon-only
+ * buttons (no label) get tighter padding.
+ */
+type TopBarAccent = 'purple' | 'emerald' | 'rose' | 'neutral';
+
+interface TopBarButtonProps {
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+  label?: string;
+  /** Hide the label on viewports narrower than md (matches the
+   *  existing Mobile / Library button behaviour). */
+  hideLabelBelowMd?: boolean;
+  accent?: TopBarAccent;
+  active?: boolean;
+  /** Trailing element (e.g. ChevronRight on Library). */
+  trailing?: React.ReactNode;
+}
+
+const ACCENT_CLS: Record<TopBarAccent, { idle: string; idleText: string; active: string }> = {
+  purple: {
+    idle: 'border-purple-500/20 hover:bg-purple-500/15',
+    idleText: 'text-purple-300 group-hover:text-purple-200',
+    active: 'border-purple-500/40 bg-purple-500/15 text-purple-200',
+  },
+  emerald: {
+    idle: 'border-emerald-500/20 hover:bg-emerald-500/15',
+    idleText: 'text-emerald-300 group-hover:text-emerald-200',
+    active: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200',
+  },
+  rose: {
+    idle: 'border-rose-500/20 hover:bg-rose-500/15',
+    idleText: 'text-rose-300 group-hover:text-rose-200',
+    active: 'border-rose-500/40 bg-rose-500/15 text-rose-200',
+  },
+  neutral: {
+    idle: 'border-white/5 hover:bg-white/5',
+    idleText: 'text-zinc-500 group-hover:text-zinc-200',
+    active: 'border-white/20 bg-white/10 text-zinc-100',
+  },
+};
+
+const TopBarButton: React.FC<TopBarButtonProps> = ({
+  onClick,
+  icon,
+  title,
+  label,
+  hideLabelBelowMd = false,
+  accent = 'neutral',
+  active = false,
+  trailing,
+}) => {
+  const cls = ACCENT_CLS[accent];
+  const stateCls = active ? cls.active : `${cls.idle} ${cls.idleText}`;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={`p-1.5 rounded border transition-colors group flex items-center gap-1.5 ${stateCls}`}
+    >
+      {icon}
+      {label && (
+        <span
+          className={`text-[9px] font-black uppercase tracking-widest pr-1 ${
+            hideLabelBelowMd ? 'hidden md:inline' : ''
+          }`}
+        >
+          {label}
+        </span>
+      )}
+      {trailing}
+    </button>
   );
 };
 

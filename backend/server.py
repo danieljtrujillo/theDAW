@@ -35,6 +35,7 @@ matplotlib.use("Agg")
 
 from matplotlib.figure import Figure
 from PIL import Image
+from backend.admin_routes import router as admin_router
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
 
@@ -1438,3 +1439,4 @@ async def save_preset(preset: dict):
 
 
 app.include_router(assistant_router)
+app.include_router(admin_router)

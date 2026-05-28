@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, type ComponentType, type RefObject } from 'react'
 import {
   Brain, Wrench, Eye, Mic, Headphones, Video, Image, Code, Globe,
-  Braces, BookOpen, Zap, ChevronDown, Check, Loader2
+  Braces, BookOpen, Zap, ChevronDown, Check, Loader2,
+  Music, Film, Radio, Network, Bot, FlaskConical, Cpu, AlertTriangle
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -10,7 +11,10 @@ import {
 
 export type Capability =
   | 'tools' | 'reasoning' | 'vision' | 'audio_in' | 'audio_out'
-  | 'video_in' | 'image_gen' | 'code' | 'web_search'
+  | 'video_in' | 'video_gen' | 'image_gen' | 'music_gen'
+  | 'tts' | 'live' | 'embeddings' | 'agentic' | 'research'
+  | 'robotics' | 'deprecated'
+  | 'code' | 'web_search'
   | 'structured_output' | 'long_context' | 'fast'
 
 export interface ModelInfo {
@@ -41,18 +45,27 @@ export interface ProviderModelSelectorProps {
 // ---------------------------------------------------------------------------
 
 const CAPABILITY_META: Record<Capability, { icon: ComponentType<any>; label: string; classes: string }> = {
-  tools:             { icon: Wrench,     label: 'TOOL',  classes: 'border-blue-500/30 bg-blue-500/10 text-blue-400' },
-  reasoning:         { icon: Brain,      label: 'RSN',   classes: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
-  vision:            { icon: Eye,        label: 'VIS',   classes: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
-  audio_in:          { icon: Mic,        label: 'STT',   classes: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' },
-  audio_out:         { icon: Headphones, label: 'TTS',   classes: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' },
-  video_in:          { icon: Video,      label: 'VID',   classes: 'border-red-500/30 bg-red-500/10 text-red-400' },
-  image_gen:         { icon: Image,      label: 'IMG',   classes: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
-  code:              { icon: Code,       label: 'CODE',  classes: 'border-violet-500/30 bg-violet-500/10 text-violet-400' },
-  web_search:        { icon: Globe,      label: 'WEB',   classes: 'border-teal-500/30 bg-teal-500/10 text-teal-400' },
-  structured_output: { icon: Braces,     label: 'JSON',  classes: 'border-orange-500/30 bg-orange-500/10 text-orange-400' },
-  long_context:      { icon: BookOpen,   label: '200K+', classes: 'border-purple-500/30 bg-purple-500/10 text-purple-400' },
-  fast:              { icon: Zap,        label: 'FAST',  classes: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400' },
+  tools:             { icon: Wrench,         label: 'TOOL',   classes: 'border-blue-500/30 bg-blue-500/10 text-blue-400' },
+  reasoning:         { icon: Brain,          label: 'RSN',    classes: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
+  vision:            { icon: Eye,            label: 'VIS',    classes: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
+  audio_in:          { icon: Mic,            label: 'STT',    classes: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' },
+  audio_out:         { icon: Headphones,     label: 'TTS',    classes: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' },
+  video_in:          { icon: Video,          label: 'VID',    classes: 'border-red-500/30 bg-red-500/10 text-red-400' },
+  video_gen:         { icon: Film,           label: 'VGEN',   classes: 'border-red-500/30 bg-red-500/10 text-red-300' },
+  image_gen:         { icon: Image,          label: 'IMG',    classes: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
+  music_gen:         { icon: Music,          label: 'MUS',    classes: 'border-pink-500/30 bg-pink-500/10 text-pink-400' },
+  tts:               { icon: Radio,          label: 'TTS',    classes: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' },
+  live:              { icon: Radio,          label: 'LIVE',   classes: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300' },
+  embeddings:        { icon: Network,        label: 'EMB',    classes: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300' },
+  agentic:           { icon: Bot,            label: 'AGENT',  classes: 'border-purple-500/40 bg-purple-500/15 text-purple-300' },
+  research:          { icon: FlaskConical,   label: 'RESCH',  classes: 'border-purple-500/30 bg-purple-500/10 text-purple-400' },
+  robotics:          { icon: Cpu,            label: 'ROBO',   classes: 'border-orange-500/30 bg-orange-500/10 text-orange-400' },
+  deprecated:        { icon: AlertTriangle,  label: 'DEPREC', classes: 'border-red-500/40 bg-red-500/15 text-red-300' },
+  code:              { icon: Code,           label: 'CODE',   classes: 'border-violet-500/30 bg-violet-500/10 text-violet-400' },
+  web_search:        { icon: Globe,          label: 'WEB',    classes: 'border-teal-500/30 bg-teal-500/10 text-teal-400' },
+  structured_output: { icon: Braces,         label: 'JSON',   classes: 'border-orange-500/30 bg-orange-500/10 text-orange-400' },
+  long_context:      { icon: BookOpen,       label: '200K+',  classes: 'border-purple-500/30 bg-purple-500/10 text-purple-400' },
+  fast:              { icon: Zap,            label: 'FAST',   classes: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400' },
 }
 
 // ---------------------------------------------------------------------------

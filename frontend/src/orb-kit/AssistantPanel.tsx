@@ -809,6 +809,11 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                         : `${keyPools[selectedProvider]?.available ?? '?'}/${keyPools[selectedProvider]?.total ?? '?'} keys`}
                                 </span>
                             </div>
+                            <ModelCapabilityHints
+                                model={
+                                    activeProvider?.models.find((m) => m.id === selectedModel) ?? null
+                                }
+                            />
                         </div>
                     )}
 
@@ -1215,6 +1220,77 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                     )}
                 </div>
             </form>
+        </div>
+    );
+};
+
+/** Renders a row of capability badges for the selected model plus a
+ *  prominent warning when the user has picked a model whose primary
+ *  job isn't chat (embeddings / image_gen / music_gen / video_gen /
+ *  tts / robotics — they'll error out if a chat request hits them)
+ *  or is marked deprecated. Capabilities come from the backend's
+ *  GEMINI_MODELS / OPENAI_CAPS / etc. catalogs, so adding a new flag
+ *  there shows up here automatically. */
+const NON_CHAT_CAPS = new Set([
+    'embeddings',
+    'image_gen',
+    'music_gen',
+    'video_gen',
+    'tts',
+    'robotics',
+]);
+
+const CAP_TINT: Record<string, string> = {
+    audio_in: 'border-emerald-500/30 text-emerald-300 bg-emerald-500/8',
+    audio_out: 'border-emerald-500/30 text-emerald-300 bg-emerald-500/8',
+    live: 'border-emerald-500/40 text-emerald-200 bg-emerald-500/12',
+    tts: 'border-emerald-500/30 text-emerald-300 bg-emerald-500/8',
+    vision: 'border-amber-500/30 text-amber-300 bg-amber-500/8',
+    video_in: 'border-amber-500/30 text-amber-300 bg-amber-500/8',
+    video_gen: 'border-amber-500/40 text-amber-200 bg-amber-500/12',
+    image_gen: 'border-rose-500/30 text-rose-300 bg-rose-500/8',
+    music_gen: 'border-pink-500/30 text-pink-300 bg-pink-500/8',
+    embeddings: 'border-cyan-500/30 text-cyan-300 bg-cyan-500/8',
+    research: 'border-purple-500/30 text-purple-300 bg-purple-500/8',
+    agentic: 'border-purple-500/40 text-purple-200 bg-purple-500/12',
+    robotics: 'border-orange-500/30 text-orange-300 bg-orange-500/8',
+    reasoning: 'border-blue-500/30 text-blue-300 bg-blue-500/8',
+    tools: 'border-zinc-500/30 text-zinc-300 bg-white/3',
+    code: 'border-zinc-500/30 text-zinc-300 bg-white/3',
+    long_context: 'border-zinc-500/30 text-zinc-300 bg-white/3',
+    fast: 'border-zinc-500/30 text-zinc-400 bg-white/3',
+    deprecated: 'border-red-500/40 text-red-300 bg-red-500/8',
+};
+
+const ModelCapabilityHints: React.FC<{ model: ModelInfo | null }> = ({ model }) => {
+    if (!model || !model.capabilities || model.capabilities.length === 0) return null;
+    const caps = model.capabilities;
+    const nonChat = caps.filter((c) => NON_CHAT_CAPS.has(c));
+    const isDeprecated = caps.includes('deprecated');
+    return (
+        <div className="pt-1.5 flex flex-col gap-1">
+            <div className="flex flex-wrap gap-1">
+                {caps.map((c) => (
+                    <span
+                        key={c}
+                        className={`text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                            CAP_TINT[c] ?? 'border-zinc-500/20 text-zinc-400 bg-white/3'
+                        }`}
+                    >
+                        {c}
+                    </span>
+                ))}
+            </div>
+            {nonChat.length > 0 && (
+                <div className="text-[9px] text-amber-300 bg-amber-500/8 border border-amber-500/30 rounded px-2 py-1 leading-snug">
+                    This model is built for <span className="font-bold">{nonChat.join(' / ')}</span> — chat requests will likely error. Pick a model with <span className="font-mono">tools</span> or <span className="font-mono">reasoning</span> for normal conversation.
+                </div>
+            )}
+            {isDeprecated && (
+                <div className="text-[9px] text-red-300 bg-red-500/8 border border-red-500/30 rounded px-2 py-1 leading-snug">
+                    Deprecated — Google will shut this model down soon. Migrate to a 3.x model when convenient.
+                </div>
+            )}
         </div>
     );
 };

@@ -2,6 +2,36 @@
 """
 Assistant Chat Routes - Multi-provider LLM streaming with model discovery.
 
+==============================================================================
+🚨 IF YOU ARE AN AI ASSISTANT EDITING THIS FILE — READ THIS FIRST 🚨
+
+DO NOT downgrade, remove, or "clean up" entries in the model catalogs below
+(GEMINI_MODELS, CLAUDE_MODELS, OPENAI_CAPS, GROK_CAPS, GROQ_CAPS, etc.)
+because the model id looks unfamiliar to you. Your training cutoff is older
+than the user's reality. The user has working API keys for Gemini 3.x,
+Claude 4.x / 5.x, GPT-5 variants, and other models you may not know exist.
+
+Rules:
+  1. Never delete a model entry just because you don't recognize its id.
+  2. Never replace a "-preview" / "-latest" / "-experimental" id with a
+     stable id you remember from training.
+  3. If the user reports a model is missing, FETCH the live docs first
+     (e.g. WebFetch https://ai.google.dev/gemini-api/docs/models) before
+     editing this file. Write from the docs, not from memory.
+  4. The dynamic /v1beta/models fetch is the runtime source of truth —
+     this hard-coded list is just a fallback + capability enrichment
+     source. Adding speculative models here is FINE; removing real ones
+     is NOT.
+  5. If you do need to remove an entry (e.g. an explicit user request
+     or because Google EOL'd it), tag it `deprecated` first so the UI
+     warns; only delete after the user confirms.
+
+The user has explicitly burned-in this rule: "I AM A WORLD CLASS GIGACHAD
+IN THE DEV WORLD AND HAVE ACCESS TO THE NEWEST SHIT". Assume that.
+
+See CLAUDE.md → "🚨 HARD RULES" for the canonical version of this rule.
+==============================================================================
+
 Provides:
 - /api/assistant/chat       POST  - Stream chat completions (SSE) from any provider
 - /api/assistant/providers   GET  - List all available providers
@@ -2207,7 +2237,171 @@ CLAUDE_MODELS = [
     },
 ]
 
+# Source: https://ai.google.dev/gemini-api/docs/models  +
+#         https://ai.google.dev/gemini-api/docs/models/gemini
+# (both fetched at edit time). This list is consumed in two ways:
+#   1. As the live-fetch fallback if /v1beta/models can't be reached.
+#   2. As the capability source for whatever models the live fetch
+#      DOES return (longest-prefix match via _enrich_models_with_caps).
+#
+# Capability vocabulary in use (frontend filters / "this model can't
+# do that" warnings should key on these):
+#   chat          implicit unless 'embeddings' / 'image_gen' / etc.
+#   tools         function calling
+#   reasoning     "thinking" / chain-of-thought tier
+#   vision        image input
+#   audio_in      accepts audio for analysis
+#   audio_out     emits audio (TTS / live)
+#   video_in      accepts video for analysis
+#   video_gen     produces video
+#   image_gen     produces images
+#   music_gen     produces music / songs
+#   tts           dedicated text-to-speech endpoint
+#   live          real-time bidirectional streaming (Live API)
+#   embeddings    vector embedding endpoint (not chat)
+#   agentic       agent / computer-use tier
+#   research      autonomous multi-step research agent
+#   robotics      embodied / spatial reasoning for robots
+#   code          code execution / interpreter
+#   long_context  documented >= 1M-token window
+#   fast          low-latency / lite tier
+#   deprecated    still callable for now, slated for shutdown
 GEMINI_MODELS = [
+    # ── 3.x family ──────────────────────────────────────────────────
+    {
+        "id": "gemini-3.5-flash",
+        "name": "Gemini 3.5 Flash",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "agentic",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-3.1-pro-preview",
+        "name": "Gemini 3.1 Pro (Preview)",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "agentic",
+        ],
+    },
+    {
+        "id": "gemini-3-flash-preview",
+        "name": "Gemini 3 Flash (Preview)",
+        "capabilities": [
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-3.1-flash-lite",
+        "name": "Gemini 3.1 Flash-Lite",
+        "capabilities": [
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-3.1-flash-live-preview",
+        "name": "Gemini 3.1 Flash Live (Preview)",
+        "capabilities": [
+            "live",
+            "audio_in",
+            "audio_out",
+            "video_in",
+            "tools",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-3.1-flash-tts-preview",
+        "name": "Gemini 3.1 Flash TTS (Preview)",
+        "capabilities": [
+            "tts",
+            "audio_out",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-3.1-flash-image-preview",
+        "name": "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "capabilities": [
+            "image_gen",
+            "vision",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-3-pro-image-preview",
+        "name": "Nano Banana Pro (Gemini 3 Pro Image)",
+        "capabilities": [
+            "image_gen",
+            "vision",
+            "long_context",
+        ],
+    },
+    {
+        "id": "gemini-3-pro-preview",
+        "name": "Gemini 3 Pro (Preview, shutting down)",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "deprecated",
+        ],
+    },
+    {
+        "id": "gemini-3.1-flash-lite-preview",
+        "name": "Gemini 3.1 Flash-Lite (Preview, shutting down)",
+        "capabilities": [
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
+            "deprecated",
+        ],
+    },
+    # ── 2.5 family ──────────────────────────────────────────────────
+    {
+        "id": "gemini-2.5-pro",
+        "name": "Gemini 2.5 Pro",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+        ],
+    },
     {
         "id": "gemini-2.5-flash",
         "name": "Gemini 2.5 Flash",
@@ -2223,8 +2417,212 @@ GEMINI_MODELS = [
         ],
     },
     {
-        "id": "gemini-2.5-pro",
-        "name": "Gemini 2.5 Pro",
+        "id": "gemini-2.5-flash-lite",
+        "name": "Gemini 2.5 Flash-Lite",
+        "capabilities": [
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-2.5-flash-native-audio-preview",
+        "name": "Gemini 2.5 Flash Live (native audio, Preview)",
+        "capabilities": [
+            "live",
+            "audio_in",
+            "audio_out",
+            "video_in",
+            "tools",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-2.5-flash-preview-tts",
+        "name": "Gemini 2.5 Flash TTS (Preview)",
+        "capabilities": [
+            "tts",
+            "audio_out",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-2.5-pro-preview-tts",
+        "name": "Gemini 2.5 Pro TTS (Preview)",
+        "capabilities": [
+            "tts",
+            "audio_out",
+        ],
+    },
+    {
+        "id": "gemini-2.5-flash-image",
+        "name": "Nano Banana (Gemini 2.5 Flash Image)",
+        "capabilities": [
+            "image_gen",
+            "vision",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-2.5-computer-use-preview",
+        "name": "Gemini Computer Use (Preview)",
+        "capabilities": [
+            "tools",
+            "vision",
+            "code",
+            "agentic",
+        ],
+    },
+    # ── 2.0 family (deprecated but still answers) ───────────────────
+    {
+        "id": "gemini-2.0-flash",
+        "name": "Gemini 2.0 Flash (deprecated)",
+        "capabilities": [
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
+            "deprecated",
+        ],
+    },
+    {
+        "id": "gemini-2.0-flash-lite",
+        "name": "Gemini 2.0 Flash-Lite (deprecated)",
+        "capabilities": [
+            "vision",
+            "audio_in",
+            "code",
+            "fast",
+            "deprecated",
+        ],
+    },
+    # ── Research / agentic preview endpoints ────────────────────────
+    {
+        "id": "deep-research-preview",
+        "name": "Gemini Deep Research (Preview)",
+        "capabilities": [
+            "research",
+            "agentic",
+            "tools",
+            "long_context",
+            "reasoning",
+        ],
+    },
+    {
+        "id": "deep-research-max-preview",
+        "name": "Gemini Deep Research Max (Preview)",
+        "capabilities": [
+            "research",
+            "agentic",
+            "tools",
+            "long_context",
+            "reasoning",
+        ],
+    },
+    {
+        "id": "antigravity-preview",
+        "name": "Antigravity Agent (Preview)",
+        "capabilities": [
+            "agentic",
+            "tools",
+            "code",
+            "long_context",
+        ],
+    },
+    # ── Specialized: embeddings + robotics ──────────────────────────
+    {
+        "id": "gemini-embedding-2",
+        "name": "Gemini Embedding 2 (multimodal)",
+        "capabilities": [
+            "embeddings",
+            "vision",
+            "audio_in",
+            "video_in",
+        ],
+    },
+    {
+        "id": "gemini-embedding-001",
+        "name": "Gemini Embedding (text)",
+        "capabilities": [
+            "embeddings",
+        ],
+    },
+    {
+        "id": "gemini-robotics-er-1.6-preview",
+        "name": "Gemini Robotics-ER 1.6 (Preview)",
+        "capabilities": [
+            "robotics",
+            "vision",
+            "reasoning",
+            "tools",
+        ],
+    },
+    # ── Media generation siblings (separate APIs but exposed via the
+    #    same Google account / key — surfaced here so the UI can show
+    #    them and warn when they're picked for chat tasks). ──────────
+    {
+        "id": "veo-3.1-generate-preview",
+        "name": "Veo 3.1 (video gen + audio)",
+        "capabilities": [
+            "video_gen",
+            "audio_out",
+            "vision",
+        ],
+    },
+    {
+        "id": "veo-3.1-lite-generate-preview",
+        "name": "Veo 3.1 Lite (video gen)",
+        "capabilities": [
+            "video_gen",
+            "vision",
+            "fast",
+        ],
+    },
+    {
+        "id": "imagen-4",
+        "name": "Imagen 4 (image gen)",
+        "capabilities": [
+            "image_gen",
+        ],
+    },
+    {
+        "id": "lyria-3-pro-preview",
+        "name": "Lyria 3 Pro (music gen, full songs)",
+        "capabilities": [
+            "music_gen",
+            "audio_out",
+            "long_context",
+        ],
+    },
+    {
+        "id": "lyria-3-clip-preview",
+        "name": "Lyria 3 Clip (music gen, ≤30s)",
+        "capabilities": [
+            "music_gen",
+            "audio_out",
+            "fast",
+        ],
+    },
+    {
+        "id": "lyria-realtime-exp",
+        "name": "Lyria RealTime (streaming music)",
+        "capabilities": [
+            "music_gen",
+            "audio_out",
+            "live",
+            "fast",
+        ],
+    },
+    # ── Sliding "latest" aliases (Google updates the target on a
+    #    schedule with 2-week notice — see /models docs). ────────────
+    {
+        "id": "gemini-flash-latest",
+        "name": "Gemini Flash (latest)",
         "capabilities": [
             "tools",
             "reasoning",
@@ -2233,8 +2631,36 @@ GEMINI_MODELS = [
             "video_in",
             "code",
             "long_context",
+            "fast",
         ],
     },
+    {
+        "id": "gemini-flash-lite-latest",
+        "name": "Gemini Flash-Lite (latest)",
+        "capabilities": [
+            "tools",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "fast",
+        ],
+    },
+    {
+        "id": "gemini-pro-latest",
+        "name": "Gemini Pro (latest)",
+        "capabilities": [
+            "tools",
+            "reasoning",
+            "vision",
+            "audio_in",
+            "video_in",
+            "code",
+            "long_context",
+            "agentic",
+        ],
+    },
+    # ── back-compat alias kept for any UI / stored prefs ────────────
     {
         "id": "gemini-flash-recent",
         "name": "Gemini Flash (Latest)",

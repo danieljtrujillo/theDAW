@@ -10,13 +10,37 @@ export function normalizeStableDAWView(value: unknown): StableDAWView | null {
     : null;
 }
 
+/** The center-bar tabs in user-locked order MAKE / EDIT / MIX / TRAIN
+ *  / LEARN / VJ. All workspaces live here; the legacy left-side tabs
+ *  (CREATE/PROCESS/TRAIN) are subsumed by these. */
+export const CENTER_TABS = ['make', 'edit', 'mix', 'train', 'learn', 'vj'] as const;
+export type CenterTab = typeof CENTER_TABS[number];
+
+/** Translate legacy navigation targets (used by orb-kit, library row
+ *  clicks, assistant 'navigate' actions, etc.) into the new center-bar
+ *  tabs so existing call sites keep working. */
+const LEGACY_VIEW_TO_CENTER_TAB: Record<string, CenterTab> = {
+  create: 'make',
+  advanced: 'make',
+  edit: 'mix',
+  train: 'train',
+};
+
+export function normalizeCenterTab(value: unknown): CenterTab | null {
+  return typeof value === 'string' && (CENTER_TABS as readonly string[]).includes(value)
+    ? (value as CenterTab)
+    : null;
+}
+
 interface AppUiState {
   activeView: StableDAWView;
+  centerTab: CenterTab;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
   rightPanelWidth: number;
   docsOpen: boolean;
   setActiveView: (view: unknown) => void;
+  setCenterTab: (tab: unknown) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
   setRightPanelWidth: (width: number) => void;
@@ -36,7 +60,11 @@ export const useAppUiStore = create<AppUiState>()(
   persist(
     (set) => ({
       activeView: 'create',
-      isLeftPanelOpen: true,
+      centerTab: 'make',
+      // Left panel defaults closed now that the center bar hosts all
+      // tab content. It still exists (toggleable from the new
+      // CenterTabBar) for future use as a context palette.
+      isLeftPanelOpen: false,
       isRightPanelOpen: false,
       rightPanelWidth: RIGHT_PANEL_DEFAULT_WIDTH,
       docsOpen: false,
@@ -50,7 +78,20 @@ export const useAppUiStore = create<AppUiState>()(
           set({ isRightPanelOpen: true });
           return;
         }
-        set({ activeView: normalized });
+        // Mirror legacy view → center tab so existing 'navigate' callers
+        // (orb-kit assistant, library row clicks, WaveformEditor's
+        // "back to Create" buttons, etc.) route to the new center bar.
+        const mapped = LEGACY_VIEW_TO_CENTER_TAB[normalized];
+        if (mapped) {
+          set({ activeView: normalized, centerTab: mapped });
+        } else {
+          set({ activeView: normalized });
+        }
+      },
+      setCenterTab: (tab) => {
+        const normalized = normalizeCenterTab(tab);
+        if (!normalized) return;
+        set({ centerTab: normalized });
       },
       setLeftPanelOpen: (open) => set({ isLeftPanelOpen: open }),
       setRightPanelOpen: (open) => set({ isRightPanelOpen: open }),
@@ -60,6 +101,7 @@ export const useAppUiStore = create<AppUiState>()(
     {
       name: 'stabledaw-app-ui',
       partialize: (s) => ({
+        centerTab: s.centerTab,
         isLeftPanelOpen: s.isLeftPanelOpen,
         isRightPanelOpen: s.isRightPanelOpen,
         rightPanelWidth: s.rightPanelWidth,

@@ -3,12 +3,22 @@ name: Lint
 on:
   pull_request:
 
-# Ruff version is pinned in BOTH this workflow and in pyproject.toml's
-# `dependency-groups.dev` so the CI ruff and the local-dev ruff (via
-# `uv sync --group dev`) are always identical. Bumping the version
-# requires changing it in both places at once — see CONTRIBUTING / the
-# CLAUDE.md note about ruff drift on stable_audio_3/model.py +
-# stable_audio_3/pipeline.py.
+# 🚨 HARD RULE — RUFF VERSION 🚨
+# Ruff is pinned in BOTH this workflow (RUFF_VERSION below) and in
+# pyproject.toml's `dependency-groups.dev` so the CI ruff and the
+# local-dev ruff (via `uv sync --group dev`) are always BIT-IDENTICAL.
+# NEVER let these drift, NEVER downgrade to an older version,
+# NEVER allow two ruff installations to coexist in this repo's
+# tooling chain.
+#
+# Bumping requires changing BOTH places in the same commit, then
+# running `uv sync --group dev` + `uv run ruff format .` in that
+# same commit so the working tree is consistent against the new
+# formatter. Symptoms of a violation: `ruff format --check` reports
+# drift on files that were clean at the last commit with no semantic
+# edits in between — that's the version-mismatch smoking gun.
+#
+# See CLAUDE.md → "🚨 HARD RULES" for the canonical version of this rule.
 #
 # We pin to a specific tagged release of actions/checkout rather than
 # the floating `@v4` major-version tag so editor integrations (e.g. the
@@ -17,7 +27,7 @@ on:
 # party setup-python action + pipx, avoiding the third-party
 # astral-sh/ruff-action entirely.
 env:
-  RUFF_VERSION: "0.15.14"
+  RUFF_VERSION: "0.15.14"  # ⚠ KEEP IN SYNC WITH pyproject.toml ⚠
 
 jobs:
   ruff:

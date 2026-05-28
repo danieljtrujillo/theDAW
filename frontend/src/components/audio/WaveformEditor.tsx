@@ -15,6 +15,7 @@ import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
 import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/editorPlaybackBridge';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const TRACK_HEADER_PX = 180;
 const TRACK_HEIGHT = 88;
@@ -734,34 +735,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  // --- Right-click context menu ---
-  type CtxMenu = { x: number; y: number; clipId: string; atSec: number };
-  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
-
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    window.addEventListener('click', close);
-    window.addEventListener('contextmenu', close, { capture: true });
-    window.addEventListener('blur', close);
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('contextmenu', close, { capture: true } as EventListenerOptions);
-      window.removeEventListener('blur', close);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [ctxMenu]);
+  // --- Right-click context menu (uses shared ContextMenu primitive) ---
+  const clipMenu = useContextMenu<{ clipId: string; atSec: number }>();
 
   const openContextMenu = (e: React.MouseEvent, clipId: string) => {
-    e.preventDefault();
     e.stopPropagation();
     if (!selectedClipIds.includes(clipId)) {
       selectClipSingle(clipId);
     }
     const atSec = timelineClientXToSec(e.clientX);
-    setCtxMenu({ x: e.clientX, y: e.clientY, clipId, atSec });
+    clipMenu.open(e, { clipId, atSec });
   };
 
   // OfflineAudioContext mixdown.
@@ -1636,113 +1619,105 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       </div>
 
-      {/* Right-click context menu */}
-      {ctxMenu && (
-        <div
-          className="fixed z-200 min-w-40 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          {inpaintSelection?.clipId === ctxMenu.clipId && (
-            <>
-              <button
-                className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-purple-300 flex items-center justify-between"
-                onClick={() => { setCtxMenu(null); openInpaintPanel(); }}
-              >
-                <span className="flex items-center gap-1.5"><Paintbrush className="w-3 h-3" /> Inpaint Region</span>
-                <span className="text-zinc-600 text-[8px]">Ctrl+P</span>
-              </button>
-              <div className="my-0.5 border-t border-white/5" />
-            </>
-          )}
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-zinc-200 flex items-center justify-between"
-            onClick={() => { void playSelectedPreview(); setCtxMenu(null); }}
-          >
-            <span>Preview</span>
-            <span className="text-zinc-600 text-[8px]">Space</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-zinc-200 flex items-center justify-between"
-            onClick={() => { splitClipAt(ctxMenu.clipId, ctxMenu.atSec); setCtxMenu(null); }}
-          >
-            <span>Split here</span>
-            <span className="text-zinc-600 text-[8px]">{ctxMenu.atSec.toFixed(2)}s</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-zinc-200 flex items-center justify-between"
-            onClick={() => {
-              duplicateSelectedClips();
-              setCtxMenu(null);
-            }}
-          >
-            <span>Duplicate</span>
-            <span className="text-zinc-600 text-[8px]">Ctrl+D</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-40 disabled:pointer-events-none"
-            disabled={isRendering}
-            onClick={() => { void sendSelectionToInit(); setCtxMenu(null); }}
-          >
-            <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3" /> Send Selection to Init</span>
-            <span className="text-zinc-600 text-[8px]">mix</span>
-          </button>
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-purple-500/15 text-purple-200 flex items-center justify-between disabled:opacity-40 disabled:pointer-events-none"
-            onClick={() => {
-              const selection = getSelectionForInit();
-              if (selection.length === 0) {
-                setCtxMenu(null);
-                return;
-              }
-              addBlobsToChimera(
-                selection.map((c) => ({
-                  blob: c.audioBlob,
-                  mimeType: c.mimeType,
-                  label: c.label,
-                })),
-              );
-              onSwitchTab?.('create');
-              setCtxMenu(null);
-            }}
-          >
-            <span className="flex items-center gap-1.5"><Layers className="w-3 h-3" /> Send Selection to Init (stacked)</span>
-            <span className="text-zinc-600 text-[8px]">chimera</span>
-          </button>
-          {(() => {
-            const clip = clips.find((c) => c.id === ctxMenu.clipId);
-            if (!clip?.sourcePianoRoll) return null;
-            return (
-              <button
-                className="w-full text-left px-3 py-1 hover:bg-emerald-500/15 text-emerald-200 flex items-center justify-between"
-                onClick={() => {
-                  usePianoRollStore.getState().loadFromClip(
-                    clip.id,
-                    clip.sourcePianoRoll ?? [],
-                    clip.sourceBpm ?? 120,
-                    clip.sourceTotalSteps ?? 32,
-                  );
-                  useBottomPanelStore.getState().showTab('piano-roll');
-                  setCtxMenu(null);
-                  logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in Piano Roll (${clip.sourcePianoRoll?.length ?? 0} notes)`);
-                }}
-              >
-                <span className="flex items-center gap-1.5"><Piano className="w-3 h-3" /> Edit in Piano Roll</span>
-                <span className="text-zinc-600 text-[8px]">{clip.sourcePianoRoll.length} notes</span>
-              </button>
+      {/* Right-click context menu — shared ContextMenu primitive
+          (plan step 3d). The conditional items (inpaint region / edit
+          in piano roll) flow naturally through the items array since
+          the menu is rebuilt each render from `clipMenu.payload`. */}
+      {(() => {
+        const payload = clipMenu.payload;
+        if (!payload) return null;
+        const clip = clips.find((c) => c.id === payload.clipId);
+        const items: ContextMenuItem[] = [];
+        if (inpaintSelection?.clipId === payload.clipId) {
+          items.push({
+            type: 'item',
+            label: 'Inpaint Region',
+            icon: <Paintbrush className="w-3 h-3" />,
+            hint: 'Ctrl+P',
+            onSelect: openInpaintPanel,
+          });
+          items.push({ type: 'separator' });
+        }
+        items.push({
+          type: 'item',
+          label: 'Preview',
+          hint: 'Space',
+          onSelect: () => { void playSelectedPreview(); },
+        });
+        items.push({
+          type: 'item',
+          label: 'Split here',
+          hint: `${payload.atSec.toFixed(2)}s`,
+          onSelect: () => splitClipAt(payload.clipId, payload.atSec),
+        });
+        items.push({
+          type: 'item',
+          label: 'Duplicate',
+          hint: 'Ctrl+D',
+          onSelect: duplicateSelectedClips,
+        });
+        items.push({
+          type: 'item',
+          label: 'Send Selection to Init',
+          icon: <Wand2 className="w-3 h-3" />,
+          hint: 'mix',
+          disabled: isRendering,
+          onSelect: () => { void sendSelectionToInit(); },
+        });
+        items.push({
+          type: 'item',
+          label: 'Send Selection to Init (stacked)',
+          icon: <Layers className="w-3 h-3" />,
+          hint: 'chimera',
+          onSelect: () => {
+            const selection = getSelectionForInit();
+            if (selection.length === 0) return;
+            addBlobsToChimera(
+              selection.map((c) => ({
+                blob: c.audioBlob,
+                mimeType: c.mimeType,
+                label: c.label,
+              })),
             );
-          })()}
-          <div className="my-0.5 border-t border-white/5" />
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-red-500/20 text-red-300 flex items-center justify-between"
-            onClick={() => { deleteSelectedClips(); setCtxMenu(null); }}
-          >
-            <span>Delete</span>
-            <span className="text-zinc-600 text-[8px]">Del</span>
-          </button>
-        </div>
-      )}
+            onSwitchTab?.('create');
+          },
+        });
+        if (clip?.sourcePianoRoll) {
+          const noteCount = clip.sourcePianoRoll.length;
+          items.push({
+            type: 'item',
+            label: 'Edit in Piano Roll',
+            icon: <Piano className="w-3 h-3" />,
+            hint: `${noteCount} notes`,
+            onSelect: () => {
+              usePianoRollStore.getState().loadFromClip(
+                clip.id,
+                clip.sourcePianoRoll ?? [],
+                clip.sourceBpm ?? 120,
+                clip.sourceTotalSteps ?? 32,
+              );
+              useBottomPanelStore.getState().showTab('piano-roll');
+              logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in Piano Roll (${noteCount} notes)`);
+            },
+          });
+        }
+        items.push({ type: 'separator' });
+        items.push({
+          type: 'item',
+          label: 'Delete',
+          hint: 'Del',
+          danger: true,
+          onSelect: deleteSelectedClips,
+        });
+        return (
+          <ContextMenu
+            position={clipMenu.position}
+            onClose={clipMenu.close}
+            items={items}
+            minWidth="10rem"
+          />
+        );
+      })()}
 
       {/* Floating inpaint panel */}
       {inpaintPanel && (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 
 interface ModuleConfig {
@@ -61,7 +61,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
           <div className="flex items-center gap-2">
             <Settings className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">System Settings</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Settings</span>
           </div>
           <button onClick={onClose} className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
             <X className="w-3.5 h-3.5" />
@@ -101,6 +101,33 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               onPatchGenerate={(v) => void patchFeatures({ stems: { auto_on_generate: v } })}
               extra={
                 <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-white/5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Stems:</span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[
+                        { value: 2,  label: '2',  hint: 'vocals + accompaniment' },
+                        { value: 4,  label: '4',  hint: 'vocals, drums, bass, other' },
+                        { value: 6,  label: '6',  hint: '+ guitar, piano' },
+                        { value: 12, label: '12', hint: '+ LARSNET drum sub-stems' },
+                      ].map((opt) => {
+                        const active = featureSettings.stems.default_count === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            onClick={() => void patchFeatures({ stems: { default_count: opt.value } })}
+                            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                              active
+                                ? 'bg-purple-500/25 border-purple-400/60 text-purple-100'
+                                : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                            }`}
+                            title={opt.hint}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Device:</span>
                     <div className="flex items-center gap-1 flex-wrap">
@@ -246,9 +273,197 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               })}
             </div>
           )}
+
+        </div>
+
+        {/* Pinned footer — Restart + Shutdown are ALWAYS visible no
+            matter how far down the user has scrolled in the module
+            list. Locked here per user request 2026-05-28. */}
+        <div className="shrink-0 border-t border-white/5 bg-[#0a080f] px-4 py-3 flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <Power className="w-3 h-3 text-purple-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Admin</span>
+            <span className="text-[8px] font-mono text-zinc-600 ml-auto">supervisor required</span>
+          </div>
+          <div className="flex gap-2">
+            <RestartServerButton />
+            <ShutdownServerButton />
+          </div>
         </div>
       </div>
     </div>
+  );
+};
+
+/** Restarts the backend by hitting POST /api/admin/restart and then
+ *  polling /api/health until the new process answers. The button
+ *  surfaces three states: idle, restarting (spinner), and a short
+ *  success/error flash that auto-resets after a few seconds.
+ *
+ *  Deadline is 90s because the backend's startup includes torch + CUDA
+ *  module loading + ML model init, which on slower GPUs can comfortably
+ *  push past a tighter window. We flash success as soon as /api/health
+ *  returns 200 (which is decoupled from model loading on the backend
+ *  side — health responds the moment uvicorn is up). */
+const RestartServerButton: React.FC = () => {
+  type Status = 'idle' | 'restarting' | 'success' | 'error';
+  const [status, setStatus] = useState<Status>('idle');
+  const [detail, setDetail] = useState<string>('');
+
+  const handle = async () => {
+    if (status === 'restarting') return;
+    setStatus('restarting');
+    setDetail('Sending restart signal…');
+    try {
+      const r = await fetch('/api/admin/restart', { method: 'POST' });
+      if (r.status === 412) {
+        // Backend isn't running under the supervisor — show its detail
+        // verbatim so the user knows how to enable restart.
+        const body = await r.json().catch(() => ({ detail: '' }));
+        setStatus('error');
+        setDetail(body.detail || 'Supervisor not detected. Launch via start-dev.bat to enable restart.');
+        setTimeout(() => {
+          setStatus('idle');
+          setDetail('');
+        }, 10_000);
+        return;
+      }
+      if (!r.ok) throw new Error(`restart endpoint returned ${r.status}`);
+      // Wait a beat for the process to exit, then poll /api/health.
+      setDetail('Waiting for backend to come back…');
+      const deadline = Date.now() + 90_000;
+      // Brief initial sleep so we don't race the still-alive old
+      // process before the supervisor re-spawns.
+      await new Promise((res) => setTimeout(res, 1500));
+      while (Date.now() < deadline) {
+        try {
+          const h = await fetch('/api/health', { cache: 'no-store' });
+          if (h.ok) {
+            setStatus('success');
+            setDetail('Backend restarted.');
+            setTimeout(() => {
+              setStatus('idle');
+              setDetail('');
+            }, 4000);
+            return;
+          }
+        } catch {
+          // expected during the offline window
+        }
+        const remaining = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+        setDetail(`Waiting for backend to come back… ${remaining}s left`);
+        await new Promise((res) => setTimeout(res, 500));
+      }
+      throw new Error("backend didn't respond within 90s — it may still be loading; try refreshing the page");
+    } catch (e) {
+      setStatus('error');
+      setDetail(e instanceof Error ? e.message : 'restart failed');
+      setTimeout(() => {
+        setStatus('idle');
+        setDetail('');
+      }, 10_000);
+    }
+  };
+
+  const baseCls =
+    'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+  const stateCls: Record<Status, string> = {
+    idle: 'border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/60',
+    restarting: 'border-amber-500/40 bg-amber-500/10 text-amber-200 cursor-wait',
+    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 cursor-default',
+    error: 'border-rose-500/40 bg-rose-500/10 text-rose-200 cursor-default',
+  };
+
+  const icon =
+    status === 'restarting' ? (
+      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+    ) : status === 'success' ? (
+      <CheckCircle2 className="w-3.5 h-3.5" />
+    ) : status === 'error' ? (
+      <AlertCircle className="w-3.5 h-3.5" />
+    ) : (
+      <Power className="w-3.5 h-3.5" />
+    );
+
+  const label =
+    status === 'restarting'
+      ? 'Restarting…'
+      : status === 'success'
+      ? 'Back online'
+      : status === 'error'
+      ? 'Restart failed'
+      : 'Restart';
+
+  return (
+    <button
+      type="button"
+      onClick={handle}
+      disabled={status === 'restarting'}
+      className={`${baseCls} ${stateCls[status]}`}
+      title={detail || label}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+};
+
+/** Cleanly stops the SA3 backend (rc=0). The supervisor sees a non-
+ *  restart exit code and terminates the loop, so the whole "SA3
+ *  Backend" console closes — the user has to relaunch via start-dev
+ *  to bring SA3 back up. Confirms before sending the shutdown signal
+ *  because this can't be reversed from the browser side once fired. */
+const ShutdownServerButton: React.FC = () => {
+  const [pending, setPending] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const handle = async () => {
+    if (pending || done) return;
+    const ok = window.confirm(
+      'Shut down the SA3 backend?\n\nThe browser will lose its connection. Relaunch via start-dev.bat to bring it back.',
+    );
+    if (!ok) return;
+    setPending(true);
+    try {
+      await fetch('/api/admin/shutdown', { method: 'POST' });
+      setDone(true);
+    } catch {
+      // The fetch may abort mid-shutdown — that's expected. Treat it
+      // as a successful trigger so the UI flips to the terminal state.
+      setDone(true);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const baseCls =
+    'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+  const cls = done
+    ? 'border-rose-500/50 bg-rose-500/15 text-rose-200 cursor-default'
+    : pending
+    ? 'border-amber-500/40 bg-amber-500/10 text-amber-200 cursor-wait'
+    : 'border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 hover:border-rose-400/60';
+
+  const icon = done ? (
+    <PowerOff className="w-3.5 h-3.5" />
+  ) : pending ? (
+    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+  ) : (
+    <PowerOff className="w-3.5 h-3.5" />
+  );
+  const label = done ? 'Offline' : pending ? 'Shutting down…' : 'Shutdown';
+
+  return (
+    <button
+      type="button"
+      onClick={handle}
+      disabled={pending || done}
+      className={`${baseCls} ${cls}`}
+      title="Stop the SA3 backend entirely (supervisor exits, no respawn)."
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   );
 };
 

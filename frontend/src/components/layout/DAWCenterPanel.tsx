@@ -6,30 +6,47 @@ import { PianoRoll } from '../audio/PianoRoll';
 import { DetailsView } from './DetailsView';
 import { MediaBucketView } from './MediaBucketView';
 import {
-  Scissors, Layers, Activity, GripHorizontal, ChevronDown, ChevronUp,
-  Info, Piano, FolderOpen, Sliders, Zap,
+  Layers, Activity, GripHorizontal, ChevronDown, ChevronUp,
+  Info, Piano, FolderOpen,
 } from 'lucide-react';
 import { AdvancedView } from '../../views/AdvancedView';
 import { AdvancedEditorPanel } from '../../views/AdvancedEditorPanel';
+import { TrainingView } from '../../views/TrainingView';
+import { LineageView } from '../library/LineageModal';
+import { VJView } from '../../views/VJView';
+import { CenterTabBar } from './CenterTabBar';
+import { useAppUiStore } from '../../state/appUiStore';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 
+// Tab order + labels locked by user 2026-05-28:
+//   VISUALIZE | PIANO | SEQUENCE | DETAILS | MEDIA BUCKET
+// (was: Real-time Spectral | Details | Piano Roll | Step Sequencer | Media Bucket)
 const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
-  { id: 'spectral',   label: 'Real-time Spectral', icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
-  { id: 'details',    label: 'Details',            icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
-  { id: 'piano-roll', label: 'Piano Roll',         icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
-  { id: 'step-seq',   label: 'Step Sequencer',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
-  { id: 'bucket',     label: 'Media Bucket',       icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
+  { id: 'spectral',   label: 'Visualize',    icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
+  { id: 'piano-roll', label: 'Piano',        icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'step-seq',   label: 'Sequence',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'details',    label: 'Details',      icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
+  { id: 'bucket',     label: 'Media Bucket', icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
 ];
 
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<'editor' | 'advanced' | 'effects'>('editor');
+  const centerTab = useAppUiStore((s) => s.centerTab);
+  const setCenterTab = useAppUiStore((s) => s.setCenterTab);
+  const isRightPanelOpen = useAppUiStore((s) => s.isRightPanelOpen);
+  const setRightPanelOpen = useAppUiStore((s) => s.setRightPanelOpen);
   const [bottomHeight, setBottomHeight] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
   const setBottomOpen = useBottomPanelStore((s) => s.setOpen);
   const activeTab = useBottomPanelStore((s) => s.activeTab);
   const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
+
+  // Bottom multi-tab panel is GLOBAL — appears across all 5 center
+  // tabs (Make, Edit, Mix, Train, Learn). Visibility is purely the
+  // user's open/closed toggle. Previously gated to EDIT, which broke
+  // the user's expectation that the panel always be available.
+  const showBottomPanel = isBottomOpen;
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -62,51 +79,56 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, [isResizing, setBottomOpen]);
 
   return (
-    <div ref={containerRef} className="flex-1 h-full flex flex-col pt-2 px-2 pb-0 gap-2 bg-[#0a080f]/40 relative z-0 min-h-0">
+    <div ref={containerRef} className="flex-1 h-full flex flex-col pt-0 px-0 pb-0 gap-2 bg-[#0a080f]/40 relative z-0 min-h-0">
 
-      {/* Main Timeline Section */}
-      <div className="flex-1 min-h-0 hardware-card flex flex-col pt-1">
+      {/* New center tab bar — replaces the old 3-button inner toolbar.
+          Hosts the 5 workspace tabs (Train / Make / Edit / Mix / Learn)
+          centered, plus the side-panel collapse arrows at the inner
+          edges. Plan step 3a. */}
+      <CenterTabBar
+        activeTab={centerTab}
+        onTabChange={setCenterTab}
+        isRightPanelOpen={isRightPanelOpen}
+        onToggleRightPanel={() => setRightPanelOpen(!isRightPanelOpen)}
+      />
 
-        {/* Toolbar */}
-        <div className="flex items-center gap-2 mb-1 px-2 border-b border-white/5 pb-1 shrink-0">
-           <button
-             onClick={() => setWorkspaceMode('editor')}
-             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
-               ${workspaceMode === 'editor' ? 'bg-purple-600/20 border-purple-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
-           >
-              <Scissors className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-black uppercase tracking-widest">Waveform Editor</span>
-           </button>
-           <button
-             onClick={() => setWorkspaceMode('advanced')}
-             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
-               ${workspaceMode === 'advanced' ? 'bg-rose-600/20 border-rose-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
-           >
-              <Sliders className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
-           </button>
-           <button
-             onClick={() => setWorkspaceMode('effects')}
-             className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border
-               ${workspaceMode === 'effects' ? 'bg-orange-600/20 border-orange-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
-           >
-              <Zap className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-black uppercase tracking-widest">Effects</span>
-           </button>
-        </div>
-
-        {/* Timeline body */}
+      {/* Main workspace — fills below the tab bar. Edit keeps the
+          waveform + bottom multi-tab panel; the other tabs render
+          their workspace full-bleed. */}
+      <div className="flex-1 min-h-0 hardware-card flex flex-col mx-2 pt-1">
         <div className="flex-1 min-h-0 relative">
-           {workspaceMode === 'editor' && <WaveformEditor onSwitchTab={onSwitchTab} />}
-           {workspaceMode === 'advanced' && <div className="absolute inset-0 overflow-hidden"><AdvancedView /></div>}
-           {workspaceMode === 'effects' && <div className="absolute inset-0 overflow-y-auto"><AdvancedEditorPanel /></div>}
+          {centerTab === 'train' && (
+            <div className="absolute inset-0 overflow-y-auto">
+              <TrainingView />
+            </div>
+          )}
+          {centerTab === 'make' && (
+            <div className="absolute inset-0 overflow-hidden">
+              <AdvancedView />
+            </div>
+          )}
+          {centerTab === 'edit' && (
+            <WaveformEditor onSwitchTab={onSwitchTab} />
+          )}
+          {centerTab === 'mix' && (
+            <div className="absolute inset-0 overflow-y-auto">
+              <AdvancedEditorPanel />
+            </div>
+          )}
+          {centerTab === 'learn' && (
+            <LineageView rootEntryId={null} />
+          )}
+          {centerTab === 'vj' && (
+            <VJView />
+          )}
         </div>
       </div>
 
-      {/* Resize Handle */}
-      {isBottomOpen && (
+      {/* Resize Handle — only relevant when the bottom panel is in use
+          (Edit tab + bottom open). */}
+      {showBottomPanel && (
         <div
-          className="h-2 -my-2 flex items-center justify-center cursor-row-resize z-10 group relative"
+          className="h-2 -my-2 flex items-center justify-center cursor-row-resize z-10 group relative mx-2"
           onMouseDown={() => setIsResizing(true)}
         >
           <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 group-hover:bg-purple-500/30 transition-colors" />
@@ -114,21 +136,24 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       )}
 
-      {/* Collapsible Header (When Collapsed) */}
+      {/* "Open bottom panel" pill — global, shown whenever the bottom
+          panel is collapsed. Per layout invariant the panel is
+          available on every center tab, not just EDIT. */}
       {!isBottomOpen && (
         <button
           type="button"
           onClick={() => setBottomOpen(true)}
-          className="hardware-card border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 flex items-center justify-center py-2 cursor-pointer transition-colors group/restore"
+          className="hardware-card border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 flex items-center justify-center py-2 cursor-pointer transition-colors group/restore mx-2"
+          title="Open bottom panel (Visualize / Piano / Sequence / Details / Media Bucket)"
         >
            <ChevronUp className="w-4 h-4 text-purple-300 group-hover/restore:text-white transition-colors" />
         </button>
       )}
 
-      {/* Bottom Panel — multi-tab */}
-      {isBottomOpen && (
+      {/* Bottom Panel — multi-tab (Edit only) */}
+      {showBottomPanel && (
         <div
-          className="shrink-0"
+          className="shrink-0 mx-2"
           style={{ height: `${bottomHeight}px` }}
         >
           <div className="hardware-card border-purple-500/20 bg-purple-500/2 flex flex-col min-h-0 relative h-full p-0!">
