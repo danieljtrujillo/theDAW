@@ -66,18 +66,24 @@ interface GraphAppearance {
   wireframe: boolean;
 }
 
+// Defaults are pinned to the "Particle cloud" preset — the values match
+// PRESET_BUNDLES['particle-cloud'] one-for-one. We mirror them on the
+// top-level fields so the AppearancePanel's preset dropdown lands on
+// 'particle-cloud' AND the individual sliders display the right
+// numbers on first open, without needing the panel to "apply preset"
+// at mount time.
 const DEFAULT_APPEARANCE: GraphAppearance = {
   renderMode: '3d',
-  vizPreset: 'default',
+  vizPreset: 'particle-cloud',
   nodeShape: 'sphere',
-  nodeSizeScale: 1.0,
-  linkWidth: 2.5,
-  linkOpacity: 0.85,
+  nodeSizeScale: 0.7,
+  linkWidth: 1.0,
+  linkOpacity: 0.35,
   particles: true,
-  particleSpeed: 0.006,
-  edgeCurve: 0.0,
+  particleSpeed: 0.004,
+  edgeCurve: 0.15,
   labelMode: 'hover',
-  background: 'midnight',
+  background: 'pure-black',
   // Trackball is the library's default and avoids the bug in
   // react-force-graph-3d where OrbitControls + DragControls can race
   // on pointer-cancel and throw `Cannot read properties of undefined
@@ -85,6 +91,22 @@ const DEFAULT_APPEARANCE: GraphAppearance = {
   controlType: 'trackball',
   wireframe: false,
 };
+
+const APPEARANCE_STORAGE_KEY = 'lineageGraphAppearance:v1';
+
+function loadStoredAppearance(): GraphAppearance {
+  if (typeof window === 'undefined') return DEFAULT_APPEARANCE;
+  try {
+    const raw = window.localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    if (!raw) return DEFAULT_APPEARANCE;
+    const parsed = JSON.parse(raw) as Partial<GraphAppearance>;
+    // Merge over defaults so newly-added fields take their default
+    // when an older payload is read back.
+    return { ...DEFAULT_APPEARANCE, ...parsed };
+  } catch {
+    return DEFAULT_APPEARANCE;
+  }
+}
 
 /** Preset bundles — selecting a preset swaps a coordinated set of
  *  rendering choices for a distinct visual style (inspired by the
@@ -175,8 +197,22 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   const [loading, setLoading] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   // Appearance options for the 3D graph; controlled in a side drawer.
-  const [appearance, setAppearance] = useState<GraphAppearance>(DEFAULT_APPEARANCE);
+  // Hydrated from localStorage so settings survive a reload.
+  const [appearance, setAppearance] = useState<GraphAppearance>(loadStoredAppearance);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+
+  // Persist appearance changes to localStorage (debounced via the
+  // natural batching of React state updates — each setAppearance flushes
+  // once per render, and JSON.stringify is cheap on this small object).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(appearance));
+    } catch {
+      // Quota exceeded / SecurityError in private mode — silently skip;
+      // session-only persistence is acceptable.
+    }
+  }, [appearance]);
 
   // When the modal opens for a specific track, default to that view.
   // When opened library-wide, jump straight to the genealogy view.
@@ -1073,25 +1109,53 @@ const Graph3DView: React.FC<{
     return { nodes, edges };
   }, [payload]);
 
+  // Graphrag-workbench-style search: when the query is non-empty, nodes
+  // whose name/prompt/model don't substring-match are visually muted
+  // (gray, low alpha) and their incident edges are dimmed. Empty query
+  // disables the filter. Matching is case-insensitive.
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchNeedle = searchQuery.trim().toLowerCase();
+  const matchSet = useMemo(() => {
+    if (!searchNeedle) return null;
+    const out = new Set<string>();
+    for (const n of connected.nodes) {
+      const haystack = `${n.title ?? ''} ${n.id} ${n.source ?? ''} ${n.model ?? ''}`.toLowerCase();
+      if (haystack.includes(searchNeedle)) out.add(n.id);
+    }
+    return out;
+  }, [searchNeedle, connected.nodes]);
+
   const data = useMemo(
     () => ({
-      nodes: connected.nodes.map((n) => ({
-        id: n.id,
-        name: n.title ?? n.id,
-        title: n.title ?? '',
-        source: n.source ?? '',
-        model: n.model ?? '',
-        val: (4 + Math.log10(1 + (n.duration_sec ?? 1)) * 6) * appearance.nodeSizeScale,
-        color: n.id === highlight ? '#fbbf24' : pickNodeColor(n),
-      })),
-      links: connected.edges.map((e) => ({
-        source: e.from_id,
-        target: e.to_id,
-        kind: e.kind,
-        color: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa',
-      })),
+      nodes: connected.nodes.map((n) => {
+        const isMatch = matchSet === null || matchSet.has(n.id);
+        const baseColor = n.id === highlight ? '#fbbf24' : pickNodeColor(n);
+        return {
+          id: n.id,
+          name: n.title ?? n.id,
+          title: n.title ?? '',
+          source: n.source ?? '',
+          model: n.model ?? '',
+          val: (4 + Math.log10(1 + (n.duration_sec ?? 1)) * 6) * appearance.nodeSizeScale,
+          color: isMatch ? baseColor : '#2a2336',
+          // expose match flag so labelHtml / future hover hooks can read it
+          __searchDim: !isMatch,
+        };
+      }),
+      links: connected.edges.map((e) => {
+        const isMatch =
+          matchSet === null || (matchSet.has(e.from_id) && matchSet.has(e.to_id));
+        const baseColor = EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa';
+        return {
+          source: e.from_id,
+          target: e.to_id,
+          kind: e.kind,
+          color: isMatch ? baseColor : '#1c1828',
+          __searchDim: !isMatch,
+        };
+      }),
     }),
-    [connected, highlight, appearance.nodeSizeScale],
+    [connected, highlight, appearance.nodeSizeScale, matchSet],
   );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1427,6 +1491,26 @@ const Graph3DView: React.FC<{
           nodeLabel={labelHtml}
         />
       )}
+      {/* Search overlay — sits above the graph canvas, fixed top-left.
+          Typing filters nodes/edges by dimming non-matching ones; empty
+          query restores everything. Inspired by graphrag-workbench's
+          query box. */}
+      <div className="absolute top-2 left-2 z-10 flex items-center gap-2">
+        <input
+          id="lineage-graph-search"
+          name="lineage-graph-search"
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search graph…"
+          className="bg-black/60 backdrop-blur-sm border border-purple-500/30 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 placeholder-zinc-500 w-44 focus:outline-none focus:border-purple-400/60"
+        />
+        {matchSet !== null && (
+          <span className="text-[9px] font-mono text-purple-300/80 px-1.5 py-0.5 bg-purple-500/10 border border-purple-500/20 rounded">
+            {matchSet.size} / {connected.nodes.length}
+          </span>
+        )}
+      </div>
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
         {appearance.renderMode === '3d'
           ? 'click-drag rotate · right-click-drag pan · wheel zoom'
