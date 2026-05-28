@@ -184,16 +184,13 @@ export const Shell: React.FC = () => {
         maxWidth={500}
       >
         <div className="h-full flex flex-col bg-[#07050a] relative">
-          {/* Left panel becomes a context palette in a future step. For
-              now (plan step 3a → 3c transition) it just hosts the
-              ProcessingLog at full height. Step 3c will relocate the
-              log to the right side. */}
+          {/* Left panel becomes a context palette in a future step.
+              ProcessingLog moved to the right rail in step 3c. */}
           <div className="flex-1 overflow-hidden relative min-h-0">
             <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-[9px] font-mono uppercase tracking-widest text-zinc-700">
               Context palette — coming with the MAKE / MIX merge
             </div>
           </div>
-          <ProcessingLog />
         </div>
       </ResizablePanel>
 
@@ -202,8 +199,8 @@ export const Shell: React.FC = () => {
         <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
 
-      {/* Right Panel — permanent dock for the Library (collapsed by default,
-          drag-resizable, state persists across reloads). */}
+      {/* Right Panel — permanent dock for the Library (collapsed by
+          default, drag-resizable, state persists across reloads). */}
       <ResizablePanel
         position="right"
         isOpen={isRightPanelOpen}
@@ -233,6 +230,23 @@ export const Shell: React.FC = () => {
           </div>
         </div>
       </ResizablePanel>
+
+      {/* Persistent right rail — ProcessingLog lives here. Plan step 3c:
+          stays in the UI even when the Library above is collapsed, and
+          gets a sleek 45° beveled left edge when standalone so it reads
+          as a deliberate panel rather than an awkward strip. */}
+      <aside
+        className={`h-full shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 ${
+          isRightPanelOpen ? 'w-72' : 'w-72'
+        }`}
+        style={
+          isRightPanelOpen
+            ? undefined
+            : { clipPath: 'polygon(56px 0, 100% 0, 100% 100%, 0 100%)' }
+        }
+      >
+        <ProcessingLog />
+      </aside>
       </div>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
