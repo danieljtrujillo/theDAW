@@ -10,10 +10,6 @@ import { useLibraryStore } from '../../state/libraryStore';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
-/** Width the right rail collapses to when the user hides the Library.
- *  Big enough to fit the LOG / ACTION buttons in ProcessingLog without
- *  truncating; the 45° clip-path runs in the leftmost ~56px. */
-const RIGHT_RAIL_COLLAPSED = 288;
 
 export const Shell: React.FC = () => {
   const setActiveView = useAppUiStore((state) => state.setActiveView);
@@ -112,8 +108,6 @@ export const Shell: React.FC = () => {
     };
   }, [isResizingRail, setRightPanelWidth]);
 
-  const railWidth = isRightPanelOpen ? rightPanelWidth : RIGHT_RAIL_COLLAPSED;
-
   return (
     <div
       className="flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
@@ -194,25 +188,19 @@ export const Shell: React.FC = () => {
         <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
 
-      {/* Right rail — single column on the right side of the app.
-          Library section sits on top (collapsible via the CenterTabBar
-          toggle). Log section is pinned to the bottom and stays
-          visible even when the Library is collapsed. When collapsed
-          the whole rail narrows to RIGHT_RAIL_COLLAPSED with a 45°
-          beveled left edge so the strip reads as deliberate. */}
-      <aside
-        className="h-full min-h-0 shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
-        style={{
-          width: railWidth,
-          transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
-          clipPath: isRightPanelOpen
-            ? undefined
-            : 'polygon(56px 0, 100% 0, 100% 100%, 0 100%)',
-        }}
-      >
-        {/* Resize handle — only when the Library is showing; the
-            collapsed-rail width is fixed. */}
-        {isRightPanelOpen && (
+      {/* Library rail — ONLY mounts when isRightPanelOpen. The
+          ProcessingLog is NOT inside this rail (it's the global
+          bottom strip below) — user explicitly flagged that the log
+          must stay anchored regardless of library state. */}
+      {isRightPanelOpen && (
+        <aside
+          className="h-full min-h-0 shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
+          style={{
+            width: rightPanelWidth,
+            transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
+          }}
+        >
+          {/* Resize handle at the left edge of the rail. */}
           <div
             className="absolute top-0 bottom-0 -left-1 w-2 cursor-col-resize z-30 group"
             onMouseDown={(e) => {
@@ -222,28 +210,20 @@ export const Shell: React.FC = () => {
           >
             <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/10 group-hover:bg-purple-500/50 rounded-full transition-colors" />
           </div>
-        )}
 
-        {/* Library section — collapsed when isRightPanelOpen is false.
-            The outer rail header was removed; the LIBRARY Section
-            inside LibraryView now serves as the ONLY library header
-            (its rightNode hosts the rail-collapse button). Eliminates
-            the duplicate "LIBRARY" header + duplicate collapse handle
-            the user flagged. */}
-        {isRightPanelOpen && (
           <div className="flex-1 overflow-hidden relative min-h-0">
             <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
           </div>
-        )}
-
-        {/* Log section — always visible. Sits at the bottom of the
-            rail. ProcessingLog itself is shrink-0 with its own internal
-            collapsible body, so this is just the dock. */}
-        <div className="shrink-0">
-          <ProcessingLog />
-        </div>
-      </aside>
+        </aside>
+      )}
       </div>
+
+      {/* Global LOG / CREATE strip — full-width footer pinned to the
+          bottom of the app. INDEPENDENT of the library panel state.
+          Collapsing the library never affects the log. */}
+      <footer className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30">
+        <ProcessingLog />
+      </footer>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center">
