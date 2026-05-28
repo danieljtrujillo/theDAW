@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Settings, ChevronRight, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
+import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
@@ -174,16 +174,10 @@ export const Shell: React.FC = () => {
             title="Open mobile access QR/link"
             accent="emerald"
           />
-          <TopBarButton
-            onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-            icon={<LibraryIcon className="w-3.5 h-3.5" />}
-            label="Library"
-            hideLabelBelowMd
-            title={isRightPanelOpen ? 'Hide library' : 'Show library'}
-            accent="purple"
-            active={isRightPanelOpen}
-            trailing={<ChevronRight className="w-3 h-3" />}
-          />
+          {/* Library toggle removed from the header — the only library
+              show/hide handle now lives at the right edge of the
+              CenterTabBar (the PanelRightOpen/Close arrow), matching
+              the user's "one handle, one place" preference. */}
           <TopBarButton
             onClick={() => setSettingsOpen(true)}
             icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}
@@ -329,7 +323,7 @@ export const Shell: React.FC = () => {
  */
 const BrandLogo: React.FC = () => (
   <img
-    src="/favicon.svg"
+    src="/favicon.svg?v=4"
     alt="The DAW logo"
     className="w-7 h-7 shrink-0 rounded-md shadow-[0_0_12px_rgba(124,58,237,0.35)]"
     draggable={false}

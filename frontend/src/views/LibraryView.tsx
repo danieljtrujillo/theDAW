@@ -5,10 +5,8 @@ import {
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown,
-  ChevronRight,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
-import { useAppUiStore } from '../state/appUiStore';
 import { LineageModal } from '../components/library/LineageModal';
 import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
 import { MicRecorder } from '../components/audio/MicRecorder';
@@ -711,17 +709,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           <button onClick={() => setViewMode('grid')} className={`p-1 rounded ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-zinc-600'}`} title="Grid view">
             <LayoutGrid className="w-3 h-3" />
           </button>
-          {/* Collapse-rail button — the ONLY library collapse handle
-              now that the outer rail header was removed. Lives at the
-              far right of the Section header. */}
-          <button
-            onClick={() => useAppUiStore.getState().setRightPanelOpen(false)}
-            className="p-1 rounded text-zinc-500 hover:bg-white/10 hover:text-white transition-colors ml-1 border-l border-white/5 pl-2"
-            title="Collapse library panel"
-            aria-label="Collapse library panel"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
+          {/* Collapse handle removed — the ONLY library toggle now
+              lives at the right edge of the CenterTabBar (the
+              PanelRightOpen/Close icon). User flagged that the
+              in-panel chevron was a duplicate. */}
         </div>
       }>
         {/* Mic-in recorder. Hidden by default; toggled from the LIBRARY
