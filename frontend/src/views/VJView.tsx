@@ -348,7 +348,11 @@ export const VJView: React.FC = () => {
             // microphone permission so the user can VJ to mic input
             // without re-prompting; the iframe will still trigger the
             // browser's standard permission prompt on first use.
-            allow="microphone; camera; autoplay; fullscreen"
+            // `midi` is required so the iframe (VJ project) can call
+            // navigator.requestMIDIAccess() — without it the browser's
+            // Permissions Policy blocks the call inside the iframe even
+            // though SA3 has access at the top frame.
+            allow="microphone; camera; autoplay; fullscreen; midi"
             // sandbox is deliberately NOT set here because the VJ app
             // is a same-origin (localhost) sibling app we control —
             // we want full window APIs (audio context, MIDI, etc.).
