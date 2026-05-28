@@ -34,18 +34,23 @@ export const BottomMultiTabPanel: React.FC = () => {
   const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
 
   if (!isOpen) {
+    // Collapsed: thin header strip at TOP of the column, matching the
+    // LOG's header height so the two panels line up visually. Click
+    // anywhere on the strip to expand. Body area below the strip is
+    // empty (no full-height button) so it doesn't compete for space
+    // with whatever the LOG is showing on the other side.
     return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="w-full h-full flex items-center justify-center gap-2 bg-purple-500/5 border-t border-purple-500/15 hover:bg-purple-500/10 transition-colors group"
-        title="Open bottom panel (Visualize / Piano / Sequence / Details / Media)"
-      >
-        <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
-        <span className="text-[9px] font-mono uppercase tracking-widest text-purple-300 group-hover:text-white transition-colors">
-          Open panel
-        </span>
-      </button>
+      <div className="h-full flex flex-col min-h-0">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="flex items-center justify-center gap-1.5 px-2 py-1.5 border-b border-purple-500/20 bg-purple-500/4 hover:bg-purple-500/10 transition-colors group shrink-0"
+          title="Expand bottom panel (Visualize / Piano / Sequence / Details / Media)"
+          aria-label="Expand bottom panel"
+        >
+          <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
+        </button>
+      </div>
     );
   }
 

@@ -323,9 +323,11 @@ export const ProcessingLog: React.FC = () => {
         </div>
       )}
 
-      {/* Track controls strip — shown ONLY when a track is loaded.
-          Sits between the log body and the action button as a thin
-          Play/Pause + Download row. */}
+      {/* Bottom-pinned group — track controls (if any) + action button.
+          `mt-auto` pins this to the bottom of the LOG column whether
+          the log body is open or collapsed, so the LOG side's
+          baseline always aligns with the dock's bottom edge. */}
+      <div className="mt-auto shrink-0 flex flex-col">
       {hasTrack && (
         <div className="flex items-center gap-1 px-2 py-1 border-t border-white/5 shrink-0 bg-black/20">
           <button
@@ -347,10 +349,6 @@ export const ProcessingLog: React.FC = () => {
         </div>
       )}
 
-      {/* Action button — always visible at the very bottom. Same
-          chunky CREATE / PROCESS / TRAIN / ABORT affordance the user
-          relies on; lives outside the collapsible body so it never
-          gets hidden. */}
       <div className="flex shrink-0">
         <button
           type="button"
@@ -381,6 +379,7 @@ export const ProcessingLog: React.FC = () => {
             )}
           </span>
         </button>
+      </div>
       </div>
     </div>
   );

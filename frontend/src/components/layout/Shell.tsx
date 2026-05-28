@@ -311,11 +311,16 @@ const ShellBottomDock: React.FC = () => {
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
   const [isResizing, setIsResizing] = useState(false);
 
-  // Total dock height: when both panels are collapsed, just the
-  // small toggle row each renders (~38px). When either is open, the
-  // user-controlled bottomHeight applies.
+  // Dock height: when either panel is open, use the user-controlled
+  // bottomHeight (resize handle writes it). When both are collapsed,
+  // shrink to the LOG column's minimum (header strip + action button
+  // pinned at bottom) so the always-visible CREATE/PROCESS/TRAIN
+  // button never gets clipped. The MULTI-TAB column's collapsed
+  // strip slots in at the top of its column and lines up with the
+  // LOG's header. Each panel toggles independently.
   const anyOpen = isBottomOpen || isLogOpen;
-  const dockHeight = anyOpen ? bottomHeight : 38;
+  const COLLAPSED_DOCK_MIN = 76;
+  const dockHeight = anyOpen ? bottomHeight : COLLAPSED_DOCK_MIN;
 
   useEffect(() => {
     if (!isResizing) return;
