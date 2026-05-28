@@ -287,16 +287,20 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   // of the zoomed subtree fixes that for both the genealogy SVG and
   // the 3D-graph WebGL canvas.
   //
-  // In embedded mode there's no portal and no card — the view fills
-  // its parent (e.g. the LEARN tab's content area).
-  const modalShellClass = embedded
-    ? 'relative w-full h-full bg-[#0c0a14] flex flex-col overflow-hidden'
-    : fullscreen
+  // In embedded mode + non-fullscreen, the view fills its parent (the
+  // LEARN tab's content area) with no portal and no card. In embedded
+  // + fullscreen the view portals out of the zoom-scaled Shell and
+  // covers the viewport — same visual treatment as the modal's
+  // fullscreen state. The fullscreen toggle is available in BOTH modes
+  // per layout invariant; user noticed when it disappeared in embedded.
+  const fullBleed = embedded || fullscreen;
+  const modalShellClass = fullBleed
     ? 'relative w-full h-full bg-[#0c0a14] flex flex-col overflow-hidden'
     : 'relative w-[min(1100px,92vw)] h-[min(720px,86vh)] bg-[#0c0a14] border border-purple-500/30 rounded-lg shadow-2xl flex flex-col overflow-hidden';
+  const useInlineLayout = embedded && !fullscreen;
 
   const content = (
-    <div className={embedded ? 'absolute inset-0 flex' : 'fixed inset-0 z-200 flex items-center justify-center'}>
+    <div className={useInlineLayout ? 'absolute inset-0 flex' : 'fixed inset-0 z-200 flex items-center justify-center'}>
       {!embedded && (
         <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
       )}
@@ -333,15 +337,16 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
                 <Sliders className="w-3.5 h-3.5" />
               </button>
             )}
-            {!embedded && (
-              <button
-                onClick={() => setFullscreen((v) => !v)}
-                className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
-                title={fullscreen ? 'Exit full screen' : 'Full screen'}
-              >
-                {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-              </button>
-            )}
+            {/* Fullscreen toggle available in both modal AND embedded
+                mode. In embedded mode it overlays the full viewport;
+                in modal mode it expands the modal card. */}
+            <button
+              onClick={() => setFullscreen((v) => !v)}
+              className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
+              title={fullscreen ? 'Exit full screen' : 'Full screen'}
+            >
+              {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            </button>
             {!embedded && (
               <button onClick={onClose} className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
                 <X className="w-3.5 h-3.5" />
@@ -395,7 +400,12 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
     </div>
   );
 
-  if (embedded) return content;
+  // Inline embedded (no fullscreen) lives in the LEARN tab DOM tree.
+  // Modal mode AND embedded+fullscreen portal to document.body to
+  // escape the Shell's `.dense-layout { zoom: 0.85 }` ancestor — the
+  // 3D canvas + tooltip overlays use unzoomed CSS pixels so they only
+  // render correctly outside the zoomed subtree.
+  if (useInlineLayout) return content;
   if (typeof document === 'undefined') return content;
   return createPortal(content, document.body);
 };

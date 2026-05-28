@@ -3,9 +3,11 @@ import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
   Music, Star, Tag, Filter, ArrowUpDown,
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
-  Package, Network, FileMusic, Loader2,
+  Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
 } from 'lucide-react';
 import { LineageModal } from '../components/library/LineageModal';
+import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
+import { MicRecorder } from '../components/audio/MicRecorder';
 import { Section } from '../components/ui/Section';
 import { useLibraryStore, type LibraryEntry } from '../state/libraryStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
@@ -13,12 +15,20 @@ import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { useStatusBarStore } from '../state/statusBarStore';
-import { usePianoRollStore } from '../state/pianoRollStore';
 import { useFeatureToggleStore } from '../state/featureToggleStore';
-import { parseMidi } from '../lib/midi';
 import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { setAudioDragData } from '../lib/audioDnD';
+import {
+  loadMidiIntoPianoRoll,
+  sendAudioToChimera,
+  sendAudioToEditor,
+  sendAudioToInit,
+  sendAudioToInpaint,
+  sendMidiIdToTarget,
+  stemRowToSendable,
+} from '../lib/sendToTargets';
+
 
 const formatDuration = (sec: number): string => {
   if (!Number.isFinite(sec) || sec <= 0) return '--:--';
@@ -63,6 +73,15 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
   const [runningKind, setRunningKind] = useState<{ id: string; kind: 'analysis' | 'stems' | 'midi' } | null>(null);
   const [stemsBanner, setStemsBanner] = useState<{ phase: string; progress: number; message: string } | null>(null);
   const stemsAbortControllerRef = useRef<AbortController | null>(null);
+  // Pre-run modal state for stem separation. The modal opens whenever
+  // the user picks "Separate stems" from a context menu so they can pick
+  // count / device / quality before kicking the heavy demucs run.
+  const [stemsModal, setStemsModal] = useState<{ entryId: string; entryTitle: string } | null>(null);
+  // Mic-in panel — toggled by a button at the top of the LIBRARY section.
+  const [micOpen, setMicOpen] = useState(false);
+  const midiFileInputRef = useRef<HTMLInputElement | null>(null);
+  const patchFeatures = useFeatureToggleStore((s) => s.patch);
+
 
   const abortStems = async () => {
     if (!runningKind || runningKind.kind !== 'stems') return;
@@ -488,6 +507,54 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     patchGenParams({ inpaintAudioFile: file, inpaintEnabled: true, maskStart: 0, maskEnd: 0 });
   };
 
+  // Handler invoked from StemsRunModal — applies the user's per-run
+  // choices (writing them back as defaults if they ticked the checkbox)
+  // and kicks the actual /api/stems/<id>/run with those query params.
+  const onConfirmStemsModal = async (opts: StemsRunOptions) => {
+    const modal = stemsModal;
+    if (!modal) return;
+    setStemsModal(null);
+    if (opts.persistAsDefault) {
+      // Fire-and-forget — backend persists to data/settings.json and the
+      // feature store reconciles on next refresh. Don't block the run.
+      void patchFeatures({
+        stems: {
+          default_count: opts.stems,
+          device: opts.device,
+          quality: opts.quality,
+        },
+      });
+    } else {
+      // Even when not persisting, set the in-memory store so the
+      // existing runJobForEntry() (which reads from the store) picks up
+      // the user's per-run choice without a backend round-trip.
+      useFeatureToggleStore.setState((s) => ({
+        settings: {
+          ...s.settings,
+          stems: {
+            ...s.settings.stems,
+            default_count: opts.stems,
+            device: opts.device,
+            quality: opts.quality,
+          },
+        },
+      }));
+    }
+    await runJobForEntry(modal.entryId, 'stems');
+  };
+
+  // Picks a .mid file off disk and loads it straight into the piano roll
+  // — gives the user a "MIDI IN" path that doesn't require running the
+  // basic-pitch engine first. Reusable for any /mid file on disk.
+  const onLoadMidiFile = async (file: File) => {
+    try {
+      const buf = await file.arrayBuffer();
+      loadMidiIntoPianoRoll(buf, 'piano-roll', file.name);
+    } catch (e) {
+      logError('library', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const handlePlay = async (entry: LibraryEntry) => {
     // If this entry is already loaded in the global engine, just toggle play/pause.
     if (engineEntryId === entry.id) {
@@ -507,8 +574,38 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     setPlayingId(entry.id);
   };
 
+  // Compact analytics strip at the very top of the panel — the user
+  // wanted the prior "LIBRARY ANALYSIS" section's stats hoisted up
+  // here as small chip-style features instead of taking up real
+  // estate at the bottom of the panel.
+  const totalSize = entries.reduce((s, e) => s + e.fileSizeBytes, 0);
+  const totalDur = entries.reduce((s, e) => s + e.duration, 0);
+  const favCount = entries.filter((e) => e.favorite).length;
+
   return (
-    <div className="flex flex-col gap-2 h-full text-[11px] pb-0 px-2 pt-2">
+    // h-full + overflow-y-auto on the outer scroll container ensures
+    // the Library is ALWAYS fully scrollable inside the right rail —
+    // never clipped behind the always-on Log section that pins to the
+    // rail's bottom. min-h-0 lets the flex parent collapse properly.
+    <div className="flex flex-col gap-2 h-full min-h-0 overflow-y-auto text-[11px] pb-2 px-2 pt-2">
+
+      {/* Top stats strip — compact "features" version of the old
+          LIBRARY ANALYSIS section. */}
+      <div className="flex items-center gap-1 flex-wrap text-[8px] font-mono uppercase tracking-widest text-zinc-500 pb-1 border-b border-white/5">
+        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
+          <span className="text-zinc-300">{entries.length}</span> entries
+        </span>
+        <span className="px-1.5 py-0.5 rounded bg-yellow-500/10 border border-yellow-500/20">
+          <Star className="w-2 h-2 fill-current inline-block text-yellow-400 -mt-0.5" />{' '}
+          <span className="text-yellow-200">{favCount}</span>
+        </span>
+        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
+          <span className="text-zinc-300">{formatSize(totalSize)}</span>
+        </span>
+        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
+          <span className="text-zinc-300">{formatDuration(totalDur)}</span>
+        </span>
+      </div>
 
       {/* Stems running banner. Shows live phase + progress + an Abort
           button so the user can bail without right-click-finding the
@@ -537,9 +634,48 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         </div>
       )}
 
+      {/* Stems pre-run modal — picks count / device / quality, optionally
+          saves them as the new defaults, then kicks runJobForEntry. */}
+      <StemsRunModal
+        open={stemsModal !== null}
+        entryLabel={stemsModal?.entryTitle}
+        onCancel={() => setStemsModal(null)}
+        onConfirm={(opts) => void onConfirmStemsModal(opts)}
+      />
+
+      {/* Hidden file picker — used by the "Import MIDI" toolbar button.
+          Drives loadMidiIntoPianoRoll() so users can pull a .mid off
+          disk straight into the piano roll without running basic-pitch. */}
+      <input
+        ref={midiFileInputRef}
+        type="file"
+        accept=".mid,.midi,audio/midi"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void onLoadMidiFile(file);
+          // Reset so picking the same file twice re-fires onChange.
+          e.target.value = '';
+        }}
+      />
+
       <Section title="LIBRARY" icon={Database} defaultOpen={true} rightNode={
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <span className="text-[8px] font-mono text-zinc-600">{entries.length} TRACKS</span>
+          <button
+            onClick={() => setMicOpen((v) => !v)}
+            className={`p-1 rounded ${micOpen ? 'bg-red-500/20 text-red-300' : 'text-zinc-500 hover:text-zinc-300'}`}
+            title="Mic-in recorder"
+          >
+            <Mic className="w-3 h-3" />
+          </button>
+          <button
+            onClick={() => midiFileInputRef.current?.click()}
+            className="p-1 rounded text-zinc-500 hover:text-purple-300"
+            title="Import a .mid file → piano roll"
+          >
+            <FileMusic className="w-3 h-3" />
+          </button>
           <button onClick={() => setViewMode('list')} className={`p-1 rounded ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-zinc-600'}`} title="List view">
             <ListIcon className="w-3 h-3" />
           </button>
@@ -548,6 +684,18 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           </button>
         </div>
       }>
+        {/* Mic-in recorder. Hidden by default; toggled from the LIBRARY
+            header. Saving to library triggers a refresh so the recording
+            shows up immediately as a fresh import entry. */}
+        {micOpen && (
+          <div className="mb-2">
+            <MicRecorder
+              embedded
+              onClose={() => setMicOpen(false)}
+            />
+          </div>
+        )}
+
         <div className="flex flex-col gap-2 mb-2">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
@@ -821,15 +969,19 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
             disabled={runningKind?.id === contextMenu.entryId && runningKind?.kind === 'stems'}
             onClick={() => {
               const id = contextMenu.entryId;
+              const title = entries.find((e) => e.id === id)?.title ?? id;
               setContextMenu(null);
-              void runJobForEntry(id, 'stems');
+              // Open the modal so the user picks stem count / device /
+              // quality. Holding Shift skips the modal and uses the
+              // settings.json defaults for power users.
+              setStemsModal({ entryId: id, entryTitle: title });
             }}
           >
             <span className="flex items-center gap-1.5">
               {runningKind?.id === contextMenu.entryId && runningKind?.kind === 'stems'
                 ? <Loader2 className="w-3 h-3 animate-spin" />
                 : <Scissors className="w-3 h-3" />}
-              Separate stems
+              Separate stems…
             </span>
             <span className="text-zinc-600 text-[8px]">demucs</span>
           </button>
@@ -886,26 +1038,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
         onClose={() => setLineageOpen(null)}
       />
 
-      <Section title="LIBRARY ANALYSIS [WIP]" icon={Activity} defaultOpen={false}>
-        <div className="space-y-2 text-[10px] font-mono text-zinc-500">
-          <p>Total entries: <span className="text-zinc-300">{entries.length}</span></p>
-          <p>Favorites: <span className="text-zinc-300">{entries.filter((e) => e.favorite).length}</span></p>
-          <p>
-            Total size:{' '}
-            <span className="text-zinc-300">
-              {formatSize(entries.reduce((sum, e) => sum + e.fileSizeBytes, 0))}
-            </span>
-          </p>
-          <p>
-            Total duration:{' '}
-            <span className="text-zinc-300">
-              {formatDuration(entries.reduce((sum, e) => sum + e.duration, 0))}
-            </span>
-          </p>
-        </div>
-
-        <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-2">
-          <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Library maintenance</p>
+      {/* Stats moved to the compact chip strip at the top of the
+          panel. This section is now just maintenance actions. */}
+      <Section title="LIBRARY MAINTENANCE" icon={Activity} defaultOpen={false}>
+        <div className="flex flex-col gap-2">
           <button
             type="button"
             className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1.5 justify-center self-start hover:bg-orange-500/15 hover:text-orange-200 border border-orange-500/30"
@@ -982,60 +1118,14 @@ interface SubTabListProps {
   placeholder: string;
 }
 
-async function sendMidiToTarget(
-  midiId: string,
-  target: 'piano-roll' | 'step-seq',
-): Promise<void> {
-  try {
-    const res = await fetch(`/api/midi/file/${midiId}`);
-    if (!res.ok) {
-      logError('library', `MIDI fetch failed for ${midiId}: HTTP ${res.status}`);
-      return;
-    }
-    const buf = await res.arrayBuffer();
-    const midi = parseMidi(buf);
-    const ppq = midi.ppq || 480;
-    const stepTicks = ppq / 4; // 16th-note resolution
-
-    const pianoNotes = midi.tracks.flatMap((track) =>
-      track.notes.map((n) => ({
-        id: `pn-${Math.random().toString(36).slice(2)}`,
-        note: n.note,
-        step: Math.round(n.tick / stepTicks),
-        length: Math.max(1, Math.round(n.durationTicks / stepTicks)),
-        velocity: n.velocity,
-      })),
-    );
-
-    if (pianoNotes.length === 0) {
-      logError('library', `MIDI ${midiId} parsed empty — no note-on events`);
-      return;
-    }
-
-    const lastStep = Math.max(...pianoNotes.map((p) => p.step + p.length));
-    const totalSteps = Math.max(16, Math.min(256, lastStep + 16));
-
-    const piano = usePianoRollStore.getState();
-    piano.setBpm(midi.bpm || piano.bpm);
-    piano.setTotalSteps(totalSteps);
-    piano.replaceAll(pianoNotes);
-
-    const bottom = useBottomPanelStore.getState();
-    bottom.showTab(target === 'piano-roll' ? 'piano-roll' : 'step-seq');
-
-    logInfo(
-      'library',
-      `Loaded ${pianoNotes.length} notes into ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps)`,
-    );
-  } catch (e) {
-    logError('library', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
+type SubTabContextMenu =
+  | { kind: 'midi'; x: number; y: number; midiId: string; label: string }
+  | { kind: 'stem'; x: number; y: number; row: Record<string, unknown> };
 
 
 const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder }) => {
   const parentIds = Object.keys(byParent);
-  const [menu, setMenu] = useState<{ x: number; y: number; midiId: string; target: string } | null>(null);
+  const [menu, setMenu] = useState<SubTabContextMenu | null>(null);
 
   useEffect(() => {
     if (!menu) return;
@@ -1062,16 +1152,21 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
             {byParent[pid].map((row, idx) => {
               const isMidi = kind === 'midi';
               const midiId = String(row.id ?? '');
-              const target = String((isMidi ? row.source : row.stem_name) ?? 'midi');
+              const label = String((isMidi ? row.source : row.stem_name) ?? 'item');
               return (
                 <div
                   key={String(row.id ?? idx)}
-                  className={`flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded ${isMidi ? 'cursor-context-menu' : ''}`}
+                  className="flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded cursor-context-menu"
                   onContextMenu={(e) => {
-                    if (!isMidi || !midiId) return;
                     e.preventDefault();
-                    setMenu({ x: e.clientX, y: e.clientY, midiId, target });
+                    if (isMidi) {
+                      if (!midiId) return;
+                      setMenu({ kind: 'midi', x: e.clientX, y: e.clientY, midiId, label });
+                    } else {
+                      setMenu({ kind: 'stem', x: e.clientX, y: e.clientY, row });
+                    }
                   }}
+                  title="Right-click to send this anywhere"
                 >
                   <span className="truncate">
                     {kind === 'stem' ? String(row.stem_name ?? 'stem') : String(row.source ?? 'midi')}
@@ -1088,36 +1183,21 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         </div>
       ))}
 
-      {menu && (
-        <div
-          className="fixed z-200 min-w-44 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
-          style={{ left: menu.x, top: menu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5 truncate">
-            MIDI · {menu.target}
-          </div>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
-            onClick={() => {
-              void sendMidiToTarget(menu.midiId, 'piano-roll');
-              setMenu(null);
-            }}
-          >
-            Send to piano roll
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
-            onClick={() => {
-              void sendMidiToTarget(menu.midiId, 'step-seq');
-              setMenu(null);
-            }}
-          >
-            Send to step sequencer
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
+      {menu && menu.kind === 'midi' && (
+        <ContextMenu x={menu.x} y={menu.y} title={`MIDI · ${menu.label}`}>
+          <ContextItem
+            icon={<Piano className="w-3 h-3" />}
+            label="Send to piano roll"
+            onClick={() => { void sendMidiIdToTarget(menu.midiId, 'piano-roll'); setMenu(null); }}
+          />
+          <ContextItem
+            icon={<ListOrdered className="w-3 h-3" />}
+            label="Send to step sequencer"
+            onClick={() => { void sendMidiIdToTarget(menu.midiId, 'step-seq'); setMenu(null); }}
+          />
+          <ContextItem
+            icon={<Download className="w-3 h-3" />}
+            label="Download .mid"
             onClick={() => {
               const a = document.createElement('a');
               a.href = `/api/midi/file/${menu.midiId}`;
@@ -1127,11 +1207,114 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
               document.body.removeChild(a);
               setMenu(null);
             }}
-          >
-            Download .mid
-          </button>
-        </div>
+          />
+        </ContextMenu>
+      )}
+
+      {menu && menu.kind === 'stem' && (
+        <StemContextMenu
+          x={menu.x}
+          y={menu.y}
+          row={menu.row}
+          onClose={() => setMenu(null)}
+        />
       )}
     </div>
   );
 };
+
+
+/**
+ * Right-click menu for one separated stem (e.g. bass.wav, drums.wav).
+ * Same set of audio destinations the parent-track menu has — editor,
+ * init, inpaint, chimera, download.
+ */
+const StemContextMenu: React.FC<{
+  x: number;
+  y: number;
+  row: Record<string, unknown>;
+  onClose: () => void;
+}> = ({ x, y, row, onClose }) => {
+  const stemId = String(row.id ?? '');
+  const stemName = String(row.stem_name ?? 'stem');
+  const sendable = useMemo(() => stemRowToSendable(row), [row]);
+  const audioUrl = `/api/library/stems/${stemId}/audio`;
+  return (
+    <ContextMenu x={x} y={y} title={`Stem · ${stemName}`}>
+      <ContextItem
+        icon={<Scissors className="w-3 h-3" />}
+        label="Append to editor"
+        onClick={() => { void sendAudioToEditor(sendable, 'editor-first-track'); onClose(); }}
+      />
+      <ContextItem
+        icon={<Layers className="w-3 h-3" />}
+        label="Send to editor (new track)"
+        onClick={() => { void sendAudioToEditor(sendable, 'editor-new-track'); onClose(); }}
+      />
+      <ContextItem
+        icon={<Wand2 className="w-3 h-3" />}
+        label="Send to Init audio"
+        onClick={() => { void sendAudioToInit(sendable); onClose(); }}
+      />
+      <ContextItem
+        icon={<PenLine className="w-3 h-3" />}
+        label="Send to Inpaint"
+        onClick={() => { void sendAudioToInpaint(sendable); onClose(); }}
+      />
+      <ContextItem
+        icon={<Music className="w-3 h-3" />}
+        label="Add to Chimera"
+        onClick={() => { void sendAudioToChimera([sendable]); onClose(); }}
+      />
+      <ContextItem
+        icon={<Download className="w-3 h-3" />}
+        label="Download .wav"
+        onClick={() => {
+          const a = document.createElement('a');
+          a.href = audioUrl;
+          a.download = `${stemName}.wav`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          onClose();
+        }}
+      />
+    </ContextMenu>
+  );
+};
+
+
+const ContextMenu: React.FC<{
+  x: number;
+  y: number;
+  title: string;
+  children: React.ReactNode;
+}> = ({ x, y, title, children }) => (
+  <div
+    className="fixed z-200 min-w-48 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
+    style={{ left: x, top: y }}
+    onClick={(e) => e.stopPropagation()}
+    onContextMenu={(e) => e.preventDefault()}
+  >
+    <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5 truncate">
+      {title}
+    </div>
+    {children}
+  </div>
+);
+
+
+const ContextItem: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}> = ({ icon, label, onClick }) => (
+  <button
+    className="w-full text-left px-3 py-1.5 hover:bg-purple-500/15 text-purple-200 flex items-center gap-1.5"
+    onClick={onClick}
+  >
+    {icon}
+    {label}
+  </button>
+);
+

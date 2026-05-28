@@ -1,7 +1,6 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Search, Settings, ChevronRight, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
-import { ResizablePanel } from './ResizablePanel';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
 import { DocsModal } from './DocsModal';
@@ -9,10 +8,15 @@ import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
 
+const RIGHT_RAIL_MIN = 280;
+const RIGHT_RAIL_MAX = 640;
+/** Width the right rail collapses to when the user hides the Library.
+ *  Big enough to fit the LOG / ACTION buttons in ProcessingLog without
+ *  truncating; the 45° clip-path runs in the leftmost ~56px. */
+const RIGHT_RAIL_COLLAPSED = 288;
+
 export const Shell: React.FC = () => {
   const setActiveView = useAppUiStore((state) => state.setActiveView);
-  const isLeftPanelOpen = useAppUiStore((state) => state.isLeftPanelOpen);
-  const setIsLeftPanelOpen = useAppUiStore((state) => state.setLeftPanelOpen);
   const isRightPanelOpen = useAppUiStore((state) => state.isRightPanelOpen);
   const setIsRightPanelOpen = useAppUiStore((state) => state.setRightPanelOpen);
   const rightPanelWidth = useAppUiStore((state) => state.rightPanelWidth);
@@ -76,21 +80,39 @@ export const Shell: React.FC = () => {
     };
     const openDocsHandler = () => setDocsOpen(true);
     const closeDocsHandler = () => setDocsOpen(false);
-    const leftPanelHandler = (e: Event) => {
-      const open = (e as CustomEvent).detail?.open;
-      if (typeof open === 'boolean') setIsLeftPanelOpen(open);
-    };
     window.addEventListener('stabledaw:navigate', handler);
     window.addEventListener('stabledaw:open-docs', openDocsHandler);
     window.addEventListener('stabledaw:close-docs', closeDocsHandler);
-    window.addEventListener('stabledaw:set-left-panel', leftPanelHandler);
     return () => {
       window.removeEventListener('stabledaw:navigate', handler);
       window.removeEventListener('stabledaw:open-docs', openDocsHandler);
       window.removeEventListener('stabledaw:close-docs', closeDocsHandler);
-      window.removeEventListener('stabledaw:set-left-panel', leftPanelHandler);
     };
-  }, [setActiveView, setDocsOpen, setIsLeftPanelOpen]);
+  }, [setActiveView, setDocsOpen]);
+
+  // ── Right rail drag-resize. When the Library is open, dragging the
+  // rail's left edge widens / narrows the rail. The collapsed-rail
+  // state is fixed-width (RIGHT_RAIL_COLLAPSED) and not resizable.
+  const [isResizingRail, setIsResizingRail] = useState(false);
+  useEffect(() => {
+    if (!isResizingRail) return;
+    const onMove = (e: MouseEvent) => {
+      const next = window.innerWidth - e.clientX;
+      const clamped = Math.max(RIGHT_RAIL_MIN, Math.min(RIGHT_RAIL_MAX, next));
+      setRightPanelWidth(clamped);
+    };
+    const onUp = () => setIsResizingRail(false);
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      document.body.style.cursor = 'default';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizingRail, setRightPanelWidth]);
+
+  const railWidth = isRightPanelOpen ? rightPanelWidth : RIGHT_RAIL_COLLAPSED;
 
   return (
     <div
@@ -174,82 +196,70 @@ export const Shell: React.FC = () => {
       </header>
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-      {/* Left Panel */}
-      <ResizablePanel
-        position="left"
-        isOpen={isLeftPanelOpen}
-        onToggle={() => setIsLeftPanelOpen(false)}
-        defaultWidth={400}
-        minWidth={300}
-        maxWidth={500}
-      >
-        <div className="h-full flex flex-col bg-[#07050a] relative">
-          {/* Left panel becomes a context palette in a future step.
-              ProcessingLog moved to the right rail in step 3c. */}
-          <div className="flex-1 overflow-hidden relative min-h-0">
-            <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-[9px] font-mono uppercase tracking-widest text-zinc-700">
-              Context palette — coming with the MAKE / MIX merge
-            </div>
-          </div>
-        </div>
-      </ResizablePanel>
-
-      {/* Main Canvas (DAW Center Panel) */}
+      {/* Main Canvas (DAW Center Panel) — no left panel; the user
+          removed it per layout invariant. */}
       <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
         <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
       </main>
 
-      {/* Right Panel — permanent dock for the Library (collapsed by
-          default, drag-resizable, state persists across reloads). */}
-      <ResizablePanel
-        position="right"
-        isOpen={isRightPanelOpen}
-        onToggle={() => setIsRightPanelOpen(false)}
-        defaultWidth={380}
-        minWidth={280}
-        maxWidth={640}
-        width={rightPanelWidth}
-        onWidthChange={setRightPanelWidth}
-      >
-        <div className="h-full flex flex-col bg-[#07050a] relative">
-          {/* Library header height matches the CenterTabBar (h-9) so the
-              top horizontal "line" — the bottom border of both — lands at
-              the same Y across panes (plan step 3a polish). */}
-          <div className="h-9 flex items-center justify-between border-b border-white/5 px-3 bg-[#0a080f] shrink-0">
-            <div className="flex items-center gap-2">
-              <LibraryIcon className="w-3 h-3 text-purple-400" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
-            </div>
-            <button
-              onClick={() => setIsRightPanelOpen(false)}
-              className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors"
-              title="Collapse library"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div className="flex-1 overflow-hidden relative min-h-0">
-            <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
-          </div>
-        </div>
-      </ResizablePanel>
-
-      {/* Persistent right rail — ProcessingLog lives here. Plan step 3c:
-          stays in the UI even when the Library above is collapsed, and
-          gets a sleek 45° beveled left edge when standalone so it reads
-          as a deliberate panel rather than an awkward strip. Step 3a
-          polish: justify-end pins the ProcessingLog to the BOTTOM of
-          the rail so its action button shares a Y with the row bottom
-          regardless of which workspace tab is active. */}
+      {/* Right rail — single column on the right side of the app.
+          Library section sits on top (collapsible via the CenterTabBar
+          toggle). Log section is pinned to the bottom and stays
+          visible even when the Library is collapsed. When collapsed
+          the whole rail narrows to RIGHT_RAIL_COLLAPSED with a 45°
+          beveled left edge so the strip reads as deliberate. */}
       <aside
-        className="h-full w-72 shrink-0 flex flex-col justify-end bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20"
-        style={
-          isRightPanelOpen
+        className="h-full shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
+        style={{
+          width: railWidth,
+          transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
+          clipPath: isRightPanelOpen
             ? undefined
-            : { clipPath: 'polygon(56px 0, 100% 0, 100% 100%, 0 100%)' }
-        }
+            : 'polygon(56px 0, 100% 0, 100% 100%, 0 100%)',
+        }}
       >
-        <ProcessingLog />
+        {/* Resize handle — only when the Library is showing; the
+            collapsed-rail width is fixed. */}
+        {isRightPanelOpen && (
+          <div
+            className="absolute top-0 bottom-0 -left-1 w-2 cursor-col-resize z-30 group"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setIsResizingRail(true);
+            }}
+          >
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/10 group-hover:bg-purple-500/50 rounded-full transition-colors" />
+          </div>
+        )}
+
+        {/* Library section — collapsed when isRightPanelOpen is false. */}
+        {isRightPanelOpen && (
+          <>
+            <div className="h-9 flex items-center justify-between border-b border-white/5 px-3 bg-[#0a080f] shrink-0">
+              <div className="flex items-center gap-2">
+                <LibraryIcon className="w-3 h-3 text-purple-400" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Library</span>
+              </div>
+              <button
+                onClick={() => setIsRightPanelOpen(false)}
+                className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors"
+                title="Collapse library"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden relative min-h-0">
+              <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
+            </div>
+          </>
+        )}
+
+        {/* Log section — always visible. Sits at the bottom of the
+            rail. ProcessingLog itself is shrink-0 with its own internal
+            collapsible body, so this is just the dock. */}
+        <div className="shrink-0">
+          <ProcessingLog />
+        </div>
       </aside>
       </div>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />

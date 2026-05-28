@@ -17,20 +17,21 @@ import { CenterTabBar } from './CenterTabBar';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 
+// Tab order + labels locked by user 2026-05-28:
+//   VISUALIZE | PIANO | SEQUENCE | DETAILS | MEDIA BUCKET
+// (was: Real-time Spectral | Details | Piano Roll | Step Sequencer | Media Bucket)
 const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
-  { id: 'spectral',   label: 'Real-time Spectral', icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
-  { id: 'details',    label: 'Details',            icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
-  { id: 'piano-roll', label: 'Piano Roll',         icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
-  { id: 'step-seq',   label: 'Step Sequencer',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
-  { id: 'bucket',     label: 'Media Bucket',       icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
+  { id: 'spectral',   label: 'Visualize',    icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
+  { id: 'piano-roll', label: 'Piano',        icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'step-seq',   label: 'Sequence',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'details',    label: 'Details',      icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
+  { id: 'bucket',     label: 'Media Bucket', icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
 ];
 
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const centerTab = useAppUiStore((s) => s.centerTab);
   const setCenterTab = useAppUiStore((s) => s.setCenterTab);
-  const isLeftPanelOpen = useAppUiStore((s) => s.isLeftPanelOpen);
-  const setLeftPanelOpen = useAppUiStore((s) => s.setLeftPanelOpen);
   const isRightPanelOpen = useAppUiStore((s) => s.isRightPanelOpen);
   const setRightPanelOpen = useAppUiStore((s) => s.setRightPanelOpen);
   const [bottomHeight, setBottomHeight] = useState(260);
@@ -40,12 +41,11 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const activeTab = useBottomPanelStore((s) => s.activeTab);
   const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
 
-  // The MAKE / MIX / LEARN tabs use full-bleed workspaces and don't
-  // pair well with the bottom multi-tab panel (which is timeline-
-  // adjacent: spectral, details, piano roll, step seq, media bucket).
-  // Only EDIT keeps that bottom panel; TRAIN/MAKE/MIX/LEARN render
-  // their content fullscreen inside the center.
-  const showBottomPanel = centerTab === 'edit' && isBottomOpen;
+  // Bottom multi-tab panel is GLOBAL — appears across all 5 center
+  // tabs (Make, Edit, Mix, Train, Learn). Visibility is purely the
+  // user's open/closed toggle. Previously gated to EDIT, which broke
+  // the user's expectation that the panel always be available.
+  const showBottomPanel = isBottomOpen;
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -87,9 +87,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       <CenterTabBar
         activeTab={centerTab}
         onTabChange={setCenterTab}
-        isLeftPanelOpen={isLeftPanelOpen}
         isRightPanelOpen={isRightPanelOpen}
-        onToggleLeftPanel={() => setLeftPanelOpen(!isLeftPanelOpen)}
         onToggleRightPanel={() => setRightPanelOpen(!isRightPanelOpen)}
       />
 
@@ -134,12 +132,15 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       )}
 
-      {/* "Open bottom panel" pill (Edit tab, panel collapsed) */}
-      {centerTab === 'edit' && !isBottomOpen && (
+      {/* "Open bottom panel" pill — global, shown whenever the bottom
+          panel is collapsed. Per layout invariant the panel is
+          available on every center tab, not just EDIT. */}
+      {!isBottomOpen && (
         <button
           type="button"
           onClick={() => setBottomOpen(true)}
           className="hardware-card border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 flex items-center justify-center py-2 cursor-pointer transition-colors group/restore mx-2"
+          title="Open bottom panel (Visualize / Piano / Sequence / Details / Media Bucket)"
         >
            <ChevronUp className="w-4 h-4 text-purple-300 group-hover/restore:text-white transition-colors" />
         </button>
