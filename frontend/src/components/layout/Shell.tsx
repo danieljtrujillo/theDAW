@@ -1,10 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Search, Settings, ChevronRight, ChevronLeft, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
-import { GenerateView } from '../../views/GenerateView';
-import { StudioView } from '../../views/StudioView';
+import { Search, Settings, ChevronRight, Library as LibraryIcon, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
-import { TrainingView } from '../../views/TrainingView';
 import { ResizablePanel } from './ResizablePanel';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
@@ -14,7 +10,6 @@ import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
 
 export const Shell: React.FC = () => {
-  const activeView = useAppUiStore((state) => state.activeView);
   const setActiveView = useAppUiStore((state) => state.setActiveView);
   const isLeftPanelOpen = useAppUiStore((state) => state.isLeftPanelOpen);
   const setIsLeftPanelOpen = useAppUiStore((state) => state.setLeftPanelOpen);
@@ -97,12 +92,6 @@ export const Shell: React.FC = () => {
     };
   }, [setActiveView, setDocsOpen, setIsLeftPanelOpen]);
 
-  const tabs = [
-    { id: 'create', label: 'CREATE' },
-    { id: 'edit', label: 'PROCESS' },
-    { id: 'train', label: 'TRAIN' },
-  ];
-
   return (
     <div
       className="flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
@@ -114,19 +103,11 @@ export const Shell: React.FC = () => {
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
           <span className="font-semibold text-[15px] font-sans text-zinc-100 tracking-wide">StableDAW</span>
         </div>
-        <div className="flex items-center gap-6 relative z-10">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.4em] flex items-center gap-2.5">
-            {isLeftPanelOpen ? (
-              <button onClick={() => setIsLeftPanelOpen(false)} className="p-1 hover:bg-white/10 rounded mr-1 pointer-events-auto" title="Collapse left panel">
-                <ChevronRight className="w-4 h-4 text-zinc-500 hover:text-white transition-colors rotate-180" />
-              </button>
-            ) : (
-              <button onClick={() => setIsLeftPanelOpen(true)} className="p-1 hover:bg-white/10 rounded mr-1 pointer-events-auto" title="Open left panel">
-                <ChevronRight className="w-4 h-4 text-zinc-500 hover:text-white transition-colors" />
-              </button>
-            )}
-          </h2>
-        </div>
+        {/* Left side of the header is intentionally empty now —
+            the side-panel collapse arrows live in the CenterTabBar
+            below (plan step 3a). The legacy chevron here was the only
+            inhabitant; removing it tightens the header. */}
+        <div className="flex items-center gap-6 relative z-10" />
         <div className="flex items-center gap-2.5">
           <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
             <Search className="w-3 h-3 text-zinc-600" />
@@ -180,11 +161,7 @@ export const Shell: React.FC = () => {
           >
             <LibraryIcon className="w-3.5 h-3.5" />
             <span className="hidden md:inline text-[9px] font-black uppercase tracking-widest pr-1">Library</span>
-            {isRightPanelOpen ? (
-              <ChevronRight className="w-3 h-3" />
-            ) : (
-              <ChevronLeft className="w-3 h-3" />
-            )}
+            <ChevronRight className="w-3 h-3" />
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
@@ -207,43 +184,15 @@ export const Shell: React.FC = () => {
         maxWidth={500}
       >
         <div className="h-full flex flex-col bg-[#07050a] relative">
-          
-          {/* Tabs */}
-          <div className="flex flex-col border-b border-white/5 pt-2 pb-0 px-3 bg-[#0a080f]">
-            {/* Horizontal Tabs */}
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar mb-2 px-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveView(tab.id)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all border whitespace-nowrap
-                    ${activeView === tab.id ? 'bg-purple-600/20 border-purple-500/50 text-white' : 'border-white/5 text-zinc-500 hover:text-zinc-300'}`}
-                >
-                  <span className="text-[10px] font-black uppercase tracking-widest">{tab.label}</span>
-                </button>
-              ))}
+          {/* Left panel becomes a context palette in a future step. For
+              now (plan step 3a → 3c transition) it just hosts the
+              ProcessingLog at full height. Step 3c will relocate the
+              log to the right side. */}
+          <div className="flex-1 overflow-hidden relative min-h-0">
+            <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-[9px] font-mono uppercase tracking-widest text-zinc-700">
+              Context palette — coming with the MAKE / MIX merge
             </div>
           </div>
-
-          {/* Render Active View */}
-          <div className="flex-1 overflow-hidden relative min-h-0">
-             <AnimatePresence mode="wait">
-               <motion.div
-                 key={activeView}
-                 initial={{ opacity: 0, x: 10 }}
-                 animate={{ opacity: 1, x: 0 }}
-                 exit={{ opacity: 0, x: -10 }}
-                 transition={{ duration: 0.15 }}
-                 className="h-full absolute inset-0 overflow-y-auto overflow-x-hidden"
-               >
-                 {activeView === 'create' && <GenerateView />}
-                 {activeView === 'edit' && <StudioView />}
-                 {activeView === 'train' && <TrainingView />}
-               </motion.div>
-             </AnimatePresence>
-          </div>
-
-          {/* Global Processing Log */}
           <ProcessingLog />
         </div>
       </ResizablePanel>
