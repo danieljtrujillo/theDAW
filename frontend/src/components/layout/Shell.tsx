@@ -120,16 +120,19 @@ export const Shell: React.FC = () => {
       style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))' }}
     >
       {/* Full-width header — spans entire window including over the left panel */}
-      <header className="h-10 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
-        {/* Centered App Name */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-          <span className="font-semibold text-[15px] font-sans text-zinc-100 tracking-wide">StableDAW</span>
+      <header className="h-10 border-b border-white/5 flex items-center justify-between px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
+        {/* Logo block — user moved "StableDAW" branding out of the
+            header center into this two-line logo at the left edge.
+            Matches the SUBSTRATA / BY GANTASMO reference screenshot:
+            an isometric stacked-cube icon + a chunky title + a
+            mono-style "by GANTASMO" subtitle. */}
+        <div className="flex items-center gap-2 relative z-10 select-none">
+          <BrandLogo />
+          <div className="flex flex-col leading-none">
+            <span className="text-[13px] font-black uppercase tracking-widest text-zinc-100">The DAW</span>
+            <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by Gantasmo</span>
+          </div>
         </div>
-        {/* Left side of the header is intentionally empty now —
-            the side-panel collapse arrows live in the CenterTabBar
-            below (plan step 3a). The legacy chevron here was the only
-            inhabitant; removing it tightens the header. */}
-        <div className="flex items-center gap-6 relative z-10" />
         <div className="flex items-center gap-2.5">
           <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
             <Search className="w-3 h-3 text-zinc-600" />
@@ -315,6 +318,22 @@ export const Shell: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Brand logo — isometric stacked-cube glyph in a rounded square,
+ * matching the SUBSTRATA reference screenshot. Self-contained SVG so
+ * it scales crisply at any size and doesn't depend on a raster asset.
+ */
+const BrandLogo: React.FC = () => (
+  <div className="w-7 h-7 rounded-md bg-linear-to-br from-purple-600/40 via-fuchsia-700/30 to-cyan-700/25 border border-purple-500/30 flex items-center justify-center shadow-[0_0_12px_rgba(168,85,247,0.25)] shrink-0">
+    <svg viewBox="0 0 24 24" className="w-5 h-5 text-purple-100" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {/* Three stacked isometric squares — a layered "stack" glyph. */}
+      <path d="M12 3l8 4.5-8 4.5-8-4.5L12 3z" />
+      <path d="M4 12l8 4.5 8-4.5" />
+      <path d="M4 16.5l8 4.5 8-4.5" />
+    </svg>
+  </div>
+);
 
 /**
  * Shared top-bar button used by the header strip. Unifies the
