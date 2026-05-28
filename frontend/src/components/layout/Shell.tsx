@@ -3,10 +3,13 @@ import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink } from 'l
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { ProcessingLog } from './ProcessingLog';
+import { BottomMultiTabPanel } from './BottomMultiTabPanel';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useBottomPanelStore } from '../../state/bottomPanelStore';
+import { GripHorizontal } from 'lucide-react';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -218,12 +221,13 @@ export const Shell: React.FC = () => {
       )}
       </div>
 
-      {/* Global LOG / CREATE strip — full-width footer pinned to the
-          bottom of the app. INDEPENDENT of the library panel state.
-          Collapsing the library never affects the log. */}
-      <footer className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30">
-        <ProcessingLog />
-      </footer>
+      {/* Global bottom dock — BottomMultiTabPanel (left, flex-1) and
+          ProcessingLog (right, fixed width = rightPanelWidth) live
+          side-by-side at the bottom of the app. Both INDEPENDENT of
+          the library panel state. Heights are synced via
+          useBottomPanelStore.bottomHeight; a single resize handle at
+          the top of the footer drags both. */}
+      <ShellBottomDock />
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center">
@@ -289,6 +293,76 @@ export const Shell: React.FC = () => {
         </div>
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </div>
+  );
+};
+
+/**
+ * Global bottom dock — BottomMultiTabPanel (left) + ProcessingLog
+ * (right). Both render with `height = bottomHeight`. A single resize
+ * handle at the top edge drags `bottomHeight` and both panels follow.
+ * Independent of the library rail's collapsed/expanded state.
+ */
+const ShellBottomDock: React.FC = () => {
+  const bottomHeight = useBottomPanelStore((s) => s.bottomHeight);
+  const setBottomHeight = useBottomPanelStore((s) => s.setBottomHeight);
+  const rightPanelWidth = useAppUiStore((s) => s.rightPanelWidth);
+  const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
+  const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
+  const [isResizing, setIsResizing] = useState(false);
+
+  // Total dock height: when both panels are collapsed, just the
+  // small toggle row each renders (~38px). When either is open, the
+  // user-controlled bottomHeight applies.
+  const anyOpen = isBottomOpen || isLogOpen;
+  const dockHeight = anyOpen ? bottomHeight : 38;
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const next = window.innerHeight - e.clientY;
+      const clamped = Math.max(80, Math.min(window.innerHeight - 200, next));
+      setBottomHeight(clamped);
+    };
+    const onUp = () => setIsResizing(false);
+    document.body.style.cursor = 'row-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      document.body.style.cursor = 'default';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizing, setBottomHeight]);
+
+  return (
+    <div
+      className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30 flex flex-col"
+      style={{ height: `${dockHeight}px` }}
+    >
+      {/* Resize handle — only when at least one of the two panels is
+          open. Drag to set bottomHeight (synced via store). */}
+      {anyOpen && (
+        <div
+          className="h-1.5 -mt-1 cursor-row-resize flex items-center justify-center group relative z-40"
+          onMouseDown={(e) => { e.preventDefault(); setIsResizing(true); }}
+          title="Drag to resize"
+        >
+          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
+          <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
+      )}
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0 border-r border-purple-500/15">
+          <BottomMultiTabPanel />
+        </div>
+        <div
+          className="shrink-0 min-w-72"
+          style={{ width: rightPanelWidth }}
+        >
+          <ProcessingLog />
+        </div>
+      </div>
     </div>
   );
 };
