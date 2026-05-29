@@ -6,6 +6,7 @@ import { StudioView } from '../../views/StudioView';
 import { TrainingView } from '../../views/TrainingView';
 import { LineageView } from '../library/LineageModal';
 import { VJView } from '../../views/VJView';
+import { DJView } from '../../views/DJView';
 import { CenterTabBar } from './CenterTabBar';
 import { useAppUiStore } from '../../state/appUiStore';
 
@@ -65,6 +66,9 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           )}
           {centerTab === 'learn' && (
             <LineageView rootEntryId={null} />
+          )}
+          {centerTab === 'dj' && (
+            <DJView />
           )}
           {centerTab === 'vj' && (
             <VJView />

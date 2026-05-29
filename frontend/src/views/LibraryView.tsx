@@ -689,13 +689,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       <Section title="LIBRARY" icon={Database} defaultOpen={true} resizable={false} collapsible={false} maxContentHeight={null} rightNode={
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <span className="text-[8px] font-mono text-zinc-600">{entries.length} TRACKS</span>
-          <button
-            onClick={() => setMicOpen((v) => !v)}
-            className={`p-1 rounded ${micOpen ? 'bg-red-500/20 text-red-300' : 'text-zinc-500 hover:text-zinc-300'}`}
-            title="Mic-in recorder"
-          >
-            <Mic className="w-3 h-3" />
-          </button>
+          {/* Mic-in toggle removed per spec — the MicRecorder lives
+              on EDIT + VJ now, not Library. */}
           <button
             onClick={() => midiFileInputRef.current?.click()}
             className="p-1 rounded text-zinc-500 hover:text-purple-300"
@@ -753,7 +748,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
               <Clock className="w-2 h-2" /> NEWEST
             </button>
             <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'duration' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('duration')}>
-              <Tag className="w-2 h-2" /> DURATION
+              <Tag className="w-2 h-2" /> LENGTH
             </button>
             <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'title' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('title')}>
               <Filter className="w-2 h-2" /> TITLE
@@ -761,25 +756,19 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           </div>
         </div>
 
-        {/* Sub-tabs: Tracks / Stems / MIDI */}
+        {/* Sub-tabs: Tracks / Stems / MIDI — text-only per spec, no
+            icons; GRAPH button removed (use the LEARN tab for the
+            lineage graph instead). */}
         <div className="flex items-center gap-1 mb-2 border-b border-white/5 pb-1">
-          <SubTabButton active={subTab === 'tracks'} onClick={() => setSubTab('tracks')} icon={<Music className="w-3 h-3" />}>
+          <SubTabButton active={subTab === 'tracks'} onClick={() => setSubTab('tracks')}>
             Tracks ({entries.length})
           </SubTabButton>
-          <SubTabButton active={subTab === 'stems'} onClick={() => setSubTab('stems')} icon={<Scissors className="w-3 h-3" />}>
+          <SubTabButton active={subTab === 'stems'} onClick={() => setSubTab('stems')}>
             Stems ({allStems?.length ?? '…'})
           </SubTabButton>
-          <SubTabButton active={subTab === 'midi'} onClick={() => setSubTab('midi')} icon={<FileMusic className="w-3 h-3" />}>
+          <SubTabButton active={subTab === 'midi'} onClick={() => setSubTab('midi')}>
             MIDI ({allMidis?.length ?? '…'})
           </SubTabButton>
-          <button
-            onClick={() => setLineageOpen('__library__')}
-            className="ml-auto p-1 rounded hover:bg-purple-500/15 text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-1"
-            title="Open the library-wide lineage / knowledge graph"
-          >
-            <Network className="w-3 h-3" />
-            <span className="text-[8px] font-mono uppercase tracking-widest">Graph</span>
-          </button>
         </div>
 
         {subTab === 'tracks' && (<>
@@ -1357,7 +1346,7 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
 interface SubTabButtonProps {
   active: boolean;
   onClick: () => void;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   children: React.ReactNode;
 }
 

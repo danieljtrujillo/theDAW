@@ -6,6 +6,7 @@ import {
   Zap,
   Workflow,
   Tv2,
+  Disc,
   ChevronLeft,
   ChevronRight,
   PanelRightOpen,
@@ -87,6 +88,17 @@ const TABS: Array<{
       bg: 'bg-rose-500/15',
       text: 'text-rose-100',
       iconText: 'text-rose-300',
+    },
+  },
+  {
+    id: 'dj',
+    label: 'DJ',
+    icon: Disc,
+    accent: {
+      border: 'border-pink-500/50',
+      bg: 'bg-pink-500/15',
+      text: 'text-pink-100',
+      iconText: 'text-pink-300',
     },
   },
   {
