@@ -9,10 +9,20 @@ import {
   Music as MusicIcon,
   Piano,
   Maximize2,
+  Volume2,
+  VolumeX,
+  Smartphone,
+  Copy,
+  Check,
 } from 'lucide-react';
+
 import { getAnalyser } from '../state/playerStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useLibraryStore } from '../state/libraryStore';
+import { subscribeToMidi } from '../state/midiBus';
+import { useMidiTriggerStore } from '../state/midiTriggerStore';
+import { getVjPlaybackState, registerVjPlaybackHandler, reportVjPlaybackState } from '../state/vjPlaybackBus';
+import { registerVjSetHandler } from '../state/vjSetBus';
 
 /**
  * VJ tab — embeds the GANTASMO-LIVE-VJ Vite dev server in an iframe.
@@ -40,6 +50,13 @@ export const VJView: React.FC = () => {
   const [detail, setDetail] = useState<string>('');
   const [popped, setPopped] = useState(false);
   const [bridgeFps, setBridgeFps] = useState(0);
+  // LAN-reachable URL for phones/tablets on the same Wi-Fi. Populated
+  // from /api/vj/url's `mobile_url` field (null when the machine has
+  // no non-loopback IP). The popover shows it as a copyable link + QR.
+  const [mobileUrl, setMobileUrl] = useState<string | null>(null);
+  const [showMobile, setShowMobile] = useState(false);
+  const [copied, setCopied] = useState(false);
+
   // Active VJ inputs — user toggles which signals feed the iframe.
   // Invariant: at least one must stay active; clicking the last
   // enabled chip is a no-op (prevents the user from accidentally
@@ -60,9 +77,24 @@ export const VJView: React.FC = () => {
   };
   const poppedWindowRef = useRef<Window | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const iframeReadyTimerRef = useRef<number | null>(null);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const libraryEntries = useLibraryStore((s) => s.entries);
+  // MIDI audio-trigger mute. When on, the controller still drives VJ
+  // effects (messages keep flowing on the bus + into the iframe) but
+  // App.tsx no longer fires the piano-synth voice on note-on.
+  const midiAudioMuted = useMidiTriggerStore((s) => s.audioMuted);
+  const toggleMidiAudioMuted = useMidiTriggerStore((s) => s.toggleAudioMuted);
+
+
+  const postToIframe = (payload: Record<string, unknown>) => {
+    try {
+      iframeRef.current?.contentWindow?.postMessage(payload, '*');
+    } catch {
+      // iframe can be mid-navigation; the next lifecycle tick retries.
+    }
+  };
 
   // Fetch the VJ URL on mount. The backend will spawn the dev server
   // if it isn't already running — this can take ~30s on first launch
@@ -76,10 +108,12 @@ export const VJView: React.FC = () => {
         const body = await r.json().catch(() => ({ detail: '' }));
         throw new Error(body.detail || `backend returned ${r.status}`);
       }
-      const j = (await r.json()) as { url: string };
+      const j = (await r.json()) as { url: string; mobile_url?: string | null };
       setUrl(j.url);
+      setMobileUrl(j.mobile_url ?? null);
       setStatus('ready');
       setDetail('');
+
     } catch (e) {
       setStatus('error');
       setDetail(e instanceof Error ? e.message : String(e));
@@ -162,62 +196,88 @@ export const VJView: React.FC = () => {
     if (status !== 'ready' || popped) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
-    try {
-      iframe.contentWindow?.postMessage(
-        { type: 'sa3-vj/inputs', ...vjInputs },
-        '*',
-      );
-    } catch { /* ignored */ }
+    postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
   }, [status, popped, vjInputs]);
 
-  // Global Web MIDI → forward raw messages to the iframe when MIDI
-  // input is enabled. This is independent of the synthesizer trigger
-  // in App.tsx — both fire on the same note, the synth plays a
-  // voice, the iframe receives the event and can react visually.
+  // Global MIDI bus → forward raw messages to the iframe when MIDI
+  // input is enabled. The single Web MIDI listener lives in App.tsx
+  // and republishes through midiBus; here we just subscribe. This
+  // avoids the last-listener-wins problem the previous version had
+  // (where VJView called requestMIDIAccess() too and clobbered the
+  // App-level synth trigger). Now App's synth trigger + VJ iframe
+  // forwarding + MidiMapper popups all share one input.
   useEffect(() => {
     if (status !== 'ready' || popped) return;
     if (!vjInputs.midi) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
-    if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
-    let cancelled = false;
-    let access: MIDIAccess | null = null;
-
-    const onMessage = (e: MIDIMessageEvent) => {
-      if (!e.data || !iframe.contentWindow) return;
+    const unsub = subscribeToMidi((msg) => {
+      if (!iframe.contentWindow) return;
       try {
         iframe.contentWindow.postMessage(
-          {
-            type: 'sa3-vj/midi',
-            data: Array.from(e.data),
-            t: performance.now(),
-          },
+          { type: 'sa3-vj/midi', data: msg.data, t: msg.t },
           '*',
         );
       } catch { /* ignored */ }
+    });
+    return unsub;
+  }, [status, popped, vjInputs.midi]);
+
+  // Register a VJ playback handler so the SA3 PlayerFooter's
+  // Play/Pause button can drive the VJ iframe's video element. The
+  // bus is module-level; this effect just installs and tears down
+  // the handler around the iframe's lifecycle. The VJ side listens
+  // for sa3-vj/playback messages and calls video.play() / video.pause().
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    let lastState: 'playing' | 'paused' = getVjPlaybackState() === 'playing' ? 'playing' : 'paused';
+    const post = (action: 'play' | 'pause') => {
+      postToIframe({ type: 'sa3-vj/playback', action });
     };
-
-    (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
-      .requestMIDIAccess()
-      .then((a) => {
-        if (cancelled) return;
-        access = a;
-        a.inputs.forEach((input) => { input.onmidimessage = onMessage; });
-        a.onstatechange = () => {
-          if (cancelled || !access) return;
-          access.inputs.forEach((input) => { input.onmidimessage = onMessage; });
-        };
-      })
-      .catch(() => { /* silent — App-level listener already logged */ });
-
-    return () => {
-      cancelled = true;
-      if (access) {
-        access.inputs.forEach((input) => { input.onmidimessage = null; });
-        access.onstatechange = null;
+    const unregister = registerVjPlaybackHandler({
+      play: () => { lastState = 'playing'; post('play'); },
+      pause: () => { lastState = 'paused'; post('pause'); },
+      getState: () => lastState,
+    });
+    // If the user clicked Play before the iframe registered, honor that
+    // intent as soon as the bridge is ready instead of leaving the VJ
+    // canvas parked on its black initial frame.
+    if (lastState === 'playing') post('play');
+    // Listen for state echoes from the VJ side ("I'm now playing/paused")
+    // so the SA3 UI's icon stays in sync with the actual video element.
+    const onMsg = (event: MessageEvent) => {
+      const d = event.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'sa3-vj/playback-state') {
+        lastState = d.state === 'playing' ? 'playing' : 'paused';
+        reportVjPlaybackState(lastState);
       }
     };
-  }, [status, popped, vjInputs.midi]);
+    window.addEventListener('message', onMsg);
+    return () => {
+      unregister();
+      window.removeEventListener('message', onMsg);
+    };
+  }, [status, popped]);
+
+  // VJ SET receiver: DJView (or any view) pushes a SET / single track
+  // onto vjSetBus; we forward it into the iframe as sa3-vj/load-set so
+  // the VJ project can append the items to its archive bucket. The bus
+  // buffers a payload queued before this tab mounted, so a SET sent
+  // from the DJ tab arrives the moment the VJ tab opens.
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const unregister = registerVjSetHandler({
+      loadSet: (payload) => {
+        postToIframe({ type: 'sa3-vj/load-set', ...payload });
+      },
+    });
+    return unregister;
+  }, [status, popped]);
 
   // Track-meta + BPM bridge: when the SA3 player loads a new entry
   // (or playback toggles), post the current track's metadata to the
@@ -227,26 +287,43 @@ export const VJView: React.FC = () => {
     const iframe = iframeRef.current;
     if (!iframe) return;
     const entry = libraryEntries.find((e) => e.id === currentEntryId) ?? null;
-    try {
-      iframe.contentWindow?.postMessage(
-        {
-          type: 'sa3-vj/track-meta',
-          entryId: entry?.id ?? null,
-          title: entry?.title ?? null,
-          // BPM / key live in the analysis sidecar store, not on the
-          // library entry — VJ can request them via the SA3 analysis
-          // endpoint if it ever needs them. We send the basics here.
-          model: entry?.model ?? null,
-          source: entry?.source ?? null,
-          duration: entry?.duration ?? null,
-          isPlaying,
-        },
-        '*',
-      );
-    } catch {
-      // ignored — iframe may not be ready yet
-    }
+    postToIframe({
+      type: 'sa3-vj/track-meta',
+      entryId: entry?.id ?? null,
+      title: entry?.title ?? null,
+      // BPM / key live in the analysis sidecar store, not on the
+      // library entry — VJ can request them via the SA3 analysis
+      // endpoint if it ever needs them. We send the basics here.
+      model: entry?.model ?? null,
+      source: entry?.source ?? null,
+      duration: entry?.duration ?? null,
+      isPlaying,
+    });
   }, [status, popped, currentEntryId, isPlaying, libraryEntries]);
+
+  const handleIframeLoad = () => {
+    if (iframeReadyTimerRef.current !== null) {
+      window.clearTimeout(iframeReadyTimerRef.current);
+      iframeReadyTimerRef.current = null;
+    }
+    // The child app may attach its postMessage listeners after the
+    // iframe load event. Send one immediate sync plus a short delayed
+    // sync so startup state does not get lost, which previously left
+    // the VJ view on an all-black initial frame.
+    const sync = () => {
+      postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
+      const state = getVjPlaybackState();
+      if (state === 'playing' || state === 'paused') {
+        postToIframe({ type: 'sa3-vj/playback', action: state === 'playing' ? 'play' : 'pause' });
+      }
+    };
+    sync();
+    iframeReadyTimerRef.current = window.setTimeout(sync, 250);
+  };
+
+  useEffect(() => () => {
+    if (iframeReadyTimerRef.current !== null) window.clearTimeout(iframeReadyTimerRef.current);
+  }, []);
 
   // Watch the popped window — if the user closes it manually, snap
   // back to the in-tab iframe view.
@@ -337,6 +414,109 @@ export const VJView: React.FC = () => {
             inactiveLabel="MIDI forwarding is off. Click to enable."
             disabled={vjInputs.midi && !vjInputs.mic && !vjInputs.audio}
           />
+          {/* MIDI audio-trigger mute. This does NOT stop MIDI from
+              driving effects — messages still flow on the bus and into
+              the iframe. It only silences the built-in piano-synth
+              voice so the controller is a pure effects trigger. */}
+          <button
+            type="button"
+            onClick={toggleMidiAudioMuted}
+            className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors ${
+              midiAudioMuted
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/20 hover:bg-white/5'
+            }`}
+            title={
+              midiAudioMuted
+                ? 'MIDI audio is MUTED — the controller triggers visual effects only, no synth voice. Click to unmute.'
+                : 'MIDI audio is ON — note-on events fire the piano synth voice. Click to mute (keeps effect triggering).'
+            }
+            aria-label="Toggle MIDI audio trigger"
+          >
+            {midiAudioMuted ? <VolumeX className="w-2.5 h-2.5" /> : <Volume2 className="w-2.5 h-2.5" />}
+            {midiAudioMuted ? 'MIDI Snd Off' : 'MIDI Snd'}
+          </button>
+          {/* Mobile link — exposes the LAN-reachable URL so a phone on
+              the same Wi-Fi can open the VJ output. The Vite server is
+              bound to 0.0.0.0 with allowedHosts disabled so the device
+              isn't blocked. Disabled (with a hint) when no LAN IP was
+              detected (machine offline / loopback only). */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMobile((v) => !v)}
+              disabled={status !== 'ready'}
+              className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors disabled:opacity-40 disabled:pointer-events-none ${
+                showMobile
+                  ? 'border-sky-500/50 bg-sky-500/15 text-sky-200'
+                  : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/20 hover:bg-white/5'
+              }`}
+              title={
+                mobileUrl
+                  ? 'Show the mobile URL — open this on a phone/tablet on the same Wi-Fi.'
+                  : 'No LAN IP detected — connect this machine to Wi-Fi/Ethernet to enable mobile access.'
+              }
+              aria-label="Mobile URL"
+            >
+              <Smartphone className="w-2.5 h-2.5" /> Mobile
+            </button>
+            {showMobile && (
+              <div className="absolute right-0 top-full mt-1 z-50 w-72 p-3 rounded-lg border border-sky-500/30 bg-[#0a0a12] shadow-2xl shadow-black/60 flex flex-col gap-2">
+                <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">
+                  Open on a phone / tablet
+                </span>
+                {mobileUrl ? (
+                  <>
+                    <span className="text-[8px] font-mono text-zinc-500 leading-relaxed">
+                      Make sure the device is on the same Wi-Fi, then scan
+                      the code or type the URL into its browser.
+                    </span>
+                    <img
+                      // Offline-friendly: the QR is rendered by the api.qrserver.com
+                      // service when online; if the host is offline the
+                      // copyable URL below is the reliable fallback.
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(mobileUrl)}`}
+                      alt={`QR code for ${mobileUrl}`}
+                      className="self-center w-40 h-40 rounded bg-white p-1.5"
+                    />
+                    <div className="flex items-center gap-1">
+                      <code className="flex-1 text-[9px] font-mono text-sky-200 bg-black/40 rounded px-2 py-1 truncate">
+                        {mobileUrl}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(mobileUrl);
+                          setCopied(true);
+                          window.setTimeout(() => setCopied(false), 1500);
+                        }}
+                        className="p-1.5 rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
+                        title="Copy the mobile URL"
+                        aria-label="Copy mobile URL"
+                      >
+                        {copied ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                      <a
+                        href={mobileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="p-1.5 rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
+                        title="Open the mobile URL in a new tab"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-[8px] font-mono text-amber-300/90 leading-relaxed">
+                    No LAN IP detected. Connect this machine to Wi-Fi or
+                    Ethernet, then hit Reload — the mobile URL will appear
+                    here.
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => void loadUrl()}
@@ -346,6 +526,7 @@ export const VJView: React.FC = () => {
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+
           {popped ? (
             <button
               type="button"
@@ -432,6 +613,7 @@ export const VJView: React.FC = () => {
           <iframe
             ref={iframeRef}
             src={url}
+            onLoad={handleIframeLoad}
             // The VJ project hosts its own controls + canvas. We grant
             // microphone permission so the user can VJ to mic input
             // without re-prompting; the iframe will still trigger the

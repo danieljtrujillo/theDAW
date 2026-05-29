@@ -6,6 +6,7 @@ import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
+import { MidiMapper } from './MidiMapper';
 
 const NOTE_HEIGHT = 12;
 const HEADER_HEIGHT = 22;
@@ -62,6 +63,11 @@ const triggerPianoNote = (midi: number, velocity: number, when: number, duration
  * know the synth's internals. The PianoRoll component itself still
  * uses the bare `triggerPianoNote` for its own scheduling.
  */
+const PIANO_MIDI_PARAMS = [
+  { key: 'bpm' as const,        label: 'BPM',         min: 40,  max: 240, autoCc: 14, integer: true },
+  { key: 'totalSteps' as const, label: 'Total Steps', min: 16,  max: 256, autoCc: 15, integer: true },
+];
+
 export const triggerPianoNoteFromMidi = (midi: number, velocity = 100, duration = 0.18) => {
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume();
@@ -130,6 +136,8 @@ const renderPianoRollToBlob = async (
   return { blob: encodeWavBlob(rendered), duration: rendered.duration };
 };
 
+// Re-declared after the imports section so it picks up the imported
+// MidiMapper symbol without circular-import gymnastics.
 export const PianoRoll: React.FC = () => {
   const notes = usePianoRollStore((s) => s.notes);
   const bpm = usePianoRollStore((s) => s.bpm);
@@ -421,7 +429,24 @@ export const PianoRoll: React.FC = () => {
   for (let n = highestNote; n >= lowestNote; n -= 1) rows.push(n);
 
   return (
-    <div className="h-full flex flex-col bg-[#07050a] overflow-hidden">
+    <div className="h-full flex flex-col bg-[#07050a] overflow-hidden relative">
+      {/* MIDI mapper popup — top-right pill that expands to LEARN UI.
+          Mapped CC moves bpm / totalSteps from the user's controller
+          without touching the rest of the toolbar. */}
+      <MidiMapper
+        title="PIANO"
+        accent="cyan"
+        storageKey="sa3-midi-map:piano-v1"
+        params={PIANO_MIDI_PARAMS}
+        onChange={(key, value) => {
+          if (key === 'bpm') setBpm(Math.round(value));
+          else if (key === 'totalSteps') {
+            const stepped = Math.max(16, Math.round(value / 16) * 16);
+            setTotalSteps(stepped);
+          }
+        }}
+      />
+
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 px-2 py-1 border-b border-white/5 bg-black/40 shrink-0">
         <div className="flex items-center gap-2">

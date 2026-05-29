@@ -1,16 +1,14 @@
 /**
- * Bottom multi-tab panel — Visualize / Piano / Sequence / Details /
- * Media. Lives in the global footer (Shell.tsx) side-by-side with
- * ProcessingLog. Was previously embedded in DAWCenterPanel.
- *
- * Height is read from the shared bottomPanelStore so the panel and
- * the log resize in lock-step (the footer's resize handle writes
- * `bottomHeight` and both surfaces re-render at the new height).
+ * Bottom multi-tab panel body — Visualize / Piano / Sequence / Details
+ * / Media. Mounted above the dock strip when isOpen=true. The strip
+ * itself (Shell.tsx ShellBottomDock) handles the open/close toggle,
+ * so this component only renders the body shape: a tabs row + the
+ * active tab's content. Height is the column's own `multiHeight`
+ * from bottomPanelStore — independent of the LOG's `logHeight`.
  */
 import React from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen,
-  ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { PianoRoll } from '../audio/PianoRoll';
@@ -28,29 +26,11 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
 ];
 
 export const BottomMultiTabPanel: React.FC = () => {
-  const isOpen = useBottomPanelStore((s) => s.isOpen);
-  const setOpen = useBottomPanelStore((s) => s.setOpen);
   const activeTab = useBottomPanelStore((s) => s.activeTab);
   const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
 
-  if (!isOpen) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="w-full h-full flex items-center justify-center gap-2 bg-purple-500/5 border-t border-purple-500/15 hover:bg-purple-500/10 transition-colors group"
-        title="Open bottom panel (Visualize / Piano / Sequence / Details / Media)"
-      >
-        <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
-        <span className="text-[9px] font-mono uppercase tracking-widest text-purple-300 group-hover:text-white transition-colors">
-          Open panel
-        </span>
-      </button>
-    );
-  }
-
   return (
-    <div className="h-full flex flex-col bg-purple-500/2 border-t border-purple-500/15 min-h-0">
+    <div className="h-full flex flex-col bg-purple-500/2 min-h-0">
       {/* Tabs row */}
       <div className="flex items-center justify-between border-b border-white/5 shrink-0 bg-black/30">
         <div className="flex overflow-x-auto no-scrollbar">
@@ -68,16 +48,6 @@ export const BottomMultiTabPanel: React.FC = () => {
               </button>
             );
           })}
-        </div>
-        <div className="flex items-center gap-2 px-2 shrink-0">
-          <button
-            onClick={() => setOpen(false)}
-            className="p-1 hover:bg-white/10 rounded"
-            title="Collapse bottom panel"
-            aria-label="Collapse bottom panel"
-          >
-            <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
-          </button>
         </div>
       </div>
 

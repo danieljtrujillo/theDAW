@@ -14,6 +14,8 @@ import { logInfo, logWarn } from './state/logStore';
 import { handleStableDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
+import { publishMidi } from './state/midiBus';
+import { isMidiAudioMuted } from './state/midiTriggerStore';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
@@ -57,7 +59,7 @@ export default function App() {
   }, [refreshHealth]);
 
   useEffect(() => {
-    logInfo('system', 'StableDAW UI initialized');
+    logInfo('system', 'The DAW UI initialized');
   }, []);
 
   // ── Global Web MIDI listener ───────────────────────────────────
@@ -73,12 +75,19 @@ export default function App() {
 
     const onMidiMessage = (e: MIDIMessageEvent) => {
       if (!e.data) return;
+      // 1. Republish on the global MIDI bus so every feature
+      //    (VJView iframe forwarder, MidiMapper popups in Piano +
+      //    Sequence) sees the same stream. Each subscriber decides
+      //    what to do with it. ONE Web MIDI listener, many readers.
+      publishMidi(e.data);
+
+      // 2. Built-in piano-synth trigger on note-on. Skipped when the
+      //    user has muted MIDI audio triggering (VJ performers who
+      //    want the controller to drive effects only). The bus
+      //    publish above still runs, so visual effects keep reacting.
       const [status, data1, data2] = e.data;
       const command = status & 0xf0;
-      // note-on with velocity > 0 → synth voice. note-on velocity=0
-      // is the alternate note-off encoding some controllers use; we
-      // skip it since our voices auto-decay.
-      if (command === 0x90 && data2 > 0) {
+      if (command === 0x90 && data2 > 0 && !isMidiAudioMuted()) {
         try {
           triggerPianoNoteFromMidi(data1, data2);
         } catch (err) {

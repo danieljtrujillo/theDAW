@@ -698,7 +698,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             <div className="absolute inset-0 rounded-full bg-linear-to-br from-primary via-purple-500 to-pink-500 animate-spin-slow opacity-50 blur-sm"></div>
                             <div className="w-3 h-3 rounded-full bg-white/90 z-10"></div>
                         </div>
-                        <span className="font-semibold text-sm">StableDAW</span>
+                        <span className="font-semibold text-sm">The DAW</span>
                         {messages.length > 0 && (
                             <span className="text-[10px] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
                                 {messages.length}

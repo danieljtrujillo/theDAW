@@ -60,13 +60,45 @@ def _maybe_auto_spawn() -> None:
 def get_url() -> dict:
     """Return the URL of the running VJ dev server. Spawns it if it
     isn't running yet — the caller (frontend iframe) will block until
-    Vite is ready, which on first run can take ~30s (npm install)."""
+    Vite is ready, which on first run can take ~30s (npm install).
+
+    Also returns ``mobile_url`` — a LAN-reachable address (or None if
+    the machine has no non-loopback IP) so the frontend can render a QR
+    code / shareable link for phones on the same Wi-Fi."""
     _maybe_auto_spawn()
     try:
         url = sidecar.ensure_running()
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    return {"url": url}
+    cfg = sidecar.resolve_config()
+    return {
+        "url": url,
+        "mobile_url": sidecar.mobile_url_for(cfg.port),
+        "lan_ip": sidecar.detect_lan_ip(),
+    }
+
+
+@router.get("/mobile")
+def get_mobile() -> dict:
+    """Return just the LAN-reachable mobile URL (spawning the server if
+    needed). 503s with a clear message when no LAN IP is detectable so
+    the UI can tell the user to connect to a network."""
+    _maybe_auto_spawn()
+    try:
+        sidecar.ensure_running()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    cfg = sidecar.resolve_config()
+    mobile_url = sidecar.mobile_url_for(cfg.port)
+    if not mobile_url:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No LAN IP detected — connect this machine to a network "
+                "(Wi-Fi/Ethernet) so phones can reach the VJ output."
+            ),
+        )
+    return {"mobile_url": mobile_url, "lan_ip": sidecar.detect_lan_ip()}
 
 
 @router.get("/status")
