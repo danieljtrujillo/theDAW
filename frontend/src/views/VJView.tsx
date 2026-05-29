@@ -13,6 +13,8 @@ import {
 import { getAnalyser } from '../state/playerStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useLibraryStore } from '../state/libraryStore';
+import { subscribeToMidi } from '../state/midiBus';
+import { getVjPlaybackState, registerVjPlaybackHandler, reportVjPlaybackState } from '../state/vjPlaybackBus';
 
 /**
  * VJ tab — embeds the GANTASMO-LIVE-VJ Vite dev server in an iframe.
@@ -60,9 +62,18 @@ export const VJView: React.FC = () => {
   };
   const poppedWindowRef = useRef<Window | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const iframeReadyTimerRef = useRef<number | null>(null);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const libraryEntries = useLibraryStore((s) => s.entries);
+
+  const postToIframe = (payload: Record<string, unknown>) => {
+    try {
+      iframeRef.current?.contentWindow?.postMessage(payload, '*');
+    } catch {
+      // iframe can be mid-navigation; the next lifecycle tick retries.
+    }
+  };
 
   // Fetch the VJ URL on mount. The backend will spawn the dev server
   // if it isn't already running — this can take ~30s on first launch
@@ -162,62 +173,71 @@ export const VJView: React.FC = () => {
     if (status !== 'ready' || popped) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
-    try {
-      iframe.contentWindow?.postMessage(
-        { type: 'sa3-vj/inputs', ...vjInputs },
-        '*',
-      );
-    } catch { /* ignored */ }
+    postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
   }, [status, popped, vjInputs]);
 
-  // Global Web MIDI → forward raw messages to the iframe when MIDI
-  // input is enabled. This is independent of the synthesizer trigger
-  // in App.tsx — both fire on the same note, the synth plays a
-  // voice, the iframe receives the event and can react visually.
+  // Global MIDI bus → forward raw messages to the iframe when MIDI
+  // input is enabled. The single Web MIDI listener lives in App.tsx
+  // and republishes through midiBus; here we just subscribe. This
+  // avoids the last-listener-wins problem the previous version had
+  // (where VJView called requestMIDIAccess() too and clobbered the
+  // App-level synth trigger). Now App's synth trigger + VJ iframe
+  // forwarding + MidiMapper popups all share one input.
   useEffect(() => {
     if (status !== 'ready' || popped) return;
     if (!vjInputs.midi) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
-    if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
-    let cancelled = false;
-    let access: MIDIAccess | null = null;
-
-    const onMessage = (e: MIDIMessageEvent) => {
-      if (!e.data || !iframe.contentWindow) return;
+    const unsub = subscribeToMidi((msg) => {
+      if (!iframe.contentWindow) return;
       try {
         iframe.contentWindow.postMessage(
-          {
-            type: 'sa3-vj/midi',
-            data: Array.from(e.data),
-            t: performance.now(),
-          },
+          { type: 'sa3-vj/midi', data: msg.data, t: msg.t },
           '*',
         );
       } catch { /* ignored */ }
+    });
+    return unsub;
+  }, [status, popped, vjInputs.midi]);
+
+  // Register a VJ playback handler so the SA3 PlayerFooter's
+  // Play/Pause button can drive the VJ iframe's video element. The
+  // bus is module-level; this effect just installs and tears down
+  // the handler around the iframe's lifecycle. The VJ side listens
+  // for sa3-vj/playback messages and calls video.play() / video.pause().
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    let lastState: 'playing' | 'paused' = getVjPlaybackState() === 'playing' ? 'playing' : 'paused';
+    const post = (action: 'play' | 'pause') => {
+      postToIframe({ type: 'sa3-vj/playback', action });
     };
-
-    (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
-      .requestMIDIAccess()
-      .then((a) => {
-        if (cancelled) return;
-        access = a;
-        a.inputs.forEach((input) => { input.onmidimessage = onMessage; });
-        a.onstatechange = () => {
-          if (cancelled || !access) return;
-          access.inputs.forEach((input) => { input.onmidimessage = onMessage; });
-        };
-      })
-      .catch(() => { /* silent — App-level listener already logged */ });
-
-    return () => {
-      cancelled = true;
-      if (access) {
-        access.inputs.forEach((input) => { input.onmidimessage = null; });
-        access.onstatechange = null;
+    const unregister = registerVjPlaybackHandler({
+      play: () => { lastState = 'playing'; post('play'); },
+      pause: () => { lastState = 'paused'; post('pause'); },
+      getState: () => lastState,
+    });
+    // If the user clicked Play before the iframe registered, honor that
+    // intent as soon as the bridge is ready instead of leaving the VJ
+    // canvas parked on its black initial frame.
+    if (lastState === 'playing') post('play');
+    // Listen for state echoes from the VJ side ("I'm now playing/paused")
+    // so the SA3 UI's icon stays in sync with the actual video element.
+    const onMsg = (event: MessageEvent) => {
+      const d = event.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'sa3-vj/playback-state') {
+        lastState = d.state === 'playing' ? 'playing' : 'paused';
+        reportVjPlaybackState(lastState);
       }
     };
-  }, [status, popped, vjInputs.midi]);
+    window.addEventListener('message', onMsg);
+    return () => {
+      unregister();
+      window.removeEventListener('message', onMsg);
+    };
+  }, [status, popped]);
 
   // Track-meta + BPM bridge: when the SA3 player loads a new entry
   // (or playback toggles), post the current track's metadata to the
@@ -227,26 +247,43 @@ export const VJView: React.FC = () => {
     const iframe = iframeRef.current;
     if (!iframe) return;
     const entry = libraryEntries.find((e) => e.id === currentEntryId) ?? null;
-    try {
-      iframe.contentWindow?.postMessage(
-        {
-          type: 'sa3-vj/track-meta',
-          entryId: entry?.id ?? null,
-          title: entry?.title ?? null,
-          // BPM / key live in the analysis sidecar store, not on the
-          // library entry — VJ can request them via the SA3 analysis
-          // endpoint if it ever needs them. We send the basics here.
-          model: entry?.model ?? null,
-          source: entry?.source ?? null,
-          duration: entry?.duration ?? null,
-          isPlaying,
-        },
-        '*',
-      );
-    } catch {
-      // ignored — iframe may not be ready yet
-    }
+    postToIframe({
+      type: 'sa3-vj/track-meta',
+      entryId: entry?.id ?? null,
+      title: entry?.title ?? null,
+      // BPM / key live in the analysis sidecar store, not on the
+      // library entry — VJ can request them via the SA3 analysis
+      // endpoint if it ever needs them. We send the basics here.
+      model: entry?.model ?? null,
+      source: entry?.source ?? null,
+      duration: entry?.duration ?? null,
+      isPlaying,
+    });
   }, [status, popped, currentEntryId, isPlaying, libraryEntries]);
+
+  const handleIframeLoad = () => {
+    if (iframeReadyTimerRef.current !== null) {
+      window.clearTimeout(iframeReadyTimerRef.current);
+      iframeReadyTimerRef.current = null;
+    }
+    // The child app may attach its postMessage listeners after the
+    // iframe load event. Send one immediate sync plus a short delayed
+    // sync so startup state does not get lost, which previously left
+    // the VJ view on an all-black initial frame.
+    const sync = () => {
+      postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
+      const state = getVjPlaybackState();
+      if (state === 'playing' || state === 'paused') {
+        postToIframe({ type: 'sa3-vj/playback', action: state === 'playing' ? 'play' : 'pause' });
+      }
+    };
+    sync();
+    iframeReadyTimerRef.current = window.setTimeout(sync, 250);
+  };
+
+  useEffect(() => () => {
+    if (iframeReadyTimerRef.current !== null) window.clearTimeout(iframeReadyTimerRef.current);
+  }, []);
 
   // Watch the popped window — if the user closes it manually, snap
   // back to the in-tab iframe view.
@@ -432,6 +469,7 @@ export const VJView: React.FC = () => {
           <iframe
             ref={iframeRef}
             src={url}
+            onLoad={handleIframeLoad}
             // The VJ project hosts its own controls + canvas. We grant
             // microphone permission so the user can VJ to mic input
             // without re-prompting; the iframe will still trigger the

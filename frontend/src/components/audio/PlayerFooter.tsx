@@ -5,8 +5,13 @@ import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useLibraryStore } from '../../state/libraryStore';
-import { useActiveViewStore } from '../../state/activeViewStore';
+import { useAppUiStore } from '../../state/appUiStore';
 import { callEditorPlay, isEditorPlaybackRegistered } from '../../state/editorPlaybackBridge';
+import {
+  toggleVjPlayback,
+  subscribeToVjPlaybackState,
+  type VjPlaybackState,
+} from '../../state/vjPlaybackBus';
 
 const formatDuration = (sec: number | null | undefined): string => {
   if (sec == null || !Number.isFinite(sec) || sec < 0) return '--:--';
@@ -48,7 +53,8 @@ export const PlayerFooter: React.FC = () => {
   // Editor mode — when the EDIT tab is active and editor bridge is registered,
   // the first play click triggers an offline render into playerStore.
   // After that, all transport (seek, skip, loop, volume) works natively.
-  const activeView = useActiveViewStore((s) => s.activeView);
+  const activeView = useAppUiStore((s) => s.activeView);
+  const centerTab = useAppUiStore((s) => s.centerTab);
   const inEditorMode = activeView === 'edit' && isEditorPlaybackRegistered();
 
   // Volume → master gain (continuous).
@@ -70,13 +76,36 @@ export const PlayerFooter: React.FC = () => {
     }
   }, [hasTrack, lastFilename, load]);
 
-  const displayLabel = engineLabel ?? lastFilename ?? null;
+  // VJ playback state — when the user is on the VJ tab, the play
+  // button controls the VJ iframe's video element instead of (or in
+  // addition to) the SA3 player engine. The vjPlaybackBus signals
+  // whether a handler is registered (VJ tab mounted) and the latest
+  // playing/paused echo from the iframe.
+  const [vjState, setVjState] = useState<VjPlaybackState>('unknown');
+  useEffect(() => subscribeToVjPlaybackState(setVjState), []);
+  // VJ tab lives in centerTab (the new tab system), not activeView
+  // (the legacy create/edit/train enum). Do not additionally gate this
+  // on handler registration: while the iframe is booting, the footer
+  // should still present VJ transport instead of falling back to a
+  // disabled audio-only state.
+  const isVjMode = centerTab === 'vj';
+
+  const displayLabel = engineLabel ?? lastFilename ?? (isVjMode ? 'VJ · live visuals' : null);
   const displayDuration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
   const displayCurrentTime = currentTime;
-  const displayIsPlaying = isPlaying;
+  const displayIsPlaying = isVjMode ? vjState === 'playing' : isPlaying;
   const progressPct = displayDuration > 0 ? Math.min(100, (displayCurrentTime / displayDuration) * 100) : 0;
 
   const handleToggle = () => {
+    // VJ-tab mode: drive the VJ iframe's video element via the bus.
+    // Also toggle the SA3 player if a track is loaded so loaded
+    // audio + visuals start together. When there's no SA3 track,
+    // the VJ-only path runs alone.
+    if (isVjMode) {
+      toggleVjPlayback();
+      if (hasTrack) toggle();
+      return;
+    }
     // In editor mode, if editor audio isn't loaded yet, trigger the offline render+play.
     // Once loaded (entryId === 'editor-timeline'), toggle works natively.
     if (inEditorMode && currentEntryId !== 'editor-timeline') {
@@ -164,7 +193,7 @@ export const PlayerFooter: React.FC = () => {
           </button>
           <button
             onClick={handleToggle}
-            disabled={!inEditorMode && !hasTrack}
+            disabled={!isVjMode && !inEditorMode && !hasTrack}
             className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-[0_0_15px_rgba(255,255,255,0.2)] disabled:opacity-40 disabled:pointer-events-none"
             title={displayIsPlaying ? 'Pause' : 'Play'}
           >

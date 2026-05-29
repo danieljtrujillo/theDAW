@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink } from 'lucide-react';
+import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, Terminal } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
-import { ProcessingLog } from './ProcessingLog';
+import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel } from './BottomMultiTabPanel';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useLogStore } from '../../state/logStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { GripHorizontal } from 'lucide-react';
 
@@ -299,19 +300,36 @@ export const Shell: React.FC = () => {
 };
 
 /**
- * Global bottom dock — BottomMultiTabPanel (left) and ProcessingLog
- * (right). Each column has its OWN height (multiHeight, logHeight)
- * and its OWN resize handle at the top edge. Expanding or resizing
- * one column does NOT affect the other. When a column is collapsed
- * it shrinks to a header-only strip (or header + pinned action
- * button for the LOG). The dock container's overall height is the
- * max of the two so both columns can sit at different heights and
- * still bottom-align to the screen edge.
+ * Global bottom dock.
+ *
+ * Layout (always one horizontal strip at the bottom):
+ *
+ *   ┌─────────── canvas / main ────────────┬── library rail ──┐
+ *   │                                       │                 │
+ *   │  (multi body if isBottomOpen)         │  (log body if   │
+ *   │                                       │   isLogOpen)    │
+ *   ├───────────────────────────────────────┼─────────┬───────┤
+ *   │   ^   multi toggle  (flex-1)          │ ^ LOG[N]│ CREATE│  <- the strip
+ *   └───────────────────────────────────────┴─────────┴───────┘
+ *                                            ←── rightPanelWidth ──→
+ *                                            ← 40% ─→← 60% ──────→
+ *
+ * - Multi-tab body and LOG body each have their OWN height
+ *   (multiHeight / logHeight) and their OWN resize handle. Toggling
+ *   or resizing one never affects the other.
+ * - The strip is fixed-height and always visible. The `^` collapses
+ *   the multi-tab body without touching the LOG, and the LOG's `^`
+ *   (on the LEFT of the LOG header per user spec) collapses the LOG
+ *   body without touching the multi-tab.
+ * - The CREATE / PROCESS / TRAIN action button stays pinned in the
+ *   right 60% of the LOG strip section so the user's most-used
+ *   affordance never moves.
  */
-const MULTI_COLLAPSED_HEIGHT = 28;   // just the header chevron strip
-const LOG_COLLAPSED_HEIGHT = 76;     // header + always-visible action button (+track strip if track)
+const STRIP_HEIGHT = 36;
 const DOCK_MIN_HEIGHT = 60;
-const DOCK_MAX_FRACTION = 0.85;      // max 85% of viewport — leave room for top bar + canvas
+const DOCK_MAX_FRACTION = 0.85;
+const LOG_HEADER_FRACTION = '40%';
+const CREATE_FRACTION = '60%';
 
 const ShellBottomDock: React.FC = () => {
   const multiHeight = useBottomPanelStore((s) => s.multiHeight);
@@ -320,44 +338,103 @@ const ShellBottomDock: React.FC = () => {
   const setLogHeight = useBottomPanelStore((s) => s.setLogHeight);
   const rightPanelWidth = useAppUiStore((s) => s.rightPanelWidth);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
+  const setBottomOpen = useBottomPanelStore((s) => s.setOpen);
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
+  const setLogOpen = useBottomPanelStore((s) => s.setLogOpen);
+  const logEntryCount = useLogStore((s) => s.entries.length);
 
-  const multiEffective = isBottomOpen ? multiHeight : MULTI_COLLAPSED_HEIGHT;
-  const logEffective = isLogOpen ? logHeight : LOG_COLLAPSED_HEIGHT;
-  const dockHeight = Math.max(multiEffective, logEffective);
+  const showBodyRow = isBottomOpen || isLogOpen;
+  const dockGridStyle = { gridTemplateColumns: `minmax(0, 1fr) ${rightPanelWidth}px` };
 
   return (
-    <div
-      className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)] z-30 flex items-end"
-      style={{ height: `${dockHeight}px` }}
-    >
-      {/* Multi-tab column — its own height + its own resize handle. */}
-      <div
-        className="flex-1 min-w-0 border-r border-purple-500/15 relative"
-        style={{ height: `${multiEffective}px` }}
-      >
-        {isBottomOpen && (
-          <ColumnResizeHandle
-            currentHeight={multiHeight}
-            onSet={setMultiHeight}
-            title="Drag to resize the bottom multi-tab panel"
-          />
-        )}
-        <BottomMultiTabPanel />
-      </div>
-      {/* LOG column — its own height + its own resize handle. */}
-      <div
-        className="shrink-0 min-w-72 relative"
-        style={{ width: rightPanelWidth, height: `${logEffective}px` }}
-      >
-        {isLogOpen && (
-          <ColumnResizeHandle
-            currentHeight={logHeight}
-            onSet={setLogHeight}
-            title="Drag to resize the log panel"
-          />
-        )}
-        <ProcessingLog />
+    <div className="shrink-0 flex flex-col z-30 pointer-events-none">
+      {/* Body row — only mounted when at least one panel is open. */}
+      {showBodyRow && (
+        <div className="shrink-0 grid items-end pointer-events-auto" style={dockGridStyle}>
+          {/* Multi body — flex-1, height = multiHeight. */}
+          <div
+            className="min-w-0 border-r border-purple-500/15 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+            style={{ height: isBottomOpen ? `${multiHeight}px` : 0 }}
+          >
+            {isBottomOpen && (
+              <>
+                <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
+                <ColumnResizeHandle
+                  currentHeight={multiHeight}
+                  onSet={setMultiHeight}
+                  title="Drag to resize the bottom multi-tab panel"
+                />
+                <BottomMultiTabPanel />
+              </>
+            )}
+          </div>
+          {/* LOG body — width = rightPanelWidth, height = logHeight. */}
+          <div
+            className="min-w-72 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+            style={{ height: isLogOpen ? `${logHeight}px` : 0 }}
+          >
+            {isLogOpen && (
+              <>
+                <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
+                <ColumnResizeHandle
+                  currentHeight={logHeight}
+                  onSet={setLogHeight}
+                  title="Drag to resize the log panel"
+                />
+                <LogBody />
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Single horizontal strip — always visible. */}
+      <div className="shrink-0 grid items-stretch pointer-events-auto" style={{ ...dockGridStyle, height: STRIP_HEIGHT }}>
+        {/* Multi-tab toggle — left, flex-1 */}
+        <button
+          type="button"
+          onClick={() => setBottomOpen(!isBottomOpen)}
+          className="min-w-0 bg-[#0a080f] flex items-center justify-center gap-2 group hover:bg-purple-500/8 transition-colors border-t border-r border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+          title={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
+          aria-label={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
+        >
+          {isBottomOpen
+            ? <ChevronDown className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
+            : <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
+          }
+        </button>
+
+        {/* LOG strip section — right, width = rightPanelWidth.
+            Internally: 40% LOG header (chevron-LEFT + label + count)
+            | 60% CREATE action button. */}
+        <div className="min-w-72 bg-[#0a080f] flex items-stretch border-t border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
+          {/* LOG header — 40%. Chevron on the LEFT per user spec. */}
+          <button
+            type="button"
+            onClick={() => setLogOpen(!isLogOpen)}
+            className="flex items-center gap-1.5 px-2 group hover:bg-purple-500/8 transition-colors border-r border-purple-500/15 min-w-0"
+            style={{ width: LOG_HEADER_FRACTION }}
+            title={isLogOpen ? 'Collapse log' : 'Expand log'}
+            aria-label={isLogOpen ? 'Collapse log' : 'Expand log'}
+          >
+            {isLogOpen
+              ? <ChevronDown className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
+              : <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
+            }
+            <Terminal className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">LOG</span>
+            <span className="text-[9px] font-mono text-zinc-600 shrink-0">[{logEntryCount}]</span>
+            {!isLogOpen && (
+              <span className="flex items-center gap-1.5 min-w-0">
+                <LogStripCompactInfo />
+              </span>
+            )}
+          </button>
+          {/* CREATE — 60%. */}
+          <div className="flex items-stretch" style={{ width: CREATE_FRACTION }}>
+            <LogActionButton />
+          </div>
+        </div>
       </div>
     </div>
   );

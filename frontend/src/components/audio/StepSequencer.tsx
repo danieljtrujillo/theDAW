@@ -8,6 +8,11 @@ import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { logError, logInfo } from '../../state/logStore';
+import { MidiMapper } from './MidiMapper';
+
+const SEQUENCE_MIDI_PARAMS = [
+  { key: 'bpm' as const, label: 'BPM', min: 40, max: 240, autoCc: 14, integer: true },
+];
 
 type Voice = 'kick' | 'snare' | 'hat' | 'tone' | 'noise';
 
@@ -520,7 +525,16 @@ export const StepSequencer: React.FC = () => {
   };
 
   return (
-    <div className="hardware-card h-full flex flex-col bg-black/40">
+    <div className="hardware-card h-full flex flex-col bg-black/40 relative">
+      <MidiMapper
+        title="SEQUENCE"
+        accent="cyan"
+        storageKey="sa3-midi-map:sequence-v1"
+        params={SEQUENCE_MIDI_PARAMS}
+        onChange={(key, value) => {
+          if (key === 'bpm') setBpm(Math.round(value));
+        }}
+      />
       <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">

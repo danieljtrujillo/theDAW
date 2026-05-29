@@ -1,10 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import {
-  Terminal, ChevronDown, ChevronUp, Trash2, Download,
-  Play, Pause, FileDown, X, Cpu, Thermometer, Zap, Clock,
-} from 'lucide-react';
+import { Trash2, Download, X, Zap } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
-import { usePlayerStore } from '../../state/playerStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useGenerateStore } from '../../state/generateStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
@@ -26,7 +22,7 @@ interface SystemStats {
   ram_total_gb: number | null;
 }
 
-// ─── Tab config (mirrors GlobalGenerateBar) ──────────────────────────────────
+// ─── Action-button tab config (mirrors GlobalGenerateBar) ────────────────────
 
 const TAB_CONFIG = {
   create:  { idle: 'CREATE',  active: 'ABORT', idleColor: 'bg-purple-600 hover:bg-purple-500 text-white',           activeColor: 'bg-red-600/30 text-red-300 hover:bg-red-600/50' },
@@ -35,6 +31,8 @@ const TAB_CONFIG = {
   library: { idle: 'CREATE',  active: 'ABORT', idleColor: 'bg-purple-600/60 hover:bg-purple-500/60 text-white/70',  activeColor: 'bg-red-600/30 text-red-300 hover:bg-red-600/50' },
   advanced:{ idle: 'CREATE',  active: 'ABORT', idleColor: 'bg-purple-600/60 hover:bg-purple-500/60 text-white/70',  activeColor: 'bg-red-600/30 text-red-300 hover:bg-red-600/50' },
 } as const;
+
+type TabKey = keyof typeof TAB_CONFIG;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,18 +66,6 @@ const downloadLog = (entries: LogEntry[]) => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
-const downloadCurrentTrack = () => {
-  const player = usePlayerStore.getState();
-  if (!player.hasTrack) return;
-  const entry = (player.currentEntryId
-    ? useLibraryStore.getState().entries.find((e) => e.id === player.currentEntryId)
-    : useLibraryStore.getState().entries[0]);
-  if (!entry) return;
-  const url = useLibraryStore.getState().getAudioUrl(entry);
-  const a = Object.assign(document.createElement('a'), { href: url, download: entry.title });
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-};
-
 const fmtEst = (ms: number): string => {
   if (ms <= 0) return '--';
   const s = Math.round(ms / 1000);
@@ -87,48 +73,24 @@ const fmtEst = (ms: number): string => {
   return `${Math.floor(s / 60)}m${(s % 60).toString().padStart(2, '0')}s`;
 };
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── LogBody ─────────────────────────────────────────────────────────────────
+// Just the entries + telemetry overlay + small download/clear toolbar.
+// Mounted above the strip when the LOG is expanded.
 
-export const ProcessingLog: React.FC = () => {
-  // Log
-  const entries   = useLogStore((s) => s.entries);
-  const clear     = useLogStore((s) => s.clear);
-  // Open/closed state lives in the shared bottomPanelStore so the
-  // ShellBottomDock can sync heights with the BottomMultiTabPanel —
-  // both surfaces' "expanded" state contributes to whether the dock
-  // is at full height or just the toggle row.
-  const isOpen      = useBottomPanelStore((s) => s.isLogOpen);
-  const setIsOpen   = useBottomPanelStore((s) => s.setLogOpen);
-  const bodyRef   = useRef<HTMLDivElement>(null);
+export const LogBody: React.FC = () => {
+  const entries = useLogStore((s) => s.entries);
+  const clear   = useLogStore((s) => s.clear);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Player
-  const hasTrack  = usePlayerStore((s) => s.hasTrack);
-  const isPlaying = usePlayerStore((s) => s.isPlaying);
-  const toggle    = usePlayerStore((s) => s.toggle);
-
-  // Active tab
-  const activeView    = useAppUiStore((s) => s.activeView);
-  const setActiveView = useAppUiStore((s) => s.setActiveView);
-
-  // CREATE
-  const isGenerating  = useGenerateStore((s) => s.isGenerating);
-  const progressPct   = useGenerateStore((s) => s.progressPct);
-  const statusLabel   = useGenerateStore((s) => s.statusLabel);
-  const submitGeneration = useGenerateStore((s) => s.submitGeneration);
-  const cancelPolling = useGenerateStore((s) => s.cancelPolling);
-  const model         = useGenerateParamsStore((s) => s.model);
-
-  // EDIT / TRAIN
-  const isProcessing  = useStudioStore((s) => s.isProcessing);
-  const isTraining    = useTrainingStore((s) => s.isTraining);
-
-  // Telemetry
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   const [stats, setStats] = useState<SystemStats | null>(null);
-  const genStartRef = useRef<number | null>(null);
-  const [now, setNow]   = useState(Date.now());
 
-  // EST TIME tracking
+  const isGenerating  = useGenerateStore((s) => s.isGenerating);
+  const progressPct   = useGenerateStore((s) => s.progressPct);
+
+  const genStartRef = useRef<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+
   useEffect(() => {
     if (isGenerating && genStartRef.current === null) genStartRef.current = Date.now();
     if (!isGenerating) genStartRef.current = null;
@@ -145,7 +107,6 @@ export const ProcessingLog: React.FC = () => {
     return (elapsed / progressPct) * (100 - progressPct);
   })();
 
-  // Poll system stats every 5 s — only after the backend is reachable
   const fetchStats = useCallback(async () => {
     try {
       const r = await fetch('/api/system-stats');
@@ -160,15 +121,109 @@ export const ProcessingLog: React.FC = () => {
     return () => clearInterval(t);
   }, [fetchStats, isBackendReady]);
 
-  // Auto-scroll
   useEffect(() => {
-    if (!isOpen) return;
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [entries, isOpen]);
+  }, [entries]);
 
-  // Action button
-  type TabKey = keyof typeof TAB_CONFIG;
+  return (
+    <div className="h-full flex flex-col min-h-0 bg-black/40">
+      {/* Thin toolbar at the top of the body for download/clear. */}
+      <div className="shrink-0 flex items-center justify-end gap-1 px-2 py-1 border-b border-white/5 bg-purple-500/4">
+        <button
+          onClick={() => downloadLog(entries)}
+          className="p-1 text-zinc-600 hover:text-purple-300 transition-colors"
+          title="Download log"
+        >
+          <Download className="w-3 h-3" />
+        </button>
+        <button
+          onClick={() => clear()}
+          className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
+          title="Clear log"
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
+      </div>
+
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={bodyRef}
+          className="h-full overflow-y-auto px-2 py-1 font-mono text-[9px] space-y-0.5 pr-22"
+        >
+          {entries.length === 0
+            ? <p className="text-zinc-700 italic">Waiting for signal...</p>
+            : entries.map((e) => (
+                <p key={e.id} className={`pl-2 ${levelStyles[e.level]}`}>
+                  <span className="text-zinc-600">{fmtTime(e.ts)}</span>{' '}
+                  <span className="text-zinc-500 uppercase">[{e.source}]</span>{' '}
+                  <span>{e.msg}</span>
+                </p>
+              ))
+          }
+        </div>
+
+        {/* Telemetry overlay — right side, like spectral Hz/RMS/peak */}
+        <div className="absolute right-0 top-0 bottom-0 w-20 pointer-events-none flex flex-col justify-end pb-2"
+             style={{ background: 'linear-gradient(to left, rgba(0,0,0,0.85) 60%, transparent)' }}>
+          <div className="flex flex-col gap-1 pr-2 items-end">
+            {stats?.gpu_util_pct != null && (
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">GPU</span>
+                <span className="text-[10px] font-mono text-purple-300">{stats.gpu_util_pct}%</span>
+              </div>
+            )}
+            {stats?.cpu_pct != null && (
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">CPU</span>
+                <span className="text-[10px] font-mono text-emerald-400">{stats.cpu_pct}%</span>
+              </div>
+            )}
+            {stats?.gpu_temp_c != null && (
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">HEAT</span>
+                <span className={`text-[10px] font-mono ${stats.gpu_temp_c > 80 ? 'text-red-400' : stats.gpu_temp_c > 65 ? 'text-amber-400' : 'text-zinc-300'}`}>
+                  {stats.gpu_temp_c}°C
+                </span>
+              </div>
+            )}
+            {stats?.vram_used_gb != null && stats.vram_total_gb > 0 && (
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">VRAM</span>
+                <span className="text-[10px] font-mono text-zinc-300">{stats.vram_used_gb}/{stats.vram_total_gb}G</span>
+              </div>
+            )}
+            {isGenerating && estMs > 0 && (
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">EST</span>
+                <span className="text-[10px] font-mono text-cyan-400">{fmtEst(estMs)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── LogActionButton ─────────────────────────────────────────────────────────
+// The chunky CREATE / PROCESS / TRAIN / ABORT button. Lives in the
+// footer strip on the right (taking the right 60% of the LOG section
+// per user spec), independent of the LOG body's open/closed state so
+// the affordance is always one click away.
+
+export const LogActionButton: React.FC = () => {
+  const activeView    = useAppUiStore((s) => s.activeView);
+  const setActiveView = useAppUiStore((s) => s.setActiveView);
+  const isGenerating  = useGenerateStore((s) => s.isGenerating);
+  const progressPct   = useGenerateStore((s) => s.progressPct);
+  const statusLabel   = useGenerateStore((s) => s.statusLabel);
+  const submitGeneration = useGenerateStore((s) => s.submitGeneration);
+  const cancelPolling = useGenerateStore((s) => s.cancelPolling);
+  const model         = useGenerateParamsStore((s) => s.model);
+  const isProcessing  = useStudioStore((s) => s.isProcessing);
+  const isTraining    = useTrainingStore((s) => s.isTraining);
+
   const tab = (activeView in TAB_CONFIG ? activeView : 'create') as TabKey;
   const cfg = TAB_CONFIG[tab];
   const isActive = tab === 'create' ? isGenerating : tab === 'edit' ? isProcessing : tab === 'train' ? isTraining : false;
@@ -204,7 +259,62 @@ export const ProcessingLog: React.FC = () => {
     }
   };
 
-  // Compact telemetry string for collapsed state
+  return (
+    <button
+      type="button"
+      onClick={handleAction}
+      className={`relative w-full h-full overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors ${
+        isActive ? cfg.activeColor : cfg.idleColor
+      }`}
+      title={
+        tab === 'create' ? (isGenerating ? 'Abort generation' : `Submit ${model.toUpperCase()} to /api/generate-jobs`) :
+        tab === 'edit'   ? (isProcessing ? 'Cancel processing' : 'Process audio') :
+        tab === 'train'  ? (isTraining   ? 'Abort training'   : 'Submit LoRA job') :
+        'Switch to CREATE'
+      }
+    >
+      {tab === 'create' && isGenerating && (
+        <div
+          className="absolute inset-y-0 left-0 bg-red-500/25 transition-[width] duration-200"
+          style={{ width: `${Math.max(2, progressPct)}%` }}
+        />
+      )}
+      <span className="relative z-10 flex items-center gap-2">
+        {isActive ? <X className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
+        {isActive
+          ? (tab === 'create' ? `ABORT (${progressPct}%)` : cfg.active)
+          : cfg.idle}
+        {tab === 'create' && !isGenerating && statusLabel !== 'READY' && (
+          <span className="text-[8px] font-mono opacity-60 normal-case tracking-normal">{statusLabel}</span>
+        )}
+      </span>
+    </button>
+  );
+};
+
+// ─── LogStripCompactInfo ────────────────────────────────────────────────────
+// Tiny summary shown inline in the strip's LOG header when the LOG is
+// collapsed — just a compact telemetry line so the user knows things
+// are alive without expanding.
+
+export const LogStripCompactInfo: React.FC = () => {
+  const entries = useLogStore((s) => s.entries);
+  const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
+  const [stats, setStats] = useState<SystemStats | null>(null);
+
+  useEffect(() => {
+    if (!isBackendReady) return;
+    const fetchStats = async () => {
+      try {
+        const r = await fetch('/api/system-stats');
+        if (r.ok) setStats(await r.json() as SystemStats);
+      } catch { /* non-fatal */ }
+    };
+    void fetchStats();
+    const t = setInterval(() => void fetchStats(), 5000);
+    return () => clearInterval(t);
+  }, [isBackendReady]);
+
   const compactTelemetry = (() => {
     const parts: string[] = [];
     if (stats?.gpu_util_pct != null) parts.push(`${stats.gpu_util_pct}%`);
@@ -215,172 +325,16 @@ export const ProcessingLog: React.FC = () => {
   })();
 
   return (
-    // Outer fills the ShellBottomDock's right column. When isOpen the
-    // body section takes the available flex space; when closed only
-    // the section header + action button remain visible.
-    <div className="h-full flex flex-col min-h-0">
-      {/* Section-style header at top — Terminal icon, LOG label,
-          entry-count chip, body controls when open, collapse arrow.
-          Matches the visual rhythm of other section headers in the
-          right-rail / DAW so the log doesn't look like a stranger. */}
-      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-purple-500/20 bg-purple-500/4 shrink-0">
-        <button
-          type="button"
-          onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-1.5 group flex-1 min-w-0 text-left"
-          title={isOpen ? 'Collapse log' : 'Expand log'}
-        >
-          <Terminal className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">LOG</span>
-          <span className="text-[9px] font-mono text-zinc-600">[{entries.length}]</span>
-          {!isOpen && compactTelemetry && (
-            <span className="text-[8px] font-mono text-zinc-600 ml-1 truncate">{compactTelemetry}</span>
-          )}
-          <span className="ml-auto text-zinc-500 group-hover:text-purple-200 transition-colors">
-            {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-          </span>
-        </button>
-        {/* Body controls — only visible when expanded. */}
-        {isOpen && (
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => downloadLog(entries)}
-              className="p-1 text-zinc-600 hover:text-purple-300 transition-colors"
-              title="Download log"
-            >
-              <Download className="w-3 h-3" />
-            </button>
-            <button
-              onClick={() => clear()}
-              className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
-              title="Clear log"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Body — flex-1 fills the LOG column's height (driven by
-          bottomPanelStore.logHeight, independent of the multi-tab
-          panel's height). Hidden when the log is collapsed. */}
-      {isOpen && (
-        <div className="relative bg-black/40 flex-1 min-h-0">
-          <div
-            ref={bodyRef}
-            className="h-full overflow-y-auto px-2 py-1 font-mono text-[9px] space-y-0.5 pr-22"
-          >
-            {entries.length === 0
-              ? <p className="text-zinc-700 italic">Waiting for signal...</p>
-              : entries.map((e) => (
-                  <p key={e.id} className={`pl-2 ${levelStyles[e.level]}`}>
-                    <span className="text-zinc-600">{fmtTime(e.ts)}</span>{' '}
-                    <span className="text-zinc-500 uppercase">[{e.source}]</span>{' '}
-                    <span>{e.msg}</span>
-                  </p>
-                ))
-            }
-          </div>
-
-          {/* Telemetry overlay — right side, like spectral Hz/RMS/peak */}
-          <div className="absolute right-0 top-0 bottom-0 w-20 pointer-events-none flex flex-col justify-end pb-2"
-               style={{ background: 'linear-gradient(to left, rgba(0,0,0,0.85) 60%, transparent)' }}>
-            <div className="flex flex-col gap-1 pr-2 items-end">
-              {stats?.gpu_util_pct != null && (
-                <div className="flex flex-col items-end leading-none">
-                  <span className="text-[7px] font-mono text-zinc-600 uppercase">GPU</span>
-                  <span className="text-[10px] font-mono text-purple-300">{stats.gpu_util_pct}%</span>
-                </div>
-              )}
-              {stats?.cpu_pct != null && (
-                <div className="flex flex-col items-end leading-none">
-                  <span className="text-[7px] font-mono text-zinc-600 uppercase">CPU</span>
-                  <span className="text-[10px] font-mono text-emerald-400">{stats.cpu_pct}%</span>
-                </div>
-              )}
-              {stats?.gpu_temp_c != null && (
-                <div className="flex flex-col items-end leading-none">
-                  <span className="text-[7px] font-mono text-zinc-600 uppercase">HEAT</span>
-                  <span className={`text-[10px] font-mono ${stats.gpu_temp_c > 80 ? 'text-red-400' : stats.gpu_temp_c > 65 ? 'text-amber-400' : 'text-zinc-300'}`}>
-                    {stats.gpu_temp_c}°C
-                  </span>
-                </div>
-              )}
-              {stats?.vram_used_gb != null && stats.vram_total_gb > 0 && (
-                <div className="flex flex-col items-end leading-none">
-                  <span className="text-[7px] font-mono text-zinc-600 uppercase">VRAM</span>
-                  <span className="text-[10px] font-mono text-zinc-300">{stats.vram_used_gb}/{stats.vram_total_gb}G</span>
-                </div>
-              )}
-              {isGenerating && estMs > 0 && (
-                <div className="flex flex-col items-end leading-none">
-                  <span className="text-[7px] font-mono text-zinc-600 uppercase">EST</span>
-                  <span className="text-[10px] font-mono text-cyan-400">{fmtEst(estMs)}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+    <>
+      <span className="text-[9px] font-mono text-zinc-600 shrink-0">[{entries.length}]</span>
+      {compactTelemetry && (
+        <span className="text-[8px] font-mono text-zinc-600 truncate hidden md:inline">{compactTelemetry}</span>
       )}
-
-      {/* Bottom-pinned group — track controls (if any) + action button.
-          `mt-auto` pins this to the bottom of the LOG column whether
-          the log body is open or collapsed, so the LOG side's
-          baseline always aligns with the dock's bottom edge. */}
-      <div className="mt-auto shrink-0 flex flex-col">
-      {hasTrack && (
-        <div className="flex items-center gap-1 px-2 py-1 border-t border-white/5 shrink-0 bg-black/20">
-          <button
-            type="button"
-            onClick={() => toggle()}
-            className={`p-1 transition-colors ${isPlaying ? 'text-purple-300 hover:text-purple-200' : 'text-zinc-500 hover:text-purple-300'}`}
-            title={isPlaying ? 'Pause' : 'Play'}
-          >
-            {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
-          </button>
-          <button
-            type="button"
-            onClick={() => downloadCurrentTrack()}
-            className="p-1 text-zinc-500 hover:text-purple-300 transition-colors"
-            title="Download current track"
-          >
-            <FileDown className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      <div className="flex shrink-0">
-        <button
-          type="button"
-          onClick={handleAction}
-          className={`relative flex-1 overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors py-2 ${
-            isActive ? cfg.activeColor : cfg.idleColor
-          }`}
-          title={
-            tab === 'create' ? (isGenerating ? 'Abort generation' : `Submit ${model.toUpperCase()} to /api/generate-jobs`) :
-            tab === 'edit'   ? (isProcessing ? 'Cancel processing' : 'Process audio') :
-            tab === 'train'  ? (isTraining   ? 'Abort training'   : 'Submit LoRA job') :
-            'Switch to CREATE'
-          }
-        >
-          {tab === 'create' && isGenerating && (
-            <div
-              className="absolute inset-y-0 left-0 bg-red-500/25 transition-[width] duration-200"
-              style={{ width: `${Math.max(2, progressPct)}%` }}
-            />
-          )}
-          <span className="relative z-10 flex items-center gap-2">
-            {isActive ? <X className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
-            {isActive
-              ? (tab === 'create' ? `ABORT (${progressPct}%)` : cfg.active)
-              : cfg.idle}
-            {tab === 'create' && !isGenerating && statusLabel !== 'READY' && (
-              <span className="text-[8px] font-mono opacity-60 normal-case tracking-normal">{statusLabel}</span>
-            )}
-          </span>
-        </button>
-      </div>
-      </div>
-    </div>
+    </>
   );
 };
+
+// Re-export the store hook here so consumers (Shell, BottomMultiTabPanel)
+// don't need to know about the underlying state library.
+export { useBottomPanelStore };
+export { useLogStore };
