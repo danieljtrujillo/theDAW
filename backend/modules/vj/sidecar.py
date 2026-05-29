@@ -94,6 +94,43 @@ def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
+def detect_lan_ip() -> Optional[str]:
+    """Best-effort detection of this machine's primary LAN IPv4 address
+    so phones/tablets on the same network can reach the VJ output.
+
+    We open a UDP socket "toward" a public address (no packets are
+    actually sent for UDP connect) and read back the local end of the
+    route the OS picked. This reliably yields the interface IP used for
+    outbound LAN/WAN traffic, dodging the 127.0.0.1 that
+    ``socket.gethostbyname(gethostname())`` often returns. Returns None
+    if we can't determine a non-loopback address.
+    """
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 8.8.8.8 is just a routing hint; nothing is transmitted.
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = ""
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
+    if ip and not ip.startswith("127."):
+        return ip
+    return None
+
+
+def mobile_url_for(port: int) -> Optional[str]:
+    """Return a LAN-reachable URL for the given port, or None if no
+    non-loopback IP could be detected (e.g. machine is offline)."""
+    ip = detect_lan_ip()
+    return f"http://{ip}:{port}" if ip else None
+
+
 def probe() -> dict:
     """Non-spawning diagnostics for the Settings UI / /status endpoint."""
     cfg = resolve_config()
@@ -113,6 +150,11 @@ def probe() -> dict:
         "listening": listening,
         "process_alive": _proc is not None and _proc.poll() is None,
         "url": _resolved_url or f"http://localhost:{cfg.port}",
+        # LAN-reachable URL for phones/tablets (None if offline). The
+        # Vite server is bound to 0.0.0.0 with allowedHosts disabled so
+        # this address isn't rejected when a mobile device connects.
+        "mobile_url": mobile_url_for(cfg.port),
+        "lan_ip": detect_lan_ip(),
         "issues": issues,
     }
 

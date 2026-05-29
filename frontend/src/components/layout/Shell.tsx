@@ -344,13 +344,34 @@ const ShellBottomDock: React.FC = () => {
   const logEntryCount = useLogStore((s) => s.entries.length);
 
   const showBodyRow = isBottomOpen || isLogOpen;
-  const dockGridStyle = { gridTemplateColumns: `minmax(0, 1fr) ${rightPanelWidth}px` };
+  // The STRIP row always shows both toggle affordances side-by-side, so
+  // it keeps the canonical two-column split (flex multi toggle on the
+  // left, rightPanelWidth LOG strip on the right).
+  const stripGridStyle = { gridTemplateColumns: `minmax(0, 1fr) ${rightPanelWidth}px` };
+  // The BODY row keeps the left (multi) column flexible at all times and
+  // only collapses the right (LOG) column when the log is closed. This
+  // keeps the LOG body pinned to the right edge — column-aligned with the
+  // LOG section of the always-visible strip below — instead of drifting
+  // to the left when the multi panel is collapsed:
+  //   - only LOG open   → left column flexes as an empty spacer (multi
+  //     body height 0), LOG pinned right at rightPanelWidth.
+  //   - only multi open → right (LOG) column 0px, multi spans full width.
+  //   - both open       → flex multi + rightPanelWidth LOG.
+  // Without the always-flex left column, `0px <rightPanelWidth>` would
+  // left-align the LOG body and break alignment with the strip, which is
+  // the horizontal-stretch/misalignment bug this dock previously had.
+  const bodyGridStyle = {
+    gridTemplateColumns: `minmax(0, 1fr) ${isLogOpen ? `${rightPanelWidth}px` : '0px'}`,
+  };
+
+
 
   return (
     <div className="shrink-0 flex flex-col z-30 pointer-events-none">
       {/* Body row — only mounted when at least one panel is open. */}
       {showBodyRow && (
-        <div className="shrink-0 grid items-end pointer-events-auto" style={dockGridStyle}>
+        <div className="shrink-0 grid items-end pointer-events-auto" style={bodyGridStyle}>
+
           {/* Multi body — flex-1, height = multiHeight. */}
           <div
             className="min-w-0 border-r border-purple-500/15 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
@@ -389,7 +410,8 @@ const ShellBottomDock: React.FC = () => {
       )}
 
       {/* Single horizontal strip — always visible. */}
-      <div className="shrink-0 grid items-stretch pointer-events-auto" style={{ ...dockGridStyle, height: STRIP_HEIGHT }}>
+      <div className="shrink-0 grid items-stretch pointer-events-auto" style={{ ...stripGridStyle, height: STRIP_HEIGHT }}>
+
         {/* Multi-tab toggle — left, flex-1 */}
         <button
           type="button"
