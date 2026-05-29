@@ -58,7 +58,7 @@ export default function App() {
   }, [refreshHealth]);
 
   useEffect(() => {
-    logInfo('system', 'StableDAW UI initialized');
+    logInfo('system', 'The DAW UI initialized');
   }, []);
 
   // ── Global Web MIDI listener ───────────────────────────────────

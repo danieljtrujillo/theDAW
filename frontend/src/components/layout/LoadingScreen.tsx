@@ -35,8 +35,8 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip }) => {
 
       {/* App name */}
       <div className="flex flex-col items-center gap-1 mb-8">
-        <span className="text-[18px] font-black uppercase tracking-[0.4em] text-zinc-100">StableDAW</span>
-        <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-600">Stable Audio 3</span>
+        <span className="text-[18px] font-black uppercase tracking-[0.4em] text-zinc-100">The DAW</span>
+        <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-600">by Gantasmo · Stable Audio 3</span>
       </div>
 
       {/* Status */}

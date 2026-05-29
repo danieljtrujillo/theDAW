@@ -251,7 +251,7 @@ export const Shell: React.FC = () => {
             <div className="p-4 flex flex-col gap-4">
               <div className="flex justify-center">
                 <div className="p-3 rounded-lg bg-white shadow-[0_0_24px_rgba(16,185,129,0.16)]">
-                  <img src={qrImageUrl} alt="StableDAW mobile access QR code" className="w-55 h-55" />
+                  <img src={qrImageUrl} alt="The DAW mobile access QR code" className="w-55 h-55" />
                 </div>
               </div>
 
