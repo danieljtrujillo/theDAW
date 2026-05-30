@@ -22,7 +22,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
+  ChevronUp, ChevronDown,
 } from 'lucide-react';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useSetlistStore } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
@@ -63,8 +65,39 @@ export const DJView: React.FC = () => {
   const removeSetlist = useSetlistStore((s) => s.remove);
   const setActive = useSetlistStore((s) => s.setActive);
   const appendToSet = useSetlistStore((s) => s.append);
+  const setEntries = useSetlistStore((s) => s.setEntries);
+  const entryMenu = useContextMenu<{ index: number }>();
 
   const activeSet = activeId ? setlists[activeId] : null;
+
+  // Setlist-entry ops driven by the right-click menu on each row.
+  const moveSetEntry = (from: number, to: number) => {
+    if (!activeId || !activeSet) return;
+    if (to < 0 || to >= activeSet.entries.length) return;
+    const arr = [...activeSet.entries];
+    const [item] = arr.splice(from, 1);
+    arr.splice(to, 0, item);
+    setEntries(activeId, arr);
+  };
+  const removeSetEntry = (index: number) => {
+    if (!activeId || !activeSet) return;
+    setEntries(activeId, activeSet.entries.filter((_, i) => i !== index));
+  };
+  const sendSetEntryToVj = (index: number) => {
+    if (!activeSet) return;
+    const e = activeSet.entries[index];
+    if (!e) return;
+    const entry = e.entryId ? entries.find((x) => x.id === e.entryId) ?? null : null;
+    sendTrackToVj({
+      entryId: e.entryId,
+      label: e.label,
+      url: entry?.audioUrl ?? e.url,
+      kind: e.kind ?? 'audio',
+    });
+    setFlash(
+      isVjSetTargetActive() ? `Sent "${e.label}" to VJ` : `Queued "${e.label}" — opens with VJ tab`,
+    );
+  };
 
   // Keep the master transport icon synced with the real VJ state.
   useEffect(() => {
@@ -300,7 +333,12 @@ export const DJView: React.FC = () => {
             ) : (
               <ol className="text-[9px] font-mono">
                 {activeSet.entries.map((e, i) => (
-                  <li key={i} className="px-3 py-1 border-b border-white/3 text-zinc-400 truncate">
+                  <li
+                    key={i}
+                    onContextMenu={(ev) => entryMenu.open(ev, { index: i })}
+                    className="px-3 py-1 border-b border-white/3 text-zinc-400 truncate cursor-context-menu hover:bg-white/5 hover:text-zinc-200"
+                    title="Right-click for actions"
+                  >
                     {String(i + 1).padStart(2, '0')}. {e.label}
                   </li>
                 ))}
@@ -309,6 +347,56 @@ export const DJView: React.FC = () => {
           </div>
         )}
       </aside>
+
+      {/* Right-click menu for a setlist entry. */}
+      {(() => {
+        const payload = entryMenu.payload;
+        if (!payload || !activeSet) return null;
+        const idx = payload.index;
+        const e = activeSet.entries[idx];
+        if (!e) return null;
+        const last = activeSet.entries.length - 1;
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            label: 'Send to VJ',
+            icon: <Cast className="w-3 h-3" />,
+            onSelect: () => sendSetEntryToVj(idx),
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Move up',
+            icon: <ChevronUp className="w-3 h-3" />,
+            disabled: idx <= 0,
+            onSelect: () => moveSetEntry(idx, idx - 1),
+          },
+          {
+            type: 'item',
+            label: 'Move down',
+            icon: <ChevronDown className="w-3 h-3" />,
+            disabled: idx >= last,
+            onSelect: () => moveSetEntry(idx, idx + 1),
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Remove from setlist',
+            icon: <Trash2 className="w-3 h-3" />,
+            danger: true,
+            onSelect: () => removeSetEntry(idx),
+          },
+        ];
+        return (
+          <ContextMenu
+            position={entryMenu.position}
+            onClose={entryMenu.close}
+            items={items}
+            title={e.label}
+            minWidth="12rem"
+          />
+        );
+      })()}
     </div>
   );
 };
@@ -422,3 +510,4 @@ const Deck: React.FC<DeckProps> = ({
     </div>
   );
 };
+

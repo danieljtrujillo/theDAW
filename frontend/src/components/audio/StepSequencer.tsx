@@ -9,6 +9,7 @@ import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const SEQUENCE_MIDI_PARAMS = [
   { key: 'bpm' as const, label: 'BPM', min: 40, max: 240, autoCc: 14, integer: true },
@@ -357,6 +358,7 @@ export const StepSequencer: React.FC = () => {
   const [exportMode, setExportMode] = useState<'single' | 'multi'>('single');
   const [exportBars, setExportBars] = useState(2);
   const [isBouncing, setIsBouncing] = useState(false);
+  const trackMenu = useContextMenu<{ trackId: string }>();
 
   // Refs so the timer callback always reads the latest state without re-creating the interval.
   const tracksRef = useRef(tracks);
@@ -448,6 +450,11 @@ export const StepSequencer: React.FC = () => {
 
   const clearAll = () => {
     setTracks(tracks.map((t) => ({ ...t, steps: Array(STEPS).fill(false) })));
+  };
+
+  // Per-track step rewrite, used by the row right-click menu.
+  const patchTrackSteps = (trackId: string, fn: (steps: boolean[]) => boolean[]) => {
+    setTracks(tracks.map((t) => (t.id === trackId ? { ...t, steps: fn(t.steps) } : t)));
   };
 
   const randomizeFill = () => {
@@ -642,7 +649,11 @@ export const StepSequencer: React.FC = () => {
 
       <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]">
         {tracks.map((track) => (
-          <div key={track.id} className="flex gap-2 group">
+          <div
+            key={track.id}
+            className="flex gap-2 group"
+            onContextMenu={(e) => trackMenu.open(e, { trackId: track.id })}
+          >
             <div className="w-32 shrink-0 flex flex-col bg-black/40 rounded p-1.5 border border-white/5 group-hover:border-white/10 transition-colors">
               <div className="flex justify-between items-center mb-1 gap-1">
                 <input
@@ -743,6 +754,67 @@ export const StepSequencer: React.FC = () => {
           <span className="text-[7px] font-mono text-cyan-500/80 uppercase">Web Audio Engine</span>
         </div>
       </div>
+
+      {/* Right-click menu for a sequencer track row. */}
+      {(() => {
+        const payload = trackMenu.payload;
+        if (!payload) return null;
+        const track = tracks.find((t) => t.id === payload.trackId);
+        if (!track) return null;
+        const id = track.id;
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            label: 'Fill every step',
+            onSelect: () => patchTrackSteps(id, () => Array(STEPS).fill(true)),
+          },
+          {
+            type: 'item',
+            label: 'Fill every 2nd',
+            onSelect: () => patchTrackSteps(id, () => Array(STEPS).fill(false).map((_, i) => i % 2 === 0)),
+          },
+          {
+            type: 'item',
+            label: 'Fill every 4th',
+            onSelect: () => patchTrackSteps(id, () => Array(STEPS).fill(false).map((_, i) => i % 4 === 0)),
+          },
+          {
+            type: 'item',
+            label: 'Randomize row',
+            icon: <Sparkles className="w-3 h-3" />,
+            onSelect: () => patchTrackSteps(id, () => Array(STEPS).fill(false).map(() => Math.random() > 0.7)),
+          },
+          {
+            type: 'item',
+            label: 'Invert row',
+            onSelect: () => patchTrackSteps(id, (steps) => steps.map((s) => !s)),
+          },
+          {
+            type: 'item',
+            label: 'Clear row',
+            onSelect: () => patchTrackSteps(id, () => Array(STEPS).fill(false)),
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Remove track',
+            icon: <Trash2 className="w-3 h-3" />,
+            danger: true,
+            disabled: tracks.length <= 1,
+            onSelect: () => removeTrack(id),
+          },
+        ];
+        return (
+          <ContextMenu
+            position={trackMenu.position}
+            onClose={trackMenu.close}
+            items={items}
+            title={`Track · ${track.name}`}
+            minWidth="12rem"
+          />
+        );
+      })()}
     </div>
   );
 };
+

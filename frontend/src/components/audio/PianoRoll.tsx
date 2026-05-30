@@ -7,6 +7,7 @@ import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const NOTE_HEIGHT = 12;
 const HEADER_HEIGHT = 22;
@@ -158,6 +159,7 @@ export const PianoRoll: React.FC = () => {
   const setCurrentStep = usePianoRollStore((s) => s.setCurrentStep);
   const replaceAll = usePianoRollStore((s) => s.replaceAll);
   const clear = usePianoRollStore((s) => s.clear);
+  const noteMenu = useContextMenu<PianoNote>();
   const editingClipId = usePianoRollStore((s) => s.editingClipId);
   const setEditingClip = usePianoRollStore((s) => s.setEditingClip);
 
@@ -627,6 +629,7 @@ export const PianoRoll: React.FC = () => {
                     else setSelectedNote(n.id);
                   }}
                   onPointerDown={(e) => onNotePointerDown(e, n, 'body')}
+                  onContextMenu={(e) => { e.stopPropagation(); setSelectedNote(n.id); noteMenu.open(e, n); }}
                   className={`absolute rounded-sm border z-10 transition-colors ${selected ? 'bg-purple-400 border-white' : 'bg-purple-500 border-purple-700 hover:bg-purple-400'}`}
                   style={{ left, width, top: top + 1, height: NOTE_HEIGHT - 2 }}
                   title={`${noteLabel(n.note)} · step ${n.step + 1} · ${n.length} step${n.length === 1 ? '' : 's'}`}
@@ -653,9 +656,87 @@ export const PianoRoll: React.FC = () => {
           )}
         </span>
         <span className="text-[8px] font-mono text-zinc-600">
-          Click empty cell = add · Click note = select / second click = delete · Drag right edge = resize · Delete key removes selection
+          Click empty cell = add · Click note = select / second click = delete · Drag right edge = resize · Delete key removes selection · Right-click note for actions
         </span>
       </div>
+
+      {/* Right-click menu for a single note. */}
+      {(() => {
+        const n = noteMenu.payload;
+        if (!n) return null;
+        const clampVel = (v: number) => Math.max(1, Math.min(127, v));
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            label: 'Duplicate (after)',
+            hint: 'step+len',
+            onSelect: () => {
+              addNote({ note: n.note, step: n.step + n.length, length: n.length, velocity: n.velocity });
+            },
+          },
+          {
+            type: 'item',
+            label: 'Velocity +10',
+            hint: `${n.velocity}`,
+            disabled: n.velocity >= 127,
+            onSelect: () => updateNote(n.id, { velocity: clampVel(n.velocity + 10) }),
+          },
+          {
+            type: 'item',
+            label: 'Velocity −10',
+            hint: `${n.velocity}`,
+            disabled: n.velocity <= 1,
+            onSelect: () => updateNote(n.id, { velocity: clampVel(n.velocity - 10) }),
+          },
+          {
+            type: 'item',
+            label: 'Lengthen (+1 step)',
+            onSelect: () => updateNote(n.id, { length: n.length + 1 }),
+          },
+          {
+            type: 'item',
+            label: 'Shorten (−1 step)',
+            disabled: n.length <= 1,
+            onSelect: () => updateNote(n.id, { length: Math.max(1, n.length - 1) }),
+          },
+          {
+            type: 'item',
+            label: 'Nudge left',
+            disabled: n.step <= 0,
+            onSelect: () => updateNote(n.id, { step: Math.max(0, n.step - 1) }),
+          },
+          {
+            type: 'item',
+            label: 'Nudge right',
+            onSelect: () => updateNote(n.id, { step: n.step + 1 }),
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Clear all notes',
+            icon: <Trash2 className="w-3 h-3" />,
+            hint: `${notes.length}`,
+            onSelect: clear,
+          },
+          {
+            type: 'item',
+            label: 'Delete note',
+            hint: 'Del',
+            danger: true,
+            onSelect: () => removeNote(n.id),
+          },
+        ];
+        return (
+          <ContextMenu
+            position={noteMenu.position}
+            onClose={noteMenu.close}
+            items={items}
+            title={`${noteLabel(n.note)} · step ${n.step + 1}`}
+            minWidth="12rem"
+          />
+        );
+      })()}
     </div>
   );
 };
+

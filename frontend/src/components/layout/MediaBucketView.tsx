@@ -7,6 +7,7 @@ import { logError, logInfo } from '../../state/logStore';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { setAudioDragData } from '../../lib/audioDnD';
 import { useAppUiStore } from '../../state/appUiStore';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const fmtSize = (b: number): string => {
   if (b >= 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
@@ -27,6 +28,7 @@ export const MediaBucketView: React.FC = () => {
   const [dragOver, setDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
+  const itemMenu = useContextMenu<BucketItem>();
 
   const selectedAudio = useMemo(
     () => items.filter((it) => selectedIds.includes(it.id) && isAudio(it.mimeType, it.name)),
@@ -204,6 +206,15 @@ export const MediaBucketView: React.FC = () => {
                 key={item.id}
                 draggable={isAudio(item.mimeType, item.name)}
                 onClick={(e) => onRowClick(e, item.id)}
+                onContextMenu={(e) => {
+                  // Right-click selects the row first (unless it's part of a
+                  // multi-select) so the menu acts on what the user sees.
+                  if (!selectedIds.includes(item.id)) {
+                    setSelectedIds([item.id]);
+                    setSelectionAnchor(item.id);
+                  }
+                  itemMenu.open(e, item);
+                }}
                 onDragStart={(e) => {
                   e.dataTransfer.effectAllowed = 'copyMove';
                   e.dataTransfer.setData('text/plain', item.name);
@@ -277,6 +288,59 @@ export const MediaBucketView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Right-click menu for a bucket item. */}
+      {(() => {
+        const item = itemMenu.payload;
+        if (!item) return null;
+        const audio = isAudio(item.mimeType, item.name);
+        const batch = selectedIds.includes(item.id) && selectedAudio.length > 1;
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            label: batch ? `Send ${selectedAudio.length} to INIT (Chimera)` : 'Send to INIT',
+            icon: <Wand2 className="w-3 h-3" />,
+            hint: 'mix',
+            disabled: !audio,
+            onSelect: () => handleSendToInit(item),
+          },
+          {
+            type: 'item',
+            label: 'Send to editor (new track)',
+            icon: <Send className="w-3 h-3" />,
+            disabled: !audio,
+            onSelect: () => { void handleSendToEditor(item); },
+          },
+          {
+            type: 'item',
+            label: 'Save to library',
+            icon: <Library className="w-3 h-3" />,
+            disabled: !audio,
+            onSelect: () => { void handleSendToLibrary(item); },
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: batch ? `Remove ${selectedIds.length} from bucket` : 'Remove from bucket',
+            icon: <Trash2 className="w-3 h-3" />,
+            danger: true,
+            onSelect: () => {
+              if (batch) selectedIds.forEach((id) => remove(id));
+              else remove(item.id);
+            },
+          },
+        ];
+        return (
+          <ContextMenu
+            position={itemMenu.position}
+            onClose={itemMenu.close}
+            items={items}
+            title={item.name}
+            minWidth="12rem"
+          />
+        );
+      })()}
     </div>
   );
 };
+
