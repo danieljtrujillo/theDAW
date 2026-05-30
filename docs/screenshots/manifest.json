@@ -1,0 +1,279 @@
+{
+  "generatedAt": "2026-05-30T21:41:09.284Z",
+  "entries": [
+    {
+      "file": "01-shell-make.png",
+      "label": "01-shell-make",
+      "features": [
+        "shell-center-tabs-right-library",
+        "create-advanced-generation-templates-prompts-spectrograms",
+        "docs-modal-download-print-rag",
+        "assistant-orb-providers-keys-attachments"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§6 CREATE Tab",
+        "§22 Screenshot Manifest"
+      ],
+      "kind": "full",
+      "sourceScene": "01-shell-make"
+    },
+    {
+      "file": "01-shell-make__header-actions.png",
+      "label": "01-shell-make / header-actions",
+      "features": [
+        "docs-modal-download-print-rag",
+        "settings-feature-toggles-modules-admin",
+        "assistant-orb-providers-keys-attachments",
+        "vj-sidecar-tab-mobile-share"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§6 CREATE Tab",
+        "§22 Screenshot Manifest"
+      ],
+      "kind": "crop",
+      "sourceScene": "01-shell-make"
+    },
+    {
+      "file": "01-shell-make__make-controls.png",
+      "label": "01-shell-make / make-controls",
+      "features": [
+        "create-advanced-generation-templates-prompts-spectrograms",
+        "create-chimera-fusion-stack",
+        "create-mic-recorder-send-targets"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§6 CREATE Tab",
+        "§22 Screenshot Manifest"
+      ],
+      "kind": "crop",
+      "sourceScene": "01-shell-make"
+    },
+    {
+      "file": "02-library-with-showcase-selected.png",
+      "label": "02-library-with-showcase-selected",
+      "features": [
+        "library-backend-local-storage",
+        "media-bucket-routing"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "02-library-with-showcase-selected"
+    },
+    {
+      "file": "02-library-with-showcase-selected__library-details.png",
+      "label": "02-library-with-showcase-selected / library-details",
+      "features": [
+        "shell-center-tabs-right-library",
+        "library-backend-local-storage"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "02-library-with-showcase-selected"
+    },
+    {
+      "file": "03-library-actions-toolbar.png",
+      "label": "03-library-actions-toolbar",
+      "features": [
+        "library-stems-sidecar",
+        "library-midi-conversion",
+        "library-bundle-download-lineage-export",
+        "create-chimera-fusion-stack"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "03-library-actions-toolbar"
+    },
+    {
+      "file": "03-library-actions-toolbar__library-toolbar.png",
+      "label": "03-library-actions-toolbar / library-toolbar",
+      "features": [
+        "library-stems-sidecar",
+        "library-midi-conversion",
+        "library-bundle-download-lineage-export",
+        "create-chimera-fusion-stack"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "03-library-actions-toolbar"
+    },
+    {
+      "file": "04-library-download-submenu.png",
+      "label": "04-library-download-submenu",
+      "features": [
+        "library-bundle-download-lineage-export",
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "04-library-download-submenu"
+    },
+    {
+      "file": "04-library-download-submenu__download-submenu.png",
+      "label": "04-library-download-submenu / download-submenu",
+      "features": [
+        "library-bundle-download-lineage-export",
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "04-library-download-submenu"
+    },
+    {
+      "file": "05-library-entry-right-click.png",
+      "label": "05-library-entry-right-click",
+      "features": [
+        "library-stems-sidecar",
+        "library-midi-conversion",
+        "library-bundle-download-lineage-export",
+        "media-bucket-routing"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "05-library-entry-right-click"
+    },
+    {
+      "file": "05-library-entry-right-click__entry-context-menu.png",
+      "label": "05-library-entry-right-click / entry-context-menu",
+      "features": [
+        "library-stems-sidecar",
+        "library-midi-conversion",
+        "library-bundle-download-lineage-export",
+        "media-bucket-routing"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "05-library-entry-right-click"
+    },
+    {
+      "file": "06-learn-tab-3d-graph.png",
+      "label": "06-learn-tab-3d-graph",
+      "features": [
+        "library-bundle-download-lineage-export"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "06-learn-tab-3d-graph"
+    },
+    {
+      "file": "06-learn-tab-3d-graph__lineage-graph.png",
+      "label": "06-learn-tab-3d-graph / lineage-graph",
+      "features": [
+        "library-bundle-download-lineage-export"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "06-learn-tab-3d-graph"
+    },
+    {
+      "file": "07-settings-modal-with-shutdown.png",
+      "label": "07-settings-modal-with-shutdown",
+      "features": [
+        "settings-feature-toggles-modules-admin",
+        "backend-module-loader-settings"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "07-settings-modal-with-shutdown"
+    },
+    {
+      "file": "07-settings-modal-with-shutdown__settings-toggles.png",
+      "label": "07-settings-modal-with-shutdown / settings-toggles",
+      "features": [
+        "settings-feature-toggles-modules-admin",
+        "backend-module-loader-settings"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "07-settings-modal-with-shutdown"
+    },
+    {
+      "file": "08-vj-tab-loading.png",
+      "label": "08-vj-tab-loading",
+      "features": [
+        "vj-sidecar-tab-mobile-share"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "08-vj-tab-loading"
+    },
+    {
+      "file": "08-vj-tab-loading__vj-panel.png",
+      "label": "08-vj-tab-loading / vj-panel",
+      "features": [
+        "vj-sidecar-tab-mobile-share"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "08-vj-tab-loading"
+    },
+    {
+      "file": "09-chimera-cohort-multi-select.png",
+      "label": "09-chimera-cohort-multi-select",
+      "features": [
+        "create-chimera-fusion-stack",
+        "library-backend-local-storage"
+      ],
+      "docsSections": [
+        "§6 CREATE Tab",
+        "§9 LIBRARY Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "09-chimera-cohort-multi-select"
+    },
+    {
+      "file": "09-chimera-cohort-multi-select__chimera-multi-select.png",
+      "label": "09-chimera-cohort-multi-select / chimera-multi-select",
+      "features": [
+        "create-chimera-fusion-stack",
+        "library-backend-local-storage"
+      ],
+      "docsSections": [
+        "§6 CREATE Tab",
+        "§9 LIBRARY Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "09-chimera-cohort-multi-select"
+    }
+  ]
+}

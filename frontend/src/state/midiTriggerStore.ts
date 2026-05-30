@@ -19,8 +19,16 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 interface MidiTriggerState {
+  /** Master Web MIDI gate. Default OFF so the app never calls
+   *  navigator.requestMIDIAccess() at load — that call triggers Chrome's
+   *  Web MIDI permission prompt + a deprecation notice. We only request
+   *  access once the user explicitly turns MIDI on (the "MIDI" toggle, or
+   *  opening a MIDI mapper). */
+  enabled: boolean;
   /** When true, MIDI note-on events do NOT fire the piano synth voice. */
   audioMuted: boolean;
+  setEnabled: (enabled: boolean) => void;
+  toggleEnabled: () => void;
   setAudioMuted: (muted: boolean) => void;
   toggleAudioMuted: () => void;
 }
@@ -28,7 +36,10 @@ interface MidiTriggerState {
 export const useMidiTriggerStore = create<MidiTriggerState>()(
   persist(
     (set) => ({
+      enabled: false,
       audioMuted: false,
+      setEnabled: (enabled) => set({ enabled }),
+      toggleEnabled: () => set((s) => ({ enabled: !s.enabled })),
       setAudioMuted: (audioMuted) => set({ audioMuted }),
       toggleAudioMuted: () => set((s) => ({ audioMuted: !s.audioMuted })),
     }),
@@ -40,3 +51,13 @@ export const useMidiTriggerStore = create<MidiTriggerState>()(
 export function isMidiAudioMuted(): boolean {
   return useMidiTriggerStore.getState().audioMuted;
 }
+
+/** Turn MIDI on from non-React call sites (e.g. opening a MIDI mapper in
+ *  the piano roll / sequencer) so mapping works without hunting for the
+ *  toggle. No-op if already on. */
+export function enableMidi(): void {
+  if (!useMidiTriggerStore.getState().enabled) {
+    useMidiTriggerStore.getState().setEnabled(true);
+  }
+}
+

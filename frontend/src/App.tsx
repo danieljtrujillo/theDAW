@@ -11,11 +11,11 @@ import { LoadingScreen } from './components/layout/LoadingScreen';
 import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
 import { AssistantPanel } from './orb-kit/AssistantPanel';
 import { logInfo, logWarn } from './state/logStore';
-import { handleStableDAWAction } from './orb-kit/actionHandlers';
+import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
-import { isMidiAudioMuted } from './state/midiTriggerStore';
+import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
@@ -59,7 +59,7 @@ export default function App() {
   }, [refreshHealth]);
 
   useEffect(() => {
-    logInfo('system', 'The DAW UI initialized');
+    logInfo('system', 'theDAW UI initialized');
   }, []);
 
   // ── Global Web MIDI listener ───────────────────────────────────
@@ -68,7 +68,12 @@ export default function App() {
   // Velocity is preserved 0-127. note-off events stop nothing —
   // the synth voice has its own envelope that naturally decays.
   // Hot-plug aware via MIDIAccess.onstatechange.
+  const midiEnabled = useMidiTriggerStore((s) => s.enabled);
   useEffect(() => {
+    // Gated behind the master MIDI toggle: until the user turns MIDI on
+    // we never call requestMIDIAccess(), so Chrome's permission prompt +
+    // Web MIDI deprecation notice only appear on explicit opt-in.
+    if (!midiEnabled) return;
     if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
     let access: MIDIAccess | null = null;
     let cancelled = false;
@@ -136,10 +141,10 @@ export default function App() {
         access.onstatechange = null;
       }
     };
-  }, []);
+  }, [midiEnabled]);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {
-    const result = handleStableDAWAction(action);
+    const result = handletheDAWAction(action);
     logInfo('assistant', `Action: ${action.type} → ${result}`);
   }, []);
 
@@ -179,3 +184,5 @@ export default function App() {
     </>
   );
 }
+
+

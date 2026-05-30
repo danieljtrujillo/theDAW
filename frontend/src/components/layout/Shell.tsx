@@ -49,7 +49,30 @@ export const Shell: React.FC = () => {
   });
   const [copiedShareUrl, setCopiedShareUrl] = React.useState(false);
 
-  const detectedShareUrl = typeof window === 'undefined' ? '' : window.location.origin;
+  // LAN-reachable URL for this app (host:frontend-port), auto-detected
+  // from the backend so the QR points phones at a real address instead
+  // of localhost. Falls back to window.location.origin when there's no
+  // LAN IP (e.g. offline). Mirrors how the VJ tab builds its mobile QR.
+  const [lanUrl, setLanUrl] = React.useState('');
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/vj/lan-ip')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { lan_ip?: string | null } | null) => {
+        if (cancelled || !j?.lan_ip || typeof window === 'undefined') return;
+        const port = window.location.port || '5173';
+        setLanUrl(`http://${j.lan_ip}:${port}`);
+      })
+      .catch(() => {
+        /* no backend / no LAN — keep the origin fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const detectedShareUrl =
+    lanUrl || (typeof window === 'undefined' ? '' : window.location.origin);
   const shareUrl = shareUrlOverride.trim() || detectedShareUrl;
   const qrImageUrl = useMemo(
     () => `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(shareUrl)}`,
@@ -119,7 +142,7 @@ export const Shell: React.FC = () => {
     >
       {/* Full-width header — spans entire window including over the left panel */}
       <header className="h-10 border-b border-white/5 flex items-center justify-between px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
-        {/* Logo block — user moved "StableDAW" branding out of the
+        {/* Logo block — user moved "theDAW" branding out of the
             header center into this two-line logo at the left edge.
             Matches the SUBSTRATA / BY GANTASMO reference screenshot:
             an isometric stacked-cube icon + a chunky title + a
@@ -127,7 +150,7 @@ export const Shell: React.FC = () => {
         <div className="flex items-center gap-2 relative z-10 select-none">
           <BrandLogo />
           <div className="flex flex-col leading-none">
-            <span className="text-[13px] font-black uppercase tracking-widest text-zinc-100">The DAW</span>
+            <span className="text-[13px] font-black tracking-[0.18em] text-zinc-100">theDAW</span>
             <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by Gantasmo</span>
           </div>
         </div>
@@ -251,7 +274,7 @@ export const Shell: React.FC = () => {
             <div className="p-4 flex flex-col gap-4">
               <div className="flex justify-center">
                 <div className="p-3 rounded-lg bg-white shadow-[0_0_24px_rgba(16,185,129,0.16)]">
-                  <img src={qrImageUrl} alt="The DAW mobile access QR code" className="w-55 h-55" />
+                  <img src={qrImageUrl} alt="theDAW mobile access QR code" className="w-55 h-55" />
                 </div>
               </div>
 
@@ -374,7 +397,7 @@ const ShellBottomDock: React.FC = () => {
 
           {/* Multi body — flex-1, height = multiHeight. */}
           <div
-            className="min-w-0 border-r border-purple-500/15 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+            className={`min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)] ${isLogOpen ? 'border-r border-purple-500/15' : ''}`}
             style={{ height: isBottomOpen ? `${multiHeight}px` : 0 }}
           >
             {isBottomOpen && (
@@ -391,7 +414,7 @@ const ShellBottomDock: React.FC = () => {
           </div>
           {/* LOG body — width = rightPanelWidth, height = logHeight. */}
           <div
-            className="min-w-72 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+            className="min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
             style={{ height: isLogOpen ? `${logHeight}px` : 0 }}
           >
             {isLogOpen && (
@@ -429,7 +452,7 @@ const ShellBottomDock: React.FC = () => {
         {/* LOG strip section — right, width = rightPanelWidth.
             Internally: 40% LOG header (chevron-LEFT + label + count)
             | 60% CREATE action button. */}
-        <div className="min-w-72 bg-[#0a080f] flex items-stretch border-t border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
+        <div className="min-w-0 bg-[#0a080f] flex items-stretch border-t border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
           {/* LOG header — 40%. Chevron on the LEFT per user spec. */}
           <button
             type="button"
@@ -523,7 +546,7 @@ const ColumnResizeHandle: React.FC<ColumnResizeHandleProps> = ({ currentHeight, 
 const BrandLogo: React.FC = () => (
   <img
     src="/favicon.svg?v=4"
-    alt="The DAW logo"
+    alt="theDAW logo"
     className="w-7 h-7 shrink-0 rounded-md shadow-[0_0_12px_rgba(124,58,237,0.35)]"
     draggable={false}
   />
@@ -609,5 +632,7 @@ const TopBarButton: React.FC<TopBarButtonProps> = ({
     </button>
   );
 };
+
+
 
 

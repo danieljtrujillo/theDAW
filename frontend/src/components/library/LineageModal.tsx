@@ -47,7 +47,10 @@ type VizPreset =
   | 'particle-cloud'    // tiny billboard sprites + faint lines (codepen 'm00nb0y')
   | 'constellation'     // bright spheres with cyan haze, no particles (codepen 'hiteshsahu')
   | 'matrix-cube'       // wireframe cubes + arrow-only edges
-  | 'plasma';           // glowy octahedrons with thick particle streams
+  | 'plasma'            // glowy octahedrons with thick particle streams
+  | 'galaxy'            // glowing star-spheres, wide spread, heavy particle streams
+  | 'crystalline'       // faceted icosahedron gems, no particles, sharp links
+  | 'tron-grid';        // wireframe cubes on a glowing ground grid, neon edges
 
 type NodeShape =
   | 'sphere'
@@ -184,6 +187,54 @@ const PRESET_BUNDLES: Record<VizPreset, Partial<GraphAppearance>> = {
     particleSpeed: 0.012,
     background: 'midnight',
   },
+  // Glowing star-spheres flung wide (see PRESET_CHARGE) with heavy
+  // particle streams over the starfield — reads like a star map, not a
+  // tidy neural net.
+  'galaxy': {
+    nodeShape: 'sphere',
+    wireframe: false,
+    nodeSizeScale: 0.6,
+    linkWidth: 0.8,
+    linkOpacity: 0.28,
+    edgeCurve: 0.4,
+    particles: true,
+    particleSpeed: 0.009,
+    background: 'pure-black',
+  },
+  // Faceted low-poly gems, no particles, sharp straight links — angular
+  // and mineral rather than organic.
+  'crystalline': {
+    nodeShape: 'icosahedron',
+    wireframe: false,
+    nodeSizeScale: 1.3,
+    linkWidth: 1.0,
+    linkOpacity: 0.5,
+    edgeCurve: 0.0,
+    particles: false,
+    background: 'midnight',
+  },
+  // Wireframe cubes pinned over a glowing ground grid (see the grid
+  // effect) with hard neon edges — a Tron/cityscape feel.
+  'tron-grid': {
+    nodeShape: 'cube',
+    wireframe: true,
+    nodeSizeScale: 1.0,
+    linkWidth: 1.4,
+    linkOpacity: 0.7,
+    edgeCurve: 0.0,
+    particles: false,
+    background: 'pure-black',
+  },
+};
+
+// Per-preset force-charge override. Galaxy flings nodes wide for a
+// dispersed star-map; tron/crystalline sit a touch tighter than the
+// default so their structure reads. Anything absent uses DEFAULT_CHARGE.
+const DEFAULT_CHARGE = -90;
+const PRESET_CHARGE: Partial<Record<VizPreset, number>> = {
+  galaxy: -200,
+  'tron-grid': -70,
+  crystalline: -110,
 };
 
 const BG_COLORS: Record<GraphAppearance['background'], string> = {
@@ -1010,6 +1061,9 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
           { value: 'constellation',   label: 'Constellation' },
           { value: 'matrix-cube',     label: 'Matrix cubes' },
           { value: 'plasma',          label: 'Plasma' },
+          { value: 'galaxy',          label: 'Galaxy / orbital' },
+          { value: 'crystalline',     label: 'Crystalline / faceted' },
+          { value: 'tron-grid',       label: 'Tron grid' },
         ]}
         onChange={(v) => {
           const next = v as VizPreset;
@@ -1372,8 +1426,8 @@ const Graph3DView: React.FC<{
       } | null;
     } | null;
     if (ref?.d3Force) {
-      ref.d3Force('charge')?.strength?.(-90);
-      ref.d3Force('link')?.distance?.(18);
+      ref.d3Force('charge')?.strength?.(PRESET_CHARGE[appearance.vizPreset] ?? DEFAULT_CHARGE);
+      ref.d3Force('link')?.distance?.(appearance.vizPreset === 'galaxy' ? 28 : 18);
     }
     const timeouts = [350, 1200, 2500].map((ms) =>
       setTimeout(() => {
@@ -1386,7 +1440,7 @@ const Graph3DView: React.FC<{
       }, ms),
     );
     return () => timeouts.forEach(clearTimeout);
-  }, [data, appearance.renderMode]);
+  }, [data, appearance.renderMode, appearance.vizPreset]);
 
   // Cluster tint: when ON (and 3D), add a translucent halo sphere
   // centered on each per-source centroid so the user can see source-
@@ -1605,6 +1659,122 @@ const Graph3DView: React.FC<{
     }
   }, [appearance.renderMode, appearance.vizPreset, data]);
 
+  // Tron-grid preset: lay a glowing ground GridHelper under the nodes,
+  // injected straight into the Three.js scene (like the starfield) and
+  // removed whenever any other preset is active.
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    let cancelled = false;
+    let teardown: (() => void) | null = null;
+    const removeExisting = () => {
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = (ref?.scene?.() ?? null) as import('three').Scene | null;
+      const prior = scene?.getObjectByName('__lineage_grid__');
+      if (prior && scene) scene.remove(prior);
+    };
+    const run = async () => {
+      const THREE = threeRef.current ?? (await import('three'));
+      threeRef.current = THREE;
+      if (cancelled) return;
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = (ref?.scene?.() ?? null) as import('three').Scene | null;
+      if (!scene) return;
+      removeExisting();
+      if (appearance.vizPreset !== 'tron-grid') return;
+      const grid = new THREE.GridHelper(1400, 70, 0x22d3ee, 0x0e7490);
+      grid.name = '__lineage_grid__';
+      const mat = grid.material as import('three').Material & {
+        opacity?: number;
+        transparent?: boolean;
+      };
+      mat.transparent = true;
+      mat.opacity = 0.22;
+      grid.position.y = -140;
+      scene.add(grid);
+      teardown = () => {
+        scene.remove(grid);
+        grid.geometry.dispose();
+      };
+    };
+    const t = setTimeout(() => void run(), 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      teardown?.();
+      removeExisting();
+    };
+  }, [appearance.renderMode, appearance.vizPreset, data]);
+
+  // Selection "handle": scale the selected node's group up so both the
+  // click target and the visual selection read clearly. Walks the scene
+  // like the hover-dim effect; resets every group to 1 when nothing is
+  // selected. (Node groups carry userData.nodeId from nodeThreeObject.)
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    const ref = fgRef.current as { scene?: () => unknown } | null;
+    const scene = (ref?.scene?.() ?? null) as {
+      traverse?: (cb: (o: unknown) => void) => void;
+    } | null;
+    if (!scene?.traverse) return;
+    type GroupLike = {
+      userData?: { nodeId?: string };
+      scale?: { setScalar?: (n: number) => void };
+    };
+    scene.traverse((obj: unknown) => {
+      const g = obj as GroupLike;
+      const id = g.userData?.nodeId;
+      if (!id || !g.scale?.setScalar) return;
+      g.scale.setScalar(id === selectedId ? 1.8 : 1);
+    });
+  }, [selectedId, appearance.renderMode, data]);
+
+  // WASD / arrow-key fly controls (3D). W/S dolly along the view
+  // direction, A/D strafe, Q/E raise/lower. Hold Shift for a bigger
+  // step. Ignored while typing in the search box so keys don't hijack
+  // text entry.
+  useEffect(() => {
+    if (appearance.renderMode !== '3d') return;
+    const MOVE: Record<string, [number, number, number]> = {
+      w: [0, 0, 1], arrowup: [0, 0, 1],
+      s: [0, 0, -1], arrowdown: [0, 0, -1],
+      a: [-1, 0, 0], arrowleft: [-1, 0, 0],
+      d: [1, 0, 0], arrowright: [1, 0, 0],
+      q: [0, -1, 0], e: [0, 1, 0],
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      const dir = MOVE[ev.key.toLowerCase()];
+      if (!dir) return;
+      const THREE = threeRef.current;
+      const ref = fgRef.current as {
+        camera?: () => import('three').PerspectiveCamera;
+        controls?: () => { target?: import('three').Vector3; update?: () => void } | null;
+      } | null;
+      if (!THREE || !ref?.camera) return;
+      ev.preventDefault();
+      const cam = ref.camera();
+      const controls = ref.controls?.() ?? null;
+      const step = ev.shiftKey ? 70 : 28;
+      const forward = new THREE.Vector3();
+      cam.getWorldDirection(forward);
+      forward.y = 0;
+      forward.normalize();
+      const right = new THREE.Vector3().crossVectors(forward, cam.up).normalize();
+      const delta = new THREE.Vector3()
+        .addScaledVector(forward, dir[2] * step)
+        .addScaledVector(right, dir[0] * step)
+        .addScaledVector(cam.up, dir[1] * step);
+      cam.position.add(delta);
+      if (controls?.target) {
+        controls.target.add(delta);
+        controls.update?.();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [appearance.renderMode]);
+
   if (connected.nodes.length === 0) {
     return (
       <p className="absolute inset-0 flex items-center justify-center text-[10px] text-zinc-500 italic px-12 text-center">
@@ -1760,7 +1930,7 @@ const Graph3DView: React.FC<{
           ref={fgRef}
           graphData={data}
           nodeAutoColorBy="source"
-          nodeRelSize={5}
+          nodeRelSize={7}
           backgroundColor={bgColor}
           showNavInfo={false}
           controlType={appearance.controlType}
@@ -1805,7 +1975,7 @@ const Graph3DView: React.FC<{
         <ForceGraph2D
           ref={fgRef}
           graphData={data}
-          nodeRelSize={5}
+          nodeRelSize={7}
           backgroundColor={bgColor}
           // Node drag is on by default in ForceGraph2D — being explicit
           // here so a refactor doesn't silently disable it. Each node is
@@ -1893,7 +2063,7 @@ const Graph3DView: React.FC<{
       />
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
         {appearance.renderMode === '3d'
-          ? 'click-drag rotate · right-click-drag pan · wheel zoom · click node for details · right-click node for actions'
+          ? 'click-drag rotate · right-click-drag pan · wheel zoom · WASD/arrows fly (Q/E up-down, ⇧ faster) · click node for details · right-click node for actions'
           : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
         {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
       </div>
@@ -2136,3 +2306,4 @@ function escapeHtml(s: string): string {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c
   ));
 }
+

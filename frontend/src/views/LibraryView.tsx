@@ -480,7 +480,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     }
   };
 
-  const handleSendToEditor = (entry: LibraryEntry) => void sendEntryToTrack(entry, 'first-track-tail');
+  // One "send to editor" action — always appends as a new track at the
+  // end of the timeline (the user collapsed the old append-to-track-1 +
+  // new-track pair into a single button).
   const handleSendToNewTrack = (entry: LibraryEntry) => void sendEntryToTrack(entry, 'new-track');
 
   const patchGenParams = useGenerateParamsStore((s) => s.patch);
@@ -908,15 +910,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
                         </button>
                         <button
                           className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); handleSendToEditor(entry); }}
-                          title="Append to first editor track"
-                        >
-                          <Scissors className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
-                        </button>
-                        <button
-                          className="p-1 hover:bg-white/10 rounded"
                           onClick={(e) => { e.stopPropagation(); handleSendToNewTrack(entry); }}
-                          title="Send to editor as a NEW track"
+                          title="Send to editor as a new track"
                         >
                           <Layers className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
                         </button>
@@ -1430,12 +1425,6 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
     menuItems = [
       {
         type: 'item',
-        label: 'Append to editor',
-        icon: <Scissors className="w-3 h-3" />,
-        onSelect: () => { void sendAudioToEditor(sendable, 'editor-first-track'); },
-      },
-      {
-        type: 'item',
         label: 'Send to editor (new track)',
         icon: <Layers className="w-3 h-3" />,
         onSelect: () => { void sendAudioToEditor(sendable, 'editor-new-track'); },
@@ -1524,4 +1513,5 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
     </div>
   );
 };
+
 

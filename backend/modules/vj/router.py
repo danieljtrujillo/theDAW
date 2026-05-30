@@ -12,7 +12,7 @@ Endpoints:
   * POST /api/vj/stop    — terminates the sidecar.
 
 The module also auto-spawns the VJ dev server on backend startup
-(unless STABLEDAW_VJ_NO_AUTO_SPAWN is set) so by the time the user
+(unless theDAW_VJ_NO_AUTO_SPAWN is set) so by the time the user
 clicks the VJ tab, the iframe loads instantly.
 """
 
@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import threading
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from . import sidecar
+from . import export, sidecar
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _maybe_auto_spawn() -> None:
     on the first /status / /url request so the heavy npm-install on
     first run doesn't block the request thread."""
     global _auto_spawn_started
-    if os.environ.get("STABLEDAW_VJ_NO_AUTO_SPAWN"):
+    if os.environ.get("theDAW_VJ_NO_AUTO_SPAWN"):
         return
     with _auto_spawn_lock:
         if _auto_spawn_started:
@@ -101,6 +103,14 @@ def get_mobile() -> dict:
     return {"mobile_url": mobile_url, "lan_ip": sidecar.detect_lan_ip()}
 
 
+@router.get("/lan-ip")
+def get_lan_ip() -> dict:
+    """Just this machine's LAN IPv4 (or null), without spawning the VJ
+    sidecar. The main app uses it to build a phone-reachable QR for its
+    OWN URL (host:frontend-port) — not the VJ's mobile_url."""
+    return {"lan_ip": sidecar.detect_lan_ip()}
+
+
 @router.get("/status")
 def get_status() -> dict:
     """Non-spawning diagnostics. Returns probe() output verbatim plus
@@ -129,3 +139,75 @@ def post_stop() -> dict:
     live process (false = nothing was running)."""
     stopped = sidecar.stop()
     return {"ok": True, "stopped": stopped}
+
+
+def _export_root() -> str:
+    """Read settings.vj.export_root, defaulting to 'exports/vj'. Imported
+    lazily so the VJ module doesn't hard-depend on the settings module at
+    import time (module load order is alphabetical)."""
+    try:
+        from ..settings.router import get_store
+
+        root = get_store().get_value("vj", "export_root", "exports/vj")
+        return str(root or "exports/vj")
+    except Exception as e:  # noqa: BLE001 — fall back to the default root
+        log.warning("vj.router: could not read export_root setting: %s", e)
+        return "exports/vj"
+
+
+@router.post("/export")
+def post_export(
+    file: UploadFile = File(...),
+    codec: str = Form("h264"),
+    resolution: str = Form("1080p"),
+    subfolder: str = Form(""),
+) -> dict:
+    """Receive a browser-recorded ``.webm`` take and transcode it to the
+    chosen codec (with audio muxed in), writing it under
+    ``<export_root>/<subfolder>/``. Returns the absolute saved path.
+
+    ``resolution`` is informational — the take is already captured at the
+    selected resolution, so we transcode without rescaling.
+    """
+    codec_key = (codec or "h264").lower().strip()
+    if codec_key not in export.SUPPORTED_CODECS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported codec {codec!r}. Use one of {export.SUPPORTED_CODECS}.",
+        )
+
+    try:
+        out_dir = export.resolve_export_dir(_export_root(), subfolder)
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"Could not create export folder: {e}"
+        ) from e
+
+    # Spool the upload to a temp .webm so ffmpeg has a real file to read.
+    tmp = tempfile.NamedTemporaryFile(prefix="vj_take_", suffix=".webm", delete=False)
+    try:
+        with tmp:
+            data = file.file.read()
+            if not data:
+                raise HTTPException(status_code=400, detail="Empty recording upload.")
+            tmp.write(data)
+        src = Path(tmp.name)
+        try:
+            out_path = export.transcode(src, codec_key, out_dir)
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    log.info("vj.export: wrote %s (%s)", out_path, codec_key)
+    return {
+        "ok": True,
+        "path": str(out_path),
+        "filename": out_path.name,
+        "codec": codec_key,
+        "resolution": resolution,
+        "folder": str(out_dir),
+    }

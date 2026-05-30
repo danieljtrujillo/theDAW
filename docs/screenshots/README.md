@@ -1,10 +1,16 @@
-# StableDAW screenshots
+# theDAW screenshots
 
 Captured by the playwright-driven script at
 [`scripts/screenshots/capture.ts`](../../scripts/screenshots/capture.ts).
 Each scene drives the live app through a real interaction sequence
 and snaps the resulting state — these are features **in action**,
 not just the chrome.
+
+The same runner now also emits targeted cropped screenshots for
+feature-level documentation. The canonical mapping lives in
+[`scripts/screenshots/specs.ts`](../../scripts/screenshots/specs.ts),
+and generated manifests are written as `manifest.json` and
+`manifest.md` in this directory.
 
 ## How to regenerate
 
@@ -26,7 +32,16 @@ not just the chrome.
    ```
 
 3. PNGs land in this directory, ready to be committed or pasted
-   into the README.
+   into the README. Full scenes use `<scene-id>.png`; crops use
+   `<scene-id>__<crop-id>.png`.
+
+4. Regenerate the feature/docs coverage report whenever screenshot
+   specs change:
+
+   ```cmd
+   cd frontend
+   npm exec -- tsx ../scripts/screenshots/featureCoverage.ts
+   ```
 
 ## Run only one scene
 
@@ -55,20 +70,31 @@ array). Comma-separate to run several.
 
 ## Scene index
 
-| # | File | Shows |
-|---|------|-------|
-| 01 | `01-shell-make.png` | App on MAKE tab, top bar + tabs visible. |
-| 02 | `02-library-with-showcase-selected.png` | Library panel with the showcase track selected. |
-| 03 | `03-library-actions-toolbar.png` | Icon-only toolbar (SELECT / DOWNLOAD / DELETE / FUSE / INPAINT / OPTIONS) with selection. |
-| 04 | `04-library-download-submenu.png` | DOWNLOAD submenu open showing Songs / MIDI / JSON / Bundle / Lineage. |
-| 05 | `05-library-entry-right-click.png` | Per-row right-click menu (Send to Init, Run analysis, Separate stems, Convert to MIDI, Download bundle, Show lineage). |
-| 06 | `06-learn-tab-3d-graph.png` | LEARN tab — 3D lineage graph with cluster halos and node-details panel. |
-| 07 | `07-settings-modal-with-shutdown.png` | SETTINGS modal — pinned Restart + Shutdown footer at the bottom. |
-| 08 | `08-vj-tab-loading.png` | VJ tab — either the loading state during sidecar spawn or the iframe ready state. |
-| 09 | `09-chimera-cohort-multi-select.png` | Library with a multi-track cohort selected (FUSE-ready). |
+| # | File | Shows | Feature IDs |
+|---|------|-------|-------------|
+| 01 | `01-shell-make.png` | App on MAKE tab, top bar + tabs visible. Crops: `header-actions`, `make-controls`. | `shell-center-tabs-right-library`, `create-advanced-generation-templates-prompts-spectrograms`, `docs-modal-download-print-rag`, `assistant-orb-providers-keys-attachments` |
+| 02 | `02-library-with-showcase-selected.png` | Library panel with the showcase track selected. Crop: `library-details`. | `library-backend-local-storage`, `media-bucket-routing` |
+| 03 | `03-library-actions-toolbar.png` | Icon-only toolbar (SELECT / DOWNLOAD / DELETE / FUSE / INPAINT / OPTIONS) with selection. Crop: `library-toolbar`. | `library-stems-sidecar`, `library-midi-conversion`, `library-bundle-download-lineage-export`, `create-chimera-fusion-stack` |
+| 04 | `04-library-download-submenu.png` | DOWNLOAD submenu open showing Songs / MIDI / JSON / Bundle / Lineage. Crop: `download-submenu`. | `library-bundle-download-lineage-export`, `library-midi-conversion` |
+| 05 | `05-library-entry-right-click.png` | Per-row right-click menu (Send to Init, Run analysis, Separate stems, Convert to MIDI, Download bundle, Show lineage). Crop: `entry-context-menu`. | `library-stems-sidecar`, `library-midi-conversion`, `library-bundle-download-lineage-export`, `media-bucket-routing` |
+| 06 | `06-learn-tab-3d-graph.png` | LEARN tab — 3D lineage graph with cluster halos and node-details panel. Crop: `lineage-graph`. | `library-bundle-download-lineage-export` |
+| 07 | `07-settings-modal-with-shutdown.png` | SETTINGS modal — pinned Restart + Shutdown footer at the bottom. Crop: `settings-toggles`. | `settings-feature-toggles-modules-admin`, `backend-module-loader-settings` |
+| 08 | `08-vj-tab-loading.png` | VJ tab — either the loading state during sidecar spawn or the iframe ready state. Crop: `vj-panel`. | `vj-sidecar-tab-mobile-share` |
+| 09 | `09-chimera-cohort-multi-select.png` | Library with a multi-track cohort selected (FUSE-ready). Crop: `chimera-multi-select`. | `create-chimera-fusion-stack`, `library-backend-local-storage` |
+
+## Crop asset rules
+
+- Define every crop in `scripts/screenshots/specs.ts`; do not hardcode
+  crop rectangles inside scene functions.
+- Keep rectangles inside the shared 1920×1080 viewport.
+- Prefer one strong crop reused by multiple feature IDs over many nearly
+  identical screenshots.
+- When UI layout changes, update the spec, rerun screenshots, then rerun
+  `featureCoverage.ts` so manifests stay aligned.
 
 ## Headless-vs-headed
 
 The script runs headless by default. To watch the browser drive
-through the scenes, edit `capture.ts` and change `headless: true`
-to `headless: false`. Useful for diagnosing a flaky scene.
+through the scenes, set `HEADED=1` before running the script. Useful
+for diagnosing a flaky scene or validating crop bounds visually.
+
