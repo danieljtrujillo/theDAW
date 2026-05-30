@@ -43,12 +43,20 @@ export interface IdleSettings {
   respect_vram_pressure: boolean;
 }
 
+export interface VjSettings {
+  /** Root folder for VJ recording exports. Relative paths resolve
+   *  against the backend project root; absolute paths are used as-is.
+   *  Each take also lands in a per-export subfolder named in the VJ bar. */
+  export_root: string;
+}
+
 export interface FeatureSettings {
   schema_version: number;
   analysis: AnalysisSettings;
   stems: StemsSettings;
   midi: MidiSettings;
   idle: IdleSettings;
+  vj: VjSettings;
 }
 
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
@@ -75,6 +83,9 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
     min_idle_seconds: 30,
     respect_vram_pressure: true,
   },
+  vj: {
+    export_root: 'exports/vj',
+  },
 };
 
 interface FeatureToggleState {
@@ -97,6 +108,7 @@ function mergeSettings(base: FeatureSettings, patch: DeepPartial<FeatureSettings
     stems: { ...base.stems, ...(patch.stems ?? {}) },
     midi: { ...base.midi, ...(patch.midi ?? {}) },
     idle: { ...base.idle, ...(patch.idle ?? {}) },
+    vj: { ...base.vj, ...(patch.vj ?? {}) },
   };
   if (patch.schema_version != null) next.schema_version = patch.schema_version;
   return next;
@@ -150,3 +162,4 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
     },
   ),
 );
+

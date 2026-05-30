@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Mic, Square, Play, Pause, Trash2, Wand2, PenLine, Scissors, Layers, Save, X,
+  Mic, Square, Play, Pause, Trash2, Wand2, PenLine, Layers, Save, X,
 } from 'lucide-react';
 import { logError, logInfo } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
@@ -355,7 +355,6 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
         <div className="flex flex-col gap-1.5 pt-1 border-t border-white/5">
           <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Send recording to</span>
           <div className="grid grid-cols-2 gap-1">
-            <SendBtn icon={Scissors} label="Editor (append)" onClick={() => handleSendEditor('editor-first-track')} disabled={busy} />
             <SendBtn icon={Layers}   label="Editor (new track)" onClick={() => handleSendEditor('editor-new-track')} disabled={busy} />
             <SendBtn icon={Wand2}    label="Init audio" onClick={handleSendInit} disabled={busy} />
             <SendBtn icon={PenLine}  label="Inpaint" onClick={handleSendInpaint} disabled={busy} />
@@ -410,3 +409,4 @@ const SendBtn: React.FC<{
     {label}
   </button>
 );
+

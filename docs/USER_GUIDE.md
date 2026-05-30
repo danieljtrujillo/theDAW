@@ -1,6 +1,8 @@
-# Stable Audio 3 — StableDAW User Guide
+# Stable Audio 3 — theDAW User Guide
 
-Complete reference for the StableDAW platform: the upstream Stable Audio 3 ML pipeline, the FastAPI backend that wraps it, and the StableDAW React interface built on top. The in-app **Docs** button renders this document as an interactive modal with PDF export.
+Complete reference for the theDAW platform: the upstream Stable Audio 3 ML pipeline, the FastAPI backend that wraps it, and the theDAW React interface built on top. The in-app **Docs** button renders this document as an interactive modal with Markdown download and browser print/PDF export.
+
+> **Feature audit:** This guide was audited against tracked code plus local `repomix-output.md` context on 2026-05-29. Coverage artifacts are generated at `docs/reports/feature-doc-coverage-report.md` and `docs/reports/feature-doc-coverage.json`; repomix remains gitignored and must not be staged.
 
 ---
 
@@ -27,6 +29,7 @@ Complete reference for the StableDAW platform: the upstream Stable Audio 3 ML pi
 19. [LoRA Adapter Types](#19-lora-adapter-types)
 20. [Troubleshooting](#20-troubleshooting)
 21. [Development Workflows](#21-development-workflows)
+22. [Feature Coverage and Screenshot Evidence](#22-feature-coverage-and-screenshot-evidence)
 
 ---
 
@@ -44,16 +47,14 @@ Complete reference for the StableDAW platform: the upstream Stable Audio 3 ML pi
 
 ## 2. Architecture
 
-```
-Browser (:5173 dev / static serve in prod)
-  ↓ fetch('/api/...')
-FastAPI backend (:8600)
-  ↓ pipeline.generate(...)  /  subprocess.run(ffmpeg ...)
-StableAudioModel
-  ├── T5Gemma text encoder       models/conditioners.py
-  ├── DiT diffusion transformer  models/dit.py → models/transformer.py
-  └── SAME autoencoder           models/autoencoders.py
-```
+Request flow:
+
+- Browser (`:5173` in dev / static in prod) calls `/api/...`.
+- FastAPI backend (`:8600`) handles HTTP and dispatches generation/effects work.
+- `StableAudioModel` composes:
+  - T5Gemma text encoder (`models/conditioners.py`)
+  - DiT diffusion transformer (`models/dit.py` → `models/transformer.py`)
+  - SAME autoencoder (`models/autoencoders.py`)
 
 ### Two-stage generation
 
@@ -156,39 +157,33 @@ uv run python run_gradio.py --model medium --lora-ckpt-path path/to/lora.safeten
 
 The application window is divided into three persistent regions:
 
-```
-┌──────────────────────┬───────────────────────────────────────┐
-│  LEFT PANEL          │  DAW WORKSPACE (center)               │
-│  (resizable)         │                                       │
-│                      │  ┌─────────────────────────────────┐  │
-│  STABLEDAW logo      │  │ Mode toolbar (Editor/Sequencer) │  │
-│  Tab strip:          │  ├─────────────────────────────────┤  │
-│    CREATE            │  │ Timeline or Step grid           │  │
-│    EDIT              │  │                                 │  │
-│    TRAIN             │  ├─────────────────────────────────┤  │
-│    LIBRARY           │  │ Bottom panel (collapsible)      │  │
-│                      │  │ Spectral/Details/Piano/Bucket   │  │
-│  View content        │  └─────────────────────────────────┘  │
-│  (per-tab accordion) │                                       │
-│                      │                                       │
-│  RUN CTA (sticky)    │                                       │
-│  Processing Log      │                                       │
-└──────────────────────┴───────────────────────────────────────┘
-│  PLAYER FOOTER (fixed, z-50)                                  │
-└───────────────────────────────────────────────────────────────┘
-```
+Layout summary:
 
-**Full-width header:** a fixed bar spanning the entire window width. Contains: left-panel collapse/reveal toggle (chevron), the StableDAW logo dot, a global search input, and action buttons (Docs, Settings, User avatar, AI Assistant orb).
+- **Left panel** (resizable): brand, tab/controls content, run CTA, processing log.
+- **Center workspace**: mode toolbar, main timeline/grid area, collapsible bottom multi-tab panel.
+- **Player footer**: fixed transport bar across the bottom of the app.
+
+**Full-width header:** a fixed bar spanning the entire window width. Contains: left-panel collapse/reveal toggle (chevron), the theDAW logo dot, a global search input, and action buttons (Docs, mobile access QR/link, Settings, User avatar, AI Assistant orb).
 
 **Left panel resize:** drag the vertical handle on the panel's right edge. Range: 300 px to 500 px.
 
-**Left panel collapse:** click the chevron in the header. The DAW workspace expands to full width. Click again to restore.
+**Left panel collapse:** click the chevron in the header. theDAW workspace expands to full width. Click again to restore.
 
-**Tab switching:** tabs (CREATE / EDIT / TRAIN / LIBRARY) swap the accordion content in the left panel. The DAW workspace remains in place across all tab selections.
+**Center tab switching:** the active workspace is controlled by the center tab bar in the locked order **MAKE / EDIT / MIX / TRAIN / LEARN / DJ / VJ** (`CENTER_TABS`). Legacy navigation targets such as CREATE, EDIT, TRAIN, and LIBRARY are translated into these center tabs so assistant actions, library sends, and older shortcuts still route correctly. theDAW workspace remains in place across all tab selections.
 
-**AI Assistant panel:** click the orb icon in the header to open the collapsible assistant panel. Streams chat from any configured LLM provider with RAG context sourced from this user guide. See [§16.9](#169-assistant) for the API reference.
+**Right-side library rail:** the Library is now a collapsible right-side panel rather than only a legacy left tab. Use the library button in the center tab bar to expand/collapse it; the rail width persists between 280 px and 640 px. This lets MAKE, MIX, LEARN, VJ, and editor workflows stay visible while selecting or routing library material.
+
+**Docs modal:** click the Docs button in the header to open this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables/code blocks, raw Markdown download, and browser print/PDF export. The assistant RAG index is built from the same guide, so doc updates improve in-app help and AI context together.
+
+**Mobile access share:** click the QR/link button in the header to copy or scan the current LAN/tunnel URL for mobile performance access. This is especially useful with the VJ tab and any browser-based controller/viewer.
+
+**AI Assistant panel:** click the orb icon in the header to open the collapsible assistant panel. Streams chat from any configured LLM provider with RAG context sourced from this user guide, supports file attachments and voice input, and exposes provider/key-pool controls. See [§16.11](#1611-assistant) for the API reference.
 
 **Viewport scaling:** the UI applies a CSS `zoom` factor based on viewport width (0.85 at < 1440 px; 0.95 at 1440–1919 px; 1.1 at ≥ 1920 px). Shell height calculations compensate so the layout tiles cleanly to the footer.
+
+![UI shell with center tabs and right library rail](screenshots/01-shell-make.png)
+
+![Header actions (Docs, share, settings, assistant)](screenshots/01-shell-make__header-actions.png)
 
 ---
 
@@ -226,6 +221,25 @@ The Advanced Generation Panel provides a dense layout for configuration.
 - **Saved Prompts Dropdown** maintains a history of frequently used user-defined prompts.
 - **Spectrogram Viewer** displays Mel, STFT, Chromagram, and CQT visualizations of generated audio.
 
+Templates and saved prompts are stored in browser local storage and are intended for rapid iteration. The prompt sparkle action calls the assistant prompt enhancer (`/api/assistant/chat`) when text already exists, or inserts a sample prompt when empty.
+
+### 6.3.1 Chimera Fusion Stack
+
+Chimera fuses two or more audio clips into a single init signal before generation. Clips can be sent from the Library toolbar/context menu, Media Bucket, microphone recorder, or other send targets.
+
+| Control | Description |
+|---|---|
+| **CHIMERA banner** | Always-visible status strip at the top of MAKE. Shows stack count and jumps to the Init Audio card. |
+| **Target BPM** | `auto` uses the selected base clip BPM, median detected BPM, or 120 BPM fallback. A numeric value forces a target. |
+| **Base clip** | Optional reference clip. When set, its BPM and/or duration can drive the fusion target. |
+| **Noise / influence** | Per-clip noise slider maps to backend `weights`; higher noise means less influence on the fused output. |
+| **Align mode** | `start` aligns clips from time zero, `downbeat` trims to detected first beats, and `weave` schedules chunks into an arrangement arc. |
+| **Weave controls** | Chunk bars, total bars, and max polyphony shape the generated arrangement when `align_mode=weave`. |
+
+Rendering posts to `POST /api/chimera/mashup`, normalizes inputs to 44.1 kHz stereo, detects tempo/beats, time-stretches clips, and returns a WAV File plus metadata (`target_bpm_used`, per-clip stretch ratios, warnings). The fused result can then be used as Init Audio for Stable Audio generation.
+
+![Chimera multi-select cohort and stack flow](screenshots/09-chimera-cohort-multi-select__chimera-multi-select.png)
+
 ### 6.4 INIT SIGNAL / CONDITIONING
 
 Audio-to-audio mode. Upload a source file via the dropzone to condition the model on existing audio.
@@ -234,6 +248,16 @@ Audio-to-audio mode. Upload a source file via the dropzone to condition the mode
 - **Type** — `Audio` (standard) or `RF-Inv` (RF-Inversion, only meaningful with `-rf` model variants).
 
 Removing the source file returns the form to text-to-audio mode.
+
+### 6.4.1 Microphone Recorder
+
+The browser-side Mic Recorder uses `navigator.mediaDevices.getUserMedia` plus `MediaRecorder` to capture live audio without leaving the app. Supported browser encodings are selected in order: WebM/Opus, OGG/Opus, MP4/AAC, then WAV fallback.
+
+After recording, the review card can:
+- play/pause the take inline;
+- send it to a new editor track or the first editor track tail;
+- send it to Init Audio or Inpaint Audio;
+- import it into the disk-backed Library through `POST /api/library/import` so stems, MIDI conversion, lineage, and bundle downloads can run against it later.
 
 ### 6.5 INPAINTING / REGEN REGION
 
@@ -330,6 +354,17 @@ All effects are dispatched to `ffmpeg` via `subprocess.run`. Server-side bounds 
 
 The last 8 processing invocations are retained in the store. Any item in the history list can be selected and promoted to the current source via **Reuse as source**.
 
+### 7.5 Advanced Editor Panel
+
+The advanced editor surface expands the basic EDIT flow into a categorized chain builder for mastering, dynamics, EQ, tempo, cleanup, and export operations.
+
+- **Effect catalog:** categories expose the same FFmpeg-backed processors as the standard FX chain, with list/tile view modes and color-coded groups.
+- **Chain processing:** add multiple effects, toggle individual rows active/inactive, reorder the chain, and clear it in one action.
+- **Parameter editing:** each effect displays bounded sliders and numeric fields sourced from `PARAM_BOUNDS` / `EFFECT_CATALOG`.
+- **Source/output waveform previews:** uploaded or dragged-in files show waveform previews plus peak, RMS, sample-rate, and duration stats.
+- **Resizable columns:** sidebar and chain columns can be dragged wider/narrower for dense mixing sessions.
+- **Library drag-in:** library entries use the `application/x-stabledaw-library-id` transfer protocol so a persisted track can become the source file without a manual download.
+
 ---
 
 ## 8. TRAIN Tab
@@ -371,7 +406,7 @@ Long-running training jobs are tracked via `GET /api/jobs/{id}` polled at 1-seco
 
 ### Purpose
 
-Persistent storage for all generated audio, backed by IndexedDB (`sa3-library` database, `generations` object store). Entries survive page reloads and browser restarts within the same origin.
+Persistent storage for generated, imported, processed, recorded, and fused audio. The default provider is **backend-local**: metadata is mirrored through `/api/library/*`, audio is stored on disk under `data/generations/`, and playback uses range-streamed file responses so large tracks can scrub without loading the full file into memory. Older browser-local IndexedDB behavior is superseded by this provider but the frontend still keeps transient Blob caches for efficient repeated use in a session.
 
 ### 9.1 Automatic Entry Creation
 
@@ -401,7 +436,7 @@ Each entry stores:
 }
 ```
 
-Waveform editor mixdowns are also auto-saved here on commit, with `source: 'editor-mixdown'` and all generation fields set to their neutral defaults.
+Waveform editor mixdowns, studio outputs, mic recordings, imports, and Chimera renders can also be saved here. Server records expose `audio_url`, `audio_filename`, `file_size_bytes`, mutable `favorite`, `rating`, `tags`, `notes`, and optional `chimera_sources` fields. User edits are persisted with `PATCH /api/library/entries/{id}`.
 
 ### 9.2 List and Grid Views
 
@@ -424,11 +459,54 @@ Toggle between a dense **List** view (one row per entry) and a **Grid** view (ti
 | **Scissors icon** | Decodes the audio Blob, computes 240-bin waveform peaks, and appends the clip to the first available waveform editor track. If no tracks exist, a new track is created. |
 | **Row click** | Selects the entry; the Details panel in the bottom tab bar reflects the selection. |
 
-### 9.5 Library Analysis
+Right-clicking an entry opens the per-row context menu. Depending on installed modules and selected entry state, it can send to Init, send to Inpaint, run analysis, separate stems, convert to MIDI, download a bundle, show lineage, or delete the entry.
+
+![Library details rail with selected entry](screenshots/02-library-with-showcase-selected__library-details.png)
+
+![Library entry context menu actions](screenshots/05-library-entry-right-click__entry-context-menu.png)
+
+### 9.5 Bundle Downloads and Lineage
+
+The Library can export a self-contained ZIP bundle from `GET /api/library/{entry_id}/bundle`. Bundles include the audio file, metadata, analysis rows, stem rows, MIDI rows, and lineage edges when available.
+
+Lineage endpoints build parent/child graphs for generated, imported, stem, MIDI, and Chimera-derived assets:
+- `GET /api/library/{entry_id}/lineage?depth=4` returns nodes/edges around one entry.
+- `GET /api/library/_graph/all` returns the complete local genealogy graph, including virtual nodes for stems, MIDI files, and external source labels.
+
+The LEARN tab and Lineage modal visualize this graph in 2D/3D, with appearance options, fit/reset controls, and node details.
+
+![Library bundle and download submenu](screenshots/04-library-download-submenu__download-submenu.png)
+
+![LEARN lineage 3D graph](screenshots/06-learn-tab-3d-graph__lineage-graph.png)
+
+### 9.6 Stem Separation
+
+The stems module mounts at `/api/stems` and runs a sidecar-backed separation pipeline. Library entries can be split into 2, 4, 6, or 12 stems; progress is persisted in the library database and stem audio is served through `GET /api/library/stems/{stem_id}/audio` for editor/init/inpaint routing.
+
+Important endpoints:
+- `GET /api/stems/probe` — check tool availability without spawning the sidecar.
+- `POST /api/stems/install` — install integration dependencies into the configured Python environment.
+- `POST /api/stems/start` / `POST /api/stems/stop` — manually control the sidecar.
+- `POST /api/stems/{entry_id}/run` — separate one library entry.
+- `GET /api/stems/{entry_id}/progress` — poll `phase`, `message`, `progress`, and `task_id`.
+- `POST /api/stems/{entry_id}/abort` — request cancellation at the next poll tick.
+
+### 9.7 MIDI Conversion
+
+The MIDI module mounts at `/api/midi` and can convert full tracks or separated stems to Standard MIDI Files. It supports installable engines such as `basic_pitch` and `piano_transcription_inference`.
+
+Important endpoints:
+- `GET /api/midi` — capability report and available engines.
+- `POST /api/midi/install?engine=basic_pitch` — install a conversion engine.
+- `POST /api/midi/{entry_id}/run?from_stems=true` — run conversion for one entry.
+- `GET /api/midi/{entry_id}` — list MIDI rows for an entry.
+- `GET /api/midi/file/{midi_id}` — stream `.mid` bytes for import into Piano Roll or Step Sequencer.
+
+### 9.8 Library Analysis
 
 A stats footer displays: total entry count, favorites count, cumulative storage size (sum of all Blob sizes), and cumulative playback duration.
 
-### 9.6 Empty State
+### 9.9 Empty State
 
 Displayed until the first generation. Contains a **Go generate something** button that switches the active left-panel tab to CREATE.
 
@@ -563,6 +641,15 @@ All voices share the same `triggerVoice` function, which accepts a `BaseAudioCon
 ### 11.4 Send to Editor
 
 Renders the current pattern offline to a WAV Blob using `OfflineAudioContext`, then appends it to the waveform editor as a new clip on a new track. The clip's source kind is set to `'audio'`.
+
+### 11.5 MIDI Export
+
+The sequencer can also export Standard MIDI Files:
+- **Single mixed track / single-track MIDI** writes all active voices into one MIDI track.
+- **One track per voice / multi-track MIDI** writes each sequencer lane as a separate MIDI track.
+- **Bars to render** controls the offline audio render length when sending to the editor.
+
+These exports use the same PPQ timing constants as live playback (`PPQ = 480`, one 16th note = `PPQ / 4`) so MIDI files line up with the sequencer grid.
 
 ---
 
@@ -792,7 +879,7 @@ GET /api/model-info
 }
 ```
 
-### 16.3 Generation — Async (StableDAW UI)
+### 16.3 Generation — Async (theDAW UI)
 
 Submit:
 ```
@@ -979,6 +1066,85 @@ GET /api/modules
 
 Returns the list of module manifests (`module.json` contents) for all modules that loaded successfully at startup. A module that failed to load does not appear in this list.
 
+Settings and module management endpoints used by the Settings modal:
+```http
+GET   /api/settings
+PATCH /api/settings
+GET   /api/modules/all
+PATCH /api/modules/{dirName}/enabled
+POST  /api/admin/restart
+POST  /api/admin/shutdown
+```
+
+`PATCH /api/settings` accepts a partial nested object and silently drops unknown keys, allowing newer/older frontends to remain compatible. Module enablement is persisted in module manifests/settings and takes effect according to each module's loader behavior; backend restart may be required for import-time changes.
+
+![Settings modal toggles and admin actions](screenshots/07-settings-modal-with-shutdown__settings-toggles.png)
+
+### 16.13 Disk-backed Library
+
+The default local storage provider uses `/api/library` rather than IndexedDB-only persistence.
+
+```http
+GET    /api/library/entries
+GET    /api/library/entries/{entry_id}
+GET    /api/library/audio/{entry_id}
+PATCH  /api/library/entries/{entry_id}
+DELETE /api/library/entries/{entry_id}
+POST   /api/library/import
+GET    /api/library/{entry_id}/bundle
+GET    /api/library/{entry_id}/lineage?depth=3
+GET    /api/library/_graph/all
+GET    /api/library/_all/stems
+GET    /api/library/_all/midi
+GET    /api/library/stems/{stem_id}/audio
+```
+
+Audio responses use `FileResponse` and support browser range requests. Imports accept multipart audio plus JSON metadata. Bundle responses are ZIP files containing audio, metadata, analysis, stems, MIDI, and lineage edges when available.
+
+### 16.14 Chimera
+
+```http
+GET  /api/chimera/probe
+POST /api/chimera/probe/refresh
+POST /api/chimera/mashup
+```
+
+`POST /api/chimera/mashup` accepts multiple uploaded files plus `target_bpm`, optional `base_index`, JSON `weights`, `align_mode` (`start`, `downbeat`, `weave`), `out_sr`, and weave-specific bar/polyphony controls. The response contains base64 WAV audio plus `sample_rate`, `duration_sec`, `target_bpm_used`, `target_bpm_source`, `align_mode_used`, per-clip metadata, and warnings.
+
+### 16.15 Stems
+
+```http
+GET  /api/stems/probe
+GET  /api/stems/status
+POST /api/stems/install
+POST /api/stems/start
+POST /api/stems/stop
+POST /api/stems/{entry_id}/run?stems=4&device=cuda&quality=high
+GET  /api/stems/{entry_id}/progress
+POST /api/stems/{entry_id}/abort
+GET  /api/stems/{entry_id}
+```
+
+Stem runs operate on disk-backed library entries, hold the backend idle gate while running, and persist rows in the library database so stems appear in details, bundles, lineage, and send-target workflows.
+
+### 16.16 MIDI
+
+```http
+GET  /api/midi
+POST /api/midi/install?engine=basic_pitch
+POST /api/midi/{entry_id}/run?from_stems=true
+GET  /api/midi/{entry_id}
+GET  /api/midi/file/{midi_id}
+```
+
+MIDI conversion can run on full entries and, when available, separated stems. The streamed `.mid` files can be imported into the Piano Roll or used as downloadable artifacts in bundles.
+
+### 16.17 VJ
+
+The VJ module is experimental and powers the VJ center tab/iframe. Probe/status/start endpoints depend on the local sidecar configuration and are exposed under `/api/vj` when the module is enabled. Use the Settings modal module list and the VJ tab loading state to confirm availability.
+
+![VJ tab panel loading state](screenshots/08-vj-tab-loading__vj-panel.png)
+
 ---
 
 ## 17. Python Pipeline Reference
@@ -1129,7 +1295,7 @@ uv run python -c "import flash_attn; from flash_attn import flash_attn_func; pri
 ```
 Any import error indicates the wheel does not match the installed Python + PyTorch + CUDA combination. Reinstall from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
 
-### "API UNREACHABLE" banner in the StableDAW header
+### "API UNREACHABLE" banner in the theDAW header
 
 The backend is not responding on port 8600. Test directly:
 ```bash
@@ -1244,7 +1410,7 @@ The current async job store (`JOBS` dict in `backend/server.py`) is in-memory. A
 | `useEditorStore` | Waveform editor tracks, clips, playhead, tool mode, snap, zoom, inpaint selection. |
 | `usePlayerStore` | HTMLAudioElement-based playback engine (load, play, pause, seek, loop). Shared by all playback sources. |
 | `usePlaybackStore` | Master volume and mute. Read by `playerStore`, the library player, and the sequencer master gain. |
-| `useLibraryStore` | IndexedDB-backed generation entries, search/filter/sort state, selected entry. |
+| `useLibraryStore` | Disk-backed provider facade plus session Blob cache, search/filter/sort state, selected entry. |
 | `useGenerateStore` | Last generation metadata (filename, model, duration) for footer display. |
 | `useGenerateParamsStore` | All CREATE tab form field values. |
 | `useStudioStore` | EDIT tab source, output, process history. |
@@ -1253,8 +1419,76 @@ The current async job store (`JOBS` dict in `backend/server.py`) is in-memory. A
 | `useMediaBucketStore` | Session-scoped file bucket items. |
 | `useBottomPanelStore` | Bottom panel open state, height, active tab. |
 | `useLogStore` | Processing log ring buffer. |
-| `useActiveViewStore` | Active left-panel tab (`create`, `edit`, `train`, `library`). |
+| `useActiveViewStore` / `useAppUiStore` | Legacy active view plus center-tab shell state (`make`, `edit`, `mix`, `train`, `learn`, `dj`, `vj`) and right library rail state. |
 
 ---
 
-*Last updated: 2026-05-22. Maintained by the StableDAW development team.*
+## 22. Feature Coverage and Screenshot Evidence
+
+theDAW documentation now has a repeatable audit loop that connects implemented features to guide coverage and visual proof.
+
+> [!TIP]
+> Treat this section as the docs control room: feature descriptors define what exists, screenshot specs prove it visually, and the coverage report confirms the guide explains it.
+
+### 22.1 Coverage artifacts
+
+| Artifact | Purpose |
+|---|---|
+| `scripts/screenshots/specs.ts` | Canonical feature descriptors plus screenshot/crop mapping. |
+| `scripts/screenshots/featureCoverage.ts` | Generates the feature-vs-doc coverage report from `docs/USER_GUIDE.md`. |
+| `docs/reports/feature-doc-coverage-report.md` | Human-readable coverage matrix and screenshot map. |
+| `docs/reports/feature-doc-coverage.json` | Machine-readable report for future automation. |
+
+The coverage pass records whether `repomix-output.md` was present and confirms it is not tracked. Repomix is local analysis context only.
+
+### 22.2 Screenshot generation
+
+The primary screenshot runner is `scripts/screenshots/capture.ts`:
+
+```powershell
+npm --prefix frontend run screenshots
+```
+
+The runner drives the live app through real DAW interactions, writes full-scene images to `docs/screenshots/`, and emits crop assets using this naming convention:
+
+```text
+<scene-id>.png
+<scene-id>__<crop-id>.png
+```
+
+For example, `03-library-actions-toolbar.png` can document the Library toolbar as a whole, while `03-library-actions-toolbar__library-toolbar.png` focuses tightly on the action cluster. One full screenshot or crop may intentionally support multiple feature IDs.
+
+### 22.3 Current feature-to-screenshot map
+
+| Feature ID | Recommended evidence |
+|---|---|
+| `shell-center-tabs-right-library` | `01-shell-make.png`, `02-library-with-showcase-selected__library-details.png` |
+| `docs-modal-download-print-rag` | `01-shell-make__header-actions.png`, `docs/UI/screenshots/05-docs-modal.png` |
+| `assistant-orb-providers-keys-attachments` | `01-shell-make__header-actions.png` |
+| `create-advanced-generation-templates-prompts-spectrograms` | `01-shell-make__make-controls.png` |
+| `create-chimera-fusion-stack` | `09-chimera-cohort-multi-select.png`, `01-shell-make__make-controls.png` |
+| `create-mic-recorder-send-targets` | `01-shell-make__make-controls.png` |
+| `edit-advanced-effects-chain-analyzer` | `docs/UI/screenshots/02-edit-tab-overview.png` plus future advanced-editor crop |
+| `library-backend-local-storage` | `02-library-with-showcase-selected.png`, `02-library-with-showcase-selected__library-details.png` |
+| `library-bundle-download-lineage-export` | `04-library-download-submenu__download-submenu.png`, `06-learn-tab-3d-graph__lineage-graph.png` |
+| `library-stems-sidecar` | `05-library-entry-right-click__entry-context-menu.png` |
+| `library-midi-conversion` | `04-library-download-submenu__download-submenu.png`, `05-library-entry-right-click__entry-context-menu.png` |
+| `settings-feature-toggles-modules-admin` | `07-settings-modal-with-shutdown__settings-toggles.png` |
+| `sequencer-midi-export-render` | `docs/UI/screenshots/06-step-sequencer.png` plus future sequencer-toolbar crop |
+| `vj-sidecar-tab-mobile-share` | `08-vj-tab-loading__vj-panel.png`, `01-shell-make__header-actions.png` |
+
+### 22.4 Documentation maintenance rule
+
+When adding or changing a feature:
+
+1. Add/update its `FeatureDescriptor` in `scripts/screenshots/specs.ts`.
+2. Map the feature to a full screenshot and, if needed, a crop region.
+3. Update `docs/USER_GUIDE.md` first.
+4. Run the coverage script and screenshot runner.
+5. Sync `docs/USER_GUIDE.md` to `frontend/public/USER_GUIDE.md` before validating the Docs modal.
+
+---
+
+*Last updated: 2026-05-29. Maintained by the theDAW development team.*
+
+

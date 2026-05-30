@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Music2, Plug, X, RotateCcw, Crosshair, Zap } from 'lucide-react';
 import { subscribeToMidi } from '../../state/midiBus';
+import { enableMidi } from '../../state/midiTriggerStore';
 
 export interface MidiParamDef<K extends string = string> {
   key: K;
@@ -158,6 +159,14 @@ export function MidiMapper<K extends string = string>({
   useEffect(() => {
     saveMappings(storageKey, mappings);
   }, [mappings, storageKey]);
+
+  // Opening a mapper is an explicit MIDI opt-in — turn on the master
+  // gate so the global listener starts and bus messages flow here. This
+  // is what triggers the browser's one-time Web MIDI permission prompt,
+  // now tied to a deliberate user action rather than app load.
+  useEffect(() => {
+    if (open) enableMidi();
+  }, [open]);
 
   // Subscribe to the global MIDI bus. The bus publishes raw
   // [status, data1, data2] for every message; we apply our mapping
@@ -330,3 +339,4 @@ export function MidiMapper<K extends string = string>({
     </div>
   );
 }
+

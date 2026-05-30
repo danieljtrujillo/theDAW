@@ -9,8 +9,6 @@ import {
   Music as MusicIcon,
   Piano,
   Maximize2,
-  Volume2,
-  VolumeX,
   Smartphone,
   Copy,
   Check,
@@ -23,6 +21,9 @@ import { subscribeToMidi } from '../state/midiBus';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 import { getVjPlaybackState, registerVjPlaybackHandler, reportVjPlaybackState } from '../state/vjPlaybackBus';
 import { registerVjSetHandler } from '../state/vjSetBus';
+import { useAppUiStore } from '../state/appUiStore';
+import { logError, logInfo } from '../state/logStore';
+
 
 /**
  * VJ tab — embeds the GANTASMO-LIVE-VJ Vite dev server in an iframe.
@@ -30,7 +31,7 @@ import { registerVjSetHandler } from '../state/vjSetBus';
  * The backend `vj` module spawns the dev server (default port 5187)
  * lazily. We fetch its live URL from `/api/vj/url` so the port isn't
  * hardcoded in the frontend; if the user / env overrode it via
- * STABLEDAW_VJ_PORT, this stays in sync automatically.
+ * theDAW_VJ_PORT, this stays in sync automatically.
  *
  * The "Pop out" action opens the iframe URL in a new browser window
  * — the user can drag, resize, or move that window onto a second
@@ -81,11 +82,17 @@ export const VJView: React.FC = () => {
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const libraryEntries = useLibraryStore((s) => s.entries);
-  // MIDI audio-trigger mute. When on, the controller still drives VJ
-  // effects (messages keep flowing on the bus + into the iframe) but
-  // App.tsx no longer fires the piano-synth voice on note-on.
-  const midiAudioMuted = useMidiTriggerStore((s) => s.audioMuted);
-  const toggleMidiAudioMuted = useMidiTriggerStore((s) => s.toggleAudioMuted);
+  // Master MIDI gate. OFF (grey) = the app never requests Web MIDI, so
+  // no permission prompt / deprecation notice. ON (colour) = a connected
+  // controller drives the piano synth, the global bus, and the VJ iframe.
+  const midiEnabled = useMidiTriggerStore((s) => s.enabled);
+  const toggleMidiEnabled = useMidiTriggerStore((s) => s.toggleEnabled);
+  // Which center tab is active. DAWCenterPanel keeps the VJ tab mounted
+  // (warm) and only toggles its CSS visibility, so we use this to tell
+  // the iframe to pause its render loop while backgrounded (GPU → ~0%).
+  const centerTab = useAppUiStore((s) => s.centerTab);
+  const isVjVisible = centerTab === 'vj';
+
 
 
   const postToIframe = (payload: Record<string, unknown>) => {
@@ -253,6 +260,12 @@ export const VJView: React.FC = () => {
       if (d.type === 'sa3-vj/playback-state') {
         lastState = d.state === 'playing' ? 'playing' : 'paused';
         reportVjPlaybackState(lastState);
+      } else if (d.type === 'sa3-vj/export-done') {
+        // The VJ panel finished a recording and the backend transcoded
+        // it to the chosen codec. Surface the saved path in the log.
+        logInfo('vj', `Export saved: ${d.filename ?? d.path} → ${d.folder ?? ''} (${d.codec ?? ''})`);
+      } else if (d.type === 'sa3-vj/export-error') {
+        logError('vj', `VJ export failed: ${d.message ?? 'unknown error'} — the raw .webm was downloaded as a fallback.`);
       }
     };
     window.addEventListener('message', onMsg);
@@ -301,7 +314,17 @@ export const VJView: React.FC = () => {
     });
   }, [status, popped, currentEntryId, isPlaying, libraryEntries]);
 
+  // Visibility bridge: tell the iframe whether the VJ tab is currently
+  // shown. When hidden, the VJ render loop parks itself (cancels its
+  // requestAnimationFrame) so a backgrounded-but-warm VJ tab costs ~0%
+  // GPU. Re-sent on iframe (re)load via handleIframeLoad's sync().
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    postToIframe({ type: 'sa3-vj/visibility', visible: isVjVisible });
+  }, [status, popped, isVjVisible]);
+
   const handleIframeLoad = () => {
+
     if (iframeReadyTimerRef.current !== null) {
       window.clearTimeout(iframeReadyTimerRef.current);
       iframeReadyTimerRef.current = null;
@@ -312,7 +335,9 @@ export const VJView: React.FC = () => {
     // the VJ view on an all-black initial frame.
     const sync = () => {
       postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
+      postToIframe({ type: 'sa3-vj/visibility', visible: isVjVisible });
       const state = getVjPlaybackState();
+
       if (state === 'playing' || state === 'paused') {
         postToIframe({ type: 'sa3-vj/playback', action: state === 'playing' ? 'play' : 'pause' });
       }
@@ -414,27 +439,28 @@ export const VJView: React.FC = () => {
             inactiveLabel="MIDI forwarding is off. Click to enable."
             disabled={vjInputs.midi && !vjInputs.mic && !vjInputs.audio}
           />
-          {/* MIDI audio-trigger mute. This does NOT stop MIDI from
-              driving effects — messages still flow on the bus and into
-              the iframe. It only silences the built-in piano-synth
-              voice so the controller is a pure effects trigger. */}
+          {/* Master MIDI toggle — grey when OFF (no Web MIDI access, no
+              prompt), colour when ON. Turning it on lets a controller
+              drive the piano synth, the global MIDI bus, and the VJ
+              iframe. */}
           <button
             type="button"
-            onClick={toggleMidiAudioMuted}
+            onClick={toggleMidiEnabled}
             className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors ${
-              midiAudioMuted
-                ? 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/20 hover:bg-white/5'
+              midiEnabled
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/5'
             }`}
             title={
-              midiAudioMuted
-                ? 'MIDI audio is MUTED — the controller triggers visual effects only, no synth voice. Click to unmute.'
-                : 'MIDI audio is ON — note-on events fire the piano synth voice. Click to mute (keeps effect triggering).'
+              midiEnabled
+                ? 'MIDI is ON — a connected controller drives the synth, bus and VJ. Click to turn off.'
+                : 'MIDI is OFF — click to enable Web MIDI (asks the browser for permission the first time).'
             }
-            aria-label="Toggle MIDI audio trigger"
+            aria-label="Toggle MIDI"
+            aria-pressed={midiEnabled}
           >
-            {midiAudioMuted ? <VolumeX className="w-2.5 h-2.5" /> : <Volume2 className="w-2.5 h-2.5" />}
-            {midiAudioMuted ? 'MIDI Snd Off' : 'MIDI Snd'}
+            <Piano className="w-2.5 h-2.5" />
+            MIDI
           </button>
           {/* Mobile link — exposes the LAN-reachable URL so a phone on
               the same Wi-Fi can open the VJ output. The Vite server is
@@ -589,8 +615,8 @@ export const VJView: React.FC = () => {
             <span className="text-[8px] font-mono text-zinc-600 max-w-xl text-center leading-relaxed">
               Check the SA3 Backend window for the spawn error. Most
               common causes: Node not on PATH, the VJ project path is
-              wrong (override with STABLEDAW_VJ_PROJECT), or port 5187
-              is already in use (override with STABLEDAW_VJ_PORT).
+              wrong (override with theDAW_VJ_PROJECT), or port 5187
+              is already in use (override with theDAW_VJ_PORT).
             </span>
           </div>
         )}
@@ -673,3 +699,5 @@ const InputChip: React.FC<{
     {icon} {label}
   </button>
 );
+
+

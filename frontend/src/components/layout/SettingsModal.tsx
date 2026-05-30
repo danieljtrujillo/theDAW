@@ -21,6 +21,14 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
   const refreshFeatures = useFeatureToggleStore((s) => s.refresh);
   const patchFeatures = useFeatureToggleStore((s) => s.patch);
 
+  // Local mirror of the VJ export root so typing doesn't fire a PATCH per
+  // keystroke — we commit on blur / Enter. Kept in sync when the backend
+  // settings resolve.
+  const [vjExportRoot, setVjExportRoot] = useState('');
+  useEffect(() => {
+    setVjExportRoot(featureSettings.vj?.export_root ?? 'exports/vj');
+  }, [featureSettings.vj?.export_root]);
+
   useEffect(() => {
     if (!open) return;
     setLoading(true);
@@ -200,6 +208,31 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               onPatchImport={(v) => void patchFeatures({ midi: { auto_on_import: v } })}
               onPatchGenerate={(v) => void patchFeatures({ midi: { auto_on_generate: v } })}
             />
+          </div>
+
+          {/* Section: VJ recording */}
+          <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
+            <Activity className="w-3 h-3 text-purple-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">VJ Recording</span>
+          </div>
+          <div className="mb-3">
+            <label className="block text-[9px] font-mono uppercase tracking-wider text-zinc-400 mb-1">Export root folder</label>
+            <input
+              type="text"
+              value={vjExportRoot}
+              onChange={(e) => setVjExportRoot(e.target.value)}
+              onBlur={() => {
+                const v = vjExportRoot.trim() || 'exports/vj';
+                if (v !== featureSettings.vj.export_root) void patchFeatures({ vj: { export_root: v } });
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              spellCheck={false}
+              placeholder="exports/vj"
+              className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 focus:outline-none"
+            />
+            <p className="text-[8px] text-zinc-600 mt-1">
+              Where VJ recordings are saved. A relative path sits inside the project; an absolute path (e.g. D:\Renders) is used as-is. Each take adds the subfolder named in the VJ record bar, then ffmpeg transcodes to the chosen codec.
+            </p>
           </div>
 
           {/* Section: Modules */}
@@ -521,3 +554,4 @@ const ToggleRow: React.FC<ToggleRowProps> = ({ label, enabled, onToggle }) => (
     </span>
   </button>
 );
+

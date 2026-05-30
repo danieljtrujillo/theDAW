@@ -23,7 +23,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -63,13 +63,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "min_idle_seconds": 30,
         "respect_vram_pressure": True,
     },
+    "vj": {
+        # Root folder for VJ recording exports. A relative path resolves
+        # against the project root; an absolute path is used verbatim.
+        # Each take also lands in a per-export subfolder named in the VJ
+        # record bar, so the final file is <export_root>/<subfolder>/…
+        "export_root": "exports/vj",
+    },
 }
 
 
 def default_settings_path(project_root: Path) -> Path:
     """Resolve the settings file path. Env override wins; otherwise it lives
     next to the library generations directory."""
-    configured = os.getenv("STABLEDAW_SETTINGS_PATH")
+    configured = os.getenv("theDAW_SETTINGS_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
     return project_root / "data" / "settings.json"
@@ -121,6 +128,11 @@ def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         # it routinely hangs at ~5-10 min per track even on GPU; users
         # who want max quality can opt in via Settings → Stems.
         merged["stems"]["quality"] = "balanced"
+    if old_version < 5:
+        # Migration v4 → v5: add the `vj` section (export_root). New
+        # section, so it's already filled from DEFAULT_SETTINGS above;
+        # this branch only exists to re-persist the bumped schema.
+        merged.setdefault("vj", deepcopy(DEFAULT_SETTINGS["vj"]))
 
     merged["schema_version"] = SCHEMA_VERSION
     return merged

@@ -1,0 +1,28 @@
+{
+  // These scripts live OUTSIDE frontend/ but are run with `tsx` from the
+  // frontend workspace (see frontend/package.json "screenshots" /
+  // "docs:coverage"), so their deps — @types/node and playwright — only
+  // exist in ../../frontend/node_modules. Without this tsconfig the IDE
+  // falls back to a default project that can't resolve `node:*`,
+  // `playwright`, `process`, or the `./*.js` relative imports.
+  //
+  // typeRoots picks up @types/node; the `paths` "*" fallback lets bare
+  // specifiers (playwright) resolve from the frontend node_modules.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "typeRoots": ["../../frontend/node_modules/@types"],
+    "paths": {
+      "*": ["../../frontend/node_modules/*"]
+    },
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}
