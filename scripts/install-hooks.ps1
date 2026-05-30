@@ -1,4 +1,4 @@
-# Install StableDAW git hooks (PowerShell variant for Windows).
+# Install theDAW git hooks (PowerShell variant for Windows).
 #
 # Usage:  .\scripts\install-hooks.ps1
 #
@@ -25,3 +25,4 @@ Get-ChildItem -File -Path $hooksSrc | ForEach-Object {
 }
 
 Write-Host '[hooks] Done. Hooks run on every commit; bypass with --no-verify.' -ForegroundColor Magenta
+

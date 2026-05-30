@@ -22,13 +22,22 @@ if (-not (Test-Path $src)) {
     exit 1
 }
 
-# 1. Sync canonical guide → frontend/public for in-app modal.
+# 1. Generate feature/docs coverage before syncing the in-app copy.
+Write-Log 'Generating feature coverage report'
+Push-Location frontend
+try {
+    & npm exec -- tsx ../scripts/screenshots/featureCoverage.ts
+    if ($LASTEXITCODE -ne 0) { Write-Warn 'Coverage report generation failed. Continuing.' }
+}
+finally { Pop-Location }
+
+# 2. Sync canonical guide → frontend/public for in-app modal.
 Write-Log "Syncing $src -> $dest"
 $destDir = Split-Path $dest -Parent
 if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 Copy-Item -LiteralPath $src -Destination $dest -Force
 
-# 2. Frontend build.
+# 3. Frontend build.
 Write-Log 'Building frontend'
 Push-Location frontend
 try {
@@ -40,8 +49,8 @@ try {
 }
 finally { Pop-Location }
 
-# 3. Optional Playwright screenshots.
-$screenshotScript = 'scripts/screenshots/take-screenshots.mjs'
+# 4. Optional Playwright screenshots.
+$screenshotScript = 'scripts/screenshots/capture.ts'
 $hasPlaywright = (Test-Path 'frontend/node_modules/playwright') -or (Test-Path 'frontend/node_modules/@playwright/test')
 $devServerUp = $false
 try {
@@ -53,7 +62,7 @@ if ((Test-Path $screenshotScript) -and $hasPlaywright -and $devServerUp) {
     Write-Log 'Dev server up - taking Playwright screenshots'
     Push-Location frontend
     try {
-        & node "../$screenshotScript"
+        & npm exec -- tsx "../$screenshotScript"
         if ($LASTEXITCODE -ne 0) { Write-Warn 'Screenshot script exited non-zero. Continuing.' }
     }
     finally { Pop-Location }
@@ -63,11 +72,14 @@ if ((Test-Path $screenshotScript) -and $hasPlaywright -and $devServerUp) {
     Write-Warn 'Dev server not running on :5173 - skipping screenshots.'
 }
 
-# 4. Stage updated files for the commit.
+# 5. Stage updated files for the commit.
 Write-Log 'Staging docs changes'
-try { & git add docs/USER_GUIDE.md frontend/public/USER_GUIDE.md 2>$null } catch {}
+try { & git add docs/USER_GUIDE.md frontend/public/USER_GUIDE.md docs/reports scripts/screenshots/specs.ts scripts/screenshots/featureCoverage.ts 2>$null } catch {}
 if (Test-Path 'docs/UI/screenshots') {
     try { & git add docs/UI/screenshots 2>$null } catch {}
+}
+if (Test-Path 'docs/screenshots') {
+    try { & git add docs/screenshots 2>$null } catch {}
 }
 
 Write-Log 'Done.'
