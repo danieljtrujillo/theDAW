@@ -23,25 +23,30 @@ if [[ ! -f "$src" ]]; then
   exit 1
 fi
 
-# 1. Sync the guide so the UI modal serves the canonical version.
+# 1. Generate feature/docs coverage before syncing the in-app copy.
+log "Generating feature coverage report"
+( cd frontend && npm exec -- tsx ../scripts/screenshots/featureCoverage.ts ) || \
+  warn "Coverage report generation failed. Continuing."
+
+# 2. Sync the guide so the UI modal serves the canonical version.
 log "Syncing $src → $dest"
 mkdir -p "$(dirname "$dest")"
 cp "$src" "$dest"
 
-# 2. Frontend build (catches markdown that breaks the modal's renderer).
+# 3. Frontend build (catches markdown that breaks the modal's renderer).
 log "Building frontend"
 ( cd frontend && npx --no vite build >/dev/null 2>&1 ) || {
   err "Frontend build failed — fix before committing."
   exit 2
 }
 
-# 3. Optional Playwright screenshots — only if all preconditions hold.
-screenshot_script="scripts/screenshots/take-screenshots.mjs"
+# 4. Optional Playwright screenshots — only if all preconditions hold.
+screenshot_script="scripts/screenshots/capture.ts"
 if [[ -f "$screenshot_script" ]] && \
    ( cd frontend && [[ -d node_modules/playwright || -d node_modules/@playwright/test ]] ); then
   if curl -s -m 2 http://localhost:5173 >/dev/null 2>&1; then
     log "Dev server up — taking Playwright screenshots"
-    ( cd frontend && node "../$screenshot_script" ) || \
+    ( cd frontend && npm exec -- tsx "../$screenshot_script" ) || \
       warn "Screenshot script exited non-zero. Continuing."
   else
     warn "Dev server not running on :5173 — skipping screenshots."
@@ -50,11 +55,14 @@ else
   warn "Playwright not installed — skipping screenshots. (Run: cd frontend && npm i -D playwright && npx playwright install chromium)"
 fi
 
-# 4. Stage all the files the regen step touches.
+# 5. Stage all the files the regen step touches.
 log "Staging docs changes"
-git add docs/USER_GUIDE.md frontend/public/USER_GUIDE.md 2>/dev/null || true
+git add docs/USER_GUIDE.md frontend/public/USER_GUIDE.md docs/reports scripts/screenshots/specs.ts scripts/screenshots/featureCoverage.ts 2>/dev/null || true
 if [[ -d docs/UI/screenshots ]]; then
   git add docs/UI/screenshots 2>/dev/null || true
+fi
+if [[ -d docs/screenshots ]]; then
+  git add docs/screenshots 2>/dev/null || true
 fi
 
 log "Done."

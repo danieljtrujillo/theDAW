@@ -1,7 +1,7 @@
 """Manage the stem-separation sidecar process and proxy requests to it.
 
 The integration-package (D:/StableAudio/JoshOG/integration-package by
-default, overridable via STABLEDAW_STEMS_PACKAGE) ships its own FastAPI
+default, overridable via theDAW_STEMS_PACKAGE) ships its own FastAPI
 server with Demucs + LARSNET. It needs heavy deps (demucs, torchcrepe,
 audio-separator) that we deliberately keep OUT of the main app's
 environment.
@@ -9,7 +9,7 @@ environment.
 This module:
 
   * Locates the package and the Python interpreter that can run it
-    (defaults to the main venv; overridable via STABLEDAW_STEMS_PYTHON
+    (defaults to the main venv; overridable via theDAW_STEMS_PYTHON
     so users can point at an isolated venv where the heavy deps live).
   * ``probe()`` — non-spawning health check: does the package exist?
     Does the configured Python import demucs?
@@ -70,9 +70,9 @@ def _sidecar_venv_python(package_path: Path) -> Path:
 
 
 def resolve_config() -> SidecarConfig:
-    pkg = os.getenv("STABLEDAW_STEMS_PACKAGE")
+    pkg = os.getenv("theDAW_STEMS_PACKAGE")
     package_path = Path(pkg).expanduser().resolve() if pkg else DEFAULT_PACKAGE_PATH
-    py = os.getenv("STABLEDAW_STEMS_PYTHON")
+    py = os.getenv("theDAW_STEMS_PYTHON")
     if py:
         python_exe = Path(py).expanduser().resolve()
     else:
@@ -82,7 +82,7 @@ def resolve_config() -> SidecarConfig:
         # integration-package's requirements.txt pins scipy==1.11.4 etc.
         # which is incompatible with our main venv's numpy/scipy stack.
         python_exe = _sidecar_venv_python(package_path)
-    port_env = os.getenv("STABLEDAW_STEMS_PORT")
+    port_env = os.getenv("theDAW_STEMS_PORT")
     port = int(port_env) if (port_env and port_env.isdigit()) else None
     return SidecarConfig(
         package_path=package_path,
@@ -168,7 +168,7 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
     if not out["package_exists"]:
         out["error"] = (
             f"integration-package not found at {cfg.package_path}. "
-            f"Set STABLEDAW_STEMS_PACKAGE to point at it, or clone it from "
+            f"Set theDAW_STEMS_PACKAGE to point at it, or clone it from "
             f"its source repository."
         )
         return out
@@ -255,7 +255,7 @@ class StemsSidecar:
         if not self.cfg.package_path.is_dir():
             raise RuntimeError(
                 f"stems integration-package not found at {self.cfg.package_path}. "
-                f"Set STABLEDAW_STEMS_PACKAGE to point at the package's backend/ dir."
+                f"Set theDAW_STEMS_PACKAGE to point at the package's backend/ dir."
             )
         run_backend = self.cfg.package_path / "run_backend.py"
         if not run_backend.is_file():

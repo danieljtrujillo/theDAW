@@ -6,5 +6,5 @@
   "sidebar": false,
   "api_prefix": "/api/vj",
   "backend": true,
-  "description": "GANTASMO-LIVE-VJ audio-reactive visualizer as an SA3 sidecar. Spawns the Vite dev server on demand (default port 5187) and exposes it through SA3's UI as a center tab / detachable floating window. VJ project lives at D:/StableAudio/GANTASMO-LIVE-VJ (override via STABLEDAW_VJ_PROJECT). Disable to skip the auto-spawn on backend startup."
+  "description": "GANTASMO-LIVE-VJ audio-reactive visualizer as an SA3 sidecar. Spawns the Vite dev server on demand (default port 5187) and exposes it through SA3's UI as a center tab / detachable floating window. VJ project lives at D:/StableAudio/GANTASMO-LIVE-VJ (override via theDAW_VJ_PROJECT). Disable to skip the auto-spawn on backend startup."
 }

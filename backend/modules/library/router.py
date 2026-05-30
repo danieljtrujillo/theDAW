@@ -72,6 +72,33 @@ def stream_audio(entry_id: str) -> FileResponse:
     )
 
 
+@router.get("/stems/{stem_id}/audio")
+def stream_stem_audio(stem_id: str) -> FileResponse:
+    """Serve the actual WAV bytes for one separated stem so the frontend
+    can fetch it as a Blob and feed it into the editor / init / inpaint
+    targets (the library audio endpoint only knows about parent tracks,
+    not their stem children)."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    # Stem rows are keyed per-entry, but stem ids are globally unique
+    # (`{entry_id}__{stem_name}`), so a linear scan is fine — small N
+    # and avoids needing a new DB index.
+    for entry in store.db.list_entries():
+        for stem in store.db.list_stems(entry["id"]):
+            if stem.get("id") == stem_id:
+                path = Path(stem.get("audio_path") or "")
+                if not path.is_file():
+                    raise HTTPException(404, f"stem file missing on disk: {path}")
+                mime, _ = mimetypes.guess_type(str(path))
+                return FileResponse(
+                    path=str(path),
+                    media_type=mime or "audio/wav",
+                    filename=path.name,
+                )
+    raise HTTPException(404, f"stem {stem_id!r} not found")
+
+
 @router.patch("/entries/{entry_id}")
 def update_entry(entry_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, Any]:
     record = get_store().update_entry(entry_id, patch)

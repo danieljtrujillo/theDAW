@@ -1,7 +1,7 @@
 @echo off
-title StableDAW - Dev Launcher
+title theDAW - Dev Launcher
 echo ========================================
-echo   StableDAW - Development Server
+echo   theDAW - Development Server
 echo ========================================
 echo.
 

@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add informative hover tooltips to every control in the StableDAW AI frontend so users understand what each parameter does, what values to use, and what the defaults are.
+**Goal:** Add informative hover tooltips to every control in the theDAW AI frontend so users understand what each parameter does, what values to use, and what the defaults are.
 
 **Architecture:** Build a lightweight custom `<Tooltip>` React component (no library — the project has zero UI deps and we want to keep it that way). Inject it into the two existing helper components (`SF` and `Spin` in `StudioView.tsx`) via a new `tooltip` prop, then wrap all remaining bare controls (textareas, selects, checkboxes, inline sliders) with the same component. Tooltip content comes from the already-written `docs/UI/hover-text-guide.md`.
 
@@ -648,3 +648,4 @@ git commit -m "feat(frontend): add tooltips to card headers and audio player but
 | Card headers | 2 | Sampler Params, Schedule Shift |
 | AudioPlayer | 4 | Send to Init, Send to Inpaint, Download, Loop |
 | **Total** | **~51** | |
+

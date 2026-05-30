@@ -1,6 +1,12 @@
-# StableDAW UI Screenshot Manifest (LLM-Ready)
+# theDAW UI Screenshot Manifest (LLM-Ready)
 
 Purpose: machine-readable human-friendly index for documentation generation models.
+
+For the current feature-audit workflow, prefer the canonical runner at
+`scripts/screenshots/capture.ts` and the generated manifests in
+`docs/screenshots/manifest.json` / `docs/screenshots/manifest.md`.
+This older UI folder is still useful as context for broad UI overview
+shots and Docs modal rendering.
 
 Capture context:
 - App URL: http://127.0.0.1:5173
@@ -79,8 +85,17 @@ Capture context:
 12. File: `12-header-stabledaw-branding.png`
 - Label: Header Branding
 - Area: Main top header
-- What it shows: Centered StableDAW brand/title treatment
+- What it shows: Centered theDAW brand/title treatment
 - Suggested docs section: Shell/header anatomy
+
+## Feature-audit crosswalk
+
+| Feature ID | Preferred screenshot source | Notes |
+|---|---|---|
+| `docs-modal-download-print-rag` | `05-docs-modal.png` and `../screenshots/01-shell-make__header-actions.png` | Use this folder for the modal body; use canonical crops for header controls. |
+| `edit-advanced-effects-chain-analyzer` | `02-edit-tab-overview.png` | Until a dedicated advanced-editor crop exists, this is the best broad EDIT evidence. |
+| `sequencer-midi-export-render` | `06-step-sequencer.png` | Pair with docs text for MIDI export controls if toolbar details are not visible. |
+| `media-bucket-routing` | `10-bottom-media-bucket.png` | Pair with canonical library drag/drop screenshots for send-target context. |
 
 ## Suggested ingestion prompt for doc LLM
 
@@ -89,3 +104,4 @@ Capture context:
 2) 3-5 bullet callouts of controls visible,
 3) cross-link to likely docs section,
 4) any mismatch between UI wording and existing docs text."
+

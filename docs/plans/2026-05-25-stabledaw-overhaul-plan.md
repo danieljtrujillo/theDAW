@@ -1,4 +1,4 @@
-# StableDAW — Big-Picture Plan
+# theDAW — Big-Picture Plan
 **Date:** 2026-05-25
 **Scope:** UI re-dock + sequencer integration + auto-analysis + auto-stems + MIDI conversion + embedded-tag extraction + SQLite lineage graph + library bundles
 **Mode:** plan-only — no edits outside this file.
@@ -425,3 +425,4 @@ After each phase:
 - `piano-transcription-inference` model is ~100 MB — surface as a one-time download in Settings → MIDI, same pattern as LARSNET.
 - `basic-pitch`'s default model is fine for first pass, but consider their `ICASSP 2022` checkpoint variant for noisier inputs.
 - "Downtime" definition may need tuning — start with 30s of no user HTTP activity; if user feedback says "stop running stuff when I'm in the middle of something," lengthen the gate or add a global pause-all switch in the header.
+

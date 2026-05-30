@@ -141,7 +141,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
               <BookOpen className="w-3.5 h-3.5 text-white" />
             </div>
             <div className="flex flex-col leading-tight">
-              <span className="font-black text-[13px] uppercase tracking-widest text-white">The DAW Docs</span>
+              <span className="font-black text-[13px] uppercase tracking-widest text-white">theDAW Docs</span>
               <span className="text-[9px] font-mono text-purple-300/70 tracking-tighter uppercase">User Guide / Reference</span>
             </div>
           </div>
@@ -275,8 +275,27 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
           text-transform: uppercase;
           letter-spacing: 0.08em;
         }
-        .docs-content p { line-height: 1.55; margin: 0.4rem 0; font-size: 12px; color: #d4d4d8; }
-        .docs-content ul, .docs-content ol { margin: 0.4rem 0 0.4rem 1.4rem; font-size: 12px; color: #d4d4d8; line-height: 1.55; }
+        .docs-content,
+        .docs-content * {
+          box-sizing: border-box;
+          min-width: 0;
+        }
+        .docs-content p {
+          line-height: 1.55;
+          margin: 0.4rem 0;
+          font-size: 12px;
+          color: #d4d4d8;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .docs-content ul, .docs-content ol {
+          margin: 0.4rem 0 0.4rem 1.4rem;
+          font-size: 12px;
+          color: #d4d4d8;
+          line-height: 1.55;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
         .docs-content li { margin: 0.15rem 0; }
         .docs-content blockquote {
           margin: 0.5rem 0;
@@ -298,6 +317,8 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
           padding: 0.3rem 0.6rem;
           text-align: left;
           color: #d4d4d8;
+          overflow-wrap: anywhere;
+          word-break: break-word;
         }
         .docs-content th { background: rgba(139,92,246,0.12); color: #c4b5fd; font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
         .docs-content tr:nth-child(2n) td { background: rgba(255,255,255,0.02); }
@@ -320,12 +341,42 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
           background: rgba(139,92,246,0.12);
           border-radius: 3px;
           color: #ddd6fe;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          white-space: pre-wrap;
         }
         .docs-content .docs-link {
           color: #a78bfa;
           text-decoration: underline;
           text-decoration-color: rgba(167,139,250,0.4);
           text-underline-offset: 2px;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .docs-content img {
+          display: block;
+          width: 100%;
+          max-width: 100%;
+          height: auto;
+          margin: 0.7rem 0;
+          border-radius: 6px;
+          border: 1px solid rgba(139,92,246,0.22);
+          background: rgba(10, 8, 15, 0.45);
+          object-fit: contain;
+        }
+        .docs-content pre,
+        .docs-content code,
+        .docs-content a,
+        .docs-content li,
+        .docs-content blockquote {
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .docs-content table {
+          display: block;
+          max-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
         }
         .docs-content .docs-link:hover { color: #c4b5fd; text-decoration-color: #c4b5fd; }
         .docs-content hr {
@@ -350,11 +401,14 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
             backdrop-filter: none !important;
             display: block !important;
             height: auto !important;
+            overflow: visible !important;
           }
           .docs-modal-window {
             position: static !important;
             width: 100% !important;
             height: auto !important;
+            min-height: 0 !important;
+            max-height: none !important;
             max-width: 100% !important;
             background: white !important;
             background-image: none !important;
@@ -369,21 +423,57 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
             background: white !important;
             background-image: none !important;
             overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
           }
-          .docs-content { max-width: 100% !important; padding: 0 !important; color: black !important; background: white !important; }
+          .docs-content {
+            max-width: 100% !important;
+            padding: 0 !important;
+            color: black !important;
+            background: white !important;
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+            font-size: 11pt !important;
+            line-height: 1.45 !important;
+          }
+          .docs-html {
+            display: block !important;
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+          }
           .docs-content * { color: black !important; background-color: transparent !important; }
           .docs-content .docs-h-1 { border-bottom-color: #7c3aed !important; }
           .docs-content blockquote { background: #f3f0ff !important; border-left-color: #7c3aed !important; }
           .docs-content blockquote * { color: #4c1d95 !important; background-color: #f3f0ff !important; }
-          .docs-content .docs-code { background: #f5f3ff !important; border: 1px solid #ddd !important; color: #1a1a1a !important; }
+          /* Do not print large code/ascii blocks unless explicitly requested. */
+          .docs-content .docs-code { display: none !important; }
           .docs-content .docs-inline-code { background: #ede9fe !important; color: #4c1d95 !important; }
           .docs-content th { background: #ede9fe !important; color: #4c1d95 !important; }
           .docs-content tr:nth-child(2n) td { background: #faf5ff !important; }
           .docs-content td { border-color: #e0d9f7 !important; }
           .docs-content a { color: #6d28d9 !important; }
+          .docs-content img {
+            max-width: 100% !important;
+            height: auto !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            border: 1px solid #e0d9f7 !important;
+            margin: 10pt 0 !important;
+          }
+          .docs-content h1,
+          .docs-content h2,
+          .docs-content h3,
+          .docs-content table,
+          .docs-content blockquote {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
           @page { margin: 0.7in; size: letter; }
         }
       `}</style>
     </div>
   );
 };
+

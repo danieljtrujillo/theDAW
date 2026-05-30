@@ -4,11 +4,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ProviderModelSelector, type ModelInfo } from './ProviderModelSelector';
 import { actionFromAssistantEvent, statusFromAssistantEvent } from './assistantEvents';
-import { buildStableDAWAppContext } from './appContext';
+import { buildtheDAWAppContext } from './appContext';
 import { uuid } from './utils';
 import { useStatusBarStore } from '../state/statusBarStore';
 
-// Inline clipboard helper (no external util available in StableDAW)
+// Inline clipboard helper (no external util available in theDAW)
 const copyToClipboard = (text: string) => navigator.clipboard.writeText(text).catch(() => {});
 
 const formatBytes = (bytes: number): string => {
@@ -494,7 +494,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
         const attachmentSummary = pendingAttachments.length
             ? `\n\nAttached: ${pendingAttachments.map(item => `${item.name} (${formatBytes(item.size)})`).join(', ')}`
             : '';
-        const appContext = buildStableDAWAppContext({
+        const appContext = buildtheDAWAppContext({
             selectedProvider,
             selectedModel,
             attachments: pendingAttachments.map(item => ({
@@ -698,7 +698,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             <div className="absolute inset-0 rounded-full bg-linear-to-br from-primary via-purple-500 to-pink-500 animate-spin-slow opacity-50 blur-sm"></div>
                             <div className="w-3 h-3 rounded-full bg-white/90 z-10"></div>
                         </div>
-                        <span className="font-semibold text-sm">The DAW</span>
+                        <span className="font-semibold text-sm">theDAW</span>
                         {messages.length > 0 && (
                             <span className="text-[10px] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
                                 {messages.length}
@@ -1296,3 +1296,4 @@ const ModelCapabilityHints: React.FC<{ model: ModelInfo | null }> = ({ model }) 
 };
 
 export default AssistantPanel;
+

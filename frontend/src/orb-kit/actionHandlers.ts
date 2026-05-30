@@ -80,7 +80,7 @@ function buildParamUpdates(payload: Record<string, unknown> | undefined): Partia
     return updates;
 }
 
-export function handleStableDAWAction(action: AssistantActionPayload): string {
+export function handletheDAWAction(action: AssistantActionPayload): string {
     const { type, payload } = action;
     const params = useGenerateParamsStore.getState();
     const gen = useGenerateStore.getState();
@@ -217,3 +217,5 @@ export function handleStableDAWAction(action: AssistantActionPayload): string {
             return `Unknown action: ${type}`;
     }
 }
+
+

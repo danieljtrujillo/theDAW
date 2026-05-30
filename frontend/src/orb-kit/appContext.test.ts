@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 
-import { formatStableDAWAppContext } from './appContext.ts';
+import { formattheDAWAppContext } from './appContext.ts';
 
-const context = formatStableDAWAppContext({
+const context = formattheDAWAppContext({
   ui: {
     activeView: 'advanced',
     isLeftPanelOpen: true,
@@ -60,3 +60,5 @@ assert.match(context, /If the user asks to navigate/);
 assert.match(context, /If the user asks for settings help/);
 
 console.log('appContext runtime context regression passed');
+
+

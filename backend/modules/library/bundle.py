@@ -109,7 +109,7 @@ def _render_readme(
     midi_count: int,
 ) -> str:
     lines: list[str] = []
-    lines.append("StableDAW Track Bundle")
+    lines.append("theDAW Track Bundle")
     lines.append("=" * 60)
     lines.append(f"Entry ID: {entry_id}")
     if record.get("title"):

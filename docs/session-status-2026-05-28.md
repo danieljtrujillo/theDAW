@@ -1,7 +1,7 @@
 # Session status — pre-compaction snapshot (2026-05-28)
 
 **Branch:** `wip/pre-torchcodec-checkpoint`
-**Remote:** `new_origin` (gantasmo/StableDAW)
+**Remote:** `new_origin` (gantasmo/theDAW)
 **VJ project:** `D:/StableAudio/GANTASMO-LIVE-VJ` on `main`
 
 User asked for this note before context compaction so future-me
@@ -170,3 +170,4 @@ Plus the typecheck passed (`npm --prefix frontend run lint` exits 0).
 - Never downgrade external model catalogs without explicit OK.
 - Ruff is pinned to one exact version in both pyproject.toml and
   lint.yml; both update together in the same commit.
+

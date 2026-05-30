@@ -1,4 +1,4 @@
-# StableDAW AI — UI Rebuild Guide
+# theDAW AI — UI Rebuild Guide
 
 ## Purpose
 
@@ -117,7 +117,7 @@ The top bar should be slim and fixed. It provides identity, tab switching, and g
 Left side:
 
 - Vertical waveform logo mark.
-- Product name: **StableDAW AI**.
+- Product name: **theDAW AI**.
 
 Center:
 
@@ -1973,7 +1973,7 @@ A power-user screen with automation curves, advanced model options, performance/
 ```text
 APP SHELL
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ StableDAW AI        Generate | Init/Modify | Presets | Advanced      ? ⚙ A │
+│ theDAW AI        Generate | Init/Modify | Presets | Advanced      ? ⚙ A │
 ├───────────────┬──────────────────────────────────────────────────────────────┤
 │ Generate      │ ACTIVE TAB VIEW                                              │
 │ Init/Modify   │                                                              │
@@ -1989,4 +1989,5 @@ APP SHELL
 ```
 
 The rebuilt UI should look like a serious audio-generation workstation: dark panels, purple audio accents, clean spacing, compact but readable controls, strong waveform previews, and a clear separation between creation, modification, library management, and advanced automation.
+
 

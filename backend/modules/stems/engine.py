@@ -195,10 +195,7 @@ async def separate_entry(
         stems_dir.mkdir(parents=True, exist_ok=True)
 
         listing = await sc.list_stems(task_id)
-        files = listing.get("files") or listing.get("stems") or []
-        if isinstance(files, dict):
-            # Some shapes return a name → path mapping.
-            files = list(files.keys())
+        files = _normalize_stem_filenames(listing)
         _set_progress(
             entry_id,
             phase="writing",
@@ -236,6 +233,12 @@ async def separate_entry(
                 kind="stem_of",
             )
             written += 1
+
+        if files and written == 0:
+            raise RuntimeError(
+                f"stem separation produced {len(files)} listed file(s) "
+                f"but none could be fetched/written for {entry_id}"
+            )
 
         _set_status(db, entry_id, "complete")
         _set_progress(
@@ -280,6 +283,90 @@ def _stem_uuid() -> str:
     by name. Currently unused — kept for future ``add_stem`` cases that
     need it."""
     return uuid.uuid4().hex[:12]
+
+
+def _normalize_stem_filenames(listing: Any) -> list[str]:
+    """Coerce the sidecar's ``/stems/{task_id}`` listing into a list of
+    safe basename filenames (e.g. ``["bass.wav", "drums.wav"]``).
+
+    The integration-package sidecar returns rich dict entries:
+
+        {"files": [{"name": "bass.wav", "size": 1234, "url": "/stems/<task>/bass.wav"}, ...]}
+
+    Older or alternative shapes we tolerate:
+
+      * ``{"files": ["bass.wav", "drums.wav"]}``        — list of strings
+      * ``{"stems": [...]}``                            — same data under
+        a different key
+      * ``{"files": {"bass.wav": "/abs/path/bass.wav"}}`` — dict of
+        name -> path
+
+    Unsafe entries (anything with path separators, ``..``, or missing a
+    ``name``/``url``) are dropped with a warning rather than raising so
+    one bad item can't tank a whole separation run.
+    """
+    if not isinstance(listing, dict):
+        return []
+
+    raw_files: Any = listing.get("files")
+    if raw_files is None:
+        raw_files = listing.get("stems") or []
+
+    candidates: list[str] = []
+    if isinstance(raw_files, dict):
+        # name -> path mapping; we just need the keys (names).
+        candidates.extend(str(k) for k in raw_files.keys())
+    elif isinstance(raw_files, list):
+        for item in raw_files:
+            if isinstance(item, str):
+                candidates.append(item)
+                continue
+            if isinstance(item, dict):
+                name = item.get("name")
+                if not name:
+                    # Fall back to the basename of the url if present.
+                    url = item.get("url") or item.get("path") or ""
+                    if url:
+                        name = Path(str(url)).name
+                if name:
+                    candidates.append(str(name))
+                    continue
+            log.warning(
+                "stems.engine: dropping unrecognized stem listing entry: %r", item
+            )
+    else:
+        log.warning(
+            "stems.engine: unexpected sidecar listing shape (%s); ignoring",
+            type(raw_files).__name__,
+        )
+        return []
+
+    safe: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        name = raw.strip()
+        if not name:
+            continue
+        # Reject anything that could escape the stems dir.
+        if (
+            "/" in name
+            or "\\" in name
+            or name in ("..", ".")
+            or ".." in name.split("/")
+        ):
+            log.warning("stems.engine: dropping unsafe stem filename: %r", raw)
+            continue
+        # The integration-package only emits .wav stems today; keep the
+        # filter loose enough to accept future formats but still drop
+        # obvious junk.
+        if not Path(name).suffix:
+            log.warning("stems.engine: dropping extensionless stem name: %r", raw)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        safe.append(name)
+    return safe
 
 
 def _write_stem_compact(wav_bytes: bytes, out_path: Path) -> int:

@@ -13,7 +13,7 @@
 export type ToolTier = 'T0_silent' | 'T1_inform' | 'T2_confirm'
 
 // ---------------------------------------------------------------------------
-// Tier map - StableDAW tool declarations
+// Tier map - theDAW tool declarations
 // ---------------------------------------------------------------------------
 
 const TOOL_TIERS: Record<string, ToolTier> = {
@@ -118,3 +118,5 @@ function truncateString(s: string | undefined, maxLen: number): string {
   if (!s) return ''
   return s.length > maxLen ? `${s.slice(0, maxLen)}...` : s
 }
+
+

@@ -3,7 +3,7 @@
 **Owner:** Daniel (gantasmo)
 **Last updated:** 2026-05-27
 **Remote:** `new_origin/wip/pre-torchcodec-checkpoint` (fork at
-`gantasmo/StableDAW`). Upstream `origin` is `Stability-AI/stable-audio-3`,
+`gantasmo/theDAW`). Upstream `origin` is `Stability-AI/stable-audio-3`,
 no push access.
 
 This is the living "what's been done / what's left" doc for the
@@ -207,3 +207,4 @@ format drift, then review the content diffs separately.
    while results go to `D:\StableAudio\...`. `shutil.move` everywhere
    that crosses; `os.rename` / `os.replace` are forbidden across
    drives on Windows (WinError 17).
+

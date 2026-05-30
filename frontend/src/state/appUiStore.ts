@@ -1,12 +1,12 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export const STABLEDAW_VIEWS = ['create', 'edit', 'train', 'library', 'advanced'] as const;
-export type StableDAWView = typeof STABLEDAW_VIEWS[number];
+export const theDAW_VIEWS = ['create', 'edit', 'train', 'library', 'advanced'] as const;
+export type theDAWView = typeof theDAW_VIEWS[number];
 
-export function normalizeStableDAWView(value: unknown): StableDAWView | null {
-  return typeof value === 'string' && STABLEDAW_VIEWS.includes(value as StableDAWView)
-    ? value as StableDAWView
+export function normalizetheDAWView(value: unknown): theDAWView | null {
+  return typeof value === 'string' && theDAW_VIEWS.includes(value as theDAWView)
+    ? value as theDAWView
     : null;
 }
 
@@ -33,7 +33,7 @@ export function normalizeCenterTab(value: unknown): CenterTab | null {
 }
 
 interface AppUiState {
-  activeView: StableDAWView;
+  activeView: theDAWView;
   centerTab: CenterTab;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
@@ -69,7 +69,7 @@ export const useAppUiStore = create<AppUiState>()(
       rightPanelWidth: RIGHT_PANEL_DEFAULT_WIDTH,
       docsOpen: false,
       setActiveView: (view) => {
-        const normalized = normalizeStableDAWView(view);
+        const normalized = normalizetheDAWView(view);
         if (!normalized) return;
         // The library used to be a left-tab; it now lives in a permanent
         // right-side dock. Any caller that asks to navigate to 'library'
@@ -109,3 +109,5 @@ export const useAppUiStore = create<AppUiState>()(
     },
   ),
 );
+
+

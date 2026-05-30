@@ -1,7 +1,7 @@
 """Filesystem-backed library store.
 
 Layout under the library root (default: `<project>/data/generations/`,
-overridable via `STABLEDAW_GENERATIONS_DIR`):
+overridable via `theDAW_GENERATIONS_DIR`):
 
     <library_root>/
         <entry_id>/
@@ -104,7 +104,7 @@ class LibraryRecord:
 def default_library_root(project_root: Path) -> Path:
     """Resolve the library root path. Env override wins; otherwise it lives
     alongside the existing generate artifacts so old data is picked up."""
-    configured = os.getenv("STABLEDAW_GENERATIONS_DIR")
+    configured = os.getenv("theDAW_GENERATIONS_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
     return project_root / "data" / "generations"

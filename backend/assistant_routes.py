@@ -78,10 +78,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
-STABLEDAW_SYSTEM_PROMPT = """You are the StableDAW Assistant — an expert AI companion for the Stable Audio 3 audio generation system.
+theDAW_SYSTEM_PROMPT = """You are the theDAW Assistant — an expert AI companion for the Stable Audio 3 audio generation system.
 
 ## Your Capabilities
-- Answer any question about StableDAW, Stable Audio 3, and audio generation
+- Answer any question about theDAW, Stable Audio 3, and audio generation
 - Explain every parameter and what it does
 - Recommend optimal settings for different use cases
 - Diagnose issues (CUDA, VRAM, model loading, audio artifacts)
@@ -90,7 +90,7 @@ STABLEDAW_SYSTEM_PROMPT = """You are the StableDAW Assistant — an expert AI co
 - Improve prompts and apply them to the UI when asked
 
 ## Embedded App Context
-You are running inside the already-open StableDAW frontend. The user is not asking from a detached help page.
+You are running inside the already-open theDAW frontend. The user is not asking from a detached help page.
 Every request may include a `<current_app_context>` block containing the active tab, visible UI state, selected chat provider/model, current generation status, current prompt, and all generation settings.
 Use that context when answering settings questions. If the user asks you to do something the action catalog supports, emit actions instead of telling them to click manually.
 
@@ -165,7 +165,7 @@ If the user asks to improve their prompt, provide the improved prompt and emit `
 """
 
 CLAUDE_CODE_SYSTEM_PROMPT = """## Claude Code Provider Mode — Full Repo Agent
-When the selected provider is Claude Code, you are not only a chat assistant. You are the in-repository coding agent for StableDAW.
+When the selected provider is Claude Code, you are not only a chat assistant. You are the in-repository coding agent for theDAW.
 
 ### Native Claude Code capabilities
 - You are running through Claude Code, not a plain LLM API.
@@ -188,10 +188,10 @@ When the selected provider is Claude Code, you are not only a chat assistant. Yo
 ### Audio and attachment analysis
 - Attached files are staged on disk and listed in the prompt. Read and analyze those files directly.
 - For audio files, inspect metadata, duration, sample rate, channels, loudness/peaks, waveform characteristics, and obvious corruption/format issues using Python, ffmpeg, torchaudio, soundfile, or other available local tools.
-- For logs/screenshots/code files, read the file contents and connect findings back to the current StableDAW codebase.
+- For logs/screenshots/code files, read the file contents and connect findings back to the current theDAW codebase.
 
 ### App control vs repo work
-- For StableDAW UI actions, emit `<action>{...}</action>` blocks exactly as documented above.
+- For theDAW UI actions, emit `<action>{...}</action>` blocks exactly as documented above.
 - For code repair, web research, shell commands, file edits, tests, and audio analysis, use Claude Code tools directly. Do not wrap those tool operations in app action blocks.
 - Keep the user informed about major tool activity, but do not ask permission for routine diagnostics or fixes.
 """
@@ -400,7 +400,7 @@ def _claude_fallback_model(model: str) -> str | None:
 
 def _format_claude_rag_context(rag_chunks: list[dict]) -> str:
     """
-    Compact retrieved StableDAW docs for Claude Code.
+    Compact retrieved theDAW docs for Claude Code.
 
     Claude Code can still use Read/Grep/MCPs when it needs more, but this block
     prevents it from re-searching docs for the common case.
@@ -409,7 +409,7 @@ def _format_claude_rag_context(rag_chunks: list[dict]) -> str:
         return ""
 
     parts = [
-        "## Retrieved StableDAW docs (backend RAG)",
+        "## Retrieved theDAW docs (backend RAG)",
         "These documentation chunks were already retrieved by the app. Use them first; only read/search files if this context is insufficient.",
     ]
     for index, chunk in enumerate(rag_chunks, start=1):
@@ -1318,15 +1318,15 @@ async def _stream_claude(req: ChatRequest, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# StableDAW tool definitions for providers with native function calling
+# theDAW tool definitions for providers with native function calling
 # ---------------------------------------------------------------------------
 
-STABLEDAW_TOOLS = [
+theDAW_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "navigate",
-            "description": "Switch the active tab/view in StableDAW",
+            "description": "Switch the active tab/view in theDAW",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1344,7 +1344,7 @@ STABLEDAW_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_docs",
-            "description": "Open the StableDAW documentation modal",
+            "description": "Open the theDAW documentation modal",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -1352,7 +1352,7 @@ STABLEDAW_TOOLS = [
         "type": "function",
         "function": {
             "name": "close_docs",
-            "description": "Close the StableDAW documentation modal",
+            "description": "Close the theDAW documentation modal",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -1703,7 +1703,7 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
             headers["Authorization"] = f"Bearer {api_key}"
         if provider_id in ("openrouter", "openrouter-free"):
             headers["HTTP-Referer"] = "https://stabledaw.local"
-            headers["X-Title"] = "StableDAW Assistant"
+            headers["X-Title"] = "theDAW Assistant"
 
         if key_attempt == 0:
             yield _sse_frame(
@@ -1715,7 +1715,7 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                 "model": model,
                 "messages": messages_payload,
                 "stream": True,
-                "tools": STABLEDAW_TOOLS,
+                "tools": theDAW_TOOLS,
             }
 
             async with httpx.AsyncClient(
@@ -2046,7 +2046,7 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
 
     # Convert OpenAI tool format to Anthropic tool format
     anthropic_tools = []
-    for t in STABLEDAW_TOOLS:
+    for t in theDAW_TOOLS:
         fn = t["function"]
         anthropic_tools.append(
             {
@@ -3265,7 +3265,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             except Exception:
                 pass
 
-        system_content = STABLEDAW_SYSTEM_PROMPT
+        system_content = theDAW_SYSTEM_PROMPT
         skill_block = _stable_audio_skill_system_block()
         claude_session_id = None
         if provider == "claude":

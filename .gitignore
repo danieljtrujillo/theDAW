@@ -202,3 +202,6 @@ frontend.bak*/
 # Local backup snapshots — never commit
 _RECOVERY_BACKUP/
 
+
+# Reference PDFs kept locally, not version-controlled (large binaries)
+docs/*.pdf

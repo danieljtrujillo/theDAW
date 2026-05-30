@@ -3,7 +3,7 @@ export interface AssistantExecutableAction {
     payload?: Record<string, unknown>;
 }
 
-const STABLEDAW_ACTION_TYPES = new Set([
+const theDAW_ACTION_TYPES = new Set([
     'navigate',
     'navigate_to',
     'open_docs',
@@ -77,7 +77,7 @@ export function actionFromAssistantEvent(event: unknown): AssistantExecutableAct
     if (event.type !== 'action' && event.type !== 'tool_call' && event.type !== 'function_call') return null;
 
     const type = actionNameFromEvent(event);
-    if (!type || !STABLEDAW_ACTION_TYPES.has(type)) return null;
+    if (!type || !theDAW_ACTION_TYPES.has(type)) return null;
 
     return {
         type,
@@ -95,7 +95,9 @@ export function statusFromAssistantEvent(event: unknown): string | null {
 
     if (event.type !== 'tool_call' && event.type !== 'function_call') return null;
     const name = actionNameFromEvent(event);
-    if (!name || STABLEDAW_ACTION_TYPES.has(name)) return null;
+    if (!name || theDAW_ACTION_TYPES.has(name)) return null;
 
     return `Claude Code: using ${name}`;
 }
+
+

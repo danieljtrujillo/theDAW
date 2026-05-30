@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# StableDAW pre-commit hook.
+# theDAW pre-commit hook.
 #
 # Re-runs scripts/regenerate-docs.sh so the canonical user guide,
 # the in-app copy under frontend/public, and (optionally) the
@@ -19,3 +19,4 @@ fi
 
 # Run under bash explicitly so this works on Windows git-bash hooks too.
 bash "$script"
+

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install StableDAW git hooks.
+# Install theDAW git hooks.
 #
 # Usage:
 #   ./scripts/install-hooks.sh
@@ -26,3 +26,4 @@ for hook_path in "$hooks_src"/*; do
 done
 
 echo "[hooks] Done. Hooks run on every commit; bypass with --no-verify."
+

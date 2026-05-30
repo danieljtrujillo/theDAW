@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { ModelInfo } from '../ProviderModelSelector';
-import { handleStableDAWAction, type AssistantActionPayload } from '../actionHandlers';
+import { handletheDAWAction, type AssistantActionPayload } from '../actionHandlers';
 import { uuid } from '../utils';
 
 // ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ function extractAndExecuteActions(
             executed.add(json);
             try {
                 const action: AssistantActionPayload = JSON.parse(json);
-                handleStableDAWAction(action);
+                handletheDAWAction(action);
             } catch { /* malformed JSON — skip */ }
         }
     }
@@ -412,7 +412,7 @@ export function useOrbChat(config: OrbChatConfig = {}): OrbChatState {
                                 type: event.action_type || event.type,
                                 payload: event.payload,
                             };
-                            handleStableDAWAction(actionPayload);
+                            handletheDAWAction(actionPayload);
                         } else if (event.type === 'tool_call' || event.type === 'function_call') {
                             const name = event.name || event.function?.name || 'tool';
                             setStatusText(`Using ${name}...`);
@@ -488,3 +488,5 @@ export function useOrbChat(config: OrbChatConfig = {}): OrbChatState {
         saveApiKey, clearApiKey, getActiveKey, maskKey,
     };
 }
+
+

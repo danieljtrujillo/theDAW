@@ -1,5 +1,5 @@
 """
-Mini RAG system — indexes StableDAW markdown docs into ChromaDB.
+Mini RAG system — indexes theDAW markdown docs into ChromaDB.
 
 On startup, scans docs/, CLAUDE.md, and frontend/public/USER_GUIDE.md.
 Chunks by markdown ## headers. Embeds with all-MiniLM-L6-v2.

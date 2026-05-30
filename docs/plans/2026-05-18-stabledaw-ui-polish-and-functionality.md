@@ -1,8 +1,8 @@
-# StableDAW UI — Polish & Functionality Plan
+# theDAW UI — Polish & Functionality Plan
 
 **Date:** 2026-05-18
 **Status:** Triage only. No code changes performed.
-**Context:** Frontend graft from `grafting_day/ui_v2/` was completed earlier today. The StableDAW UI is now live on :5173 with backend shim on :8600. This doc enumerates the layout, polish, and functionality work the user identified after a first walkthrough.
+**Context:** Frontend graft from `grafting_day/ui_v2/` was completed earlier today. The theDAW UI is now live on :5173 with backend shim on :8600. This doc enumerates the layout, polish, and functionality work the user identified after a first walkthrough.
 
 ---
 
@@ -10,7 +10,7 @@
 
 Two important framings before the task list:
 
-1. **The library persistence layer the user remembers is `libraryStore.ts`** — a client-side IndexedDB store at [frontend.bak-20260518-060200/src/state/libraryStore.ts](../../frontend.bak-20260518-060200/src/state/libraryStore.ts) (`DB_NAME = 'sa3-library'`, object store `generations`). The old `GenerateView` called `useLibraryStore.addEntry(...)` after every successful generation ([frontend.bak-20260518-060200/src/views/GenerateView.tsx:112](../../frontend.bak-20260518-060200/src/views/GenerateView.tsx#L112)). The StableDAW LibraryView dropped both. Porting `libraryStore.ts` back and re-attaching the `addEntry` hook is the work — small, mostly a copy-paste.
+1. **The library persistence layer the user remembers is `libraryStore.ts`** — a client-side IndexedDB store at [frontend.bak-20260518-060200/src/state/libraryStore.ts](../../frontend.bak-20260518-060200/src/state/libraryStore.ts) (`DB_NAME = 'sa3-library'`, object store `generations`). The old `GenerateView` called `useLibraryStore.addEntry(...)` after every successful generation ([frontend.bak-20260518-060200/src/views/GenerateView.tsx:112](../../frontend.bak-20260518-060200/src/views/GenerateView.tsx#L112)). The theDAW LibraryView dropped both. Porting `libraryStore.ts` back and re-attaching the `addEntry` hook is the work — small, mostly a copy-paste.
 
 2. **The current footer is not vertically overlapping content geometrically — it's eating real estate.** Math: `Shell` is `h-[calc(100vh-5rem)]` ([Shell.tsx:35](../../frontend/src/components/layout/Shell.tsx#L35)), `PlayerFooter` is `fixed bottom-0 h-20` ([PlayerFooter.tsx:15](../../frontend/src/components/audio/PlayerFooter.tsx#L15)). They tile cleanly. The complaint in the screenshot is that the **bottom analysis row inside the DAW panel feels cramped** because (a) the footer steals 80px from the page, (b) the bottom panel defaults to `bottomHeight=160` ([DAWCenterPanel.tsx:12](../../frontend/src/components/layout/DAWCenterPanel.tsx#L12)) of which ~30px is the tab bar, leaving ~130px of visualization, and (c) the footer duplicates the visualization at right ([PlayerFooter.tsx:81-83](../../frontend/src/components/audio/PlayerFooter.tsx#L81-L83)), making the perception of "blocking" worse. Fixing perception > fighting geometry.
 
@@ -112,7 +112,7 @@ The restore bar IS rendered when collapsed — the user just couldn't find it. L
    - Optional: a `console.*` interceptor for errors thrown from React error boundaries
 3. **New component** `<ProcessingLog />` that subscribes to the store and renders. Move it to the BOTTOM of the left panel (after `GenerateView` content), as a collapsible `<Section>` so it's a peer of the existing accordion sections. Probably anchor it as a non-collapsible final row that stays pinned ~150px tall.
 4. **Delete** the right-side processing log block from `DAWCenterPanel`.
-5. The DAW bottom row's grid changes from `col-span-12 lg:col-span-8` + `col-span-12 lg:col-span-4` to a single full-width spectral panel.
+5. theDAW bottom row's grid changes from `col-span-12 lg:col-span-8` + `col-span-12 lg:col-span-4` to a single full-width spectral panel.
 
 **Effort:** 1.5–2 hours.
 **Risk:** Where to position the log inside the left column is a design call — under the per-tab content (so it changes height per tab) vs. as a global pinned strip below the tab content. I'd recommend a global pinned strip below `<AnimatePresence>` in `Shell.tsx:82-98` — it stays visible across CREATE/EDIT/TRAIN/LIBRARY.
@@ -424,3 +424,5 @@ Grouped so that each chunk leaves the app in a working, demoable state:
 2. **Multi-track real-time playback — v1 or v2?** Recommend v2; v1 = preview selected clip + offline mixdown for COMMIT EDIT. Confirm.
 3. **Step sequencer sounds — synth tones first, or library samples first?** Recommend synth tones first. Confirm.
 4. **Processing log placement in left column — global pinned strip, or per-tab section?** Recommend global pinned strip ~150px tall. Confirm.
+
+

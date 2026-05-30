@@ -1,11 +1,11 @@
-# GANTASMOB0T Integration Design for StableDAW
+# GANTASMOB0T Integration Design for theDAW
 
 **Date**: 2026-05-20
 **Status**: Approved
 
 ## Summary
 
-Integrate the GANTASMOB0T AI assistant into StableDAW's React frontend as the ultimate app companion. The assistant answers questions about Stable Audio 3, advises on generation parameters, controls UI elements, searches the web, and diagnoses app issues. Powered by a mini RAG system over all project documentation.
+Integrate the GANTASMOB0T AI assistant into theDAW's React frontend as the ultimate app companion. The assistant answers questions about Stable Audio 3, advises on generation parameters, controls UI elements, searches the web, and diagnoses app issues. Powered by a mini RAG system over all project documentation.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Three layers:
 
 ### 1. Backend — Multi-Provider Assistant API
 
-Port SunoHarvester's `assistant_chat_routes.py` into StableDAW's FastAPI backend (port 8600). Mounted at `/api/assistant/*`.
+Port SunoHarvester's `assistant_chat_routes.py` into theDAW's FastAPI backend (port 8600). Mounted at `/api/assistant/*`.
 
 **Endpoints:**
 - `POST /api/assistant/chat` — SSE-streamed chat completions (all providers)
@@ -60,7 +60,7 @@ Port SunoHarvester's `assistant_chat_routes.py` into StableDAW's FastAPI backend
 Port orb-kit from SunoHarvester into `frontend/src/orb-kit/`. Changes from source:
 
 - Strip Suno-specific: audio gen tab, Lyria references, Suno titles
-- Rebrand: "StableDAW Assistant" default title
+- Rebrand: "theDAW Assistant" default title
 - Inline `ProviderModelSelector` (copy into orb-kit, fix imports)
 - Mount as floating overlay in `App.tsx` on all tabs
 
@@ -130,3 +130,4 @@ Handled by provider-native capabilities. Most modern models (Gemini, Claude, GPT
 - `frontend/src/App.tsx` — mount orb-kit overlay
 - `backend/server.py` — mount assistant router
 - `pyproject.toml` — add chromadb + sentence-transformers
+
