@@ -20,7 +20,7 @@ def client_with_root(tmp_path: Path, monkeypatch) -> TestClient:
     # Force the module-level store to be re-created.
     monkeypatch.setattr(library_router_module, "_store", None)
     # Override the root via env var (default_library_root() honors it).
-    monkeypatch.setenv("STABLEDAW_GENERATIONS_DIR", str(tmp_path))
+    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
 
     app = FastAPI()
     app.include_router(library_router_module.router, prefix="/api/library")
@@ -147,3 +147,43 @@ def test_import_endpoint_rejects_empty_file(client_with_root):
         data={"metadata": "{}"},
     )
     assert r.status_code == 400
+
+
+def test_stream_stem_audio_endpoint_serves_stem_bytes(client_with_root, tmp_path):
+    """The /api/library/stems/{stem_id}/audio route lets the frontend
+    fetch one separated stem's WAV bytes for the editor / init / inpaint
+    pipelines without an in-memory copy. Test that the path-to-bytes
+    round-trip works."""
+    _seed_generate_entry(tmp_path, "job_stems", 0)
+    # Write a fake stem file in the entry dir + register it in the DB
+    # so the endpoint can resolve it.
+    entry_dir = tmp_path / "job_stems_00"
+    if not entry_dir.is_dir():
+        entry_dir = tmp_path / "job_stems" / "00"
+    stems_dir = entry_dir / "stems"
+    stems_dir.mkdir(parents=True, exist_ok=True)
+    stem_bytes = b"RIFF\x00\x00\x00\x00WAVEdata fake-bass"
+    stem_path = stems_dir / "bass.wav"
+    stem_path.write_bytes(stem_bytes)
+
+    store = library_router_module.get_store()
+    assert store.db is not None
+    store.db.add_stem(
+        stem_id="job_stems_00__bass",
+        entry_id="job_stems_00",
+        stem_name="bass",
+        audio_path=str(stem_path),
+        file_size_bytes=len(stem_bytes),
+        model="demucs",
+        model_variant="4-stem",
+    )
+
+    r = client_with_root.get("/api/library/stems/job_stems_00__bass/audio")
+    assert r.status_code == 200
+    assert r.content == stem_bytes
+    assert "audio" in r.headers.get("content-type", "")
+
+
+def test_stream_stem_audio_endpoint_404_for_unknown_stem(client_with_root):
+    r = client_with_root.get("/api/library/stems/does-not-exist/audio")
+    assert r.status_code == 404

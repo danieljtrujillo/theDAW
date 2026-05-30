@@ -120,7 +120,7 @@ def test_generation_filename_strips_control_characters_and_reserved_names():
 def test_generation_artifacts_save_audio_spectrograms_and_metadata(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("STABLEDAW_GENERATIONS_DIR", str(tmp_path))
+    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
     png_payload = base64.b64encode(b"fake-png-bytes").decode("ascii")
 
     saved = _save_generation_artifacts(

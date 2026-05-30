@@ -24,13 +24,13 @@ from backend.modules.stems.sidecar import (
 
 
 def test_resolve_config_defaults_to_sidecar_venv(monkeypatch):
-    """Without STABLEDAW_STEMS_PYTHON the config points at the
+    """Without theDAW_STEMS_PYTHON the config points at the
     integration-package's dedicated .sidecar_venv (auto-created on
     first install). The exe may not exist yet — we only assert the path
     shape so we don't accidentally test against an already-populated
     venv on the dev machine."""
-    monkeypatch.delenv("STABLEDAW_STEMS_PYTHON", raising=False)
-    monkeypatch.delenv("STABLEDAW_STEMS_PORT", raising=False)
+    monkeypatch.delenv("theDAW_STEMS_PYTHON", raising=False)
+    monkeypatch.delenv("theDAW_STEMS_PORT", raising=False)
     cfg = resolve_config()
     assert isinstance(cfg, SidecarConfig)
     assert ".sidecar_venv" in str(cfg.python_exe)
@@ -43,9 +43,9 @@ def test_resolve_config_honours_env_overrides(monkeypatch, tmp_path: Path):
     pkg.mkdir()
     py = tmp_path / "python.exe"
     py.write_text("")  # presence check only
-    monkeypatch.setenv("STABLEDAW_STEMS_PACKAGE", str(pkg))
-    monkeypatch.setenv("STABLEDAW_STEMS_PYTHON", str(py))
-    monkeypatch.setenv("STABLEDAW_STEMS_PORT", "8123")
+    monkeypatch.setenv("theDAW_STEMS_PACKAGE", str(pkg))
+    monkeypatch.setenv("theDAW_STEMS_PYTHON", str(py))
+    monkeypatch.setenv("theDAW_STEMS_PORT", "8123")
     cfg = resolve_config()
     assert cfg.package_path == pkg.resolve()
     assert cfg.python_exe == py.resolve()
@@ -54,8 +54,8 @@ def test_resolve_config_honours_env_overrides(monkeypatch, tmp_path: Path):
 
 
 def test_probe_reports_missing_package(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("STABLEDAW_STEMS_PACKAGE", str(tmp_path / "nope"))
-    monkeypatch.delenv("STABLEDAW_STEMS_PYTHON", raising=False)
+    monkeypatch.setenv("theDAW_STEMS_PACKAGE", str(tmp_path / "nope"))
+    monkeypatch.delenv("theDAW_STEMS_PYTHON", raising=False)
     out = probe()
     assert out["package_exists"] is False
     assert out["ok"] is False
