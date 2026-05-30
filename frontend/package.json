@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "screenshots": "tsx ../scripts/screenshots/capture.ts"
+    "screenshots": "tsx ../scripts/screenshots/capture.ts",
+    "docs:coverage": "tsx ../scripts/screenshots/featureCoverage.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

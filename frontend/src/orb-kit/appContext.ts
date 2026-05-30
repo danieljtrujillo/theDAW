@@ -23,11 +23,11 @@ type RuntimeContext = {
     attachments: Array<{ name: string; mime: string; size: number }>;
 };
 
-export function formatStableDAWAppContext(context: RuntimeContext): string {
+export function formattheDAWAppContext(context: RuntimeContext): string {
     const payload = {
         assistant_is_inside_running_app: true,
         important_behavior: [
-            'The user is already talking to you from inside The DAW (by Gantasmo) frontend. Do not tell them to click UI manually when an action exists.',
+            'The user is already talking to you from inside theDAW (by Gantasmo) frontend. Do not tell them to click UI manually when an action exists.',
             'If the user asks to navigate, emit a navigate action immediately.',
             'If the user asks for settings help, use currentGenerationParams below and explain what each relevant setting does.',
             'If the user asks to improve the prompt, propose a better prompt and emit set_prompt or improve_prompt if they ask you to apply it.',
@@ -44,7 +44,7 @@ export function formatStableDAWAppContext(context: RuntimeContext): string {
     return `<current_app_context>\n${JSON.stringify(payload, null, 2)}\n</current_app_context>`;
 }
 
-export function buildStableDAWAppContext(options: {
+export function buildtheDAWAppContext(options: {
     selectedProvider: string;
     selectedModel: string;
     attachments?: Array<{ name: string; mime: string; size: number }>;
@@ -53,7 +53,7 @@ export function buildStableDAWAppContext(options: {
     const params = useGenerateParamsStore.getState();
     const generation = useGenerateStore.getState();
 
-    return formatStableDAWAppContext({
+    return formattheDAWAppContext({
         ui: {
             activeView: ui.activeView,
             isLeftPanelOpen: ui.isLeftPanelOpen,
@@ -128,3 +128,5 @@ export function buildStableDAWAppContext(options: {
         attachments: options.attachments ?? [],
     });
 }
+
+

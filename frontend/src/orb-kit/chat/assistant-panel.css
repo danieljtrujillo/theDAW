@@ -1,7 +1,7 @@
-/* StableDAW Assistant Panel — glass-morphism chat panel
+/* theDAW Assistant Panel — glass-morphism chat panel
    Companion stylesheet to gantasmo-orb.css.
    All selectors scoped under .gantasmo-orb-theme to share the orb's variable namespace.
-   Ported from SunoHarvester orb-kit for StableDAW integration.
+   Ported from SunoHarvester orb-kit for theDAW integration.
 */
 
 /* -- 1. Panel Custom Properties ------------------------------------------------ */
@@ -797,3 +797,4 @@
         scroll-behavior: auto;
     }
 }
+

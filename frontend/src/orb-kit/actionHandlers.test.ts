@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { handleStableDAWAction } from './actionHandlers.ts';
+import { handletheDAWAction } from './actionHandlers.ts';
 import { useGenerateParamsStore } from '../state/generateParamsStore.ts';
 import { useGenerateStore, type GenerateParams } from '../state/generateStore.ts';
 
@@ -60,7 +60,7 @@ useGenerateParamsStore.setState({
   loras: [],
 });
 
-const message = handleStableDAWAction({ type: 'generate' });
+const message = handletheDAWAction({ type: 'generate' });
 
 assert.equal(message, 'Generation started');
 assert.ok(captured, 'assistant generate action should submit generation params');
@@ -83,3 +83,5 @@ assert.equal(captured?.cutToDuration, false);
 assert.deepEqual(captured?.loras, []);
 
 console.log('actionHandlers generation dispatch regression passed');
+
+

@@ -1,4 +1,4 @@
-# StableDAW Frontend
+# theDAW Frontend
 
 ## Run Locally
 
@@ -10,3 +10,4 @@
 4. Open `http://localhost:5173`.
 
 The dev server proxies `/api/*` requests to the backend. See the root `README.md` and `docs/USER_GUIDE.md` for complete setup and feature documentation.
+

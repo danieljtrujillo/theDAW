@@ -346,7 +346,7 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
       {audioEl}
 
       {error && (
-        <div className="text-[9px] font-mono text-red-300 break-words bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
+        <div className="text-[9px] font-mono text-red-300 wrap-break-word bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
           {error}
         </div>
       )}

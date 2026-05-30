@@ -1,4 +1,4 @@
-import { buildStableDAWAppContext } from './appContext';
+import { buildtheDAWAppContext } from './appContext';
 
 export type PromptEnhancementTarget = 'positive' | 'negative';
 
@@ -45,7 +45,7 @@ export function buildPromptEnhancementRequest({
 
     return [
         `Enhance ONLY the ${targetLabel} for Stable Audio 3.`,
-        `Use The DAW (by Gantasmo) documentation and prompting rules, especially docs/guides/prompting.md, docs/USER_GUIDE.md, and relevant UI prompt guidance from the backend RAG context.`,
+        `Use theDAW (by Gantasmo) documentation and prompting rules, especially docs/guides/prompting.md, docs/USER_GUIDE.md, and relevant UI prompt guidance from the backend RAG context.`,
         `Consider BOTH prompts. The ${otherLabel} is context and constraints; do not ignore it.`,
         `Keep the result optimized for Stable Audio 3 audio generation: concise, concrete, richly descriptive, and focused on sound, instrumentation, mood, production, texture, stereo field, and artifacts to avoid where relevant.`,
         `Preserve the user's intent, but make it more precise and generation-ready.`,
@@ -83,7 +83,7 @@ export function extractEnhancedPrompt(rawText: string): string {
 
 export async function enhanceStableAudioPrompt(request: PromptEnhancementRequest): Promise<string> {
     const { provider, model } = getStoredProviderSelection();
-    const appContext = buildStableDAWAppContext({
+    const appContext = buildtheDAWAppContext({
         selectedProvider: provider,
         selectedModel: model,
         attachments: [],
@@ -160,3 +160,5 @@ export async function enhanceStableAudioPrompt(request: PromptEnhancementRequest
     if (!enhanced) throw new Error('Prompt enhancer returned an empty prompt.');
     return enhanced;
 }
+
+

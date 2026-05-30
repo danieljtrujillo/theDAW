@@ -1,8 +1,8 @@
 /**
- * Type definitions for the StableDAW AI Assistant (Orb Kit)
+ * Type definitions for the theDAW AI Assistant (Orb Kit)
  *
  * Ported from SunoHarvester's Gantasmo assistant types,
- * adapted for the StableDAW audio generation domain.
+ * adapted for the theDAW audio generation domain.
  */
 
 // ---------------------------------------------------------------------------
@@ -12,7 +12,7 @@
 export type MessageRole = 'user' | 'assistant' | 'action' | 'system' | 'pending_confirmation'
 
 // ---------------------------------------------------------------------------
-// Action kinds - StableDAW audio generation domain
+// Action kinds - theDAW audio generation domain
 // ---------------------------------------------------------------------------
 
 export type AssistantActionKind =
@@ -140,3 +140,5 @@ export interface ActionResult {
   action: AssistantAction
   data?: unknown
 }
+
+
