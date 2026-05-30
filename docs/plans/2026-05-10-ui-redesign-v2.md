@@ -1,4 +1,4 @@
-# StableDAW AI — UI Redesign v2 Plan
+# theDAW AI — UI Redesign v2 Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -39,7 +39,7 @@ The mockups show the right pattern — one dense page with these zones:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ TOP BAR: StableDAW AI    [Studio] [Library]                    ? ⚙ ●     │
+│ TOP BAR: theDAW AI    [Studio] [Library]                    ? ⚙ ●     │
 ├─────────────────────────────────┬───────────────────────────────────────────┤
 │ PROMPTING                       │ MAIN CONTROLS                             │
 │ Prompt [━━━━━━━━━━━━━━━━━━━━━]  │ Seconds ━━━━  Steps [8]  CFG scale ━━━━  │
@@ -75,7 +75,7 @@ The mockups show the right pattern — one dense page with these zones:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ TOP BAR: StableDAW AI    [Studio] [Library]                    ? ⚙ ●     │
+│ TOP BAR: theDAW AI    [Studio] [Library]                    ? ⚙ ●     │
 ├───────────┬────────────────────────────────┬────────────────────────────────┤
 │ SIDEBAR   │ ITEMS                          │ DETAIL                         │
 │ Search    │ Sort [▼Recent]                 │ Name + ★                       │
@@ -259,3 +259,4 @@ What the mockups consistently show:
 7. Task 8 (Library) — second page
 8. Task 9 (polish) — interactions
 9. Task 10 (verification) — QA
+

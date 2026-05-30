@@ -1,8 +1,8 @@
-# StableDAW Plugin / Module System — Architecture Plan
+# theDAW Plugin / Module System — Architecture Plan
 
 **Date:** 2026-05-21
 **Status:** Design only. No code changes performed.
-**Context:** The DAW has accumulated several large, semi-independent feature areas (effects processing, LoRA training, dataset preparation, library management, MIDI, step sequencer). Each one touches both backend routes and frontend views. Adding more features without a clear module boundary risks breaking the whole app. This plan defines a lightweight, practical plugin system that keeps the core stable while letting new features be developed, installed, and disabled independently.
+**Context:** theDAW has accumulated several large, semi-independent feature areas (effects processing, LoRA training, dataset preparation, library management, MIDI, step sequencer). Each one touches both backend routes and frontend views. Adding more features without a clear module boundary risks breaking the whole app. This plan defines a lightweight, practical plugin system that keeps the core stable while letting new features be developed, installed, and disabled independently.
 
 **Reference:**
 - LoRA dataset research → [`docs/guides/lora-dataset-guide.md`](../guides/lora-dataset-guide.md)
@@ -612,3 +612,5 @@ frontend/src/
   components/layout/ModuleSidebar.tsx   EDIT — accept modules array as prop
   components/audio/PlayerFooter.tsx     EDIT — render footerActions contribution slot
 ```
+
+

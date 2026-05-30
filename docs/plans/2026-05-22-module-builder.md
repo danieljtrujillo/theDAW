@@ -1,4 +1,4 @@
-# StableDAW Module Builder — Architecture Plan
+# theDAW Module Builder — Architecture Plan
 
 **Date:** 2026-05-22
 **Status:** Design only. No code changes performed.
@@ -16,7 +16,7 @@ This plan defines a **completely separate** scaffolding tool that lives in its o
 
 Without a builder, every new module is a hand-copy of an existing one. Bugs propagate (someone forgets to defer a heavy import, or skips the `ErrorBoundary` wrapping, or reaches into another module's internals). The module system's safety properties are only as strong as the discipline of whoever writes the next module at midnight. A builder converts those properties from "things you must remember" into "things the tool refuses to generate without."
 
-Additionally: the visual UI builder solves a separate problem. The DAW has an established design language — dense dark layout, purple accents, the `Section` primitive, the `ResizablePanel` shell, the bottom tab pattern. A module author should not have to reverse-engineer that style. They should pick from a palette of templates that already match.
+Additionally: the visual UI builder solves a separate problem. theDAW has an established design language — dense dark layout, purple accents, the `Section` primitive, the `ResizablePanel` shell, the bottom tab pattern. A module author should not have to reverse-engineer that style. They should pick from a palette of templates that already match.
 
 ---
 
@@ -446,7 +446,7 @@ This is the catalog the visual builder draws from. Each entry maps to a Jinja2 f
 
 ### 6.3 Placement slots — every place a module can appear in the DAW
 
-The DAW exposes a fixed catalog of named slots. A module's spec declares which slots it fills. Each slot has a defined template, prop schema, and matching preview backdrop (see §9.3).
+theDAW exposes a fixed catalog of named slots. A module's spec declares which slots it fills. Each slot has a defined template, prop schema, and matching preview backdrop (see §9.3).
 
 | Slot ID | Where in the DAW | What it does | Renders inside |
 |---|---|---|---|
@@ -598,11 +598,11 @@ A single Zustand store (`specStore.ts`) holds the current `ModuleSpec`, the curr
 
 ### 9.3 Live preview — the wireframe DAW
 
-The preview iframe loads a **mock DAW shell** (`preview-harness.html`) that renders a stripped-down skeleton of the real StableDAW with every placement slot present and labeled. The module under construction renders inside the slot(s) it declares in the spec. Slots the module does NOT fill are shown as dimmed labeled rectangles so the author always sees the module's placement in context.
+The preview iframe loads a **mock DAW shell** (`preview-harness.html`) that renders a stripped-down skeleton of the real theDAW with every placement slot present and labeled. The module under construction renders inside the slot(s) it declares in the spec. Slots the module does NOT fill are shown as dimmed labeled rectangles so the author always sees the module's placement in context.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Header: StableDAW                                  [Docs] [Settings]  │
+│  Header: theDAW                                  [Docs] [Settings]  │
 ├──────────┬───────────────────────────────────────────────────────────────┤
 │  CREATE  │  ▶ Workspace toolbar ─────────────────────────────────       │
 │  EDIT    │  [Waveform Editor] [Step Sequencer] [+ centerToolbar slot]   │
@@ -888,3 +888,5 @@ module_builder/
     test_spec_roundtrip.py                      CREATE
     fixtures/                                   CREATE — valid + invalid module fixtures
 ```
+
+

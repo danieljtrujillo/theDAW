@@ -1,4 +1,4 @@
-# StableDAW Multi-Select / Mashup / Mobile Access TODO
+# theDAW Multi-Select / Mashup / Mobile Access TODO
 
 This task was intentionally split into smaller chunks so low-risk work can land separately from the more complex editor workflow changes.
 

@@ -1,6 +1,6 @@
-# Stable Audio 3 — StableDAW
+# Stable Audio 3 — theDAW
 
-A research and production platform for high-quality, text-conditioned audio generation, built on the Stability AI Stable Audio 3 diffusion pipeline. This fork layers a FastAPI backend and a bespoke React DAW interface (StableDAW) on top of the upstream Python pipeline, providing a complete browser-based studio for generation, editing, and composition.
+A research and production platform for high-quality, text-conditioned audio generation, built on the Stability AI Stable Audio 3 diffusion pipeline. This fork layers a FastAPI backend and a bespoke React DAW interface (theDAW) on top of the upstream Python pipeline, providing a complete browser-based studio for generation, editing, and composition.
 
 > **Complete documentation:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — the source of truth for every feature, endpoint, and control. The in-app **Docs** button renders it as an interactive modal with PDF export.
 
@@ -15,8 +15,8 @@ A research and production platform for high-quality, text-conditioned audio gene
 | **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | Async HTTP wrapper. Manages a job queue for generation, synchronous FFmpeg-based audio processing, model introspection endpoints. Binds to port 8600. |
 | **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory contains `module.json` (metadata, enabled flag, API prefix) and `router.py` (FastAPI APIRouter). The loader mounts all enabled modules at startup; failures are non-fatal. Currently ships the `effects` module (mounted at `/api/studio`). |
-| **StableDAW React UI** | `frontend/` | React 19 + Vite 6 + Tailwind 4 + Zustand 5. Browser-based DAW with multi-track editor, step sequencer, piano roll, persistent library, real-time spectral analyzer, and AI assistant panel. Proxies `/api/*` to the backend. Runs on port 5173 in development. |
-| **Gradio UI (legacy)** | `run_gradio.py`, `stable_audio_3/interface/` | Upstream Gradio interface. Functional for direct pipeline access; StableDAW supersedes it for daily use. |
+| **theDAW React UI** | `frontend/` | React 19 + Vite 6 + Tailwind 4 + Zustand 5. Browser-based DAW with multi-track editor, step sequencer, piano roll, persistent library, real-time spectral analyzer, and AI assistant panel. Proxies `/api/*` to the backend. Runs on port 5173 in development. |
+| **Gradio UI (legacy)** | `run_gradio.py`, `stable_audio_3/interface/` | Upstream Gradio interface. Functional for direct pipeline access; theDAW supersedes it for daily use. |
 
 ---
 
@@ -135,7 +135,7 @@ See [docs/workflows/autoencoder.md](docs/workflows/autoencoder.md) for batch enc
 
 ---
 
-## StableDAW Feature Summary
+## theDAW Feature Summary
 
 ### Generation (CREATE tab)
 - Text-to-audio, audio-to-audio, and inpainting/continuation from a single form.
@@ -310,3 +310,4 @@ The browser storage cap has been reached. Remove old library entries using the t
 ## License
 
 Commercial use of these models is governed by the [Stability AI Community License](https://stability.ai/license).
+
