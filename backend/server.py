@@ -50,7 +50,7 @@ from stable_audio_3.models.lora import remove_lora
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="StableDAW API")
+app = FastAPI(title="theDAW API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -184,7 +184,7 @@ def _condense_filename_text(text: str | None, fallback: str = "_") -> str:
 
 def _get_generation_artifacts_root() -> Path:
     """Return the local folder where generated audio + spectrograms are saved."""
-    configured = os.getenv("STABLEDAW_GENERATIONS_DIR")
+    configured = os.getenv("theDAW_GENERATIONS_DIR")
     return (
         Path(configured).expanduser().resolve()
         if configured
@@ -396,7 +396,7 @@ def _compute_request_sample_size(
     if align > 1:
         target_audio_samples = ((target_audio_samples + align - 1) // align) * align
 
-    max_sample_size_env = os.getenv("STABLEDAW_MAX_SAMPLE_SIZE")
+    max_sample_size_env = os.getenv("theDAW_MAX_SAMPLE_SIZE")
     if max_sample_size_env:
         try:
             max_sample_size = int(max_sample_size_env)
@@ -404,7 +404,7 @@ def _compute_request_sample_size(
                 target_audio_samples = min(target_audio_samples, max_sample_size)
         except ValueError:
             logger.warning(
-                "Invalid STABLEDAW_MAX_SAMPLE_SIZE=%r (must be int)",
+                "Invalid theDAW_MAX_SAMPLE_SIZE=%r (must be int)",
                 max_sample_size_env,
             )
 
@@ -1022,7 +1022,7 @@ async def generate(
     )
 
 
-# --- Async job shim for StableDAW frontend (generate-jobs + polling) ---
+# --- Async job shim for theDAW frontend (generate-jobs + polling) ---
 
 JOBS: dict[str, dict] = {}
 

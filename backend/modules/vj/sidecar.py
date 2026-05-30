@@ -2,7 +2,7 @@
 
 The VJ project lives in its own repo at
 ``D:/StableAudio/GANTASMO-LIVE-VJ`` (overridable via
-``STABLEDAW_VJ_PROJECT``). It's a vanilla Vite/React app — no Python,
+``theDAW_VJ_PROJECT``). It's a vanilla Vite/React app — no Python,
 no heavy ML deps — so the spawn logic is much simpler than the stems
 sidecar: just shell out to ``npm run dev`` with ``--port <N>`` and
 poll the port until the dev server is listening.
@@ -15,7 +15,7 @@ We deliberately use a NON-default port (5187) because:
     when 5173 is taken).
   * 5187 is far enough from those that it stays out of the way.
 
-The port is configurable via ``STABLEDAW_VJ_PORT``.
+The port is configurable via ``theDAW_VJ_PORT``.
 
 Lifecycle:
   * ``probe()`` — does the project exist? Does package.json look right?
@@ -65,10 +65,10 @@ _resolved_url: Optional[str] = None
 
 def resolve_config() -> VJConfig:
     """Resolve project path + port + the npm binary to use."""
-    pkg = os.getenv("STABLEDAW_VJ_PROJECT")
+    pkg = os.getenv("theDAW_VJ_PROJECT")
     project_path = Path(pkg).expanduser().resolve() if pkg else DEFAULT_PROJECT_PATH
 
-    port_env = os.getenv("STABLEDAW_VJ_PORT")
+    port_env = os.getenv("theDAW_VJ_PORT")
     try:
         port = int(port_env) if port_env else DEFAULT_PORT
     except ValueError:
@@ -183,7 +183,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             if not cfg.project_path.is_dir():
                 raise RuntimeError(
                     f"VJ project not found at {cfg.project_path}. Set "
-                    "STABLEDAW_VJ_PROJECT to override."
+                    "theDAW_VJ_PROJECT to override."
                 )
             # First-run bootstrap: if node_modules is missing, npm run
             # dev exits with rc=1 immediately ("vite: not found"). Do
