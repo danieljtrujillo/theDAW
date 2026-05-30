@@ -1812,3 +1812,4 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     </div>
   );
 };
+

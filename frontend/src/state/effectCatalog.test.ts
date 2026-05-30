@@ -20,3 +20,4 @@ for (const category of ADVANCED_EFFECT_CATEGORY_META) {
 }
 
 console.log('effect catalog backend parity regression passed');
+

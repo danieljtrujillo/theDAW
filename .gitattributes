@@ -1,0 +1,35 @@
+# Normalize line endings. Text files are stored as LF in the repo and
+# checked out with LF everywhere (prevents the CRLF<->LF churn that was
+# showing dozens of files as "modified" with no real content change).
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF to run correctly.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary assets — never touch line endings or try to diff.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.pdf   binary
+*.mp3   binary
+*.wav   binary
+*.flac  binary
+*.ogg   binary
+*.m4a   binary
+*.mp4   binary
+*.mov   binary
+*.webm  binary
+*.zip   binary
+*.safetensors binary
+*.ckpt  binary
+*.pt    binary
+*.onnx  binary

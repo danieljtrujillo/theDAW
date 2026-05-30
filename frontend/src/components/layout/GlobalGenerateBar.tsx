@@ -149,3 +149,4 @@ export const GlobalGenerateBar: React.FC = () => {
     </button>
   );
 };
+

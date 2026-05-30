@@ -238,3 +238,4 @@ export const TrainingView: React.FC = () => {
     </div>
   );
 };
+

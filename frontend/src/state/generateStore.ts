@@ -544,3 +544,4 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
     useStatusBarStore.getState().setText('GENERATION OUTPUT CLEARED');
   },
 }));
+

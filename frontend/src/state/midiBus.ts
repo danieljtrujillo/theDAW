@@ -40,3 +40,4 @@ export function subscribeToMidi(cb: MidiListener): () => void {
     listeners.delete(cb);
   };
 }
+

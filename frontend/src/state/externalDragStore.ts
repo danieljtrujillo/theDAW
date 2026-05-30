@@ -31,3 +31,4 @@ export const useExternalDragStore = create<ExternalDragState>((set) => ({
   begin: (items) => set({ active: true, items }),
   end: () => set({ active: false, items: [] }),
 }));
+

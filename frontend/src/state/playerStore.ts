@@ -264,3 +264,4 @@ export const samplePeakAndRMS = (): { peakDb: number; rmsDb: number; peak: numbe
   const rmsDb = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
   return { peakDb, rmsDb, peak, rms };
 };
+

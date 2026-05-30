@@ -82,3 +82,4 @@ export const BottomMultiTabPanel: React.FC = () => {
     </div>
   );
 };
+

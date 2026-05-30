@@ -125,3 +125,4 @@ export const ModuleSidebar: React.FC = () => {
     </div>
   );
 };
+

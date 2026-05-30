@@ -310,3 +310,4 @@ export const computePeaks = async (blob: Blob, bins = 200): Promise<{ peaks: Flo
     try { await ctx.close(); } catch { /* ignore */ }
   }
 };
+

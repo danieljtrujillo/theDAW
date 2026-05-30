@@ -284,3 +284,4 @@ export const PlayerFooter: React.FC = () => {
     </footer>
   );
 };
+

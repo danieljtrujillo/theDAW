@@ -9,3 +9,4 @@ export type { OrbChatPanelProps } from './chat/OrbChatPanel';
 export { ProviderModelSelector } from './ProviderModelSelector';
 export type { ModelInfo, Capability, ProviderOption, ProviderModelSelectorProps } from './ProviderModelSelector';
 export { AssistantPanel } from './AssistantPanel';
+

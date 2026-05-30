@@ -58,3 +58,4 @@ export const ADVANCED_EFFECT_CATEGORY_META: AdvancedEffectCategoryMeta[] = [
 export function outputFormatForEffect(effect: string, fallback: string): string {
   return effect.startsWith('export_') ? effect.replace('export_', '') : fallback;
 }
+

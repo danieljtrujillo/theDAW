@@ -15,3 +15,4 @@ export function buildSpectrogramFormData({
   form.append('sample_rate_form', String(sampleRate));
   return form;
 }
+

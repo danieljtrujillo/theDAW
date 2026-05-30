@@ -64,3 +64,4 @@ export const useStatusBarStore = create<StatusBarStoreState>()((set, get) => ({
     }
   },
 }));
+
