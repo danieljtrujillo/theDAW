@@ -53,3 +53,4 @@ export interface StorageProvider {
    */
   fetchAudioBlob(entry: LibraryEntry): Promise<Blob>;
 }
+

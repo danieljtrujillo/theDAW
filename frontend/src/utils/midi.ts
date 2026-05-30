@@ -236,3 +236,4 @@ export const parseMidi = (bytes: Uint8Array): MidiFileData => {
 
   return { ppq, bpm, tracks };
 };
+

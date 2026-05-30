@@ -309,3 +309,4 @@ function safeFfprobeSummary(jsonText: string): string {
     return jsonText;
   }
 }
+

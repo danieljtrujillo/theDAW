@@ -363,3 +363,4 @@ export const useTrainingStore = create<TrainingStoreState>()((set, get) => ({
     useStatusBarStore.getState().setText('TRAINING POLLING STOPPED');
   },
 }));
+

@@ -121,3 +121,4 @@ export const HOVER_TOOLTIPS: Record<string, string> = {
   loraStrength:
     'How much this style patch influences the output. 0.0 = off. 1.0 = full effect. Above 1.0 = amplified (can get weird above 2.0).',
 };
+

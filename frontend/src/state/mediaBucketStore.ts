@@ -54,3 +54,4 @@ export const useMediaBucketStore = create<MediaBucketState>()((set) => ({
     set((s) => ({ items: s.items.filter((i) => i.id !== id) })),
   clear: () => set({ items: [] }),
 }));
+

@@ -477,3 +477,4 @@ export const GenerateView: React.FC = () => {
     </div>
   );
 };
+

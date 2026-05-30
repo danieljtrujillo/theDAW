@@ -168,3 +168,4 @@ export const useAssistantBridgeStore = create<AssistantBridgeState>()((set, get)
 
     clearPending: () => set({ pendingActions: [] }),
 }));
+

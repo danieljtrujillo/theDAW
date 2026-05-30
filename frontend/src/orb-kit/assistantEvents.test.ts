@@ -88,3 +88,4 @@ const resultStatus = statusFromAssistantEvent({
 assert.equal(resultStatus, 'Claude Code: Bash complete');
 
 console.log('assistantEvents action normalization regression passed');
+

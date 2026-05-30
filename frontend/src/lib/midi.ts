@@ -272,3 +272,4 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   }
   return { ppq, bpm: Math.round(bpm), tracks };
 };
+

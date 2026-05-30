@@ -39,3 +39,4 @@ assert.equal(
 );
 
 console.log('promptEnhancer regression passed');
+

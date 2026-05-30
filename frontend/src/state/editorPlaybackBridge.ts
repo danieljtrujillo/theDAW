@@ -20,3 +20,4 @@ export const unregisterEditorPlayback = (): void => {
 export const callEditorPlay = (): void => { _play?.(); };
 export const callEditorStop = (): void => { _stop?.(); };
 export const isEditorPlaybackRegistered = (): boolean => _play !== null;
+

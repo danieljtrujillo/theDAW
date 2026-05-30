@@ -19,3 +19,4 @@ export const usePlaybackStore = create<PlaybackStoreState>()((set, get) => ({
     return s.muted ? 0 : s.volume / 100;
   },
 }));
+

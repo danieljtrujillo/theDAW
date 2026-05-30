@@ -304,3 +304,4 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
 };
 
 export default GantasmoOrb;
+

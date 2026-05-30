@@ -14,3 +14,4 @@ assert.equal(form.get('sample_rate_form'), '48000');
 assert.equal(form.get('sample_rate'), null, 'backend expects sample_rate_form, not sample_rate');
 
 console.log('spectrogram request form regression passed');
+

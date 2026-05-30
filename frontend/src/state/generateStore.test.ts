@@ -84,3 +84,4 @@ assert.equal(disabledInitAudioForm.has('init_audio'), false);
 assert.equal((enabledInitAudioForm.get('init_audio') as File).name, 'source.wav');
 
 console.log('generateStore form contract regression passed');
+

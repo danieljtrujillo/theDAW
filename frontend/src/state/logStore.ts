@@ -48,3 +48,4 @@ export const logError = (source: string, msg: string) =>
   useLogStore.getState().append('error', source, msg);
 export const logDebug = (source: string, msg: string) =>
   useLogStore.getState().append('debug', source, msg);
+

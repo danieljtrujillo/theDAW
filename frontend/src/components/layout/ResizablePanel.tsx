@@ -116,3 +116,4 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
     </AnimatePresence>
   );
 };
+

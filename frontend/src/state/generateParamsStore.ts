@@ -258,3 +258,4 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
     chimera: { ...state.chimera, clips: [], lastMeta: null },
   })),
 }));
+

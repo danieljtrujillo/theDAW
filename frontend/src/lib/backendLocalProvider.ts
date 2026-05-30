@@ -192,3 +192,4 @@ export const getStorageProvider = (): StorageProvider => {
 export const setStorageProvider = (provider: StorageProvider): void => {
   _provider = provider;
 };
+

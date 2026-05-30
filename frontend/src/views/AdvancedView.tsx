@@ -8,3 +8,4 @@ export const AdvancedView: React.FC = () => {
     </div>
   );
 };
+

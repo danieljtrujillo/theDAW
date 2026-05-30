@@ -76,3 +76,4 @@ export const Visualizer: React.FC<VisualizerProps> = ({ isPlaying, color = '#8b5
     />
   );
 };
+
