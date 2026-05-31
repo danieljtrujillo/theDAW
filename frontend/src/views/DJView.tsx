@@ -35,13 +35,16 @@ import {
 import {
   sendSetToVj, sendTrackToVj, isVjSetTargetActive, type VjSetItem,
 } from '../state/vjSetBus';
+import * as djEngine from '../state/djEngine';
 
 export const DJView: React.FC = () => {
   const [deckATrack, setDeckATrack] = useState<string | null>(null);
   const [deckBTrack, setDeckBTrack] = useState<string | null>(null);
+  // Playing state is OWNED by the engine (real <audio> transport), mirrored
+  // here via djEngine.subscribe so the disc/icon reflect actual playback.
   const [deckAPlaying, setDeckAPlaying] = useState(false);
   const [deckBPlaying, setDeckBPlaying] = useState(false);
-  const [crossfader, setCrossfader] = useState(0); // -1 A, 0 center, +1 B
+  const [crossfader, setCrossfader] = useState(() => djEngine.getCrossfade()); // -1 A, 0 center, +1 B
   const [deckAPitch, setDeckAPitch] = useState(0);
   const [deckBPitch, setDeckBPitch] = useState(0);
   const [deckAEqLow, setDeckAEqLow] = useState(0);
@@ -107,6 +110,26 @@ export const DJView: React.FC = () => {
     });
     return unsub;
   }, []);
+
+  // Mirror the real deck transport state from the audio engine.
+  useEffect(() => {
+    return djEngine.subscribe((a, b) => {
+      setDeckAPlaying(a.playing);
+      setDeckBPlaying(b.playing);
+    });
+  }, []);
+
+  // Load / clear a deck's audio when its selected track changes.
+  useEffect(() => {
+    const t = trackById(deckATrack);
+    void djEngine.loadDeck('A', t ? (t.audioUrl ?? null) : null, t?.title ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckATrack]);
+  useEffect(() => {
+    const t = trackById(deckBTrack);
+    void djEngine.loadDeck('B', t ? (t.audioUrl ?? null) : null, t?.title ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckBTrack]);
 
   // Auto-dismiss the confirmation flash.
   useEffect(() => {
@@ -200,13 +223,16 @@ export const DJView: React.FC = () => {
             accent="purple"
             trackTitle={deckATitle}
             isPlaying={deckAPlaying}
-            onPlay={() => setDeckAPlaying((p) => !p)}
+            onPlay={() => djEngine.toggleDeck('A')}
             pitch={deckAPitch}
-            onPitch={setDeckAPitch}
+            onPitch={(v) => { setDeckAPitch(v); djEngine.setDeckPitch('A', v); }}
             eqLow={deckAEqLow}
             eqMid={deckAEqMid}
             eqHigh={deckAEqHigh}
-            onEq={(b, v) => (b === 'low' ? setDeckAEqLow(v) : b === 'mid' ? setDeckAEqMid(v) : setDeckAEqHigh(v))}
+            onEq={(b, v) => {
+              if (b === 'low') setDeckAEqLow(v); else if (b === 'mid') setDeckAEqMid(v); else setDeckAEqHigh(v);
+              djEngine.setDeckEq('A', b, v);
+            }}
             onLoadId={setDeckATrack}
             entries={entries}
             onAddToSet={() => handleAddCurrentToSet('A')}
@@ -219,13 +245,16 @@ export const DJView: React.FC = () => {
             accent="cyan"
             trackTitle={deckBTitle}
             isPlaying={deckBPlaying}
-            onPlay={() => setDeckBPlaying((p) => !p)}
+            onPlay={() => djEngine.toggleDeck('B')}
             pitch={deckBPitch}
-            onPitch={setDeckBPitch}
+            onPitch={(v) => { setDeckBPitch(v); djEngine.setDeckPitch('B', v); }}
             eqLow={deckBEqLow}
             eqMid={deckBEqMid}
             eqHigh={deckBEqHigh}
-            onEq={(b, v) => (b === 'low' ? setDeckBEqLow(v) : b === 'mid' ? setDeckBEqMid(v) : setDeckBEqHigh(v))}
+            onEq={(b, v) => {
+              if (b === 'low') setDeckBEqLow(v); else if (b === 'mid') setDeckBEqMid(v); else setDeckBEqHigh(v);
+              djEngine.setDeckEq('B', b, v);
+            }}
             onLoadId={setDeckBTrack}
             entries={entries}
             onAddToSet={() => handleAddCurrentToSet('B')}
@@ -244,7 +273,7 @@ export const DJView: React.FC = () => {
             max={1}
             step={0.01}
             value={crossfader}
-            onChange={(e) => setCrossfader(parseFloat(e.target.value))}
+            onChange={(e) => { const v = parseFloat(e.target.value); setCrossfader(v); djEngine.setCrossfade(v); }}
             className="flex-1 h-3 accent-fuchsia-500 cursor-col-resize"
             title="Crossfade between Deck A and Deck B"
           />
