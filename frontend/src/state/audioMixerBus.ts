@@ -17,11 +17,13 @@
  *     state back onto slideStore's audio values/pads so the lanes render at the
  *     right positions (and follow the EDIT-tab faders).
  *
- * Honesty about "live": MASTER is genuinely real-time. Per-track changes write
- * editorStore; multi-track audio is an offline bounce on play today, so a track
- * fader is *heard* on the next play (identical to the EDIT tab). The SLIDE UI
- * reflects it immediately. The real-time per-track scheduler is deferred
- * (see docs/plans/2026-05-31-slide-phase2-mixer-and-stacks.md, "2B-plus").
+ * Live: MASTER is real-time (playerStore.setMasterGain). Per-track volume / pan
+ * / mute / solo are ALSO real-time during EDIT playback — they write editorStore,
+ * which the live scheduler (state/liveMixer.ts) applies to per-track nodes
+ * mid-playback. When the editor isn't the active audio source, the changes still
+ * persist and take effect on the next play. (Export still uses the offline
+ * bounce in WaveformEditor.) This realizes the "2B-plus" item from
+ * docs/plans/2026-05-31-slide-phase2-mixer-and-stacks.md.
  *
  * Echo guard: `applying` is set while we write INBOUND changes into slideStore
  * so the outbound subscription ignores them.

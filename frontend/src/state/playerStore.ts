@@ -96,6 +96,23 @@ export const getMasterGain = (): GainNode => ensureEngine().master;
 export const getAnalyser = (): AnalyserNode => ensureEngine().analyser;
 export const getEngineCtx = (): AudioContext => ensureEngine().ctx;
 
+/**
+ * Live transport override. When the EDIT timeline plays through the real-time
+ * `liveMixer` (per-track nodes, not the <audio> element), it registers itself
+ * here so the footer's ordinary transport buttons drive it instead of the
+ * audio element. Loading any new track (library, etc.) supersedes it.
+ */
+export interface LiveTransport {
+  play: () => void;
+  pause: () => void;
+  stop: () => void;
+  seek: (sec: number) => void;
+}
+let _live: LiveTransport | null = null;
+export const setLiveTransport = (t: LiveTransport | null): void => {
+  _live = t;
+};
+
 // Auto-warm-up: the first time the user interacts with the page in
 // ANY way (click / keydown / pointerdown / touchstart), flip the gesture
 // flag and resume any suspended AudioContext. Eliminates the console
@@ -151,6 +168,13 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
 
   load: async (blob, meta) => {
     const { audioEl } = ensureEngine();
+    // Loading a real audio file (library track, etc.) supersedes any live
+    // editor session — drop the live transport so transport drives the
+    // <audio> element again. Skip this for the editor's own bounce path
+    // (it sets up its own session; entryId 'editor-timeline' is the live one).
+    if (_live && meta.entryId !== 'editor-timeline') {
+      _live = null;
+    }
     // Revoke previous object URL if we created one for the engine.
     if (_objectUrl) {
       try { URL.revokeObjectURL(_objectUrl); } catch { /* ignore */ }
@@ -189,21 +213,28 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
     // ensureEngine() calls are allowed to resume the suspended ctx.
     _userGesture = true;
     const { audioEl, ctx } = ensureEngine();
-    if (!audioEl.src) return;
     if (ctx.state === 'suspended') {
       void ctx.resume().catch(() => { /* swallowed; will retry */ });
     }
+    if (_live) { _live.play(); return; } // live editor timeline
+    if (!audioEl.src) return;
     void audioEl.play().catch((err) => {
       logError('player', `Play rejected: ${err instanceof Error ? err.message : String(err)}`);
     });
   },
 
   pause: () => {
+    if (_live) { _live.pause(); return; }
     const { audioEl } = ensureEngine();
     audioEl.pause();
   },
 
   toggle: () => {
+    if (_live) {
+      if (get().isPlaying) _live.pause();
+      else get().play();
+      return;
+    }
     const { audioEl } = ensureEngine();
     if (!audioEl.src) return;
     if (audioEl.paused) get().play();
@@ -211,6 +242,7 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   stop: () => {
+    if (_live) { _live.stop(); return; }
     const { audioEl } = ensureEngine();
     audioEl.pause();
     audioEl.currentTime = 0;
@@ -218,17 +250,20 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   seek: (sec) => {
-    const { audioEl } = ensureEngine();
     if (!Number.isFinite(sec)) return;
+    if (_live) { _live.seek(sec); return; }
+    const { audioEl } = ensureEngine();
     audioEl.currentTime = Math.max(0, Math.min(audioEl.duration || 0, sec));
     set({ currentTime: audioEl.currentTime });
   },
 
   seekByFraction: (frac) => {
+    const clamped = Math.max(0, Math.min(1, frac));
+    if (_live) { _live.seek(clamped * (get().duration || 0)); return; }
     const { audioEl } = ensureEngine();
     const dur = audioEl.duration || 0;
     if (!dur) return;
-    const target = Math.max(0, Math.min(1, frac)) * dur;
+    const target = clamped * dur;
     audioEl.currentTime = target;
     set({ currentTime: target });
   },
