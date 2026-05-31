@@ -34,9 +34,30 @@ export const BottomMultiTabPanel: React.FC = () => {
   const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
   const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
   const toggleMultiMaximized = useBottomPanelStore((s) => s.toggleMultiMaximized);
-  // SLIDE can detach into its own window (second-monitor performance). Session
-  // state only — never auto-reopen a popup on reload.
-  const [slideDetached, setSlideDetached] = useState(false);
+  // SLIDE can detach into its own window (second-monitor performance). The
+  // window is opened in the click handler below — browsers block window.open
+  // that runs from an effect (outside the gesture), which was the original
+  // "pop-out does nothing" bug. Session state only — never auto-reopen on reload.
+  const [slideWin, setSlideWin] = useState<Window | null>(null);
+  const [popupBlocked, setPopupBlocked] = useState(false);
+
+  const toggleSlideDetach = () => {
+    if (slideWin) {
+      setSlideWin(null); // pop back in — unmounting DetachableWindow closes it
+      return;
+    }
+    const w = window.open(
+      '',
+      'theDAW_SLIDE',
+      'width=560,height=860,menubar=no,toolbar=no,location=no,status=no',
+    );
+    if (!w) {
+      setPopupBlocked(true);
+      return;
+    }
+    setPopupBlocked(false);
+    setSlideWin(w);
+  };
 
   return (
     <div className="h-full flex flex-col bg-purple-500/2 min-h-0">
@@ -66,13 +87,13 @@ export const BottomMultiTabPanel: React.FC = () => {
             <>
               <SlideContentToggle />
               <button
-                onClick={() => setSlideDetached((v) => !v)}
+                onClick={toggleSlideDetach}
                 className={`p-1 rounded border text-[9px] flex items-center gap-1 ${
-                  slideDetached
+                  slideWin
                     ? 'border-pink-500/50 bg-pink-500/15 text-pink-200'
                     : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'
                 }`}
-                title={slideDetached ? 'Pop SLIDE back into the app' : 'Pop SLIDE out into its own window (second monitor)'}
+                title={slideWin ? 'Pop SLIDE back into the app' : 'Pop SLIDE out into its own window (second monitor)'}
                 aria-label="Detach SLIDE window"
               >
                 <ExternalLink className="w-3 h-3" />
@@ -123,7 +144,7 @@ export const BottomMultiTabPanel: React.FC = () => {
         )}
         {activeTab === 'slide' && (
           <div className="absolute inset-0">
-            {slideDetached ? (
+            {slideWin ? (
               <>
                 <div className="h-full flex flex-col items-center justify-center gap-3 text-pink-200">
                   <ExternalLink className="w-5 h-5" />
@@ -131,18 +152,25 @@ export const BottomMultiTabPanel: React.FC = () => {
                     SLIDE is in a separate window
                   </span>
                   <button
-                    onClick={() => setSlideDetached(false)}
+                    onClick={() => setSlideWin(null)}
                     className="px-3 py-1.5 rounded border border-pink-500/40 bg-pink-500/15 text-pink-200 hover:bg-pink-500/25 text-[9px] font-black uppercase tracking-widest"
                   >
                     Pop back in
                   </button>
                 </div>
-                <DetachableWindow title="theDAW — SLIDE" onClose={() => setSlideDetached(false)}>
+                <DetachableWindow win={slideWin} title="theDAW — SLIDE" onClose={() => setSlideWin(null)}>
                   <SlidePanel />
                 </DetachableWindow>
               </>
             ) : (
-              <SlidePanel />
+              <>
+                {popupBlocked && (
+                  <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded border border-amber-500/50 bg-amber-500/15 text-amber-200 text-[9px] font-mono">
+                    Pop-up blocked — allow pop-ups for this site, then click the ⤢ button again.
+                  </div>
+                )}
+                <SlidePanel />
+              </>
             )}
           </div>
         )}

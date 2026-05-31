@@ -242,7 +242,10 @@
   right: calc(50% + var(--track-w) / 2 + var(--scale-gap));
   width: var(--scale-w);
   pointer-events: none;
-  z-index: 6;
+  /* ruler/numbers ride at the FRONT of the lane — clearly above the capsule
+     (fill z2 / knob z5) and the name/value/map rows (z6) so a magnified digit
+     is never painted under any sibling layer. */
+  z-index: 9;
 }
 
 .ts-mark {
@@ -263,6 +266,8 @@
 }
 
 .ts-num {
+  position: relative;
+  z-index: 1;
   font-size: 8px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;

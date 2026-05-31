@@ -461,7 +461,7 @@ const FocusStrip: React.FC<{
 
     // drag-to-pan on empty strip area (slower gain = calmer); widgets keep
     // their own pointer handling.
-    const PAN_GAIN = 0.42;
+    const PAN_GAIN = 0.09; // ~1/5th of the old 0.42 — heavier, slower FOCUS drag-pan
     let panning = false;
     let panX = 0;
     let panStart = 0;
@@ -604,6 +604,11 @@ export const SlidePanel: React.FC = () => {
     [pageCount, setBank],
   );
 
+  // Page-nav cadence guard: holding ←/→ machine-gunned through pages. A cooldown
+  // throttles the OS key-repeat to ~1/5th speed; a deliberate fresh press still
+  // fires immediately because the idle gap exceeds the cooldown.
+  const navCooldownRef = useRef(0);
+
   // ←/→ keyboard page nav (always on, wraps). Ignored while typing in a field
   // or when a <select> is focused; widgets are up/down-only so there's no conflict.
   useEffect(() => {
@@ -612,6 +617,9 @@ export const SlidePanel: React.FC = () => {
       const ae = document.activeElement as HTMLElement | null;
       if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return;
       e.preventDefault();
+      const now = performance.now();
+      if (now - navCooldownRef.current < 220) return;
+      navCooldownRef.current = now;
       goToPage(bank + (e.key === 'ArrowRight' ? 1 : -1));
     };
     window.addEventListener('keydown', onKey);
@@ -639,6 +647,14 @@ export const SlidePanel: React.FC = () => {
   const mapMode = useControllerMapStore((s) => s.mapMode);
   const learnPos = useControllerMapStore((s) => s.learnPos);
   const autoWalk = useControllerMapStore((s) => s.autoWalk);
+
+  // Tracks the signature we just bound during an Auto-map walk so its trailing
+  // message stream doesn't walk onto the next slot. Reset at each walk start so
+  // a stale sig from a prior walk can't suppress the first real control.
+  const lastBoundSigRef = useRef<MidiBinding | null>(null);
+  useEffect(() => {
+    if (autoWalk) lastBoundSigRef.current = null;
+  }, [autoWalk]);
 
   // Device positions for the CURRENT page, in the profile's section order
   // (knobs → faders → pads). Each carries its widget kind + the slideStore item
@@ -713,22 +729,24 @@ export const SlidePanel: React.FC = () => {
           b.kind === binding!.kind && b.number === binding!.number && b.channel === channel;
 
         if (useControllerMapStore.getState().autoWalk) {
-          // A physical control emits a STREAM while you wiggle it. The first
-          // message binds + advances; ignore any further message whose signature
-          // is ALREADY bound, so the draining stream from the just-mapped control
-          // doesn't also claim the next slot (the CC49/CC77 cross-link bug).
-          // Auto starts from a cleared profile, so "already bound" == "mapped in
-          // this walk".
-          const already = Object.values(prof).some(sameSig);
-          if (already) return;
-        } else {
-          // Manual learn: one physical control maps to exactly ONE slot — steal
-          // this signature from any other position before binding here.
-          for (const [posStr, b] of Object.entries(prof)) {
-            if (Number(posStr) !== target && sameSig(b)) store.clearPos(profileId, Number(posStr));
-          }
+          // A physical control emits a STREAM of messages while you wiggle it.
+          // Drain guard: ignore ONLY the signature we *just* bound, so its
+          // trailing messages don't walk onto the next slot. A genuinely
+          // different control is always treated as new — even if it was
+          // (mis)bound earlier this walk — so it gets STOLEN to the current slot
+          // below. (The old "ignore ANY already-bound signature" guard preserved
+          // a stale/mis-bound CC instead of moving it: the CC49/CC77 cross-link.)
+          const last = lastBoundSigRef.current;
+          if (last && last.kind === binding.kind && last.number === binding.number && last.channel === channel) return;
+        }
+        // One physical control = exactly ONE slot (auto + manual): steal this
+        // signature from any other position before binding here, so routing's
+        // first-match can never cross-link two slots to one CC.
+        for (const [posStr, b] of Object.entries(prof)) {
+          if (Number(posStr) !== target && sameSig(b)) store.clearPos(profileId, Number(posStr));
         }
         store.bind(profileId, target, binding);
+        lastBoundSigRef.current = { kind: binding.kind, number: binding.number, channel };
         advanceLearn(target);
         return;
       }

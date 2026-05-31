@@ -19,6 +19,10 @@ import { useSlideStore, valueKey, type SlideContent } from '../../state/slideSto
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+// Readouts are capped at 2 decimals — sync round-trips and knob drag math can
+// leave long floats (e.g. 63.6363…) in the store; this is display-only and
+// never rounds the stored value (MIDI/sync precision is preserved).
+const fmt2 = (v: number) => (Number.isFinite(v) ? v.toFixed(2) : '0.00');
 
 const FOCUS_UNITS = 22; // magnifier reach for the ruler, in value units
 
@@ -155,7 +159,7 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
           </div>
         </div>
       </div>
-      <div className="tw-value">{muted ? '—' : value}</div>
+      <div className="tw-value">{muted ? '—' : fmt2(value)}</div>
       <div className="tw-map" title={mapping || 'UNMAPPED'}>{muted ? 'UNMAPPED' : mapping || 'UNMAPPED'}</div>
     </div>
   );
@@ -242,7 +246,7 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
           </div>
         </div>
       </div>
-      <div className="tw-value">{muted ? '—' : value}</div>
+      <div className="tw-value">{muted ? '—' : fmt2(value)}</div>
       <div className="tw-map" title={mapping || 'UNMAPPED'}>{muted ? 'UNMAPPED' : mapping || 'UNMAPPED'}</div>
     </div>
   );

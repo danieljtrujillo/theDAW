@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, Terminal } from 'lucide-react';
+import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, GripVertical } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
@@ -8,9 +8,7 @@ import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
-import { useLogStore } from '../../state/logStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
-import { GripHorizontal } from 'lucide-react';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -327,114 +325,109 @@ export const Shell: React.FC = () => {
  *
  * Layout (always one horizontal strip at the bottom):
  *
- *   ┌─────────── canvas / main ────────────┬── library rail ──┐
- *   │                                       │                 │
- *   │  (multi body if isBottomOpen)         │  (log body if   │
- *   │                                       │   isLogOpen)    │
- *   ├───────────────────────────────────────┼─────────┬───────┤
- *   │   ^   multi toggle  (flex-1)          │ ^ LOG[N]│ CREATE│  <- the strip
- *   └───────────────────────────────────────┴─────────┴───────┘
- *                                            ←── rightPanelWidth ──→
+ *   ┌─────────── canvas / main ────────────┬│┬── log body ──────┐
+ *   │                                       ││                   │
+ *   │  (multi body if isBottomOpen)         ││ (log body if      │
+ *   │                                       ││  isLogOpen)       │
+ *   ├───────────────────────────────────────┼─────────┬─────────┤
+ *   │   ^   multi toggle  (flex-1)          │ ^ LOG …│ CREATE  │  <- the strip
+ *   └───────────────────────────────────────┴─────────┴─────────┘
+ *                                            ←──── logWidth ─────→
  *                                            ← 40% ─→← 60% ──────→
  *
- * - Multi-tab body and LOG body each have their OWN height
- *   (multiHeight / logHeight) and their OWN resize handle. Toggling
- *   or resizing one never affects the other.
- * - The strip is fixed-height and always visible. The `^` collapses
- *   the multi-tab body without touching the LOG, and the LOG's `^`
- *   (on the LEFT of the LOG header per user spec) collapses the LOG
- *   body without touching the multi-tab.
- * - The CREATE / PROCESS / TRAIN action button stays pinned in the
- *   right 60% of the LOG strip section so the user's most-used
- *   affordance never moves.
+ * - The dock body has ONE shared height (multiHeight) via a single vertical
+ *   handle, so the LOG can never grow taller than the dock and push into the
+ *   center work area; LOG content scrolls internally instead.
+ * - The LOG has its OWN width (logWidth) with a horizontal handle at its left
+ *   edge (the `│` above). Dragging it also nudges the library rail above so
+ *   they stay aligned — one-way: the rail's own handle never changes logWidth.
+ * - The strip is fixed-height and always visible. The left `^` collapses the
+ *   multi-tab body; the LOG's `^` collapses the LOG body.
+ * - The CREATE / PROCESS / TRAIN action button stays pinned in the right 60%
+ *   of the LOG strip section so the user's most-used affordance never moves.
  */
 const STRIP_HEIGHT = 36;
 const DOCK_MIN_HEIGHT = 60;
 const DOCK_MAX_FRACTION = 0.85;
 const LOG_HEADER_FRACTION = '40%';
 const CREATE_FRACTION = '60%';
+const LOG_MIN_WIDTH = 220;
+const LOG_MAX_WIDTH = 720;
 
 const ShellBottomDock: React.FC = () => {
   const multiHeight = useBottomPanelStore((s) => s.multiHeight);
   const setMultiHeight = useBottomPanelStore((s) => s.setMultiHeight);
-  const logHeight = useBottomPanelStore((s) => s.logHeight);
-  const setLogHeight = useBottomPanelStore((s) => s.setLogHeight);
-  const rightPanelWidth = useAppUiStore((s) => s.rightPanelWidth);
+  const logWidth = useBottomPanelStore((s) => s.logWidth);
+  const setLogWidth = useBottomPanelStore((s) => s.setLogWidth);
+  const setRightPanelWidth = useAppUiStore((s) => s.setRightPanelWidth);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
   const setBottomOpen = useBottomPanelStore((s) => s.setOpen);
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
   const setLogOpen = useBottomPanelStore((s) => s.setLogOpen);
   const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
-  const logEntryCount = useLogStore((s) => s.entries.length);
 
   const showBodyRow = isBottomOpen || isLogOpen;
-  // The STRIP row always shows both toggle affordances side-by-side, so
-  // it keeps the canonical two-column split (flex multi toggle on the
-  // left, rightPanelWidth LOG strip on the right).
-  const stripGridStyle = { gridTemplateColumns: `minmax(0, 1fr) ${rightPanelWidth}px` };
-  // The BODY row keeps the left (multi) column flexible at all times and
-  // only collapses the right (LOG) column when the log is closed. This
-  // keeps the LOG body pinned to the right edge — column-aligned with the
-  // LOG section of the always-visible strip below — instead of drifting
-  // to the left when the multi panel is collapsed:
-  //   - only LOG open   → left column flexes as an empty spacer (multi
-  //     body height 0), LOG pinned right at rightPanelWidth.
-  //   - only multi open → right (LOG) column 0px, multi spans full width.
-  //   - both open       → flex multi + rightPanelWidth LOG.
-  // Without the always-flex left column, `0px <rightPanelWidth>` would
-  // left-align the LOG body and break alignment with the strip, which is
-  // the horizontal-stretch/misalignment bug this dock previously had.
+  // ONE shared dock-body height — the LOG can never grow taller than the dock
+  // and push into the center work area. Maximized fills the work area.
+  const bodyHeight = multiMaximized ? 'calc(100vh - 7rem)' : `${multiHeight}px`;
+  // The LOG column has its OWN width (logWidth); the strip + body both use it so
+  // they stay column-aligned with each other (decoupled from the right Library
+  // rail). Dragging the LOG handle also nudges the rail above — one-way: the
+  // rail's own handle never changes logWidth.
+  const stripGridStyle = { gridTemplateColumns: `minmax(0, 1fr) ${logWidth}px` };
   const bodyGridStyle = {
-    gridTemplateColumns: `minmax(0, 1fr) ${isLogOpen ? `${rightPanelWidth}px` : '0px'}`,
+    gridTemplateColumns: `minmax(0, 1fr) ${isLogOpen ? `${logWidth}px` : '0px'}`,
   };
-
-
+  const setLogWidthCoupled = (w: number) => {
+    setLogWidth(w);
+    setRightPanelWidth(w);
+  };
 
   return (
     <div className="shrink-0 flex flex-col z-30 pointer-events-none">
-      {/* Body row — only mounted when at least one panel is open. */}
+      {/* Body row — one shared height; multi (flex) + LOG (logWidth) side-by-side. */}
       {showBodyRow && (
-        <div className="shrink-0 grid items-end pointer-events-auto" style={bodyGridStyle}>
+        <div
+          className="relative shrink-0 grid items-stretch pointer-events-auto"
+          style={{ ...bodyGridStyle, height: bodyHeight }}
+        >
+          {/* One vertical resize handle for the whole dock body (top edge).
+              z-40 (inside the handle) keeps it above the cells regardless of
+              DOM order. Hidden while maximized. */}
+          {!multiMaximized && (
+            <ColumnResizeHandle
+              currentHeight={multiHeight}
+              onSet={setMultiHeight}
+              title="Drag to resize the bottom dock"
+            />
+          )}
 
-          {/* Multi body — flex-1, height = multiHeight. */}
+          {/* Multi body — flexible column, fills the shared height. Transparent
+              when collapsed so only the LOG block shows. */}
           <div
-            className={`min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)] ${isLogOpen && !multiMaximized ? 'border-r border-purple-500/15' : ''}`}
-            // Maximized: the multi body fills the work area (tall height pushes
-            // the flex-1 canvas above it to ~0). Restore returns to multiHeight.
-            style={{ height: isBottomOpen ? (multiMaximized ? 'calc(100vh - 7rem)' : `${multiHeight}px`) : 0 }}
+            className={`min-w-0 relative overflow-hidden ${isBottomOpen ? 'bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)]' : ''} ${isLogOpen && isBottomOpen && !multiMaximized ? 'border-r border-purple-500/15' : ''}`}
           >
             {isBottomOpen && (
               <>
                 <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
-                {/* No manual resize handle while maximized. */}
-                {!multiMaximized && (
-                  <ColumnResizeHandle
-                    currentHeight={multiHeight}
-                    onSet={setMultiHeight}
-                    title="Drag to resize the bottom multi-tab panel"
-                  />
-                )}
                 <BottomMultiTabPanel />
               </>
             )}
           </div>
-          {/* LOG body — width = rightPanelWidth, height = logHeight. */}
-          <div
-            className="min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
-            style={{ height: isLogOpen ? `${logHeight}px` : 0 }}
-          >
-            {isLogOpen && (
-              <>
-                <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
-                <ColumnResizeHandle
-                  currentHeight={logHeight}
-                  onSet={setLogHeight}
-                  title="Drag to resize the log panel"
-                />
-                <LogBody />
-              </>
-            )}
-          </div>
+
+          {/* LOG body — independent width, fills the shared height. */}
+          {isLogOpen && (
+            <div className="min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
+              <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
+              {/* Horizontal handle between the multi panel and the LOG. */}
+              <WidthResizeHandle
+                currentWidth={logWidth}
+                onSet={setLogWidthCoupled}
+                title="Drag to resize the log width"
+              />
+              <LogBody />
+            </div>
+          )}
         </div>
       )}
 
@@ -472,14 +465,12 @@ const ShellBottomDock: React.FC = () => {
               ? <ChevronDown className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
               : <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
             }
-            <Terminal className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">LOG</span>
-            <span className="text-[9px] font-mono text-zinc-600 shrink-0">[{logEntryCount}]</span>
-            {!isLogOpen && (
-              <span className="flex items-center gap-1.5 min-w-0">
-                <LogStripCompactInfo />
-              </span>
-            )}
+            <span className="text-[10px] font-black uppercase tracking-widest text-purple-200 shrink-0">LOG</span>
+            {/* Live CPU · GPU · TEMP · VRAM · RAM. Truncates when the LOG column
+                is narrow — widen it with the horizontal handle to see them all. */}
+            <span className="flex-1 min-w-0 overflow-hidden">
+              <LogStripCompactInfo />
+            </span>
           </button>
           {/* CREATE — 60%. */}
           <div className="flex items-stretch" style={{ width: CREATE_FRACTION }}>
@@ -542,6 +533,60 @@ const ColumnResizeHandle: React.FC<ColumnResizeHandleProps> = ({ currentHeight, 
       >
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
         <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+      </div>
+    </>
+  );
+};
+
+/**
+ * Horizontal resize handle between the multi panel and the LOG. Lives at the
+ * LEFT edge of the LOG cell; dragging left widens the LOG, right narrows it.
+ * Same `dragging` full-window overlay trick as the vertical handle so the VJ
+ * iframe can't swallow the drag. Width grows as the pointer moves left, so the
+ * new width = (current right edge) - clientX, derived from the start geometry.
+ */
+interface WidthResizeHandleProps {
+  currentWidth: number;
+  onSet: (w: number) => void;
+  title: string;
+}
+const WidthResizeHandle: React.FC<WidthResizeHandleProps> = ({ currentWidth, onSet, title }) => {
+  const [dragging, setDragging] = useState(false);
+  const startX = React.useRef(0);
+  const startW = React.useRef(currentWidth);
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const dx = startX.current - e.clientX; // drag left = positive = wider
+      const clamped = Math.max(LOG_MIN_WIDTH, Math.min(LOG_MAX_WIDTH, startW.current + dx));
+      onSet(clamped);
+    };
+    const onUp = () => setDragging(false);
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      document.body.style.cursor = 'default';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [dragging, onSet]);
+
+  return (
+    <>
+      {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+      <div
+        className="absolute inset-y-0 left-0 w-1.5 -ml-0.5 cursor-col-resize flex items-center justify-center group z-40"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          startX.current = e.clientX;
+          startW.current = currentWidth;
+          setDragging(true);
+        }}
+        title={title}
+      >
+        <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 group-hover:bg-purple-500/40 transition-colors" />
+        <GripVertical className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
     </>
   );

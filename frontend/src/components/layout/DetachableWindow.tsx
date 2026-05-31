@@ -3,23 +3,28 @@
  * a portal, so a panel can live on a second monitor while the main app keeps
  * running.
  *
- * Because the portal renders with the opener's React + JS realm (window.open
- * with no URL is same-origin and shares our module scope), all zustand stores,
- * the MIDI bus, and the control-sync buses keep working in the detached window
- * exactly as in-app — it's the same live state, just painted into another
- * window's DOM.
+ * IMPORTANT: the window MUST be opened by the caller *synchronously inside the
+ * click handler* and passed in as `win`. Browsers block `window.open` that runs
+ * outside a user gesture (e.g. from an effect after a state change) — that was
+ * the original "pop-out does nothing" bug. This component only adopts the
+ * already-open window: clone styles, mount a portal root, wire close detection.
  *
- * Stylesheets are cloned from the opener document so Tailwind + the component
- * CSS apply in the popup. (Dev HMR injects styles dynamically; a popup opened
+ * Because the portal renders in the opener's React + JS realm (window.open with
+ * no URL is same-origin and shares our module scope), all zustand stores, the
+ * MIDI bus, and the control-sync buses keep working in the detached window
+ * exactly as in-app — same live state, just painted into another window's DOM.
+ *
+ * Stylesheets are cloned from the opener document so Tailwind + component CSS
+ * apply in the popup. (Dev HMR injects styles dynamically; a popup opened
  * mid-session gets a snapshot — re-pop after a hot update if styles drift.)
  */
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 interface DetachableWindowProps {
+  /** A window already opened in a user-gesture click (see note above). */
+  win: Window;
   title: string;
-  /** window.open feature string (size/position). */
-  features?: string;
   /** Fired when the popup closes (manually or via unmount). */
   onClose: () => void;
   children: React.ReactNode;
@@ -36,24 +41,14 @@ function cloneStyles(src: Document, dst: Document): void {
 }
 
 export const DetachableWindow: React.FC<DetachableWindowProps> = ({
+  win,
   title,
-  features,
   onClose,
   children,
 }) => {
   const [host, setHost] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
-    const win = window.open(
-      '',
-      title.replace(/\s+/g, '_'),
-      features ?? 'width=540,height=820,menubar=no,toolbar=no,location=no,status=no',
-    );
-    if (!win) {
-      // popup blocked — tell the caller so it can fall back to the in-app view
-      onClose();
-      return;
-    }
     win.document.title = title;
     cloneStyles(document, win.document);
 
@@ -61,6 +56,16 @@ export const DetachableWindow: React.FC<DetachableWindowProps> = ({
     mount.style.height = '100%';
     win.document.body.appendChild(mount);
     setHost(mount);
+
+    // ←/→ page-nav is wired on the OPENER's window; key events in the popup go
+    // to the popup. Forward arrows back to the opener so paging works from the
+    // detached window too (the stores are shared, so both windows re-render).
+    const forwardKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: e.key, bubbles: true }));
+      }
+    };
+    win.addEventListener('keydown', forwardKey);
 
     // Closing the popup (its X, or the opener navigating away) restores in-app.
     const handleClose = () => onClose();
@@ -74,6 +79,7 @@ export const DetachableWindow: React.FC<DetachableWindowProps> = ({
     }, 500);
 
     return () => {
+      win.removeEventListener('keydown', forwardKey);
       win.removeEventListener('beforeunload', handleClose);
       window.clearInterval(poll);
       if (!win.closed) win.close();
