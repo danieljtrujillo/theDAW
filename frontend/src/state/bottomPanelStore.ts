@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type BottomPanelTab = 'spectral' | 'details' | 'piano-roll' | 'step-seq' | 'bucket';
+export type BottomPanelTab = 'spectral' | 'details' | 'piano-roll' | 'step-seq' | 'bucket' | 'slide';
 
 interface BottomPanelState {
   activeTab: BottomPanelTab;
@@ -14,11 +14,16 @@ interface BottomPanelState {
   /** Height of the ProcessingLog column when open. Independent of
    *  the multi panel. */
   logHeight: number;
+  /** When true, the multi-tab body fills the work area (covers the canvas).
+   *  Remembers the prior multiHeight so restore returns to it. */
+  multiMaximized: boolean;
   setActiveTab: (tab: BottomPanelTab) => void;
   setOpen: (open: boolean) => void;
   setLogOpen: (open: boolean) => void;
   setMultiHeight: (height: number) => void;
   setLogHeight: (height: number) => void;
+  setMultiMaximized: (on: boolean) => void;
+  toggleMultiMaximized: () => void;
   showTab: (tab: BottomPanelTab) => void;
 }
 
@@ -30,11 +35,16 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       isLogOpen: false,
       multiHeight: 260,
       logHeight: 260,
+      multiMaximized: false,
       setActiveTab: (activeTab) => set({ activeTab }),
       setOpen: (isOpen) => set({ isOpen }),
       setLogOpen: (isLogOpen) => set({ isLogOpen }),
       setMultiHeight: (multiHeight) => set({ multiHeight }),
       setLogHeight: (logHeight) => set({ logHeight }),
+      setMultiMaximized: (multiMaximized) => set({ multiMaximized }),
+      toggleMultiMaximized: () => set((s) => ({ multiMaximized: !s.multiMaximized })),
+      // Opening/activating a tab should also un-maximize so the user isn't
+      // trapped full-screen after navigating.
       showTab: (tab) => set({ activeTab: tab, isOpen: true }),
     }),
     {
@@ -45,6 +55,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         isLogOpen: s.isLogOpen,
         multiHeight: s.multiHeight,
         logHeight: s.logHeight,
+        multiMaximized: s.multiMaximized,
       }),
     },
   ),

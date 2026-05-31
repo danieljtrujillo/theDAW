@@ -1,0 +1,787 @@
+/* ============================================================================
+   Track controls — SLIDE tab control surface (faders / knobs / pads + the
+   page light and focus strip). Ported from the standalone /sliders template.
+
+   Plain CSS by design: the capsule glow, conic-gradient knob arc, and fisheye
+   transforms are awkward to express as Tailwind utilities, and the template
+   was authored and tuned here. Class names are prefixed (ts-/tk-/tp-/sl-) and
+   everything lives under `.slide-surface` to avoid colliding with app styles.
+
+   Each control is its own stacking world (`isolation: isolate`) with text
+   layers above the colored glow so labels are never occluded.
+   JS sets the live theme via --accent* custom properties per control.
+   ========================================================================= */
+
+.slide-surface {
+  --lane: 96px;
+  --body-w: 50px;
+  --body-h: 178px;
+  --track-inset: 14px;
+  --track-w: 28px;
+  --knob-cap: 34px; /* the little dot riding the fader fill */
+  --scale-w: 30px;
+  --scale-gap: 6px;
+  --dial-d: 50px;
+
+  --accent: #00e5ff;
+  --accent-bright: #9bf4ff;
+  --accent-deep: #00a7bd;
+  --accent-glow: rgba(0, 229, 255, 0.55);
+  --accent-faint: rgba(0, 229, 255, 0.16);
+}
+
+.slide-surface * {
+  box-sizing: border-box;
+}
+
+/* ----------------------------------------------------------------------------
+   Shared widget shell — 4-row rhythm: name → body → value → map. All three
+   widget kinds use it so a column of mixed controls aligns row-for-row.
+   --------------------------------------------------------------------------- */
+.tw {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: var(--lane);
+  min-width: var(--lane);
+  isolation: isolate;
+  /* layout containment scopes reflow to this widget — moving one fader's fill
+     can't force the whole surface to re-layout. (NOT `paint` — that would clip
+     the colored glow that intentionally bleeds past the capsule.) */
+  contain: layout;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+/* muted = a physical control with nothing mapped to it (CONTROLLER view). The
+   widget still occupies its slot so the hardware layout reads 1:1, but it's
+   desaturated, dimmed, and non-interactive. */
+.tw.muted {
+  filter: grayscale(1) brightness(0.7);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.tw-name {
+  position: relative;
+  z-index: 6;
+  width: 100%;
+  text-align: center;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #e4e4e7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tw-body {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.tw-value {
+  position: relative;
+  z-index: 6;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-shadow: 0 0 12px var(--accent-glow);
+}
+
+.tw-map {
+  position: relative;
+  z-index: 6;
+  max-width: var(--lane);
+  text-align: center;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 7.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(161, 161, 170, 0.85);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 3px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ----------------------------------------------------------------------------
+   FADER — vertical glass capsule with a smooth colored fill + number ruler.
+   --------------------------------------------------------------------------- */
+.ts-stage {
+  position: relative;
+  width: var(--body-w);
+}
+
+.ts-body {
+  position: relative;
+  width: var(--body-w);
+  height: var(--body-h);
+  border-radius: 999px;
+  background:
+    radial-gradient(130% 55% at 50% 0%, rgba(255, 255, 255, 0.07), transparent 62%),
+    linear-gradient(180deg, rgba(30, 30, 33, 0.92) 0%, rgba(12, 12, 14, 0.94) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.07),
+    inset 0 -12px 26px rgba(0, 0, 0, 0.5),
+    0 12px 26px rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+.ts-track {
+  position: absolute;
+  top: var(--track-inset);
+  bottom: var(--track-inset);
+  left: 50%;
+  width: var(--track-w);
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.92));
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.9),
+    inset 0 0 14px rgba(0, 0, 0, 0.9),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.04);
+}
+
+.ts-track::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 46%;
+  height: 30%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.01));
+  filter: blur(2px);
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.ts-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0%;
+  border-radius: 999px;
+  background:
+    radial-gradient(75% 70px at 50% 0%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 72%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0) 6%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0) 94%),
+    linear-gradient(180deg, var(--accent-bright) 0%, var(--accent) 32%, var(--accent-deep) 100%);
+  box-shadow:
+    0 0 14px var(--accent-glow),
+    0 0 34px var(--accent-glow),
+    inset 0 1px 3px rgba(255, 255, 255, 0.5);
+  transition:
+    height 0.12s cubic-bezier(0.22, 1, 0.36, 1),
+    background 0.25s ease,
+    box-shadow 0.25s ease;
+  z-index: 2;
+}
+
+.ts-knob {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: var(--knob-cap);
+  height: var(--knob-cap);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background:
+    radial-gradient(58% 58% at 36% 30%, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.03) 48%, transparent 60%),
+    radial-gradient(120% 120% at 50% 60%, var(--accent-faint), transparent 70%),
+    rgba(18, 18, 20, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 0 12px var(--accent-glow),
+    inset 0 1px 5px rgba(255, 255, 255, 0.28),
+    inset 0 -4px 9px rgba(0, 0, 0, 0.5),
+    0 6px 14px rgba(0, 0, 0, 0.55);
+  cursor: grab;
+  z-index: 5;
+  transition: box-shadow 0.25s ease, width 0.12s ease, height 0.12s ease;
+}
+
+.tw.is-dragging .ts-knob {
+  cursor: grabbing;
+  width: calc(var(--knob-cap) + 3px);
+  height: calc(var(--knob-cap) + 3px);
+}
+
+.ts-knob:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--accent-faint),
+    0 0 16px var(--accent-glow),
+    inset 0 1px 5px rgba(255, 255, 255, 0.28),
+    0 6px 14px rgba(0, 0, 0, 0.55);
+}
+
+/* ruler — floats to the LEFT of the capsule so the capsule stays centered in
+   the lane and aligns 1:1 with knob/pad centers above/below it. */
+.ts-scale {
+  position: absolute;
+  top: var(--track-inset);
+  bottom: var(--track-inset);
+  right: calc(50% + var(--track-w) / 2 + var(--scale-gap));
+  width: var(--scale-w);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.ts-mark {
+  position: absolute;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  transform-origin: right center;
+  /* NOTE: deliberately NO `will-change` here. With ~11 marks per fader across
+     many lanes, promoting each to its own compositor layer was a major source
+     of lag. The transition below is cheap enough without it. */
+  transition:
+    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.16s ease,
+    color 0.16s ease;
+}
+
+.ts-num {
+  font-size: 8px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: inherit;
+  text-shadow: var(--mark-glow, none);
+}
+
+.ts-tick {
+  height: 2px;
+  width: 7px;
+  border-radius: 2px;
+  background: currentColor;
+  flex: 0 0 auto;
+  box-shadow: var(--mark-glow, none);
+}
+
+/* ----------------------------------------------------------------------------
+   KNOB — 270° colored arc + glowing pointer. Gap centered at the BOTTOM.
+   --------------------------------------------------------------------------- */
+.tk-dial {
+  position: relative;
+  width: var(--dial-d);
+  height: var(--dial-d);
+  border-radius: 50%;
+  cursor: ns-resize;
+  outline: none;
+  background:
+    radial-gradient(circle at 50% 36%, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.4) 70%),
+    #0c0c10;
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.06),
+    inset 0 -6px 12px rgba(0, 0, 0, 0.6),
+    0 6px 14px rgba(0, 0, 0, 0.5);
+}
+
+.tk-arc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  -webkit-mask: radial-gradient(closest-side, transparent 62%, #000 64%);
+  mask: radial-gradient(closest-side, transparent 62%, #000 64%);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+  /* conic-gradient background set per-value by JS */
+}
+
+.tk-face {
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 30%, rgba(255, 255, 255, 0.2), rgba(18, 18, 22, 0.96) 62%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 1px 3px rgba(255, 255, 255, 0.12),
+    0 0 10px var(--accent-faint);
+}
+
+.tk-point {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* rotation set per-value by JS */
+}
+.tk-point span {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 3px;
+  height: 10px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--accent-bright);
+  box-shadow: 0 0 7px var(--accent-glow);
+}
+
+.tw.is-dragging .tk-dial,
+.tk-dial:focus-visible {
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.08),
+    inset 0 -6px 12px rgba(0, 0, 0, 0.6),
+    0 0 0 2px var(--accent-faint),
+    0 0 16px var(--accent-glow);
+}
+
+/* ----------------------------------------------------------------------------
+   PAD — toggle / momentary button that lights up in its assigned color.
+   Color comes from --pad* custom props (set by JS).
+   --------------------------------------------------------------------------- */
+.tp-btn {
+  position: relative;
+  width: 50px;
+  height: 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.5)),
+    #111114;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.06), 0 4px 10px rgba(0, 0, 0, 0.5);
+  transition: background 0.12s ease, box-shadow 0.16s ease, border-color 0.12s ease, transform 0.08s ease;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tp-btn:focus-visible { box-shadow: 0 0 0 2px var(--pad-glow), 0 4px 10px rgba(0, 0, 0, 0.5); }
+.tp-btn:active { transform: translateY(1px); }
+
+.tp-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.6);
+  transition: background 0.12s ease, box-shadow 0.16s ease;
+}
+
+.tp-btn.on {
+  border-color: var(--pad);
+  background: linear-gradient(180deg, var(--pad-bright), var(--pad));
+  box-shadow:
+    0 0 16px var(--pad-glow),
+    0 0 32px var(--pad-glow),
+    inset 0 1px 4px rgba(255, 255, 255, 0.45);
+}
+.tp-btn.on .tp-led {
+  background: #fff;
+  box-shadow: 0 0 8px #fff, 0 0 14px var(--pad-glow);
+}
+
+/* pad value row reuses .tw-value but in the pad's color */
+.tp-value { color: rgba(120, 120, 130, 0.9); text-shadow: none; }
+.tp-value.on { color: var(--pad-bright); text-shadow: 0 0 10px var(--pad-glow); }
+
+/* ----------------------------------------------------------------------------
+   Slot chrome — drag grip (top-left) + lock (bottom-right), above the glow.
+   --------------------------------------------------------------------------- */
+.sl-slot {
+  position: relative;
+  border-radius: 14px;
+  outline: 2px solid transparent;
+  transition: outline-color 0.15s ease;
+}
+.sl-slot.dragover { outline-color: rgba(129, 140, 248, 0.9); }
+.sl-slot.dragging { opacity: 0.4; }
+
+.sl-grip {
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  z-index: 8;
+  pointer-events: auto;
+  cursor: grab;
+  color: #52525b;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px;
+}
+.sl-grip:hover { color: #a1a1aa; }
+
+.sl-lock {
+  position: absolute;
+  bottom: 4px;
+  right: 5px;
+  z-index: 8;
+  pointer-events: auto;
+  cursor: pointer;
+  border: 0;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 5px;
+  padding: 2px 3px;
+  line-height: 1;
+  color: #52525b;
+  font-size: 10px;
+}
+.sl-lock.on { color: #fbbf24; text-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
+.sl-lock:hover { color: #d4d4d8; }
+
+/* translucent placeholder = open slot awaiting auto-fill */
+.sl-ph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: var(--lane);
+  padding: 16px 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.018);
+  color: #3f3f46;
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.sl-ph:hover { opacity: 0.85; border-color: rgba(129, 140, 248, 0.4); color: #818cf8; }
+.sl-ph-ring { width: 34px; height: 34px; border-radius: 50%; border: 2px dashed currentColor; opacity: 0.6; }
+.sl-ph-cap { width: 26px; height: 78px; border-radius: 999px; border: 2px dashed currentColor; opacity: 0.6; }
+.sl-ph-pad { width: 46px; height: 30px; border-radius: 8px; border: 2px dashed currentColor; opacity: 0.6; }
+.sl-ph-label { font: 700 7.5px/1 system-ui; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* ----------------------------------------------------------------------------
+   Layout — grids, the horizontal strip, the focus carousel, the page light.
+   --------------------------------------------------------------------------- */
+.sl-grid { display: grid; gap: 12px; justify-content: start; }
+
+.sl-strip {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 2px 4px;
+}
+.sl-strip::-webkit-scrollbar { height: 8px; }
+.sl-strip::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 99px; }
+.sl-strip > .sl-slot { flex: 0 0 auto; }
+.sl-strip.focus > .sl-slot { transform-origin: center bottom; transition: transform 0.06s linear, opacity 0.06s linear; }
+
+/* FOCUS triplicates the whole catalog (~200 lanes) for seamless wrap. Without
+   help the browser would build/paint every one. content-visibility:auto lets
+   it skip rendering lanes that are scrolled off-screen — only the ~visible
+   handful cost anything — while contain-intrinsic-size keeps each lane's box
+   the right size so scroll math + the fisheye's offsetLeft reads stay correct. */
+.sl-strip.focus > .sl-slot {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--lane) auto 244px;
+}
+
+.sl-pagelight {
+  position: relative;
+  margin: 14px auto 4px;
+  height: 6px;
+  width: min(680px, 86%);
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  display: flex;
+}
+.sl-pageseg {
+  flex: 1;
+  margin: 1px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.05);
+  transition: background 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.sl-pageseg.on {
+  background: linear-gradient(90deg, var(--pl, #f9a8d4), #fff, var(--pl, #f9a8d4));
+  box-shadow: 0 0 14px var(--pl, #f9a8d4), 0 0 28px var(--pl, #f9a8d4);
+}
+.sl-pagenum {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font: 800 9px/1 ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  color: #fff;
+  text-shadow: 0 0 10px var(--pl, #f9a8d4);
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid var(--pl, #f9a8d4);
+  border-radius: 99px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.sl-nav {
+  position: absolute;
+  top: 38%;
+  transform: translateY(-50%);
+  z-index: 9;
+  width: 26px;
+  height: 46px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 10, 14, 0.7);
+  color: #a1a1aa;
+  cursor: pointer;
+  font-size: 14px;
+}
+.sl-nav:hover { color: #fff; border-color: rgba(255, 255, 255, 0.3); }
+.sl-nav.prev { left: 2px; }
+.sl-nav.next { right: 2px; }
+
+.sl-section { margin-bottom: 16px; }
+.sl-section-head {
+  font: 800 8px/1 system-ui;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin: 0 0 9px 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ----------------------------------------------------------------------------
+   STACK lanes (2C) — a custom macro fader bound to media + effect targets.
+   The fader itself reuses .tw; the wrapper adds a STACK badge, a gear (open
+   editor), an optional media chip, and hosts the editor popover.
+   --------------------------------------------------------------------------- */
+.sl-stack {
+  position: relative;
+  border-radius: 14px;
+  padding-top: 2px;
+  outline: 1px solid rgba(236, 72, 153, 0.35);
+  outline-offset: -1px;
+}
+
+.sl-stack-badge {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  font: 800 6.5px/1 system-ui;
+  letter-spacing: 0.16em;
+  color: #f9a8d4;
+  background: rgba(236, 72, 153, 0.15);
+  border: 1px solid rgba(236, 72, 153, 0.4);
+  border-radius: 99px;
+  padding: 2px 6px;
+  pointer-events: none;
+}
+
+.sl-stack-gear {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 9;
+  border: 0;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 5px;
+  padding: 2px;
+  color: #a1a1aa;
+  cursor: pointer;
+}
+.sl-stack-gear:hover { color: #fff; }
+
+.sl-stack-media {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: var(--lane);
+  margin: 2px auto 0;
+  font: 700 7px/1 ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #c7d2fe;
+  background: rgba(129, 140, 248, 0.12);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  border-radius: 5px;
+  padding: 3px 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sl-stack-media:hover { background: rgba(129, 140, 248, 0.22); color: #e0e7ff; }
+
+/* editor popover */
+.sl-stack-editor {
+  position: absolute;
+  top: 6px;
+  left: calc(100% + 8px);
+  z-index: 60;
+  width: 240px;
+  max-height: 70vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(236, 72, 153, 0.35);
+  background: #0c0a12;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.7);
+}
+
+.sl-se-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 800 9px/1 system-ui;
+  letter-spacing: 0.18em;
+  color: #f9a8d4;
+}
+.sl-se-head button { border: 0; background: transparent; color: #a1a1aa; cursor: pointer; }
+.sl-se-head button:hover { color: #fff; }
+
+.sl-se-label {
+  font: 700 7.5px/1 system-ui;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+.sl-se-input {
+  width: 100%;
+  background: #161620;
+  color: #e4e4e7;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 5px 7px;
+  font: 600 10px/1.2 system-ui;
+  outline: none;
+}
+.sl-se-input:focus { border-color: rgba(236, 72, 153, 0.5); }
+
+.sl-se-row { display: flex; gap: 5px; align-items: center; }
+
+.sl-se-hint {
+  font: 500 8px/1.4 ui-monospace, monospace;
+  color: #71717a;
+}
+
+.sl-se-target { display: flex; gap: 4px; align-items: center; }
+.sl-se-key { flex: 1; min-width: 0; }
+.sl-se-num {
+  width: 38px;
+  flex: 0 0 auto;
+  background: #161620;
+  color: #e4e4e7;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 4px 4px;
+  font: 600 9px/1 ui-monospace, monospace;
+  outline: none;
+  text-align: center;
+}
+.sl-se-icon {
+  flex: 0 0 auto;
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  padding: 4px;
+  color: #a1a1aa;
+  cursor: pointer;
+}
+.sl-se-icon:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+
+.sl-se-add,
+.sl-se-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 7px;
+  padding: 6px;
+  font: 700 8px/1 system-ui;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.sl-se-add {
+  margin-top: 2px;
+  border: 1px dashed rgba(129, 140, 248, 0.4);
+  background: transparent;
+  color: #c7d2fe;
+}
+.sl-se-add:hover { background: rgba(129, 140, 248, 0.12); }
+.sl-se-delete {
+  margin-top: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+}
+.sl-se-delete:hover { background: rgba(239, 68, 68, 0.18); color: #fecaca; }
+.sl-section-head::after { content: ""; flex: 1; height: 1px; background: rgba(255, 255, 255, 0.06); }
+
+/* ----------------------------------------------------------------------------
+   Controller MAP mode — a binding chip under each cell + a guidance banner.
+   --------------------------------------------------------------------------- */
+.sl-map-banner {
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fcd34d;
+  font: 700 9px/1.4 system-ui;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sl-mapcell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.sl-mapchip {
+  width: var(--lane);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 6px;
+  padding: 3px 4px;
+  font: 700 8px/1 ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #71717a;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.sl-mapchip:hover { color: #d4d4d8; border-color: rgba(255, 255, 255, 0.25); }
+.sl-mapchip.bound { color: #6ee7b7; border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.08); }
+.sl-mapchip.learning {
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.7);
+  background: rgba(245, 158, 11, 0.15);
+  animation: sl-learn-pulse 1s ease-in-out infinite;
+}
+@keyframes sl-learn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25); }
+}

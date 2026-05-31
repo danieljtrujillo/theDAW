@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>verify — contact sheet</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    #app { gap: 56px; padding: 30px; align-items: flex-start; flex-wrap: wrap; }
+    .ts { transform: scale(0.62); transform-origin: top center; }
+  </style>
+</head>
+
+<body>
+  <main id="app">
+    <!-- data-name = the track / video / song / image name (white label). -->
+    <div class="ts" data-slider data-value="12" data-name="MASTER"></div>
+    <div class="ts" data-slider data-value="30" data-name="KICK"></div>
+    <div class="ts" data-slider data-value="50" data-name="BASS"></div>
+    <div class="ts" data-slider data-value="70" data-name="BLOOM"></div>
+    <div class="ts" data-slider data-value="88" data-name="GLITCH"></div>
+    <div class="ts" data-slider data-value="100" data-name="STROBE"></div>
+  </main>
+  <script src="./script.js"></script>
+</body>
+
+</html>

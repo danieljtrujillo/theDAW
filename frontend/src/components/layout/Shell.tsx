@@ -151,7 +151,7 @@ export const Shell: React.FC = () => {
           <BrandLogo />
           <div className="flex flex-col leading-none">
             <span className="text-[13px] font-black tracking-[0.18em] text-zinc-100">theDAW</span>
-            <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by Gantasmo</span>
+            <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by GANTASMO</span>
           </div>
         </div>
         <div className="flex items-center gap-2.5">
@@ -364,6 +364,7 @@ const ShellBottomDock: React.FC = () => {
   const setBottomOpen = useBottomPanelStore((s) => s.setOpen);
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
   const setLogOpen = useBottomPanelStore((s) => s.setLogOpen);
+  const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
   const logEntryCount = useLogStore((s) => s.entries.length);
 
   const showBodyRow = isBottomOpen || isLogOpen;
@@ -397,17 +398,22 @@ const ShellBottomDock: React.FC = () => {
 
           {/* Multi body — flex-1, height = multiHeight. */}
           <div
-            className={`min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)] ${isLogOpen ? 'border-r border-purple-500/15' : ''}`}
-            style={{ height: isBottomOpen ? `${multiHeight}px` : 0 }}
+            className={`min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)] ${isLogOpen && !multiMaximized ? 'border-r border-purple-500/15' : ''}`}
+            // Maximized: the multi body fills the work area (tall height pushes
+            // the flex-1 canvas above it to ~0). Restore returns to multiHeight.
+            style={{ height: isBottomOpen ? (multiMaximized ? 'calc(100vh - 7rem)' : `${multiHeight}px`) : 0 }}
           >
             {isBottomOpen && (
               <>
                 <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
-                <ColumnResizeHandle
-                  currentHeight={multiHeight}
-                  onSet={setMultiHeight}
-                  title="Drag to resize the bottom multi-tab panel"
-                />
+                {/* No manual resize handle while maximized. */}
+                {!multiMaximized && (
+                  <ColumnResizeHandle
+                    currentHeight={multiHeight}
+                    onSet={setMultiHeight}
+                    title="Drag to resize the bottom multi-tab panel"
+                  />
+                )}
                 <BottomMultiTabPanel />
               </>
             )}
@@ -519,19 +525,25 @@ const ColumnResizeHandle: React.FC<ColumnResizeHandleProps> = ({ currentHeight, 
   }, [dragging, onSet]);
 
   return (
-    <div
-      className="absolute inset-x-0 top-0 h-1.5 -mt-0.5 cursor-row-resize flex items-center justify-center group z-40"
-      onMouseDown={(e) => {
-        e.preventDefault();
-        startY.current = e.clientY;
-        startH.current = currentHeight;
-        setDragging(true);
-      }}
-      title={title}
-    >
-      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
-      <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-    </div>
+    <>
+      {/* While dragging, a full-window overlay sits ABOVE the center iframe
+          (VJ) so the iframe can't swallow mousemove/mouseup — that swallow was
+          what left the resize "stuck" as if the mouse never released. */}
+      {dragging && <div className="fixed inset-0 z-50 cursor-row-resize" />}
+      <div
+        className="absolute inset-x-0 top-0 h-1.5 -mt-0.5 cursor-row-resize flex items-center justify-center group z-40"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          startY.current = e.clientY;
+          startH.current = currentHeight;
+          setDragging(true);
+        }}
+        title={title}
+      >
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
+        <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+      </div>
+    </>
   );
 };
 

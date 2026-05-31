@@ -108,8 +108,12 @@ export default function App() {
       });
     };
 
-    (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
-      .requestMIDIAccess()
+    // Pass an explicit MIDIOptions ({ sysex: false }). Chrome logs a
+    // deprecation notice when requestMIDIAccess() is called WITHOUT options
+    // ("…will ask permission even if sysex is not specified"); specifying it
+    // resolves that warning. We don't need SysEx for note/CC input.
+    (navigator as Navigator & { requestMIDIAccess: (opts?: { sysex?: boolean }) => Promise<MIDIAccess> })
+      .requestMIDIAccess({ sysex: false })
       .then((a) => {
         if (cancelled) return;
         access = a;

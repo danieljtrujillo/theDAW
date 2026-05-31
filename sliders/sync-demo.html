@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Track Slider — real-time sync demo</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    #app { gap: 90px; align-items: center; }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      color: rgba(255, 255, 255, 0.7);
+      font: 600 0.8rem/1.4 system-ui, sans-serif;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .panel h2 {
+      margin: 0 0 4px;
+      font-size: 0.7rem;
+      color: rgba(255, 255, 255, 0.4);
+      letter-spacing: 0.3em;
+    }
+
+    .src {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 260px;
+      height: 8px;
+      border-radius: 99px;
+      background: #1c1c1f;
+      outline: none;
+    }
+    .src::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #eee;
+      cursor: pointer;
+      box-shadow: 0 2px 8px #000;
+    }
+
+    .row { display: flex; gap: 12px; }
+
+    button {
+      font: inherit;
+      letter-spacing: 0.12em;
+      padding: 10px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: #161618;
+      color: #ddd;
+      cursor: pointer;
+    }
+    button.on { background: #00e5ff22; border-color: #00e5ff; color: #00e5ff; }
+
+    .hint {
+      max-width: 280px;
+      text-transform: none;
+      letter-spacing: 0;
+      color: rgba(255, 255, 255, 0.4);
+    }
+  </style>
+</head>
+
+<body>
+  <main id="app">
+    <!-- Stand-in for whatever VJ control a VISUAL track is mapped to
+         (a slider / knob / button). Replace with the real control on wire-up. -->
+    <div class="panel">
+      <h2>Mapped control (VJ)</h2>
+      <input id="src" class="src" type="range" min="0" max="100" value="40">
+      <div class="row">
+        <button id="lfo">Auto&nbsp;LFO</button>
+        <button id="rand">Random</button>
+      </div>
+      <p class="hint">Drag this, hit Auto&nbsp;LFO, or drag the VISUAL slider — they
+        stay locked to the same real-time position, both directions.</p>
+    </div>
+
+    <!-- The VISUAL track slider that mirrors it. No [data-slider] here: we
+         create it manually so we can hold the handle and bind it. -->
+    <div class="ts" id="visual"></div>
+  </main>
+
+  <script src="./script.js"></script>
+  <script>
+    const src = document.getElementById("src");
+    const slider = window.createSlider(document.getElementById("visual"), {
+      value: +src.value,
+      name: "BLOOM",
+    });
+
+    // guard prevents an inbound->outbound->inbound echo loop
+    let guard = false;
+    function fromSource() {
+      if (guard) return;
+      guard = true;
+      slider.setValue(+src.value);   // mapped control -> visual slider
+      guard = false;
+    }
+    src.addEventListener("input", fromSource);
+
+    slider.on((v) => {               // visual slider -> mapped control (two-way)
+      if (guard) return;
+      guard = true;
+      src.value = v;
+      guard = false;
+    });
+
+    // Auto LFO: continuously drive the mapped control to prove real-time sync.
+    const lfoBtn = document.getElementById("lfo");
+    let on = false, raf = 0, t0 = 0;
+    function tick(now) {
+      if (!t0) t0 = now;
+      src.value = 50 + 50 * Math.sin((now - t0) / 600);
+      fromSource();
+      raf = requestAnimationFrame(tick);
+    }
+    lfoBtn.addEventListener("click", () => {
+      on = !on;
+      lfoBtn.classList.toggle("on", on);
+      if (on) { t0 = 0; raf = requestAnimationFrame(tick); }
+      else cancelAnimationFrame(raf);
+    });
+
+    // "Button" mapping example: jump to a value.
+    document.getElementById("rand").addEventListener("click", () => {
+      src.value = Math.round(Math.random() * 100);
+      fromSource();
+    });
+  </script>
+</body>
+
+</html>

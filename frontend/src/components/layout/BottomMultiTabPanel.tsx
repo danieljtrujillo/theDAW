@@ -1,21 +1,24 @@
 /**
  * Bottom multi-tab panel body — Visualize / Piano / Sequence / Details
- * / Media. Mounted above the dock strip when isOpen=true. The strip
+ * / Media / SLIDE. Mounted above the dock strip when isOpen=true. The strip
  * itself (Shell.tsx ShellBottomDock) handles the open/close toggle,
  * so this component only renders the body shape: a tabs row + the
  * active tab's content. Height is the column's own `multiHeight`
  * from bottomPanelStore — independent of the LOG's `logHeight`.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  Activity, Info, Piano, Layers, FolderOpen,
+  Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { PianoRoll } from '../audio/PianoRoll';
 import { StepSequencer } from '../audio/StepSequencer';
 import { DetailsView } from './DetailsView';
 import { MediaBucketView } from './MediaBucketView';
+import { SlidePanel } from './SlidePanel';
+import { DetachableWindow } from './DetachableWindow';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
+import { useSlideStore } from '../../state/slideStore';
 
 const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
   { id: 'spectral',   label: 'Visualize',    icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
@@ -23,15 +26,22 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'step-seq',   label: 'Sequence',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
   { id: 'details',    label: 'Details',      icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'bucket',     label: 'Media',        icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
+  { id: 'slide',      label: 'SLIDE',        icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
 ];
 
 export const BottomMultiTabPanel: React.FC = () => {
   const activeTab = useBottomPanelStore((s) => s.activeTab);
   const setActiveTab = useBottomPanelStore((s) => s.setActiveTab);
+  const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
+  const toggleMultiMaximized = useBottomPanelStore((s) => s.toggleMultiMaximized);
+  // SLIDE can detach into its own window (second-monitor performance). Session
+  // state only — never auto-reopen a popup on reload.
+  const [slideDetached, setSlideDetached] = useState(false);
 
   return (
     <div className="h-full flex flex-col bg-purple-500/2 min-h-0">
-      {/* Tabs row */}
+      {/* Tabs row. When SLIDE is active its AUDIO/VISUAL content toggle lives
+          here (right side) so the panel body gets full height for the lanes. */}
       <div className="flex items-center justify-between border-b border-white/5 shrink-0 bg-black/30">
         <div className="flex overflow-x-auto no-scrollbar">
           {TAB_DEFS.map((t) => {
@@ -48,6 +58,39 @@ export const BottomMultiTabPanel: React.FC = () => {
               </button>
             );
           })}
+        </div>
+        {/* Right cluster — SLIDE-only controls (when active) + the always-on
+            maximize toggle so any tab can fill the window. */}
+        <div className="flex items-center gap-1 pr-2 shrink-0">
+          {activeTab === 'slide' && (
+            <>
+              <SlideContentToggle />
+              <button
+                onClick={() => setSlideDetached((v) => !v)}
+                className={`p-1 rounded border text-[9px] flex items-center gap-1 ${
+                  slideDetached
+                    ? 'border-pink-500/50 bg-pink-500/15 text-pink-200'
+                    : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'
+                }`}
+                title={slideDetached ? 'Pop SLIDE back into the app' : 'Pop SLIDE out into its own window (second monitor)'}
+                aria-label="Detach SLIDE window"
+              >
+                <ExternalLink className="w-3 h-3" />
+              </button>
+            </>
+          )}
+          <button
+            onClick={toggleMultiMaximized}
+            className={`p-1 rounded border ${
+              multiMaximized
+                ? 'border-purple-500/50 bg-purple-500/15 text-purple-200'
+                : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'
+            }`}
+            title={multiMaximized ? 'Restore panel size' : 'Maximize panel to fill the window'}
+            aria-label={multiMaximized ? 'Restore panel' : 'Maximize panel'}
+          >
+            {multiMaximized ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+          </button>
         </div>
       </div>
 
@@ -78,8 +121,61 @@ export const BottomMultiTabPanel: React.FC = () => {
             <MediaBucketView />
           </div>
         )}
+        {activeTab === 'slide' && (
+          <div className="absolute inset-0">
+            {slideDetached ? (
+              <>
+                <div className="h-full flex flex-col items-center justify-center gap-3 text-pink-200">
+                  <ExternalLink className="w-5 h-5" />
+                  <span className="text-[10px] font-mono uppercase tracking-widest">
+                    SLIDE is in a separate window
+                  </span>
+                  <button
+                    onClick={() => setSlideDetached(false)}
+                    className="px-3 py-1.5 rounded border border-pink-500/40 bg-pink-500/15 text-pink-200 hover:bg-pink-500/25 text-[9px] font-black uppercase tracking-widest"
+                  >
+                    Pop back in
+                  </button>
+                </div>
+                <DetachableWindow title="theDAW — SLIDE" onClose={() => setSlideDetached(false)}>
+                  <SlidePanel />
+                </DetachableWindow>
+              </>
+            ) : (
+              <SlidePanel />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
+/**
+ * AUDIO / VISUAL content toggle for the SLIDE tab — hoisted into the tab row
+ * (per the user's layout) instead of living inside the panel body. Drives
+ * slideStore.content; AUDIO is emerald, VISUAL is pink to match the surface.
+ */
+const SlideContentToggle: React.FC = () => {
+  const content = useSlideStore((s) => s.content);
+  const setContent = useSlideStore((s) => s.setContent);
+  const btn = 'px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-colors';
+  return (
+    <div className="flex items-center pr-2 shrink-0">
+      <div className="flex rounded-md border border-white/10 overflow-hidden">
+        <button
+          onClick={() => setContent('audio')}
+          className={`${btn} ${content === 'audio' ? 'bg-emerald-500/15 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.5)]' : 'text-zinc-500 hover:text-zinc-200'}`}
+        >
+          Audio
+        </button>
+        <button
+          onClick={() => setContent('visual')}
+          className={`${btn} ${content === 'visual' ? 'bg-pink-500/15 text-pink-200 shadow-[inset_0_0_0_1px_rgba(236,72,153,0.5)]' : 'text-zinc-500 hover:text-zinc-200'}`}
+        >
+          Visual
+        </button>
+      </div>
+    </div>
+  );
+};
