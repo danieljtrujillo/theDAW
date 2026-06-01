@@ -209,7 +209,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
               <span className="text-[8px] font-mono text-zinc-500">{aiAvailable ? (aiProvider ?? 'vision model') : 'no vision key'}</span>
             </div>
             <p className="text-[9px] text-zinc-400 leading-relaxed">
-              A vision model identifies your controller (brand + model) and counts its controls — far more accurate than raw shape detection. Uses your Assistant keys.
+              A vision model identifies your controller (brand + model) and counts its controls — far more accurate than raw shape detection. If enabled, this uploads the photo to your configured AI provider (via your Assistant keys).
             </p>
             <div className="flex gap-2">
               <input ref={aiFileRef} type="file" accept="image/*" className="hidden"
