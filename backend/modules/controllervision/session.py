@@ -43,7 +43,7 @@ def _prune(now: float) -> None:
 
 
 def create_session() -> str:
-    sid = secrets.token_urlsafe(6)
+    sid = secrets.token_urlsafe(16)
     now = time.time()
     with _lock:
         _prune(now)
