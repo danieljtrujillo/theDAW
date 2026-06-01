@@ -42,11 +42,14 @@ import {
   profileById,
   profileControlCount,
   profileKindCount,
+  detectProfileFromNames,
   type ControlKind,
 } from '../../state/controllerProfiles';
 import { useEditorStore } from '../../state/editorStore';
 import { audioCatalog, startAudioMixerSync, PAN_SUFFIX } from '../../state/audioMixerBus';
 import { subscribeToMidi } from '../../state/midiBus';
+import { useMidiDevicesStore } from '../../state/midiDevicesStore';
+import { useLearnedProfilesStore } from '../../state/learnedProfilesStore';
 import { enableMidi } from '../../state/midiTriggerStore';
 import {
   useControllerMapStore,
@@ -546,9 +549,20 @@ export const SlidePanel: React.FC = () => {
   const bankByContent = useSlideStore((s) => s.bank);
   const assignments = useSlideStore((s) => s.assignments[content]);
   const pageNavBinding = useSlideStore((s) => s.pageNavBinding);
+  const autoDetect = useSlideStore((s) => s.autoDetect);
   const setView = useSlideStore((s) => s.setView);
   const setProfileId = useSlideStore((s) => s.setProfileId);
+  const setAutoDetect = useSlideStore((s) => s.setAutoDetect);
   const setBank = useSlideStore((s) => s.setBank);
+  const midiInputs = useMidiDevicesStore((s) => s.inputs);
+  // Learned (capture-built) profiles — the universal path for custom rigs that
+  // no name-detected preset can match (e.g. a 92-control combined setup).
+  const learnedProfiles = useLearnedProfilesStore((s) => s.profiles);
+  const learnPhase = useLearnedProfilesStore((s) => s.phase);
+  const capturedCount = useLearnedProfilesStore((s) => Object.keys(s.captured).length);
+  const startLearn = useLearnedProfilesStore((s) => s.start);
+  const cancelLearn = useLearnedProfilesStore((s) => s.cancel);
+  const commitLearn = useLearnedProfilesStore((s) => s.commit);
   const setPageNavBinding = useSlideStore((s) => s.setPageNavBinding);
   const swapSlots = useSlideStore((s) => s.swapSlots);
   const resetAssignments = useSlideStore((s) => s.resetAssignments);
@@ -580,6 +594,16 @@ export const SlidePanel: React.FC = () => {
   // namespace so AUDIO lanes open at the right positions and follow the EDIT
   // tab's own faders. One subscription for the panel's lifetime.
   useEffect(() => startAudioMixerSync(), []);
+
+  // Auto-detect the controller profile from connected MIDI device names.
+  // Scored match (specific device name beats a family token). Only runs while
+  // autoDetect is on; the manual <select> sets autoDetect off so a user choice
+  // sticks. Re-runs on hot-plug (midiInputs changes).
+  const detected = useMemo(() => detectProfileFromNames(midiInputs), [midiInputs]);
+  useEffect(() => {
+    if (!autoDetect || !detected) return;
+    if (detected.id !== profileId) { setProfileId(detected.id); setBank(0); }
+  }, [autoDetect, detected, profileId, setProfileId, setBank]);
 
   const bank = bankByContent[content] ?? 0;
 
@@ -806,20 +830,93 @@ export const SlidePanel: React.FC = () => {
 
         <span className="w-px h-4 bg-white/10" />
 
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+        <span
+          className={`w-1.5 h-1.5 rounded-full ${midiInputs.length > 0 ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-zinc-600'}`}
+          title={midiInputs.length > 0 ? `MIDI: ${midiInputs.join(', ')}` : 'No MIDI device connected'}
+        />
+        {/* AUTO toggle — when on, the profile follows the connected device. */}
+        <button
+          onClick={() => setAutoDetect(!autoDetect)}
+          className={`px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border transition-colors ${
+            autoDetect
+              ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
+              : 'border-white/12 text-zinc-500 hover:text-zinc-200'
+          }`}
+          title={
+            autoDetect
+              ? `Auto-detect ON${detected ? ` — matched ${detected.name}` : midiInputs.length ? ' — no profile match for connected device' : ' — no device connected'}`
+              : 'Auto-detect OFF — using your manual profile choice'
+          }
+        >
+          Auto
+        </button>
         <label htmlFor="slide-controller-profile" className="sr-only">Controller profile</label>
         <select
           id="slide-controller-profile"
           name="slide-controller-profile"
           value={profileId}
-          onChange={(e) => { setProfileId(e.target.value); setBank(0); }}
+          onChange={(e) => { setProfileId(e.target.value); setAutoDetect(false); setBank(0); }}
           className="bg-[#111114] text-zinc-300 border border-white/12 rounded-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider outline-none"
-          title="Controller profile — auto-detect by device name (MIDI-learn coming later)"
+          title="Controller profile — picking one turns Auto off so your choice sticks"
         >
-          {CONTROLLER_PROFILES.map((p) => (
-            <option key={p.id} value={p.id}>{p.name} · {profileControlCount(p)}</option>
-          ))}
+          {learnedProfiles.length > 0 && (
+            <optgroup label="LEARNED (your devices)">
+              {learnedProfiles
+                .map((l) => l.profile)
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} · {profileControlCount(p)}</option>
+                ))}
+            </optgroup>
+          )}
+          {(['dj', 'pad', 'mixer', 'keys', 'generic'] as const).map((cat) => {
+            const inCat = CONTROLLER_PROFILES
+              .filter((p) => (p.category ?? 'generic') === cat)
+              .sort((a, b) => a.name.localeCompare(b.name)); // alpha within each group
+            if (inCat.length === 0) return null;
+            return (
+              <optgroup key={cat} label={cat.toUpperCase()}>
+                {inCat.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} · {profileControlCount(p)}</option>
+                ))}
+              </optgroup>
+            );
+          })}
         </select>
+
+        {/* Learn-device — capture-build a profile from ANY controller (incl.
+            custom/unlisted rigs). MIDI has no firmware layout query, so we build
+            the exact layout + mapping from what the device actually sends. */}
+        {learnPhase === 'capturing' ? (
+          <span className="flex items-center gap-1.5">
+            <span className="px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-amber-500/50 bg-amber-500/15 text-amber-200 animate-pulse">
+              ◉ Listening · {capturedCount} ctrl{capturedCount === 1 ? '' : 's'}
+            </span>
+            <button
+              onClick={() => { const id = commitLearn(`My Controller (${capturedCount})`); if (id) { setProfileId(id); setAutoDetect(false); setBank(0); } }}
+              disabled={capturedCount === 0}
+              className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-emerald-500/50 bg-emerald-500/15 text-emerald-200 disabled:opacity-30"
+              title="Finish — build a profile from the controls you exercised"
+            >
+              Done
+            </button>
+            <button
+              onClick={cancelLearn}
+              className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-zinc-200"
+              title="Cancel capture"
+            >
+              ✕
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => { enableMidi(); startLearn(); }}
+            className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-indigo-200 hover:border-indigo-500/40"
+            title="Learn device — wiggle/press every control once, then Done. Builds the exact layout + mapping from your hardware (works for any controller)."
+          >
+            Learn
+          </button>
+        )}
 
         <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-wider">
           {catalog.length} {content === 'visual' ? 'fx' : 'tracks'} · {pageSize}/page
