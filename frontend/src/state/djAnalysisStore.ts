@@ -40,9 +40,16 @@ interface DjAnalysisState {
   /** Fetch; if pending/unknown, kick off a /run and store the result. Safe to
    *  call repeatedly — in-flight + ready entries are skipped. */
   ensureAnalyzed: (entryId: string) => Promise<void>;
+  /** Background sweep: ensure every given entry is analyzed, one at a time
+   *  (gentle on the backend + a 6 GB machine). Already-analyzed/running/errored
+   *  entries are skipped; only one sweep runs at a time. */
+  analyzeAll: (entryIds: string[]) => Promise<void>;
   /** Selector helper. */
   get: (entryId: string | null) => Entry | null;
 }
+
+// Module-level guard so a sweep doesn't stack up across re-renders / remounts.
+let sweepRunning = false;
 
 function pickFields(raw: Record<string, unknown>): DjAnalysis {
   const num = (v: unknown): number | null =>
@@ -105,6 +112,23 @@ export const useDjAnalysisStore = create<DjAnalysisState>()((set, get) => ({
     } catch (e) {
       logError('dj', `Analysis run failed for ${entryId}: ${e instanceof Error ? e.message : String(e)}`);
       set((s) => ({ byId: { ...s.byId, [entryId]: { status: 'error', data: null } } }));
+    }
+  },
+
+  analyzeAll: async (entryIds) => {
+    if (sweepRunning) return;
+    sweepRunning = true;
+    try {
+      for (const id of entryIds) {
+        const cur = get().byId[id];
+        // Skip anything already resolved or in flight (don't re-hammer errors).
+        if (cur && (cur.status === 'ready' || cur.status === 'running' || cur.status === 'error')) continue;
+        await get().ensureAnalyzed(id);
+        // Small gap so the foreground backend analysis + UI stay responsive.
+        await new Promise((r) => setTimeout(r, 80));
+      }
+    } finally {
+      sweepRunning = false;
     }
   },
 
