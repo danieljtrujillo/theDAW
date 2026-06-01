@@ -25,7 +25,6 @@ from . import session as pairing
 from .engine import (
     cv_available,
     detect_controls_in_image,
-    fetch_image_bytes,
     identify_with_vision_llm,
     pick_vision_provider,
     search_wikimedia_image,
@@ -132,7 +131,9 @@ async def detect_by_name(device_name: str = Form(...)) -> dict[str, Any]:
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=5.0)
+        ) as client:
             async with client.stream("GET", hit["url"], follow_redirects=True) as r:
                 r.raise_for_status()
                 size = 0

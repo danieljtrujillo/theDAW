@@ -19,16 +19,18 @@
  * VJ side via vjSetBus. If the VJ tab isn't open yet, the SET is
  * buffered and delivered the moment it mounts.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown,
+  ChevronUp, ChevronDown, Repeat,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
+import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
+import { useDjCuesStore, HOTCUE_SLOTS } from '../state/djCuesStore';
 import { toCamelot, keyLabel } from '../lib/camelot';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import {
@@ -65,6 +67,8 @@ export const DJView: React.FC = () => {
   const [flash, setFlash] = useState<string | null>(null);
 
   const entries = useLibraryStore((s) => s.entries);
+  const analyzeAll = useDjAnalysisStore((s) => s.analyzeAll);
+  const djTabActive = useAppUiStore((s) => s.centerTab === 'dj');
   const setlists = useSetlistStore((s) => s.setlists);
   const activeId = useSetlistStore((s) => s.activeId);
   const createSetlist = useSetlistStore((s) => s.create);
@@ -121,6 +125,15 @@ export const DJView: React.FC = () => {
       setDeckBPlaying(b.playing);
     });
   }, []);
+
+  // Every track should carry BPM/key/beatgrid in the DJ context. Once the DJ tab
+  // is open, sweep the whole library in the background (gentle, one at a time)
+  // so loops + beatgrid are ready before a track is even loaded; deck-load also
+  // ensures its own. Gated on the active tab because DJView is mounted "warmed"
+  // — we don't want a startup analysis storm when the user isn't in DJ.
+  useEffect(() => {
+    if (djTabActive && entries.length) void analyzeAll(entries.map((e) => e.id));
+  }, [djTabActive, entries, analyzeAll]);
 
   // Load / clear a deck's audio when its selected track changes.
   useEffect(() => {
@@ -222,6 +235,7 @@ export const DJView: React.FC = () => {
 
         <div className="flex-1 grid grid-cols-2 gap-3 min-h-0">
           <Deck
+            deckId="A"
             label="DECK A"
             accent="purple"
             trackTitle={deckATitle}
@@ -246,6 +260,7 @@ export const DJView: React.FC = () => {
             audioUrl={(() => { const t = trackById(deckATrack); return t ? (t.audioUrl ?? null) : null; })()}
           />
           <Deck
+            deckId="B"
             label="DECK B"
             accent="cyan"
             trackTitle={deckBTitle}
@@ -438,6 +453,7 @@ export const DJView: React.FC = () => {
 };
 
 interface DeckProps {
+  deckId: djEngine.DeckId;
   label: string;
   accent: 'purple' | 'cyan';
   trackTitle: string;
@@ -462,13 +478,14 @@ interface DeckProps {
 }
 
 const Deck: React.FC<DeckProps> = ({
-  label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
+  deckId, label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
   hasTrack, setLoaded, entryId, audioUrl,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
   const accentBg = accent === 'purple' ? 'bg-purple-500/10' : 'bg-cyan-500/10';
+  const accentAcc = accent === 'purple' ? 'accent-purple-500' : 'accent-cyan-500';
 
   // Analysis (BPM / key / Camelot) for the loaded track — runs on the backend
   // on demand, cached in djAnalysisStore. Surfacing what we already compute.
@@ -481,6 +498,63 @@ const Deck: React.FC<DeckProps> = ({
   const a = analysisEntry?.data ?? null;
   const analyzing = analysisEntry?.status === 'running';
   const cam = a ? toCamelot(a.key, a.scale) : null;
+  const bpm = a?.bpm ?? null;
+  const beats = a?.beats ?? null;
+  const beatLen = bpm && bpm > 0 ? 60 / bpm : null;
+
+  // Hotcues (persisted per track) + live loop/slip state (low-frequency toggles,
+  // pulled from the engine so the buttons reflect reality without per-frame work).
+  const cues = useDjCuesStore((s) => (entryId ? s.byEntry[entryId] : undefined));
+  const setCue = useDjCuesStore((s) => s.setCue);
+  const clearCue = useDjCuesStore((s) => s.clearCue);
+  const [loopActive, setLoopActiveSt] = useState(false);
+  const [activeLoopBeats, setActiveLoopBeats] = useState<number | null>(null);
+  const [slip, setSlipSt] = useState(false);
+  const [decoding, setDecoding] = useState(false);
+  useEffect(() => djEngine.subscribe((sa, sb) => {
+    const st = deckId === 'A' ? sa : sb;
+    setLoopActiveSt((p) => (p === st.loopActive ? p : st.loopActive));
+    setSlipSt((p) => (p === st.slip ? p : st.slip));
+    setDecoding((p) => (p === st.decoding ? p : st.decoding));
+  }), [deckId]);
+  // Drop the "which beat-loop is lit" memory whenever the loop is disengaged.
+  useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
+
+  const setHotcue = (i: number) => {
+    if (!entryId) return;
+    const c = cues?.[i] ?? null;
+    if (c == null) setCue(entryId, i, djEngine.getStatus(deckId).currentTime);
+    else djEngine.seekDeck(deckId, c);
+  };
+  const dropHotcue = (i: number) => { if (entryId) clearCue(entryId, i); };
+
+  // Loops never block on analysis: until BPM is known we fall back to 120 so the
+  // user can always loop; the beatgrid + beat-snapped in-point kick in the
+  // moment analysis lands. effBeatLen = seconds per beat.
+  const effBeatLen = beatLen ?? 0.5;
+  const toggleBeatLoop = (loopBeats: number) => {
+    if (!hasTrack) return;
+    if (loopActive && activeLoopBeats === loopBeats) {
+      djEngine.exitLoop(deckId);
+      return;
+    }
+    const len = loopBeats * effBeatLen;
+    const pos = djEngine.getStatus(deckId).currentTime;
+    let inPt = pos;
+    if (beats && beats.length) {
+      const anchor = snapToBeat(pos, beats); // nearest beat ≤ pos
+      inPt = anchor;
+      // Sub-beat loops: advance to the fractional grid cell containing pos so
+      // the head stays inside [in, out) and the loop actually wraps.
+      if (loopBeats < 1 && len > 0) {
+        inPt = anchor + Math.max(0, Math.floor((pos - anchor) / len)) * len;
+      }
+    }
+    djEngine.setLoop(deckId, inPt, inPt + len);
+    setActiveLoopBeats(loopBeats);
+  };
+  const rollDown = (loopBeats: number) => { if (hasTrack) djEngine.startLoopRoll(deckId, loopBeats * effBeatLen); };
+  const rollUp = () => djEngine.endLoopRoll(deckId);
 
   return (
     <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
@@ -549,17 +623,115 @@ const Deck: React.FC<DeckProps> = ({
               {analyzing ? '…' : '—'}
             </span>
           )}
+          {decoding && (
+            <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 animate-pulse">
+              decoding…
+            </span>
+          )}
         </div>
 
-        {/* Deck waveform — reuses the shared wavesurfer preview. */}
+        {/* Deck waveform — wavesurfer preview + beatgrid / playhead / loop /
+            cue overlays. The playhead is driven imperatively (no per-frame
+            React re-render). */}
         <div className="shrink-0">
           {audioUrl ? (
-            <WaveformPreview audioUrl={audioUrl} height={48} />
+            <DeckWaveform
+              deckId={deckId}
+              audioUrl={audioUrl}
+              beats={beats}
+              cues={cues ?? null}
+              accent={accent}
+            />
           ) : (
             <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[9px] font-mono text-zinc-700">
               no track loaded
             </div>
           )}
+        </div>
+
+        {/* Hotcues — click empty to set at the playhead, click set to jump,
+            right-click to clear. Persisted per track. */}
+        <div className="grid grid-cols-4 gap-1">
+          {Array.from({ length: HOTCUE_SLOTS }, (_, i) => {
+            const c = cues?.[i] ?? null;
+            const set = c != null;
+            return (
+              <button
+                key={i}
+                onClick={() => setHotcue(i)}
+                onContextMenu={(e) => { e.preventDefault(); dropHotcue(i); }}
+                disabled={!hasTrack}
+                className={`py-1 rounded text-[8px] font-black uppercase tracking-wider border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                  set
+                    ? `${accentBg} ${accentText} ${accentBorder}`
+                    : 'bg-black/40 border-white/10 text-zinc-600 hover:text-zinc-300 hover:border-white/25'
+                }`}
+                title={set ? `Cue ${i + 1} @ ${fmtTime(c)} — click to jump, right-click to clear` : `Set cue ${i + 1} at the playhead`}
+              >
+                {set ? `▶ ${i + 1}` : `○ ${i + 1}`}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Loop / slip — beat-synced auto-loops, momentary loop-rolls (hold),
+            and a slip toggle. Disabled until BPM is known. */}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1">
+            <Repeat className={`w-3 h-3 ${loopActive ? accentText : 'text-zinc-600'}`} />
+            <span className="text-[7px] font-mono uppercase text-zinc-600 w-8">Loop</span>
+            {BEAT_SIZES.map((b) => (
+              <button
+                key={b.beats}
+                onClick={() => toggleBeatLoop(b.beats)}
+                disabled={!hasTrack}
+                className={`flex-1 py-1 rounded text-[8px] font-bold border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                  loopActive && activeLoopBeats === b.beats
+                    ? `${accentBg} ${accentText} ${accentBorder}`
+                    : 'bg-black/40 border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25'
+                }`}
+                title={beatLen ? `${b.label}-beat loop` : `${b.label}-beat loop (~120 BPM until analyzed)`}
+              >
+                {b.label}
+              </button>
+            ))}
+            <button
+              onClick={() => djEngine.exitLoop(deckId)}
+              disabled={!loopActive}
+              className="flex-1 py-1 rounded text-[8px] font-black uppercase border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              title="Exit loop"
+            >
+              Out
+            </button>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-[7px] font-mono uppercase text-zinc-600 w-11 ml-4">Roll</span>
+            {ROLL_SIZES.map((b) => (
+              <button
+                key={b.beats}
+                onPointerDown={(e) => { e.preventDefault(); rollDown(b.beats); }}
+                onPointerUp={rollUp}
+                onPointerLeave={(e) => { if (e.buttons) rollUp(); }}
+                disabled={!hasTrack}
+                className="flex-1 py-1 rounded text-[8px] font-bold border bg-black/40 border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25 active:bg-white/10 transition-colors disabled:opacity-30 disabled:pointer-events-none select-none"
+                title={beatLen ? `${b.label}-beat loop-roll (hold)` : `${b.label}-beat loop-roll (~120 BPM until analyzed)`}
+              >
+                {b.label}
+              </button>
+            ))}
+            <button
+              onClick={() => djEngine.setSlip(deckId, !slip)}
+              disabled={!hasTrack}
+              className={`flex-1 py-1 rounded text-[8px] font-black uppercase tracking-wider border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                slip
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                  : 'bg-black/40 border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25'
+              }`}
+              title="Slip mode — on loop/roll exit, jump to where playback would be"
+            >
+              Slip
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -579,7 +751,7 @@ const Deck: React.FC<DeckProps> = ({
               <input
                 type="range" min={-12} max={12} step={0.5} value={value}
                 onChange={(e) => onEq(band, parseFloat(e.target.value))}
-                className={`w-full h-1 cursor-col-resize ${accent === 'purple' ? 'accent-purple-500' : 'accent-cyan-500'}`}
+                className={`w-full h-1 cursor-col-resize ${accentAcc}`}
                 title={`${band.toUpperCase()} ${value} dB`}
               />
               <span className="text-[7px] font-mono uppercase text-zinc-600">{band}</span>
@@ -594,11 +766,203 @@ const Deck: React.FC<DeckProps> = ({
           <input
             type="range" min={-8} max={8} step={0.1} value={pitch}
             onChange={(e) => onPitch(parseFloat(e.target.value))}
-            className={`flex-1 h-1 cursor-col-resize ${accent === 'purple' ? 'accent-purple-500' : 'accent-cyan-500'}`}
+            className={`flex-1 h-1 cursor-col-resize ${accentAcc}`}
           />
           <span className={`text-[9px] font-mono w-10 text-right ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
         </div>
       </div>
+    </div>
+  );
+};
+
+/* ------------------------------- helpers ----------------------------------- */
+
+/** Beat-loop sizes (in beats) offered as auto-loop buttons. */
+const BEAT_SIZES: Array<{ beats: number; label: string }> = [
+  { beats: 0.25, label: '¼' },
+  { beats: 0.5, label: '½' },
+  { beats: 1, label: '1' },
+  { beats: 2, label: '2' },
+  { beats: 4, label: '4' },
+];
+
+/** Loop-roll sizes (momentary, hold). */
+const ROLL_SIZES: Array<{ beats: number; label: string }> = [
+  { beats: 0.25, label: '¼' },
+  { beats: 0.5, label: '½' },
+  { beats: 1, label: '1' },
+];
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+
+/** Snap a time to the nearest beat at or before it (so loops start on a beat). */
+function snapToBeat(t: number, beats: number[] | null): number {
+  if (!beats || beats.length === 0) return t;
+  let best = beats[0];
+  for (const b of beats) {
+    if (b <= t) best = b;
+    else break;
+  }
+  return best;
+}
+
+function fmtTime(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function sameLoop(a: { in: number; out: number } | null, b: { in: number; out: number } | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.in === b.in && a.out === b.out;
+}
+
+/**
+ * Deck waveform with beatgrid / playhead / loop-region / hotcue overlays.
+ *
+ * The playhead is driven IMPERATIVELY from the engine subscription (a single
+ * style.left mutation per frame) so the deck never re-renders at frame rate —
+ * important on weak machines. Only low-frequency changes (duration, loop region)
+ * use React state. A transparent click-catcher sits above the wavesurfer canvas
+ * so seeks route to our engine (not wavesurfer's own cursor).
+ */
+const DeckWaveform: React.FC<{
+  deckId: djEngine.DeckId;
+  audioUrl: string;
+  beats: number[] | null;
+  cues: (number | null)[] | null;
+  accent: 'purple' | 'cyan';
+}> = ({ deckId, audioUrl, beats, cues, accent }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
+  const [dur, setDur] = useState(0);
+  const [loop, setLoop] = useState<{ in: number; out: number } | null>(null);
+
+  useEffect(() => djEngine.subscribe((sa, sb) => {
+    const st = deckId === 'A' ? sa : sb;
+    const d = st.duration || 0;
+    setDur((p) => (p === d ? p : d));
+    if (playheadRef.current) {
+      playheadRef.current.style.left = d > 0 ? `${(st.currentTime / d) * 100}%` : '0%';
+    }
+    const nl = st.loopActive && st.loopIn != null && st.loopOut != null
+      ? { in: st.loopIn, out: st.loopOut }
+      : null;
+    setLoop((p) => (sameLoop(p, nl) ? p : nl));
+  }), [deckId]);
+
+  // Beatgrid marks (memoized). Thin to downbeats only when very dense so weak
+  // machines don't paint hundreds of lines.
+  const beatMarks = useMemo(() => {
+    if (!beats || beats.length === 0 || dur <= 0) return null;
+    const dense = beats.length <= 400;
+    const out: Array<{ left: number; down: boolean }> = [];
+    for (let i = 0; i < beats.length; i++) {
+      const down = i % 4 === 0;
+      if (!dense && !down) continue;
+      out.push({ left: (beats[i] / dur) * 100, down });
+    }
+    return out;
+  }, [beats, dur]);
+
+  const accentColor = accent === 'purple' ? '#a855f7' : '#22d3ee';
+
+  // Drag-scrubbing — pull the playhead through the track to find a spot instead
+  // of playing from the start and waiting. Seeks are rAF-throttled so a fast
+  // drag doesn't restart the buffer source dozens of times per frame; pointer
+  // capture keeps the drag tracking even when it leaves the lane.
+  const scrubbing = useRef(false);
+  const pendingX = useRef<number | null>(null);
+  const scrubRaf = useRef(0);
+  const applyScrub = () => {
+    scrubRaf.current = 0;
+    const x = pendingX.current;
+    pendingX.current = null;
+    const el = containerRef.current;
+    if (x == null || !el || dur <= 0) return;
+    const rect = el.getBoundingClientRect();
+    djEngine.seekDeck(deckId, clamp01((x - rect.left) / rect.width) * dur);
+  };
+  const queueScrub = (clientX: number) => {
+    pendingX.current = clientX;
+    if (!scrubRaf.current) scrubRaf.current = requestAnimationFrame(applyScrub);
+  };
+  const onScrubDown = (e: React.PointerEvent) => {
+    if (dur <= 0) return;
+    scrubbing.current = true;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    queueScrub(e.clientX);
+  };
+  const onScrubMove = (e: React.PointerEvent) => { if (scrubbing.current) queueScrub(e.clientX); };
+  const onScrubUp = (e: React.PointerEvent) => {
+    scrubbing.current = false;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
+  useEffect(() => () => { if (scrubRaf.current) cancelAnimationFrame(scrubRaf.current); }, []);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <WaveformPreview audioUrl={audioUrl} height={48} />
+
+      {/* Scrub catcher — above the canvas so seeks drive our engine, not
+          wavesurfer's own cursor. Drag to scrub, click to jump. */}
+      <div
+        className="absolute inset-0 cursor-ew-resize"
+        onPointerDown={onScrubDown}
+        onPointerMove={onScrubMove}
+        onPointerUp={onScrubUp}
+        onPointerCancel={onScrubUp}
+        title="Drag to scrub · click to seek"
+      />
+
+      {/* Beatgrid */}
+      {beatMarks && (
+        <div className="absolute inset-0 pointer-events-none">
+          {beatMarks.map((m, i) => (
+            <div
+              key={i}
+              className="absolute top-0 bottom-0"
+              style={{ left: `${m.left}%`, width: '1px', background: m.down ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.10)' }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Loop region */}
+      {loop && dur > 0 && (
+        <div
+          className="absolute top-0 bottom-0 pointer-events-none"
+          style={{
+            left: `${(loop.in / dur) * 100}%`,
+            width: `${((loop.out - loop.in) / dur) * 100}%`,
+            background: 'rgba(245,200,66,0.18)',
+            borderLeft: '1px solid rgba(245,200,66,0.7)',
+            borderRight: '1px solid rgba(245,200,66,0.7)',
+          }}
+        />
+      )}
+
+      {/* Hotcue markers */}
+      {dur > 0 && cues && cues.map((c, i) => (c == null ? null : (
+        <div
+          key={i}
+          className="absolute top-0 bottom-0 pointer-events-none"
+          style={{ left: `${(c / dur) * 100}%`, width: '2px', background: accentColor }}
+        >
+          <span className="absolute top-0 left-0 text-[6px] font-black text-black px-0.5 leading-tight" style={{ background: accentColor }}>
+            {i + 1}
+          </span>
+        </div>
+      )))}
+
+      {/* Playhead (imperative) */}
+      <div
+        ref={playheadRef}
+        className="absolute top-0 bottom-0 pointer-events-none"
+        style={{ left: '0%', width: '2px', background: '#ffffff', boxShadow: '0 0 4px rgba(255,255,255,0.8)' }}
+      />
     </div>
   );
 };

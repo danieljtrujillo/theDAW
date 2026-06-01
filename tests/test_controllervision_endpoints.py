@@ -26,7 +26,9 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def test_capabilities_endpoint_reports_cv_and_ai_metadata(monkeypatch, client: TestClient):
+def test_capabilities_endpoint_reports_cv_and_ai_metadata(
+    monkeypatch, client: TestClient
+):
     monkeypatch.setattr(router_module, "cv_available", lambda: True)
     monkeypatch.setattr(
         router_module, "pick_vision_provider", lambda: ("openai", "gpt-4.1-mini")
@@ -46,7 +48,9 @@ def test_capabilities_endpoint_reports_cv_and_ai_metadata(monkeypatch, client: T
     }
 
 
-def test_detect_endpoint_returns_upload_source_and_counts(monkeypatch, client: TestClient):
+def test_detect_endpoint_returns_upload_source_and_counts(
+    monkeypatch, client: TestClient
+):
     monkeypatch.setattr(router_module, "cv_available", lambda: True)
     monkeypatch.setattr(
         router_module,
