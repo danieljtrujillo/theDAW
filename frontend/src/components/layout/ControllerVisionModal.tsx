@@ -106,7 +106,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
     setErr(null); setBusy(true); setResult(null); setIdentified(null);
     try {
       const res = await identifyWithAi(file);
-      if (!res.available) { setErr(res.error || 'AI vision unavailable'); return; }
+      if (!res.available || res.error || !res.counts) { setErr(res.error || 'AI identify failed'); return; }
       applyIdentify(res, URL.createObjectURL(file));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
