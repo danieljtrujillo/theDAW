@@ -28,6 +28,9 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components
 import { useSetlistStore } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
+import { useDjAnalysisStore } from '../state/djAnalysisStore';
+import { toCamelot, keyLabel } from '../lib/camelot';
+import { WaveformPreview } from '../components/audio/WaveformPreview';
 import {
   toggleVjPlayback, subscribeToVjPlaybackState, isVjPlaybackActive,
   type VjPlaybackState,
@@ -239,6 +242,8 @@ export const DJView: React.FC = () => {
             onSendToVj={() => handleSendDeckToVj('A')}
             hasTrack={!!deckATrack}
             setLoaded={!!activeSet}
+            entryId={deckATrack}
+            audioUrl={(() => { const t = trackById(deckATrack); return t ? (t.audioUrl ?? null) : null; })()}
           />
           <Deck
             label="DECK B"
@@ -261,6 +266,8 @@ export const DJView: React.FC = () => {
             onSendToVj={() => handleSendDeckToVj('B')}
             hasTrack={!!deckBTrack}
             setLoaded={!!activeSet}
+            entryId={deckBTrack}
+            audioUrl={(() => { const t = trackById(deckBTrack); return t ? (t.audioUrl ?? null) : null; })()}
           />
         </div>
 
@@ -448,16 +455,32 @@ interface DeckProps {
   onSendToVj: () => void;
   hasTrack: boolean;
   setLoaded: boolean;
+  /** Library entry id of the loaded track (drives analysis). */
+  entryId: string | null;
+  /** Resolved audio URL of the loaded track (drives the waveform). */
+  audioUrl: string | null;
 }
 
 const Deck: React.FC<DeckProps> = ({
   label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
-  hasTrack, setLoaded,
+  hasTrack, setLoaded, entryId, audioUrl,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
   const accentBg = accent === 'purple' ? 'bg-purple-500/10' : 'bg-cyan-500/10';
+
+  // Analysis (BPM / key / Camelot) for the loaded track — runs on the backend
+  // on demand, cached in djAnalysisStore. Surfacing what we already compute.
+  const ensureAnalyzed = useDjAnalysisStore((s) => s.ensureAnalyzed);
+  const analysisEntry = useDjAnalysisStore((s) => (entryId ? s.byId[entryId] ?? null : null));
+  useEffect(() => {
+    if (entryId) void ensureAnalyzed(entryId);
+  }, [entryId, ensureAnalyzed]);
+
+  const a = analysisEntry?.data ?? null;
+  const analyzing = analysisEntry?.status === 'running';
+  const cam = a ? toCamelot(a.key, a.scale) : null;
 
   return (
     <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
@@ -498,6 +521,46 @@ const Deck: React.FC<DeckProps> = ({
             <option key={e.id} value={e.id}>{e.title}</option>
           ))}
         </select>
+
+        {/* Analysis badges — BPM · key · Camelot. Grayed/“…”, while analyzing. */}
+        <div className="flex items-center gap-1.5 text-[9px] font-mono">
+          <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
+            <span className="text-zinc-600">BPM </span>
+            {a?.bpm != null ? a.bpm.toFixed(1) : (analyzing ? '…' : '—')}
+          </span>
+          <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
+            <span className="text-zinc-600">KEY </span>
+            {a?.key ? keyLabel(a.key, a.scale) : (analyzing ? '…' : '—')}
+          </span>
+          {cam ? (
+            <span
+              className="px-1.5 py-0.5 rounded font-black border"
+              style={{
+                color: `hsl(${cam.hue} 80% 75%)`,
+                borderColor: `hsl(${cam.hue} 70% 45% / 0.6)`,
+                background: `hsl(${cam.hue} 70% 45% / 0.12)`,
+              }}
+              title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
+            >
+              {cam.code}
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-600">
+              {analyzing ? '…' : '—'}
+            </span>
+          )}
+        </div>
+
+        {/* Deck waveform — reuses the shared wavesurfer preview. */}
+        <div className="shrink-0">
+          {audioUrl ? (
+            <WaveformPreview audioUrl={audioUrl} height={48} />
+          ) : (
+            <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[9px] font-mono text-zinc-700">
+              no track loaded
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <button
