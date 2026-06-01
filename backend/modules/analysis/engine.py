@@ -70,8 +70,8 @@ def analyze_audio(
         from backend.modules.chimera.detect import detect_tempo_and_beats
 
         tempo = detect_tempo_and_beats(p)
-        out["bpm"] = tempo.bpm
-        out["beats"] = list(tempo.beats)
+        out["bpm"] = tempo["bpm"]
+        out["beats"] = list(tempo["beats"])
     except Exception as e:
         log.info("analysis.engine: tempo failed for %s: %s", p.name, e)
         out["bpm"] = None
@@ -161,8 +161,16 @@ def analyze_and_persist(
     include_key = bool(settings.get("include_key", True))
     include_genre = bool(settings.get("include_genre", False))
 
+    # Some library rows are derived/variant entries (e.g. "<id>_00") that are
+    # listed but have no row in `entries`; persisting analysis for them violates
+    # the analysis→entries foreign key. Detect that up front so we still COMPUTE
+    # + return the analysis (the UI gets BPM/key) but skip the DB write instead
+    # of raising a 500.
+    entry_exists = db.get_entry(entry_id) is not None
+
     # Mark running so the UI can show a chip.
-    _set_status(db, entry_id, "running")
+    if entry_exists:
+        _set_status(db, entry_id, "running")
     try:
         payload = analyze_audio(
             audio_path,
@@ -170,6 +178,13 @@ def analyze_and_persist(
             include_pitch=True,
             include_genre=include_genre,
         )
+        if not entry_exists:
+            log.info(
+                "analysis.engine: %s has no entries row (derived/variant?) — "
+                "computed analysis but not persisting",
+                entry_id,
+            )
+            return payload
         # Pull embedded tags from metadata.json if present so we
         # persist them alongside analysis (keeps everything in one
         # place for downstream lineage / dataset export).

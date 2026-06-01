@@ -33,6 +33,7 @@ import { useDjAnalysisStore } from '../state/djAnalysisStore';
 import { useDjCuesStore, HOTCUE_SLOTS } from '../state/djCuesStore';
 import { toCamelot, keyLabel } from '../lib/camelot';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
+import { DjFader, DjPad, DECK_RGB } from '../components/dj/DjControls';
 import {
   toggleVjPlayback, subscribeToVjPlaybackState, isVjPlaybackActive,
   type VjPlaybackState,
@@ -351,18 +352,21 @@ export const DJView: React.FC = () => {
         </div>
 
         {/* Master crossfader */}
-        <div className="shrink-0 bg-black/60 border border-white/10 rounded p-3 flex items-center gap-3">
+        <div className="shrink-0 bg-black/60 border border-white/10 rounded p-3 flex items-center gap-3 dj-surface">
           <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 w-8 text-right">A</span>
-          <input
-            type="range"
-            min={-1}
-            max={1}
-            step={0.01}
-            value={crossfader}
-            onChange={(e) => { const v = parseFloat(e.target.value); setCrossfader(v); djEngine.setCrossfade(v); }}
-            className="flex-1 h-3 accent-fuchsia-500 cursor-col-resize"
-            title="Crossfade between Deck A and Deck B"
-          />
+          <div className="flex-1">
+            <DjFader
+              value={crossfader}
+              min={-1}
+              max={1}
+              defaultValue={0}
+              center
+              color={DECK_RGB.cyan}
+              onChange={(v) => { setCrossfader(v); djEngine.setCrossfade(v); }}
+              ariaLabel="Crossfader"
+              title="Crossfade between Deck A and Deck B (double-click to center)"
+            />
+          </div>
           <span className="text-[10px] font-black uppercase tracking-widest text-cyan-300 w-8 text-left">B</span>
           <span className="text-[9px] font-mono text-zinc-500 ml-2 w-12 text-right">
             {crossfader < -0.05 ? `A ${Math.round((1 + crossfader) * 100)}%` : crossfader > 0.05 ? `B ${Math.round((1 - crossfader) * -100 + 100)}%` : 'CENTER'}
@@ -555,7 +559,7 @@ const Deck: React.FC<DeckProps> = ({
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
   const accentBg = accent === 'purple' ? 'bg-purple-500/10' : 'bg-cyan-500/10';
-  const accentAcc = accent === 'purple' ? 'accent-purple-500' : 'accent-cyan-500';
+  const deckRgb = DECK_RGB[accent];
 
   // Analysis (BPM / key / Camelot) for the loaded track — runs on the backend
   // on demand, cached in djAnalysisStore. Surfacing what we already compute.
@@ -634,12 +638,15 @@ const Deck: React.FC<DeckProps> = ({
 
   return (
     <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
-      <div className={`shrink-0 px-3 py-1.5 ${accentBg} border-b ${accentBorder} flex items-center justify-between`}>
-        <div className="flex items-center gap-1.5">
-          <Disc className={`w-3.5 h-3.5 ${accentText} ${isPlaying ? 'animate-spin' : ''}`} />
-          <span className={`text-[10px] font-black uppercase tracking-widest ${accentText}`}>{label}</span>
+      <div className={`shrink-0 px-3 py-1.5 ${accentBg} border-b ${accentBorder} flex items-center justify-between gap-2`}>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Disc className={`w-3.5 h-3.5 shrink-0 ${accentText} ${isPlaying ? 'animate-spin' : ''}`} />
+          <span className={`text-[10px] font-black uppercase tracking-widest shrink-0 ${accentText}`}>{label}</span>
+          <span className="text-[9px] font-mono text-zinc-400 truncate" title={hasTrack ? trackTitle : ''}>
+            {hasTrack ? trackTitle : '—'}
+          </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={onSendToVj}
             disabled={!hasTrack}
@@ -660,50 +667,69 @@ const Deck: React.FC<DeckProps> = ({
       </div>
 
       {/* Track display */}
-      <div className="flex-1 min-h-0 flex flex-col p-3 gap-2">
-        <select
-          value={entries.find((e) => e.title === trackTitle)?.id ?? ''}
-          onChange={(e) => onLoadId(e.target.value || null)}
-          className="bg-black/40 border border-white/10 text-[10px] font-mono text-zinc-200 px-2 py-1 rounded cursor-pointer"
-        >
-          <option value="">— Load track —</option>
-          {entries.map((e) => (
-            <option key={e.id} value={e.id}>{e.title}</option>
-          ))}
-        </select>
-
-        {/* Analysis badges — BPM · key · Camelot. Grayed/“…”, while analyzing. */}
-        <div className="flex items-center gap-1.5 text-[9px] font-mono">
-          <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
-            <span className="text-zinc-600">BPM </span>
-            {a?.bpm != null ? a.bpm.toFixed(1) : (analyzing ? '…' : '—')}
-          </span>
-          <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
-            <span className="text-zinc-600">KEY </span>
-            {a?.key ? keyLabel(a.key, a.scale) : (analyzing ? '…' : '—')}
-          </span>
-          {cam ? (
-            <span
-              className="px-1.5 py-0.5 rounded font-black border"
-              style={{
-                color: `hsl(${cam.hue} 80% 75%)`,
-                borderColor: `hsl(${cam.hue} 70% 45% / 0.6)`,
-                background: `hsl(${cam.hue} 70% 45% / 0.12)`,
-              }}
-              title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
-            >
-              {cam.code}
+      <div className="flex-1 min-h-0 flex flex-col p-3 gap-2 dj-surface">
+        {/* Transport + analysis + load — Play / Sync / BPM·KEY·Camelot, with the
+            track picker filling the right of the row. */}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onPlay}
+            className={`p-1.5 rounded shrink-0 ${isPlaying ? 'bg-red-500/20 text-red-300 border border-red-500/40' : `${accentBg} ${accentText} border ${accentBorder}`}`}
+            title={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+          </button>
+          <DjPad
+            color={deckRgb}
+            disabled={!canSync}
+            onClick={onSync}
+            style={{ padding: '6px 8px', flexShrink: 0 }}
+            title={canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}
+          >
+            <Link2 className="w-3 h-3" /> Sync
+          </DjPad>
+          <div className="flex items-center gap-1 text-[9px] font-mono shrink-0">
+            <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
+              <span className="text-zinc-600">BPM </span>
+              {a?.bpm != null ? a.bpm.toFixed(1) : (analyzing ? '…' : '—')}
             </span>
-          ) : (
-            <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-600">
-              {analyzing ? '…' : '—'}
+            <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
+              <span className="text-zinc-600">KEY </span>
+              {a?.key ? keyLabel(a.key, a.scale) : (analyzing ? '…' : '—')}
             </span>
-          )}
-          {decoding && (
-            <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 animate-pulse">
-              decoding…
-            </span>
-          )}
+            {cam ? (
+              <span
+                className="px-1.5 py-0.5 rounded font-black border"
+                style={{
+                  color: `hsl(${cam.hue} 80% 75%)`,
+                  borderColor: `hsl(${cam.hue} 70% 45% / 0.6)`,
+                  background: `hsl(${cam.hue} 70% 45% / 0.12)`,
+                }}
+                title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
+              >
+                {cam.code}
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-600">
+                {analyzing ? '…' : '—'}
+              </span>
+            )}
+            {decoding && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 animate-pulse">
+                decoding…
+              </span>
+            )}
+          </div>
+          <select
+            value={entries.find((e) => e.title === trackTitle)?.id ?? ''}
+            onChange={(e) => onLoadId(e.target.value || null)}
+            className="flex-1 min-w-0 bg-black/40 border border-white/10 text-[10px] font-mono text-zinc-200 px-2 py-1 rounded cursor-pointer"
+            title="Load a track onto this deck"
+          >
+            <option value="">— Load track —</option>
+            {entries.map((e) => (
+              <option key={e.id} value={e.id}>{e.title}</option>
+            ))}
+          </select>
         </div>
 
         {/* Deck waveform — wavesurfer preview + beatgrid / playhead / loop /
@@ -732,20 +758,17 @@ const Deck: React.FC<DeckProps> = ({
             const c = cues?.[i] ?? null;
             const set = c != null;
             return (
-              <button
+              <DjPad
                 key={i}
+                on={set}
+                color={deckRgb}
+                disabled={!hasTrack}
                 onClick={() => setHotcue(i)}
                 onContextMenu={(e) => { e.preventDefault(); dropHotcue(i); }}
-                disabled={!hasTrack}
-                className={`py-1 rounded text-[8px] font-black uppercase tracking-wider border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
-                  set
-                    ? `${accentBg} ${accentText} ${accentBorder}`
-                    : 'bg-black/40 border-white/10 text-zinc-600 hover:text-zinc-300 hover:border-white/25'
-                }`}
                 title={set ? `Cue ${i + 1} @ ${fmtTime(c)} — click to jump, right-click to clear` : `Set cue ${i + 1} at the playhead`}
               >
                 {set ? `▶ ${i + 1}` : `○ ${i + 1}`}
-              </button>
+              </DjPad>
             );
           })}
         </div>
@@ -757,89 +780,78 @@ const Deck: React.FC<DeckProps> = ({
             <Repeat className={`w-3 h-3 ${loopActive ? accentText : 'text-zinc-600'}`} />
             <span className="text-[7px] font-mono uppercase text-zinc-600 w-8">Loop</span>
             {BEAT_SIZES.map((b) => (
-              <button
+              <DjPad
                 key={b.beats}
-                onClick={() => toggleBeatLoop(b.beats)}
+                className="flex-1"
+                on={loopActive && activeLoopBeats === b.beats}
+                color={deckRgb}
                 disabled={!hasTrack}
-                className={`flex-1 py-1 rounded text-[8px] font-bold border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
-                  loopActive && activeLoopBeats === b.beats
-                    ? `${accentBg} ${accentText} ${accentBorder}`
-                    : 'bg-black/40 border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25'
-                }`}
+                onClick={() => toggleBeatLoop(b.beats)}
                 title={beatLen ? `${b.label}-beat loop` : `${b.label}-beat loop (~120 BPM until analyzed)`}
               >
                 {b.label}
-              </button>
+              </DjPad>
             ))}
-            <button
-              onClick={() => djEngine.exitLoop(deckId)}
+            <DjPad
+              className="flex-1"
+              danger
               disabled={!loopActive}
-              className="flex-1 py-1 rounded text-[8px] font-black uppercase border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              onClick={() => djEngine.exitLoop(deckId)}
               title="Exit loop"
             >
               Out
-            </button>
+            </DjPad>
           </div>
           <div className="flex items-center gap-1">
             <span className="text-[7px] font-mono uppercase text-zinc-600 w-11 ml-4">Roll</span>
             {ROLL_SIZES.map((b) => (
-              <button
+              <DjPad
                 key={b.beats}
+                className="flex-1"
+                disabled={!hasTrack}
                 onPointerDown={(e) => { e.preventDefault(); rollDown(b.beats); }}
                 onPointerUp={rollUp}
                 onPointerLeave={(e) => { if (e.buttons) rollUp(); }}
-                disabled={!hasTrack}
-                className="flex-1 py-1 rounded text-[8px] font-bold border bg-black/40 border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25 active:bg-white/10 transition-colors disabled:opacity-30 disabled:pointer-events-none select-none"
                 title={beatLen ? `${b.label}-beat loop-roll (hold)` : `${b.label}-beat loop-roll (~120 BPM until analyzed)`}
               >
                 {b.label}
-              </button>
+              </DjPad>
             ))}
-            <button
-              onClick={() => djEngine.setSlip(deckId, !slip)}
+            <DjPad
+              className="flex-1"
+              on={slip}
+              color={[245, 158, 11]}
               disabled={!hasTrack}
-              className={`flex-1 py-1 rounded text-[8px] font-black uppercase tracking-wider border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
-                slip
-                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                  : 'bg-black/40 border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25'
-              }`}
+              onClick={() => djEngine.setSlip(deckId, !slip)}
               title="Slip mode — on loop/roll exit, jump to where playback would be"
             >
               Slip
-            </button>
+            </DjPad>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onPlay}
-            className={`p-2 rounded ${isPlaying ? 'bg-red-500/20 text-red-300 border border-red-500/40' : `${accentBg} ${accentText} border ${accentBorder}`}`}
-          >
-            {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-          </button>
-          <button
-            onClick={onSync}
-            disabled={!canSync}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded text-[9px] font-black uppercase tracking-widest border transition-colors disabled:opacity-30 disabled:pointer-events-none ${accentBg} ${accentText} ${accentBorder} hover:brightness-125`}
-            title={canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}
-          >
-            <Link2 className="w-3 h-3" /> Sync
-          </button>
-          <div className="flex-1 text-[10px] font-mono text-zinc-400 truncate text-right">{trackTitle}</div>
-        </div>
-
-        {/* EQ */}
-        <div className="grid grid-cols-3 gap-1 mt-1">
-          {([['low', eqLow], ['mid', eqMid], ['high', eqHigh]] as const).map(([band, value]) => (
-            <div key={band} className="flex flex-col items-center gap-0.5">
-              <input
-                type="range" min={-12} max={12} step={0.5} value={value}
-                onChange={(e) => onEq(band, parseFloat(e.target.value))}
-                className={`w-full h-1 cursor-col-resize ${accentAcc}`}
-                title={`${band.toUpperCase()} ${value} dB`}
-              />
-              <span className="text-[7px] font-mono uppercase text-zinc-600">{band}</span>
-              <span className="text-[8px] font-mono text-zinc-400">{value.toFixed(1)}</span>
+        {/* EQ — compact horizontal sliders (center = 0 dB, fill grows from
+            center). Sliders take far less room than knobs. */}
+        <div className="flex flex-col gap-1 mt-1">
+          {([['HI', eqHigh, 'high'], ['MID', eqMid, 'mid'], ['LO', eqLow, 'low']] as const).map(([label, value, band]) => (
+            <div key={band} className="flex items-center gap-2">
+              <span className="text-[7px] font-mono uppercase text-zinc-600 w-5 shrink-0">{label}</span>
+              <div className="flex-1">
+                <DjFader
+                  value={value}
+                  min={-12}
+                  max={12}
+                  defaultValue={0}
+                  center
+                  color={deckRgb}
+                  onChange={(v) => onEq(band, v)}
+                  ariaLabel={`${label} EQ`}
+                  title={`${label} EQ (dB) — double-click to reset`}
+                />
+              </div>
+              <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums shrink-0">
+                {value >= 0 ? '+' : ''}{value.toFixed(0)}
+              </span>
             </div>
           ))}
         </div>
@@ -848,13 +860,19 @@ const Deck: React.FC<DeckProps> = ({
             fader; the BPM readout shows the live effective tempo. */}
         <div className="flex items-center gap-2">
           <span className="text-[7px] font-mono uppercase text-zinc-600 shrink-0">Pitch</span>
-          <input
-            type="range" min={-50} max={50} step={0.1} value={pitch}
-            onChange={(e) => onPitch(parseFloat(e.target.value))}
-            className={`flex-1 h-1 cursor-col-resize ${accentAcc}`}
-            title="Tempo/pitch (coupled until key-lock). Double-click handle to reset."
-            onDoubleClick={() => onPitch(0)}
-          />
+          <div className="flex-1">
+            <DjFader
+              value={pitch}
+              min={-50}
+              max={50}
+              defaultValue={0}
+              center
+              color={deckRgb}
+              onChange={(v) => onPitch(v)}
+              ariaLabel="Pitch"
+              title="Tempo/pitch (coupled until key-lock) — double-click to reset"
+            />
+          </div>
           <span className={`text-[9px] font-mono w-10 text-right ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
           {bpm != null && (
             <span className="text-[9px] font-mono w-14 text-right text-zinc-300 tabular-nums" title="Effective BPM (base × pitch)">

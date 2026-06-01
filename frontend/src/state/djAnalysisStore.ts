@@ -40,16 +40,55 @@ interface DjAnalysisState {
   /** Fetch; if pending/unknown, kick off a /run and store the result. Safe to
    *  call repeatedly — in-flight + ready entries are skipped. */
   ensureAnalyzed: (entryId: string) => Promise<void>;
-  /** Background sweep: ensure every given entry is analyzed, one at a time
-   *  (gentle on the backend + a 6 GB machine). Already-analyzed/running/errored
-   *  entries are skipped; only one sweep runs at a time. */
+  /** Queue entries for background analysis (gentle, one at a time). Thin
+   *  wrapper over the shared queue so existing callers keep working. */
   analyzeAll: (entryIds: string[]) => Promise<void>;
   /** Selector helper. */
   get: (entryId: string | null) => Entry | null;
 }
 
-// Module-level guard so a sweep doesn't stack up across re-renders / remounts.
-let sweepRunning = false;
+// Shared single-consumer queue: every "analyze this" path (DJ-tab sweep,
+// deck load, add-to-setlist/VJ) funnels here so analysis runs ONE track at a
+// time — gentle on the backend's foreground analysis + a 6 GB machine — and
+// never double-runs the same entry.
+const _queue: string[] = [];
+const _queued = new Set<string>();
+let _processing = false;
+
+async function _processQueue(): Promise<void> {
+  if (_processing) return;
+  _processing = true;
+  try {
+    while (_queue.length) {
+      const id = _queue.shift()!;
+      _queued.delete(id);
+      const cur = useDjAnalysisStore.getState().byId[id];
+      // Skip anything already resolved or in flight (don't re-hammer errors).
+      if (cur && (cur.status === 'ready' || cur.status === 'running' || cur.status === 'error')) continue;
+      await useDjAnalysisStore.getState().ensureAnalyzed(id);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  } finally {
+    _processing = false;
+  }
+}
+
+/**
+ * Queue one or more library entries for immediate background analysis. Safe to
+ * call from anywhere (stores, buses) — null/dupe/already-analyzed ids are
+ * dropped. This is what makes "anything added to DJ / VJ / a setlist gets
+ * analyzed" hold without each call site spiking the backend.
+ */
+export function analyzeEntries(ids: Array<string | null | undefined>): void {
+  for (const id of ids) {
+    if (!id || _queued.has(id)) continue;
+    const cur = useDjAnalysisStore.getState().byId[id];
+    if (cur && (cur.status === 'ready' || cur.status === 'running')) continue;
+    _queued.add(id);
+    _queue.push(id);
+  }
+  void _processQueue();
+}
 
 function pickFields(raw: Record<string, unknown>): DjAnalysis {
   const num = (v: unknown): number | null =>
@@ -115,22 +154,7 @@ export const useDjAnalysisStore = create<DjAnalysisState>()((set, get) => ({
     }
   },
 
-  analyzeAll: async (entryIds) => {
-    if (sweepRunning) return;
-    sweepRunning = true;
-    try {
-      for (const id of entryIds) {
-        const cur = get().byId[id];
-        // Skip anything already resolved or in flight (don't re-hammer errors).
-        if (cur && (cur.status === 'ready' || cur.status === 'running' || cur.status === 'error')) continue;
-        await get().ensureAnalyzed(id);
-        // Small gap so the foreground backend analysis + UI stay responsive.
-        await new Promise((r) => setTimeout(r, 80));
-      }
-    } finally {
-      sweepRunning = false;
-    }
-  },
+  analyzeAll: async (entryIds) => { analyzeEntries(entryIds); },
 
   get: (entryId) => (entryId ? get().byId[entryId] ?? null : null),
 }));

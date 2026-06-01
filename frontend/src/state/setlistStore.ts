@@ -10,6 +10,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { analyzeEntries } from './djAnalysisStore';
 
 export interface SetlistEntry {
   /** Library entry id, or null for an ad-hoc URL/label (e.g. VJ
@@ -91,26 +92,32 @@ export const useSetlistStore = create<SetlistState>()(
         const { [id]: _, ...rest } = s.setlists;
         return { setlists: rest, activeId: s.activeId === id ? null : s.activeId };
       }),
-      setEntries: (id, entries) => set((s) => {
-        const cur = s.setlists[id];
-        if (!cur) return s;
-        return {
-          setlists: {
-            ...s.setlists,
-            [id]: { ...cur, entries, updatedAt: Date.now() },
-          },
-        };
-      }),
-      append: (id, entries) => set((s) => {
-        const cur = s.setlists[id];
-        if (!cur) return s;
-        return {
-          setlists: {
-            ...s.setlists,
-            [id]: { ...cur, entries: [...cur.entries, ...entries], updatedAt: Date.now() },
-          },
-        };
-      }),
+      setEntries: (id, entries) => {
+        analyzeEntries(entries.map((e) => e.entryId)); // keep set tracks analyzed
+        set((s) => {
+          const cur = s.setlists[id];
+          if (!cur) return s;
+          return {
+            setlists: {
+              ...s.setlists,
+              [id]: { ...cur, entries, updatedAt: Date.now() },
+            },
+          };
+        });
+      },
+      append: (id, entries) => {
+        analyzeEntries(entries.map((e) => e.entryId)); // analyze added tracks now
+        set((s) => {
+          const cur = s.setlists[id];
+          if (!cur) return s;
+          return {
+            setlists: {
+              ...s.setlists,
+              [id]: { ...cur, entries: [...cur.entries, ...entries], updatedAt: Date.now() },
+            },
+          };
+        });
+      },
       setActive: (id) => set({ activeId: id }),
       setNotes: (id, notes) => set((s) => {
         const cur = s.setlists[id];
