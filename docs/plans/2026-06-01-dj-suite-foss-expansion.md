@@ -332,6 +332,62 @@ Tailwind v4 class forms; no AI commit trailers.
 
 ---
 
+## 7a. Controller recognition — the three tiers (built + planned)
+
+MIDI exposes **no** standard way to read a device's physical layout from
+firmware — Web MIDI gives only `input.name`/`manufacturer` strings. (MIDI 2.0
+Property Exchange could, but no browser exposes it and almost no gear
+implements it.) So recognition is layered, weakest assumption last:
+
+- **Tier 1 — Library match (DONE, commit 9765611).** ~110 profiles across every
+  major + niche vendor, scored by longest name match, with per-vendor fallbacks
+  and generics. Instant, zero-interaction for recognized gear.
+- **Tier 2 — Learn / capture (DONE, commit 9765611).** Universal: wiggle/press
+  each control once; we build the EXACT layout + mapping from what the device
+  actually sends. Covers any custom/combined rig (incl. the 92-control setup).
+- **Tier 3 — CV-inferred layout (PLANNED, user idea 2026-06-01).** Once a device
+  is name-identified (Tier 1) or partially verified, optionally **fetch a product
+  image + text** and infer the spatial layout by computer vision, then present a
+  pre-built, photo-accurate surface for the user to confirm. Goal: a surface that
+  *looks like the real device*, not just the right control counts.
+
+### Tier 3 design (FOSS, opt-in, evidence-gated — to spec before building)
+Flow: identify device → **background image/text search** (only when Tier 1 gives
+a confident vendor+model, or the user types/confirms a model) → fetch candidate
+product image(s) + manual/spec text → **CV layout inference** (detect knobs =
+circles/Hough, faders = elongated tracks, pads = grid of rounded rects; OCR any
+labels; cross-check counts against the manual text and against Tier-2 capture if
+present) → build a positioned layout (x/y/kind per control) → **user verifies**
+in a confirm step (accept / nudge / fall back to Tier-1 grid) → save as a
+profile (extends ControllerProfile with optional per-control x/y + image).
+
+Honesty / guardrails (must hold):
+- **Opt-in + confidence-gated.** Only runs when the user asks or a match is
+  high-confidence; never auto-fires on every connect. "100% positive" = a
+  product page / manual with a matching model string AND CV control-count that
+  agrees with the manual (and Tier-2 capture if available) — otherwise we fall
+  back to the Tier-1/Tier-2 layout and say so. No silent guessing.
+- **FOSS only.** CV via a FOSS stack — OpenCV (Apache-2.0) / ONNX models, or a
+  small detector — run in the **backend** (it already hosts torch/cv-capable
+  Python) as a new module under `backend/modules/`, not a paid vision API.
+- **Image search is the open question.** A truly FOSS, ToS-clean image+text
+  source needs a decision: Wikimedia/Wikipedia API + manufacturer spec pages,
+  a user-supplied photo (snap your device → CV the photo, zero search), or an
+  optional user-provided search key. **This is a YOUR-CALL item** (sourcing +
+  licensing), so it's flagged below, not assumed.
+- **Mapping still comes from MIDI**, not the picture — CV places controls
+  spatially; Tier-2 capture (or MIDI-learn) binds them to real CC/notes. CV
+  makes it *look* right; MIDI makes it *work* right.
+
+Sequenced as **D6.5 / its own track** (after the core performance loop), since
+it's a backend CV module + a new confirm UI, not on the audio critical path.
+
+**Added open decision (YOUR call):** Tier-3 image/text source — Wikimedia +
+manufacturer pages, user-supplied device photo (no search), or an optional
+search-API key. Pick the sourcing model before we build the CV module.
+
+---
+
 ## 8. Verification approach (per phase)
 
 - Each phase: `tsc -b` + `vite build` clean (both apps if VJ touched); `uv run
