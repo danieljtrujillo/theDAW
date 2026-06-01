@@ -454,10 +454,11 @@ async def identify_with_vision_llm(
     parsed = _parse_vision_json(text)
     if parsed is None:
         return {
-            "available": True,
+            "available": False,
             "error": "model did not return parseable JSON",
             "used": f"{provider_id}/{model}",
             "raw": text[:500],
+            "counts": {"knob": 0, "fader": 0, "pad": 0},
         }
 
     def _int(v: Any) -> int:
