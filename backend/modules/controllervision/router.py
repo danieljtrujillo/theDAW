@@ -203,7 +203,8 @@ async def upload_from_phone(
     finally:
         _gate("controllervision-detect", False)
     result["source"] = "phone"
-    pairing.set_result(sid, result)
+    if not pairing.set_result(sid, result):
+        raise HTTPException(404, "session not found or expired")
     return {
         "ok": bool(result.get("available")),
         "counts": result.get("counts", {}),
