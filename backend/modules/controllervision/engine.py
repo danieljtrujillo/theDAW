@@ -258,3 +258,224 @@ async def fetch_image_bytes(url: str) -> bytes:
         r = await client.get(url)
         r.raise_for_status()
         return r.content
+
+
+# ── AI vision identification (uses the Orb Assistant's providers/keys) ───────
+#
+# Classical CV is approximate. The far more accurate path — and the one the user
+# asked for — is to send the photo to a VISION LLM (the user already has keys in
+# the Orb Assistant) and ask it to IDENTIFY the device (brand/model) and return
+# its control layout as strict JSON. We auto-pick a vision-capable provider that
+# has a working key, reusing the assistant's PROVIDERS / key resolution so we
+# never duplicate auth or model catalogs. The result is still user-verified, and
+# the brand/model is cross-checked against our built-in library client-side.
+
+# Vision-capable model per provider (cheap-but-capable default). Kept minimal +
+# current; we do NOT touch the assistant's catalogs. If a provider's listed
+# model is unavailable the call simply errors and we surface that.
+_VISION_PICKS: list[tuple[str, str]] = [
+    ("gemini", "gemini-flash-latest"),
+    ("anthropic", "claude-sonnet-4-6"),
+    ("openai", "gpt-4.1-mini"),
+    ("grok", "grok-3"),
+    ("openrouter", "google/gemini-flash-1.5"),
+]
+
+_VISION_PROMPT = (
+    "You are identifying a MIDI controller from a photo. Respond with ONLY a JSON "
+    "object, no prose, no markdown fences. Schema:\n"
+    '{"brand": string|null, "model": string|null, "confidence": number 0..1, '
+    '"knobs": integer, "faders": integer, "pads": integer, '
+    '"notes": string}\n'
+    "Count the PHYSICAL controls you can see: rotary knobs/encoders = knobs; "
+    "linear sliders = faders; square/rectangular trigger buttons or pads = pads. "
+    "If you recognize the exact product, give brand + model precisely. If unsure "
+    "of the model, still return your best control counts and set confidence low."
+)
+
+
+def pick_vision_provider() -> Optional[tuple[str, str]]:
+    """Return (provider_id, model) for the first vision pick that has a working
+    key, or None when no provider is configured. Reuses the assistant's key pool
+    + env-var resolution (no duplicate key storage)."""
+    try:
+        from backend.assistant_routes import _get_api_key
+    except Exception:
+        return None
+    for provider_id, model in _VISION_PICKS:
+        try:
+            if _get_api_key(provider_id):
+                return (provider_id, model)
+        except Exception:
+            continue
+    return None
+
+
+def _parse_vision_json(text: str) -> Optional[dict[str, Any]]:
+    """Pull a JSON object out of a model reply (tolerates stray prose / fences)."""
+    import json
+    import re
+
+    if not text:
+        return None
+    # Strip ```json fences if present.
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    raw = fenced.group(1) if fenced else None
+    if raw is None:
+        # else first {...} balanced-ish span
+        start = text.find("{")
+        end = text.rfind("}")
+        raw = text[start : end + 1] if start != -1 and end > start else None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+async def identify_with_vision_llm(
+    image_bytes: bytes, mime: str = "image/jpeg"
+) -> dict[str, Any]:
+    """Send the photo to a vision LLM and parse an identify+layout JSON result.
+
+    Returns ``{available, used (provider/model), brand, model, confidence,
+    counts:{knob,fader,pad}, notes}`` or ``{available:false, error}``. Honest:
+    this is the model's best read — the UI still has the user confirm, and the
+    brand/model is cross-checked against the library on the client.
+    """
+    import base64
+
+    pick = pick_vision_provider()
+    if pick is None:
+        return {
+            "available": False,
+            "error": "no vision-capable provider has a key (add one in the Assistant)",
+        }
+    provider_id, model = pick
+
+    try:
+        from backend.assistant_routes import PROVIDERS, _chat_url, _get_api_key
+    except Exception as e:
+        return {"available": False, "error": f"assistant unavailable: {e}"}
+
+    api_key = _get_api_key(provider_id)
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+
+    import httpx
+
+    try:
+        if provider_id == "anthropic":
+            url = f"{PROVIDERS['anthropic']['base_url']}/v1/messages"
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": model,
+                "max_tokens": 600,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": _VISION_PROMPT},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": mime,
+                                    "data": b64,
+                                },
+                            },
+                        ],
+                    }
+                ],
+            }
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(60.0, connect=10.0)
+            ) as client:
+                r = await client.post(url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                text = "".join(
+                    blk.get("text", "")
+                    for blk in data.get("content", [])
+                    if blk.get("type") == "text"
+                )
+        else:
+            # OpenAI-compatible (gemini/openai/grok/openrouter) multimodal content.
+            url = _chat_url(provider_id)
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": _VISION_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            }
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(60.0, connect=10.0)
+            ) as client:
+                r = await client.post(url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                text = (((data.get("choices") or [{}])[0]).get("message") or {}).get(
+                    "content"
+                ) or ""
+                if isinstance(text, list):  # some providers return content parts
+                    text = "".join(
+                        p.get("text", "") for p in text if isinstance(p, dict)
+                    )
+    except Exception as e:
+        log.info(
+            "controllervision: vision LLM call failed (%s/%s): %s",
+            provider_id,
+            model,
+            e,
+        )
+        return {
+            "available": False,
+            "error": f"vision call failed: {e}",
+            "used": f"{provider_id}/{model}",
+        }
+
+    parsed = _parse_vision_json(text)
+    if parsed is None:
+        return {
+            "available": True,
+            "error": "model did not return parseable JSON",
+            "used": f"{provider_id}/{model}",
+            "raw": text[:500],
+        }
+
+    def _int(v: Any) -> int:
+        try:
+            return max(0, int(v))
+        except Exception:
+            return 0
+
+    return {
+        "available": True,
+        "used": f"{provider_id}/{model}",
+        "brand": parsed.get("brand"),
+        "model": parsed.get("model"),
+        "confidence": parsed.get("confidence"),
+        "notes": parsed.get("notes"),
+        "counts": {
+            "knob": _int(parsed.get("knobs")),
+            "fader": _int(parsed.get("faders")),
+            "pad": _int(parsed.get("pads")),
+        },
+    }

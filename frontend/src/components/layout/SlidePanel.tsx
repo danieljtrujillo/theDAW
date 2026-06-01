@@ -21,7 +21,7 @@
  * control-sync bus + the VJ iframe for real-time two-way sync.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Rows3, Crosshair, LayoutGrid, RotateCcw, ChevronLeft, ChevronRight, Plus, Settings2, X, Trash2, Film, Target, Wand2 } from 'lucide-react';
+import { Rows3, Crosshair, LayoutGrid, RotateCcw, ChevronLeft, ChevronRight, Plus, Settings2, X, Trash2, Film, Target, Wand2, Sliders, Sparkles, Radio, Crosshair as MapPin, Check } from 'lucide-react';
 import './track-controls.css';
 import { TrackFader, TrackKnob, TrackPad } from './TrackControls';
 import {
@@ -565,6 +565,10 @@ export const SlidePanel: React.FC = () => {
   const cancelLearn = useLearnedProfilesStore((s) => s.cancel);
   const commitLearn = useLearnedProfilesStore((s) => s.commit);
   const [cvOpen, setCvOpen] = useState(false);
+  // Controller-view zoom — lets a big device (e.g. a 92-control rig) be seen
+  // whole (zoom out) or a section worked closely (zoom in). 1 = fit.
+  const [ctrlZoom, setCtrlZoom] = useState(1);
+  const clampZoom = (z: number) => Math.max(0.4, Math.min(2, Math.round(z * 20) / 20));
   const setPageNavBinding = useSlideStore((s) => s.setPageNavBinding);
   const swapSlots = useSlideStore((s) => s.swapSlots);
   const resetAssignments = useSlideStore((s) => s.resetAssignments);
@@ -671,6 +675,7 @@ export const SlidePanel: React.FC = () => {
 
   /* ---------------------- controller MAP + MIDI routing ----------------- */
   const mapMode = useControllerMapStore((s) => s.mapMode);
+  const setMapMode = useControllerMapStore((s) => s.setMapMode);
   const learnPos = useControllerMapStore((s) => s.learnPos);
   const autoWalk = useControllerMapStore((s) => s.autoWalk);
 
@@ -836,22 +841,6 @@ export const SlidePanel: React.FC = () => {
           className={`w-1.5 h-1.5 rounded-full ${midiInputs.length > 0 ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-zinc-600'}`}
           title={midiInputs.length > 0 ? `MIDI: ${midiInputs.join(', ')}` : 'No MIDI device connected'}
         />
-        {/* AUTO toggle — when on, the profile follows the connected device. */}
-        <button
-          onClick={() => setAutoDetect(!autoDetect)}
-          className={`px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border transition-colors ${
-            autoDetect
-              ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
-              : 'border-white/12 text-zinc-500 hover:text-zinc-200'
-          }`}
-          title={
-            autoDetect
-              ? `Auto-detect ON${detected ? ` — matched ${detected.name}` : midiInputs.length ? ' — no profile match for connected device' : ' — no device connected'}`
-              : 'Auto-detect OFF — using your manual profile choice'
-          }
-        >
-          Auto
-        </button>
         <label htmlFor="slide-controller-profile" className="sr-only">Controller profile</label>
         <select
           id="slide-controller-profile"
@@ -886,9 +875,9 @@ export const SlidePanel: React.FC = () => {
           })}
         </select>
 
-        {/* Learn-device — capture-build a profile from ANY controller (incl.
-            custom/unlisted rigs). MIDI has no firmware layout query, so we build
-            the exact layout + mapping from what the device actually sends. */}
+        {/* Unified device setup — one button → mode menu (Auto / Identify by
+            AI photo / Learn by wiggling / Manual map). The transient capture
+            state takes over inline while a Learn session is running. */}
         {learnPhase === 'capturing' ? (
           <span className="flex items-center gap-1.5">
             <span className="px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-amber-500/50 bg-amber-500/15 text-amber-200 animate-pulse">
@@ -911,22 +900,15 @@ export const SlidePanel: React.FC = () => {
             </button>
           </span>
         ) : (
-          <span className="flex items-center gap-1">
-            <button
-              onClick={() => { enableMidi(); startLearn(); }}
-              className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-indigo-200 hover:border-indigo-500/40"
-              title="Learn device — wiggle/press every control once, then Done. Builds the exact layout + mapping from your hardware (works for any controller)."
-            >
-              Learn
-            </button>
-            <button
-              onClick={() => setCvOpen(true)}
-              className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-indigo-200 hover:border-indigo-500/40"
-              title="Scan device — build a layout from a product photo (upload or search by name) via computer vision; you verify the result."
-            >
-              Scan
-            </button>
-          </span>
+          <DeviceSetupMenu
+            autoDetect={autoDetect}
+            detectedName={detected?.name ?? null}
+            hasDevice={midiInputs.length > 0}
+            onToggleAuto={() => setAutoDetect(!autoDetect)}
+            onIdentify={() => setCvOpen(true)}
+            onLearn={() => { enableMidi(); startLearn(); }}
+            onMap={() => { setView('controller'); setBank(0); setMapMode(true); }}
+          />
         )}
 
         <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-wider">
@@ -998,23 +980,36 @@ export const SlidePanel: React.FC = () => {
       </div>
 
       {/* surface */}
-      <div className="flex-1 min-h-0 overflow-auto p-3">
+      <div className="flex-1 min-h-0 overflow-auto p-3 relative">
         {view === 'controller' ? (
-          <ControllerView
-            profile={profile}
-            content={content}
-            bank={bank}
-            deviceSize={deviceSize}
-            pageCount={pageCount}
-            pageColor={pageColor}
-            resolve={resolve}
-            onDropItem={onDropItem}
-            onPickPage={setBank}
-            profileId={profileId}
-            mapMode={mapMode}
-            learnPos={learnPos}
-            autoWalk={autoWalk}
-          />
+          // Controller view is CENTERED and ZOOMABLE so a whole device (even a
+          // big custom rig) fits, or a section can be worked up close.
+          <>
+            <div className="absolute top-2 right-2 z-20 flex items-center gap-1 rounded-md border border-white/12 bg-black/60 backdrop-blur px-1 py-0.5">
+              <button onClick={() => setCtrlZoom((z) => clampZoom(z - 0.1))} className="px-1.5 py-0.5 text-zinc-300 hover:text-white text-[11px]" title="Zoom out">−</button>
+              <button onClick={() => setCtrlZoom(1)} className="px-1.5 py-0.5 text-[8px] font-mono text-zinc-400 hover:text-white tabular-nums" title="Reset zoom (fit)">{Math.round(ctrlZoom * 100)}%</button>
+              <button onClick={() => setCtrlZoom((z) => clampZoom(z + 0.1))} className="px-1.5 py-0.5 text-zinc-300 hover:text-white text-[11px]" title="Zoom in">+</button>
+            </div>
+            <div className="min-h-full flex items-start justify-center">
+              <div style={{ transform: `scale(${ctrlZoom})`, transformOrigin: 'top center', transition: 'transform 0.12s ease' }}>
+                <ControllerView
+                  profile={profile}
+                  content={content}
+                  bank={bank}
+                  deviceSize={deviceSize}
+                  pageCount={pageCount}
+                  pageColor={pageColor}
+                  resolve={resolve}
+                  onDropItem={onDropItem}
+                  onPickPage={setBank}
+                  profileId={profileId}
+                  mapMode={mapMode}
+                  learnPos={learnPos}
+                  autoWalk={autoWalk}
+                />
+              </div>
+            </div>
+          </>
         ) : view === 'focus' ? (
           <FocusStrip
             content={content}
@@ -1084,6 +1079,77 @@ const RowView: React.FC<{
         })}
       </div>
       <PageLight count={pageCount} active={bank} color={pageColor} onPick={onPickPage} />
+    </div>
+  );
+};
+
+/* ---- Unified device-setup menu (one button → the 4 ways to set up a device) ---- */
+const DeviceSetupMenu: React.FC<{
+  autoDetect: boolean;
+  detectedName: string | null;
+  hasDevice: boolean;
+  onToggleAuto: () => void;
+  onIdentify: () => void;
+  onLearn: () => void;
+  onMap: () => void;
+}> = ({ autoDetect, detectedName, hasDevice, onToggleAuto, onIdentify, onLearn, onMap }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener('mousedown', onDoc);
+    return () => window.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const item = 'w-full flex items-start gap-2 px-2.5 py-2 text-left hover:bg-white/5 transition-colors';
+  const close = (fn: () => void) => () => { fn(); setOpen(false); };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-300 hover:text-indigo-200 hover:border-indigo-500/40 flex items-center gap-1"
+        title="Set up your controller — auto-detect, identify by photo, learn by wiggling, or map manually"
+      >
+        <Sliders className="w-3 h-3" /> Set up device
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full mt-1 left-0 w-64 rounded-lg border border-white/12 bg-[#0c0a14] shadow-2xl overflow-hidden">
+          <button onClick={close(onToggleAuto)} className={item}>
+            <Radio className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${autoDetect ? 'text-emerald-300' : 'text-zinc-500'}`} />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5 text-[10px] font-bold text-zinc-100">
+                Auto-detect {autoDetect && <Check className="w-3 h-3 text-emerald-300" />}
+              </span>
+              <span className="block text-[8px] text-zinc-500">
+                {autoDetect ? (detectedName ? `On — matched ${detectedName}` : hasDevice ? 'On — no match for connected device' : 'On — waiting for a device') : 'Match a profile from the connected device name'}
+              </span>
+            </span>
+          </button>
+          <button onClick={close(onIdentify)} className={item}>
+            <Sparkles className="w-3.5 h-3.5 mt-0.5 shrink-0 text-indigo-300" />
+            <span className="min-w-0">
+              <span className="block text-[10px] font-bold text-zinc-100">Identify by photo (AI)</span>
+              <span className="block text-[8px] text-zinc-500">Snap/upload a photo — AI names it + builds the layout. Most accurate.</span>
+            </span>
+          </button>
+          <button onClick={close(onLearn)} className={item}>
+            <Wand2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-300" />
+            <span className="min-w-0">
+              <span className="block text-[10px] font-bold text-zinc-100">Learn by wiggling</span>
+              <span className="block text-[8px] text-zinc-500">Move each control once — builds the exact layout + mapping from your hardware.</span>
+            </span>
+          </button>
+          <button onClick={close(onMap)} className={item}>
+            <MapPin className="w-3.5 h-3.5 mt-0.5 shrink-0 text-cyan-300" />
+            <span className="min-w-0">
+              <span className="block text-[10px] font-bold text-zinc-100">Map manually</span>
+              <span className="block text-[8px] text-zinc-500">Controller view: click a slot, then move its control to bind it.</span>
+            </span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

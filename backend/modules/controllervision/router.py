@@ -26,6 +26,8 @@ from .engine import (
     cv_available,
     detect_controls_in_image,
     fetch_image_bytes,
+    identify_with_vision_llm,
+    pick_vision_provider,
     search_wikimedia_image,
 )
 
@@ -39,12 +41,37 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
 @router.get("")
 @router.get("/")
 def capabilities() -> dict[str, Any]:
+    pick = pick_vision_provider()
     return {
         "ok": True,
         "available": cv_available(),
         "engine": "opencv (classical: hough circles + contour shape)",
-        "note": "install opencv-python-headless to enable; mapping still comes from MIDI",
+        # AI identification via a vision LLM (uses the Assistant's keys). This is
+        # the accurate path; classical CV is the no-key fallback.
+        "ai_available": pick is not None,
+        "ai_provider": (f"{pick[0]}/{pick[1]}" if pick else None),
+        "note": "AI identify uses your Assistant keys; classical CV needs opencv; mapping still comes from MIDI",
     }
+
+
+@router.post("/identify")
+async def ai_identify(image_file: UploadFile = File(...)) -> dict[str, Any]:
+    """Identify a controller from an uploaded photo using a VISION LLM (the
+    accurate path the user asked for). Returns brand/model + control counts; the
+    UI verifies + cross-checks the model name against the built-in library."""
+    image_bytes = await image_file.read()
+    if not image_bytes:
+        raise HTTPException(400, "empty image")
+    if len(image_bytes) > _MAX_IMAGE_BYTES:
+        raise HTTPException(413, "image exceeds 20 MB")
+    mime = image_file.content_type or "image/jpeg"
+    _gate("controllervision-identify", True)
+    try:
+        result = await identify_with_vision_llm(image_bytes, mime=mime)
+    finally:
+        _gate("controllervision-identify", False)
+    result["source"] = "upload"
+    return result
 
 
 def _gate(tag: str, acquire: bool) -> None:
@@ -148,26 +175,41 @@ def poll_pairing_session(sid: str) -> dict[str, Any]:
 async def upload_from_phone(
     sid: str, image_file: UploadFile = File(...)
 ) -> dict[str, Any]:
-    """Phone posts the controller photo here; we run CV and stash the result on
-    the session for the desktop to pick up."""
+    """Phone posts the controller photo here; we identify it (AI vision LLM if a
+    key is available, else classical CV) and stash the result for the desktop."""
     if not pairing.session_exists(sid):
         raise HTTPException(404, "session not found or expired")
-    if not cv_available():
-        raise HTTPException(503, "OpenCV not installed")
     image_bytes = await image_file.read()
     if not image_bytes:
         raise HTTPException(400, "empty image")
     if len(image_bytes) > _MAX_IMAGE_BYTES:
         raise HTTPException(413, "image exceeds 20 MB")
+    mime = image_file.content_type or "image/jpeg"
 
     _gate("controllervision-detect", True)
     try:
-        result = detect_controls_in_image(image_bytes)
+        # Prefer AI identification (accurate, gives brand/model); fall back to
+        # classical CV when no vision key is configured.
+        if pick_vision_provider() is not None:
+            result = await identify_with_vision_llm(image_bytes, mime=mime)
+            if not result.get("available"):
+                # AI failed at runtime — try CV as a backstop.
+                if cv_available():
+                    result = detect_controls_in_image(image_bytes)
+        elif cv_available():
+            result = detect_controls_in_image(image_bytes)
+        else:
+            result = {"available": False, "error": "no AI key and OpenCV not installed"}
     finally:
         _gate("controllervision-detect", False)
     result["source"] = "phone"
     pairing.set_result(sid, result)
-    return {"ok": True, "counts": result.get("counts", {})}
+    return {
+        "ok": bool(result.get("available")),
+        "counts": result.get("counts", {}),
+        "brand": result.get("brand"),
+        "model": result.get("model"),
+    }
 
 
 _MOBILE_PAGE = """<!doctype html>
@@ -213,7 +255,8 @@ _MOBILE_PAGE = """<!doctype html>
       .then(function(j) {{
         var c = j.counts || {{}};
         st.className = 'ok';
-        st.textContent = 'Sent! Detected ' + (c.knob||0) + ' knobs, ' + (c.fader||0) + ' faders, ' + (c.pad||0) + ' pads. Back to your computer to confirm.';
+        var who = (j.brand || j.model) ? ((j.brand ? j.brand + ' ' : '') + (j.model || '')).trim() + ' — ' : '';
+        st.textContent = 'Sent! ' + who + (c.knob||0) + ' knobs, ' + (c.fader||0) + ' faders, ' + (c.pad||0) + ' pads. Back to your computer to confirm.';
       }})
       .catch(function(e) {{ st.className = 'err'; st.textContent = 'Upload failed: ' + e.message; }});
   }});

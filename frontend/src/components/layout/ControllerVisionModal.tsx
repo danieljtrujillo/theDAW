@@ -14,12 +14,13 @@
  * the actual binding.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { ScanLine, Upload, Search, X, Check, AlertTriangle, Smartphone } from 'lucide-react';
+import { ScanLine, Upload, Search, X, Check, AlertTriangle, Smartphone, Sparkles } from 'lucide-react';
 import {
-  detectFromUpload, detectByName, cvCapabilities,
-  createPhoneSession, lanIp, pollPhoneSession, type CvResult,
+  detectFromUpload, detectByName, identifyWithAi, cvCapabilities,
+  createPhoneSession, lanIp, pollPhoneSession, type CvResult, type CvIdentifyResult,
 } from '../../lib/controllerVision';
 import { useLearnedProfilesStore } from '../../state/learnedProfilesStore';
+import { detectProfile } from '../../state/controllerProfiles';
 
 const BACKEND_PORT = 8600; // theDAW FastAPI — serves the mobile upload page
 
@@ -39,21 +40,26 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
   const buildFromCounts = useLearnedProfilesStore((s) => s.buildFromCounts);
 
   const [available, setAvailable] = useState<boolean | null>(null);
+  const [aiAvailable, setAiAvailable] = useState<boolean>(false);
+  const [aiProvider, setAiProvider] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<CvResult | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [name, setName] = useState('');
+  // What the AI identified (brand/model) + whether our library has a match.
+  const [identified, setIdentified] = useState<{ brand?: string | null; model?: string | null; used?: string; libraryMatch?: string | null } | null>(null);
   // Editable counts (the user-verify step).
   const [counts, setCounts] = useState<{ knob: number; fader: number; pad: number }>({ knob: 0, fader: 0, pad: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
-  // Phone pairing (source #3): QR → phone upload → poll.
+  const aiFileRef = useRef<HTMLInputElement>(null);
+  // Phone pairing: QR → phone upload → poll.
   const [phoneUrl, setPhoneUrl] = useState<string | null>(null);
   const [phoneWaiting, setPhoneWaiting] = useState(false);
   const phonePoll = useRef<number | null>(null);
 
   useEffect(() => {
-    void cvCapabilities().then((c) => setAvailable(c.available));
+    void cvCapabilities().then((c) => { setAvailable(c.available); setAiAvailable(c.aiAvailable); setAiProvider(c.aiProvider); });
   }, []);
 
   // Revoke object URLs we create for uploaded-photo previews.
@@ -65,6 +71,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
   const applyResult = (res: CvResult, preview: string | null) => {
     setResult(res);
     setPreviewUrl(preview);
+    setIdentified(null);
     setCounts({
       knob: res.counts.knob ?? 0,
       fader: res.counts.fader ?? 0,
@@ -72,6 +79,41 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
     });
   };
 
+  /** Apply a vision-LLM identify result: record brand/model, cross-check the
+   *  built-in library, seed editable counts. */
+  const applyIdentify = (res: CvIdentifyResult, preview: string | null) => {
+    // Cross-check the AI's brand/model against our ~110-profile library.
+    const guess = [res.brand, res.model].filter(Boolean).join(' ').trim();
+    const libHit = guess ? detectProfile(guess) : null;
+    setResult({
+      available: res.available,
+      controls: [],
+      counts: res.counts,
+      source: res.source,
+    } as CvResult);
+    setPreviewUrl(preview);
+    setIdentified({ brand: res.brand, model: res.model, used: res.used, libraryMatch: libHit ? libHit.name : null });
+    setCounts({
+      knob: res.counts.knob ?? 0,
+      fader: res.counts.fader ?? 0,
+      pad: res.counts.pad ?? 0,
+    });
+    if (guess && !name) setName(guess);
+  };
+
+  // AI identify (the accurate path) — vision LLM names the device + counts.
+  const onAiIdentify = async (file: File) => {
+    setErr(null); setBusy(true); setResult(null); setIdentified(null);
+    try {
+      const res = await identifyWithAi(file);
+      if (!res.available) { setErr(res.error || 'AI vision unavailable'); return; }
+      applyIdentify(res, URL.createObjectURL(file));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+
+  // Classical CV upload (no-key fallback / explainable bounding boxes).
   const onUpload = async (file: File) => {
     setErr(null); setBusy(true); setResult(null);
     try {
@@ -150,29 +192,50 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
         </div>
 
         <div className="p-4 space-y-3">
-          {available === false && (
+          {available === false && !aiAvailable && (
             <div className="flex items-start gap-2 p-2 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-200">
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>Computer-vision backend isn’t available (OpenCV not installed). You can still use the <b>Learn</b> capture or pick a library profile.</span>
+              <span>No image analysis available — add a vision-capable API key in the Assistant (for AI identify), or install OpenCV. You can still use <b>Learn</b> or pick a library profile.</span>
             </div>
           )}
 
-          {/* Sources */}
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1.5">
-              <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">1 · Your photo</div>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) void onUpload(f); }} />
+          {/* PRIMARY: AI identify (the accurate path). Upload a photo OR scan
+              with a phone; a vision model names the device + counts controls. */}
+          <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/8 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-indigo-200">
+                <Sparkles className="w-3.5 h-3.5" /> AI identify <span className="text-[8px] font-bold text-indigo-300/70">recommended</span>
+              </div>
+              <span className="text-[8px] font-mono text-zinc-500">{aiAvailable ? (aiProvider ?? 'vision model') : 'no vision key'}</span>
+            </div>
+            <p className="text-[9px] text-zinc-400 leading-relaxed">
+              A vision model identifies your controller (brand + model) and counts its controls — far more accurate than raw shape detection. Uses your Assistant keys.
+            </p>
+            <div className="flex gap-2">
+              <input ref={aiFileRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void onAiIdentify(f); }} />
               <button
-                onClick={() => fileRef.current?.click()}
-                disabled={busy || available === false}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded border border-white/12 text-[10px] font-bold uppercase tracking-wider text-zinc-300 hover:border-indigo-500/40 hover:text-indigo-200 disabled:opacity-40"
+                onClick={() => aiFileRef.current?.click()}
+                disabled={busy || !aiAvailable}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded border border-indigo-500/50 bg-indigo-500/15 text-[10px] font-bold uppercase tracking-wider text-indigo-100 hover:bg-indigo-500/25 disabled:opacity-40"
               >
-                <Upload className="w-3.5 h-3.5" /> Upload
+                <Upload className="w-3.5 h-3.5" /> Upload photo
+              </button>
+              <button
+                onClick={() => void startPhone()}
+                disabled={busy || (!aiAvailable && available === false)}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded border border-indigo-500/50 bg-indigo-500/15 text-[10px] font-bold uppercase tracking-wider text-indigo-100 hover:bg-indigo-500/25 disabled:opacity-40"
+                title="Show a QR — snap the controller photo from your phone over the local network (uses AI if a key is set)"
+              >
+                <Smartphone className="w-3.5 h-3.5" /> Scan with phone
               </button>
             </div>
+          </div>
+
+          {/* SECONDARY: by-name search + raw OpenCV (no-key fallback). */}
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">2 · By name</div>
+              <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">By name (Wikimedia)</div>
               <div className="flex gap-1.5">
                 <input
                   value={name}
@@ -190,17 +253,37 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
               </div>
             </div>
             <div className="space-y-1.5">
-              <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">3 · Scan w/ phone</div>
+              <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">Raw CV (no AI)</div>
+              <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void onUpload(f); }} />
               <button
-                onClick={() => void startPhone()}
+                onClick={() => fileRef.current?.click()}
                 disabled={busy || available === false}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded border border-white/12 text-[10px] font-bold uppercase tracking-wider text-zinc-300 hover:border-indigo-500/40 hover:text-indigo-200 disabled:opacity-40"
-                title="Show a QR — snap the controller photo from your phone over the local network"
+                title="Classical OpenCV shape detection — no API key needed, but approximate"
               >
-                <Smartphone className="w-3.5 h-3.5" /> QR
+                <Upload className="w-3.5 h-3.5" /> Photo
               </button>
             </div>
           </div>
+
+          {/* What the AI identified + library cross-check. */}
+          {identified && (
+            <div className="flex items-start gap-2 p-2 rounded border border-emerald-500/30 bg-emerald-500/8 text-[10px] text-emerald-100">
+              <Sparkles className="w-3.5 h-3.5 mt-0.5 shrink-0 text-emerald-300" />
+              <div className="min-w-0">
+                <div className="font-bold">
+                  {[identified.brand, identified.model].filter(Boolean).join(' ') || 'Device identified'}
+                </div>
+                <div className="text-[9px] text-emerald-200/70">
+                  {identified.used ? `via ${identified.used}` : 'AI vision'}
+                  {identified.libraryMatch
+                    ? ` · matches library profile “${identified.libraryMatch}” (you can pick it instead for an exact layout)`
+                    : ' · not in the built-in library — building from the counts below'}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Phone-pairing QR */}
           {phoneUrl && (

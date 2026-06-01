@@ -41,7 +41,7 @@ export const ModuleSidebar: React.FC = () => {
   const [search, setSearch] = useState('');
 
   return (
-    <div className="flex flex-col h-full bg-[#0d0b16] border-l border-white/5 w-[240px] z-20 shadow-2xl">
+    <div className="flex flex-col h-full bg-[#0d0b16] border-l border-white/5 w-60 z-20 shadow-2xl">
       <div className="p-3 border-b border-white/5 bg-black/20">
         <div className="flex items-center gap-2 mb-3">
           <Database className="w-3.5 h-3.5 text-purple-500" />

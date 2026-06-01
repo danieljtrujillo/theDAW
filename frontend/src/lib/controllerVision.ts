@@ -28,16 +28,41 @@ export interface CvResult {
   descriptionUrl?: string;
 }
 
-/** Is the CV backend available (OpenCV installed)? */
-export async function cvCapabilities(): Promise<{ ok: boolean; available: boolean }> {
+/** AI identify result — brand/model + control counts from a vision LLM. */
+export interface CvIdentifyResult {
+  available: boolean;
+  error?: string;
+  used?: string;          // provider/model that answered
+  brand?: string | null;
+  model?: string | null;
+  confidence?: number | null;
+  notes?: string | null;
+  counts: { knob?: number; fader?: number; pad?: number };
+  source?: string;
+}
+
+/** Backend capabilities: classical CV (OpenCV) + AI vision (Assistant keys). */
+export async function cvCapabilities(): Promise<{ ok: boolean; available: boolean; aiAvailable: boolean; aiProvider: string | null }> {
   try {
     const r = await fetch('/api/controllervision');
-    if (!r.ok) return { ok: false, available: false };
+    if (!r.ok) return { ok: false, available: false, aiAvailable: false, aiProvider: null };
     const j = await r.json();
-    return { ok: !!j.ok, available: !!j.available };
+    return { ok: !!j.ok, available: !!j.available, aiAvailable: !!j.ai_available, aiProvider: j.ai_provider ?? null };
   } catch {
-    return { ok: false, available: false };
+    return { ok: false, available: false, aiAvailable: false, aiProvider: null };
   }
+}
+
+/** Identify a controller from a photo via a vision LLM (the accurate path). */
+export async function identifyWithAi(file: File): Promise<CvIdentifyResult> {
+  const fd = new FormData();
+  fd.append('image_file', file);
+  const r = await fetch('/api/controllervision/identify', { method: 'POST', body: fd });
+  if (!r.ok) {
+    const msg = await r.text().catch(() => r.statusText);
+    throw new Error(`identify failed (${r.status}): ${msg}`);
+  }
+  return (await r.json()) as CvIdentifyResult;
 }
 
 /** Detect controls in a user-supplied photo (source #1). */
