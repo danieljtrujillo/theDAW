@@ -869,19 +869,53 @@ const DeckWaveform: React.FC<{
 
   const accentColor = accent === 'purple' ? '#a855f7' : '#22d3ee';
 
-  const onSeek = (e: React.PointerEvent) => {
+  // Drag-scrubbing — pull the playhead through the track to find a spot instead
+  // of playing from the start and waiting. Seeks are rAF-throttled so a fast
+  // drag doesn't restart the buffer source dozens of times per frame; pointer
+  // capture keeps the drag tracking even when it leaves the lane.
+  const scrubbing = useRef(false);
+  const pendingX = useRef<number | null>(null);
+  const scrubRaf = useRef(0);
+  const applyScrub = () => {
+    scrubRaf.current = 0;
+    const x = pendingX.current;
+    pendingX.current = null;
     const el = containerRef.current;
-    if (!el || dur <= 0) return;
+    if (x == null || !el || dur <= 0) return;
     const rect = el.getBoundingClientRect();
-    djEngine.seekDeck(deckId, clamp01((e.clientX - rect.left) / rect.width) * dur);
+    djEngine.seekDeck(deckId, clamp01((x - rect.left) / rect.width) * dur);
   };
+  const queueScrub = (clientX: number) => {
+    pendingX.current = clientX;
+    if (!scrubRaf.current) scrubRaf.current = requestAnimationFrame(applyScrub);
+  };
+  const onScrubDown = (e: React.PointerEvent) => {
+    if (dur <= 0) return;
+    scrubbing.current = true;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    queueScrub(e.clientX);
+  };
+  const onScrubMove = (e: React.PointerEvent) => { if (scrubbing.current) queueScrub(e.clientX); };
+  const onScrubUp = (e: React.PointerEvent) => {
+    scrubbing.current = false;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
+  useEffect(() => () => { if (scrubRaf.current) cancelAnimationFrame(scrubRaf.current); }, []);
 
   return (
     <div ref={containerRef} className="relative">
       <WaveformPreview audioUrl={audioUrl} height={48} />
 
-      {/* Seek catcher — above the canvas so clicks drive our engine. */}
-      <div className="absolute inset-0 cursor-col-resize" onPointerDown={onSeek} title="Click to seek" />
+      {/* Scrub catcher — above the canvas so seeks drive our engine, not
+          wavesurfer's own cursor. Drag to scrub, click to jump. */}
+      <div
+        className="absolute inset-0 cursor-ew-resize"
+        onPointerDown={onScrubDown}
+        onPointerMove={onScrubMove}
+        onPointerUp={onScrubUp}
+        onPointerCancel={onScrubUp}
+        title="Drag to scrub · click to seek"
+      />
 
       {/* Beatgrid */}
       {beatMarks && (
