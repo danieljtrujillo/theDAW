@@ -19,6 +19,8 @@
  * coherent regardless of tab order.
  */
 
+import { analyzeEntries } from './djAnalysisStore';
+
 export interface VjSetItem {
   /** Library entry id (or null for ad-hoc URL entries). */
   entryId: string | null;
@@ -69,6 +71,8 @@ export function isVjSetTargetActive(): boolean {
 
 /** Send a whole SET to the VJ performance. Buffered if VJ is closed. */
 export function sendSetToVj(payload: VjSetPayload): void {
+  // Anything pushed to VJ should carry BPM/key/beatgrid — analyze on the way.
+  analyzeEntries(payload.items.map((i) => i.entryId));
   for (const cb of listeners) cb(payload);
   if (handler) handler.loadSet(payload);
   else pending = payload;
