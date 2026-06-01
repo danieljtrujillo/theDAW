@@ -203,9 +203,9 @@ export const useLearnedProfilesStore = create<LearnedProfilesState>()(
         // No bindings — the photo gives layout, not which CC/note each control
         // sends. A later capture/MIDI-learn pass fills the map.
         const learned: LearnedProfile = { profile, bindings: {} };
-        set((s) => ({ profiles: [...s.profiles, learned] }));
-        const all = get().profiles.concat(learned).map((l) => l.profile);
-        setLearnedProfiles(all);
+        const nextProfiles = [...get().profiles, learned];
+        set({ profiles: nextProfiles });
+        setLearnedProfiles(nextProfiles.map((l) => l.profile));
         return id;
       },
 
