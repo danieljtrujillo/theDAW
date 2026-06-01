@@ -130,10 +130,23 @@ async def detect_by_name(device_name: str = Form(...)) -> dict[str, Any]:
         }
 
     try:
-        image_bytes = await fetch_image_bytes(hit["url"])
+        import httpx
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            async with client.stream("GET", hit["url"], follow_redirects=True) as r:
+                r.raise_for_status()
+                size = 0
+                chunks: list[bytes] = []
+                async for chunk in r.aiter_bytes():
+                    size += len(chunk)
+                    if size > _MAX_IMAGE_BYTES:
+                        raise HTTPException(413, "fetched image too large")
+                    chunks.append(chunk)
+                image_bytes = b"".join(chunks)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(502, f"failed to fetch image: {e}")
-    if len(image_bytes) > _MAX_IMAGE_BYTES:
         raise HTTPException(413, "fetched image too large")
 
     _gate("controllervision-detect", True)
