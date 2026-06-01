@@ -234,7 +234,7 @@ _MOBILE_PAGE = """<!doctype html>
   img#preview {{ margin-top:18px; max-width:100%; border-radius:12px; display:none; }}
 </style></head><body>
 <h1>Scan your controller</h1>
-<p>Take a clear, straight-on photo of your MIDI controller. It goes to your computer over your local network — nothing leaves your LAN.</p>
+<p>Take a clear, straight-on photo of your MIDI controller. It uploads to your computer over your local network. If AI identification is enabled on your computer, the image may be sent to your configured AI provider for analysis.</p>
 <label class="btn" for="f">📷 Take / choose photo</label>
 <input id="f" type="file" accept="image/*" capture="environment" />
 <div id="status" class="muted">Waiting for a photo…</div>
