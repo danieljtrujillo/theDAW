@@ -15,6 +15,7 @@ import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
 import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/editorPlaybackBridge';
+import * as liveMixer from '../../state/liveMixer';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const TRACK_HEADER_PX = 180;
@@ -150,8 +151,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const inpaintSelection = useEditorStore((s) => s.inpaintSelection);
   const setInpaintSelection = useEditorStore((s) => s.setInpaintSelection);
   const clearInpaintSelection = useEditorStore((s) => s.clearInpaintSelection);
-  // Footer player — editor audio is loaded here so all footer controls work natively.
-  const playerCurrentTime = usePlayerStore((s) => s.currentTime);
+  // Footer player — the live engine mirrors its own playhead; we just read
+  // entry id + playing state to drive the editor's local transport button.
   const playerEntryId = usePlayerStore((s) => s.currentEntryId);
   const playerIsPlaying = usePlayerStore((s) => s.isPlaying);
   // Derived: are we currently playing the editor's rendered timeline?
@@ -522,103 +523,45 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // --- Multi-track timeline playback (routes through the footer's playerStore) ---
 
   const stopEditorPlayback = useCallback(() => {
-    usePlayerStore.getState().stop();
-    setPlayhead(0);
+    liveMixer.stop();
     stopPreview();
-  }, [setPlayhead, stopPreview]);
+  }, [stopPreview]);
 
   const playEditorTimeline = useCallback(async () => {
     if (clips.length === 0) return;
     stopPreview();
     setIsRendering(true);
     try {
-      const edState = useEditorStore.getState();
-      const totalDur = edState.getTotalDurationSec();
-      const startHead = edState.playheadSec >= totalDur - 0.05 ? 0 : edState.playheadSec;
-      if (startHead !== edState.playheadSec) edState.setPlayhead(0);
-
-      const sr = 44100;
-      const offline = new OfflineAudioContext(2, Math.ceil(totalDur * sr), sr);
-      const anySolo = tracks.some((t) => t.solo);
-      const blobCache = new Map<Blob, AudioBuffer>();
-
-      // Decode with a regular AudioContext — more reliable than OfflineAudioContext.decodeAudioData.
-      const decodeCtx = new AudioContext({ sampleRate: 44100 });
-      try {
-        for (const clip of clips) {
-          const track = tracks.find((t) => t.id === clip.trackId);
-          if (!track || track.mute || (anySolo && !track.solo)) continue;
-          if (!blobCache.has(clip.audioBlob)) {
-            const ab = await clip.audioBlob.arrayBuffer();
-            const decoded = await Promise.race([
-              decodeCtx.decodeAudioData(ab.slice(0)),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('decodeAudioData timeout')), DECODE_TIMEOUT_MS),
-              ),
-            ]);
-            blobCache.set(clip.audioBlob, decoded);
-          }
-        }
-      } finally {
-        decodeCtx.close().catch(() => {});
-      }
-
-      for (const clip of clips) {
-        const track = tracks.find((t) => t.id === clip.trackId);
-        if (!track || track.mute || (anySolo && !track.solo)) continue;
-        const buf = blobCache.get(clip.audioBlob);
-        if (!buf) continue;
-        const src = offline.createBufferSource();
-        src.buffer = buf;
-        const gainNode = offline.createGain();
-        const panner = offline.createStereoPanner();
-        panner.pan.value = Math.max(-1, Math.min(1, track.pan));
-        src.connect(gainNode).connect(panner).connect(offline.destination);
-        const vol = track.volume;
-        const fadeIn = clip.fadeInSec ?? 0;
-        const fadeOut = clip.fadeOutSec ?? 0;
-        const safeOffset = Math.min(clip.offsetIntoSource, Math.max(0, buf.duration - 0.01));
-        const safeDur = Math.min(clip.durationSec, buf.duration - safeOffset);
-        if (safeDur <= 0) continue;
-        gainNode.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, clip.startSec);
-        if (fadeIn > 0) gainNode.gain.linearRampToValueAtTime(vol, clip.startSec + Math.min(fadeIn, safeDur));
-        if (fadeOut > 0) {
-          const foStart = clip.startSec + safeDur - Math.min(fadeOut, safeDur);
-          gainNode.gain.setValueAtTime(vol, foStart);
-          gainNode.gain.linearRampToValueAtTime(0, clip.startSec + safeDur);
-        }
-        src.start(clip.startSec, safeOffset, safeDur);
-      }
-
-      const rendered = await offline.startRendering();
-      const wavBlob = encodeWav(rendered);
-
-      const ps = usePlayerStore.getState();
-      await ps.load(wavBlob, { label: 'Editor Timeline', entryId: 'editor-timeline' });
-      ps.seek(startHead);
-      ps.play();
+      // Live multi-track playback — per-track volume / pan / mute / solo are
+      // audible MID-playback (see state/liveMixer). The offline bounce is kept
+      // for export (commitEdit / sendSelectionToInit), not for preview.
+      await liveMixer.playAsync();
     } catch (e) {
-      logError('editor', `Timeline render failed: ${e instanceof Error ? e.message : e}`);
+      logError('editor', `Live playback failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setIsRendering(false);
     }
-  }, [clips, tracks, stopPreview]);
+  }, [clips.length, stopPreview]);
 
-  // Register with bridge so PlayerFooter can trigger a fresh render+play.
+  // Register with bridge so PlayerFooter can trigger a fresh render+play, AND
+  // register liveMixer as the footer's transport so its normal play/pause/seek
+  // buttons drive the live multi-track engine. liveMixer.attach() returns a
+  // disposer that stops playback + detaches on unmount.
   useEffect(() => {
     registerEditorPlayback(
       () => void playEditorTimeline(),
       stopEditorPlayback,
     );
-    return () => unregisterEditorPlayback();
+    const detach = liveMixer.attach();
+    return () => {
+      unregisterEditorPlayback();
+      detach();
+    };
   }, [playEditorTimeline, stopEditorPlayback]);
 
-  // Keep the editor playhead in sync with the footer player when our audio is loaded.
-  useEffect(() => {
-    if (playerEntryId === 'editor-timeline') {
-      setPlayhead(playerCurrentTime);
-    }
-  }, [playerCurrentTime, playerEntryId, setPlayhead]);
+  // liveMixer already mirrors its playhead into editorStore.playheadSec, so no
+  // footer→playhead bridging is needed for the live engine. (The offline path
+  // for export doesn't drive the playhead.)
 
   // Preview playback of the selected clip.
   const playSelectedPreview = useCallback(async () => {

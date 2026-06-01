@@ -1,8 +1,8 @@
-# Stable Audio 3 — theDAW User Guide
+# Stable Audio 3 - theDAW User Guide
 
-Complete reference for the theDAW platform: the upstream Stable Audio 3 ML pipeline, the FastAPI backend that wraps it, and the theDAW React interface built on top. The in-app **Docs** button renders this document as an interactive modal with Markdown download and browser print/PDF export.
+## theDAW User Guide - by GANTASMO
 
-> **Feature audit:** This guide was audited against tracked code plus local `repomix-output.md` context on 2026-05-29. Coverage artifacts are generated at `docs/reports/feature-doc-coverage-report.md` and `docs/reports/feature-doc-coverage.json`; repomix remains gitignored and must not be staged.
+This guide focuses on the highest-value workflows in theDAW: AI-native music generation, live remix and editor routing, performance-linked DJ/VJ control surfaces, reactive media playback, and export-ready output paths for real sessions. The in-app **Docs** button renders this guide as an interactive modal with Markdown download and print/PDF export.
 
 ---
 

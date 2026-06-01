@@ -28,6 +28,9 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components
 import { useSetlistStore } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
+import { useDjAnalysisStore } from '../state/djAnalysisStore';
+import { toCamelot, keyLabel } from '../lib/camelot';
+import { WaveformPreview } from '../components/audio/WaveformPreview';
 import {
   toggleVjPlayback, subscribeToVjPlaybackState, isVjPlaybackActive,
   type VjPlaybackState,
@@ -35,13 +38,16 @@ import {
 import {
   sendSetToVj, sendTrackToVj, isVjSetTargetActive, type VjSetItem,
 } from '../state/vjSetBus';
+import * as djEngine from '../state/djEngine';
 
 export const DJView: React.FC = () => {
   const [deckATrack, setDeckATrack] = useState<string | null>(null);
   const [deckBTrack, setDeckBTrack] = useState<string | null>(null);
+  // Playing state is OWNED by the engine (real <audio> transport), mirrored
+  // here via djEngine.subscribe so the disc/icon reflect actual playback.
   const [deckAPlaying, setDeckAPlaying] = useState(false);
   const [deckBPlaying, setDeckBPlaying] = useState(false);
-  const [crossfader, setCrossfader] = useState(0); // -1 A, 0 center, +1 B
+  const [crossfader, setCrossfader] = useState(() => djEngine.getCrossfade()); // -1 A, 0 center, +1 B
   const [deckAPitch, setDeckAPitch] = useState(0);
   const [deckBPitch, setDeckBPitch] = useState(0);
   const [deckAEqLow, setDeckAEqLow] = useState(0);
@@ -107,6 +113,26 @@ export const DJView: React.FC = () => {
     });
     return unsub;
   }, []);
+
+  // Mirror the real deck transport state from the audio engine.
+  useEffect(() => {
+    return djEngine.subscribe((a, b) => {
+      setDeckAPlaying(a.playing);
+      setDeckBPlaying(b.playing);
+    });
+  }, []);
+
+  // Load / clear a deck's audio when its selected track changes.
+  useEffect(() => {
+    const t = trackById(deckATrack);
+    void djEngine.loadDeck('A', t ? (t.audioUrl ?? null) : null, t?.title ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckATrack]);
+  useEffect(() => {
+    const t = trackById(deckBTrack);
+    void djEngine.loadDeck('B', t ? (t.audioUrl ?? null) : null, t?.title ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckBTrack]);
 
   // Auto-dismiss the confirmation flash.
   useEffect(() => {
@@ -200,38 +226,48 @@ export const DJView: React.FC = () => {
             accent="purple"
             trackTitle={deckATitle}
             isPlaying={deckAPlaying}
-            onPlay={() => setDeckAPlaying((p) => !p)}
+            onPlay={() => djEngine.toggleDeck('A')}
             pitch={deckAPitch}
-            onPitch={setDeckAPitch}
+            onPitch={(v) => { setDeckAPitch(v); djEngine.setDeckPitch('A', v); }}
             eqLow={deckAEqLow}
             eqMid={deckAEqMid}
             eqHigh={deckAEqHigh}
-            onEq={(b, v) => (b === 'low' ? setDeckAEqLow(v) : b === 'mid' ? setDeckAEqMid(v) : setDeckAEqHigh(v))}
+            onEq={(b, v) => {
+              if (b === 'low') setDeckAEqLow(v); else if (b === 'mid') setDeckAEqMid(v); else setDeckAEqHigh(v);
+              djEngine.setDeckEq('A', b, v);
+            }}
             onLoadId={setDeckATrack}
             entries={entries}
             onAddToSet={() => handleAddCurrentToSet('A')}
             onSendToVj={() => handleSendDeckToVj('A')}
             hasTrack={!!deckATrack}
             setLoaded={!!activeSet}
+            entryId={deckATrack}
+            audioUrl={(() => { const t = trackById(deckATrack); return t ? (t.audioUrl ?? null) : null; })()}
           />
           <Deck
             label="DECK B"
             accent="cyan"
             trackTitle={deckBTitle}
             isPlaying={deckBPlaying}
-            onPlay={() => setDeckBPlaying((p) => !p)}
+            onPlay={() => djEngine.toggleDeck('B')}
             pitch={deckBPitch}
-            onPitch={setDeckBPitch}
+            onPitch={(v) => { setDeckBPitch(v); djEngine.setDeckPitch('B', v); }}
             eqLow={deckBEqLow}
             eqMid={deckBEqMid}
             eqHigh={deckBEqHigh}
-            onEq={(b, v) => (b === 'low' ? setDeckBEqLow(v) : b === 'mid' ? setDeckBEqMid(v) : setDeckBEqHigh(v))}
+            onEq={(b, v) => {
+              if (b === 'low') setDeckBEqLow(v); else if (b === 'mid') setDeckBEqMid(v); else setDeckBEqHigh(v);
+              djEngine.setDeckEq('B', b, v);
+            }}
             onLoadId={setDeckBTrack}
             entries={entries}
             onAddToSet={() => handleAddCurrentToSet('B')}
             onSendToVj={() => handleSendDeckToVj('B')}
             hasTrack={!!deckBTrack}
             setLoaded={!!activeSet}
+            entryId={deckBTrack}
+            audioUrl={(() => { const t = trackById(deckBTrack); return t ? (t.audioUrl ?? null) : null; })()}
           />
         </div>
 
@@ -244,7 +280,7 @@ export const DJView: React.FC = () => {
             max={1}
             step={0.01}
             value={crossfader}
-            onChange={(e) => setCrossfader(parseFloat(e.target.value))}
+            onChange={(e) => { const v = parseFloat(e.target.value); setCrossfader(v); djEngine.setCrossfade(v); }}
             className="flex-1 h-3 accent-fuchsia-500 cursor-col-resize"
             title="Crossfade between Deck A and Deck B"
           />
@@ -419,16 +455,32 @@ interface DeckProps {
   onSendToVj: () => void;
   hasTrack: boolean;
   setLoaded: boolean;
+  /** Library entry id of the loaded track (drives analysis). */
+  entryId: string | null;
+  /** Resolved audio URL of the loaded track (drives the waveform). */
+  audioUrl: string | null;
 }
 
 const Deck: React.FC<DeckProps> = ({
   label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
-  hasTrack, setLoaded,
+  hasTrack, setLoaded, entryId, audioUrl,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
   const accentBg = accent === 'purple' ? 'bg-purple-500/10' : 'bg-cyan-500/10';
+
+  // Analysis (BPM / key / Camelot) for the loaded track — runs on the backend
+  // on demand, cached in djAnalysisStore. Surfacing what we already compute.
+  const ensureAnalyzed = useDjAnalysisStore((s) => s.ensureAnalyzed);
+  const analysisEntry = useDjAnalysisStore((s) => (entryId ? s.byId[entryId] ?? null : null));
+  useEffect(() => {
+    if (entryId) void ensureAnalyzed(entryId);
+  }, [entryId, ensureAnalyzed]);
+
+  const a = analysisEntry?.data ?? null;
+  const analyzing = analysisEntry?.status === 'running';
+  const cam = a ? toCamelot(a.key, a.scale) : null;
 
   return (
     <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
@@ -469,6 +521,46 @@ const Deck: React.FC<DeckProps> = ({
             <option key={e.id} value={e.id}>{e.title}</option>
           ))}
         </select>
+
+        {/* Analysis badges — BPM · key · Camelot. Grayed/“…”, while analyzing. */}
+        <div className="flex items-center gap-1.5 text-[9px] font-mono">
+          <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
+            <span className="text-zinc-600">BPM </span>
+            {a?.bpm != null ? a.bpm.toFixed(1) : (analyzing ? '…' : '—')}
+          </span>
+          <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
+            <span className="text-zinc-600">KEY </span>
+            {a?.key ? keyLabel(a.key, a.scale) : (analyzing ? '…' : '—')}
+          </span>
+          {cam ? (
+            <span
+              className="px-1.5 py-0.5 rounded font-black border"
+              style={{
+                color: `hsl(${cam.hue} 80% 75%)`,
+                borderColor: `hsl(${cam.hue} 70% 45% / 0.6)`,
+                background: `hsl(${cam.hue} 70% 45% / 0.12)`,
+              }}
+              title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
+            >
+              {cam.code}
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-600">
+              {analyzing ? '…' : '—'}
+            </span>
+          )}
+        </div>
+
+        {/* Deck waveform — reuses the shared wavesurfer preview. */}
+        <div className="shrink-0">
+          {audioUrl ? (
+            <WaveformPreview audioUrl={audioUrl} height={48} />
+          ) : (
+            <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[9px] font-mono text-zinc-700">
+              no track loaded
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <button

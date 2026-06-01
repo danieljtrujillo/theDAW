@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Track Slider — template</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+
+<body>
+  <!-- Reusable vertical track-slider template for the SLIDE tab (AUDIO + VISUAL tracks). -->
+  <!-- Visual reference: codepen "glass thermostat" (ash_creator / BalintFerenczy). -->
+  <!-- This is a clean, dependency-free rebuild: smooth color blend, animated notches, -->
+  <!-- rounded caps, custom drag track (no native input, no GSAP). -->
+
+  <main id="app">
+    <!-- One slider. data-* attributes configure it; clone this node per track later.
+         data-name = the track / video / song / image name (white label). -->
+    <div class="ts" data-slider data-value="70" data-name="MASTER"></div>
+  </main>
+
+  <script src="./script.js"></script>
+</body>
+
+</html>

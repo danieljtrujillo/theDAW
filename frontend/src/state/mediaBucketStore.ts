@@ -1,5 +1,14 @@
 import { create } from 'zustand';
 import { logInfo } from './logStore';
+import {
+  clearBucketBlobs,
+  deleteBucketBlob,
+  getBucketBlob,
+  loadBucketMeta,
+  putBucketBlob,
+  saveBucketMeta,
+  type PersistedBucketMeta,
+} from '../lib/mediaBucketPersistence';
 
 export interface BucketItem {
   id: string;
@@ -12,6 +21,8 @@ export interface BucketItem {
 
 interface MediaBucketState {
   items: BucketItem[];
+  hydrated: boolean;
+  hydrate: () => Promise<void>;
   add: (file: File) => void;
   addMany: (files: FileList | File[]) => void;
   remove: (id: string) => void;
@@ -25,6 +36,32 @@ const uid = (): string =>
 
 export const useMediaBucketStore = create<MediaBucketState>()((set) => ({
   items: [],
+  hydrated: false,
+  hydrate: async () => {
+    const meta = loadBucketMeta();
+    const restored: BucketItem[] = [];
+    for (const item of meta) {
+      const blob = await getBucketBlob(item.id);
+      if (!blob) continue;
+      restored.push({
+        id: item.id,
+        name: item.name,
+        blob,
+        mimeType: item.mimeType,
+        size: item.size,
+        addedAt: item.addedAt,
+      });
+    }
+    const cleanedMeta: PersistedBucketMeta[] = restored.map((item) => ({
+      id: item.id,
+      name: item.name,
+      mimeType: item.mimeType,
+      size: item.size,
+      addedAt: item.addedAt,
+    }));
+    saveBucketMeta(cleanedMeta);
+    set({ items: restored, hydrated: true });
+  },
   add: (file) => {
     const item: BucketItem = {
       id: uid(),
@@ -34,7 +71,20 @@ export const useMediaBucketStore = create<MediaBucketState>()((set) => ({
       size: file.size,
       addedAt: Date.now(),
     };
-    set((s) => ({ items: [item, ...s.items] }));
+    set((s) => {
+      const items = [item, ...s.items];
+      saveBucketMeta(
+        items.map((x) => ({
+          id: x.id,
+          name: x.name,
+          mimeType: x.mimeType,
+          size: x.size,
+          addedAt: x.addedAt,
+        })),
+      );
+      return { items };
+    });
+    void putBucketBlob(item.id, file);
     logInfo('bucket', `Added: ${file.name} (${Math.round(file.size / 1024)} KB)`);
   },
   addMany: (filesIn) => {
@@ -47,11 +97,42 @@ export const useMediaBucketStore = create<MediaBucketState>()((set) => ({
       size: file.size,
       addedAt: Date.now(),
     }));
-    set((s) => ({ items: [...next, ...s.items] }));
+    set((s) => {
+      const items = [...next, ...s.items];
+      saveBucketMeta(
+        items.map((x) => ({
+          id: x.id,
+          name: x.name,
+          mimeType: x.mimeType,
+          size: x.size,
+          addedAt: x.addedAt,
+        })),
+      );
+      return { items };
+    });
+    next.forEach((item) => void putBucketBlob(item.id, item.blob));
     logInfo('bucket', `Added ${arr.length} file${arr.length === 1 ? '' : 's'}`);
   },
-  remove: (id) =>
-    set((s) => ({ items: s.items.filter((i) => i.id !== id) })),
-  clear: () => set({ items: [] }),
+  remove: (id) => {
+    set((s) => {
+      const items = s.items.filter((i) => i.id !== id);
+      saveBucketMeta(
+        items.map((x) => ({
+          id: x.id,
+          name: x.name,
+          mimeType: x.mimeType,
+          size: x.size,
+          addedAt: x.addedAt,
+        })),
+      );
+      return { items };
+    });
+    void deleteBucketBlob(id);
+  },
+  clear: () => {
+    set({ items: [] });
+    saveBucketMeta([]);
+    void clearBucketBlobs();
+  },
 }));
 

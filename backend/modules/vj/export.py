@@ -41,6 +41,16 @@ class CodecSpec:
     args: list[str]
 
 
+# The browser derives the record-canvas width from the live canvas aspect
+# (height * aspect), which routinely lands on an ODD number (e.g. 720p at
+# 305:144 -> 1525x720). libx264/libx265 with yuv420p and prores 422 all require
+# EVEN width/height because 4:2:0 / 4:2:2 chroma subsampling halves each axis;
+# an odd dimension makes the encoder refuse to open ("width not divisible by
+# 2" -> "Could not open encoder before EOF"). VP9 in the source webm allows odd
+# dims, so the capture is valid — we just snap to even on transcode. trunc()
+# rounds down to the nearest even pixel (a 1px crop, imperceptible).
+_EVEN_DIMS_VF = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
 # Per-codec ffmpeg recipe. ``ext`` is the output container; ``args`` are
 # the encode flags inserted between input and output. ``pngseq`` is
 # handled specially (frame dump + zip) and is absent here.
@@ -158,6 +168,10 @@ def transcode(src_webm: Path, codec: str, out_dir: Path) -> Path:
         "-y",
         "-i",
         str(src_webm),
+        # Snap to even dimensions before the encoder sees the frames (see
+        # _EVEN_DIMS_VF). Harmless when the source is already even.
+        "-vf",
+        _EVEN_DIMS_VF,
         *spec.args,
         str(out_path),
     ]
@@ -228,5 +242,10 @@ def _run_ffmpeg(cmd: list[str]) -> None:
     log.info("vj.export: %s", " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()[-8:]
-        raise RuntimeError("ffmpeg failed:\n" + "\n".join(tail))
+        stderr = (proc.stderr or "").strip()
+        # ffmpeg's genuinely useful error line (encoder reject, bad option,
+        # missing file) is often well above its final summary, so keep a
+        # generous tail and log the whole thing for the backend console.
+        log.error("vj.export: ffmpeg rc=%s\n%s", proc.returncode, stderr)
+        tail = stderr.splitlines()[-18:]
+        raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}):\n" + "\n".join(tail))

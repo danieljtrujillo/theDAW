@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SLIDE — control surface (SLIDER row/focus · CONTROLLER · banks · lock)</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    html, body { background: #07060c; height: 100%; }
+    #app { display: block; padding: 0; min-height: 100vh; }
+
+    .dock { display: flex; flex-direction: column; height: 100vh; background: #07060c; }
+    .surface { --lane: 96px; }
+
+    .tabrow {
+      flex: 0 0 auto; display: flex; align-items: stretch;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06); background: rgba(0, 0, 0, 0.3);
+    }
+    .tabrow .tab {
+      font: 800 9px/1 system-ui; letter-spacing: 0.16em; text-transform: uppercase;
+      padding: 9px 12px; cursor: pointer; background: transparent; border: 0;
+      border-bottom: 2px solid transparent; color: #52525b; display: flex; align-items: center; gap: 5px;
+    }
+    .tabrow .tab.muted { color: #3f3f46; }
+    .tabrow .tab.on-audio { color: #6ee7b7; border-bottom-color: #10b981; }
+    .tabrow .tab.on-visual { color: #f9a8d4; border-bottom-color: #ec4899; }
+    .tabrow .spacer { flex: 1; }
+
+    .bar {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 7px 12px; border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(0,0,0,0.18);
+      font: 600 8px/1 ui-monospace, monospace; letter-spacing: 0.06em; color: #71717a;
+    }
+    .bar .dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981; }
+    .bar b { color: #a1a1aa; }
+    .bar select, .bar button {
+      background: #111114; color: #d4d4d8; border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; padding: 5px 8px; font: 700 8px/1 system-ui; letter-spacing: 0.08em;
+      text-transform: uppercase; cursor: pointer;
+    }
+    .bar button:hover { border-color: rgba(255,255,255,0.25); color: #fff; }
+    .bar .sep { width: 1px; height: 16px; background: rgba(255,255,255,0.1); margin: 0 2px; }
+
+    .seg { display: inline-flex; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; overflow: hidden; }
+    .seg button { border: 0; border-radius: 0; padding: 5px 10px; }
+    .seg button.on { background: rgba(129,140,248,0.18); color: #c7d2fe; box-shadow: inset 0 0 0 1px rgba(129,140,248,0.5); }
+
+    .area { flex: 1 1 auto; overflow: auto; padding: 14px; position: relative; }
+    .area::-webkit-scrollbar { height: 9px; width: 9px; }
+    .area::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+
+    .section { margin-bottom: 18px; }
+    .section-head {
+      font: 800 8px/1 system-ui; letter-spacing: 0.22em; text-transform: uppercase;
+      color: #6b7280; margin: 0 0 9px 2px; display: flex; align-items: center; gap: 8px;
+    }
+    .section-head::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,0.06); }
+
+    .grid { display: grid; gap: 12px; justify-content: start; }
+
+    .slot { position: relative; border-radius: 14px; outline: 2px solid transparent; transition: outline-color .15s; }
+    .slot.dragover { outline-color: rgba(129,140,248,0.9); }
+
+    /* grip top-left, lock BOTTOM-RIGHT (per spec) — both above the glow */
+    .grip {
+      position: absolute; top: 3px; left: 6px; z-index: 8; pointer-events: auto; cursor: grab;
+      color: #52525b; font-size: 11px; padding: 2px;
+    }
+    .grip:hover { color: #a1a1aa; }
+    .lockbtn {
+      position: absolute; bottom: 4px; right: 5px; z-index: 8; pointer-events: auto; cursor: pointer;
+      border: 0; background: rgba(0,0,0,0.35); border-radius: 5px; padding: 2px 3px; line-height: 1;
+      color: #52525b; font-size: 10px;
+    }
+    .lockbtn.on { color: #fbbf24; text-shadow: 0 0 8px rgba(251,191,36,0.6); }
+    .lockbtn:hover { color: #d4d4d8; }
+
+    .placeholder {
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      width: var(--lane); padding: 16px 6px;
+      border: 1px dashed rgba(255,255,255,0.12); border-radius: 14px;
+      background: rgba(255,255,255,0.018); color: #3f3f46; opacity: 0.5; cursor: pointer; transition: opacity .15s, border-color .15s;
+    }
+    .placeholder:hover { opacity: 0.85; border-color: rgba(129,140,248,0.4); color: #818cf8; }
+    .placeholder .ph-ring { width: 34px; height: 34px; border-radius: 50%; border: 2px dashed currentColor; opacity: 0.6; }
+    .placeholder .ph-cap { width: 26px; height: 78px; border-radius: 999px; border: 2px dashed currentColor; opacity: 0.6; }
+    .placeholder .ph-pad { width: 46px; height: 30px; border-radius: 8px; border: 2px dashed currentColor; opacity: 0.6; }
+    .placeholder .ph-label { font: 700 7.5px/1 system-ui; letter-spacing: 0.1em; text-transform: uppercase; }
+
+    /* ---- SLIDER mode: horizontal strip + page light ---------------------- */
+    .strip-wrap { position: relative; }
+    .strip {
+      display: flex; gap: 12px; align-items: flex-end;
+      overflow-x: auto; overflow-y: hidden; padding: 6px 2px 4px; scroll-behavior: smooth;
+    }
+    .strip.focus { scroll-behavior: auto; }              /* JS recenters; no smooth fighting */
+    .strip::-webkit-scrollbar { height: 8px; }
+    .strip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+    .strip .slot { flex: 0 0 auto; transform-origin: center bottom; }
+    .strip.focus .slot { transition: transform .06s linear, opacity .06s linear; }
+
+    /* the long thin glowing page indicator */
+    .pagelight {
+      position: relative; margin: 14px auto 4px; height: 6px; width: min(680px, 86%);
+      border-radius: 99px; background: rgba(255,255,255,0.06);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+      display: flex; overflow: visible;
+    }
+    .pagelight .seg-fill {
+      flex: 1; margin: 1px; border-radius: 99px; background: rgba(255,255,255,0.05); transition: background .2s, box-shadow .2s; cursor: pointer;
+    }
+    .pagelight .seg-fill.on {
+      background: linear-gradient(90deg, var(--pl, #f9a8d4), #fff, var(--pl, #f9a8d4));
+      box-shadow: 0 0 14px var(--pl, #f9a8d4), 0 0 28px var(--pl, #f9a8d4);
+    }
+    .pagelight .num {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      font: 800 9px/1 ui-monospace, monospace; letter-spacing: 0.1em;
+      color: #fff; text-shadow: 0 0 10px var(--pl, #f9a8d4);
+      background: rgba(0,0,0,0.65); border: 1px solid var(--pl, #f9a8d4); border-radius: 99px; padding: 3px 8px; white-space: nowrap;
+    }
+    .nav {
+      position: absolute; top: 38%; transform: translateY(-50%); z-index: 9;
+      width: 26px; height: 46px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(10,10,14,0.7); color: #a1a1aa; cursor: pointer; font-size: 14px;
+    }
+    .nav:hover { color: #fff; border-color: rgba(255,255,255,0.3); }
+    .nav.prev { left: 2px; } .nav.next { right: 2px; }
+  </style>
+</head>
+
+<body>
+  <main id="app">
+    <div class="dock surface">
+      <div class="tabrow">
+        <button class="tab muted">VISUALIZE</button>
+        <button class="tab muted">PIANO</button>
+        <button class="tab muted">SLIDE</button>
+        <button class="tab on-audio" id="tab-audio">AUDIO</button>
+        <button class="tab on-visual" id="tab-visual">VISUAL</button>
+        <div class="spacer"></div>
+      </div>
+
+      <div class="bar">
+        <div class="seg" id="seg">
+          <button data-view="row" class="on">SLIDER · ROW</button>
+          <button data-view="focus">SLIDER · FOCUS</button>
+          <button data-view="controller">CONTROLLER</button>
+        </div>
+        <span class="sep"></span>
+        <span class="dot"></span><span>DEVICE</span>
+        <select id="profile">
+          <option value="akai-midimix">AKAI MIDIMIX · 48</option>
+          <option value="korg-nanokontrol2">nanoKONTROL2 · 40</option>
+          <option value="generic-8">Generic 8-ch · 16</option>
+        </select>
+        <span class="sep"></span>
+        <span>ITEMS <b id="itemcount">—</b></span>
+        <span class="sep"></span>
+        <button id="add">+ effect</button>
+        <button id="reset">reset</button>
+        <span style="color:#52525b">⠿ drag · 🔒 lock · scroll/◀▶ to page</span>
+      </div>
+
+      <div class="area" id="area"></div>
+    </div>
+  </main>
+
+  <script src="./script.js"></script>
+  <script>
+    /* ===== profiles — KNOBS → FADERS → BUTTONS ============================ */
+    const PROFILES = {
+      'akai-midimix': { name: 'AKAI MIDIMIX', sections: [
+        { id: 'knobs',   kind: 'knob',  label: 'KNOBS',   rows: 3, cols: 8 },
+        { id: 'faders',  kind: 'fader', label: 'FADERS',  rows: 1, cols: 8 },
+        { id: 'buttons', kind: 'pad',   label: 'BUTTONS', rows: 2, cols: 8 },
+      ]},
+      'korg-nanokontrol2': { name: 'Korg nanoKONTROL2', sections: [
+        { id: 'knobs',   kind: 'knob',  label: 'KNOBS',   rows: 1, cols: 8 },
+        { id: 'faders',  kind: 'fader', label: 'FADERS',  rows: 1, cols: 8 },
+        { id: 'buttons', kind: 'pad',   label: 'S/M/R',   rows: 3, cols: 8 },
+      ]},
+      'generic-8': { name: 'Generic 8-ch', sections: [
+        { id: 'knobs',   kind: 'knob',  label: 'KNOBS',   rows: 1, cols: 8 },
+        { id: 'faders',  kind: 'fader', label: 'FADERS',  rows: 1, cols: 8 },
+      ]},
+    };
+
+    const VISUAL_CATALOG = [
+      'CROSSFADE','BRIGHTNESS','HUE ROT','SATURATION','CONTRAST','GRID TILE','RADIAL MIR','RGB GHOST',
+      'CHROMA AB','PIXELATE','WAVE WARP','RGB SPLIT','TIME GLCH','SEPIA','GRAYSCALE','SOFT BLUR',
+      'POSTERIZE','PLAYBK SPD','ECHO TRL','SLIT SCAN','TIME DISP','FEEDBACK','BLOOM','DEPTH FOG',
+      'TILT SHIFT','STROBE','GLITCH','INVERT','FREEZE','FLASH','MIRROR','KALEIDO','DATAMOSH',
+      'BLACKOUT','WIPE','ZOOM','SHAKE','TRAILS','SCAN','BEAT FX','DROP',
+    ];
+    const AUDIO_CATALOG = [
+      'MASTER','TRACK 1','TRACK 2','TRACK 3','TRACK 4','MONITOR','SYNC','CUE',
+      'VOCALS','DRUMS','BASS','OTHER','PIANO','GUITAR','SYNTH','FX BUS',
+      'MIC 1','MIC 2','LINE IN','AUX RET','SUB','REVERB','DELAY','SIDE CHN',
+    ];
+    const PAD_COLORS = [
+      [255,64,129],[0,229,255],[124,252,0],[255,170,0],
+      [170,100,255],[255,90,90],[0,200,180],[255,220,0],
+    ];
+
+    let content = 'visual';
+    let view = 'row';            // row | focus | controller
+    let bank = 0;
+    const assign = { visual: {}, audio: {} };
+
+    function prof() { return PROFILES[document.getElementById('profile').value]; }
+    function catalog() { return content === 'visual' ? VISUAL_CATALOG : AUDIO_CATALOG; }
+    function deviceSize() { return prof().sections.reduce((n, s) => n + s.rows * s.cols, 0); }
+    function pageSize() {
+      const s = prof().sections.find((x) => x.kind === 'fader');
+      return s ? s.rows * s.cols : 8;       // a "page" = one bank of physical faders
+    }
+    function pageCount() { return Math.max(1, Math.ceil(catalog().length / pageSize())); }
+
+    function itemAt(i) {
+      const a = assign[content][i];
+      if (a && a.locked) return a.item;
+      const c = catalog();
+      return i < c.length ? c[i] : null;
+    }
+    function isLocked(i) { return !!(assign[content][i] && assign[content][i].locked); }
+    function toggleLock(i) {
+      const cur = assign[content][i];
+      if (cur && cur.locked) delete assign[content][i];
+      else assign[content][i] = { item: itemAt(i), locked: true };
+      render();
+    }
+
+    function makeWidget(host, kind, item, color, idx) {
+      if (!item) return null;
+      if (kind === 'knob') return window.createKnob(host, { name: item, mapping: 'CC 46+', value: 20 + (idx * 23) % 70 });
+      if (kind === 'pad')  return window.createPad(host, { name: item, color, active: idx % 4 === 0 });
+      return window.createSlider(host, { name: item, mapping: 'CC 19+', value: 30 + (idx * 17) % 60, compact: true });
+    }
+
+    let dragFrom = -1;
+    function onDrop(toIdx) {
+      if (dragFrom < 0 || dragFrom === toIdx) return;
+      const A = assign[content][dragFrom] || { item: itemAt(dragFrom), locked: false };
+      const B = assign[content][toIdx]   || { item: itemAt(toIdx),   locked: false };
+      assign[content][dragFrom] = { item: B.item, locked: B.locked };
+      assign[content][toIdx]   = { item: A.item, locked: A.locked };
+      dragFrom = -1; render();
+    }
+
+    function renderSlot(kind, idx, color) {
+      const item = itemAt(idx);
+      const el = document.createElement('div');
+      el.className = 'slot';
+
+      const grip = document.createElement('span');
+      grip.className = 'grip'; grip.textContent = '⠿'; grip.title = 'Drag to rearrange'; grip.draggable = true;
+      grip.addEventListener('dragstart', (e) => { dragFrom = idx; e.dataTransfer.effectAllowed = 'move'; });
+      const lock = document.createElement('button');
+      lock.className = 'lockbtn' + (isLocked(idx) ? ' on' : '');
+      lock.textContent = isLocked(idx) ? '🔒' : '🔓';
+      lock.title = isLocked(idx) ? 'Locked — auto-fill skips this slot' : 'Unlocked — auto-fill may use this slot';
+      lock.addEventListener('click', () => toggleLock(idx));
+
+      if (item) {
+        const host = document.createElement('div');
+        el.appendChild(host);
+        makeWidget(host, kind, item, color, idx);
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'placeholder';
+        const shape = document.createElement('div');
+        shape.className = kind === 'knob' ? 'ph-ring' : kind === 'pad' ? 'ph-pad' : 'ph-cap';
+        const lbl = document.createElement('div'); lbl.className = 'ph-label'; lbl.textContent = 'EMPTY';
+        ph.appendChild(shape); ph.appendChild(lbl); el.appendChild(ph);
+      }
+      el.appendChild(grip); el.appendChild(lock);
+      el.addEventListener('dragover', (e) => { e.preventDefault(); el.classList.add('dragover'); });
+      el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+      el.addEventListener('drop', (e) => { e.preventDefault(); el.classList.remove('dragover'); onDrop(idx); });
+      return el;
+    }
+
+    /* ===== page light ===================================================== */
+    function buildPageLight(activePage) {
+      const pl = document.createElement('div');
+      pl.className = 'pagelight';
+      pl.style.setProperty('--pl', content === 'visual' ? '#f9a8d4' : '#6ee7b7');
+      const n = pageCount();
+      for (let p = 0; p < n; p++) {
+        const s = document.createElement('div');
+        s.className = 'seg-fill' + (p === activePage ? ' on' : '');
+        s.title = `Page ${p + 1}`;
+        s.addEventListener('click', () => { bank = p; render(); });
+        pl.appendChild(s);
+      }
+      const num = document.createElement('div');
+      num.className = 'num';
+      num.textContent = `PAGE ${activePage + 1} / ${n}`;
+      pl.appendChild(num);
+      return pl;
+    }
+
+    /* ===== render ========================================================= */
+    function render() {
+      const area = document.getElementById('area');
+      area.innerHTML = '';
+
+      if (view === 'controller') return renderController(area);
+      if (view === 'focus') return renderFocus(area);
+      return renderRow(area);
+    }
+
+    // ROW: a clean horizontal strip of the current page's faders + page light.
+    function renderRow(area) {
+      const wrap = document.createElement('div'); wrap.className = 'strip-wrap section';
+      const head = document.createElement('div'); head.className = 'section-head';
+      head.textContent = `SLIDERS · ${content.toUpperCase()} · all faders, paged`;
+      wrap.appendChild(head);
+
+      const strip = document.createElement('div'); strip.className = 'strip';
+      const ps = pageSize();
+      const start = bank * ps;
+      for (let i = 0; i < ps; i++) strip.appendChild(renderSlot('fader', start + i, PAD_COLORS[i % 8]));
+      wrap.appendChild(strip);
+      wrap.appendChild(buildPageLight(bank));
+      area.appendChild(wrap);
+      bumpCounts();
+    }
+
+    // FOCUS: infinite, center-weighted carousel. The middle ~pageSize faders
+    // are full-size; off-center ones shrink (horizontal fisheye). Scrolls
+    // seamlessly L/R with wrap-around; page light tracks the centered page.
+    function renderFocus(area) {
+      const wrap = document.createElement('div'); wrap.className = 'strip-wrap section';
+      const head = document.createElement('div'); head.className = 'section-head';
+      head.textContent = `SLIDERS · ${content.toUpperCase()} · FOCUS — centered, infinite L/R`;
+      wrap.appendChild(head);
+
+      const strip = document.createElement('div'); strip.className = 'strip focus';
+      const N = catalog().length;
+      // triplicate for seamless wrap
+      const COPIES = 3;
+      for (let c = 0; c < COPIES; c++) {
+        for (let i = 0; i < N; i++) {
+          const slot = renderSlot('fader', i, PAD_COLORS[i % 8]);
+          slot.dataset.idx = i;
+          strip.appendChild(slot);
+        }
+      }
+      wrap.appendChild(strip);
+      const lightHost = document.createElement('div');
+      wrap.appendChild(lightHost);
+      area.appendChild(wrap);
+
+      const arrowL = document.createElement('button'); arrowL.className = 'nav prev'; arrowL.textContent = '◀';
+      const arrowR = document.createElement('button'); arrowR.className = 'nav next'; arrowR.textContent = '▶';
+      wrap.style.position = 'relative';
+      wrap.appendChild(arrowL); wrap.appendChild(arrowR);
+
+      // wait for layout, then center on the active bank's page in the middle copy
+      requestAnimationFrame(() => {
+        const blockW = strip.scrollWidth / COPIES;
+        const ps = pageSize();
+        const itemW = blockW / N;
+        const center = strip.clientWidth / 2;
+        // position so bank*ps's group center sits at viewport center, in middle copy
+        const targetItem = bank * ps + ps / 2;
+        strip.scrollLeft = blockW + targetItem * itemW - center;
+        fisheye();
+
+        let raf = 0, lastPage = -1;
+        function fisheye() {
+          const els = strip.children;
+          const n = els.length;
+          const vc = strip.scrollLeft + strip.clientWidth / 2;
+          const REACH = strip.clientWidth * 0.5;
+          // snapshot centers first (uses prior-frame margins → no read/write
+          // thrash within a frame; converges to a stable fisheye).
+          const centers = new Array(n);
+          for (let i = 0; i < n; i++) centers[i] = els[i].offsetLeft + els[i].offsetWidth / 2;
+          let bestIdx = 0, best = Infinity;
+          for (let i = 0; i < n; i++) {
+            const el = els[i];
+            const d = Math.abs(centers[i] - vc);
+            const p = Math.max(0, 1 - d / REACH);
+            const s = p * p * (3 - 2 * p);            // smoothstep
+            const scale = 0.72 + s * 0.28;            // shrink LESS (0.72 → 1.0)
+            const laneW = el.offsetWidth || 96;
+            const m = -laneW * (1 - scale) / 2;       // pull neighbors in to
+            el.style.transform = `scale(${scale})`;   // close the gap a shrunk
+            el.style.marginLeft = m.toFixed(2) + 'px';// lane would otherwise leave
+            el.style.marginRight = m.toFixed(2) + 'px';
+            el.style.opacity = (0.5 + s * 0.5).toFixed(3);
+            el.style.zIndex = String(Math.round(s * 10));
+            if (d < best) { best = d; bestIdx = i; }
+          }
+          // only rebuild the page light when the centered page actually changes
+          const pg = Math.floor((+els[bestIdx].dataset.idx) / ps);
+          if (pg !== lastPage) {
+            lastPage = pg;
+            lightHost.innerHTML = '';
+            lightHost.appendChild(buildPageLight(pg));
+          }
+        }
+        function onScroll() {
+          // seamless wrap: keep scroll within the middle copy
+          if (strip.scrollLeft < blockW * 0.5) strip.scrollLeft += blockW;
+          else if (strip.scrollLeft > blockW * 1.5) strip.scrollLeft -= blockW;
+          if (!raf) raf = requestAnimationFrame(() => { raf = 0; fisheye(); });
+        }
+        strip.addEventListener('scroll', onScroll, { passive: true });
+        // horizontal wheel + arrows + click-drag to pan
+        strip.addEventListener('wheel', (e) => {
+          // only hijack when the gesture is mostly vertical over the gaps;
+          // faders capture their own wheel for value, so pan via shift/horizontal
+          if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // native horizontal
+        }, { passive: true });
+        // arrows nudge a few lanes (not a whole page) for finer, calmer steps
+        arrowL.addEventListener('click', () => strip.scrollBy({ left: -itemW * 3, behavior: 'smooth' }));
+        arrowR.addEventListener('click', () => strip.scrollBy({ left: itemW * 3, behavior: 'smooth' }));
+        // drag-to-pan on empty strip area. Gain < 1 = slower, more controlled
+        // panning (the strip moves less than the cursor) for a calmer feel.
+        const PAN_GAIN = 0.6;
+        let panning = false, panX = 0, panStart = 0;
+        strip.addEventListener('pointerdown', (e) => {
+          if (e.target.closest('.ts-body, .grip, .lockbtn')) return; // let widgets work
+          panning = true; panX = e.clientX; panStart = strip.scrollLeft;
+        });
+        window.addEventListener('pointermove', (e) => { if (panning) strip.scrollLeft = panStart - (e.clientX - panX) * PAN_GAIN; });
+        window.addEventListener('pointerup', () => { panning = false; });
+      });
+      bumpCounts();
+    }
+
+    function renderController(area) {
+      const base = bank * deviceSize();
+      let local = 0;
+      for (const sec of prof().sections) {
+        const n = sec.rows * sec.cols;
+        const wrap = document.createElement('div'); wrap.className = 'section';
+        const head = document.createElement('div'); head.className = 'section-head';
+        head.textContent = `${sec.label} · ${sec.rows}×${sec.cols}`;
+        wrap.appendChild(head);
+        const grid = document.createElement('div'); grid.className = 'grid';
+        grid.style.gridTemplateColumns = `repeat(${sec.cols}, var(--lane))`;
+        for (let i = 0; i < n; i++, local++) grid.appendChild(renderSlot(sec.kind, base + local, PAD_COLORS[(i % sec.cols) % 8]));
+        wrap.appendChild(grid); area.appendChild(wrap);
+      }
+      // controller mode also pages, in whole-device chunks
+      area.appendChild(buildPageLight(bank));
+      bumpCounts();
+    }
+
+    function bumpCounts() {
+      document.getElementById('itemcount').textContent = catalog().length + ' · ' + pageSize() + '/page · ' + pageCount() + ' pages';
+    }
+
+    /* ===== wiring ========================================================= */
+    document.getElementById('profile').addEventListener('change', () => { bank = 0; render(); });
+    document.getElementById('add').addEventListener('click', () => {
+      const extra = content === 'visual' ? `NEW FX ${VISUAL_CATALOG.length + 1}` : `STEM ${AUDIO_CATALOG.length + 1}`;
+      (content === 'visual' ? VISUAL_CATALOG : AUDIO_CATALOG).push(extra);
+      render();
+    });
+    document.getElementById('reset').addEventListener('click', () => { assign.visual = {}; assign.audio = {}; bank = 0; render(); });
+
+    document.getElementById('seg').addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      view = b.dataset.view; bank = 0;
+      [...document.querySelectorAll('#seg button')].forEach((x) => x.classList.toggle('on', x.dataset.view === view));
+      render();
+    });
+    document.getElementById('tab-audio').addEventListener('click', () => { content = 'audio'; bank = 0; setTabs(); render(); });
+    document.getElementById('tab-visual').addEventListener('click', () => { content = 'visual'; bank = 0; setTabs(); render(); });
+    function setTabs() {
+      document.getElementById('tab-audio').className = 'tab' + (content === 'audio' ? ' on-audio' : ' muted');
+      document.getElementById('tab-visual').className = 'tab' + (content === 'visual' ? ' on-visual' : ' muted');
+    }
+
+    setTabs();
+    render();
+  </script>
+</body>
+
+</html>

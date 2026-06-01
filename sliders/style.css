@@ -1,0 +1,679 @@
+/* ============================================================================
+   Track Slider — visual template
+   Vertical capsule fader: smooth color blend (0–100), magnifying notches,
+   rounded caps, glowing fill + glass knob. Dependency-free.
+   JS sets the live theme via CSS custom properties on each .ts root:
+     --accent        solid value color
+     --accent-bright lighter shade (specular / fill top)
+     --accent-deep   darker shade (fill base)
+     --accent-glow   accent @ ~0.55 alpha (halos)
+     --accent-faint  accent @ ~0.16 alpha (tints)
+   ========================================================================= */
+
+:root {
+  --bg: #000;
+
+  /* slider geometry */
+  --body-w: 152px;
+  --body-h: 528px;
+  --track-inset: 42px;           /* top & bottom padding inside the body */
+  --track-w: 46px;
+  --knob-d: 60px;
+  --scale-w: 96px;
+  --scale-gap: 18px;             /* space between scale ruler and body */
+
+  /* sensible default before JS paints */
+  --accent: #00e5ff;
+  --accent-bright: #9bf4ff;
+  --accent-deep: #00a7bd;
+  --accent-glow: rgba(0, 229, 255, 0.55);
+  --accent-faint: rgba(0, 229, 255, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: #fff;
+  font-family: "Inter", "SF Pro Display", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+}
+
+/* ----------------------------------------------------------------------------
+   Root: holds the stage (scale + body) and the readout, stacked.
+   --------------------------------------------------------------------------- */
+.ts {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 34px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;          /* we handle pointer drags ourselves */
+  /* Each slider is its OWN stacking world: the colored glow halo from the
+     fill/knob (box-shadow blur) stays contained, and the text layers
+     (ruler, name, value, mapping) sit ABOVE it — never occluded. */
+  isolation: isolate;
+}
+
+/* Text layers ride above the capsule glow (knob z-index is 5). */
+.ts-scale,
+.ts-readout,
+.ts-name-top,
+.ts-readout-compact {
+  position: relative;
+  z-index: 6;
+}
+.ts-scale { position: absolute; }   /* keep the ruler absolutely placed */
+
+/* stage = scale ruler (absolute, left) + the capsule body (in flow) */
+.ts-stage {
+  position: relative;
+  display: block;
+  width: var(--body-w);          /* stage == capsule, so the readout centers under it */
+}
+
+/* ----------------------------------------------------------------------------
+   Capsule body — dark glass shell
+   --------------------------------------------------------------------------- */
+.ts-body {
+  position: relative;
+  width: var(--body-w);
+  height: var(--body-h);
+  border-radius: 999px;
+  background:
+    radial-gradient(130% 55% at 50% 0%, rgba(255, 255, 255, 0.07), transparent 62%),
+    linear-gradient(180deg, rgba(30, 30, 33, 0.92) 0%, rgba(12, 12, 14, 0.94) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.08),
+    inset 0 -26px 50px rgba(0, 0, 0, 0.55),
+    0 36px 70px rgba(0, 0, 0, 0.7);
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------------------
+   Track channel — the recessed slot the fill rises through.
+   overflow:visible so the knob bulge + colored glow can escape.
+   --------------------------------------------------------------------------- */
+.ts-track {
+  position: absolute;
+  top: var(--track-inset);
+  bottom: var(--track-inset);
+  left: 50%;
+  width: var(--track-w);
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.92));
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.9),
+    inset 0 0 14px rgba(0, 0, 0, 0.9),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.04);
+}
+
+/* glassy top reflection sitting inside the empty channel */
+.ts-track::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 46%;
+  height: 32%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.01));
+  filter: blur(2px);
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ----------------------------------------------------------------------------
+   Fill — bottom-anchored colored column, rounded caps, big colored glow.
+   --------------------------------------------------------------------------- */
+.ts-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0%;
+  border-radius: 999px;
+  background:
+    radial-gradient(75% 90px at 50% 0%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 72%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0) 6%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0) 94%),
+    linear-gradient(180deg, var(--accent-bright) 0%, var(--accent) 32%, var(--accent-deep) 100%);
+  box-shadow:
+    0 0 30px var(--accent-glow),
+    0 0 72px var(--accent-glow),
+    0 0 120px var(--accent-glow),
+    inset 0 1px 5px rgba(255, 255, 255, 0.5);
+  transition:
+    height 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    background 0.25s ease,
+    box-shadow 0.25s ease;
+  z-index: 2;
+}
+
+/* soft moving sheen down the center of the fill */
+.ts-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(60% 40% at 50% 18%, rgba(255, 255, 255, 0.35), transparent 70%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ----------------------------------------------------------------------------
+   Knob — translucent glass disc that rides the top of the fill.
+   --------------------------------------------------------------------------- */
+.ts-knob {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: var(--knob-d);
+  height: var(--knob-d);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background:
+    radial-gradient(58% 58% at 36% 30%, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.03) 48%, transparent 60%),
+    radial-gradient(120% 120% at 50% 60%, var(--accent-faint), transparent 70%),
+    rgba(18, 18, 20, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 0 22px var(--accent-glow),
+    inset 0 1px 7px rgba(255, 255, 255, 0.28),
+    inset 0 -6px 12px rgba(0, 0, 0, 0.5),
+    0 10px 24px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(5px) saturate(160%);
+  -webkit-backdrop-filter: blur(5px) saturate(160%);
+  cursor: grab;
+  z-index: 5;
+  transition: box-shadow 0.25s ease, width 0.12s ease, height 0.12s ease;
+}
+
+.ts.is-dragging .ts-knob {
+  cursor: grabbing;
+  width: calc(var(--knob-d) + 4px);
+  height: calc(var(--knob-d) + 4px);
+}
+
+.ts-knob:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--accent-faint),
+    0 0 26px var(--accent-glow),
+    inset 0 1px 7px rgba(255, 255, 255, 0.28),
+    0 10px 24px rgba(0, 0, 0, 0.55);
+}
+
+/* ----------------------------------------------------------------------------
+   Scale ruler — numbers + ticks. Magnified near the knob (set by JS).
+   --------------------------------------------------------------------------- */
+.ts-scale {
+  position: absolute;
+  right: calc(100% + var(--scale-gap));   /* ruler hangs to the LEFT of the capsule */
+  top: var(--track-inset);
+  height: calc(var(--body-h) - 2 * var(--track-inset));
+  width: var(--scale-w);
+  pointer-events: none;
+}
+
+.ts-mark {
+  position: absolute;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  transform-origin: right center;
+  will-change: transform, opacity, color;
+  transition:
+    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.16s ease,
+    color 0.16s ease;
+}
+
+.ts-num {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: inherit;
+  text-shadow: var(--mark-glow, none);
+}
+
+.ts-tick {
+  height: 2px;
+  width: 8px;
+  border-radius: 2px;
+  background: currentColor;
+  flex: 0 0 auto;
+  box-shadow: var(--mark-glow, none);
+}
+
+/* ----------------------------------------------------------------------------
+   Readout
+   --------------------------------------------------------------------------- */
+.ts-readout {
+  text-align: center;
+  line-height: 1;
+}
+
+.ts-value {
+  font-size: 5.4rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-shadow: 0 0 42px var(--accent-glow);
+}
+
+.ts-name {
+  margin-top: 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.34em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.ts-status {
+  margin-top: 9px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  text-shadow: 0 0 20px var(--accent-glow);
+}
+
+/* ----------------------------------------------------------------------------
+   COMPACT layout — narrow mixer card for the SLIDE dock. Same capsule visual
+   language, shrunk; ruler hidden; name on top; small value + mapping chip
+   below. Tiles many-across in a horizontal row.
+   --------------------------------------------------------------------------- */
+.ts--compact {
+  /* compact geometry overrides (consumed by .ts-body / .ts-track / .ts-knob) */
+  --body-w: 50px;
+  --body-h: 178px;
+  --track-inset: 14px;
+  --track-w: 28px;
+  --knob-d: 34px;
+  --scale-w: 30px;
+  --scale-gap: 6px;
+
+  gap: 6px;
+  width: auto;
+  min-width: 104px;
+  padding: 7px 7px 7px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* The ruler hangs in a left gutter; name + readout align over the capsule
+   (offset right by the ruler width) so the column reads like the reference. */
+.ts--compact .ts-stage {
+  width: auto;
+  padding-left: calc(var(--scale-w) + var(--scale-gap));
+}
+.ts--compact .ts-scale {
+  right: auto;
+  left: 0;
+}
+.ts--compact .ts-num {
+  font-size: 8px;
+  font-weight: 700;
+}
+.ts--compact .ts-mark {
+  gap: 4px;
+}
+
+.ts--compact .ts-name-top {
+  padding-left: calc(var(--scale-w) + var(--scale-gap));
+  width: var(--body-w);
+  box-sizing: content-box;
+  text-align: center;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #e4e4e7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ts--compact .ts-body {
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.07),
+    inset 0 -12px 26px rgba(0, 0, 0, 0.5),
+    0 12px 26px rgba(0, 0, 0, 0.55);
+}
+
+/* smaller, tighter glow at mixer scale */
+.ts--compact .ts-fill {
+  box-shadow:
+    0 0 14px var(--accent-glow),
+    0 0 34px var(--accent-glow),
+    inset 0 1px 3px rgba(255, 255, 255, 0.5);
+}
+
+.ts--compact .ts-knob {
+  box-shadow:
+    0 0 12px var(--accent-glow),
+    inset 0 1px 5px rgba(255, 255, 255, 0.28),
+    inset 0 -4px 9px rgba(0, 0, 0, 0.5),
+    0 6px 14px rgba(0, 0, 0, 0.55);
+}
+
+.ts--compact.is-dragging .ts-knob {
+  width: calc(var(--knob-d) + 3px);
+  height: calc(var(--knob-d) + 3px);
+}
+
+.ts--compact .ts-readout-compact {
+  padding-left: calc(var(--scale-w) + var(--scale-gap));
+  width: var(--body-w);
+  box-sizing: content-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.ts--compact .ts-value-sm {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-shadow: 0 0 12px var(--accent-glow);
+}
+
+.ts--compact .ts-map {
+  width: 100%;
+  text-align: center;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 7.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(161, 161, 170, 0.85);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 3px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ----------------------------------------------------------------------------
+   Unified lane width — faders, knobs, and pads all occupy the SAME lane so
+   they align 1:1 in a controller grid (knobs over faders over buttons). Set
+   --lane on a container to retune all three at once.
+   --------------------------------------------------------------------------- */
+.ts--compact,
+.tk,
+.tp {
+  width: var(--lane, 96px);
+  min-width: var(--lane, 96px);
+}
+/* the compact fader centers on its CAPSULE; the ruler floats to the left so
+   the capsule lines up with the knob/pad centers in the column above/below. */
+.ts--compact { padding-left: 0; padding-right: 0; }
+.ts--compact .ts-stage,
+.ts--compact .ts-name-top,
+.ts--compact .ts-readout-compact { padding-left: 0; }
+.ts--compact .ts-scale {
+  right: calc(50% + var(--track-w) / 2 + var(--scale-gap));
+  left: auto;
+}
+.ts--compact .ts-name-top,
+.ts--compact .ts-readout-compact { width: 100%; }
+
+/* ----------------------------------------------------------------------------
+   Shared 4-row rhythm — every widget (fader / knob / pad) stacks
+   name → body → value → map. The body holds the widget at its natural
+   height; name/value/map are uniform rows so a column of mixed widgets reads
+   cleanly. (Width is unified separately via --lane.)
+   --------------------------------------------------------------------------- */
+.tw-body {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+.tw-value { position: relative; z-index: 6; }
+.tw-map   { position: relative; z-index: 6; }
+
+/* ----------------------------------------------------------------------------
+   ROTARY KNOB — 270° colored arc + glowing pointer. Same color ramp as faders.
+   --------------------------------------------------------------------------- */
+.tk {
+  --dial-d: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  isolation: isolate;          /* own stacking world — text above the glow */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.tk-name {
+  position: relative;
+  z-index: 3;
+  max-width: 66px;
+  text-align: center;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #e4e4e7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tk-dial {
+  position: relative;
+  width: var(--dial-d);
+  height: var(--dial-d);
+  border-radius: 50%;
+  cursor: ns-resize;
+  outline: none;
+  background:
+    radial-gradient(circle at 50% 36%, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.4) 70%),
+    #0c0c10;
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.06),
+    inset 0 -6px 12px rgba(0, 0, 0, 0.6),
+    0 6px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* the colored arc — a ring carved out of a conic-gradient via a radial mask */
+.tk-arc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  -webkit-mask: radial-gradient(closest-side, transparent 62%, #000 64%);
+  mask: radial-gradient(closest-side, transparent 62%, #000 64%);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+  /* background (the conic-gradient) is set by JS per value */
+}
+
+/* glassy center cap */
+.tk-face {
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 30%, rgba(255, 255, 255, 0.2), rgba(18, 18, 22, 0.96) 62%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 1px 3px rgba(255, 255, 255, 0.12),
+    0 0 10px var(--accent-faint);
+}
+
+/* pointer — a full-size layer rotated by JS; the dot sits at its top */
+.tk-point { position: absolute; inset: 0; pointer-events: none; }
+.tk-point span {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 3px;
+  height: 10px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--accent-bright);
+  box-shadow: 0 0 7px var(--accent-glow);
+}
+
+.tk.is-dragging .tk-dial,
+.tk-dial:focus-visible {
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.08),
+    inset 0 -6px 12px rgba(0, 0, 0, 0.6),
+    0 0 0 2px var(--accent-faint),
+    0 0 16px var(--accent-glow);
+}
+
+.tk-value {
+  position: relative;
+  z-index: 3;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+.tk-map {
+  position: relative;
+  z-index: 3;
+  max-width: 66px;
+  text-align: center;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 7px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(161, 161, 170, 0.85);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ----------------------------------------------------------------------------
+   TOGGLE / MOMENTARY PAD — lights up in its assigned color when active.
+   --------------------------------------------------------------------------- */
+.tp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  isolation: isolate;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tp-btn {
+  position: relative;
+  width: 50px;
+  height: 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.5)),
+    #111114;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.06), 0 4px 10px rgba(0, 0, 0, 0.5);
+  transition: background 0.12s ease, box-shadow 0.16s ease, border-color 0.12s ease, transform 0.08s ease;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tp-btn:focus-visible { box-shadow: 0 0 0 2px var(--pad-glow), 0 4px 10px rgba(0, 0, 0, 0.5); }
+.tp-btn:active { transform: translateY(1px); }
+
+/* the small LED dot in the pad */
+.tp-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.6);
+  transition: background 0.12s ease, box-shadow 0.16s ease;
+}
+
+.tp-btn.on {
+  border-color: var(--pad);
+  background: linear-gradient(180deg, var(--pad-bright), var(--pad));
+  box-shadow:
+    0 0 16px var(--pad-glow),
+    0 0 32px var(--pad-glow),
+    inset 0 1px 4px rgba(255, 255, 255, 0.45);
+}
+.tp-btn.on .tp-led {
+  background: #fff;
+  box-shadow: 0 0 8px #fff, 0 0 14px var(--pad-glow);
+}
+
+/* pad value row — ON / OFF, colored when active (keeps the 4-row rhythm) */
+.tp-value {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: rgba(120, 120, 130, 0.9);
+}
+.tp-value.on { color: var(--pad-bright); text-shadow: 0 0 10px var(--pad-glow); }
+
+.tp-map {
+  max-width: var(--lane, 96px);
+  text-align: center;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 7px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(161, 161, 170, 0.85);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 520px) {
+  .ts:not(.ts--compact) { transform: scale(0.88); }
+}

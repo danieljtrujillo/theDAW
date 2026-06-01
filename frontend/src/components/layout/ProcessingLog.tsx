@@ -293,12 +293,22 @@ export const LogActionButton: React.FC = () => {
 };
 
 // ─── LogStripCompactInfo ────────────────────────────────────────────────────
-// Tiny summary shown inline in the strip's LOG header when the LOG is
-// collapsed — just a compact telemetry line so the user knows things
-// are alive without expanding.
+// Live hardware telemetry shown in the strip's LOG header — CPU · GPU · TEMP ·
+// VRAM · RAM, in that exact order. Replaces the old `>_` terminal glyph and the
+// `[N]` entry-count badges. Each stat is a labelled chip that hides itself when
+// its datum is unavailable; the row truncates gracefully in a narrow LOG column.
+
+const TEMP_CLASS = (c: number) =>
+  c > 80 ? 'text-red-400' : c > 65 ? 'text-amber-400' : 'text-zinc-300';
+
+const Stat: React.FC<{ label: string; value: string; valueClass?: string }> = ({ label, value, valueClass }) => (
+  <span className="flex items-baseline gap-0.5 shrink-0">
+    <span className="text-[7px] font-mono text-zinc-600 uppercase">{label}</span>
+    <span className={`text-[9px] font-mono tabular-nums ${valueClass ?? 'text-zinc-300'}`}>{value}</span>
+  </span>
+);
 
 export const LogStripCompactInfo: React.FC = () => {
-  const entries = useLogStore((s) => s.entries);
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   const [stats, setStats] = useState<SystemStats | null>(null);
 
@@ -315,22 +325,26 @@ export const LogStripCompactInfo: React.FC = () => {
     return () => clearInterval(t);
   }, [isBackendReady]);
 
-  const compactTelemetry = (() => {
-    const parts: string[] = [];
-    if (stats?.gpu_util_pct != null) parts.push(`${stats.gpu_util_pct}%`);
-    if (stats?.gpu_temp_c != null)   parts.push(`${stats.gpu_temp_c}°`);
-    if (stats?.vram_used_gb != null && stats.vram_total_gb)
-      parts.push(`${stats.vram_used_gb}/${stats.vram_total_gb}G`);
-    return parts.join(' ');
-  })();
+  if (!stats) return null;
 
   return (
-    <>
-      <span className="text-[9px] font-mono text-zinc-600 shrink-0">[{entries.length}]</span>
-      {compactTelemetry && (
-        <span className="text-[8px] font-mono text-zinc-600 truncate hidden md:inline">{compactTelemetry}</span>
+    <span className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
+      {stats.cpu_pct != null && (
+        <Stat label="CPU" value={`${stats.cpu_pct}%`} valueClass="text-emerald-400" />
       )}
-    </>
+      {stats.gpu_util_pct != null && (
+        <Stat label="GPU" value={`${stats.gpu_util_pct}%`} valueClass="text-purple-300" />
+      )}
+      {stats.gpu_temp_c != null && (
+        <Stat label="TEMP" value={`${stats.gpu_temp_c}°C`} valueClass={TEMP_CLASS(stats.gpu_temp_c)} />
+      )}
+      {stats.vram_used_gb != null && stats.vram_total_gb > 0 && (
+        <Stat label="VRAM" value={`${stats.vram_used_gb}/${stats.vram_total_gb}G`} />
+      )}
+      {stats.ram_used_gb != null && stats.ram_total_gb != null && stats.ram_total_gb > 0 && (
+        <Stat label="RAM" value={`${stats.ram_used_gb}/${stats.ram_total_gb}G`} />
+      )}
+    </span>
   );
 };
 

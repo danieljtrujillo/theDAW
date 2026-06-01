@@ -112,7 +112,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'stabledaw-user-guide.md';
+    a.download = 'theDAW-user-guide.md';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -141,8 +141,8 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
               <BookOpen className="w-3.5 h-3.5 text-white" />
             </div>
             <div className="flex flex-col leading-tight">
-              <span className="font-black text-[13px] uppercase tracking-widest text-white">theDAW Docs</span>
-              <span className="text-[9px] font-mono text-purple-300/70 tracking-tighter uppercase">User Guide / Reference</span>
+              <span className="font-black text-[13px] tracking-widest text-white">theDAW Docs</span>
+              <span className="text-[9px] font-mono text-purple-300/70 tracking-tighter">theDAW User Guide - by GANTASMO</span>
             </div>
           </div>
           <div className="flex items-center gap-1.5">

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Track Slider — compact dock preview</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    /* Emulate the SLIDE dock: dark strip, a mode header, a horizontal
+       scrolling row of compact lanes — matching SlidePanel.tsx. */
+    html, body { background: #07060c; }
+    #app { display: block; padding: 0; min-height: 100vh; }
+
+    .dock {
+      height: 300px;
+      display: flex;
+      flex-direction: column;
+      background: #07060c;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    /* Simulates the lower-panel TAB ROW with AUDIO / VISUAL moved up into it
+       (alongside Visualize / Piano / … / SLIDE). The old VISUAL MIX/FX header
+       + description are gone — that height now goes to the lanes. */
+    .tabrow {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      background: rgba(0, 0, 0, 0.3);
+    }
+    .tabrow .tab {
+      font: 800 9px/1 system-ui; letter-spacing: 0.16em; text-transform: uppercase;
+      padding: 9px 12px; cursor: pointer;
+      border: 0; border-bottom: 2px solid transparent; background: transparent; color: #52525b;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .tabrow .tab.muted { color: #3f3f46; }
+    .tabrow .tab.on-audio { color: #6ee7b7; border-bottom-color: #10b981; }
+    .tabrow .tab.on-visual { color: #f9a8d4; border-bottom-color: #ec4899; }
+    .tabrow .spacer { flex: 1; }
+
+    .dock-row {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      padding: 12px;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .dock-row::-webkit-scrollbar { height: 8px; }
+    .dock-row::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+  </style>
+</head>
+
+<body>
+  <main id="app">
+    <div class="dock">
+      <!-- AUDIO / VISUAL now live in the tab row (mock of the other tabs) -->
+      <div class="tabrow">
+        <button class="tab muted">VISUALIZE</button>
+        <button class="tab muted">PIANO</button>
+        <button class="tab muted">SLIDE</button>
+        <button class="tab on-audio">AUDIO</button>
+        <button class="tab on-visual">VISUAL</button>
+        <div class="spacer"></div>
+      </div>
+      <div class="dock-row" id="row"></div>
+    </div>
+  </main>
+
+  <script src="./script.js"></script>
+  <script>
+    // A representative mix of the real SLIDE lanes (names + mappings pulled
+    // from SlidePanel.tsx) so the preview reads like the actual dock.
+    const LANES = [
+      { name: 'CROSSFADE', value: 50, mapping: 'NOTE 73 · CH1' },
+      { name: 'BRIGHTNESS', value: 62, mapping: 'CC 13 · CH1' },
+      { name: 'HUE ROTATE', value: 44, mapping: 'CC 80 · CH1' },
+      { name: 'SATURATION', value: 54, mapping: 'CC 14 · CH1' },
+      { name: 'CONTRAST', value: 58, mapping: 'CC 29 · CH1' },
+      { name: 'FEEDBACK', value: 47, mapping: 'NOTE 90' },
+      { name: 'GLITCH', value: 38, mapping: 'NOTE 44' },
+      { name: 'RGB GHOST', value: 71, mapping: 'CC 71' },
+      { name: 'STROBE', value: 14, mapping: 'CC 51 · CH1' },
+      { name: 'PIXELATE', value: 22, mapping: 'CC 81' },
+      { name: 'BLOOM', value: 83, mapping: 'PLUGIN BUS' },
+      { name: 'SLIT SCAN', value: 19, mapping: 'NOTE 89' },
+      { name: 'POSTERIZE', value: 34, mapping: 'CC 16' },
+      { name: 'BPM', value: 92, mapping: 'CC 51' },
+    ];
+
+    const row = document.getElementById('row');
+    for (const lane of LANES) {
+      const el = document.createElement('div');
+      row.appendChild(el);
+      window.createSlider(el, { ...lane, compact: true });
+    }
+  </script>
+</body>
+
+</html>

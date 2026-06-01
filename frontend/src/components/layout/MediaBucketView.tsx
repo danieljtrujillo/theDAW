@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FolderPlus, Trash2, Music, FileAudio, UploadCloud, Send, Library, Wand2 } from 'lucide-react';
 import { useMediaBucketStore, type BucketItem } from '../../state/mediaBucketStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
@@ -20,6 +20,8 @@ const isAudio = (mime: string, name: string): boolean =>
 
 export const MediaBucketView: React.FC = () => {
   const items = useMediaBucketStore((s) => s.items);
+  const hydrated = useMediaBucketStore((s) => s.hydrated);
+  const hydrate = useMediaBucketStore((s) => s.hydrate);
   const addMany = useMediaBucketStore((s) => s.addMany);
   const remove = useMediaBucketStore((s) => s.remove);
   const clear = useMediaBucketStore((s) => s.clear);
@@ -29,6 +31,10 @@ export const MediaBucketView: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const itemMenu = useContextMenu<BucketItem>();
+
+  useEffect(() => {
+    if (!hydrated) void hydrate();
+  }, [hydrated, hydrate]);
 
   const selectedAudio = useMemo(
     () => items.filter((it) => selectedIds.includes(it.id) && isAudio(it.mimeType, it.name)),

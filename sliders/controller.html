@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SLIDE — adaptive controller mirror</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    /* Mocks the lower dock: a tab row (AUDIO/VISUAL moved up into it), then a
+       scrollable area that mirrors the connected controller's physical layout
+       — knob grid, button grid, fader row. Adapts to any rows×cols profile. */
+    html, body { background: #07060c; height: 100%; }
+    #app { display: block; padding: 0; min-height: 100vh; }
+
+    .dock { display: flex; flex-direction: column; height: 100vh; background: #07060c; }
+
+    .tabrow {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(0, 0, 0, 0.3);
+    }
+    .tabrow .tab {
+      font: 800 9px/1 system-ui; letter-spacing: 0.16em; text-transform: uppercase;
+      padding: 9px 12px; cursor: pointer; background: transparent; border: 0;
+      border-bottom: 2px solid transparent; color: #52525b;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .tabrow .tab.muted { color: #3f3f46; }
+    .tabrow .tab.on-audio { color: #6ee7b7; border-bottom-color: #10b981; }
+    .tabrow .tab.on-visual { color: #f9a8d4; border-bottom-color: #ec4899; }
+    .tabrow .spacer { flex: 1; }
+    .ctrlsel {
+      display: flex; align-items: center; gap: 8px; padding: 0 10px;
+      font: 600 8px/1 ui-monospace, monospace; letter-spacing: 0.08em; color: #71717a;
+    }
+    .ctrlsel b { color: #a1a1aa; font-weight: 700; }
+    .ctrlsel .dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981; }
+    .ctrlsel select {
+      background: #111114; color: #d4d4d8; border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; padding: 4px 6px; font: 600 9px/1 system-ui; letter-spacing: 0.06em;
+    }
+
+    .area { flex: 1 1 auto; overflow: auto; padding: 12px 14px 18px; }
+
+    .section { margin-bottom: 14px; }
+    .section-head {
+      font: 800 8px/1 system-ui; letter-spacing: 0.22em; text-transform: uppercase;
+      color: #6b7280; margin: 0 0 8px 2px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-head::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,0.06); }
+
+    .grid { display: grid; gap: 10px 12px; justify-content: start; }
+    .area::-webkit-scrollbar { height: 9px; width: 9px; }
+    .area::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+  </style>
+</head>
+
+<body>
+  <main id="app">
+    <div class="dock">
+      <div class="tabrow">
+        <button class="tab muted">VISUALIZE</button>
+        <button class="tab muted">PIANO</button>
+        <button class="tab muted">SLIDE</button>
+        <button class="tab on-audio" id="tab-audio">AUDIO</button>
+        <button class="tab on-visual" id="tab-visual">VISUAL</button>
+        <div class="spacer"></div>
+        <div class="ctrlsel">
+          <span class="dot"></span>
+          <span>CONTROLLER</span>
+          <select id="profile">
+            <option value="akai-midimix">AKAI MIDIMIX</option>
+            <option value="novation-lcxl">Launch Control XL</option>
+            <option value="korg-nanokontrol2">Korg nanoKONTROL2</option>
+            <option value="generic-8">Generic 8-channel</option>
+          </select>
+        </div>
+      </div>
+      <div class="area" id="area"></div>
+    </div>
+  </main>
+
+  <script src="./script.js"></script>
+  <script>
+    /* ---- controller profiles (mirrors controllerProfiles.ts) ------------- */
+    const PROFILES = {
+      'akai-midimix': {
+        name: 'AKAI MIDIMIX',
+        sections: [
+          { id: 'knobs', kind: 'knob', label: 'KNOBS', rows: 3, cols: 8 },
+          { id: 'buttons', kind: 'button', label: 'BUTTONS', rows: 2, cols: 8 },
+          { id: 'faders', kind: 'fader', label: 'FADERS', rows: 1, cols: 8 },
+        ],
+      },
+      'novation-lcxl': {
+        name: 'Launch Control XL',
+        sections: [
+          { id: 'knobs', kind: 'knob', label: 'KNOBS', rows: 3, cols: 8 },
+          { id: 'buttons', kind: 'button', label: 'BUTTONS', rows: 2, cols: 8 },
+          { id: 'faders', kind: 'fader', label: 'FADERS', rows: 1, cols: 8 },
+        ],
+      },
+      'korg-nanokontrol2': {
+        name: 'Korg nanoKONTROL2',
+        sections: [
+          { id: 'knobs', kind: 'knob', label: 'KNOBS', rows: 1, cols: 8 },
+          { id: 'buttons', kind: 'button', label: 'S / M / R', rows: 3, cols: 8 },
+          { id: 'faders', kind: 'fader', label: 'FADERS', rows: 1, cols: 8 },
+        ],
+      },
+      'generic-8': {
+        name: 'Generic 8-channel',
+        sections: [
+          { id: 'knobs', kind: 'knob', label: 'KNOBS', rows: 3, cols: 8 },
+          { id: 'buttons', kind: 'button', label: 'BUTTONS', rows: 2, cols: 8 },
+          { id: 'faders', kind: 'fader', label: 'FADERS', rows: 1, cols: 8 },
+        ],
+      },
+    };
+
+    /* ---- semantic label pools per mode/kind (mirrors SlidePanel) --------- */
+    const POOLS = {
+      visual: {
+        fader: ['CROSSFADE', 'BLACK', 'AUTOSWITCH', 'VIDEOS', 'IMAGES', 'PICTURES', 'ASPECT', 'MASTER FX'],
+        knob: ['BRIGHTNESS', 'HUE ROT', 'SATURATION', 'CONTRAST', 'GRID TILE', 'RADIAL MIR', 'RGB GHOST', 'CHROMA AB',
+               'PIXELATE', 'WAVE WARP', 'RGB SPLIT', 'TIME GLCH', 'SEPIA', 'GRAYSCALE', 'SOFT BLUR', 'POSTERIZE',
+               'PLAYBK SPD', 'ECHO TRL', 'SLIT SCAN', 'TIME DISP', 'FEEDBACK', 'BLOOM', 'DEPTH FOG', 'TILT SHIFT'],
+        button: ['STROBE', 'GLITCH', 'INVERT', 'FREEZE', 'FLASH', 'MIRROR', 'KALEIDO', 'DATAMOSH',
+                 'BLACKOUT', 'WIPE', 'ZOOM', 'SHAKE', 'TRAILS', 'SCAN', 'BEAT FX', 'DROP'],
+      },
+      audio: {
+        fader: ['MASTER', 'TRACK 1', 'TRACK 2', 'TRACK 3', 'TRACK 4', 'TRACK 5', 'TRACK 6', 'TRACK 7'],
+        knob: null,   // generated as ROW + channel (HI/MID/LO …)
+        button: null, // generated as ROW + channel (MUTE/REC …)
+      },
+    };
+    const AUDIO_KNOB_ROWS = ['HI', 'MID', 'LO', 'AUX', 'SEND', 'PAN'];
+    const AUDIO_BTN_ROWS = ['MUTE', 'REC', 'SOLO', 'ARM'];
+
+    /* ---- pad color palette (cycles) -------------------------------------- */
+    const PAD_COLORS = [
+      [255, 64, 129], [0, 229, 255], [124, 252, 0], [255, 170, 0],
+      [170, 100, 255], [255, 90, 90], [0, 200, 180], [255, 220, 0],
+    ];
+
+    function labelFor(mode, kind, row, col, cols, idx) {
+      const pool = POOLS[mode][kind];
+      if (pool) return pool[idx] || '—';
+      // audio knobs/buttons: row purpose + channel number
+      const rows = kind === 'knob' ? AUDIO_KNOB_ROWS : AUDIO_BTN_ROWS;
+      const r = rows[row] || `R${row + 1}`;
+      return `${r} ${col + 1}`;
+    }
+
+    function mappingFor(kind, idx) {
+      if (kind === 'fader') return `CC ${19 + idx}`;
+      if (kind === 'knob') return `CC ${46 + idx}`;
+      return `NOTE ${1 + idx}`;
+    }
+
+    let mode = 'visual';
+
+    function build() {
+      const area = document.getElementById('area');
+      area.innerHTML = '';
+      const profile = PROFILES[document.getElementById('profile').value];
+
+      for (const section of profile.sections) {
+        const wrap = document.createElement('div');
+        wrap.className = 'section';
+        const count = section.rows * section.cols;
+        const head = document.createElement('div');
+        head.className = 'section-head';
+        head.textContent = `${section.label} · ${section.rows}×${section.cols}`;
+        wrap.appendChild(head);
+
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+        grid.style.gridTemplateColumns = `repeat(${section.cols}, auto)`;
+        wrap.appendChild(grid);
+
+        let idx = 0;
+        for (let r = 0; r < section.rows; r++) {
+          for (let c = 0; c < section.cols; c++, idx++) {
+            const cell = document.createElement('div');
+            grid.appendChild(cell);
+            const name = labelFor(mode, section.kind, r, c, section.cols, idx);
+            if (section.kind === 'fader') {
+              window.createSlider(cell, { name, mapping: mappingFor('fader', idx), value: 30 + (idx * 17) % 60, compact: true });
+            } else if (section.kind === 'knob') {
+              window.createKnob(cell, { name, mapping: mappingFor('knob', idx), value: 20 + (idx * 23) % 70 });
+            } else {
+              window.createPad(cell, { name, color: PAD_COLORS[c % PAD_COLORS.length], active: (idx % 3 === 0) });
+            }
+          }
+        }
+        area.appendChild(wrap);
+      }
+    }
+
+    document.getElementById('profile').addEventListener('change', build);
+    document.getElementById('tab-audio').addEventListener('click', () => { mode = 'audio'; setTabs(); build(); });
+    document.getElementById('tab-visual').addEventListener('click', () => { mode = 'visual'; setTabs(); build(); });
+    function setTabs() {
+      document.getElementById('tab-audio').className = 'tab' + (mode === 'audio' ? ' on-audio' : ' muted');
+      document.getElementById('tab-visual').className = 'tab' + (mode === 'visual' ? ' on-visual' : ' muted');
+    }
+    setTabs();
+    build();
+  </script>
+</body>
+
+</html>

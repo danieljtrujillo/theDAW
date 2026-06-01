@@ -15,6 +15,7 @@ import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
+import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
 
 import './orb-kit/styles/gantasmo-orb.css';
@@ -73,7 +74,10 @@ export default function App() {
     // Gated behind the master MIDI toggle: until the user turns MIDI on
     // we never call requestMIDIAccess(), so Chrome's permission prompt +
     // Web MIDI deprecation notice only appear on explicit opt-in.
-    if (!midiEnabled) return;
+    if (!midiEnabled) {
+      useMidiDevicesStore.getState().setMidiInputs([]);
+      return;
+    }
     if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
     let access: MIDIAccess | null = null;
     let cancelled = false;
@@ -103,13 +107,22 @@ export default function App() {
     };
 
     const attach = (a: MIDIAccess) => {
+      const names: string[] = [];
       a.inputs.forEach((input) => {
         input.onmidimessage = onMidiMessage;
+        names.push(input.name ?? 'unnamed');
       });
+      // Publish the connected device names so the SLIDE/DJ controller pickers
+      // can auto-detect a profile by name (and show what's plugged in).
+      useMidiDevicesStore.getState().setMidiInputs(names);
     };
 
-    (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
-      .requestMIDIAccess()
+    // Pass an explicit MIDIOptions ({ sysex: false }). Chrome logs a
+    // deprecation notice when requestMIDIAccess() is called WITHOUT options
+    // ("…will ask permission even if sysex is not specified"); specifying it
+    // resolves that warning. We don't need SysEx for note/CC input.
+    (navigator as Navigator & { requestMIDIAccess: (opts?: { sysex?: boolean }) => Promise<MIDIAccess> })
+      .requestMIDIAccess({ sysex: false })
       .then((a) => {
         if (cancelled) return;
         access = a;

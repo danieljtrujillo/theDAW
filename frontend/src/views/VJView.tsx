@@ -21,6 +21,8 @@ import { subscribeToMidi } from '../state/midiBus';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 import { getVjPlaybackState, registerVjPlaybackHandler, reportVjPlaybackState } from '../state/vjPlaybackBus';
 import { registerVjSetHandler } from '../state/vjSetBus';
+import { ingestManifest, applyFromVj, registerControlSink } from '../state/controlSyncBus';
+import type { VisualControl } from '../state/slideStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { logError, logInfo } from '../state/logStore';
 
@@ -275,6 +277,47 @@ export const VJView: React.FC = () => {
     };
   }, [status, popped]);
 
+  // Control sync (SLIDE tab ⇄ VJ controls). Three wires:
+  //   1. register a sink so the control-sync bus can post sa3-vj/control-set
+  //      into the iframe when a SLIDE fader moves;
+  //   2. listen for sa3-vj/controls-manifest (the VJ's control list + current
+  //      values) and sa3-vj/control-changed (a VJ-side move) → feed the bus;
+  //   3. request the manifest now (and on iframe (re)load via handleIframeLoad).
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    const unregisterSink = registerControlSink((key, value) => {
+      postToIframe({ type: 'sa3-vj/control-set', key, value });
+    });
+
+    const onMsg = (event: MessageEvent) => {
+      const d = event.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'sa3-vj/controls-manifest') {
+        const manifest = Array.isArray(d.manifest) ? (d.manifest as VisualControl[]) : [];
+        const values = (d.values && typeof d.values === 'object')
+          ? (d.values as Record<string, number | boolean>)
+          : undefined;
+        ingestManifest(manifest, values);
+        logInfo('vj', `Control manifest received — ${manifest.length} controls synced to SLIDE.`);
+      } else if (d.type === 'sa3-vj/control-changed') {
+        if (typeof d.key === 'string' && (typeof d.value === 'number' || typeof d.value === 'boolean')) {
+          applyFromVj(d.key, d.value);
+        }
+      }
+    };
+    window.addEventListener('message', onMsg);
+    // ask the iframe for its manifest (it may already be loaded)
+    postToIframe({ type: 'sa3-vj/request-controls' });
+
+    return () => {
+      unregisterSink();
+      window.removeEventListener('message', onMsg);
+    };
+  }, [status, popped]);
+
   // VJ SET receiver: DJView (or any view) pushes a SET / single track
   // onto vjSetBus; we forward it into the iframe as sa3-vj/load-set so
   // the VJ project can append the items to its archive bucket. The bus
@@ -336,6 +379,9 @@ export const VJView: React.FC = () => {
     const sync = () => {
       postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
       postToIframe({ type: 'sa3-vj/visibility', visible: isVjVisible });
+      // (re)request the control manifest so the SLIDE tab rebuilds its VISUAL
+      // lanes from the freshly-loaded VJ build.
+      postToIframe({ type: 'sa3-vj/request-controls' });
       const state = getVjPlaybackState();
 
       if (state === 'playing' || state === 'paused') {
