@@ -118,7 +118,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
     setErr(null); setBusy(true); setResult(null);
     try {
       const res = await detectFromUpload(file);
-      if (!res.available) { setErr(res.error || 'CV not available'); return; }
+      if (!res.available || res.error) { setErr(res.error || 'CV not available'); return; }
       applyResult(res, URL.createObjectURL(file));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
