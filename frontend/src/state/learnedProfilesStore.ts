@@ -204,7 +204,8 @@ export const useLearnedProfilesStore = create<LearnedProfilesState>()(
         // sends. A later capture/MIDI-learn pass fills the map.
         const learned: LearnedProfile = { profile, bindings: {} };
         set((s) => ({ profiles: [...s.profiles, learned] }));
-        setLearnedProfiles(get().profiles.map((l) => l.profile));
+        const all = get().profiles.concat(learned).map((l) => l.profile);
+        setLearnedProfiles(all);
         return id;
       },
 
