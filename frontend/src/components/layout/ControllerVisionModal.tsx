@@ -153,6 +153,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
             if (phonePoll.current) { window.clearInterval(phonePoll.current); phonePoll.current = null; }
             setPhoneWaiting(false);
             setPhoneUrl(null);
+            if (!res.available || res.error) { setErr(res.error || 'Phone analysis failed'); return; }
             // Phone result has no client-side image — show the overlay-less
             // verify panel (counts only).
             applyResult(res, null);
