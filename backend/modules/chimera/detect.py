@@ -1,11 +1,18 @@
-"""BPM and beat detection using the aubio Python wheel.
+"""BPM and beat detection.
 
 Public API:
     detect_tempo_and_beats(path) -> DetectionResult
 
-Returns None for `bpm` when the file is too short or aubio can't lock on a
-tempo (silence, very sparse onsets). The caller decides how to handle that:
-the Chimera mashup treats a None-BPM clip as "do not stretch, include as-is."
+Uses aubio when it can open the file (fast, accurate on WAV), and falls back
+to librosa's beat tracker otherwise. The aubio pip wheel on Windows only ships
+the ``wavread`` backend, so it raises on MP3/M4A/etc. ("could not find RIFF
+header"); librosa decodes those formats directly (via soundfile/audioread), so
+the fallback is what makes BPM work for compressed library tracks. No ffmpeg
+transcode step required.
+
+Returns None for `bpm` when the file is too short or no tempo can be locked
+(silence, very sparse onsets). The caller decides how to handle that: the
+Chimera mashup treats a None-BPM clip as "do not stretch, include as-is."
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ log = logging.getLogger(__name__)
 _WIN_S = 1024
 _HOP_S = 512
 _MIN_DURATION_SEC = 1.5
+_LIBROSA_SR = 22050  # beat tracking is accurate here and half the memory of 44.1k
 
 
 class DetectionResult(TypedDict):
@@ -30,7 +38,80 @@ class DetectionResult(TypedDict):
     duration_sec: float
 
 
+def _empty_result(sr: int = 0, duration_sec: float = 0.0) -> DetectionResult:
+    return {
+        "bpm": None,
+        "beats": [],
+        "confidence": 0.0,
+        "samplerate": int(sr),
+        "duration_sec": duration_sec,
+    }
+
+
 def detect_tempo_and_beats(path: str | Path) -> DetectionResult:
+    """Detect tempo + beat times (seconds). aubio first, librosa fallback."""
+    try:
+        return _detect_aubio(path)
+    except Exception as e:
+        log.info(
+            "chimera detect: aubio could not handle %s (%s) — falling back to librosa",
+            Path(path).name,
+            e,
+        )
+        try:
+            return _detect_librosa(path)
+        except Exception as e2:
+            log.warning(
+                "chimera detect: librosa fallback also failed for %s: %s",
+                Path(path).name,
+                e2,
+            )
+            return _empty_result()
+
+
+def _detect_librosa(path: str | Path) -> DetectionResult:
+    """Tempo + beats via librosa — decodes MP3/M4A/etc. that aubio can't open."""
+    import librosa
+    import numpy as np
+
+    y, sr = librosa.load(str(path), sr=_LIBROSA_SR, mono=True)
+    duration_sec = (len(y) / float(sr)) if sr else 0.0
+    if y.size == 0 or duration_sec < _MIN_DURATION_SEC:
+        return _empty_result(sr, duration_sec)
+
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    beats = [float(t) for t in librosa.frames_to_time(beat_frames, sr=sr)]
+    bpm_val = float(np.atleast_1d(tempo)[0]) if tempo is not None else 0.0
+    bpm: Optional[float] = bpm_val if bpm_val > 0 and beats else None
+
+    # Confidence heuristic: how regular the inter-beat intervals are.
+    confidence = 0.0
+    if len(beats) > 2:
+        intervals = np.diff(beats)
+        mean_i = float(intervals.mean())
+        if mean_i > 0:
+            cv = float(intervals.std()) / mean_i
+            confidence = max(0.0, min(1.0, 1.0 - cv))
+
+    log.debug(
+        "chimera detect (librosa): path=%s sr=%d dur=%.2f bpm=%s beats=%d conf=%.3f",
+        Path(path).name,
+        sr,
+        duration_sec,
+        bpm,
+        len(beats),
+        confidence,
+    )
+    return {
+        "bpm": bpm,
+        "beats": beats,
+        "confidence": confidence,
+        "samplerate": int(sr),
+        "duration_sec": duration_sec,
+    }
+
+
+def _detect_aubio(path: str | Path) -> DetectionResult:
     import aubio
 
     src = aubio.source(str(path), samplerate=0, hop_size=_HOP_S)
