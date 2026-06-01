@@ -67,6 +67,10 @@ interface LearnedProfilesState {
   /** Freeze the current capture into a learned profile. Returns its id, or null
    *  if nothing was captured. */
   commit: (name: string) => string | null;
+  /** Build a profile from CV-detected control COUNTS (Tier-3). Layout only — no
+   *  MIDI bindings (those come from a later capture / MIDI-learn pass), because
+   *  a photo can't tell us which CC/note each control sends. Returns the id. */
+  buildFromCounts: (name: string, counts: { knob?: number; fader?: number; pad?: number }) => string | null;
   removeProfile: (id: string) => void;
 }
 
@@ -174,6 +178,34 @@ export const useLearnedProfilesStore = create<LearnedProfilesState>()(
         for (const [posStr, b] of Object.entries(bindings)) {
           mapStore.bind(id, Number(posStr), b);
         }
+        return id;
+      },
+
+      buildFromCounts: (name, counts) => {
+        const knob = Math.max(0, Math.round(counts.knob ?? 0));
+        const fader = Math.max(0, Math.round(counts.fader ?? 0));
+        const pad = Math.max(0, Math.round(counts.pad ?? 0));
+        if (knob + fader + pad === 0) return null;
+        const cols = 8;
+        const sections: ControllerSection[] = [];
+        if (knob) sections.push({ id: 'knobs', kind: 'knob', label: 'KNOBS', rows: Math.max(1, Math.ceil(knob / cols)), cols });
+        if (fader) sections.push({ id: 'faders', kind: 'fader', label: 'FADERS', rows: Math.max(1, Math.ceil(fader / cols)), cols });
+        if (pad) sections.push({ id: 'pads', kind: 'pad', label: 'PADS', rows: Math.max(1, Math.ceil(pad / cols)), cols });
+        const id = `learned-cv-${Date.now()}`;
+        const profile: ControllerProfile = {
+          id,
+          name: name.trim() || `CV layout (${knob + fader + pad})`,
+          vendor: 'CV-detected',
+          category: 'generic',
+          match: [],
+          sections,
+        };
+        // No bindings — the photo gives layout, not which CC/note each control
+        // sends. A later capture/MIDI-learn pass fills the map.
+        const learned: LearnedProfile = { profile, bindings: {} };
+        const nextProfiles = [...get().profiles, learned];
+        set({ profiles: nextProfiles });
+        setLearnedProfiles(nextProfiles.map((l) => l.profile));
         return id;
       },
 

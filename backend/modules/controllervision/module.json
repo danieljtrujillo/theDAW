@@ -1,0 +1,10 @@
+{
+  "name": "controllervision",
+  "label": "Controller Vision",
+  "enabled": true,
+  "icon": "ScanLine",
+  "sidebar": false,
+  "api_prefix": "/api/controllervision",
+  "backend": true,
+  "description": "Infer a MIDI controller's physical layout (knobs / faders / pads + positions) from a product image via classical computer vision (OpenCV). Tier-3 controller recognition: user-supplied photo or Wikimedia/manufacturer fetch, user-verified. Mapping still comes from MIDI."
+}
