@@ -50,6 +50,7 @@ import { audioCatalog, startAudioMixerSync, PAN_SUFFIX } from '../../state/audio
 import { subscribeToMidi } from '../../state/midiBus';
 import { useMidiDevicesStore } from '../../state/midiDevicesStore';
 import { useLearnedProfilesStore } from '../../state/learnedProfilesStore';
+import { ControllerVisionModal } from './ControllerVisionModal';
 import { enableMidi } from '../../state/midiTriggerStore';
 import {
   useControllerMapStore,
@@ -563,6 +564,7 @@ export const SlidePanel: React.FC = () => {
   const startLearn = useLearnedProfilesStore((s) => s.start);
   const cancelLearn = useLearnedProfilesStore((s) => s.cancel);
   const commitLearn = useLearnedProfilesStore((s) => s.commit);
+  const [cvOpen, setCvOpen] = useState(false);
   const setPageNavBinding = useSlideStore((s) => s.setPageNavBinding);
   const swapSlots = useSlideStore((s) => s.swapSlots);
   const resetAssignments = useSlideStore((s) => s.resetAssignments);
@@ -909,13 +911,22 @@ export const SlidePanel: React.FC = () => {
             </button>
           </span>
         ) : (
-          <button
-            onClick={() => { enableMidi(); startLearn(); }}
-            className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-indigo-200 hover:border-indigo-500/40"
-            title="Learn device — wiggle/press every control once, then Done. Builds the exact layout + mapping from your hardware (works for any controller)."
-          >
-            Learn
-          </button>
+          <span className="flex items-center gap-1">
+            <button
+              onClick={() => { enableMidi(); startLearn(); }}
+              className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-indigo-200 hover:border-indigo-500/40"
+              title="Learn device — wiggle/press every control once, then Done. Builds the exact layout + mapping from your hardware (works for any controller)."
+            >
+              Learn
+            </button>
+            <button
+              onClick={() => setCvOpen(true)}
+              className="px-1.5 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border border-white/12 text-zinc-400 hover:text-indigo-200 hover:border-indigo-500/40"
+              title="Scan device — build a layout from a product photo (upload or search by name) via computer vision; you verify the result."
+            >
+              Scan
+            </button>
+          </span>
         )}
 
         <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-wider">
@@ -1028,6 +1039,13 @@ export const SlidePanel: React.FC = () => {
           />
         )}
       </div>
+
+      {cvOpen && (
+        <ControllerVisionModal
+          onClose={() => setCvOpen(false)}
+          onBuilt={(id) => { setProfileId(id); setAutoDetect(false); setBank(0); setCvOpen(false); }}
+        />
+      )}
     </div>
   );
 };
