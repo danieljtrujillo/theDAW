@@ -569,6 +569,22 @@ export const SlidePanel: React.FC = () => {
   // whole (zoom out) or a section worked closely (zoom in). 1 = fit.
   const [ctrlZoom, setCtrlZoom] = useState(1);
   const clampZoom = (z: number) => Math.max(0.4, Math.min(2, Math.round(z * 20) / 20));
+  // Mouse-wheel zoom over the controller surface. React's delegated onWheel is
+  // passive, so preventDefault (to stop the panel scrolling) needs a native
+  // non-passive listener bound while the controller view is active.
+  const ctrlSurfaceRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (view !== 'controller') return;
+    const el = ctrlSurfaceRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      setCtrlZoom((z) => clampZoom(z + dir * 0.1));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [view]);
   const setPageNavBinding = useSlideStore((s) => s.setPageNavBinding);
   const swapSlots = useSlideStore((s) => s.swapSlots);
   const resetAssignments = useSlideStore((s) => s.resetAssignments);
@@ -990,7 +1006,7 @@ export const SlidePanel: React.FC = () => {
               <button onClick={() => setCtrlZoom(1)} className="px-1.5 py-0.5 text-[8px] font-mono text-zinc-400 hover:text-white tabular-nums" title="Reset zoom (fit)">{Math.round(ctrlZoom * 100)}%</button>
               <button onClick={() => setCtrlZoom((z) => clampZoom(z + 0.1))} className="px-1.5 py-0.5 text-zinc-300 hover:text-white text-[11px]" title="Zoom in">+</button>
             </div>
-            <div className="min-h-full flex items-start justify-center">
+            <div ref={ctrlSurfaceRef} className="min-h-full flex items-start justify-center" title="Scroll to zoom">
               <div style={{ transform: `scale(${ctrlZoom})`, transformOrigin: 'top center', transition: 'transform 0.12s ease' }}>
                 <ControllerView
                   profile={profile}
