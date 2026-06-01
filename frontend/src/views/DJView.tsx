@@ -22,7 +22,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown, Repeat,
+  ChevronUp, ChevronDown, Repeat, Magnet, Link2,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useAppUiStore } from '../state/appUiStore';
@@ -52,6 +52,8 @@ export const DJView: React.FC = () => {
   const [crossfader, setCrossfader] = useState(() => djEngine.getCrossfade()); // -1 A, 0 center, +1 B
   const [deckAPitch, setDeckAPitch] = useState(0);
   const [deckBPitch, setDeckBPitch] = useState(0);
+  // Quantize: when on, cue jumps/sets and loop in-points snap to the beatgrid.
+  const [quantize, setQuantize] = useState(false);
   const [deckAEqLow, setDeckAEqLow] = useState(0);
   const [deckAEqMid, setDeckAEqMid] = useState(0);
   const [deckAEqHigh, setDeckAEqHigh] = useState(0);
@@ -68,6 +70,10 @@ export const DJView: React.FC = () => {
 
   const entries = useLibraryStore((s) => s.entries);
   const analyzeAll = useDjAnalysisStore((s) => s.analyzeAll);
+  // Both decks' analysis (BPM + beatgrid) for SYNC / quantize at the parent,
+  // where both decks are visible.
+  const deckAData = useDjAnalysisStore((s) => (deckATrack ? s.byId[deckATrack]?.data ?? null : null));
+  const deckBData = useDjAnalysisStore((s) => (deckBTrack ? s.byId[deckBTrack]?.data ?? null : null));
   const djTabActive = useAppUiStore((s) => s.centerTab === 'dj');
   const setlists = useSetlistStore((s) => s.setlists);
   const activeId = useSetlistStore((s) => s.activeId);
@@ -202,6 +208,47 @@ export const DJView: React.FC = () => {
     );
   };
 
+  // Beatmatch SYNC — match `which` deck's tempo to the other deck and align the
+  // beat phase, in one press. Tempo match is octave-aware (a 70 vs 140 BPM pair
+  // syncs at rate≈1, not by halving speed); pitch rides playbackRate (key-lock
+  // is the next D3 step). Phase align nudges the synced deck so its beats land
+  // with the other's. Needs BPM on both decks.
+  const syncDeck = (which: djEngine.DeckId) => {
+    const thisData = which === 'A' ? deckAData : deckBData;
+    const otherData = which === 'A' ? deckBData : deckAData;
+    const otherId: djEngine.DeckId = which === 'A' ? 'B' : 'A';
+    const thisBpm = thisData?.bpm ?? null;
+    const otherBpm = otherData?.bpm ?? null;
+    if (!thisBpm || !otherBpm) return;
+
+    // Other deck's CURRENT effective BPM (its base × its current rate).
+    const otherPitch = which === 'A' ? deckBPitch : deckAPitch;
+    const otherEffBpm = otherBpm * (1 + otherPitch / 100);
+
+    // Minimal speed change that puts the tempos in an octave relationship.
+    let rate = otherEffBpm / thisBpm;
+    while (rate > Math.SQRT2) rate /= 2;
+    while (rate < Math.SQRT1_2) rate *= 2;
+    const pct = (rate - 1) * 100;
+    if (which === 'A') setDeckAPitch(pct); else setDeckBPitch(pct);
+    djEngine.setDeckPitch(which, pct);
+
+    // Phase align (only meaningful while the reference deck is playing).
+    const thisBeats = thisData?.beats ?? null;
+    const otherBeats = otherData?.beats ?? null;
+    const otherStatus = djEngine.getStatus(otherId);
+    const thisStatus = djEngine.getStatus(which);
+    if (thisBeats && otherBeats && otherStatus.playing) {
+      const interval = 60 / (thisBpm * rate);
+      let delta = (beatPhase(otherStatus.currentTime, otherBeats) - beatPhase(thisStatus.currentTime, thisBeats)) * interval;
+      // Smallest equivalent nudge.
+      if (delta > interval / 2) delta -= interval;
+      if (delta < -interval / 2) delta += interval;
+      djEngine.seekDeck(which, thisStatus.currentTime + delta);
+    }
+    setFlash(`Synced Deck ${which} → ${otherEffBpm.toFixed(1)} BPM`);
+  };
+
   const masterPlaying = vjState === 'playing';
 
   return (
@@ -228,6 +275,17 @@ export const DJView: React.FC = () => {
               {vjOpen ? `VJ LINKED · ${vjState.toUpperCase()}` : 'VJ TAB CLOSED'}
             </span>
           </div>
+          <button
+            onClick={() => setQuantize((q) => !q)}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
+              quantize
+                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
+                : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
+            }`}
+            title="Quantize — snap hotcue jumps & sets to the beatgrid (beat-loops already start on a beat)"
+          >
+            <Magnet className="w-3 h-3" /> Quantize
+          </button>
           {flash && (
             <span className="ml-auto text-[9px] font-mono text-cyan-300 truncate max-w-[40%]">{flash}</span>
           )}
@@ -258,6 +316,9 @@ export const DJView: React.FC = () => {
             setLoaded={!!activeSet}
             entryId={deckATrack}
             audioUrl={(() => { const t = trackById(deckATrack); return t ? (t.audioUrl ?? null) : null; })()}
+            onSync={() => syncDeck('A')}
+            canSync={!!deckAData?.bpm && !!deckBData?.bpm}
+            quantize={quantize}
           />
           <Deck
             deckId="B"
@@ -283,6 +344,9 @@ export const DJView: React.FC = () => {
             setLoaded={!!activeSet}
             entryId={deckBTrack}
             audioUrl={(() => { const t = trackById(deckBTrack); return t ? (t.audioUrl ?? null) : null; })()}
+            onSync={() => syncDeck('B')}
+            canSync={!!deckAData?.bpm && !!deckBData?.bpm}
+            quantize={quantize}
           />
         </div>
 
@@ -475,12 +539,18 @@ interface DeckProps {
   entryId: string | null;
   /** Resolved audio URL of the loaded track (drives the waveform). */
   audioUrl: string | null;
+  /** Beatmatch this deck to the other deck (tempo + phase). */
+  onSync: () => void;
+  /** Both decks have BPM, so SYNC is meaningful. */
+  canSync: boolean;
+  /** Global quantize — snap cues/loops to the beatgrid. */
+  quantize: boolean;
 }
 
 const Deck: React.FC<DeckProps> = ({
   deckId, label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
-  hasTrack, setLoaded, entryId, audioUrl,
+  hasTrack, setLoaded, entryId, audioUrl, onSync, canSync, quantize,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
@@ -523,8 +593,14 @@ const Deck: React.FC<DeckProps> = ({
   const setHotcue = (i: number) => {
     if (!entryId) return;
     const c = cues?.[i] ?? null;
-    if (c == null) setCue(entryId, i, djEngine.getStatus(deckId).currentTime);
-    else djEngine.seekDeck(deckId, c);
+    if (c == null) {
+      // Set at the playhead; quantize snaps the stored cue to the nearest beat.
+      const pos = djEngine.getStatus(deckId).currentTime;
+      setCue(entryId, i, quantize ? nearestBeat(pos, beats) : pos);
+    } else {
+      // Jump; quantize lands it on the grid in case of drift.
+      djEngine.seekDeck(deckId, quantize ? nearestBeat(c, beats) : c);
+    }
   };
   const dropHotcue = (i: number) => { if (entryId) clearCue(entryId, i); };
 
@@ -741,7 +817,15 @@ const Deck: React.FC<DeckProps> = ({
           >
             {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
           </button>
-          <div className="flex-1 text-[10px] font-mono text-zinc-400 truncate">{trackTitle}</div>
+          <button
+            onClick={onSync}
+            disabled={!canSync}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded text-[9px] font-black uppercase tracking-widest border transition-colors disabled:opacity-30 disabled:pointer-events-none ${accentBg} ${accentText} ${accentBorder} hover:brightness-125`}
+            title={canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}
+          >
+            <Link2 className="w-3 h-3" /> Sync
+          </button>
+          <div className="flex-1 text-[10px] font-mono text-zinc-400 truncate text-right">{trackTitle}</div>
         </div>
 
         {/* EQ */}
@@ -760,15 +844,24 @@ const Deck: React.FC<DeckProps> = ({
           ))}
         </div>
 
-        {/* Pitch */}
+        {/* Pitch — wide (±50%) so SYNC's tempo match is representable on the
+            fader; the BPM readout shows the live effective tempo. */}
         <div className="flex items-center gap-2">
           <span className="text-[7px] font-mono uppercase text-zinc-600 shrink-0">Pitch</span>
           <input
-            type="range" min={-8} max={8} step={0.1} value={pitch}
+            type="range" min={-50} max={50} step={0.1} value={pitch}
             onChange={(e) => onPitch(parseFloat(e.target.value))}
             className={`flex-1 h-1 cursor-col-resize ${accentAcc}`}
+            title="Tempo/pitch (coupled until key-lock). Double-click handle to reset."
+            onDoubleClick={() => onPitch(0)}
           />
           <span className={`text-[9px] font-mono w-10 text-right ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
+          {bpm != null && (
+            <span className="text-[9px] font-mono w-14 text-right text-zinc-300 tabular-nums" title="Effective BPM (base × pitch)">
+              {(bpm * (1 + pitch / 100)).toFixed(1)}
+              <span className="text-zinc-600"> BPM</span>
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -804,6 +897,30 @@ function snapToBeat(t: number, beats: number[] | null): number {
     else break;
   }
   return best;
+}
+
+/** Snap a time to the NEAREST beat (either side) — used by quantize. */
+function nearestBeat(t: number, beats: number[] | null): number {
+  if (!beats || beats.length === 0) return t;
+  let best = beats[0];
+  let bestD = Math.abs(t - best);
+  for (const b of beats) {
+    const d = Math.abs(t - b);
+    if (d < bestD) { best = b; bestD = d; }
+    if (b > t && d > bestD) break; // beats are sorted; we've passed the minimum
+  }
+  return best;
+}
+
+/** Fractional position within the current beat (0..1), from the beatgrid. */
+function beatPhase(t: number, beats: number[] | null): number {
+  if (!beats || beats.length < 2) return 0;
+  let i = 0;
+  while (i < beats.length - 1 && beats[i + 1] <= t) i++;
+  const prev = beats[i];
+  const next = beats[i + 1] ?? prev + (beats[i] - (beats[i - 1] ?? prev - 0.5));
+  const interval = next - prev || 0.5;
+  return clamp01((t - prev) / interval);
 }
 
 function fmtTime(sec: number): string {
