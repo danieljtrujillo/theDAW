@@ -130,10 +130,9 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
     setErr(null); setBusy(true); setResult(null);
     try {
       const res = await detectByName(name.trim());
-      if (!res.available) { setErr(res.error || 'CV not available'); return; }
+      if (!res.available || res.error) { setErr(res.error || 'CV not available'); return; }
       if (res.found === false) { setErr(`No product image found for “${name.trim()}”. Try a photo upload instead.`); return; }
       applyResult(res, res.imageUrl ?? null);
-    } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
   };
