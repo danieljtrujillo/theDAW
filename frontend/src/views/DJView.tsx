@@ -22,7 +22,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown, Repeat, Magnet, Link2,
+  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useAppUiStore } from '../state/appUiStore';
@@ -35,7 +35,7 @@ import { toCamelot, keyLabel } from '../lib/camelot';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { DjFader, DjPad, DECK_RGB } from '../components/dj/DjControls';
 import {
-  toggleVjPlayback, subscribeToVjPlaybackState, isVjPlaybackActive,
+  subscribeToVjPlaybackState, isVjPlaybackActive,
   type VjPlaybackState,
 } from '../state/vjPlaybackBus';
 import {
@@ -55,6 +55,9 @@ export const DJView: React.FC = () => {
   const [deckBPitch, setDeckBPitch] = useState(0);
   // Quantize: when on, cue jumps/sets and loop in-points snap to the beatgrid.
   const [quantize, setQuantize] = useState(false);
+  // Auto-gain: level each deck toward a target loudness using analysis rms_db
+  // (ReplayGain-style), so tracks mix at an even volume.
+  const [autoGain, setAutoGain] = useState(true);
   const [deckAEqLow, setDeckAEqLow] = useState(0);
   const [deckAEqMid, setDeckAEqMid] = useState(0);
   const [deckAEqHigh, setDeckAEqHigh] = useState(0);
@@ -256,20 +259,19 @@ export const DJView: React.FC = () => {
     <div className="absolute inset-0 flex bg-[#07050a] text-white overflow-hidden">
       {/* Decks + crossfader */}
       <div className="flex-1 flex flex-col p-3 gap-3 min-w-0">
-        {/* Master transport — synced with the VJ tab */}
+        {/* Master transport now lives in the FOOTER (one master ▶ for the whole
+            app); this bar just reflects its live state + the VJ link. */}
         <div className="shrink-0 bg-black/60 border border-white/10 rounded px-3 py-2 flex items-center gap-3">
-          <button
-            onClick={toggleVjPlayback}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded font-black uppercase tracking-widest text-[10px] transition-colors ${
-              masterPlaying
-                ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/50'
-                : 'bg-fuchsia-500/15 text-fuchsia-200 border border-fuchsia-500/40 hover:bg-fuchsia-500/25'
+          <div
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${
+              masterPlaying ? 'border-emerald-500/50 text-emerald-200 bg-emerald-500/10' : 'border-white/10 text-zinc-400'
             }`}
-            title="Master transport — drives the VJ performance (stays in sync with the VJ tab)"
+            title="The master transport is the footer ▶ at the bottom — it drives the live VJ performance."
           >
-            {masterPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-            {masterPlaying ? 'Pause Live' : 'Play Live'}
-          </button>
+            {masterPlaying ? <Pause className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
+            Master {masterPlaying ? 'Live' : 'Idle'}
+            <span className="text-zinc-600 normal-case tracking-normal font-normal">· footer ▶</span>
+          </div>
           <div className="flex items-center gap-1.5 text-[9px] font-mono">
             <Radio className={`w-3 h-3 ${vjOpen ? 'text-emerald-400' : 'text-zinc-600'}`} />
             <span className={vjOpen ? 'text-emerald-300' : 'text-zinc-600'}>
@@ -286,6 +288,17 @@ export const DJView: React.FC = () => {
             title="Quantize — snap hotcue jumps & sets to the beatgrid (beat-loops already start on a beat)"
           >
             <Magnet className="w-3 h-3" /> Quantize
+          </button>
+          <button
+            onClick={() => setAutoGain((g) => !g)}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
+              autoGain
+                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
+                : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
+            }`}
+            title="Auto-gain — level each deck toward a target loudness (ReplayGain-style) so tracks mix evenly"
+          >
+            <Gauge className="w-3 h-3" /> Auto-Gain
           </button>
           {flash && (
             <span className="ml-auto text-[9px] font-mono text-cyan-300 truncate max-w-[40%]">{flash}</span>
@@ -320,6 +333,7 @@ export const DJView: React.FC = () => {
             onSync={() => syncDeck('A')}
             canSync={!!deckAData?.bpm && !!deckBData?.bpm}
             quantize={quantize}
+            autoGain={autoGain}
           />
           <Deck
             deckId="B"
@@ -348,29 +362,34 @@ export const DJView: React.FC = () => {
             onSync={() => syncDeck('B')}
             canSync={!!deckAData?.bpm && !!deckBData?.bpm}
             quantize={quantize}
+            autoGain={autoGain}
           />
         </div>
 
-        {/* Master crossfader */}
-        <div className="shrink-0 bg-black/60 border border-white/10 rounded p-3 flex items-center gap-3 dj-surface">
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 w-8 text-right">A</span>
-          <div className="flex-1">
-            <DjFader
-              value={crossfader}
-              min={-1}
-              max={1}
-              defaultValue={0}
-              center
-              color={DECK_RGB.cyan}
-              onChange={(v) => { setCrossfader(v); djEngine.setCrossfade(v); }}
-              ariaLabel="Crossfader"
-              title="Crossfade between Deck A and Deck B (double-click to center)"
-            />
+        {/* Master crossfader — equal-width A/B gutters keep the fader (and its
+            center detent) truly centered; the % readout sits below so it can't
+            push the fader off-center. */}
+        <div className="shrink-0 bg-black/60 border border-white/10 rounded px-3 py-2 dj-surface">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-black uppercase tracking-widest text-purple-300 w-6 text-right">A</span>
+            <div className="flex-1">
+              <DjFader
+                value={crossfader}
+                min={-1}
+                max={1}
+                defaultValue={0}
+                center
+                color={DECK_RGB.cyan}
+                onChange={(v) => { setCrossfader(v); djEngine.setCrossfade(v); }}
+                ariaLabel="Crossfader"
+                title="Crossfade between Deck A and Deck B (double-click to center)"
+              />
+            </div>
+            <span className="text-[11px] font-black uppercase tracking-widest text-cyan-300 w-6 text-left">B</span>
           </div>
-          <span className="text-[10px] font-black uppercase tracking-widest text-cyan-300 w-8 text-left">B</span>
-          <span className="text-[9px] font-mono text-zinc-500 ml-2 w-12 text-right">
+          <div className="text-center text-[10px] font-mono text-zinc-500 mt-1 tabular-nums">
             {crossfader < -0.05 ? `A ${Math.round((1 + crossfader) * 100)}%` : crossfader > 0.05 ? `B ${Math.round((1 - crossfader) * -100 + 100)}%` : 'CENTER'}
-          </span>
+          </div>
         </div>
       </div>
 
@@ -549,12 +568,17 @@ interface DeckProps {
   canSync: boolean;
   /** Global quantize — snap cues/loops to the beatgrid. */
   quantize: boolean;
+  /** Global auto-gain — level the deck toward a target loudness. */
+  autoGain: boolean;
 }
+
+/** Target loudness for auto-gain (rough rms_db proxy for ReplayGain). */
+const AUTO_GAIN_TARGET_DB = -12;
 
 const Deck: React.FC<DeckProps> = ({
   deckId, label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
-  hasTrack, setLoaded, entryId, audioUrl, onSync, canSync, quantize,
+  hasTrack, setLoaded, entryId, audioUrl, onSync, canSync, quantize, autoGain,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
@@ -593,6 +617,13 @@ const Deck: React.FC<DeckProps> = ({
   }), [deckId]);
   // Drop the "which beat-loop is lit" memory whenever the loop is disengaged.
   useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
+
+  // Auto-gain: trim the deck toward a target loudness from analysis rms_db
+  // (ReplayGain-style), or unity when off / unknown.
+  const trimDb = autoGain && a?.rms_db != null
+    ? Math.max(-15, Math.min(15, AUTO_GAIN_TARGET_DB - a.rms_db))
+    : 0;
+  useEffect(() => { djEngine.setDeckTrim(deckId, trimDb); }, [deckId, trimDb]);
 
   const setHotcue = (i: number) => {
     if (!entryId) return;
@@ -635,6 +666,19 @@ const Deck: React.FC<DeckProps> = ({
   };
   const rollDown = (loopBeats: number) => { if (hasTrack) djEngine.startLoopRoll(deckId, loopBeats * effBeatLen); };
   const rollUp = () => djEngine.endLoopRoll(deckId);
+
+  // Beat-jump — move the playhead by N beats (grid-aware via beats[], else BPM).
+  const beatJump = (n: number) => {
+    if (!hasTrack) return;
+    const pos = djEngine.getStatus(deckId).currentTime;
+    let target = pos + n * effBeatLen;
+    if (beats && beats.length) {
+      let idx = 0;
+      for (let i = 0; i < beats.length; i++) { if (beats[i] <= pos + 0.001) idx = i; else break; }
+      target = beats[Math.max(0, Math.min(beats.length - 1, idx + n))];
+    }
+    djEngine.seekDeck(deckId, target);
+  };
 
   return (
     <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
@@ -718,6 +762,11 @@ const Deck: React.FC<DeckProps> = ({
                 decoding…
               </span>
             )}
+            {autoGain && trimDb !== 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" title="Auto-gain trim applied">
+                <span className="text-emerald-600/80">GN </span>{trimDb >= 0 ? '+' : ''}{trimDb.toFixed(1)}
+              </span>
+            )}
           </div>
           <select
             id={`dj-deck-${deckId}-track`}
@@ -748,7 +797,7 @@ const Deck: React.FC<DeckProps> = ({
               accent={accent}
             />
           ) : (
-            <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[9px] font-mono text-zinc-700">
+            <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[11px] font-mono text-zinc-700">
               no track loaded
             </div>
           )}
@@ -781,7 +830,7 @@ const Deck: React.FC<DeckProps> = ({
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-1">
             <Repeat className={`w-3 h-3 ${loopActive ? accentText : 'text-zinc-600'}`} />
-            <span className="text-[7px] font-mono uppercase text-zinc-600 w-8">Loop</span>
+            <span className="text-[9px] font-mono uppercase text-zinc-600 w-8">Loop</span>
             {BEAT_SIZES.map((b) => (
               <DjPad
                 key={b.beats}
@@ -806,7 +855,7 @@ const Deck: React.FC<DeckProps> = ({
             </DjPad>
           </div>
           <div className="flex items-center gap-1">
-            <span className="text-[7px] font-mono uppercase text-zinc-600 w-11 ml-4">Roll</span>
+            <span className="text-[9px] font-mono uppercase text-zinc-600 w-11 ml-4">Roll</span>
             {ROLL_SIZES.map((b) => (
               <DjPad
                 key={b.beats}
@@ -833,13 +882,30 @@ const Deck: React.FC<DeckProps> = ({
           </div>
         </div>
 
+        {/* Beat-jump — nudge the playhead by whole beats (grid-aware). */}
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] font-mono uppercase text-zinc-600 w-11 ml-4">Jump</span>
+          {([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).map(([n, lbl]) => (
+            <DjPad
+              key={n}
+              className="flex-1"
+              color={deckRgb}
+              disabled={!hasTrack}
+              onClick={() => beatJump(n)}
+              title={`Jump ${n > 0 ? '+' : ''}${n} beat${Math.abs(n) === 1 ? '' : 's'}`}
+            >
+              {lbl}
+            </DjPad>
+          ))}
+        </div>
+
         {/* EQ — LO / MID / HI on one row (center = 0 dB, fill grows from center). */}
         <div className="grid grid-cols-3 gap-2 mt-1">
           {([['LO', eqLow, 'low'], ['MID', eqMid, 'mid'], ['HI', eqHigh, 'high']] as const).map(([label, value, band]) => (
             <div key={band} className="flex flex-col gap-0.5">
               <div className="flex items-center justify-between">
-                <span className="text-[7px] font-mono uppercase text-zinc-600">{label}</span>
-                <span className="text-[8px] font-mono text-zinc-400 tabular-nums">{value >= 0 ? '+' : ''}{value.toFixed(0)}</span>
+                <span className="text-[9px] font-mono uppercase text-zinc-600">{label}</span>
+                <span className="text-[10px] font-mono text-zinc-400 tabular-nums">{value >= 0 ? '+' : ''}{value.toFixed(0)}</span>
               </div>
               <DjFader
                 value={value}
@@ -856,29 +922,31 @@ const Deck: React.FC<DeckProps> = ({
           ))}
         </div>
 
-        {/* Pitch — wide (±50%) so SYNC's tempo match is representable on the
-            fader; the BPM readout shows the live effective tempo. */}
-        <div className="flex items-center gap-2">
-          <span className="text-[7px] font-mono uppercase text-zinc-600 shrink-0">Pitch</span>
-          <div className="flex-1">
-            <DjFader
-              value={pitch}
-              min={-50}
-              max={50}
-              defaultValue={0}
-              center
-              color={deckRgb}
-              onChange={(v) => onPitch(v)}
-              ariaLabel="Pitch"
-              title="Tempo/pitch (coupled until key-lock) — double-click to reset"
-            />
+        {/* Pitch — equal-width gutters keep the fader centered; the effective
+            BPM sits below so the readouts can't push it off-center. ±50% so
+            SYNC's tempo match is representable. */}
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-mono uppercase text-zinc-600 w-12 text-right shrink-0">Pitch</span>
+            <div className="flex-1">
+              <DjFader
+                value={pitch}
+                min={-50}
+                max={50}
+                defaultValue={0}
+                center
+                color={deckRgb}
+                onChange={(v) => onPitch(v)}
+                ariaLabel="Pitch"
+                title="Tempo/pitch (coupled until key-lock) — double-click to reset"
+              />
+            </div>
+            <span className={`text-[11px] font-mono w-12 text-left tabular-nums shrink-0 ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
           </div>
-          <span className={`text-[9px] font-mono w-10 text-right ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
           {bpm != null && (
-            <span className="text-[9px] font-mono w-14 text-right text-zinc-300 tabular-nums" title="Effective BPM (base × pitch)">
-              {(bpm * (1 + pitch / 100)).toFixed(1)}
-              <span className="text-zinc-600"> BPM</span>
-            </span>
+            <div className="text-center text-[10px] font-mono text-zinc-300 mt-0.5 tabular-nums" title="Effective BPM (base × pitch)">
+              {(bpm * (1 + pitch / 100)).toFixed(1)}<span className="text-zinc-600"> BPM</span>
+            </div>
           )}
         </div>
       </div>
@@ -1011,24 +1079,31 @@ const DeckWaveform: React.FC<{
   const scrubbing = useRef(false);
   const pendingX = useRef<number | null>(null);
   const scrubRaf = useRef(0);
+  // Duration is read LIVE from the engine (not the React `dur` state) so a click
+  // seeks even before a status tick has updated local state.
+  const seekToClientX = (clientX: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const d = djEngine.getStatus(deckId).duration;
+    if (d <= 0) return;
+    const rect = el.getBoundingClientRect();
+    djEngine.seekDeck(deckId, clamp01((clientX - rect.left) / rect.width) * d);
+  };
   const applyScrub = () => {
     scrubRaf.current = 0;
     const x = pendingX.current;
     pendingX.current = null;
-    const el = containerRef.current;
-    if (x == null || !el || dur <= 0) return;
-    const rect = el.getBoundingClientRect();
-    djEngine.seekDeck(deckId, clamp01((x - rect.left) / rect.width) * dur);
+    if (x != null) seekToClientX(x);
   };
   const queueScrub = (clientX: number) => {
     pendingX.current = clientX;
     if (!scrubRaf.current) scrubRaf.current = requestAnimationFrame(applyScrub);
   };
   const onScrubDown = (e: React.PointerEvent) => {
-    if (dur <= 0) return;
+    if (djEngine.getStatus(deckId).duration <= 0) return;
     scrubbing.current = true;
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    queueScrub(e.clientX);
+    seekToClientX(e.clientX); // jump immediately on press, not just on the rAF tick
   };
   const onScrubMove = (e: React.PointerEvent) => { if (scrubbing.current) queueScrub(e.clientX); };
   const onScrubUp = (e: React.PointerEvent) => {
@@ -1039,12 +1114,13 @@ const DeckWaveform: React.FC<{
 
   return (
     <div ref={containerRef} className="relative">
-      <WaveformPreview audioUrl={audioUrl} height={48} />
+      <WaveformPreview audioUrl={audioUrl} height={48} interact={false} />
 
-      {/* Scrub catcher — above the canvas so seeks drive our engine, not
-          wavesurfer's own cursor. Drag to scrub, click to jump. */}
+      {/* Scrub catcher — above the canvas (z-10) so seeks drive our engine, not
+          wavesurfer's own cursor. Drag to scrub, click to jump. touch-none keeps
+          a touch-drag from scrolling the panel instead of scrubbing. */}
       <div
-        className="absolute inset-0 cursor-ew-resize"
+        className="absolute inset-0 z-10 cursor-ew-resize touch-none"
         onPointerDown={onScrubDown}
         onPointerMove={onScrubMove}
         onPointerUp={onScrubUp}
@@ -1054,7 +1130,7 @@ const DeckWaveform: React.FC<{
 
       {/* Beatgrid */}
       {beatMarks && (
-        <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute inset-0 z-20 pointer-events-none">
           {beatMarks.map((m, i) => (
             <div
               key={i}
@@ -1068,7 +1144,7 @@ const DeckWaveform: React.FC<{
       {/* Loop region */}
       {loop && dur > 0 && (
         <div
-          className="absolute top-0 bottom-0 pointer-events-none"
+          className="absolute top-0 bottom-0 z-20 pointer-events-none"
           style={{
             left: `${(loop.in / dur) * 100}%`,
             width: `${((loop.out - loop.in) / dur) * 100}%`,
@@ -1083,7 +1159,7 @@ const DeckWaveform: React.FC<{
       {dur > 0 && cues && cues.map((c, i) => (c == null ? null : (
         <div
           key={i}
-          className="absolute top-0 bottom-0 pointer-events-none"
+          className="absolute top-0 bottom-0 z-20 pointer-events-none"
           style={{ left: `${(c / dur) * 100}%`, width: '2px', background: accentColor }}
         >
           <span className="absolute top-0 left-0 text-[6px] font-black text-black px-0.5 leading-tight" style={{ background: accentColor }}>

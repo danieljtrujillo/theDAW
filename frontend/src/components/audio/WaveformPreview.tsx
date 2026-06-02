@@ -11,6 +11,9 @@ export interface WaveformPreviewProps {
   regionEnd?: number;
   onRegionChange?: (start: number, end: number) => void;
   onReady?: (ws: WaveSurfer) => void;
+  /** Let wavesurfer handle its own click-to-seek cursor. Off for the DJ decks,
+   *  where an overlay drives our own engine instead. Default true. */
+  interact?: boolean;
 }
 
 export function WaveformPreview({
@@ -21,6 +24,7 @@ export function WaveformPreview({
   regionEnd,
   onRegionChange,
   onReady,
+  interact = true,
 }: WaveformPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null);
@@ -38,7 +42,7 @@ export function WaveformPreview({
     barRadius: 1,
     normalize: true,
     fillParent: true,
-    interact: true,
+    interact,
     hideScrollbar: true,
   });
 

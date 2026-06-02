@@ -49,6 +49,7 @@ export interface DeckStatus {
 }
 
 interface Deck {
+  trim: GainNode; // auto-gain / leveling trim (independent of crossfader)
   low: BiquadFilterNode;
   mid: BiquadFilterNode;
   high: BiquadFilterNode;
@@ -116,14 +117,18 @@ function buildDeck(id: DeckId): Deck {
   high.type = 'highshelf';
   high.frequency.value = 3200;
   const gain = ctx.createGain();
+  const trim = ctx.createGain(); // auto-gain / leveling, before EQ + crossfader
+  trim.gain.value = 1;
 
   const cg = crossGains(crossfade);
   gain.gain.value = id === 'A' ? cg.a : cg.b;
 
+  // src → trim → low → mid → high → gain(crossfader) → djMaster
+  trim.connect(low);
   low.connect(mid).connect(high).connect(gain).connect(master);
 
   const deck: Deck = {
-    low, mid, high, gain,
+    trim, low, mid, high, gain,
     buffer: null, src: null, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
     loopActive: false, loopIn: 0, loopOut: 0, rollResume: false,
@@ -180,7 +185,7 @@ function startSource(d: Deck, offset: number): void {
     src.loopStart = d.loopIn;
     src.loopEnd = d.loopOut;
   }
-  src.connect(d.low);
+  src.connect(d.trim);
   src.onended = () => {
     // Only a NATURAL end (not our stop/restart, not a loop) parks the deck.
     if (d.src === src && !d.loopActive) {
@@ -365,6 +370,14 @@ export function setDeckEq(id: DeckId, band: 'low' | 'mid' | 'high', db: number):
   node.gain.setTargetAtTime(clamp(db, -24, 24), ctx.currentTime, RAMP_TC);
 }
 
+/** Auto-gain / leveling trim in dB (independent of the crossfader). 0 = unity. */
+export function setDeckTrim(id: DeckId, db: number): void {
+  const d = getDeck(id);
+  const ctx = getEngineCtx();
+  const lin = Math.pow(10, clamp(db, -15, 15) / 20);
+  d.trim.gain.setTargetAtTime(lin, ctx.currentTime, RAMP_TC);
+}
+
 /** Crossfader position in [-1, 1] (equal-power). */
 export function setCrossfade(x: number): void {
   crossfade = clamp(x, -1, 1);
@@ -456,6 +469,7 @@ export function dispose(): void {
     if (!d) continue;
     try {
       stopSource(d);
+      d.trim.disconnect();
       d.low.disconnect();
       d.mid.disconnect();
       d.high.disconnect();

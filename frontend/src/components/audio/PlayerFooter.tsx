@@ -83,14 +83,16 @@ export const PlayerFooter: React.FC = () => {
   // playing/paused echo from the iframe.
   const [vjState, setVjState] = useState<VjPlaybackState>('unknown');
   useEffect(() => subscribeToVjPlaybackState(setVjState), []);
-  // VJ tab lives in centerTab (the new tab system), not activeView
-  // (the legacy create/edit/train enum). Do not additionally gate this
-  // on handler registration: while the iframe is booting, the footer
-  // should still present VJ transport instead of falling back to a
-  // disabled audio-only state.
-  const isVjMode = centerTab === 'vj';
+  // On the DJ and VJ tabs the footer's central PLAY is the MASTER / live
+  // transport (drives the VJ performance via the playback bus), so there's one
+  // obvious master control instead of a separate "Play Live" button. VJ tab
+  // lives in centerTab (not the legacy activeView enum). Don't gate on handler
+  // registration: while the iframe boots, the footer should still present the
+  // live transport rather than a disabled audio-only state.
+  const isVjMode = centerTab === 'vj' || centerTab === 'dj';
 
-  const displayLabel = engineLabel ?? lastFilename ?? (isVjMode ? 'VJ · live visuals' : null);
+  const displayLabel = engineLabel ?? lastFilename
+    ?? (centerTab === 'vj' ? 'VJ · live visuals' : centerTab === 'dj' ? 'DJ · live master' : null);
   const displayDuration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
   const displayCurrentTime = currentTime;
   const displayIsPlaying = isVjMode ? vjState === 'playing' : isPlaying;
