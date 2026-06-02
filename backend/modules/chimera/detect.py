@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict, cast
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ def _detect_librosa(path: str | Path) -> DetectionResult:
     import numpy as np
 
     y, sr = librosa.load(str(path), sr=_LIBROSA_SR, mono=True)
+    sr = int(sr)
     duration_sec = (len(y) / float(sr)) if sr else 0.0
     if y.size == 0 or duration_sec < _MIN_DURATION_SEC:
         return _empty_result(sr, duration_sec)
@@ -114,9 +115,12 @@ def _detect_librosa(path: str | Path) -> DetectionResult:
 def _detect_aubio(path: str | Path) -> DetectionResult:
     import aubio
 
-    src = aubio.source(str(path), samplerate=0, hop_size=_HOP_S)
+    # aubio is a C extension without type stubs — treat as Any so the analyzer
+    # doesn't flag .source/.tempo (which it can't resolve).
+    a = cast(Any, aubio)
+    src = a.source(str(path), samplerate=0, hop_size=_HOP_S)
     sr = src.samplerate
-    tempo_o = aubio.tempo("default", _WIN_S, _HOP_S, sr)
+    tempo_o = a.tempo("default", _WIN_S, _HOP_S, sr)
 
     beats: list[float] = []
     confidences: list[float] = []
