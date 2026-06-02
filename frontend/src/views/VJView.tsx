@@ -12,6 +12,8 @@ import {
   Smartphone,
   Copy,
   Check,
+  Camera,
+  CameraOff,
 } from 'lucide-react';
 
 import { getAnalyser } from '../state/playerStore';
@@ -24,6 +26,7 @@ import { registerVjSetHandler } from '../state/vjSetBus';
 import { ingestManifest, applyFromVj, registerControlSink } from '../state/controlSyncBus';
 import type { VisualControl } from '../state/slideStore';
 import { useAppUiStore } from '../state/appUiStore';
+import { useVjSetStatusStore } from '../state/vjSetStatusStore';
 import { logError, logInfo } from '../state/logStore';
 
 
@@ -78,6 +81,22 @@ export const VJView: React.FC = () => {
       return next;
     });
   };
+  // Camera source toggle. Posts sa3-vj/camera; the VJ echoes sa3-vj/camera-state
+  // back so this reflects the real source (and any getUserMedia failure) even
+  // when the source is changed from inside the VJ app.
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const toggleCamera = () => {
+    const next = !cameraOn;
+    setCameraOn(next); // optimistic; reconciled by the camera-state echo
+    postToIframe({ type: 'sa3-vj/camera', on: next });
+  };
+
+  // Live SET hand-off status — "sending…" optimistically, "confirmed" once the
+  // VJ ACKs (so the user sees the set actually landed, not just a click).
+  const vjSetName = useVjSetStatusStore((s) => s.name);
+  const vjSetCount = useVjSetStatusStore((s) => s.count);
+  const vjSetAcked = useVjSetStatusStore((s) => s.acked);
   const poppedWindowRef = useRef<Window | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const iframeReadyTimerRef = useRef<number | null>(null);
@@ -366,6 +385,27 @@ export const VJView: React.FC = () => {
     postToIframe({ type: 'sa3-vj/visibility', visible: isVjVisible });
   }, [status, popped, isVjVisible]);
 
+  // Camera-state echo + SET-loaded ACK from the VJ side. Active while the VJ tab
+  // is warm-mounted (even when another center tab is shown), so a set sent from
+  // the DJ tab still flips to "confirmed" and the camera button reflects reality.
+  useEffect(() => {
+    if (status !== 'ready' || popped) return;
+    const onMsg = (event: MessageEvent) => {
+      const d = event.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'sa3-vj/camera-state') {
+        setCameraOn(Boolean(d.on));
+        setCameraError(typeof d.error === 'string' ? d.error : null);
+      } else if (d.type === 'sa3-vj/set-loaded') {
+        useVjSetStatusStore
+          .getState()
+          .noteAck(typeof d.count === 'number' ? d.count : 0, typeof d.name === 'string' ? d.name : null);
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [status, popped]);
+
   const handleIframeLoad = () => {
 
     if (iframeReadyTimerRef.current !== null) {
@@ -447,6 +487,23 @@ export const VJView: React.FC = () => {
           {status === 'ready' && url && (
             <span className="text-[8px] font-mono text-zinc-600">{url}</span>
           )}
+          {vjSetCount > 0 && (
+            <span
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest ${
+                vjSetAcked
+                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+              }`}
+              title={
+                vjSetAcked
+                  ? `SET "${vjSetName ?? ''}" is loaded in the VJ — ${vjSetCount} item${vjSetCount === 1 ? '' : 's'}`
+                  : `Sending SET "${vjSetName ?? ''}" to the VJ…`
+              }
+            >
+              {vjSetAcked ? <Check className="w-2.5 h-2.5" /> : <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+              SET {vjSetCount}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {/* Input toggles — click to enable/disable each signal
@@ -485,6 +542,32 @@ export const VJView: React.FC = () => {
             inactiveLabel="MIDI forwarding is off. Click to enable."
             disabled={vjInputs.midi && !vjInputs.mic && !vjInputs.audio}
           />
+          {/* Camera source on/off — flips the VJ between the live webcam and the
+              clip/memory buffer. Lit fuchsia when on; rose if the camera failed
+              to open. Reflects the real source via the camera-state echo. */}
+          <button
+            type="button"
+            onClick={toggleCamera}
+            disabled={status !== 'ready'}
+            className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors disabled:opacity-40 disabled:pointer-events-none ${
+              cameraOn && cameraError
+                ? 'border-rose-500/50 bg-rose-500/10 text-rose-200'
+                : cameraOn
+                ? 'border-fuchsia-500/50 bg-fuchsia-500/15 text-fuchsia-200 hover:bg-fuchsia-500/25'
+                : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/5'
+            }`}
+            title={
+              cameraOn && cameraError
+                ? `Camera error: ${cameraError}`
+                : cameraOn
+                ? 'Camera ON — using the live webcam as the VJ source. Click to switch back to clip/memory.'
+                : 'Camera OFF — click to use the live webcam as the VJ source.'
+            }
+            aria-pressed={cameraOn}
+          >
+            {cameraOn ? <Camera className="w-2.5 h-2.5" /> : <CameraOff className="w-2.5 h-2.5" />}
+            Cam
+          </button>
           {/* Master MIDI toggle — grey when OFF (no Web MIDI access, no
               prompt), colour when ON. Turning it on lets a controller
               drive the piano synth, the global MIDI bus, and the VJ

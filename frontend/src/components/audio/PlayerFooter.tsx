@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Music, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Music, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
@@ -12,6 +12,7 @@ import {
   subscribeToVjPlaybackState,
   type VjPlaybackState,
 } from '../../state/vjPlaybackBus';
+import { useVjSetStatusStore } from '../../state/vjSetStatusStore';
 
 const formatDuration = (sec: number | null | undefined): string => {
   if (sec == null || !Number.isFinite(sec) || sec < 0) return '--:--';
@@ -90,6 +91,13 @@ export const PlayerFooter: React.FC = () => {
   // registration: while the iframe boots, the footer should still present the
   // live transport rather than a disabled audio-only state.
   const isVjMode = centerTab === 'vj' || centerTab === 'dj';
+
+  // VJ SET hand-off status — makes "where it sends to" obvious right at the
+  // playhead: a pill showing the set is queued (amber) or confirmed in the VJ
+  // (emerald ✓). Only meaningful in the DJ/VJ live modes.
+  const vjSetCount = useVjSetStatusStore((s) => s.count);
+  const vjSetAcked = useVjSetStatusStore((s) => s.acked);
+  const vjSetName = useVjSetStatusStore((s) => s.name);
 
   const displayLabel = engineLabel ?? lastFilename
     ?? (centerTab === 'vj' ? 'VJ · live visuals' : centerTab === 'dj' ? 'DJ · live master' : null);
@@ -225,6 +233,23 @@ export const PlayerFooter: React.FC = () => {
         </div>
 
         <div className="w-full flex items-center gap-3">
+          {isVjMode && vjSetCount > 0 && (
+            <span
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono uppercase tracking-widest shrink-0 ${
+                vjSetAcked
+                  ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-300'
+                  : 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+              }`}
+              title={
+                vjSetAcked
+                  ? `VJ set "${vjSetName ?? ''}" loaded — ${vjSetCount} item${vjSetCount === 1 ? '' : 's'}`
+                  : `Sending set "${vjSetName ?? ''}" to the VJ…`
+              }
+            >
+              {vjSetAcked ? <Check className="w-3 h-3" /> : <Cast className="w-3 h-3" />}
+              VJ {vjSetCount}
+            </span>
+          )}
           <span className="text-[10px] font-mono text-zinc-500 w-8 text-right">{formatDuration(displayCurrentTime)}</span>
           <div
             ref={progressRef}
