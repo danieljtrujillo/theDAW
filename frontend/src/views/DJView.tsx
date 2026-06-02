@@ -22,7 +22,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown, Repeat, Magnet, Link2,
+  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useAppUiStore } from '../state/appUiStore';
@@ -55,6 +55,9 @@ export const DJView: React.FC = () => {
   const [deckBPitch, setDeckBPitch] = useState(0);
   // Quantize: when on, cue jumps/sets and loop in-points snap to the beatgrid.
   const [quantize, setQuantize] = useState(false);
+  // Auto-gain: level each deck toward a target loudness using analysis rms_db
+  // (ReplayGain-style), so tracks mix at an even volume.
+  const [autoGain, setAutoGain] = useState(true);
   const [deckAEqLow, setDeckAEqLow] = useState(0);
   const [deckAEqMid, setDeckAEqMid] = useState(0);
   const [deckAEqHigh, setDeckAEqHigh] = useState(0);
@@ -287,6 +290,17 @@ export const DJView: React.FC = () => {
           >
             <Magnet className="w-3 h-3" /> Quantize
           </button>
+          <button
+            onClick={() => setAutoGain((g) => !g)}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
+              autoGain
+                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
+                : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
+            }`}
+            title="Auto-gain — level each deck toward a target loudness (ReplayGain-style) so tracks mix evenly"
+          >
+            <Gauge className="w-3 h-3" /> Auto-Gain
+          </button>
           {flash && (
             <span className="ml-auto text-[9px] font-mono text-cyan-300 truncate max-w-[40%]">{flash}</span>
           )}
@@ -320,6 +334,7 @@ export const DJView: React.FC = () => {
             onSync={() => syncDeck('A')}
             canSync={!!deckAData?.bpm && !!deckBData?.bpm}
             quantize={quantize}
+            autoGain={autoGain}
           />
           <Deck
             deckId="B"
@@ -348,6 +363,7 @@ export const DJView: React.FC = () => {
             onSync={() => syncDeck('B')}
             canSync={!!deckAData?.bpm && !!deckBData?.bpm}
             quantize={quantize}
+            autoGain={autoGain}
           />
         </div>
 
@@ -549,12 +565,17 @@ interface DeckProps {
   canSync: boolean;
   /** Global quantize — snap cues/loops to the beatgrid. */
   quantize: boolean;
+  /** Global auto-gain — level the deck toward a target loudness. */
+  autoGain: boolean;
 }
+
+/** Target loudness for auto-gain (rough rms_db proxy for ReplayGain). */
+const AUTO_GAIN_TARGET_DB = -12;
 
 const Deck: React.FC<DeckProps> = ({
   deckId, label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
-  hasTrack, setLoaded, entryId, audioUrl, onSync, canSync, quantize,
+  hasTrack, setLoaded, entryId, audioUrl, onSync, canSync, quantize, autoGain,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
@@ -593,6 +614,13 @@ const Deck: React.FC<DeckProps> = ({
   }), [deckId]);
   // Drop the "which beat-loop is lit" memory whenever the loop is disengaged.
   useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
+
+  // Auto-gain: trim the deck toward a target loudness from analysis rms_db
+  // (ReplayGain-style), or unity when off / unknown.
+  const trimDb = autoGain && a?.rms_db != null
+    ? Math.max(-15, Math.min(15, AUTO_GAIN_TARGET_DB - a.rms_db))
+    : 0;
+  useEffect(() => { djEngine.setDeckTrim(deckId, trimDb); }, [deckId, trimDb]);
 
   const setHotcue = (i: number) => {
     if (!entryId) return;
@@ -635,6 +663,19 @@ const Deck: React.FC<DeckProps> = ({
   };
   const rollDown = (loopBeats: number) => { if (hasTrack) djEngine.startLoopRoll(deckId, loopBeats * effBeatLen); };
   const rollUp = () => djEngine.endLoopRoll(deckId);
+
+  // Beat-jump — move the playhead by N beats (grid-aware via beats[], else BPM).
+  const beatJump = (n: number) => {
+    if (!hasTrack) return;
+    const pos = djEngine.getStatus(deckId).currentTime;
+    let target = pos + n * effBeatLen;
+    if (beats && beats.length) {
+      let idx = 0;
+      for (let i = 0; i < beats.length; i++) { if (beats[i] <= pos + 0.001) idx = i; else break; }
+      target = beats[Math.max(0, Math.min(beats.length - 1, idx + n))];
+    }
+    djEngine.seekDeck(deckId, target);
+  };
 
   return (
     <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
@@ -716,6 +757,11 @@ const Deck: React.FC<DeckProps> = ({
             {decoding && (
               <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 animate-pulse">
                 decoding…
+              </span>
+            )}
+            {autoGain && trimDb !== 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" title="Auto-gain trim applied">
+                <span className="text-emerald-600/80">GN </span>{trimDb >= 0 ? '+' : ''}{trimDb.toFixed(1)}
               </span>
             )}
           </div>
@@ -831,6 +877,23 @@ const Deck: React.FC<DeckProps> = ({
               Slip
             </DjPad>
           </div>
+        </div>
+
+        {/* Beat-jump — nudge the playhead by whole beats (grid-aware). */}
+        <div className="flex items-center gap-1">
+          <span className="text-[7px] font-mono uppercase text-zinc-600 w-11 ml-4">Jump</span>
+          {([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).map(([n, lbl]) => (
+            <DjPad
+              key={n}
+              className="flex-1"
+              color={deckRgb}
+              disabled={!hasTrack}
+              onClick={() => beatJump(n)}
+              title={`Jump ${n > 0 ? '+' : ''}${n} beat${Math.abs(n) === 1 ? '' : 's'}`}
+            >
+              {lbl}
+            </DjPad>
+          ))}
         </div>
 
         {/* EQ — LO / MID / HI on one row (center = 0 dB, fill grows from center). */}
