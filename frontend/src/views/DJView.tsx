@@ -22,7 +22,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge, Lock,
+  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge, Lock, KeyRound,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useAppUiStore } from '../state/appUiStore';
@@ -717,11 +717,13 @@ const Deck: React.FC<DeckProps> = ({
   const [activeLoopBeats, setActiveLoopBeats] = useState<number | null>(null);
   const [slip, setSlipSt] = useState(false);
   const [decoding, setDecoding] = useState(false);
+  const [keylock, setKeylockSt] = useState(false);
   useEffect(() => djEngine.subscribe((sa, sb) => {
     const st = deckId === 'A' ? sa : sb;
     setLoopActiveSt((p) => (p === st.loopActive ? p : st.loopActive));
     setSlipSt((p) => (p === st.slip ? p : st.slip));
     setDecoding((p) => (p === st.decoding ? p : st.decoding));
+    setKeylockSt((p) => (p === st.keylock ? p : st.keylock));
   }), [deckId]);
   // Drop the "which beat-loop is lit" memory whenever the loop is disengaged.
   useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
@@ -1076,11 +1078,25 @@ const Deck: React.FC<DeckProps> = ({
             </div>
             <span className={`text-[11px] font-mono w-12 text-left tabular-nums shrink-0 ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
           </div>
-          {bpm != null && (
-            <div className="text-center text-[10px] font-mono text-zinc-300 mt-0.5 tabular-nums" title="Effective BPM (base × pitch)">
-              {(bpm * (1 + pitch / 100)).toFixed(1)}<span className="text-zinc-600"> BPM</span>
-            </div>
-          )}
+          {/* Key-lock (master tempo) toggle + effective-BPM readout. Sits below
+              the fader so it can't pull the centered pitch fader off-center. */}
+          <div className="flex items-center justify-center gap-2 mt-0.5">
+            <DjPad
+              on={keylock}
+              color={deckRgb}
+              disabled={!hasTrack}
+              onClick={() => void djEngine.setDeckKeylock(deckId, !keylock)}
+              style={{ padding: '2px 6px', flexShrink: 0 }}
+              title="Key-lock / Master Tempo — change tempo (pitch fader, SYNC, Sync-Lock) without changing the musical key"
+            >
+              <KeyRound className="w-3 h-3" /> Key
+            </DjPad>
+            {bpm != null && (
+              <span className="text-[10px] font-mono text-zinc-300 tabular-nums" title="Effective BPM (base × tempo)">
+                {(bpm * (1 + pitch / 100)).toFixed(1)}<span className="text-zinc-600"> BPM</span>
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

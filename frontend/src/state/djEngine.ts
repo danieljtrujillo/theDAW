@@ -28,6 +28,7 @@
  * underneath. On loop exit with slip on, playback jumps to where it WOULD be —
  * as if the loop never happened. Loop-roll always slip-resumes.
  */
+import type { StretchNode } from 'signalsmith-stretch';
 import { getEngineCtx, getMasterGain } from './playerStore';
 import { logError } from './logStore';
 
@@ -46,14 +47,23 @@ export interface DeckStatus {
   loopOut: number | null;
   slip: boolean;
   pitchPct: number;
+  keylock: boolean;
 }
 
 interface Deck {
+  delayComp: DelayNode; // A/B latency match when one deck is key-locked
   trim: GainNode; // auto-gain / leveling trim (independent of crossfader)
   low: BiquadFilterNode;
   mid: BiquadFilterNode;
   high: BiquadFilterNode;
   gain: GainNode; // crossfader-controlled
+  // Key-lock (master tempo): a Signalsmith Stretch node inserted as a LIVE pitch
+  // corrector. The source still rides playbackRate for speed; the insert shifts
+  // pitch by -12·log2(rate) to cancel the resulting pitch change. Lazily created
+  // on first enable; bypassed (source → delayComp directly) when off.
+  stretch: StretchNode | null;
+  stretchLatency: number; // live-input latency (sec) of the stretch node
+  keylock: boolean;
   buffer: AudioBuffer | null;
   src: AudioBufferSourceNode | null; // current playing source (recreated per start)
   playing: boolean;
@@ -96,6 +106,33 @@ function ensureMaster(): GainNode {
   return djMaster;
 }
 
+/** The node a playing source feeds into: the key-lock pitch insert when engaged,
+ *  else the deck's delay-comp input (insert bypassed). */
+function deckInputNode(d: Deck): AudioNode {
+  return d.keylock && d.stretch ? d.stretch : d.delayComp;
+}
+
+/** Re-balance the two decks' output latency so a key-locked deck (which adds the
+ *  stretch node's latency) stays beat-aligned with a non-key-locked one: delay
+ *  each deck up to the larger of the two engaged stretch latencies. */
+function updateLatencyComp(): void {
+  const ctx = getEngineCtx();
+  const da = decks['A'];
+  const db = decks['B'];
+  const la = da?.keylock ? da.stretchLatency : 0;
+  const lb = db?.keylock ? db.stretchLatency : 0;
+  const maxL = Math.max(la, lb);
+  if (da) da.delayComp.delayTime.setTargetAtTime(Math.max(0, maxL - la), ctx.currentTime, 0.01);
+  if (db) db.delayComp.delayTime.setTargetAtTime(Math.max(0, maxL - lb), ctx.currentTime, 0.01);
+}
+
+/** Push the key-lock pitch correction (cancel the playbackRate pitch shift). */
+function applyKeylockPitch(d: Deck): void {
+  if (d.keylock && d.stretch) {
+    void d.stretch.schedule({ semitones: -12 * Math.log2(d.rate) });
+  }
+}
+
 /** Equal-power crossfader gains for a position in [-1, 1]. */
 function crossGains(x: number): { a: number; b: number } {
   const t = (clamp(x, -1, 1) + 1) / 2; // 0 (A) … 1 (B)
@@ -119,16 +156,19 @@ function buildDeck(id: DeckId): Deck {
   const gain = ctx.createGain();
   const trim = ctx.createGain(); // auto-gain / leveling, before EQ + crossfader
   trim.gain.value = 1;
+  const delayComp = ctx.createDelay(1.0); // 0 normally; matches A/B key-lock latency
 
   const cg = crossGains(crossfade);
   gain.gain.value = id === 'A' ? cg.a : cg.b;
 
-  // src → trim → low → mid → high → gain(crossfader) → djMaster
+  // src → [stretch?] → delayComp → trim → low → mid → high → gain(crossfader) → djMaster
+  delayComp.connect(trim);
   trim.connect(low);
   low.connect(mid).connect(high).connect(gain).connect(master);
 
   const deck: Deck = {
-    trim, low, mid, high, gain,
+    delayComp, trim, low, mid, high, gain,
+    stretch: null, stretchLatency: 0, keylock: false,
     buffer: null, src: null, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
     loopActive: false, loopIn: 0, loopOut: 0, rollResume: false,
@@ -185,7 +225,7 @@ function startSource(d: Deck, offset: number): void {
     src.loopStart = d.loopIn;
     src.loopEnd = d.loopOut;
   }
-  src.connect(d.trim);
+  src.connect(deckInputNode(d));
   src.onended = () => {
     // Only a NATURAL end (not our stop/restart, not a loop) parks the deck.
     if (d.src === src && !d.loopActive) {
@@ -209,7 +249,7 @@ function statusOf(id: DeckId): DeckStatus {
     return {
       loadedUrl: null, label: null, playing: false, decoding: false, hasBuffer: false,
       currentTime: 0, duration: 0, loopActive: false, loopIn: null, loopOut: null,
-      slip: false, pitchPct: 0,
+      slip: false, pitchPct: 0, keylock: false,
     };
   }
   return {
@@ -225,6 +265,7 @@ function statusOf(id: DeckId): DeckStatus {
     loopOut: d.loopActive ? d.loopOut : null,
     slip: d.slip,
     pitchPct: d.pitchPct,
+    keylock: d.keylock,
   };
 }
 
@@ -361,6 +402,54 @@ export function setDeckPitch(id: DeckId, pct: number): void {
   }
   d.rate = rate;
   d.pitchPct = pct;
+  // Key-lock: cancel the speed-induced pitch change so only tempo moves.
+  applyKeylockPitch(d);
+}
+
+const _stretchPending: Partial<Record<DeckId, boolean>> = {};
+
+/** Key-lock / master tempo: speed changes (pitch fader / SYNC) keep the original
+ *  pitch. Inserts a Signalsmith Stretch node as a live pitch corrector; bypassed
+ *  when off. Async because the worklet + WASM load lazily on first enable. */
+export async function setDeckKeylock(id: DeckId, on: boolean): Promise<void> {
+  const d = getDeck(id);
+  if (d.keylock === on) return;
+
+  if (on && !d.stretch && !_stretchPending[id]) {
+    _stretchPending[id] = true;
+    try {
+      // Lazy-load the WASM stretcher only when key-lock is first enabled, so its
+      // ~100 KB (embedded WASM) never weighs down initial load for users who
+      // don't use it. Cached by the bundler after the first import.
+      const { default: SignalsmithStretch } = await import('signalsmith-stretch');
+      const node = await SignalsmithStretch(getEngineCtx());
+      node.connect(d.delayComp);
+      d.stretch = node;
+      try {
+        d.stretchLatency = await node.latency();
+      } catch {
+        d.stretchLatency = 0;
+      }
+    } catch (e) {
+      logError('dj', `Deck ${id} key-lock unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      _stretchPending[id] = false;
+      return; // leave key-lock off; turntable mode still works
+    }
+    _stretchPending[id] = false;
+  }
+  if (on && !d.stretch) return; // creation lost a race / failed
+
+  d.keylock = on;
+  if (on && d.stretch) {
+    void d.stretch.start();
+    applyKeylockPitch(d);
+  } else if (!on && d.stretch) {
+    void d.stretch.stop(); // idle the worklet so it costs ~0 CPU while bypassed
+  }
+  updateLatencyComp();
+  // Reroute the live source through (or around) the insert.
+  if (d.playing && d.buffer) startSource(d, audiblePos(d));
+  emit();
 }
 
 export function setDeckEq(id: DeckId, band: 'low' | 'mid' | 'high', db: number): void {
@@ -469,6 +558,8 @@ export function dispose(): void {
     if (!d) continue;
     try {
       stopSource(d);
+      if (d.stretch) { try { void d.stretch.stop(); } catch { /* gone */ } d.stretch.disconnect(); }
+      d.delayComp.disconnect();
       d.trim.disconnect();
       d.low.disconnect();
       d.mid.disconnect();
@@ -476,6 +567,7 @@ export function dispose(): void {
       d.gain.disconnect();
     } catch { /* already gone */ }
     d.buffer = null;
+    d.stretch = null;
     delete decks[id];
   }
   if (djMaster) { try { djMaster.disconnect(); } catch { /* gone */ } djMaster = null; }
