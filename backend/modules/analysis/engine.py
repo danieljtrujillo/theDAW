@@ -30,7 +30,11 @@ from .pitch import detect_pitch_stats
 log = logging.getLogger(__name__)
 
 
-ANALYSIS_VERSION = 1
+# Bump when the analysis pipeline changes in a way that should re-run already-
+# analyzed tracks. v2: tempo now falls back to librosa so MP3s actually get a
+# BPM (v1 rows persisted bpm=null because aubio can't open MP3). The GET
+# endpoint reports version<ANALYSIS_VERSION rows as 'pending' so they re-run.
+ANALYSIS_VERSION = 2
 
 
 def analyze_audio(

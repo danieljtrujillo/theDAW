@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.modules.library.router import get_store as get_library_store
 
-from .engine import analyze_and_persist
+from .engine import ANALYSIS_VERSION, analyze_and_persist
 from .ffprobe import has_ffprobe
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,12 @@ def get_analysis(entry_id: str) -> dict:
         raise HTTPException(503, "library DB not available")
     row = store.db.get_analysis(entry_id)
     if row is None:
+        return {"entry_id": entry_id, "status": "pending"}
+    # A row from an older analyzer version is reported as 'pending' so the
+    # frontend re-runs it (Mixxx-style: re-analyze when the analyzer changes).
+    # This is how stale bpm=null rows — written before the librosa tempo
+    # fallback — heal themselves instead of looking permanently analyzed.
+    if int(row.get("version") or 0) < ANALYSIS_VERSION:
         return {"entry_id": entry_id, "status": "pending"}
     return row
 
