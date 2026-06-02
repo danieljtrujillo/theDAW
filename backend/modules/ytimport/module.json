@@ -1,0 +1,10 @@
+{
+  "name": "ytimport",
+  "label": "URL Import",
+  "enabled": true,
+  "icon": "Download",
+  "sidebar": false,
+  "api_prefix": "/api/ytimport",
+  "backend": true,
+  "description": "Import audio from a pasted URL (YouTube, SoundCloud, Bandcamp, …) via yt-dlp. Downloads the best available audio, prefers a lossless Opus stream-copy (transcodes to Opus 192k only when the source isn't Opus), and hands the file to the Media Bucket. Spotify is DRM-protected and cannot be downloaded."
+}

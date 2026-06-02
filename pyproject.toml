@@ -47,6 +47,11 @@ dependencies = [
     # controller's layout from a product photo. Headless (no GUI libs). The
     # module guards its import, so the backend still boots if this is absent.
     "opencv-python-headless>=4.9.0",
+    # ytimport module (backend/modules/ytimport) — paste a URL (YouTube,
+    # SoundCloud, Bandcamp, …) and pull the best audio via yt-dlp. Date-versioned
+    # and updated often as site extractors change; keep a generous floor and let
+    # `uv sync` pull the newest so YouTube/SoundCloud keep working.
+    "yt-dlp>=2025.1.1",
 ]
 
 [project.optional-dependencies]
