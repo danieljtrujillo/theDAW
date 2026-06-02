@@ -367,26 +367,30 @@ export const DJView: React.FC = () => {
           />
         </div>
 
-        {/* Master crossfader */}
-        <div className="shrink-0 bg-black/60 border border-white/10 rounded p-3 flex items-center gap-3 dj-surface">
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 w-8 text-right">A</span>
-          <div className="flex-1">
-            <DjFader
-              value={crossfader}
-              min={-1}
-              max={1}
-              defaultValue={0}
-              center
-              color={DECK_RGB.cyan}
-              onChange={(v) => { setCrossfader(v); djEngine.setCrossfade(v); }}
-              ariaLabel="Crossfader"
-              title="Crossfade between Deck A and Deck B (double-click to center)"
-            />
+        {/* Master crossfader — equal-width A/B gutters keep the fader (and its
+            center detent) truly centered; the % readout sits below so it can't
+            push the fader off-center. */}
+        <div className="shrink-0 bg-black/60 border border-white/10 rounded px-3 py-2 dj-surface">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-black uppercase tracking-widest text-purple-300 w-6 text-right">A</span>
+            <div className="flex-1">
+              <DjFader
+                value={crossfader}
+                min={-1}
+                max={1}
+                defaultValue={0}
+                center
+                color={DECK_RGB.cyan}
+                onChange={(v) => { setCrossfader(v); djEngine.setCrossfade(v); }}
+                ariaLabel="Crossfader"
+                title="Crossfade between Deck A and Deck B (double-click to center)"
+              />
+            </div>
+            <span className="text-[11px] font-black uppercase tracking-widest text-cyan-300 w-6 text-left">B</span>
           </div>
-          <span className="text-[10px] font-black uppercase tracking-widest text-cyan-300 w-8 text-left">B</span>
-          <span className="text-[9px] font-mono text-zinc-500 ml-2 w-12 text-right">
+          <div className="text-center text-[10px] font-mono text-zinc-500 mt-1 tabular-nums">
             {crossfader < -0.05 ? `A ${Math.round((1 + crossfader) * 100)}%` : crossfader > 0.05 ? `B ${Math.round((1 - crossfader) * -100 + 100)}%` : 'CENTER'}
-          </span>
+          </div>
         </div>
       </div>
 
@@ -794,7 +798,7 @@ const Deck: React.FC<DeckProps> = ({
               accent={accent}
             />
           ) : (
-            <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[9px] font-mono text-zinc-700">
+            <div className="h-12 rounded bg-[#0e0c18] border border-white/5 flex items-center justify-center text-[11px] font-mono text-zinc-700">
               no track loaded
             </div>
           )}
@@ -827,7 +831,7 @@ const Deck: React.FC<DeckProps> = ({
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-1">
             <Repeat className={`w-3 h-3 ${loopActive ? accentText : 'text-zinc-600'}`} />
-            <span className="text-[7px] font-mono uppercase text-zinc-600 w-8">Loop</span>
+            <span className="text-[9px] font-mono uppercase text-zinc-600 w-8">Loop</span>
             {BEAT_SIZES.map((b) => (
               <DjPad
                 key={b.beats}
@@ -852,7 +856,7 @@ const Deck: React.FC<DeckProps> = ({
             </DjPad>
           </div>
           <div className="flex items-center gap-1">
-            <span className="text-[7px] font-mono uppercase text-zinc-600 w-11 ml-4">Roll</span>
+            <span className="text-[9px] font-mono uppercase text-zinc-600 w-11 ml-4">Roll</span>
             {ROLL_SIZES.map((b) => (
               <DjPad
                 key={b.beats}
@@ -881,7 +885,7 @@ const Deck: React.FC<DeckProps> = ({
 
         {/* Beat-jump — nudge the playhead by whole beats (grid-aware). */}
         <div className="flex items-center gap-1">
-          <span className="text-[7px] font-mono uppercase text-zinc-600 w-11 ml-4">Jump</span>
+          <span className="text-[9px] font-mono uppercase text-zinc-600 w-11 ml-4">Jump</span>
           {([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).map(([n, lbl]) => (
             <DjPad
               key={n}
@@ -901,8 +905,8 @@ const Deck: React.FC<DeckProps> = ({
           {([['LO', eqLow, 'low'], ['MID', eqMid, 'mid'], ['HI', eqHigh, 'high']] as const).map(([label, value, band]) => (
             <div key={band} className="flex flex-col gap-0.5">
               <div className="flex items-center justify-between">
-                <span className="text-[7px] font-mono uppercase text-zinc-600">{label}</span>
-                <span className="text-[8px] font-mono text-zinc-400 tabular-nums">{value >= 0 ? '+' : ''}{value.toFixed(0)}</span>
+                <span className="text-[9px] font-mono uppercase text-zinc-600">{label}</span>
+                <span className="text-[10px] font-mono text-zinc-400 tabular-nums">{value >= 0 ? '+' : ''}{value.toFixed(0)}</span>
               </div>
               <DjFader
                 value={value}
@@ -919,29 +923,31 @@ const Deck: React.FC<DeckProps> = ({
           ))}
         </div>
 
-        {/* Pitch — wide (±50%) so SYNC's tempo match is representable on the
-            fader; the BPM readout shows the live effective tempo. */}
-        <div className="flex items-center gap-2">
-          <span className="text-[7px] font-mono uppercase text-zinc-600 shrink-0">Pitch</span>
-          <div className="flex-1">
-            <DjFader
-              value={pitch}
-              min={-50}
-              max={50}
-              defaultValue={0}
-              center
-              color={deckRgb}
-              onChange={(v) => onPitch(v)}
-              ariaLabel="Pitch"
-              title="Tempo/pitch (coupled until key-lock) — double-click to reset"
-            />
+        {/* Pitch — equal-width gutters keep the fader centered; the effective
+            BPM sits below so the readouts can't push it off-center. ±50% so
+            SYNC's tempo match is representable. */}
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-mono uppercase text-zinc-600 w-12 text-right shrink-0">Pitch</span>
+            <div className="flex-1">
+              <DjFader
+                value={pitch}
+                min={-50}
+                max={50}
+                defaultValue={0}
+                center
+                color={deckRgb}
+                onChange={(v) => onPitch(v)}
+                ariaLabel="Pitch"
+                title="Tempo/pitch (coupled until key-lock) — double-click to reset"
+              />
+            </div>
+            <span className={`text-[11px] font-mono w-12 text-left tabular-nums shrink-0 ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
           </div>
-          <span className={`text-[9px] font-mono w-10 text-right ${accentText}`}>{pitch >= 0 ? '+' : ''}{pitch.toFixed(1)}%</span>
           {bpm != null && (
-            <span className="text-[9px] font-mono w-14 text-right text-zinc-300 tabular-nums" title="Effective BPM (base × pitch)">
-              {(bpm * (1 + pitch / 100)).toFixed(1)}
-              <span className="text-zinc-600"> BPM</span>
-            </span>
+            <div className="text-center text-[10px] font-mono text-zinc-300 mt-0.5 tabular-nums" title="Effective BPM (base × pitch)">
+              {(bpm * (1 + pitch / 100)).toFixed(1)}<span className="text-zinc-600"> BPM</span>
+            </div>
           )}
         </div>
       </div>
@@ -1074,24 +1080,31 @@ const DeckWaveform: React.FC<{
   const scrubbing = useRef(false);
   const pendingX = useRef<number | null>(null);
   const scrubRaf = useRef(0);
+  // Duration is read LIVE from the engine (not the React `dur` state) so a click
+  // seeks even before a status tick has updated local state.
+  const seekToClientX = (clientX: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const d = djEngine.getStatus(deckId).duration;
+    if (d <= 0) return;
+    const rect = el.getBoundingClientRect();
+    djEngine.seekDeck(deckId, clamp01((clientX - rect.left) / rect.width) * d);
+  };
   const applyScrub = () => {
     scrubRaf.current = 0;
     const x = pendingX.current;
     pendingX.current = null;
-    const el = containerRef.current;
-    if (x == null || !el || dur <= 0) return;
-    const rect = el.getBoundingClientRect();
-    djEngine.seekDeck(deckId, clamp01((x - rect.left) / rect.width) * dur);
+    if (x != null) seekToClientX(x);
   };
   const queueScrub = (clientX: number) => {
     pendingX.current = clientX;
     if (!scrubRaf.current) scrubRaf.current = requestAnimationFrame(applyScrub);
   };
   const onScrubDown = (e: React.PointerEvent) => {
-    if (dur <= 0) return;
+    if (djEngine.getStatus(deckId).duration <= 0) return;
     scrubbing.current = true;
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    queueScrub(e.clientX);
+    seekToClientX(e.clientX); // jump immediately on press, not just on the rAF tick
   };
   const onScrubMove = (e: React.PointerEvent) => { if (scrubbing.current) queueScrub(e.clientX); };
   const onScrubUp = (e: React.PointerEvent) => {
@@ -1102,12 +1115,13 @@ const DeckWaveform: React.FC<{
 
   return (
     <div ref={containerRef} className="relative">
-      <WaveformPreview audioUrl={audioUrl} height={48} />
+      <WaveformPreview audioUrl={audioUrl} height={48} interact={false} />
 
-      {/* Scrub catcher — above the canvas so seeks drive our engine, not
-          wavesurfer's own cursor. Drag to scrub, click to jump. */}
+      {/* Scrub catcher — above the canvas (z-10) so seeks drive our engine, not
+          wavesurfer's own cursor. Drag to scrub, click to jump. touch-none keeps
+          a touch-drag from scrolling the panel instead of scrubbing. */}
       <div
-        className="absolute inset-0 cursor-ew-resize"
+        className="absolute inset-0 z-10 cursor-ew-resize touch-none"
         onPointerDown={onScrubDown}
         onPointerMove={onScrubMove}
         onPointerUp={onScrubUp}
@@ -1117,7 +1131,7 @@ const DeckWaveform: React.FC<{
 
       {/* Beatgrid */}
       {beatMarks && (
-        <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute inset-0 z-20 pointer-events-none">
           {beatMarks.map((m, i) => (
             <div
               key={i}
@@ -1131,7 +1145,7 @@ const DeckWaveform: React.FC<{
       {/* Loop region */}
       {loop && dur > 0 && (
         <div
-          className="absolute top-0 bottom-0 pointer-events-none"
+          className="absolute top-0 bottom-0 z-20 pointer-events-none"
           style={{
             left: `${(loop.in / dur) * 100}%`,
             width: `${((loop.out - loop.in) / dur) * 100}%`,
@@ -1146,7 +1160,7 @@ const DeckWaveform: React.FC<{
       {dur > 0 && cues && cues.map((c, i) => (c == null ? null : (
         <div
           key={i}
-          className="absolute top-0 bottom-0 pointer-events-none"
+          className="absolute top-0 bottom-0 z-20 pointer-events-none"
           style={{ left: `${(c / dur) * 100}%`, width: '2px', background: accentColor }}
         >
           <span className="absolute top-0 left-0 text-[6px] font-black text-black px-0.5 leading-tight" style={{ background: accentColor }}>

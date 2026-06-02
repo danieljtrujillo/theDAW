@@ -197,8 +197,11 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
+  /* min-height pins the box so the larger font can't grow rows; padding is
+     trimmed to keep the overall height the same as the old 8px-font pad. */
+  min-height: 22px;
   border-radius: 8px;
-  padding: 5px 4px;
+  padding: 2px 4px;
   cursor: pointer;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background:
@@ -208,9 +211,10 @@
   transition: background 0.12s ease, box-shadow 0.16s ease, border-color 0.12s ease, transform 0.08s ease, color 0.12s ease;
   outline: none;
   color: #a1a1aa;
-  font-size: 8px;
+  font-size: 11px;
+  line-height: 1;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
