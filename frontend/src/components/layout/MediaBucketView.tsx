@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FolderPlus, Trash2, Music, FileAudio, UploadCloud, Send, Library, Wand2 } from 'lucide-react';
+import { FolderPlus, Trash2, Music, FileAudio, UploadCloud, Send, Library, Wand2, Link2, Loader2 } from 'lucide-react';
 import { useMediaBucketStore, type BucketItem } from '../../state/mediaBucketStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
@@ -30,6 +30,8 @@ export const MediaBucketView: React.FC = () => {
   const [dragOver, setDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
+  const [importUrl, setImportUrl] = useState('');
+  const [importing, setImporting] = useState(false);
   const itemMenu = useContextMenu<BucketItem>();
 
   useEffect(() => {
@@ -58,6 +60,43 @@ export const MediaBucketView: React.FC = () => {
     }
     setSelectedIds([id]);
     setSelectionAnchor(id);
+  };
+
+  const handleImportUrl = async () => {
+    const url = importUrl.trim();
+    if (!url || importing) return;
+    setImporting(true);
+    logInfo('bucket', `Importing from URL: ${url}`);
+    try {
+      const res = await fetch('/api/ytimport/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j?.detail) detail = j.detail;
+        } catch {
+          // non-JSON error body — keep the status string
+        }
+        throw new Error(detail);
+      }
+      const blob = await res.blob();
+      const titleHdr = res.headers.get('X-Title');
+      const fnameHdr = res.headers.get('X-Filename');
+      const title = titleHdr ? decodeURIComponent(titleHdr) : 'import';
+      const filename = fnameHdr ? decodeURIComponent(fnameHdr) : `${title}.opus`;
+      const file = new File([blob], filename, { type: blob.type || 'audio/ogg' });
+      addMany([file]);
+      logInfo('bucket', `Imported "${title}" (${fmtSize(blob.size)})`);
+      setImportUrl('');
+    } catch (e) {
+      logError('bucket', `URL import failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setImporting(false);
+    }
   };
 
   const sendBlobsToChimeraStack = (entries: BucketItem[]) => {
@@ -186,6 +225,33 @@ export const MediaBucketView: React.FC = () => {
             </button>
           )}
         </div>
+      </div>
+
+      {/* URL import — paste a YouTube / SoundCloud / Bandcamp link */}
+      <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/5 bg-black/20 shrink-0">
+        <Link2 className="w-3 h-3 text-purple-300 shrink-0" />
+        <input
+          type="text"
+          value={importUrl}
+          onChange={(e) => setImportUrl(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void handleImportUrl();
+          }}
+          disabled={importing}
+          placeholder="Paste a YouTube / SoundCloud / Bandcamp link…"
+          spellCheck={false}
+          className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-purple-400/50 disabled:opacity-50"
+          title="Spotify is DRM-protected and can't be imported"
+        />
+        <button
+          onClick={() => void handleImportUrl()}
+          disabled={importing || importUrl.trim().length === 0}
+          className="btn-ghost text-[9px] py-1 flex items-center gap-1.5 text-purple-300 hover:text-purple-200 disabled:opacity-40"
+          title="Download the best audio (Opus) into the bucket"
+        >
+          {importing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}
+          {importing ? 'IMPORTING…' : 'IMPORT URL'}
+        </button>
       </div>
 
       {/* Body */}

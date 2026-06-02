@@ -20,6 +20,7 @@
  */
 
 import { analyzeEntries } from './djAnalysisStore';
+import { useVjSetStatusStore } from './vjSetStatusStore';
 
 export interface VjSetItem {
   /** Library entry id (or null for ad-hoc URL entries). */
@@ -73,6 +74,9 @@ export function isVjSetTargetActive(): boolean {
 export function sendSetToVj(payload: VjSetPayload): void {
   // Anything pushed to VJ should carry BPM/key/beatgrid — analyze on the way.
   analyzeEntries(payload.items.map((i) => i.entryId));
+  // Optimistically record the hand-off so the UI shows "sending…"; the VJ side
+  // flips it to "confirmed" when it ACKs (see VJView's sa3-vj/set-loaded).
+  useVjSetStatusStore.getState().noteSent(payload.name, payload.items.length);
   for (const cb of listeners) cb(payload);
   if (handler) handler.loadSet(payload);
   else pending = payload;

@@ -22,7 +22,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge,
+  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge, Lock,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useAppUiStore } from '../state/appUiStore';
@@ -32,6 +32,7 @@ import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
 import { useDjCuesStore, HOTCUE_SLOTS } from '../state/djCuesStore';
 import { toCamelot, keyLabel } from '../lib/camelot';
+import { buildBeatgrid } from '../lib/beatgrid';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { DjFader, DjPad, DECK_RGB } from '../components/dj/DjControls';
 import {
@@ -53,6 +54,9 @@ export const DJView: React.FC = () => {
   const [crossfader, setCrossfader] = useState(() => djEngine.getCrossfade()); // -1 A, 0 center, +1 B
   const [deckAPitch, setDeckAPitch] = useState(0);
   const [deckBPitch, setDeckBPitch] = useState(0);
+  // Sync-Lock — at most one deck is the FOLLOWER, continuously matched (tempo +
+  // phase) to the other. null = no lock. Grabbing the follower's pitch releases it.
+  const [syncLock, setSyncLock] = useState<djEngine.DeckId | null>(null);
   // Quantize: when on, cue jumps/sets and loop in-points snap to the beatgrid.
   const [quantize, setQuantize] = useState(false);
   // Auto-gain: level each deck toward a target loudness using analysis rms_db
@@ -78,6 +82,20 @@ export const DJView: React.FC = () => {
   // where both decks are visible.
   const deckAData = useDjAnalysisStore((s) => (deckATrack ? s.byId[deckATrack]?.data ?? null : null));
   const deckBData = useDjAnalysisStore((s) => (deckBTrack ? s.byId[deckBTrack]?.data ?? null : null));
+  // Constant beatgrids for both decks (drift-proof) — used by SYNC, the Sync-Lock
+  // phase PLL, and the harmonic indicator.
+  const gridA = useMemo(
+    () => buildBeatgrid({ bpm: deckAData?.bpm, beats: deckAData?.beats, duration: deckAData?.duration_sec }),
+    [deckAData],
+  );
+  const gridB = useMemo(
+    () => buildBeatgrid({ bpm: deckBData?.bpm, beats: deckBData?.beats, duration: deckBData?.duration_sec }),
+    [deckBData],
+  );
+  // Harmonic-mix indicator — do the two loaded keys mix on the Camelot wheel?
+  const camA = deckAData ? toCamelot(deckAData.key, deckAData.scale) : null;
+  const camB = deckBData ? toCamelot(deckBData.key, deckBData.scale) : null;
+  const harmonic = camA && camB ? camA.compatible.includes(camB.code) : null;
   const djTabActive = useAppUiStore((s) => s.centerTab === 'dj');
   const setlists = useSetlistStore((s) => s.setlists);
   const activeId = useSetlistStore((s) => s.activeId);
@@ -237,9 +255,10 @@ export const DJView: React.FC = () => {
     if (which === 'A') setDeckAPitch(pct); else setDeckBPitch(pct);
     djEngine.setDeckPitch(which, pct);
 
-    // Phase align (only meaningful while the reference deck is playing).
-    const thisBeats = thisData?.beats ?? null;
-    const otherBeats = otherData?.beats ?? null;
+    // Phase align (only meaningful while the reference deck is playing). Uses
+    // the constant grids so a jittery raw beat can't throw the alignment off.
+    const thisBeats = (which === 'A' ? gridA : gridB)?.beats ?? null;
+    const otherBeats = (which === 'A' ? gridB : gridA)?.beats ?? null;
     const otherStatus = djEngine.getStatus(otherId);
     const thisStatus = djEngine.getStatus(which);
     if (thisBeats && otherBeats && otherStatus.playing) {
@@ -252,6 +271,58 @@ export const DJView: React.FC = () => {
     }
     setFlash(`Synced Deck ${which} → ${otherEffBpm.toFixed(1)} BPM`);
   };
+
+  // Sync-Lock: engage = instant one-shot sync, then a continuous follower. Click
+  // again (or grab the follower's pitch fader) to release. Mutually exclusive —
+  // only one deck follows at a time.
+  const toggleSyncLock = (which: djEngine.DeckId) => {
+    if (syncLock === which) { setSyncLock(null); return; }
+    syncDeck(which);
+    setSyncLock(which);
+    setFlash(`Sync-Lock: Deck ${which} follows Deck ${which === 'A' ? 'B' : 'A'}`);
+  };
+
+  // Continuous Sync-Lock PLL — keep the follower matched to the master in tempo
+  // (octave-aware) and phase. Phase is corrected by gentle rate-bending, NOT
+  // seeks: setDeckPitch is click-free, while seekDeck restarts the source. A
+  // deadband lets it settle instead of hunting. ~350ms handles slow drift and
+  // stays cheap on a weak machine.
+  useEffect(() => {
+    if (!syncLock) return;
+    const follower = syncLock;
+    const master: djEngine.DeckId = follower === 'A' ? 'B' : 'A';
+    const fBpm = (follower === 'A' ? deckAData : deckBData)?.bpm ?? null;
+    const mBpm = (follower === 'A' ? deckBData : deckAData)?.bpm ?? null;
+    const fGrid = follower === 'A' ? gridA : gridB;
+    const mGrid = follower === 'A' ? gridB : gridA;
+    if (!fBpm || !mBpm || !fGrid || !mGrid) return;
+
+    const KP = 12;         // phase error (beats) → corrective % rate bend
+    const MAX_BEND = 4;    // cap the corrective bend (%)
+    const DEADBAND = 0.02; // beats; inside this, just hold the matched tempo
+
+    const id = window.setInterval(() => {
+      const fs = djEngine.getStatus(follower);
+      const ms = djEngine.getStatus(master);
+      if (!fs.playing || !ms.playing) return; // only correct while both run
+      // Tempo: octave-aware match to the master's CURRENT effective BPM.
+      const mEff = mBpm * (1 + ms.pitchPct / 100);
+      let rate = mEff / fBpm;
+      while (rate > Math.SQRT2) rate /= 2;
+      while (rate < Math.SQRT1_2) rate *= 2;
+      // Phase: where each deck sits within its beat (0..1); wrap the error to ±½.
+      let dPhase = beatPhase(ms.currentTime, mGrid.beats) - beatPhase(fs.currentTime, fGrid.beats);
+      if (dPhase > 0.5) dPhase -= 1;
+      if (dPhase < -0.5) dPhase += 1;
+      const bend = Math.abs(dPhase) > DEADBAND
+        ? Math.max(-MAX_BEND, Math.min(MAX_BEND, dPhase * KP))
+        : 0;
+      const pct = Math.max(-50, Math.min(50, (rate - 1) * 100 + bend));
+      djEngine.setDeckPitch(follower, pct);
+      if (follower === 'A') setDeckAPitch(pct); else setDeckBPitch(pct);
+    }, 350);
+    return () => window.clearInterval(id);
+  }, [syncLock, deckAData, deckBData, gridA, gridB]);
 
   const masterPlaying = vjState === 'playing';
 
@@ -300,6 +371,24 @@ export const DJView: React.FC = () => {
           >
             <Gauge className="w-3 h-3" /> Auto-Gain
           </button>
+          {camA && camB && (
+            <div
+              className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${
+                harmonic
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+              }`}
+              title={
+                harmonic
+                  ? `Harmonic match — ${camA.code} ↔ ${camB.code} mix in key`
+                  : `Key clash — ${camA.code} vs ${camB.code} aren't adjacent on the Camelot wheel`
+              }
+            >
+              <Music2 className="w-3 h-3" />
+              {harmonic ? 'In Key' : 'Clash'}
+              <span className="font-mono normal-case tracking-normal text-zinc-400">{camA.code}·{camB.code}</span>
+            </div>
+          )}
           {flash && (
             <span className="ml-auto text-[9px] font-mono text-cyan-300 truncate max-w-[40%]">{flash}</span>
           )}
@@ -314,7 +403,7 @@ export const DJView: React.FC = () => {
             isPlaying={deckAPlaying}
             onPlay={() => djEngine.toggleDeck('A')}
             pitch={deckAPitch}
-            onPitch={(v) => { setDeckAPitch(v); djEngine.setDeckPitch('A', v); }}
+            onPitch={(v) => { if (syncLock === 'A') setSyncLock(null); setDeckAPitch(v); djEngine.setDeckPitch('A', v); }}
             eqLow={deckAEqLow}
             eqMid={deckAEqMid}
             eqHigh={deckAEqHigh}
@@ -331,6 +420,8 @@ export const DJView: React.FC = () => {
             entryId={deckATrack}
             audioUrl={(() => { const t = trackById(deckATrack); return t ? (t.audioUrl ?? null) : null; })()}
             onSync={() => syncDeck('A')}
+            onSyncLock={() => toggleSyncLock('A')}
+            syncLocked={syncLock === 'A'}
             canSync={!!deckAData?.bpm && !!deckBData?.bpm}
             quantize={quantize}
             autoGain={autoGain}
@@ -343,7 +434,7 @@ export const DJView: React.FC = () => {
             isPlaying={deckBPlaying}
             onPlay={() => djEngine.toggleDeck('B')}
             pitch={deckBPitch}
-            onPitch={(v) => { setDeckBPitch(v); djEngine.setDeckPitch('B', v); }}
+            onPitch={(v) => { if (syncLock === 'B') setSyncLock(null); setDeckBPitch(v); djEngine.setDeckPitch('B', v); }}
             eqLow={deckBEqLow}
             eqMid={deckBEqMid}
             eqHigh={deckBEqHigh}
@@ -360,6 +451,8 @@ export const DJView: React.FC = () => {
             entryId={deckBTrack}
             audioUrl={(() => { const t = trackById(deckBTrack); return t ? (t.audioUrl ?? null) : null; })()}
             onSync={() => syncDeck('B')}
+            onSyncLock={() => toggleSyncLock('B')}
+            syncLocked={syncLock === 'B'}
             canSync={!!deckAData?.bpm && !!deckBData?.bpm}
             quantize={quantize}
             autoGain={autoGain}
@@ -564,7 +657,11 @@ interface DeckProps {
   audioUrl: string | null;
   /** Beatmatch this deck to the other deck (tempo + phase). */
   onSync: () => void;
-  /** Both decks have BPM, so SYNC is meaningful. */
+  /** Toggle continuous Sync-Lock — this deck follows the other. */
+  onSyncLock: () => void;
+  /** This deck is the active Sync-Lock follower. */
+  syncLocked: boolean;
+  /** Both decks have BPM, so SYNC / Sync-Lock are meaningful. */
   canSync: boolean;
   /** Global quantize — snap cues/loops to the beatgrid. */
   quantize: boolean;
@@ -578,7 +675,8 @@ const AUTO_GAIN_TARGET_DB = -12;
 const Deck: React.FC<DeckProps> = ({
   deckId, label, accent, trackTitle, isPlaying, onPlay, pitch, onPitch,
   eqLow, eqMid, eqHigh, onEq, onLoadId, entries, onAddToSet, onSendToVj,
-  hasTrack, setLoaded, entryId, audioUrl, onSync, canSync, quantize, autoGain,
+  hasTrack, setLoaded, entryId, audioUrl, onSync, onSyncLock, syncLocked,
+  canSync, quantize, autoGain,
 }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   const accentBorder = accent === 'purple' ? 'border-purple-500/40' : 'border-cyan-500/40';
@@ -599,6 +697,16 @@ const Deck: React.FC<DeckProps> = ({
   const bpm = a?.bpm ?? null;
   const beats = a?.beats ?? null;
   const beatLen = bpm && bpm > 0 ? 60 / bpm : null;
+  // Constant beatgrid (drift-proof): a uniform grid at the analyzed tempo,
+  // anchored to the first detected beat. Everything beat-aware on the deck —
+  // marks, loop in-points, quantize, beat-jump — rides this instead of the raw
+  // (sometimes jittery) beat list.
+  const grid = useMemo(
+    () => buildBeatgrid({ bpm, beats, duration: a?.duration_sec }),
+    [bpm, beats, a?.duration_sec],
+  );
+  const gridBeats = grid?.beats ?? beats;
+  const firstBeat = beats && beats.length > 0 ? beats[0] : null;
 
   // Hotcues (persisted per track) + live loop/slip state (low-frequency toggles,
   // pulled from the engine so the buttons reflect reality without per-frame work).
@@ -618,6 +726,21 @@ const Deck: React.FC<DeckProps> = ({
   // Drop the "which beat-loop is lit" memory whenever the loop is disengaged.
   useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
 
+  // Auto-cue to the first beat: once a fresh track has both decoded (buffer
+  // ready) and analyzed (first beat known), if the deck is still untouched at
+  // the very start, seek to that first beat so play begins on the downbeat
+  // instead of through lead-in silence. `decoding` in the deps re-runs this when
+  // the buffer finishes, so it works regardless of analyze-vs-decode order.
+  const autoCuedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!entryId || autoCuedRef.current === entryId) return;
+    if (firstBeat == null || firstBeat <= 0.05) return; // wait for analysis
+    const st = djEngine.getStatus(deckId);
+    if (st.duration <= 0) return; // buffer not decoded yet — retry when it is
+    if (!st.playing && st.currentTime <= 0.05) djEngine.seekDeck(deckId, firstBeat);
+    autoCuedRef.current = entryId; // only mark done after a real attempt
+  }, [entryId, firstBeat, deckId, decoding]);
+
   // Auto-gain: trim the deck toward a target loudness from analysis rms_db
   // (ReplayGain-style), or unity when off / unknown.
   const trimDb = autoGain && a?.rms_db != null
@@ -631,10 +754,10 @@ const Deck: React.FC<DeckProps> = ({
     if (c == null) {
       // Set at the playhead; quantize snaps the stored cue to the nearest beat.
       const pos = djEngine.getStatus(deckId).currentTime;
-      setCue(entryId, i, quantize ? nearestBeat(pos, beats) : pos);
+      setCue(entryId, i, quantize ? nearestBeat(pos, gridBeats) : pos);
     } else {
       // Jump; quantize lands it on the grid in case of drift.
-      djEngine.seekDeck(deckId, quantize ? nearestBeat(c, beats) : c);
+      djEngine.seekDeck(deckId, quantize ? nearestBeat(c, gridBeats) : c);
     }
   };
   const dropHotcue = (i: number) => { if (entryId) clearCue(entryId, i); };
@@ -652,8 +775,8 @@ const Deck: React.FC<DeckProps> = ({
     const len = loopBeats * effBeatLen;
     const pos = djEngine.getStatus(deckId).currentTime;
     let inPt = pos;
-    if (beats && beats.length) {
-      const anchor = snapToBeat(pos, beats); // nearest beat ≤ pos
+    if (gridBeats && gridBeats.length) {
+      const anchor = snapToBeat(pos, gridBeats); // nearest grid line ≤ pos
       inPt = anchor;
       // Sub-beat loops: advance to the fractional grid cell containing pos so
       // the head stays inside [in, out) and the loop actually wraps.
@@ -672,10 +795,10 @@ const Deck: React.FC<DeckProps> = ({
     if (!hasTrack) return;
     const pos = djEngine.getStatus(deckId).currentTime;
     let target = pos + n * effBeatLen;
-    if (beats && beats.length) {
+    if (gridBeats && gridBeats.length) {
       let idx = 0;
-      for (let i = 0; i < beats.length; i++) { if (beats[i] <= pos + 0.001) idx = i; else break; }
-      target = beats[Math.max(0, Math.min(beats.length - 1, idx + n))];
+      for (let i = 0; i < gridBeats.length; i++) { if (gridBeats[i] <= pos + 0.001) idx = i; else break; }
+      target = gridBeats[Math.max(0, Math.min(gridBeats.length - 1, idx + n))];
     }
     djEngine.seekDeck(deckId, target);
   };
@@ -730,6 +853,16 @@ const Deck: React.FC<DeckProps> = ({
             title={canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}
           >
             <Link2 className="w-3 h-3" /> Sync
+          </DjPad>
+          <DjPad
+            color={deckRgb}
+            on={syncLocked}
+            disabled={!canSync}
+            onClick={onSyncLock}
+            style={{ padding: '6px 8px', flexShrink: 0 }}
+            title={canSync ? 'Sync-Lock — continuously hold tempo + phase to the other deck (grab the pitch fader to release)' : 'Sync-Lock needs BPM on both decks'}
+          >
+            <Lock className="w-3 h-3" /> Lock
           </DjPad>
           <div className="flex items-center gap-1 text-[9px] font-mono shrink-0">
             <span className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-300">
@@ -792,7 +925,7 @@ const Deck: React.FC<DeckProps> = ({
             <DeckWaveform
               deckId={deckId}
               audioUrl={audioUrl}
-              beats={beats}
+              beats={gridBeats}
               cues={cues ?? null}
               accent={accent}
             />
