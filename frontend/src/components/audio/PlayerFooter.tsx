@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Music, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check } from 'lucide-react';
-import { motion } from 'motion/react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Search } from 'lucide-react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
@@ -13,6 +12,11 @@ import {
   type VjPlaybackState,
 } from '../../state/vjPlaybackBus';
 import { useVjSetStatusStore } from '../../state/vjSetStatusStore';
+import {
+  toggleDjMaster,
+  subscribeDjMasterState,
+  type DjMasterState,
+} from '../../state/djMasterBus';
 
 const formatDuration = (sec: number | null | undefined): string => {
   if (sec == null || !Number.isFinite(sec) || sec < 0) return '--:--';
@@ -25,6 +29,25 @@ const formatDuration = (sec: number | null | undefined): string => {
 export const PlayerFooter: React.FC = () => {
   const [isLiked, setIsLiked] = useState(false);
   const progressRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+
+  // G-Search lives in the footer now (global on every tab). Drives the library
+  // search store; typing opens the library rail. Ctrl/Cmd-K focuses it.
+  const setLibrarySearch = useLibraryStore((s) => s.setSearchQuery);
+  const librarySearch = useLibraryStore((s) => s.searchQuery);
+  const setRightPanelOpen = useAppUiStore((s) => s.setRightPanelOpen);
+  const isRightPanelOpen = useAppUiStore((s) => s.isRightPanelOpen);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Volume / mute live in playbackStore; they drive the engine's master gain.
   const volume = usePlaybackStore((s) => s.volume);
@@ -91,6 +114,12 @@ export const PlayerFooter: React.FC = () => {
   // registration: while the iframe boots, the footer should still present the
   // live transport rather than a disabled audio-only state.
   const isVjMode = centerTab === 'vj' || centerTab === 'dj';
+  const isDjMode = centerTab === 'dj';
+
+  // DJ master transport — the footer ▶ drives the DJ decks/set (not the global
+  // single-track player) while on the DJ tab.
+  const [djMaster, setDjMaster] = useState<DjMasterState>('paused');
+  useEffect(() => subscribeDjMasterState(setDjMaster), []);
 
   // VJ SET hand-off status — makes "where it sends to" obvious right at the
   // playhead: a pill showing the set is queued (amber) or confirmed in the VJ
@@ -103,10 +132,23 @@ export const PlayerFooter: React.FC = () => {
     ?? (centerTab === 'vj' ? 'VJ · live visuals' : centerTab === 'dj' ? 'DJ · live master' : null);
   const displayDuration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
   const displayCurrentTime = currentTime;
-  const displayIsPlaying = isVjMode ? vjState === 'playing' : isPlaying;
+  const displayIsPlaying = isDjMode
+    ? djMaster === 'playing'
+    : centerTab === 'vj'
+      ? vjState === 'playing'
+      : isPlaying;
   const progressPct = displayDuration > 0 ? Math.min(100, (displayCurrentTime / displayDuration) * 100) : 0;
 
   const handleToggle = () => {
+    // DJ-tab mode: the footer ▶ is the Live Master — play/pause the DJ decks
+    // (or start the active set from the top) and start the VJ visuals with it.
+    // It does NOT drive the global single-track player (that was the confusing
+    // "second playhead").
+    if (isDjMode) {
+      toggleDjMaster();
+      toggleVjPlayback();
+      return;
+    }
     // VJ-tab mode: drive the VJ iframe's video element via the bus.
     // Also toggle the SA3 player if a track is loaded so loaded
     // audio + visuals start together. When there's no SA3 track,
@@ -148,17 +190,32 @@ export const PlayerFooter: React.FC = () => {
 
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-20 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center justify-between gap-8 group">
-      {/* 1. Track Info & Actions */}
-      <div className="flex items-center gap-4 w-75 shrink-0">
-        <div className="w-11 h-11 rounded-lg bg-linear-to-br from-purple-500/20 to-blue-500/20 border border-white/5 flex items-center justify-center relative overflow-hidden group/thumb">
-          <Music className="w-5 h-5 text-purple-400 group-hover/thumb:scale-110 transition-transform" />
-          {isPlaying && (
-            <motion.div
-              animate={{ opacity: [0.3, 0.6, 0.3] }}
-              transition={{ repeat: Infinity, duration: 1.5 }}
-              className="absolute inset-0 bg-purple-500/10"
-            />
-          )}
+      {/* 1. G-Search + track info. The orb assistant overlaps the very
+          bottom-left corner, so pad section 1 left to clear its hit area. */}
+      <div className="flex items-center gap-3 w-75 shrink-0 pl-20">
+        {/* G-Search — global library search, available on every tab. */}
+        <div className="flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5 shrink-0">
+          <Search className="w-3 h-3 text-zinc-600" />
+          <input
+            id="global-search"
+            name="global-search"
+            ref={searchRef}
+            type="search"
+            aria-label="Global library search (Ctrl-K / Cmd-K)"
+            placeholder="G-SEARCH (ctrl-k)"
+            className="bg-transparent border-none outline-none text-[9px] text-zinc-300 w-24 font-mono placeholder:text-zinc-500"
+            value={librarySearch}
+            onChange={(e) => {
+              setLibrarySearch(e.target.value);
+              if (e.target.value && !isRightPanelOpen) setRightPanelOpen(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setLibrarySearch('');
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
         </div>
         <div className="flex flex-col min-w-0">
           <h4 className="text-[13px] font-bold text-zinc-100 truncate tracking-tight">

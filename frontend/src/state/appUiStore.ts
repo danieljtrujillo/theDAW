@@ -10,10 +10,10 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
     : null;
 }
 
-/** The center-bar tabs in user-locked order MAKE / EDIT / MIX / TRAIN
- *  / LEARN / VJ. All workspaces live here; the legacy left-side tabs
+/** The center-bar tabs in user-locked order MAKE / EDIT / MIX / DJ / VJ /
+ *  TRAIN / LEARN. All workspaces live here; the legacy left-side tabs
  *  (CREATE/PROCESS/TRAIN) are subsumed by these. */
-export const CENTER_TABS = ['make', 'edit', 'mix', 'train', 'learn', 'dj', 'vj'] as const;
+export const CENTER_TABS = ['make', 'edit', 'mix', 'dj', 'vj', 'train', 'learn'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
 
 /** Translate legacy navigation targets (used by orb-kit, library row

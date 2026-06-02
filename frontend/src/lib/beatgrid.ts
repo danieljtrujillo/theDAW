@@ -65,13 +65,13 @@ export function buildBeatgrid(input: {
         ? beats[beats.length - 1] + interval
         : null;
 
+  // No span to fill (no duration AND no beats) → return null so callers fall
+  // back to raw beats / BPM math instead of a useless single-line grid.
+  if (!dur || dur <= 0) return null;
+
   const out: number[] = [];
-  if (dur && dur > 0) {
-    for (let t = anchor; t <= dur + 1e-6; t += interval) {
-      out.push(Math.round(t * 1e6) / 1e6);
-    }
-  } else {
-    out.push(anchor);
+  for (let t = anchor; t <= dur + 1e-6; t += interval) {
+    out.push(Math.round(t * 1e6) / 1e6);
   }
 
   return { bpm: 60 / interval, interval, anchor, beats: out };

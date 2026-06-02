@@ -24,6 +24,9 @@ interface CenterTabBarProps {
   onTabChange: (tab: CenterTab) => void;
   isRightPanelOpen: boolean;
   onToggleRightPanel: () => void;
+  /** When true, render bare (no own bar chrome) so it can sit inside the
+   *  combined header row instead of as its own strip. */
+  embedded?: boolean;
 }
 
 const TABS: Array<{
@@ -34,7 +37,7 @@ const TABS: Array<{
    *  so each workspace gets a recognizable color at a glance. */
   accent: { border: string; bg: string; text: string; iconText: string };
 }> = [
-  // Order locked by user: MAKE, EDIT, MIX, TRAIN, LEARN.
+  // Order locked by user: MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN.
   {
     id: 'make',
     label: 'Make',
@@ -69,28 +72,6 @@ const TABS: Array<{
     },
   },
   {
-    id: 'train',
-    label: 'Train',
-    icon: Brain,
-    accent: {
-      border: 'border-cyan-500/50',
-      bg: 'bg-cyan-500/15',
-      text: 'text-cyan-100',
-      iconText: 'text-cyan-300',
-    },
-  },
-  {
-    id: 'learn',
-    label: 'Learn',
-    icon: Workflow,
-    accent: {
-      border: 'border-rose-500/50',
-      bg: 'bg-rose-500/15',
-      text: 'text-rose-100',
-      iconText: 'text-rose-300',
-    },
-  },
-  {
     id: 'dj',
     label: 'DJ',
     icon: Disc,
@@ -112,6 +93,28 @@ const TABS: Array<{
       iconText: 'text-fuchsia-300',
     },
   },
+  {
+    id: 'train',
+    label: 'Train',
+    icon: Brain,
+    accent: {
+      border: 'border-cyan-500/50',
+      bg: 'bg-cyan-500/15',
+      text: 'text-cyan-100',
+      iconText: 'text-cyan-300',
+    },
+  },
+  {
+    id: 'learn',
+    label: 'Learn',
+    icon: Workflow,
+    accent: {
+      border: 'border-rose-500/50',
+      bg: 'bg-rose-500/15',
+      text: 'text-rose-100',
+      iconText: 'text-rose-300',
+    },
+  },
 ];
 
 export const CenterTabBar: React.FC<CenterTabBarProps> = ({
@@ -119,9 +122,16 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
   onTabChange,
   isRightPanelOpen,
   onToggleRightPanel,
+  embedded = false,
 }) => {
   return (
-    <div className="flex items-stretch h-9 border-b border-white/5 bg-[#0a080f] px-2 shrink-0">
+    <div
+      className={
+        embedded
+          ? 'flex items-stretch flex-1 min-w-0 h-8'
+          : 'flex items-stretch h-9 border-b border-white/5 bg-[#0a080f] px-2 shrink-0'
+      }
+    >
       {/* Centered, fills width */}
       <div className="flex-1 flex items-center justify-center gap-1 px-2">
         {TABS.map((t) => {

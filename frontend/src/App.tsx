@@ -173,6 +173,10 @@ export default function App() {
         isActive={isAssistantOpen}
         onToggle={() => setIsAssistantOpen(prev => !prev)}
         onPositionChange={setOrbPosition}
+        // Bottom-left corner, pulled DOWN to overlap the footer (where the
+        // music-note icon used to be). v3 key so it resets there once.
+        defaultPosition={{ x: 12, y: typeof window !== 'undefined' ? window.innerHeight - 92 : 500 }}
+        persistenceKey="thedaw-orb-pos-v3"
       />
       <AssistantPanel
         isOpen={isAssistantOpen}

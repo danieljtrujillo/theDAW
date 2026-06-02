@@ -21,12 +21,11 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Radio, Music2,
-  ChevronUp, ChevronDown, Repeat, Magnet, Link2, Gauge, Lock, KeyRound,
+  Disc, Play, Pause, ListMusic, Plus, Save, Trash2, Cast, Music2,
+  ChevronUp, ChevronDown, ChevronRight, Repeat, Magnet, Link2, Gauge, Lock, KeyRound, Pencil, Check,
 } from 'lucide-react';
-import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useAppUiStore } from '../state/appUiStore';
-import { useSetlistStore } from '../state/setlistStore';
+import { useSetlistStore, type Setlist, type SetlistEntry } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
@@ -36,13 +35,13 @@ import { buildBeatgrid } from '../lib/beatgrid';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { DjFader, DjPad, DECK_RGB } from '../components/dj/DjControls';
 import {
-  subscribeToVjPlaybackState, isVjPlaybackActive,
-  type VjPlaybackState,
-} from '../state/vjPlaybackBus';
-import {
   sendSetToVj, sendTrackToVj, isVjSetTargetActive, type VjSetItem,
 } from '../state/vjSetBus';
+import { registerDjMasterHandler, reportDjMasterState } from '../state/djMasterBus';
 import * as djEngine from '../state/djEngine';
+
+/** DnD payload type for dragging a set/library track onto a deck. */
+const DJ_TRACK_MIME = 'application/x-thedaw-djtrack';
 
 export const DJView: React.FC = () => {
   const [deckATrack, setDeckATrack] = useState<string | null>(null);
@@ -69,11 +68,6 @@ export const DJView: React.FC = () => {
   const [deckBEqMid, setDeckBEqMid] = useState(0);
   const [deckBEqHigh, setDeckBEqHigh] = useState(0);
 
-  // Master transport — the single source of truth for the live
-  // performance, mirrored from the VJ playback bus so the DJ tab and
-  // the VJ tab never disagree about play/pause.
-  const [vjState, setVjState] = useState<VjPlaybackState>('unknown');
-  const [vjOpen, setVjOpen] = useState<boolean>(isVjPlaybackActive());
   const [flash, setFlash] = useState<string | null>(null);
 
   const entries = useLibraryStore((s) => s.entries);
@@ -82,16 +76,6 @@ export const DJView: React.FC = () => {
   // where both decks are visible.
   const deckAData = useDjAnalysisStore((s) => (deckATrack ? s.byId[deckATrack]?.data ?? null : null));
   const deckBData = useDjAnalysisStore((s) => (deckBTrack ? s.byId[deckBTrack]?.data ?? null : null));
-  // Constant beatgrids for both decks (drift-proof) — used by SYNC, the Sync-Lock
-  // phase PLL, and the harmonic indicator.
-  const gridA = useMemo(
-    () => buildBeatgrid({ bpm: deckAData?.bpm, beats: deckAData?.beats, duration: deckAData?.duration_sec }),
-    [deckAData],
-  );
-  const gridB = useMemo(
-    () => buildBeatgrid({ bpm: deckBData?.bpm, beats: deckBData?.beats, duration: deckBData?.duration_sec }),
-    [deckBData],
-  );
   // Harmonic-mix indicator — do the two loaded keys mix on the Camelot wheel?
   const camA = deckAData ? toCamelot(deckAData.key, deckAData.scale) : null;
   const camB = deckBData ? toCamelot(deckBData.key, deckBData.scale) : null;
@@ -99,58 +83,78 @@ export const DJView: React.FC = () => {
   const djTabActive = useAppUiStore((s) => s.centerTab === 'dj');
   const setlists = useSetlistStore((s) => s.setlists);
   const activeId = useSetlistStore((s) => s.activeId);
-  const createSetlist = useSetlistStore((s) => s.create);
-  const removeSetlist = useSetlistStore((s) => s.remove);
-  const setActive = useSetlistStore((s) => s.setActive);
   const appendToSet = useSetlistStore((s) => s.append);
-  const setEntries = useSetlistStore((s) => s.setEntries);
-  const entryMenu = useContextMenu<{ index: number }>();
 
   const activeSet = activeId ? setlists[activeId] : null;
 
-  // Setlist-entry ops driven by the right-click menu on each row.
-  const moveSetEntry = (from: number, to: number) => {
-    if (!activeId || !activeSet) return;
-    if (to < 0 || to >= activeSet.entries.length) return;
-    const arr = [...activeSet.entries];
-    const [item] = arr.splice(from, 1);
-    arr.splice(to, 0, item);
-    setEntries(activeId, arr);
-  };
-  const removeSetEntry = (index: number) => {
-    if (!activeId || !activeSet) return;
-    setEntries(activeId, activeSet.entries.filter((_, i) => i !== index));
-  };
-  const sendSetEntryToVj = (index: number) => {
-    if (!activeSet) return;
-    const e = activeSet.entries[index];
-    if (!e) return;
-    const entry = e.entryId ? entries.find((x) => x.id === e.entryId) ?? null : null;
-    sendTrackToVj({
-      entryId: e.entryId,
-      label: e.label,
-      url: entry?.audioUrl ?? e.url,
-      kind: e.kind ?? 'audio',
-    });
-    setFlash(
-      isVjSetTargetActive() ? `Sent "${e.label}" to VJ` : `Queued "${e.label}" — opens with VJ tab`,
-    );
-  };
+  // Refs so the (stably-registered) footer master handler always sees fresh
+  // deck/set state without re-registering on every render.
+  const deckATrackRef = useRef<string | null>(deckATrack);
+  const deckBTrackRef = useRef<string | null>(deckBTrack);
+  deckATrackRef.current = deckATrack;
+  deckBTrackRef.current = deckBTrack;
+  const pendingPlayRef = useRef<djEngine.DeckId | null>(null);
+  const masterPlayingRef = useRef(false);
 
-  // Keep the master transport icon synced with the real VJ state.
-  useEffect(() => {
-    const unsub = subscribeToVjPlaybackState((s) => {
-      setVjState(s);
-      setVjOpen(isVjPlaybackActive());
-    });
-    return unsub;
-  }, []);
-
-  // Mirror the real deck transport state from the audio engine.
+  // Mirror the real deck transport state from the audio engine, fulfil a pending
+  // master-play once a freshly-loaded deck has decoded, and report the master
+  // (decks) play state to the footer so its ▶ icon stays honest.
   useEffect(() => {
     return djEngine.subscribe((a, b) => {
       setDeckAPlaying(a.playing);
       setDeckBPlaying(b.playing);
+      const pend = pendingPlayRef.current;
+      if (pend) {
+        const st = pend === 'A' ? a : b;
+        if (st.hasBuffer && !st.decoding && !st.playing) {
+          djEngine.playDeck(pend);
+          pendingPlayRef.current = null;
+        }
+      }
+      const playing = a.playing || b.playing;
+      if (playing !== masterPlayingRef.current) {
+        masterPlayingRef.current = playing;
+        reportDjMasterState(playing ? 'playing' : 'paused');
+      }
+    });
+  }, []);
+
+  // Footer "Live Master" ▶ drives the DJ decks / the active set (not the global
+  // single-track player). Registered once; reads fresh state via refs/getState.
+  useEffect(() => {
+    const startSet = () => {
+      const aHas = !!deckATrackRef.current;
+      const bHas = !!deckBTrackRef.current;
+      if (aHas || bHas) {
+        if (aHas) djEngine.playDeck('A');
+        if (bHas) djEngine.playDeck('B');
+        return;
+      }
+      // Empty decks → load the active set's first track onto A and play from the
+      // top once it decodes (auto-cue lands it on the first beat).
+      const sl = useSetlistStore.getState();
+      const set = sl.activeId ? sl.setlists[sl.activeId] : null;
+      const first = set?.entries.find((e) => e.entryId) ?? null;
+      if (first?.entryId) {
+        pendingPlayRef.current = 'A';
+        setDeckATrack(first.entryId);
+      }
+    };
+    return registerDjMasterHandler({
+      toggle: () => {
+        const aPlaying = djEngine.getStatus('A').playing;
+        const bPlaying = djEngine.getStatus('B').playing;
+        if (aPlaying || bPlaying) {
+          if (aPlaying) djEngine.pauseDeck('A');
+          if (bPlaying) djEngine.pauseDeck('B');
+          reportDjMasterState('paused');
+        } else {
+          startSet();
+          reportDjMasterState('playing');
+        }
+      },
+      getState: () =>
+        djEngine.getStatus('A').playing || djEngine.getStatus('B').playing ? 'playing' : 'paused',
     });
   }, []);
 
@@ -211,25 +215,6 @@ export const DJView: React.FC = () => {
     );
   };
 
-  const handleSendSetToVj = () => {
-    if (!activeSet) return;
-    const items: VjSetItem[] = activeSet.entries.map((e) => {
-      const entry = e.entryId ? entries.find((x) => x.id === e.entryId) ?? null : null;
-      return {
-        entryId: e.entryId,
-        label: e.label,
-        url: entry?.audioUrl ?? e.url,
-        kind: e.kind ?? 'audio',
-      };
-    });
-    sendSetToVj({ setId: activeSet.id, name: activeSet.name, items });
-    setFlash(
-      isVjSetTargetActive()
-        ? `Sent SET "${activeSet.name}" (${items.length}) to VJ`
-        : `Queued SET "${activeSet.name}" — opens with VJ tab`,
-    );
-  };
-
   // Beatmatch SYNC — match `which` deck's tempo to the other deck and align the
   // beat phase, in one press. Tempo match is octave-aware (a 70 vs 140 BPM pair
   // syncs at rate≈1, not by halving speed); pitch rides playbackRate (key-lock
@@ -255,10 +240,11 @@ export const DJView: React.FC = () => {
     if (which === 'A') setDeckAPitch(pct); else setDeckBPitch(pct);
     djEngine.setDeckPitch(which, pct);
 
-    // Phase align (only meaningful while the reference deck is playing). Uses
-    // the constant grids so a jittery raw beat can't throw the alignment off.
-    const thisBeats = (which === 'A' ? gridA : gridB)?.beats ?? null;
-    const otherBeats = (which === 'A' ? gridB : gridA)?.beats ?? null;
+    // Phase align (only meaningful while the reference deck is playing). Uses the
+    // RAW detected beats (real onsets) so the match is to what you actually hear —
+    // a constant grid can drift from the audio when the analyzed BPM is a hair off.
+    const thisBeats = (which === 'A' ? deckAData : deckBData)?.beats ?? null;
+    const otherBeats = (which === 'A' ? deckBData : deckAData)?.beats ?? null;
     const otherStatus = djEngine.getStatus(otherId);
     const thisStatus = djEngine.getStatus(which);
     if (thisBeats && otherBeats && otherStatus.playing) {
@@ -293,9 +279,9 @@ export const DJView: React.FC = () => {
     const master: djEngine.DeckId = follower === 'A' ? 'B' : 'A';
     const fBpm = (follower === 'A' ? deckAData : deckBData)?.bpm ?? null;
     const mBpm = (follower === 'A' ? deckBData : deckAData)?.bpm ?? null;
-    const fGrid = follower === 'A' ? gridA : gridB;
-    const mGrid = follower === 'A' ? gridB : gridA;
-    if (!fBpm || !mBpm || !fGrid || !mGrid) return;
+    const fBeats = (follower === 'A' ? deckAData : deckBData)?.beats ?? null;
+    const mBeats = (follower === 'A' ? deckBData : deckAData)?.beats ?? null;
+    if (!fBpm || !mBpm || !fBeats || !mBeats) return;
 
     const KP = 12;         // phase error (beats) → corrective % rate bend
     const MAX_BEND = 4;    // cap the corrective bend (%)
@@ -311,7 +297,7 @@ export const DJView: React.FC = () => {
       while (rate > Math.SQRT2) rate /= 2;
       while (rate < Math.SQRT1_2) rate *= 2;
       // Phase: where each deck sits within its beat (0..1); wrap the error to ±½.
-      let dPhase = beatPhase(ms.currentTime, mGrid.beats) - beatPhase(fs.currentTime, fGrid.beats);
+      let dPhase = beatPhase(ms.currentTime, mBeats) - beatPhase(fs.currentTime, fBeats);
       if (dPhase > 0.5) dPhase -= 1;
       if (dPhase < -0.5) dPhase += 1;
       const bend = Math.abs(dPhase) > DEADBAND
@@ -322,79 +308,13 @@ export const DJView: React.FC = () => {
       if (follower === 'A') setDeckAPitch(pct); else setDeckBPitch(pct);
     }, 350);
     return () => window.clearInterval(id);
-  }, [syncLock, deckAData, deckBData, gridA, gridB]);
-
-  const masterPlaying = vjState === 'playing';
+  }, [syncLock, deckAData, deckBData]);
 
   return (
-    <div className="absolute inset-0 flex bg-[#07050a] text-white overflow-hidden">
-      {/* Decks + crossfader */}
-      <div className="flex-1 flex flex-col p-3 gap-3 min-w-0">
-        {/* Master transport now lives in the FOOTER (one master ▶ for the whole
-            app); this bar just reflects its live state + the VJ link. */}
-        <div className="shrink-0 bg-black/60 border border-white/10 rounded px-3 py-2 flex items-center gap-3">
-          <div
-            className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${
-              masterPlaying ? 'border-emerald-500/50 text-emerald-200 bg-emerald-500/10' : 'border-white/10 text-zinc-400'
-            }`}
-            title="The master transport is the footer ▶ at the bottom — it drives the live VJ performance."
-          >
-            {masterPlaying ? <Pause className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
-            Master {masterPlaying ? 'Live' : 'Idle'}
-            <span className="text-zinc-600 normal-case tracking-normal font-normal">· footer ▶</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-[9px] font-mono">
-            <Radio className={`w-3 h-3 ${vjOpen ? 'text-emerald-400' : 'text-zinc-600'}`} />
-            <span className={vjOpen ? 'text-emerald-300' : 'text-zinc-600'}>
-              {vjOpen ? `VJ LINKED · ${vjState.toUpperCase()}` : 'VJ TAB CLOSED'}
-            </span>
-          </div>
-          <button
-            onClick={() => setQuantize((q) => !q)}
-            className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
-              quantize
-                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
-                : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
-            }`}
-            title="Quantize — snap hotcue jumps & sets to the beatgrid (beat-loops already start on a beat)"
-          >
-            <Magnet className="w-3 h-3" /> Quantize
-          </button>
-          <button
-            onClick={() => setAutoGain((g) => !g)}
-            className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
-              autoGain
-                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
-                : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
-            }`}
-            title="Auto-gain — level each deck toward a target loudness (ReplayGain-style) so tracks mix evenly"
-          >
-            <Gauge className="w-3 h-3" /> Auto-Gain
-          </button>
-          {camA && camB && (
-            <div
-              className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${
-                harmonic
-                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                  : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-              }`}
-              title={
-                harmonic
-                  ? `Harmonic match — ${camA.code} ↔ ${camB.code} mix in key`
-                  : `Key clash — ${camA.code} vs ${camB.code} aren't adjacent on the Camelot wheel`
-              }
-            >
-              <Music2 className="w-3 h-3" />
-              {harmonic ? 'In Key' : 'Clash'}
-              <span className="font-mono normal-case tracking-normal text-zinc-400">{camA.code}·{camB.code}</span>
-            </div>
-          )}
-          {flash && (
-            <span className="ml-auto text-[9px] font-mono text-cyan-300 truncate max-w-[40%]">{flash}</span>
-          )}
-        </div>
-
-        <div className="flex-1 grid grid-cols-2 gap-3 min-h-0">
+    <div className="absolute inset-0 flex flex-col bg-[#07050a] text-white overflow-hidden">
+      {/* Decks — top, expanded (the old master IDLE bar is gone; the footer ▶ is
+          the master, and the mix toggles now live under the crossfader). */}
+      <div className="flex-1 grid grid-cols-2 gap-3 min-h-0 p-3 pb-1">
           <Deck
             deckId="A"
             label="DECK A"
@@ -459,11 +379,9 @@ export const DJView: React.FC = () => {
           />
         </div>
 
-        {/* Master crossfader — equal-width A/B gutters keep the fader (and its
-            center detent) truly centered; the % readout sits below so it can't
-            push the fader off-center. */}
-        <div className="shrink-0 bg-black/60 border border-white/10 rounded px-3 py-2 dj-surface">
-          <div className="flex items-center gap-3">
+        {/* Crossfader + mix toggles, centered below the decks. */}
+        <div className="shrink-0 px-3 pt-1.5 pb-1 dj-surface">
+          <div className="flex items-center gap-3 max-w-2xl mx-auto">
             <span className="text-[11px] font-black uppercase tracking-widest text-purple-300 w-6 text-right">A</span>
             <div className="flex-1">
               <DjFader
@@ -480,154 +398,218 @@ export const DJView: React.FC = () => {
             </div>
             <span className="text-[11px] font-black uppercase tracking-widest text-cyan-300 w-6 text-left">B</span>
           </div>
-          <div className="text-center text-[10px] font-mono text-zinc-500 mt-1 tabular-nums">
-            {crossfader < -0.05 ? `A ${Math.round((1 + crossfader) * 100)}%` : crossfader > 0.05 ? `B ${Math.round((1 - crossfader) * -100 + 100)}%` : 'CENTER'}
+          {/* Mix toggles: crossfade readout + quantize / auto-gain / harmonic
+              (moved down from the removed master bar). */}
+          <div className="flex items-center justify-center gap-2 mt-1.5 flex-wrap">
+            <span className="text-[10px] font-mono text-zinc-600 tabular-nums w-16 text-center">
+              {crossfader < -0.05 ? `A ${Math.round((1 + crossfader) * 100)}%` : crossfader > 0.05 ? `B ${Math.round((1 - crossfader) * -100 + 100)}%` : 'CENTER'}
+            </span>
+            <button
+              onClick={() => setQuantize((q) => !q)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
+                quantize ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40' : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
+              }`}
+              title="Quantize — snap hotcue jumps & sets to the beatgrid"
+            >
+              <Magnet className="w-3 h-3" /> Quantize
+            </button>
+            <button
+              onClick={() => setAutoGain((g) => !g)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
+                autoGain ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40' : 'bg-black/40 text-zinc-500 border-white/10 hover:text-zinc-200 hover:border-white/25'
+              }`}
+              title="Auto-gain — level each deck toward a target loudness"
+            >
+              <Gauge className="w-3 h-3" /> Auto-Gain
+            </button>
+            {camA && camB && (
+              <div
+                className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${
+                  harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                }`}
+                title={harmonic ? `Harmonic match — ${camA.code} ↔ ${camB.code} mix in key` : `Key clash — ${camA.code} vs ${camB.code} aren't adjacent on the Camelot wheel`}
+              >
+                <Music2 className="w-3 h-3" />
+                {harmonic ? 'In Key' : 'Clash'}
+                <span className="font-mono normal-case tracking-normal text-zinc-400">{camA.code}·{camB.code}</span>
+              </div>
+            )}
+            {flash && <span className="text-[9px] font-mono text-cyan-300 truncate max-w-xs">{flash}</span>}
           </div>
         </div>
+
+      {/* Setlist — collapsible panel centered under the crossfader. */}
+      <SetlistPanel />
+    </div>
+  );
+};
+
+/**
+ * Setlist panel — collapsible, centered under the crossfader. Lists every set;
+ * click to activate, double-click / pencil to rename, ▸/▾ to expand a set's
+ * tracks. Inside a set: reorder (▲/▼), send-to-VJ, remove, and each track is
+ * draggable straight onto a deck to load it.
+ */
+const SetlistPanel: React.FC = () => {
+  const setlists = useSetlistStore((s) => s.setlists);
+  const activeId = useSetlistStore((s) => s.activeId);
+  const createSetlist = useSetlistStore((s) => s.create);
+  const renameSetlist = useSetlistStore((s) => s.rename);
+  const removeSetlist = useSetlistStore((s) => s.remove);
+  const setActive = useSetlistStore((s) => s.setActive);
+  const setEntries = useSetlistStore((s) => s.setEntries);
+  const entries = useLibraryStore((s) => s.entries);
+
+  const [collapsed, setCollapsed] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(activeId);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
+  const sets = Object.values(setlists).sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const startRename = (id: string, name: string) => { setEditingId(id); setEditName(name); };
+  const commitRename = () => {
+    if (editingId && editName.trim()) renameSetlist(editingId, editName.trim());
+    setEditingId(null);
+  };
+  const reorder = (setId: string, from: number, to: number) => {
+    const set = setlists[setId];
+    if (!set || to < 0 || to >= set.entries.length) return;
+    const arr = [...set.entries];
+    const [it] = arr.splice(from, 1);
+    arr.splice(to, 0, it);
+    setEntries(setId, arr);
+  };
+  const removeEntry = (setId: string, index: number) => {
+    const set = setlists[setId];
+    if (set) setEntries(setId, set.entries.filter((_, i) => i !== index));
+  };
+  const sendEntry = (e: SetlistEntry) => {
+    const entry = e.entryId ? entries.find((x) => x.id === e.entryId) ?? null : null;
+    sendTrackToVj({ entryId: e.entryId, label: e.label, url: entry?.audioUrl ?? e.url, kind: e.kind ?? 'audio' });
+  };
+  const sendWholeSet = (set: Setlist) => {
+    const items: VjSetItem[] = set.entries.map((e) => {
+      const entry = e.entryId ? entries.find((x) => x.id === e.entryId) ?? null : null;
+      return { entryId: e.entryId, label: e.label, url: entry?.audioUrl ?? e.url, kind: e.kind ?? 'audio' };
+    });
+    sendSetToVj({ setId: set.id, name: set.name, items });
+  };
+
+  return (
+    <div className="shrink-0 w-full max-w-2xl mx-auto border-x border-t border-white/10 bg-[#0a080f]">
+      {/* Header (always visible) — collapse toggle + new-set. */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-purple-500/4">
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex items-center gap-1.5 text-purple-200 hover:text-purple-100 transition-colors"
+          title={collapsed ? 'Expand setlists' : 'Collapse setlists'}
+        >
+          {collapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          <ListMusic className="w-3.5 h-3.5 text-purple-400" />
+          <span className="text-[10px] font-black uppercase tracking-widest">Setlists</span>
+          <span className="text-[9px] font-mono text-zinc-600">({sets.length})</span>
+        </button>
+        <button
+          onClick={() => { const id = createSetlist(`Set ${new Date().toLocaleDateString()}`); setActive(id); setExpandedId(id); }}
+          className="p-1 rounded text-purple-300 hover:bg-purple-500/15 hover:text-purple-100 transition-colors"
+          title="New setlist"
+        >
+          <Plus className="w-3.5 h-3.5" />
+        </button>
       </div>
 
-      {/* Setlist sidebar */}
-      <aside className="shrink-0 w-72 bg-[#0a080f] border-l border-white/5 flex flex-col">
-        <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-white/5 bg-purple-500/4">
-          <div className="flex items-center gap-1.5">
-            <ListMusic className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">Setlists</span>
-          </div>
-          <button
-            onClick={() => createSetlist(`Set ${new Date().toLocaleDateString()}`)}
-            className="p-1 rounded text-purple-300 hover:bg-purple-500/15 hover:text-purple-100 transition-colors"
-            title="New setlist"
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {Object.values(setlists).length === 0 ? (
-            <div className="p-3 text-[9px] font-mono text-zinc-600 leading-relaxed">
-              No setlists yet. Click <Plus className="inline w-3 h-3" /> to create one, then use a deck's <Save className="inline w-3 h-3" /> button to push the loaded track into the active set. Send the whole set to the VJ tab with the button below.
-            </div>
-          ) : (
-            <ul className="divide-y divide-white/5">
-              {Object.values(setlists).sort((a, b) => b.updatedAt - a.updatedAt).map((s) => (
-                <li
-                  key={s.id}
-                  className={`px-3 py-2 cursor-pointer transition-colors ${s.id === activeId ? 'bg-purple-500/10' : 'hover:bg-white/5'}`}
-                  onClick={() => setActive(s.id)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-bold text-zinc-200 truncate">{s.name}</span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); removeSetlist(s.id); }}
-                      className="p-0.5 text-zinc-600 hover:text-rose-400 transition-colors"
-                      title="Delete setlist"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                  <div className="text-[8px] font-mono text-zinc-600 mt-0.5">
-                    {s.entries.length} track{s.entries.length === 1 ? '' : 's'} · {new Date(s.updatedAt).toLocaleDateString()}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Send-to-VJ action */}
-        <div className="shrink-0 border-t border-white/5 p-2">
-          <button
-            onClick={handleSendSetToVj}
-            disabled={!activeSet || activeSet.entries.length === 0}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded font-black uppercase tracking-widest text-[10px] bg-cyan-500/15 text-cyan-200 border border-cyan-500/40 hover:bg-cyan-500/25 disabled:opacity-30 disabled:pointer-events-none transition-colors"
-            title="Push the active setlist into the VJ performance bucket"
-          >
-            <Cast className="w-3.5 h-3.5" />
-            Send SET to VJ
-          </button>
-          <div className="mt-1 text-center text-[8px] font-mono text-zinc-600">
-            {isVjSetTargetActive() ? 'VJ tab linked — delivers instantly' : 'VJ tab closed — will deliver on open'}
-          </div>
-        </div>
-
-        {/* Active set entries */}
-        {activeSet && (
-          <div className="shrink-0 max-h-48 overflow-y-auto border-t border-white/5 bg-black/30">
-            <div className="px-3 py-1.5 border-b border-white/5 text-[8px] font-mono text-zinc-600 uppercase tracking-widest flex items-center justify-between">
-              <span>{activeSet.name}</span>
-              <Music2 className="w-3 h-3 text-emerald-400" />
-            </div>
-            {activeSet.entries.length === 0 ? (
-              <div className="p-2 text-[9px] text-zinc-700 italic">
-                Empty — Save a loaded deck track here.
+      {!collapsed && (
+        <>
+          <div className="max-h-56 overflow-y-auto">
+            {sets.length === 0 ? (
+              <div className="p-3 text-[9px] font-mono text-zinc-600 leading-relaxed text-center">
+                No setlists yet. Click + to create one, then a deck's Save button adds the loaded track.
               </div>
-            ) : (
-              <ol className="text-[9px] font-mono">
-                {activeSet.entries.map((e, i) => (
-                  <li
-                    key={i}
-                    onContextMenu={(ev) => entryMenu.open(ev, { index: i })}
-                    className="px-3 py-1 border-b border-white/3 text-zinc-400 truncate cursor-context-menu hover:bg-white/5 hover:text-zinc-200"
-                    title="Right-click for actions"
-                  >
-                    {String(i + 1).padStart(2, '0')}. {e.label}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-        )}
-      </aside>
+            ) : sets.map((s) => {
+              const isActive = s.id === activeId;
+              const isOpen = expandedId === s.id;
+              return (
+                <div key={s.id} className={`border-b border-white/5 ${isActive ? 'bg-purple-500/8' : ''}`}>
+                  {/* Set row */}
+                  <div className="flex items-center gap-1 px-2 py-1.5">
+                    <button
+                      onClick={() => setExpandedId(isOpen ? null : s.id)}
+                      className="p-0.5 text-zinc-500 hover:text-zinc-200 shrink-0"
+                      title={isOpen ? 'Collapse tracks' : 'Expand tracks'}
+                    >
+                      {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                    </button>
+                    {editingId === s.id ? (
+                      <input
+                        autoFocus
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
+                        onBlur={commitRename}
+                        className="flex-1 min-w-0 bg-black/50 border border-purple-400/50 rounded px-1.5 py-0.5 text-[10px] text-zinc-100 focus:outline-none"
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setActive(s.id)}
+                        onDoubleClick={() => startRename(s.id, s.name)}
+                        className={`flex-1 min-w-0 text-left text-[10px] font-bold truncate ${isActive ? 'text-purple-200' : 'text-zinc-300 hover:text-zinc-100'}`}
+                        title="Click to activate · double-click to rename"
+                      >
+                        {s.name}
+                      </button>
+                    )}
+                    <span className="text-[8px] font-mono text-zinc-600 shrink-0 px-1">{s.entries.length}</span>
+                    {editingId === s.id ? (
+                      <button onClick={commitRename} className="p-0.5 text-emerald-400 hover:text-emerald-300 shrink-0" title="Save name"><Check className="w-3 h-3" /></button>
+                    ) : (
+                      <button onClick={() => startRename(s.id, s.name)} className="p-0.5 text-zinc-600 hover:text-zinc-300 shrink-0" title="Rename"><Pencil className="w-3 h-3" /></button>
+                    )}
+                    <button onClick={() => sendWholeSet(s)} disabled={s.entries.length === 0} className="p-0.5 text-zinc-600 hover:text-cyan-300 disabled:opacity-30 shrink-0" title="Send SET to VJ"><Cast className="w-3 h-3" /></button>
+                    <button onClick={() => removeSetlist(s.id)} className="p-0.5 text-zinc-600 hover:text-rose-400 shrink-0" title="Delete setlist"><Trash2 className="w-3 h-3" /></button>
+                  </div>
 
-      {/* Right-click menu for a setlist entry. */}
-      {(() => {
-        const payload = entryMenu.payload;
-        if (!payload || !activeSet) return null;
-        const idx = payload.index;
-        const e = activeSet.entries[idx];
-        if (!e) return null;
-        const last = activeSet.entries.length - 1;
-        const items: ContextMenuItem[] = [
-          {
-            type: 'item',
-            label: 'Send to VJ',
-            icon: <Cast className="w-3 h-3" />,
-            onSelect: () => sendSetEntryToVj(idx),
-          },
-          { type: 'separator' },
-          {
-            type: 'item',
-            label: 'Move up',
-            icon: <ChevronUp className="w-3 h-3" />,
-            disabled: idx <= 0,
-            onSelect: () => moveSetEntry(idx, idx - 1),
-          },
-          {
-            type: 'item',
-            label: 'Move down',
-            icon: <ChevronDown className="w-3 h-3" />,
-            disabled: idx >= last,
-            onSelect: () => moveSetEntry(idx, idx + 1),
-          },
-          { type: 'separator' },
-          {
-            type: 'item',
-            label: 'Remove from setlist',
-            icon: <Trash2 className="w-3 h-3" />,
-            danger: true,
-            onSelect: () => removeSetEntry(idx),
-          },
-        ];
-        return (
-          <ContextMenu
-            position={entryMenu.position}
-            onClose={entryMenu.close}
-            items={items}
-            title={e.label}
-            minWidth="12rem"
-          />
-        );
-      })()}
+                  {/* Tracks (expanded) */}
+                  {isOpen && (
+                    s.entries.length === 0 ? (
+                      <div className="px-3 pb-2 pl-8 text-[9px] text-zinc-700 italic">Empty — load a deck and hit Save, or drag a track here.</div>
+                    ) : (
+                      <ol className="pb-1">
+                        {s.entries.map((e, i) => (
+                          <li
+                            key={i}
+                            draggable={!!e.entryId}
+                            onDragStart={(ev) => {
+                              if (!e.entryId) return;
+                              ev.dataTransfer.effectAllowed = 'copy';
+                              ev.dataTransfer.setData(DJ_TRACK_MIME, e.entryId);
+                              ev.dataTransfer.setData('text/plain', e.label);
+                            }}
+                            className="flex items-center gap-1 pl-8 pr-2 py-0.5 text-[9px] font-mono text-zinc-400 hover:bg-white/5 group/track cursor-grab active:cursor-grabbing"
+                            title="Drag onto a deck to load"
+                          >
+                            <span className="text-zinc-600 w-5 shrink-0">{String(i + 1).padStart(2, '0')}</span>
+                            <span className="flex-1 truncate">{e.label}</span>
+                            <span className="hidden group-hover/track:flex items-center gap-0.5 shrink-0">
+                              <button onClick={() => reorder(s.id, i, i - 1)} disabled={i === 0} className="p-0.5 text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move up"><ChevronUp className="w-3 h-3" /></button>
+                              <button onClick={() => reorder(s.id, i, i + 1)} disabled={i === s.entries.length - 1} className="p-0.5 text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move down"><ChevronDown className="w-3 h-3" /></button>
+                              <button onClick={() => sendEntry(e)} className="p-0.5 text-zinc-600 hover:text-cyan-300" title="Send to VJ"><Cast className="w-3 h-3" /></button>
+                              <button onClick={() => removeEntry(s.id, i)} className="p-0.5 text-zinc-600 hover:text-rose-400" title="Remove from set"><Trash2 className="w-3 h-3" /></button>
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
+                    )
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="px-3 py-1 text-center text-[8px] font-mono text-zinc-600 border-t border-white/5">
+            {isVjSetTargetActive() ? 'VJ linked — sets deliver instantly' : 'VJ closed — sets deliver when it opens'} · drag a track onto a deck to load
+          </div>
+        </>
+      )}
     </div>
   );
 };
@@ -718,6 +700,7 @@ const Deck: React.FC<DeckProps> = ({
   const [slip, setSlipSt] = useState(false);
   const [decoding, setDecoding] = useState(false);
   const [keylock, setKeylockSt] = useState(false);
+  const [dropHover, setDropHover] = useState(false);
   useEffect(() => djEngine.subscribe((sa, sb) => {
     const st = deckId === 'A' ? sa : sb;
     setLoopActiveSt((p) => (p === st.loopActive ? p : st.loopActive));
@@ -806,7 +789,18 @@ const Deck: React.FC<DeckProps> = ({
   };
 
   return (
-    <div className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden`}>
+    <div
+      className={`flex flex-col bg-black/40 border ${accentBorder} rounded overflow-hidden transition-shadow ${dropHover ? 'ring-2 ring-inset ring-white/50' : ''}`}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes(DJ_TRACK_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropHover(true); }
+      }}
+      onDragLeave={() => setDropHover(false)}
+      onDrop={(e) => {
+        setDropHover(false);
+        const id = e.dataTransfer.getData(DJ_TRACK_MIME);
+        if (id) { e.preventDefault(); onLoadId(id); }
+      }}
+    >
       <div className={`shrink-0 px-3 py-1.5 ${accentBg} border-b ${accentBorder} flex items-center justify-between gap-2`}>
         <div className="flex items-center gap-1.5 min-w-0">
           <Disc className={`w-3.5 h-3.5 shrink-0 ${accentText} ${isPlaying ? 'animate-spin' : ''}`} />
@@ -909,12 +903,13 @@ const Deck: React.FC<DeckProps> = ({
             aria-label={`${label} song selection`}
             value={entries.find((e) => e.title === trackTitle)?.id ?? ''}
             onChange={(e) => onLoadId(e.target.value || null)}
-            className="flex-1 min-w-0 bg-black/40 border border-white/10 text-[10px] font-mono text-zinc-200 px-2 py-1 rounded cursor-pointer"
-            title="Load a track onto this deck"
+            className={`flex-1 min-w-0 bg-[#0e0c18] border ${accentBorder} ${accentText} text-[10px] font-mono px-2 py-1 rounded cursor-pointer focus:outline-none hover:bg-[#161320] transition-colors`}
+            style={{ colorScheme: 'dark' }}
+            title="Load a track onto this deck (or drag one from a setlist)"
           >
-            <option value="">— Load track —</option>
+            <option value="" className="bg-[#0e0c18] text-zinc-400">— Load track —</option>
             {entries.map((e) => (
-              <option key={e.id} value={e.id}>{e.title}</option>
+              <option key={e.id} value={e.id} className="bg-[#0e0c18] text-zinc-200">{e.title}</option>
             ))}
           </select>
         </div>
