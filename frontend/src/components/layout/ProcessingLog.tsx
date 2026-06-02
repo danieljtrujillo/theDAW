@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Trash2, Download, X, Zap } from 'lucide-react';
+import { Trash2, Download, X, Zap, Cast } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useGenerateStore } from '../../state/generateStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { useStudioStore } from '../../state/studioStore';
 import { useTrainingStore } from '../../state/trainingStore';
+import { useSetlistStore } from '../../state/setlistStore';
+import { sendSetToVj, isVjSetTargetActive, type VjSetItem } from '../../state/vjSetBus';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
@@ -214,6 +216,7 @@ export const LogBody: React.FC = () => {
 
 export const LogActionButton: React.FC = () => {
   const activeView    = useAppUiStore((s) => s.activeView);
+  const centerTab     = useAppUiStore((s) => s.centerTab);
   const setActiveView = useAppUiStore((s) => s.setActiveView);
   const isGenerating  = useGenerateStore((s) => s.isGenerating);
   const progressPct   = useGenerateStore((s) => s.progressPct);
@@ -227,6 +230,33 @@ export const LogActionButton: React.FC = () => {
   const tab = (activeView in TAB_CONFIG ? activeView : 'create') as TabKey;
   const cfg = TAB_CONFIG[tab];
   const isActive = tab === 'create' ? isGenerating : tab === 'edit' ? isProcessing : tab === 'train' ? isTraining : false;
+
+  // On the DJ tab the action button is SEND TO VJ (CREATE/PROCESS make no sense
+  // there) — pushes the active setlist to the VJ performance.
+  const sendActiveSetToVj = () => {
+    const { setlists, activeId } = useSetlistStore.getState();
+    const activeSet = activeId ? setlists[activeId] : null;
+    if (!activeSet || activeSet.entries.length === 0) return;
+    const entries = useLibraryStore.getState().entries;
+    const items: VjSetItem[] = activeSet.entries.map((e) => {
+      const entry = e.entryId ? entries.find((x) => x.id === e.entryId) ?? null : null;
+      return { entryId: e.entryId, label: e.label, url: entry?.audioUrl ?? e.url, kind: e.kind ?? 'audio' };
+    });
+    sendSetToVj({ setId: activeSet.id, name: activeSet.name, items });
+  };
+
+  if (centerTab === 'dj') {
+    return (
+      <button
+        type="button"
+        onClick={sendActiveSetToVj}
+        className="relative w-full h-full overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors bg-cyan-600 hover:bg-cyan-500 text-white"
+        title={isVjSetTargetActive() ? 'Send the active setlist to the VJ performance' : 'Queue the active setlist — delivers when the VJ tab opens'}
+      >
+        <span className="relative z-10 flex items-center gap-2"><Cast className="w-3.5 h-3.5" /> Send to VJ</span>
+      </button>
+    );
+  }
 
   const handleAction = () => {
     if (tab === 'create' || tab === 'library' || tab === 'advanced') {

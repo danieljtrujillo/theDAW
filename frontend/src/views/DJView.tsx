@@ -35,7 +35,7 @@ import { toCamelot, keyLabel } from '../lib/camelot';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { DjFader, DjPad, DECK_RGB } from '../components/dj/DjControls';
 import {
-  toggleVjPlayback, subscribeToVjPlaybackState, isVjPlaybackActive,
+  subscribeToVjPlaybackState, isVjPlaybackActive,
   type VjPlaybackState,
 } from '../state/vjPlaybackBus';
 import {
@@ -259,20 +259,19 @@ export const DJView: React.FC = () => {
     <div className="absolute inset-0 flex bg-[#07050a] text-white overflow-hidden">
       {/* Decks + crossfader */}
       <div className="flex-1 flex flex-col p-3 gap-3 min-w-0">
-        {/* Master transport — synced with the VJ tab */}
+        {/* Master transport now lives in the FOOTER (one master ▶ for the whole
+            app); this bar just reflects its live state + the VJ link. */}
         <div className="shrink-0 bg-black/60 border border-white/10 rounded px-3 py-2 flex items-center gap-3">
-          <button
-            onClick={toggleVjPlayback}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded font-black uppercase tracking-widest text-[10px] transition-colors ${
-              masterPlaying
-                ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/50'
-                : 'bg-fuchsia-500/15 text-fuchsia-200 border border-fuchsia-500/40 hover:bg-fuchsia-500/25'
+          <div
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${
+              masterPlaying ? 'border-emerald-500/50 text-emerald-200 bg-emerald-500/10' : 'border-white/10 text-zinc-400'
             }`}
-            title="Master transport — drives the VJ performance (stays in sync with the VJ tab)"
+            title="The master transport is the footer ▶ at the bottom — it drives the live VJ performance."
           >
-            {masterPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-            {masterPlaying ? 'Pause Live' : 'Play Live'}
-          </button>
+            {masterPlaying ? <Pause className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
+            Master {masterPlaying ? 'Live' : 'Idle'}
+            <span className="text-zinc-600 normal-case tracking-normal font-normal">· footer ▶</span>
+          </div>
           <div className="flex items-center gap-1.5 text-[9px] font-mono">
             <Radio className={`w-3 h-3 ${vjOpen ? 'text-emerald-400' : 'text-zinc-600'}`} />
             <span className={vjOpen ? 'text-emerald-300' : 'text-zinc-600'}>
