@@ -117,10 +117,11 @@ export default function App() {
       useMidiDevicesStore.getState().setMidiInputs(names);
     };
 
-    // Pass an explicit MIDIOptions ({ sysex: false }). Chrome logs a
-    // deprecation notice when requestMIDIAccess() is called WITHOUT options
-    // ("…will ask permission even if sysex is not specified"); specifying it
-    // resolves that warning. We don't need SysEx for note/CC input.
+    // Pass an explicit MIDIOptions ({ sysex: false }) — we don't need SysEx for
+    // note/CC input. NOTE: Chrome still logs a platform DEPRECATION notice
+    // ("Web MIDI will ask a permission to use even if the sysex is not
+    // specified") — that's Chrome moving to always-prompt (milestone 82), not
+    // something our call can suppress. Correct usage; the notice is unavoidable.
     (navigator as Navigator & { requestMIDIAccess: (opts?: { sysex?: boolean }) => Promise<MIDIAccess> })
       .requestMIDIAccess({ sysex: false })
       .then((a) => {

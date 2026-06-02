@@ -720,6 +720,9 @@ const Deck: React.FC<DeckProps> = ({
             )}
           </div>
           <select
+            id={`dj-deck-${deckId}-track`}
+            name={`dj-deck-${deckId}-track`}
+            aria-label={`${label} song selection`}
             value={entries.find((e) => e.title === trackTitle)?.id ?? ''}
             onChange={(e) => onLoadId(e.target.value || null)}
             className="flex-1 min-w-0 bg-black/40 border border-white/10 text-[10px] font-mono text-zinc-200 px-2 py-1 rounded cursor-pointer"
@@ -830,28 +833,25 @@ const Deck: React.FC<DeckProps> = ({
           </div>
         </div>
 
-        {/* EQ — compact horizontal sliders (center = 0 dB, fill grows from
-            center). Sliders take far less room than knobs. */}
-        <div className="flex flex-col gap-1 mt-1">
-          {([['HI', eqHigh, 'high'], ['MID', eqMid, 'mid'], ['LO', eqLow, 'low']] as const).map(([label, value, band]) => (
-            <div key={band} className="flex items-center gap-2">
-              <span className="text-[7px] font-mono uppercase text-zinc-600 w-5 shrink-0">{label}</span>
-              <div className="flex-1">
-                <DjFader
-                  value={value}
-                  min={-12}
-                  max={12}
-                  defaultValue={0}
-                  center
-                  color={deckRgb}
-                  onChange={(v) => onEq(band, v)}
-                  ariaLabel={`${label} EQ`}
-                  title={`${label} EQ (dB) — double-click to reset`}
-                />
+        {/* EQ — LO / MID / HI on one row (center = 0 dB, fill grows from center). */}
+        <div className="grid grid-cols-3 gap-2 mt-1">
+          {([['LO', eqLow, 'low'], ['MID', eqMid, 'mid'], ['HI', eqHigh, 'high']] as const).map(([label, value, band]) => (
+            <div key={band} className="flex flex-col gap-0.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[7px] font-mono uppercase text-zinc-600">{label}</span>
+                <span className="text-[8px] font-mono text-zinc-400 tabular-nums">{value >= 0 ? '+' : ''}{value.toFixed(0)}</span>
               </div>
-              <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums shrink-0">
-                {value >= 0 ? '+' : ''}{value.toFixed(0)}
-              </span>
+              <DjFader
+                value={value}
+                min={-12}
+                max={12}
+                defaultValue={0}
+                center
+                color={deckRgb}
+                onChange={(v) => onEq(band, v)}
+                ariaLabel={`${label} EQ`}
+                title={`${label} EQ (dB) — double-click to reset`}
+              />
             </div>
           ))}
         </div>

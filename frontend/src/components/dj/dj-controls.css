@@ -146,7 +146,9 @@
     linear-gradient(0deg, rgba(255, 255, 255, 0) 6%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0) 94%),
     linear-gradient(90deg, var(--accent-deep, #0891b2) 0%, var(--accent, #22d3ee) 60%, var(--accent-bright, #a5f3fc) 100%);
   box-shadow: 0 0 12px var(--accent-glow, rgba(34, 211, 238, 0.5));
-  transition: width 0.08s cubic-bezier(0.22, 1, 0.36, 1);
+  /* No width/left transition: the fill must track the handle frame-for-frame
+     while dragging (the handle has no transition either). An ease here is what
+     made the color lag behind the handle. */
 }
 .dj-fader-knob {
   position: absolute;
