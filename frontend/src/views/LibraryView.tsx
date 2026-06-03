@@ -420,8 +420,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
     }
 
     setSelectedEntry(entry.id);
-    // Reveal extreme metadata in the bottom panel's Details tab.
-    showBottomTab('details');
+    // Selecting a track no longer auto-opens the Details tab (per user).
+    // Details is still reachable via the bottom-panel tab + open-lineage events.
   };
 
   const handleEntryContextMenu = (event: React.MouseEvent, entry: LibraryEntry) => {
@@ -430,7 +430,6 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
       setSelectedEntryIds([entry.id]);
       setSelectionAnchorId(entry.id);
       setSelectedEntry(entry.id);
-      showBottomTab('details');
     }
     entryMenu.open(event, { entryId: entry.id });
   };
