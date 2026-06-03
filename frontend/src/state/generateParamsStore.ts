@@ -103,6 +103,7 @@ export interface GenerateParamsState {
 
   fileFormat: string;
   fileNaming: string;
+  outputName: string;
   cutToDuration: boolean;
   autoplay: boolean;
   autoDownload: boolean;
@@ -128,7 +129,7 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
   prompt: '',
   negativePrompt: '',
   model: 'medium',
-  duration: 30,
+  duration: 110,
   steps: 8,
   cfg: 1.0,
   seed: -1,
@@ -175,6 +176,7 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
 
   fileFormat: 'wav',
   fileNaming: 'verbose',
+  outputName: '',
   cutToDuration: true,
   autoplay: true,
   autoDownload: false,

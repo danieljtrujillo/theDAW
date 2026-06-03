@@ -215,11 +215,18 @@ def _make_generation_filename(
     prompt: str,
     negative_prompt: str | None,
     seed: int,
+    custom_name: str | None = None,
 ) -> str:
-    """Build a safe output filename using the frontend-selected naming mode."""
+    """Build a safe output filename using the frontend-selected naming mode.
+
+    A non-empty ``custom_name`` (the UI "NAME" field) overrides the naming mode.
+    """
     fmt = (file_format or "wav").split()[0].lower()
     if fmt not in {"wav", "flac", "ogg"}:
         fmt = "wav"
+
+    if custom_name and custom_name.strip():
+        return f"{_condense_filename_text(custom_name)}_{index}.{fmt}"
 
     mode = (file_naming or "verbose").strip().lower()
     if mode == "seed":
@@ -1056,6 +1063,7 @@ async def _run_generate_job(
     batch_size: int,
     file_format: str,
     file_naming: str,
+    custom_name: str,
     lora_paths: list[str],
     lora_weights: list[float],
     lora_temp_dir: Path | None,
@@ -1101,6 +1109,7 @@ async def _run_generate_job(
                         str(base_args.get("prompt", "")),
                         base_args.get("negative_prompt"),
                         int(args.get("seed", -1)),
+                        custom_name,
                     )
 
                     def _do_specs_and_save():
@@ -1236,6 +1245,7 @@ async def generate_jobs(
     init_audio_type: str = Form("Audio"),
     file_format: str = Form("wav"),
     file_naming: str = Form("verbose"),
+    custom_name: str = Form(""),
     mask_start: float = Form(0.0),
     mask_end: float = Form(0.0),
     sampler_type: Optional[str] = Form(None),
@@ -1373,6 +1383,7 @@ async def generate_jobs(
             int(batch_size),
             file_format,
             file_naming,
+            custom_name,
             lora_paths,
             lora_weights,
             lora_temp_dir,

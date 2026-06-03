@@ -24,11 +24,12 @@ import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { Circle, Droplet, Grid3x3, Mountain } from 'lucide-react';
+import { Circle, Droplet, Grid3x3, Maximize2, Mountain } from 'lucide-react';
 import { fs as backdropFS, vs as backdropVS } from './cymatics/backdrop-shader';
 import { vs as sphereVS } from './cymatics/sphere-shader';
 import { vs as cymaticsVS } from './cymatics/cymatics-shader';
 import { vs as landscapeVS } from './cymatics/landscape-shader';
+import { plasmaVS, plasmaFS, haloFS } from './cymatics/plasma-shader';
 import { Analyser } from './cymatics/analyser';
 
 export type CymaticsMode = 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
@@ -102,8 +103,10 @@ interface CymaticsVisualizerProps {
   mode: CymaticsMode;
   /** Optional live audio tap. When omitted, the visualizer self-drives. */
   audioNode?: AudioNode | null;
-  /** Orb pole-axis tilt in degrees (use +90 / -90 on two panels to mirror). */
+  /** Orb pole-axis tilt in degrees. */
   orbTilt?: number;
+  /** Horizontally mirror the whole render (so one panel mirrors the other). */
+  flipX?: boolean;
   className?: string;
 }
 
@@ -112,7 +115,7 @@ const EXR_URL = '/piz_compressed.exr';
 const FOV = 65;
 const TAN_HALF_FOV = Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
 
-const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audioNode, orbTilt = 0, className }) => {
+const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audioNode, orbTilt = 0, flipX = false, className }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const modeRef = useRef<CymaticsMode>(mode);
   modeRef.current = mode;
@@ -168,7 +171,7 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
 
     // --- Tunables (the original Lit component's @property defaults) ---
     const spikeDensity = 5.0;
-    const spikeAmplitude = 0.8;
+    const spikeAmplitude = 0.45; // orb spike height — bumped up a smidgen
     const noiseViscosity = 1.2;
     const isFerrofluid = 1.0;
     const landscapeHeight = 1.5;
@@ -260,48 +263,82 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
       landscapeMaterial.userData.shader = shader;
       shader.vertexShader = landscapeVS;
     };
-    // Longer than the original so it recedes further before the fog swallows it.
-    const landscape = new THREE.Mesh(new THREE.PlaneGeometry(16, 38, 220, 300), landscapeMaterial);
+    // Wide + long so it fills the panel edge-to-edge (not a slab floating in
+    // space) and recedes far before the fog swallows it.
+    const landscape = new THREE.Mesh(new THREE.PlaneGeometry(34, 40, 300, 300), landscapeMaterial);
     landscape.rotation.x = -Math.PI / 2.3;
     landscape.position.set(0, -1.15, -8);
     landscape.visible = false;
     scene.add(landscape);
 
-    // 3b. "Nuclear fusor" plasma sun in the synthwave sky (landscape modes).
-    // MeshBasic + fog:false so it stays bright while the terrain fogs to black,
-    // and blooms purple. A double counter-rotating wireframe cage = the fusor grid.
+    // 3b. Realistic purple PLASMA BALL, set BEHIND the terrain on the horizon
+    // so the ridges occlude its base (landscape modes). A turbulent fbm plasma
+    // sphere + an additive fresnel halo; blooms hard. Sits at SUN_POS.
+    const SUN_POS = new THREE.Vector3(0, 2.4, -16);
     const sun = new THREE.Group();
-    const sunCore = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(1.45, 5),
-      new THREE.MeshBasicMaterial({ color: 0xff4dff, fog: false }),
-    );
-    const sunCorona = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(2.05, 4),
-      new THREE.MeshBasicMaterial({
-        color: 0x9b30ff,
-        transparent: true,
-        opacity: 0.32,
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-        depthWrite: false,
-        fog: false,
-      }),
-    );
-    const sunCage1 = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(2.55, 1),
-      new THREE.MeshBasicMaterial({ color: 0xc77dff, wireframe: true, transparent: true, opacity: 0.7, fog: false }),
-    );
-    const sunCage2 = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(2.95, 2),
-      new THREE.MeshBasicMaterial({ color: 0x36e0ff, wireframe: true, transparent: true, opacity: 0.35, fog: false }),
-    );
-    sun.add(sunCorona, sunCore, sunCage1, sunCage2);
-    sun.position.set(0, 2.0, -10);
+    const plasmaMat = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 },
+        intensity: { value: 0.85 },
+        colorLow: { value: new THREE.Color(0x2a0a4e) },
+        colorHigh: { value: new THREE.Color(0xc24dff) },
+      },
+      vertexShader: plasmaVS,
+      fragmentShader: plasmaFS,
+    });
+    const sunCore = new THREE.Mesh(new THREE.IcosahedronGeometry(3.0, 6), plasmaMat);
+    const haloMat = new THREE.ShaderMaterial({
+      uniforms: { color: { value: new THREE.Color(0x9b30ff) } },
+      vertexShader: plasmaVS,
+      fragmentShader: haloFS,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+      depthWrite: false,
+    });
+    const sunHalo = new THREE.Mesh(new THREE.IcosahedronGeometry(4.7, 5), haloMat);
+    sun.add(sunHalo, sunCore);
+    sun.position.copy(SUN_POS);
     sun.visible = false;
     scene.add(sun);
 
+    // The plasma actually lights the landscape: a purple point light at the sun
+    // (always in the scene so the light count stays constant — intensity is
+    // toggled to 0 outside landscape modes).
+    const sunLight = new THREE.PointLight(0xc24dff, 0, 70, 1.3);
+    sunLight.position.copy(SUN_POS);
+    scene.add(sunLight);
+
+    // 3c. Twinkling starfield sky (landscape modes) — fog:false so it survives
+    // the fog-to-black horizon; opacity rides the highs.
+    const starCount = 240;
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      // golden-angle scatter across a wide swath of sky, far behind the sun
+      const gx = ((i * 0.61803398875) % 1) * 2 - 1;
+      const gy = ((i * 0.7548776662) % 1);
+      const gz = ((i * 0.5698402909) % 1);
+      starPos[i * 3] = gx * 34;
+      starPos[i * 3 + 1] = 2.5 + gy * 24;
+      starPos[i * 3 + 2] = -20 - gz * 26;
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({
+      color: 0x8fa8d8,
+      size: 0.13,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.6,
+      depthWrite: false,
+      fog: false,
+    });
+    const stars = new THREE.Points(starGeo, starMat);
+    stars.visible = false;
+    scene.add(stars);
+
     // 4. Three-point studio + neon accent lighting
-    const keyLight = new THREE.DirectionalLight(0xfff5ea, 1.2);
+    const keyLight = new THREE.DirectionalLight(0xfff5ea, 1.4); // front key bumped a touch
     keyLight.position.set(6, 9, 5);
     scene.add(keyLight);
     const rimLight = new THREE.DirectionalLight(0xb14dff, 0.9);
@@ -339,9 +376,10 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     });
 
     const renderPass = new RenderPass(scene, camera);
-    // Dialed back from the original strength 4.0 — keep glow tasteful while the
-    // plasma sun still blooms.
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 1.55, 0.5, 0.2);
+    // Moderate, tight bloom so the plasma ball reads as a structured ball rather
+    // than a round white glare blob; higher threshold keeps faint stuff (stars,
+    // chrome) from blooming into little orbs.
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 1.65, 0.4, 0.6);
     const composer = new EffectComposer(renderer);
     composer.addPass(renderPass);
     composer.addPass(bloomPass);
@@ -366,6 +404,9 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     const rotation = new THREE.Vector3(0, 0, 0);
     let smoothedMode = 0;
     let smoothedAmplitude = 0;
+    // Slow band envelopes shared by the ferrofluid modes (orb + valley) so the
+    // spikes rise/fall slowly and don't jitter.
+    let envB = 0, envM = 0, envH = 0;
     let rafId = 0;
 
     const animate = () => {
@@ -386,6 +427,20 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
       const dt = (t - prevTime) / (1000 / 60);
       prevTime = t;
 
+      // Shared smoothed band envelopes (bass/mids/highs), max of in/out. Low
+      // gain = slow spike rise/fall + far less jitter for orb + valley.
+      let rawInB = 0, rawInM = 0, rawInH = 0, rawOutB = 0, rawOutM = 0, rawOutH = 0;
+      for (let i = 0; i < 4; i++) { rawInB += inData[i] || 0; rawOutB += outData[i] || 0; }
+      for (let i = 4; i < 11; i++) { rawInM += inData[i] || 0; rawOutM += outData[i] || 0; }
+      for (let i = 11; i < 16; i++) { rawInH += inData[i] || 0; rawOutH += outData[i] || 0; }
+      const tgtB = Math.max(rawInB, rawOutB) / 1020;
+      const tgtM = Math.max(rawInM, rawOutM) / 1785;
+      const tgtH = Math.max(rawInH, rawOutH) / 1275;
+      const envK = Math.min(1, 0.035 * dt); // low = slow, smooth spike rise/fall
+      envB += (tgtB - envB) * envK;
+      envM += (tgtM - envM) * envK;
+      envH += (tgtH - envH) * envK;
+
       const backdropMaterial = backdrop.material as THREE.RawShaderMaterial;
       backdropMaterial.uniforms.rand.value = Math.random() * 10000;
 
@@ -398,6 +453,8 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
       plane.visible = isCymatics && isEnvMapLoaded;
       landscape.visible = isLandscape && isEnvMapLoaded;
       sun.visible = isLandscape;
+      stars.visible = isLandscape;
+      if (!isLandscape) sunLight.intensity = 0; // plasma light only in landscape modes
       scene.fog = isLandscape ? landscapeFog : null;
 
       if (isOrb) {
@@ -408,31 +465,11 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
           shader.uniforms.noiseViscosity.value = noiseViscosity;
           shader.uniforms.isFerrofluid.value = isFerrofluid;
 
-          // Per-panel pole tilt so two orbs can be mirrored (+90 / -90).
           sphere.rotation.z = THREE.MathUtils.degToRad(orbTiltRef.current);
 
-          let inBass = 0, inMids = 0, inHighs = 0;
-          let outBass = 0, outMids = 0, outHighs = 0;
-          for (let i = 0; i < 4; i++) {
-            inBass += inData[i] || 0;
-            outBass += outData[i] || 0;
-          }
-          for (let i = 4; i < 11; i++) {
-            inMids += inData[i] || 0;
-            outMids += outData[i] || 0;
-          }
-          for (let i = 11; i < 16; i++) {
-            inHighs += inData[i] || 0;
-            outHighs += outData[i] || 0;
-          }
-          inBass /= 1020; outBass /= 1020;
-          inMids /= 1785; outMids /= 1785;
-          inHighs /= 1275; outHighs /= 1275;
-          const inAmp = (inBass + inMids + inHighs) / 3.0;
-          const outAmp = (outBass + outMids + outHighs) / 3.0;
-
-          const combinedBass = Math.max(inBass, outBass);
-          const combinedMids = Math.max(inMids, outMids);
+          // Smoothed bands → slow, non-jittery spike rise/fall.
+          const combinedBass = envB, combinedMids = envM, combinedHighs = envH;
+          const amp = (combinedBass + combinedMids + combinedHighs) / 3.0;
 
           sphere.scale.setScalar(1.0 + 0.04 * combinedBass);
 
@@ -453,8 +490,8 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
           const speedScale = 0.015 * (1.0 + 0.6 * combinedBass);
           shader.uniforms.time.value += dt * speedScale;
 
-          shader.uniforms.inputData.value.set(inBass, inMids, inHighs, inAmp);
-          shader.uniforms.outputData.value.set(outBass, outMids, outHighs, outAmp);
+          shader.uniforms.inputData.value.set(combinedBass, combinedMids, combinedHighs, amp);
+          shader.uniforms.outputData.value.set(0, 0, 0, 0);
         }
       } else if (isCymatics) {
         const shader = planeMaterial.userData.shader;
@@ -481,7 +518,7 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
           const ampSmoothFactor = avgVolume > smoothedAmplitude ? 0.28 : 0.07;
           smoothedAmplitude += (avgVolume - smoothedAmplitude) * ampSmoothFactor * dt;
 
-          shader.uniforms.time.value += dt * 0.08;
+          shader.uniforms.time.value += dt * 0.04; // slowed cymatics
           shader.uniforms.audioLevels.value.set(audioLevels);
           shader.uniforms.activeModeIndex.value = smoothedMode;
           shader.uniforms.smoothedAmplitude.value = smoothedAmplitude;
@@ -499,31 +536,12 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
       } else if (isLandscape) {
         const shader = landscapeMaterial.userData.shader;
         if (shader) {
-          let inBass = 0, inMids = 0, inHighs = 0;
-          let outBass = 0, outMids = 0, outHighs = 0;
-          for (let i = 0; i < 4; i++) {
-            inBass += inData[i] || 0;
-            outBass += outData[i] || 0;
-          }
-          for (let i = 4; i < 11; i++) {
-            inMids += inData[i] || 0;
-            outMids += outData[i] || 0;
-          }
-          for (let i = 11; i < 16; i++) {
-            inHighs += inData[i] || 0;
-            outHighs += outData[i] || 0;
-          }
-          inBass /= 1020; outBass /= 1020;
-          inMids /= 1785; outMids /= 1785;
-          inHighs /= 1275; outHighs /= 1275;
-
-          const b = Math.max(inBass, outBass);
-          const mid = Math.max(inMids, outMids);
-          const h = Math.max(inHighs, outHighs);
+          // Smoothed bands → slow, non-jittery valley spikes.
+          const b = envB, mid = envM, h = envH;
 
           shader.uniforms.audioData.value.set(b, mid, h, 0);
 
-          const speedMultiplier = scrollSpeed * (1.0 + b * 1.5);
+          const speedMultiplier = scrollSpeed * (1.0 + b * 0.6);
           shader.uniforms.time.value += dt * 0.012 * speedMultiplier;
           shader.uniforms.scrollSpeed.value = scrollSpeed;
           shader.uniforms.mountainHeight.value = landscapeHeight;
@@ -531,19 +549,22 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
           const ferrofluidWeight = m === 'landscape-ferrofluid' ? isFerrofluid : 0.0;
           shader.uniforms.isFerrofluid.value = ferrofluidWeight;
 
-          // Plasma fusor sun: counter-rotating cages + bass-driven pulse.
-          sunCage1.rotation.y += dt * 0.004;
-          sunCage1.rotation.x += dt * 0.0022;
-          sunCage2.rotation.y -= dt * 0.006;
-          sunCage2.rotation.z += dt * 0.003;
-          const pulse = 1 + 0.06 * Math.sin(t * 0.003) + 0.3 * b;
-          sunCore.scale.setScalar(pulse);
-          sunCorona.scale.setScalar(pulse * 1.05 + 0.12 * mid);
+          // Plasma ball: turbulence drifts + brightens on bass/mids, gentle pulse,
+          // and it casts purple light onto the terrain.
+          plasmaMat.uniforms.time.value += dt * 0.02;
+          plasmaMat.uniforms.intensity.value = 0.75 + 0.45 * b + 0.2 * mid;
+          sunCore.scale.setScalar(1 + 0.06 * Math.sin(t * 0.003) + 0.3 * b);
+          sunHalo.scale.setScalar(1 + 0.1 * Math.sin(t * 0.004) + 0.4 * mid);
+          sunLight.intensity = 30 + 70 * b;
+          // Sky: stars drift + twinkle with the highs.
+          stars.rotation.z += dt * 0.0006;
+          starMat.opacity = 0.3 + 0.45 * h;
 
-          // Lock camera looking forward into the synthwave horizon down the valley.
-          camera.position.set(0, 0.42, 2.3);
+          // Tilt the camera up so the horizon drops to ~1/3 from the bottom and
+          // the plasma sun sits clearly in the sky above the ridgeline.
+          camera.position.set(0, 0.6, 2.4);
           camera.up.set(0, 1, 0);
-          camera.lookAt(0, -0.28, -5.0);
+          camera.lookAt(0, 2.2, -6.5);
         }
       }
 
@@ -572,7 +593,13 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     };
   }, []);
 
-  return <div ref={containerRef} className={`block h-full w-full ${className ?? ''}`} />;
+  return (
+    <div
+      ref={containerRef}
+      className={`block h-full w-full ${className ?? ''}`}
+      style={{ transform: flipX ? 'scaleX(-1)' : undefined }}
+    />
+  );
 };
 
 export const CymaticsVisualizer = memo(CymaticsVisualizerImpl);
@@ -590,37 +617,50 @@ const MODES: { key: CymaticsMode; label: string; Icon: typeof Circle }[] = [
 interface VisualizerPanelProps {
   audioNode?: AudioNode | null;
   initialMode?: CymaticsMode;
-  /** Orb pole tilt in degrees (use +90 / -90 on the two panels to mirror). */
+  /** Orb pole tilt in degrees. */
   orbTilt?: number;
+  /** Horizontally mirror this panel's render (so it mirrors the other panel). */
+  flipX?: boolean;
+  /** Which side the control icons sit on (mirror the two panels toward center). */
+  iconsSide?: 'left' | 'right';
   className?: string;
 }
 
-const VisualizerPanelImpl: React.FC<VisualizerPanelProps> = ({ audioNode, initialMode = 'orb', orbTilt = 0, className }) => {
+const VisualizerPanelImpl: React.FC<VisualizerPanelProps> = ({ audioNode, initialMode = 'orb', orbTilt = 0, flipX = false, iconsSide = 'right', className }) => {
   const [vizMode, setVizMode] = useState<CymaticsMode>(initialMode);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const toggleFullscreen = () => {
+    const el = rootRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void el.requestFullscreen?.().catch(() => {});
+  };
+  const iconBtn = (active: boolean) =>
+    `grid h-6 w-6 place-items-center rounded-md border backdrop-blur-sm transition-colors ${
+      active
+        ? 'border-purple-400/60 bg-purple-600/40 text-white shadow-[0_0_8px_rgba(168,85,247,0.6)]'
+        : 'border-white/10 bg-black/40 text-zinc-400 hover:bg-black/60 hover:text-white'
+    }`;
   return (
-    <div className={`relative overflow-hidden rounded-lg bg-black ${className ?? ''}`}>
-      <CymaticsVisualizer mode={vizMode} audioNode={audioNode} orbTilt={orbTilt} className="absolute inset-0" />
-      <div className="absolute right-1.5 bottom-1.5 z-10 flex flex-col gap-1">
-        {MODES.map(({ key, label, Icon }) => {
-          const on = vizMode === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              title={label}
-              aria-label={label}
-              aria-pressed={on}
-              onClick={() => setVizMode(key)}
-              className={`grid h-6 w-6 place-items-center rounded-md border backdrop-blur-sm transition-colors ${
-                on
-                  ? 'border-purple-400/60 bg-purple-600/40 text-white shadow-[0_0_8px_rgba(168,85,247,0.6)]'
-                  : 'border-white/10 bg-black/40 text-zinc-400 hover:bg-black/60 hover:text-white'
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-            </button>
-          );
-        })}
+    <div ref={rootRef} className={`relative overflow-hidden rounded-lg bg-black ${className ?? ''}`}>
+      <CymaticsVisualizer mode={vizMode} audioNode={audioNode} orbTilt={orbTilt} flipX={flipX} className="absolute inset-0" />
+      <div className={`absolute bottom-1.5 z-10 flex flex-col gap-1 ${iconsSide === 'left' ? 'left-1.5' : 'right-1.5'}`}>
+        <button type="button" title="Fullscreen" aria-label="Toggle fullscreen" onClick={toggleFullscreen} className={iconBtn(false)}>
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+        {MODES.map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            type="button"
+            title={label}
+            aria-label={label}
+            aria-pressed={vizMode === key}
+            onClick={() => setVizMode(key)}
+            className={iconBtn(vizMode === key)}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        ))}
       </div>
     </div>
   );

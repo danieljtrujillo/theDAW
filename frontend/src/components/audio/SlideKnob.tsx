@@ -15,7 +15,7 @@
  * ruler digit.
  */
 import React, { memo, useRef, useState } from 'react';
-import { accentVars, colorAt, rgb } from '../../lib/trackColor';
+import { accentVars, colorAt, rgb, rgba } from '../../lib/trackColor';
 import { HoverTip } from '../ui/Tooltip';
 import { HOVER_TOOLTIPS } from '../ui/tooltips';
 
@@ -31,10 +31,12 @@ interface SlideKnobProps {
   step?: number;
   tipKey?: string;
   size?: number;
+  /** Render the value in the CENTER of the dial, colored by the dial value. */
+  centerReadout?: boolean;
 }
 
 const SlideKnobImpl: React.FC<SlideKnobProps> = ({
-  label, value, onChange, min, max, step = 0.01, tipKey, size = 42,
+  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false,
 }) => {
   const dragging = useRef(false);
   const lastY = useRef(0);
@@ -118,19 +120,36 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
         <div className="tk-arc" style={{ background: arcBg }} />
         <div className="tk-face" />
         <div className="tk-point" style={{ transform: `rotate(${225 + sweep}deg)` }}><span /></div>
+        {centerReadout && (
+          <span
+            className="absolute inset-0 grid place-items-center font-mono tabular-nums pointer-events-none leading-none"
+            style={{
+              color: rgb(base),
+              fontSize: active ? '13px' : '11px',
+              fontWeight: 800,
+              textShadow: `0 0 8px ${rgba(base, 0.85)}`,
+              zIndex: 3,
+              transition: 'font-size 0.1s ease',
+            }}
+          >
+            {fmt(value)}
+          </span>
+        )}
       </div>
-      <span
-        className="font-mono tabular-nums leading-none"
-        style={{
-          fontSize: active ? '12px' : '9px',
-          fontWeight: active ? 800 : 700,
-          color: 'var(--accent)',
-          textShadow: active ? '0 0 10px var(--accent-glow)' : 'none',
-          transition: 'font-size 0.1s ease, text-shadow 0.1s ease',
-        }}
-      >
-        {fmt(value)}
-      </span>
+      {!centerReadout && (
+        <span
+          className="font-mono tabular-nums leading-none"
+          style={{
+            fontSize: active ? '12px' : '9px',
+            fontWeight: active ? 800 : 700,
+            color: 'var(--accent)',
+            textShadow: active ? '0 0 10px var(--accent-glow)' : 'none',
+            transition: 'font-size 0.1s ease, text-shadow 0.1s ease',
+          }}
+        >
+          {fmt(value)}
+        </span>
+      )}
     </div>
   );
 };

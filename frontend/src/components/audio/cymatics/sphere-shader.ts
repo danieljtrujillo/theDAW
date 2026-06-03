@@ -66,8 +66,9 @@ float rosensweig(vec3 p, float t, vec4 audio) {
   grid = grid * 0.5 + 0.5; // Map to [0.0, 1.0]
 
   // Implement the physical double-curvature Hershey's Kiss / "Witch's Hat" silhouette:
-  // 1. Broad candle-foot flare near base (low exponent)
-  float foot = pow(grid, 2.5);
+  // 1. Broad candle-foot flare near base (low exponent) — widened so adjacent
+  //    spike bases flare out and touch.
+  float foot = pow(grid, 1.3);
 
   // 2. High-strength magnetic apex needle core (high exponent, scales dynamically with total audio response)
   float magneticStrength = isFerrofluid * (0.15 + 0.85 * totalAudio) * fieldStrength;
