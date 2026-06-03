@@ -188,8 +188,10 @@
     0 0 14px var(--accent-glow),
     0 0 34px var(--accent-glow),
     inset 0 1px 3px rgba(255, 255, 255, 0.5);
+  /* No `height` transition — the fill must track the pointer 1:1 (the 0.12s
+     ease made the SLIDE-tab faders feel laggy, dragging behind the cursor).
+     Only the colour/glow ease, which isn't positional lag. */
   transition:
-    height 0.12s cubic-bezier(0.22, 1, 0.36, 1),
     background 0.25s ease,
     box-shadow 0.25s ease;
   z-index: 2;

@@ -91,11 +91,11 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
   // ruler: 5 ticks across the range, numbers on the ends + middle, all
   // magnifying as the handle nears them (the SLIDE "bulge").
   const marks: React.ReactNode[] = [];
-  const TICKS = 4;
+  const TICKS = 20;                     // dense ruler — many ticks
   for (let i = 0; i <= TICKS; i++) {
     const tt = i / TICKS;
     const p = smoothstep(1 - Math.abs(tt - t) / FOCUS);
-    const isMajor = i === 0 || i === TICKS || i === TICKS / 2;
+    const isMajor = i % 4 === 0;        // number every 4th tick (6 numbers)
     const txt: RGB = [lerp(150, 255, p), lerp(150, 255, p), lerp(155, 255, p)];
     const tickCol: RGB = [lerp(150, base[0], p), lerp(150, base[1], p), lerp(155, base[2], p)];
     marks.push(

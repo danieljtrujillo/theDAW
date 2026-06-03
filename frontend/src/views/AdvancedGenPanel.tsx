@@ -526,7 +526,7 @@ export const AdvancedGenPanel: React.FC<{
                       <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
                     </select>
                   </div>
-                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5">
+                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
                     <SlideFader label="Sigma" value={p.sigmaMax} onChange={(v) => sf('sigmaMax', v)} min={0} max={1} tipKey="sigmaMax" />
                     <SlideFader label="DurPad" value={p.durationPaddingSec} onChange={(v) => sf('durationPaddingSec', v)} min={0} max={30} step={0.1} tipKey="durationPadding" />
                     <SlideFader label="APG" value={p.apgScale} onChange={(v) => sf('apgScale', v)} min={0} max={1} tipKey="apg" />
@@ -559,7 +559,7 @@ export const AdvancedGenPanel: React.FC<{
                       ))}
                     </div>
                   </div>
-                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5">
+                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
                     {shiftFaders()}
                   </div>
                 </div>

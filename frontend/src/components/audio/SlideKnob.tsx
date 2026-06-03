@@ -62,10 +62,12 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
       `rgba(255,255,255,0.09) ${sweep}deg 270deg, rgba(255,255,255,0) 270deg 360deg)`;
 
   const snap = (v: number) => clamp(+(Math.round(v / step) * step).toFixed(6), min, max);
+  // Decimals follow the step: integer steps → 0, 0.1 → 1 dp, finer → 2 dp.
+  const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
   const fmt = (v: number) =>
     !Number.isFinite(v) ? '0'
-      : Number.isInteger(v) || Math.abs(v) >= 100 ? String(Math.round(v))
-        : v.toFixed(2);
+      : Number.isInteger(v) ? String(v)
+        : v.toFixed(decimals);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
