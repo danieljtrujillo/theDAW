@@ -24,7 +24,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, Plus, Save, Trash2, Cast, Music2,
   ChevronDown, ChevronRight, Repeat, Magnet, Gauge, Lock,
-  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2,
+  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield,
 } from 'lucide-react';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
@@ -599,6 +599,7 @@ const Mixer: React.FC<MixerProps> = ({
   gainA, gainB, eqA, eqB, filterA, filterB, volA, volB, onGain, onEq, onFilter, onVol,
   crossfader, onCrossfade, quantize, setQuantize, autoGain, setAutoGain, camA, camB, harmonic, flash,
 }) => {
+  const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
   // A deck's EQ + filter as a vertical knob column (HI · MID · LO · FLT),
   // spread to fill the channel height alongside the tall VOL fader.
   const eqCol = (which: djEngine.DeckId, eq: { low: number; mid: number; high: number }, filter: number) => (
@@ -629,16 +630,19 @@ const Mixer: React.FC<MixerProps> = ({
         {eqCol('B', eqB, filterB)}
       </div>
 
-      {/* toggles + harmonic match */}
+      {/* toggles */}
       <div className="shrink-0 flex items-center justify-center gap-2">
         <RoundToggle label="Qtz" icon={Magnet} on={quantize} onChange={setQuantize} box={24} />
         <RoundToggle label="Gain" icon={Gauge} on={autoGain} onChange={setAutoGain} box={24} />
-        {camA && camB && (
-          <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold border ${harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`} title={harmonic ? `Harmonic — ${camA.code} ↔ ${camB.code} mix in key` : `Key clash — ${camA.code} vs ${camB.code}`}>
-            <Music2 className="w-2.5 h-2.5" />{harmonic ? 'In Key' : 'Clash'}
-          </div>
-        )}
+        <RoundToggle label="Lim" icon={Shield} on={limiterOn} onChange={(v) => { setLimiterOn(v); djEngine.setLimiter(v); }} box={24} />
       </div>
+
+      {/* harmonic key match */}
+      {camA && camB && (
+        <div className={`shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold border ${harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`} title={harmonic ? `Harmonic — ${camA.code} ↔ ${camB.code} mix in key` : `Key clash — ${camA.code} vs ${camB.code}`}>
+          <Music2 className="w-2.5 h-2.5" />{harmonic ? 'In Key' : 'Clash'}
+        </div>
+      )}
 
       {/* crossfader */}
       <div className="shrink-0 w-full">
@@ -658,34 +662,41 @@ const Mixer: React.FC<MixerProps> = ({
 
 /* ═══════════════════════════════ DeckRack (FX + STEMS, scaffold) ════════════ */
 
-const FX_SLOTS = ['Flanger', 'Reverb', 'Wahwah'];
+const DJ_FX: Array<{ key: djEngine.DjFx; label: string }> = [
+  { key: 'flanger', label: 'Flng' }, { key: 'reverb', label: 'Verb' }, { key: 'wahwah', label: 'Wah' },
+];
 const STEM_PADS = ['Vocal', 'Instru', 'Bass', 'Kick', 'HiHat', 'StemFX'];
 
 const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan' }> = ({ deck, accent }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
+  // Per-deck FX wet amounts (0..1), wired live to the engine (D5). Lazy-builds
+  // the deck's FX rack on first non-zero touch.
+  const [fx, setFx] = useState<Record<string, number>>({ flanger: 0, reverb: 0, wahwah: 0 });
+  const onFx = (k: djEngine.DjFx, v: number) => { setFx((p) => ({ ...p, [k]: v })); djEngine.setDeckFx(deck, k, v); };
   return (
     <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         <Layers className={`w-3 h-3 shrink-0 ${accentText}`} />
         <span className={`text-[9px] font-black uppercase tracking-wider ${accentText}`}>FX · Stems {deck}</span>
-        <span className="ml-auto text-[7px] font-bold uppercase tracking-wider text-zinc-600 px-1 py-0.5 rounded bg-white/5">soon</span>
       </div>
-      <div className="flex-1 min-h-0 flex flex-col gap-1 p-1.5 overflow-hidden">
-        {/* FX rack rows */}
-        <div className="flex flex-col gap-1">
-          {FX_SLOTS.map((fx) => (
-            <div key={fx} className="flex items-center gap-1 rounded border border-white/8 bg-black/30 px-1.5 py-1" title="FX rack slot — coming soon (D5)">
-              <span className="w-2.5 h-2.5 rounded-full border border-white/15 shrink-0" />
-              <span className="flex-1 text-[8px] font-mono uppercase tracking-wide text-zinc-500">{fx}</span>
-              <ChevronDown className="w-2.5 h-2.5 text-zinc-700" />
-            </div>
+      <div className="flex-1 min-h-0 flex flex-col gap-1.5 p-1.5 overflow-hidden">
+        {/* FX rack — live wet knobs (flanger / reverb / wah) */}
+        <div className="grid grid-cols-3 gap-1 place-items-center">
+          {DJ_FX.map(({ key, label }) => (
+            <SlideKnob key={key} label={label} value={fx[key]} onChange={(v) => onFx(key, v)} min={0} max={1} step={0.01} size={30} centerReadout />
           ))}
         </div>
-        {/* stems pads */}
-        <div className="mt-auto grid grid-cols-3 gap-1">
-          {STEM_PADS.map((s) => (
-            <div key={s} className="rounded border border-white/8 bg-black/30 py-1 text-center text-[7px] font-mono uppercase tracking-wide text-zinc-600" title="Live stem control — coming soon (D4)">{s}</div>
-          ))}
+        {/* stems — coming soon (D4) */}
+        <div className="mt-auto">
+          <div className="flex items-center gap-1 mb-1">
+            <span className="text-[7px] font-black uppercase tracking-widest text-zinc-600">Stems</span>
+            <span className="text-[7px] font-bold uppercase tracking-wider text-zinc-600 px-1 rounded bg-white/5">soon</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            {STEM_PADS.map((s) => (
+              <div key={s} className="rounded border border-white/8 bg-black/30 py-1 text-center text-[7px] font-mono uppercase tracking-wide text-zinc-600" title="Live stem control — coming soon (D4)">{s}</div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
