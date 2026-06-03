@@ -24,7 +24,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, Plus, Save, Trash2, Cast, Music2,
   ChevronDown, ChevronRight, Repeat, Magnet, Gauge, Lock,
-  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield,
+  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield, Headphones,
 } from 'lucide-react';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
@@ -183,6 +183,8 @@ export const DJView: React.FC = () => {
   const [filterB, setFilterB] = useState(0);
   const [volA, setVolA] = useState(1);
   const [volB, setVolB] = useState(1);
+  const [cueA, setCueA] = useState(false);
+  const [cueB, setCueB] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [source, setSource] = useState<Source>({ kind: 'library' });
 
@@ -363,6 +365,11 @@ export const DJView: React.FC = () => {
   const onFilter = (which: djEngine.DeckId, v: number) => { if (which === 'A') setFilterA(v); else setFilterB(v); djEngine.setDeckFilter(which, v); };
   const onVol = (which: djEngine.DeckId, v: number) => { if (which === 'A') setVolA(v); else setVolB(v); djEngine.setDeckVolume(which, v); };
   const onGain = (which: djEngine.DeckId, v: number) => { if (which === 'A') setGainA(v); else setGainB(v); };
+  const toggleCue = (which: djEngine.DeckId) => {
+    const next = which === 'A' ? !cueA : !cueB;
+    if (which === 'A') setCueA(next); else setCueB(next);
+    djEngine.setDeckCue(which, next);
+  };
 
   return (
     <div className="h-full w-full overflow-hidden flex flex-col gap-1.5 p-1.5 bg-[#07050a] text-white">
@@ -380,7 +387,7 @@ export const DJView: React.FC = () => {
         <div className="min-h-0 flex flex-col gap-1.5">
           {/* decks + mixer */}
           <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) 168px minmax(0,1fr)' }}>
-            <DeckColumn deckId="A" accent="purple" ctl={ctlA} title={deckATitle} cam={camA} hasTrack={!!deckATrack} isPlaying={deckAPlaying} pitch={deckAPitch} onPitch={(v) => onPitch('A', v)} onPlay={() => djEngine.toggleDeck('A')} onCue={() => djEngine.cueDeck('A')} onSync={() => syncDeck('A')} onSyncLock={() => toggleSyncLock('A')} syncLocked={syncLock === 'A'} canSync={canSync} onSendVj={() => sendDeckToVj('A')} onAddSet={() => addDeckToSet('A')} />
+            <DeckColumn deckId="A" accent="purple" ctl={ctlA} title={deckATitle} cam={camA} hasTrack={!!deckATrack} isPlaying={deckAPlaying} pitch={deckAPitch} onPitch={(v) => onPitch('A', v)} onPlay={() => djEngine.toggleDeck('A')} onCue={() => djEngine.cueDeck('A')} onSync={() => syncDeck('A')} onSyncLock={() => toggleSyncLock('A')} syncLocked={syncLock === 'A'} canSync={canSync} onSendVj={() => sendDeckToVj('A')} onAddSet={() => addDeckToSet('A')} headCued={cueA} onHeadCue={() => toggleCue('A')} />
             <Mixer
               gainA={gainA} gainB={gainB} eqA={eqA} eqB={eqB} filterA={filterA} filterB={filterB} volA={volA} volB={volB}
               onGain={onGain} onEq={onEq} onFilter={onFilter} onVol={onVol}
@@ -388,7 +395,7 @@ export const DJView: React.FC = () => {
               quantize={quantize} setQuantize={setQuantize} autoGain={autoGain} setAutoGain={setAutoGain}
               camA={camA} camB={camB} harmonic={harmonic} flash={flash}
             />
-            <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror pitch={deckBPitch} onPitch={(v) => onPitch('B', v)} onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} />
+            <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror pitch={deckBPitch} onPitch={(v) => onPitch('B', v)} onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} headCued={cueB} onHeadCue={() => toggleCue('B')} />
           </div>
           {/* FX/STEMS racks flanking the track browser */}
           <div className="shrink-0 grid gap-1.5" style={{ gridTemplateColumns: '168px minmax(0,1fr) 168px', height: 176 }}>
@@ -473,13 +480,14 @@ interface DeckColumnProps {
   pitch: number; onPitch: (v: number) => void; onPlay: () => void; onCue: () => void;
   onSync: () => void; onSyncLock: () => void; syncLocked: boolean; canSync: boolean;
   onSendVj: () => void; onAddSet: () => void;
+  headCued: boolean; onHeadCue: () => void;
 }
 
 const PAD_SM = 'px-1.5 py-1 text-[8px] min-w-0';
 
 const DeckColumn: React.FC<DeckColumnProps> = ({
   deckId, accent, ctl, title, cam, hasTrack, isPlaying, mirror, pitch, onPitch,
-  onPlay, onCue, onSync, onSyncLock, syncLocked, canSync, onSendVj, onAddSet,
+  onPlay, onCue, onSync, onSyncLock, syncLocked, canSync, onSendVj, onAddSet, headCued, onHeadCue,
 }) => {
   const rgbc = DECK_RGB[accent];
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
@@ -535,6 +543,7 @@ const DeckColumn: React.FC<DeckColumnProps> = ({
         <SlidePad color={rgbc} disabled={!hasTrack} onClick={onPlay} className="px-3 py-1" title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}</SlidePad>
         <SlidePad color={rgbc} disabled={!canSync} onClick={onSync} className={PAD_SM} title={canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}>Sync</SlidePad>
         <SlidePad color={rgbc} on={syncLocked} disabled={!canSync} onClick={onSyncLock} className="px-1.5 py-1" title={canSync ? 'Sync-Lock — hold tempo + phase (grab pitch to release)' : 'Sync-Lock needs BPM on both decks'}><Lock className="w-3 h-3" /></SlidePad>
+        <SlidePad color={[34, 211, 238]} on={headCued} disabled={!hasTrack} onClick={onHeadCue} className="px-1.5 py-1" title="Cue — pre-listen this deck in the headphone output"><Headphones className="w-3 h-3" /></SlidePad>
         {/* hotcues ride the same row */}
         <span className="w-px h-4 bg-white/10 mx-0.5" />
         {Array.from({ length: HOTCUE_SLOTS }, (_, i) => {
@@ -601,6 +610,16 @@ const Mixer: React.FC<MixerProps> = ({
   crossfader, onCrossfade, quantize, setQuantize, autoGain, setAutoGain, camA, camB, harmonic, flash,
 }) => {
   const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
+  // Cue (headphone) output device picker — only when the runtime supports setSinkId.
+  const cueSupported = djEngine.isCueSupported();
+  const [cueDevices, setCueDevices] = useState<Array<{ id: string; label: string }>>([]);
+  const [cueDev, setCueDev] = useState(() => djEngine.getCueSinkId());
+  useEffect(() => {
+    if (!cueSupported || !navigator.mediaDevices?.enumerateDevices) return;
+    navigator.mediaDevices.enumerateDevices()
+      .then((ds) => setCueDevices(ds.filter((d) => d.kind === 'audiooutput').map((d) => ({ id: d.deviceId, label: d.label || 'Output' }))))
+      .catch(() => { /* ignore — labels need permission, ids still resolve */ });
+  }, [cueSupported]);
   // A deck's EQ + filter as a vertical knob column (HI · MID · LO · FLT),
   // spread to fill the channel height alongside the tall VOL fader.
   const eqCol = (which: djEngine.DeckId, eq: { low: number; mid: number; high: number }, filter: number) => (
@@ -657,6 +676,16 @@ const Mixer: React.FC<MixerProps> = ({
         </div>
       </div>
       {flash && <span className="shrink-0 text-center text-[8px] font-mono text-cyan-300 truncate w-full">{flash}</span>}
+      {cueSupported && cueDevices.length > 0 && (
+        <div className="shrink-0 flex items-center gap-1 w-full" title="Headphone (cue) output device">
+          <Headphones className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
+          <select value={cueDev} onChange={(e) => { setCueDev(e.target.value); void djEngine.setCueSinkId(e.target.value); }}
+            className="flex-1 min-w-0 bg-[#0e0c18] border border-white/10 text-zinc-300 text-[8px] font-mono px-1 py-0.5 rounded focus:outline-none" style={{ colorScheme: 'dark' }}>
+            <option value="">Default out</option>
+            {cueDevices.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
+        </div>
+      )}
     </div>
   );
 };

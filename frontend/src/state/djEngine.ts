@@ -115,6 +115,8 @@ interface Deck {
   virtualStart: number;
   // FX rack (D5) — lazily built on first setDeckFx; spliced filter → fx → gain.
   fx: DeckFx | null;
+  // Cue/headphone send (D6): filter → cueSend → cueBus → headphone sink. 0 = off.
+  cueSend: GainNode;
 }
 
 const RAMP_TC = 0.012;
@@ -122,6 +124,12 @@ const RAMP_TC = 0.012;
 let djMaster: GainNode | null = null;
 let limiter: DynamicsCompressorNode | null = null;
 let limiterEnabled = true; // brickwall on the DJ bus for clip safety (D5)
+// Cue/headphone bus (D6): per-deck cueSend → cueBus → MediaStreamDestination →
+// a hidden <audio> whose setSinkId routes pre-listen to a second (headphone) output.
+let cueBus: GainNode | null = null;
+let cueDest: MediaStreamAudioDestinationNode | null = null;
+let cueAudioEl: HTMLAudioElement | null = null;
+let cueSinkId = '';
 const decks: Partial<Record<DeckId, Deck>> = {};
 let crossfade = 0; // -1 = full A, 0 = center, +1 = full B
 let rafId = 0;
@@ -146,6 +154,19 @@ function ensureMaster(): GainNode {
   limiter.connect(getMasterGain());
   djMaster.connect(limiterEnabled ? limiter : getMasterGain());
   return djMaster;
+}
+
+/** The cue (headphone) bus: a MediaStreamDestination fed by per-deck cue sends,
+ *  played through a hidden <audio> we can route to a 2nd output via setSinkId. */
+function ensureCueBus(): GainNode {
+  if (cueBus) return cueBus;
+  const ctx = getEngineCtx();
+  cueBus = ctx.createGain();
+  cueDest = ctx.createMediaStreamDestination();
+  cueBus.connect(cueDest);
+  cueAudioEl = new Audio();
+  cueAudioEl.srcObject = cueDest.stream;
+  return cueBus;
 }
 
 /** The node a playing source feeds into: the key-lock pitch insert when engaged,
@@ -207,6 +228,8 @@ function buildDeck(id: DeckId): Deck {
   vol.gain.value = 1;
   const delayComp = ctx.createDelay(1.0); // 0 normally; matches A/B key-lock latency
   const srcBus = ctx.createGain(); // all sources (full or stems) sum here → insert → delayComp
+  const cueSend = ctx.createGain(); // pre-listen send → cue bus (headphones); 0 = off
+  cueSend.gain.value = 0;
 
   const cg = crossGains(crossfade);
   gain.gain.value = id === 'A' ? cg.a : cg.b;
@@ -217,9 +240,11 @@ function buildDeck(id: DeckId): Deck {
   trim.connect(vol);
   vol.connect(low);
   low.connect(mid).connect(high).connect(filter).connect(gain).connect(master);
+  filter.connect(cueSend); // post-EQ/filter pre-listen tap (survives the FX splice)
+  cueSend.connect(ensureCueBus());
 
   const deck: Deck = {
-    delayComp, trim, vol, low, mid, high, filter, gain, srcBus,
+    delayComp, trim, vol, low, mid, high, filter, gain, srcBus, cueSend,
     stretch: null, stretchLatency: 0, keylock: false,
     buffer: null, srcs: [], stems: null, stemMode: false, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
@@ -618,7 +643,7 @@ function ensureDeckFx(d: Deck): DeckFx {
 
   // Splice between the filter and the crossfader gain (one-time; a brief click
   // is possible if done mid-playback — acceptable for a first FX-knob touch).
-  try { d.filter.disconnect(); } catch { /* not yet connected */ }
+  try { d.filter.disconnect(d.gain); } catch { /* not connected */ } // keep the filter → cueSend tap
   d.filter.connect(input);
   out.connect(d.gain);
 
@@ -654,6 +679,35 @@ export function setLimiter(on: boolean): void {
 
 export function getLimiter(): boolean {
   return limiterEnabled;
+}
+
+/* -------------------------------- cue / headphones (D6) -------------------- */
+
+/** Whether the runtime supports per-element output routing (`setSinkId`). */
+export function isCueSupported(): boolean {
+  return typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+}
+
+/** Pre-listen a deck in the cue (headphone) bus — independent of the crossfader. */
+export function setDeckCue(id: DeckId, on: boolean): void {
+  const d = getDeck(id);
+  ensureCueBus();
+  d.cueSend.gain.setTargetAtTime(on ? 1 : 0, ctxNow(), RAMP_TC);
+  if (on && cueAudioEl) void cueAudioEl.play().catch(() => { /* needs a gesture — the toggle click is one */ });
+}
+
+/** Route the cue bus to a specific output device (headphones). '' = default. */
+export async function setCueSinkId(deviceId: string): Promise<void> {
+  ensureCueBus();
+  cueSinkId = deviceId;
+  const el = cueAudioEl as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+  if (el?.setSinkId) {
+    try { await el.setSinkId(deviceId); } catch (e) { logError('dj', `cue setSinkId failed: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+}
+
+export function getCueSinkId(): string {
+  return cueSinkId;
 }
 
 /** Crossfader position in [-1, 1] (equal-power). */
@@ -806,6 +860,7 @@ export function dispose(): void {
       stopSource(d);
       teardownStems(d);
       try { d.srcBus.disconnect(); } catch { /* gone */ }
+      try { d.cueSend.disconnect(); } catch { /* gone */ }
       if (d.fx) {
         try { d.fx.lfoFlanger.stop(); } catch { /* gone */ }
         try { d.fx.lfoWah.stop(); } catch { /* gone */ }
@@ -827,6 +882,9 @@ export function dispose(): void {
     delete decks[id];
   }
   if (limiter) { try { limiter.disconnect(); } catch { /* gone */ } limiter = null; }
+  if (cueBus) { try { cueBus.disconnect(); } catch { /* gone */ } cueBus = null; }
+  if (cueAudioEl) { try { cueAudioEl.pause(); cueAudioEl.srcObject = null; } catch { /* gone */ } cueAudioEl = null; }
+  cueDest = null;
   if (djMaster) { try { djMaster.disconnect(); } catch { /* gone */ } djMaster = null; }
   listeners.clear();
 }
