@@ -582,6 +582,8 @@ async def load_model():
     try:
         import platform
 
+        import torch.version  # submodule; explicit import so type checkers resolve .cuda
+
         gpu_info = "no CUDA"
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(0)
