@@ -225,6 +225,7 @@ export const LogActionButton: React.FC = () => {
   const cancelPolling = useGenerateStore((s) => s.cancelPolling);
   const model         = useGenerateParamsStore((s) => s.model);
   const isProcessing  = useStudioStore((s) => s.isProcessing);
+  const isChainProcessing = useStudioStore((s) => s.isChainProcessing);
   const isTraining    = useTrainingStore((s) => s.isTraining);
 
   const tab = (activeView in TAB_CONFIG ? activeView : 'create') as TabKey;
@@ -254,6 +255,28 @@ export const LogActionButton: React.FC = () => {
         title={isVjSetTargetActive() ? 'Send the active setlist to the VJ performance' : 'Queue the active setlist — delivers when the VJ tab opens'}
       >
         <span className="relative z-10 flex items-center gap-2"><Cast className="w-3.5 h-3.5" /> Send to VJ</span>
+      </button>
+    );
+  }
+
+  // On the MIX tab the action button runs the effect CHAIN over the source
+  // (the tab itself has no Process button — the footer is the transport, per
+  // DESIGN_PRINCIPLES §6). Orange echoes the MIX tab accent.
+  if (centerTab === 'mix') {
+    return (
+      <button
+        type="button"
+        onClick={() => { void useStudioStore.getState().processChain(); }}
+        disabled={isChainProcessing}
+        className={`relative w-full h-full overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors disabled:cursor-not-allowed ${
+          isChainProcessing ? 'bg-orange-600/30 text-orange-300' : 'bg-orange-600 hover:bg-orange-500 text-white'
+        }`}
+        title={isChainProcessing ? 'Processing the effect chain…' : 'Process the effect chain over the source audio'}
+      >
+        <span className="relative z-10 flex items-center gap-2">
+          <Zap className="w-3.5 h-3.5" />
+          {isChainProcessing ? 'PROCESSING…' : 'PROCESS CHAIN'}
+        </span>
       </button>
     );
   }

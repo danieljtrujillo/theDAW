@@ -4,6 +4,8 @@ import { logError, logInfo } from './logStore';
 import { uuid } from '../orb-kit/utils';
 import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
+import { useEffectChainStore, EFFECT_LABELS } from './effectChainStore';
+import { useAdvancedEditorSourceStore } from './advancedEditorStore';
 
 interface StudioHistoryEntry {
   id: string;
@@ -17,15 +19,24 @@ interface StudioStoreState {
   outputUrl: string | null;
   outputFormat: string;
   isProcessing: boolean;
+  // True for the whole multi-effect chain run (processAudio toggles
+  // isProcessing per effect, which would flicker the footer between
+  // effects — the footer keys its PROCESS state off this flag instead).
+  isChainProcessing: boolean;
   error: string | null;
   processHistory: StudioHistoryEntry[];
-  // Pending action kept in sync by StudioView so GlobalGenerateBar can fire without local state.
+  // Legacy single-effect "pending action" path (kept for the footer's
+  // edit-tab branch). The MIX tab now runs the full chain via processChain().
   pendingEffect: string;
   pendingParams: Record<string, number>;
   setSourceFile: (file: File | null) => void;
   setOutputFormat: (format: string) => void;
   setPendingAction: (effect: string, params: Record<string, number>) => void;
   processAudio: (payload: { effect: string; params: Record<string, number>; skipLibrary?: boolean }) => Promise<void>;
+  // Runs the enabled effects in useEffectChainStore in series over the
+  // source in useAdvancedEditorSourceStore, then imports the final result
+  // to the library, loads the player, and writes advancedEditorStore.outputUrl.
+  processChain: () => Promise<void>;
   triggerPendingProcess: () => Promise<void>;
   reuseOutputAsSource: () => Promise<void>;
   clearOutput: () => void;
@@ -58,6 +69,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
   outputUrl: null,
   outputFormat: 'wav',
   isProcessing: false,
+  isChainProcessing: false,
   error: null,
   processHistory: [],
   pendingEffect: 'mastering_chain',
@@ -186,6 +198,73 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
       set({ isProcessing: false, error: message });
       useStatusBarStore.getState().setText(`STUDIO PROCESS FAILED: ${message}`);
       logError('studio', `effect=${effect} FAILED — ${message}`);
+    }
+  },
+
+  processChain: async () => {
+    if (get().isProcessing || get().isChainProcessing) return;
+
+    const source = useAdvancedEditorSourceStore.getState().sourceFile;
+    if (!source) {
+      const message = 'Load a source audio file before processing.';
+      set({ error: message });
+      useStatusBarStore.getState().setText(`MIX FAILED: ${message}`);
+      return;
+    }
+
+    const enabled = useEffectChainStore.getState().chain.filter((e) => e.enabled);
+    if (enabled.length === 0) {
+      const message = 'Add at least one enabled effect to the chain.';
+      set({ error: message });
+      useStatusBarStore.getState().setText(`MIX FAILED: ${message}`);
+      return;
+    }
+
+    const fmt = get().outputFormat;
+    const chainLabel = enabled.map((e) => EFFECT_LABELS[e.effect] || e.effect).join(' → ');
+    set({ isChainProcessing: true, error: null });
+    useStatusBarStore.getState().setText(`MIX CHAIN STARTED: ${chainLabel}`);
+    logInfo('studio', `Chain process: ${chainLabel} (${enabled.length} effects) format=${fmt}`);
+
+    try {
+      // Run each enabled effect in series, feeding each output into the
+      // next effect's input. Per-effect processing skips the library so
+      // only the final result is saved.
+      let currentFile = source;
+      for (const entry of enabled) {
+        get().setSourceFile(currentFile);
+        await get().processAudio({ effect: entry.effect, params: entry.params, skipLibrary: true });
+        const url = get().outputUrl;
+        // processAudio already set an error + status if this failed.
+        if (!url) return;
+        const blob = await (await fetch(url)).blob();
+        currentFile = new File([blob], `chain-${entry.effect}.${fmt}`, { type: blob.type });
+      }
+
+      const finalUrl = get().outputUrl;
+      if (!finalUrl) return;
+      useAdvancedEditorSourceStore.getState().setOutputUrl(finalUrl);
+
+      const finalBlob = await fetch(finalUrl).then((r) => r.blob());
+      const title = `chain-${chainLabel.slice(0, 40)}.${fmt}`;
+      try {
+        const entry = await useLibraryStore.getState().importEntry({
+          blob: finalBlob,
+          filename: title,
+          mimeType: finalBlob.type || 'audio/wav',
+          metadata: { title, prompt: chainLabel, source: 'studio', tags: ['effects-chain'] },
+        });
+        await usePlayerStore.getState().load(finalBlob, { label: title, entryId: entry.id });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logError('studio', `Chain library save failed: ${msg}`);
+        try {
+          await usePlayerStore.getState().load(finalBlob, { label: title, entryId: `chain-fail-${Date.now()}` });
+        } catch { /* swallow */ }
+      }
+      useStatusBarStore.getState().setText(`MIX CHAIN COMPLETE: ${chainLabel}`);
+    } finally {
+      set({ isChainProcessing: false });
     }
   },
 
