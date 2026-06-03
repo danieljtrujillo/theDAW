@@ -55,13 +55,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# gradio removed (CVE sweep 2026-06-03): only the legacy run_gradio.py UI used
+# it; the React + FastAPI app does not. Reinstall ad-hoc if you ever run the
+# legacy Gradio interface.
 ui = [
-  "gradio==6.3.0",
   "accelerate>=1.13.0",
 ]
 
 lora = [
-  "pytorch_lightning==2.5.5",
+  "pytorch_lightning==2.6.5",
   "dill>=0.4.1",
 ]
 
