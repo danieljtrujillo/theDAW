@@ -20,49 +20,92 @@ import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideFader } from '../components/audio/SlideFader';
 import { VisualizerPanel } from '../components/audio/CymaticsVisualizer';
 import { getMasterGain } from '../state/playerStore';
+import { accentVars, colorAt, rgb, rgba } from '../lib/trackColor';
 import '../components/layout/track-controls.css';
 
-/* ── RoundToggle: circular LED-style toggle that echoes the knobs ──────── */
-function RoundToggle({ label, icon: Icon, on, onChange }: {
-  label: string; icon: React.ComponentType<{ className?: string }>; on: boolean; onChange: (v: boolean) => void;
+const clampN = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
+
+/* ── RoundToggle: circular LED-style toggle that echoes the knobs.
+   Label ABOVE; the button sits in a fixed-height box so its center aligns with
+   the NORM THR knob's dial center when laid out in a row. ─────────────────── */
+function RoundToggle({ label, icon: Icon, on, onChange, box = 46 }: {
+  label: string; icon: React.ComponentType<{ className?: string }>; on: boolean; onChange: (v: boolean) => void; box?: number;
 }) {
   return (
     <button type="button" onClick={() => onChange(!on)} title={label}
       className="flex flex-col items-center gap-1 group shrink-0">
-      <span
-        className={`relative grid place-items-center rounded-full border-2 transition-all duration-200 ${
-          on
-            ? 'border-purple-400/70 bg-purple-600/30 text-purple-100 shadow-[0_0_12px_rgba(168,85,247,0.65)]'
-            : 'border-white/15 bg-black/40 text-zinc-500 group-hover:text-zinc-300 group-hover:border-white/30'
-        }`}
-        style={{ width: 34, height: 34 }}>
-        <Icon className="w-3.5 h-3.5" />
+      <span className={`text-[8px] font-bold uppercase tracking-wider leading-none transition-colors ${on ? 'text-purple-200' : 'text-zinc-400'}`}>{label}</span>
+      <span className="grid place-items-center" style={{ height: box }}>
+        <span
+          className={`grid place-items-center rounded-full border-2 transition-all duration-200 ${
+            on
+              ? 'border-purple-400/70 bg-purple-600/30 text-purple-100 shadow-[0_0_12px_rgba(168,85,247,0.65)]'
+              : 'border-white/15 bg-black/40 text-zinc-500 group-hover:text-zinc-300 group-hover:border-white/30'
+          }`}
+          style={{ width: 34, height: 34 }}>
+          <Icon className="w-3.5 h-3.5" />
+        </span>
       </span>
-      <span className={`text-[8px] font-bold uppercase tracking-wide transition-colors ${on ? 'text-purple-200' : 'text-zinc-500'}`}>{label}</span>
     </button>
   );
 }
 
-/* ── Inline number+slider row (high-level Controls rail) ──────────────── */
-function CtrlRow({ label, value, onChange, min, max, step = 1, suffix, tipKey, onRandomize }: {
+/* ── SlideRow: horizontal SLIDE-style fader row for the Controls rail ───
+   Glass-capsule track + glowing colored fill/knob (the SLIDE look, laid out
+   horizontally), a value field that tints with the value, and fixed slots so
+   every row's number/suffix/randomize line up in a column. */
+function SlideRow({ label, value, onChange, min, max, step = 1, tipKey, onRandomize }: {
   label: string; value: number; onChange: (v: number) => void;
-  min: number; max: number; step?: number; suffix?: string; tipKey?: string; onRandomize?: () => void;
+  min: number; max: number; step?: number; tipKey?: string; onRandomize?: () => void;
 }) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const dragging = useRef(false);
+  const [drag, setDrag] = useState(false);
+  const span = max - min || 1;
+  const t = clampN((value - min) / span, 0, 1);
+  const base = colorAt(t);
+  const fromX = (clientX: number) => {
+    const el = trackRef.current;
+    if (!el) return value;
+    const r = el.getBoundingClientRect();
+    const nt = clampN((clientX - r.left) / r.width, 0, 1);
+    return clampN(min + Math.round((nt * span) / step) * step, min, max);
+  };
+  const onDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    dragging.current = true; setDrag(true);
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    onChange(fromX(e.clientX)); e.preventDefault();
+  };
+  const onMove = (e: React.PointerEvent) => { if (dragging.current) onChange(fromX(e.clientX)); };
+  const onUp = (e: React.PointerEvent) => {
+    dragging.current = false; setDrag(false);
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
   const tip = tipKey ? HOVER_TOOLTIPS[tipKey] : undefined;
-  const labelEl = <span className="text-[11px] text-zinc-300">{label}</span>;
+  const labelEl = <span className="text-[11px] text-zinc-300 whitespace-nowrap">{label}</span>;
   return (
-    <div className="flex items-center gap-2">
-      <div className="w-12 shrink-0">{tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}</div>
-      <input type="range" className="pro-slider flex-1 min-w-0" min={min} max={max} step={step}
-        value={value} onChange={(e) => onChange(+e.target.value)} />
-      <input type="number" className="compact-input w-13 text-center tabular-nums shrink-0"
+    <div className="flex items-center gap-2" style={accentVars(t)}>
+      <div className="w-16 shrink-0 flex items-center gap-1">
+        {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
+        {onRandomize && (
+          <button onClick={onRandomize} title="Randomize" className="btn-ghost cursor-pointer p-0.5 shrink-0 text-zinc-500 hover:text-purple-300">
+            <RefreshCw className="w-2.5 h-2.5" />
+          </button>
+        )}
+      </div>
+      <div ref={trackRef}
+        className="relative flex-1 min-w-0 h-3 rounded-full bg-black/50 border border-white/10 cursor-pointer select-none"
+        style={{ touchAction: 'none' }}
+        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
+        <div className="absolute inset-y-0.5 left-0.5 rounded-full"
+          style={{ width: `calc(${t * 100}% - 2px)`, background: rgb(base), boxShadow: `0 0 8px ${rgba(base, 0.7)}`, transition: drag ? 'none' : 'width 0.08s ease' }} />
+        <div className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white"
+          style={{ left: `${t * 100}%`, transform: 'translate(-50%,-50%)', boxShadow: `0 0 8px ${rgba(base, 0.9)}`, transition: drag ? 'none' : 'left 0.08s ease' }} />
+      </div>
+      <input type="number" className="compact-input w-11 text-center tabular-nums shrink-0"
+        style={{ color: rgb(base), fontWeight: 700 }}
         min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value || 0)} />
-      {suffix && <span className="text-[9px] text-zinc-600 w-2 shrink-0">{suffix}</span>}
-      {onRandomize && (
-        <button className="btn-ghost cursor-pointer p-1 shrink-0" onClick={onRandomize}>
-          <RefreshCw className="w-3 h-3" />
-        </button>
-      )}
     </div>
   );
 }
@@ -240,6 +283,7 @@ export const AdvancedGenPanel: React.FC<{
   const [enhancingNegative, setEnhancingNegative] = useState(false);
 
   const [presetsOpen, setPresetsOpen] = useState(false);
+  const [lorasOpen, setLorasOpen] = useState(false);
   const applyPreset = useCallback((preset: GenerationPreset) => {
     patch(preset.params);
     setPresetsOpen(false);
@@ -482,7 +526,7 @@ export const AdvancedGenPanel: React.FC<{
             <span className={`${sectionTitle} mb-1.5`}>CONTROLS</span>
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-zinc-300 w-10 shrink-0">Model</span>
+                <span className="text-[11px] text-zinc-300 w-16 shrink-0">Model</span>
                 <select className="compact-input flex-1" value={p.model} onChange={(e) => {
                   const m = e.target.value; const isRf = m.endsWith('-rf');
                   patch({ model: m, steps: isRf ? 50 : 8, cfg: isRf ? 7.0 : 1.0 });
@@ -493,14 +537,16 @@ export const AdvancedGenPanel: React.FC<{
                   <option value="medium-rf">Medium-RF</option>
                 </select>
               </div>
-              <CtrlRow label="Dur" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} suffix="s" tipKey="duration" />
-              <CtrlRow label="Steps" value={p.steps} onChange={(v) => sf('steps', v)} min={1} max={500} step={1} tipKey="steps" />
-              <CtrlRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
-              <CtrlRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
+              <SlideRow label="Length (s)" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} tipKey="duration" />
+              <SlideRow label="Steps" value={p.steps} onChange={(v) => sf('steps', v)} min={1} max={500} step={1} tipKey="steps" />
+              <SlideRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
+              <SlideRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
                 onRandomize={() => sf('seed', Math.floor(Math.random() * 2147483647))} />
+              {/* Batch — value field aligned (flush right) with the SlideRows above */}
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-zinc-300 w-10 shrink-0">Batch</span>
-                <input type="number" className="compact-input w-16 text-center" min={1} max={16} step={1} value={p.batch} onChange={(e) => sf('batch', +e.target.value || 1)} />
+                <span className="text-[11px] text-zinc-300 w-16 shrink-0 whitespace-nowrap">Batch</span>
+                <div className="flex-1 min-w-0" />
+                <input type="number" className="compact-input w-11 text-center tabular-nums shrink-0" min={1} max={16} step={1} value={p.batch} onChange={(e) => sf('batch', +e.target.value || 1)} />
               </div>
             </div>
           </div>
@@ -574,8 +620,8 @@ export const AdvancedGenPanel: React.FC<{
                 {/* SCHEDULE column — FX thin rows ride above the faders */}
                 <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
                   <span className={subTitle}>FX</span>
-                  <div className="flex items-center justify-around gap-1 shrink-0">
-                    <SlideKnob label="Norm thr" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} tipKey="cfgNormThreshold" size={34} />
+                  <div className="flex items-start justify-around gap-1 shrink-0">
+                    <SlideKnob label="Norm thr" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} tipKey="cfgNormThreshold" size={46} centerReadout />
                     <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
                     <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
                     <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
@@ -655,32 +701,48 @@ export const AdvancedGenPanel: React.FC<{
 
         {/* ── OUTPUT RAIL: LoRA · Output · Quick Actions ── */}
         <div className="flex flex-col gap-1.5 min-h-0 overflow-y-auto">
-            {/* LoRA — above Output */}
-            <div className="hardware-card flex flex-col shrink-0">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className={`${sectionTitle} flex items-center gap-1`}>LORA <InfoTip {...RICH_TOOLTIPS.lora} /></span>
-                <button className="btn-ghost cursor-pointer p-1" onClick={() => sf('loras', [...p.loras, { name: '', weight: 1.0, file: null }])}>
-                  <Plus className="w-3 h-3" />
-                </button>
-              </div>
-              <div className="overflow-y-auto min-h-0 max-h-16">
-                {p.loras.length > 0 ? p.loras.map((lora, i) => (
-                  <div key={i} className="flex items-center gap-1 bg-purple-500/5 rounded px-1.5 py-1 border border-purple-500/10 mb-1">
-                    {lora.file ? (
-                      <span className="text-[9px] text-purple-200 flex-1 truncate">{lora.file.name}</span>
-                    ) : (
-                      <button className="btn-ghost cursor-pointer text-[9px]" onClick={() => {
-                        const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.safetensors,.pt,.bin';
-                        inp.onchange = () => { if (inp.files?.[0]) { const u = p.loras.map((l, idx) => idx === i ? { ...l, file: inp.files![0], name: inp.files![0].name } : l); sf('loras', u); } };
-                        inp.click();
-                      }}>File</button>
-                    )}
-                    <input type="number" className="compact-input w-10 text-center text-[9px]" value={lora.weight} step={0.05} min={0} max={2}
-                      onChange={(e) => { const u = p.loras.map((l, idx) => idx === i ? { ...l, weight: +e.target.value } : l); sf('loras', u); }} />
-                    <button className="text-zinc-500 hover:text-red-400 cursor-pointer" onClick={() => sf('loras', p.loras.filter((_, idx) => idx !== i))}><X className="w-3 h-3" /></button>
-                  </div>
-                )) : <span className="text-[9px] text-zinc-600 font-mono">No LoRAs added</span>}
-              </div>
+            {/* LoRA — PRESETS-style dropdown; expands to show added LoRAs */}
+            <div className="relative shrink-0">
+              <button onClick={() => setLorasOpen(!lorasOpen)}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded border border-white/10 bg-white/5 hover:bg-purple-500/15 hover:border-purple-500/30 text-zinc-300 hover:text-white transition-colors">
+                <Layers className="w-3.5 h-3.5" />
+                <span className="text-[10px] font-black uppercase tracking-widest">LoRA{p.loras.length ? ` (${p.loras.length})` : ''}</span>
+                <ChevronDown className={`w-3 h-3 transition-transform ${lorasOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {lorasOpen && (
+                <div className="absolute left-0 top-full mt-1 z-50 w-full max-h-64 overflow-y-auto rounded border border-white/10 bg-[#0c0a12] shadow-2xl p-1.5 flex flex-col gap-1">
+                  <button
+                    className="flex items-center justify-center gap-1 px-2 py-1 rounded border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-[10px] font-bold uppercase tracking-wider text-purple-200 cursor-pointer"
+                    onClick={() => sf('loras', [...p.loras, { name: '', weight: 1.0, file: null }])}>
+                    <Plus className="w-3 h-3" /> Add LoRA
+                  </button>
+                  {p.loras.length === 0 ? (
+                    <span className="text-[9px] text-zinc-600 font-mono text-center py-1">No LoRAs added</span>
+                  ) : p.loras.map((lora, i) => (
+                    <div key={i} className="flex items-center gap-1 bg-purple-500/5 rounded px-1.5 py-1 border border-purple-500/10">
+                      {lora.file ? (
+                        <span className="text-[9px] text-purple-200 flex-1 truncate" title={lora.file.name}>{lora.file.name}</span>
+                      ) : (
+                        <button className="btn-ghost cursor-pointer text-[9px] flex-1 text-left" onClick={() => {
+                          const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.safetensors,.pt,.bin';
+                          inp.onchange = () => { if (inp.files?.[0]) { const u = p.loras.map((l, idx) => idx === i ? { ...l, file: inp.files![0], name: inp.files![0].name } : l); sf('loras', u); } };
+                          inp.click();
+                        }}>Choose file…</button>
+                      )}
+                      <input type="number" className="compact-input w-10 text-center text-[9px]" value={lora.weight} step={0.05} min={0} max={2}
+                        onChange={(e) => { const u = p.loras.map((l, idx) => idx === i ? { ...l, weight: +e.target.value } : l); sf('loras', u); }} />
+                      <button className="text-zinc-500 hover:text-red-400 cursor-pointer" onClick={() => sf('loras', p.loras.filter((_, idx) => idx !== i))}><X className="w-3 h-3" /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* NAME — name your outputs (below LoRA) */}
+            <div className="hardware-card flex flex-col shrink-0 gap-1">
+              <span className={`${sectionTitle} flex items-center gap-1`}>NAME</span>
+              <input className="compact-input w-full" placeholder="name your output…" maxLength={80}
+                value={p.outputName} onChange={(e) => sf('outputName', e.target.value)} />
             </div>
 
             {/* Output settings */}
@@ -725,8 +787,8 @@ export const AdvancedGenPanel: React.FC<{
 
       {/* ═══ BOTTOM: edge-to-edge visualizers flanking the prompt ═══ */}
       <div className="shrink-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,560px) minmax(0,1fr)', height: 196 }}>
-        {/* VIZ LEFT — orb tilted +90 (poles oppose the right panel) */}
-        <VisualizerPanel initialMode="orb" orbTilt={90} audioNode={masterAudio} className="border border-purple-500/15" />
+        {/* VIZ LEFT */}
+        <VisualizerPanel initialMode="orb" audioNode={masterAudio} className="border border-purple-500/15" />
 
         {/* PROMPT */}
         <div className="hardware-card flex flex-col gap-1.5 min-h-0">
@@ -776,8 +838,8 @@ export const AdvancedGenPanel: React.FC<{
           </div>
         </div>
 
-        {/* VIZ RIGHT — orb tilted -90 (poles oppose the left panel) */}
-        <VisualizerPanel initialMode="orb" orbTilt={-90} audioNode={masterAudio} className="border border-purple-500/15" />
+        {/* VIZ RIGHT — flipped + icons on the left so it mirrors the left panel */}
+        <VisualizerPanel initialMode="orb" flipX iconsSide="left" audioNode={masterAudio} className="border border-purple-500/15" />
       </div>
     </div>
   );

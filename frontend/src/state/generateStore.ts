@@ -54,6 +54,7 @@ export interface GenerateParams {
 
   fileFormat?: string;
   fileNaming?: string;
+  outputName?: string;
   cutToDuration?: boolean;
 
   loras?: Array<{ file: File | null; weight: number }>;
@@ -135,6 +136,7 @@ export const buildGenerateJobFormData = (params: GenerateParams, prompt: string)
   formData.append('init_audio_type', params.initType);
   formData.append('file_format', params.fileFormat || 'wav');
   formData.append('file_naming', params.fileNaming || 'verbose');
+  formData.append('custom_name', params.outputName || '');
 
   if (params.samplerType) formData.append('sampler_type', params.samplerType);
   if (params.sigmaMax !== undefined) formData.append('sigma_max', String(params.sigmaMax));
@@ -230,6 +232,7 @@ export const buildGenerateParamsFromState = (params: GenerateParamsState): Gener
   inversionUnconditional: params.inversionUnconditional,
   fileFormat: params.fileFormat,
   fileNaming: params.fileNaming,
+  outputName: params.outputName,
   cutToDuration: params.cutToDuration,
   loras: params.loras.map((lora) => ({ file: lora.file, weight: lora.weight })),
 });
