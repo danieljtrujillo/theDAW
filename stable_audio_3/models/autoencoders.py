@@ -1,11 +1,13 @@
 import torch
 
 from torch import nn
-# Uses the modern parametrizations API. Legacy checkpoints that saved
-# `weight_g`/`weight_v` keys are remapped to `parametrizations.weight.
-# original0/1` on load by `loading_utils.remap_state_dict_keys`, so both
-# old + new checkpoints work against this module.
-from torch.nn.utils.parametrizations import weight_norm
+# Legacy weight_norm API — the SAME-S/L autoencoder checkpoints are saved
+# with legacy `weight_g`/`weight_v` keys, so the module that reconstructs
+# the conv weights must use the SAME (legacy) implementation. Switching to
+# `torch.nn.utils.parametrizations.weight_norm` (a deprecation "cleanup")
+# silently mis-loaded every AE conv and produced pure-static decodes; this
+# matches upstream Stability-AI/stable-audio-3.
+from torch.nn.utils import weight_norm
 from torchaudio import transforms as T
 from einops import rearrange
 
