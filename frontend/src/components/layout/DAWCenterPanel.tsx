@@ -1,11 +1,4 @@
-import React, { useEffect, useState } from 'react';
-import { WaveformEditor } from '../audio/WaveformEditor';
-import { AdvancedView } from '../../views/AdvancedView';
-import { MixPanel } from '../../views/MixPanel';
-import { TrainingView } from '../../views/TrainingView';
-import { LineageView } from '../library/LineageModal';
-import { VJView } from '../../views/VJView';
-import { DJView } from '../../views/DJView';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { useAppUiStore } from '../../state/appUiStore';
 
 /**
@@ -16,6 +9,12 @@ import { useAppUiStore } from '../../state/appUiStore';
  * own independent height (multiHeight / logHeight in bottomPanelStore)
  * and its own resize handle.
  *
+ * Each tab view is code-split (React.lazy) so its JS — and its heavy
+ * deps (wavesurfer, the force-graph engine, the chimera/effect stacks,
+ * the VJ bridge) — only download when that tab is first opened, not in
+ * the initial bundle. Each tab renders inside its OWN Suspense boundary
+ * so a not-yet-loaded tab can't blank out a sibling.
+ *
  * DJ / VJ persistence: these two tabs host live performance state (a
  * 2-deck mixer + an embedded WebGL VJ iframe). Unmounting them on every
  * tab switch tore down that state and — for VJ — reloaded the whole
@@ -23,8 +22,23 @@ import { useAppUiStore } from '../../state/appUiStore';
  * keep DJ and VJ MOUNTED once first visited ("warmed"), toggling only
  * their CSS visibility. The VJ iframe is told to pause its render loop
  * while hidden (see VJView's sa3-vj/visibility bridge) so a backgrounded
- * VJ tab costs ~0% GPU instead of unmounting + cold-reloading.
+ * VJ tab costs ~0% GPU instead of unmounting + cold-reloading. Their own
+ * Suspense boundary means resolving another tab never disturbs them.
  */
+const WaveformEditor = lazy(() => import('../audio/WaveformEditor').then((m) => ({ default: m.WaveformEditor })));
+const AdvancedView = lazy(() => import('../../views/AdvancedView').then((m) => ({ default: m.AdvancedView })));
+const MixPanel = lazy(() => import('../../views/MixPanel').then((m) => ({ default: m.MixPanel })));
+const TrainingView = lazy(() => import('../../views/TrainingView').then((m) => ({ default: m.TrainingView })));
+const LineageView = lazy(() => import('../library/LineageModal').then((m) => ({ default: m.LineageView })));
+const VJView = lazy(() => import('../../views/VJView').then((m) => ({ default: m.VJView })));
+const DJView = lazy(() => import('../../views/DJView').then((m) => ({ default: m.DJView })));
+
+const TabFallback: React.FC = () => (
+  <div className="absolute inset-0 grid place-items-center">
+    <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-600 animate-pulse">loading…</span>
+  </div>
+);
+
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const centerTab = useAppUiStore((s) => s.centerTab);
 
@@ -54,16 +68,16 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         <div className="flex-1 min-h-0 relative">
           {centerTab === 'train' && (
             <div className="absolute inset-0 overflow-y-auto">
-              <TrainingView />
+              <Suspense fallback={<TabFallback />}><TrainingView /></Suspense>
             </div>
           )}
           {centerTab === 'make' && (
             <div className="absolute inset-0 overflow-hidden">
-              <AdvancedView />
+              <Suspense fallback={<TabFallback />}><AdvancedView /></Suspense>
             </div>
           )}
           {centerTab === 'edit' && (
-            <WaveformEditor onSwitchTab={onSwitchTab} />
+            <Suspense fallback={<TabFallback />}><WaveformEditor onSwitchTab={onSwitchTab} /></Suspense>
           )}
           {centerTab === 'mix' && (
             // PROCESS → MIX. The unified, single-screen MIX workspace
@@ -72,22 +86,23 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             // output + effects-viz on the bottom. Edge-to-edge with no
             // page scroll — MixPanel owns the viewport like the MAKE tab.
             <div className="absolute inset-0 overflow-hidden">
-              <MixPanel />
+              <Suspense fallback={<TabFallback />}><MixPanel /></Suspense>
             </div>
           )}
           {centerTab === 'learn' && (
-            <LineageView rootEntryId={null} />
+            <Suspense fallback={<TabFallback />}><LineageView rootEntryId={null} /></Suspense>
           )}
 
           {/* DJ + VJ stay mounted once warmed; visibility toggles with
               the active tab so their live state (decks, VJ iframe) is
-              preserved across tab switches. */}
+              preserved across tab switches. Each has its own Suspense so
+              loading a different tab never blanks them. */}
           {warmedTabs.has('dj') && (
             <div
               className="absolute inset-0"
               style={{ display: centerTab === 'dj' ? undefined : 'none' }}
             >
-              <DJView />
+              <Suspense fallback={<TabFallback />}><DJView /></Suspense>
             </div>
           )}
           {warmedTabs.has('vj') && (
@@ -95,7 +110,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               className="absolute inset-0"
               style={{ display: centerTab === 'vj' ? undefined : 'none' }}
             >
-              <VJView />
+              <Suspense fallback={<TabFallback />}><VJView /></Suspense>
             </div>
           )}
         </div>
@@ -103,4 +118,3 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     </div>
   );
 };
-
