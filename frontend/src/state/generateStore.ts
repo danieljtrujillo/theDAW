@@ -483,6 +483,11 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
                 entryId: firstEntry.id,
               });
               logInfo('generate', `[${elapsed()}] Loaded into player bar (${Math.round(performance.now() - loadT0)}ms).`);
+              // "Play" toggle on → route the output straight through the footer transport.
+              if (useGenerateParamsStore.getState().autoplay) {
+                usePlayerStore.getState().play();
+                logInfo('generate', `[${elapsed()}] Auto-play (footer transport) started.`);
+              }
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               logError('generate', `Player load failed: ${msg}`);

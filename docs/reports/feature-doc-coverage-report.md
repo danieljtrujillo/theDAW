@@ -1,7 +1,7 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-03T13:18:00.491Z · Git revision: `b80378bbfa28` · Repomix tracked: **no**
+> Generated: 2026-06-03T23:10:38.592Z · Git revision: `60d98bc8ccbd` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
@@ -16,7 +16,7 @@
 | Cropped screenshot assets | **10** |
 
 > [!IMPORTANT]
-> Repomix context: present at `repomix-output.md`; tracked=false. Used as local analysis context only. It is intentionally gitignored and must not be staged.
+> Repomix context: not present; tracked=false. Repomix context was not present for this run.
 
 ## Coverage Matrix
 

@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-03T13:18:00.491Z",
-  "repoRevision": "b80378bbfa28",
+  "generatedAt": "2026-06-03T23:10:38.592Z",
+  "repoRevision": "60d98bc8ccbd",
   "repomixContext": {
     "path": "repomix-output.md",
-    "present": true,
+    "present": false,
     "tracked": false,
-    "note": "Used as local analysis context only. It is intentionally gitignored and must not be staged."
+    "note": "Repomix context was not present for this run."
   },
   "features": [
     {

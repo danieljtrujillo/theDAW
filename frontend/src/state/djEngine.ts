@@ -50,12 +50,29 @@ export interface DeckStatus {
   keylock: boolean;
 }
 
+export type DjFx = 'flanger' | 'reverb' | 'wahwah';
+
+/** Per-deck FX rack (lazy-built on first use): a dry path plus parallel
+ *  flanger / wah / reverb branches, each summed at `out` via its own wet gain. */
+interface DeckFx {
+  input: GainNode;
+  out: GainNode;
+  flangerWet: GainNode;
+  reverbWet: GainNode;
+  wahWet: GainNode;
+  lfoFlanger: OscillatorNode;
+  lfoWah: OscillatorNode;
+  nodes: AudioNode[];
+}
+
 interface Deck {
   delayComp: DelayNode; // A/B latency match when one deck is key-locked
   trim: GainNode; // auto-gain / leveling trim (independent of crossfader)
+  vol: GainNode; // channel volume fader (manual), post-trim
   low: BiquadFilterNode;
   mid: BiquadFilterNode;
   high: BiquadFilterNode;
+  filter: BiquadFilterNode; // single-knob DJ filter (LP↔HP sweep), post-EQ
   gain: GainNode; // crossfader-controlled
   // Key-lock (master tempo): a Signalsmith Stretch node inserted as a LIVE pitch
   // corrector. The source still rides playbackRate for speed; the insert shifts
@@ -83,11 +100,15 @@ interface Deck {
   slip: boolean;
   virtualBase: number;
   virtualStart: number;
+  // FX rack (D5) — lazily built on first setDeckFx; spliced filter → fx → gain.
+  fx: DeckFx | null;
 }
 
 const RAMP_TC = 0.012;
 
 let djMaster: GainNode | null = null;
+let limiter: DynamicsCompressorNode | null = null;
+let limiterEnabled = true; // brickwall on the DJ bus for clip safety (D5)
 const decks: Partial<Record<DeckId, Deck>> = {};
 let crossfade = 0; // -1 = full A, 0 = center, +1 = full B
 let rafId = 0;
@@ -102,7 +123,15 @@ function ensureMaster(): GainNode {
   const ctx = getEngineCtx();
   djMaster = ctx.createGain();
   djMaster.gain.value = 1;
-  djMaster.connect(getMasterGain());
+  // Brickwall limiter on the DJ bus (clip safety). Bypassable via setLimiter().
+  limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -1.5;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.08;
+  limiter.connect(getMasterGain());
+  djMaster.connect(limiterEnabled ? limiter : getMasterGain());
   return djMaster;
 }
 
@@ -153,26 +182,35 @@ function buildDeck(id: DeckId): Deck {
   const high = ctx.createBiquadFilter();
   high.type = 'highshelf';
   high.frequency.value = 3200;
+  // Single-knob DJ filter: flat (allpass) at center, sweeps to LP / HP.
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'allpass';
+  filter.frequency.value = 1000;
+  filter.Q.value = 0.0001;
   const gain = ctx.createGain();
-  const trim = ctx.createGain(); // auto-gain / leveling, before EQ + crossfader
+  const trim = ctx.createGain(); // auto-gain / leveling, before the channel fader
   trim.gain.value = 1;
+  const vol = ctx.createGain(); // channel volume fader (manual), post-trim
+  vol.gain.value = 1;
   const delayComp = ctx.createDelay(1.0); // 0 normally; matches A/B key-lock latency
 
   const cg = crossGains(crossfade);
   gain.gain.value = id === 'A' ? cg.a : cg.b;
 
-  // src → [stretch?] → delayComp → trim → low → mid → high → gain(crossfader) → djMaster
+  // src → [stretch?] → delayComp → trim → vol → low → mid → high → filter → gain(crossfader) → djMaster
   delayComp.connect(trim);
-  trim.connect(low);
-  low.connect(mid).connect(high).connect(gain).connect(master);
+  trim.connect(vol);
+  vol.connect(low);
+  low.connect(mid).connect(high).connect(filter).connect(gain).connect(master);
 
   const deck: Deck = {
-    delayComp, trim, low, mid, high, gain,
+    delayComp, trim, vol, low, mid, high, filter, gain,
     stretch: null, stretchLatency: 0, keylock: false,
     buffer: null, src: null, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
     loopActive: false, loopIn: 0, loopOut: 0, rollResume: false,
     slip: false, virtualBase: 0, virtualStart: 0,
+    fx: null,
   };
   decks[id] = deck;
   return deck;
@@ -467,6 +505,127 @@ export function setDeckTrim(id: DeckId, db: number): void {
   d.trim.gain.setTargetAtTime(lin, ctx.currentTime, RAMP_TC);
 }
 
+/** Channel volume fader (linear, 0..1). 1 = unity. */
+export function setDeckVolume(id: DeckId, level: number): void {
+  const d = getDeck(id);
+  const ctx = getEngineCtx();
+  d.vol.gain.setTargetAtTime(clamp(level, 0, 1), ctx.currentTime, RAMP_TC);
+}
+
+/** Single-knob DJ filter. amount in [-1, 1]: 0 = bypass (flat), <0 sweeps a
+ *  lowpass down toward 200 Hz, >0 sweeps a highpass up toward 8 kHz. Resonance
+ *  rises with travel for the classic filter "bite". */
+export function setDeckFilter(id: DeckId, amount: number): void {
+  const d = getDeck(id);
+  const ctx = getEngineCtx();
+  const a = clamp(amount, -1, 1);
+  const f = d.filter;
+  const now = ctx.currentTime;
+  if (Math.abs(a) < 0.02) {
+    f.type = 'allpass';
+    f.frequency.setTargetAtTime(1000, now, RAMP_TC);
+    f.Q.setTargetAtTime(0.0001, now, RAMP_TC);
+  } else if (a < 0) {
+    f.type = 'lowpass';
+    f.frequency.setTargetAtTime(20000 * Math.pow(200 / 20000, -a), now, RAMP_TC);
+    f.Q.setTargetAtTime(1 + -a * 6, now, RAMP_TC);
+  } else {
+    f.type = 'highpass';
+    f.frequency.setTargetAtTime(20 * Math.pow(8000 / 20, a), now, RAMP_TC);
+    f.Q.setTargetAtTime(1 + a * 6, now, RAMP_TC);
+  }
+}
+
+/* -------------------------------- FX rack (D5) ----------------------------- */
+
+/** A short decaying-noise impulse response for the reverb convolver — generated
+ *  so we don't bundle an IR file. ~1.8 s, exponential decay. */
+function makeReverbIR(ctx: BaseAudioContext, seconds = 1.8, decay = 3): AudioBuffer {
+  const rate = ctx.sampleRate;
+  const len = Math.max(1, Math.floor(seconds * rate));
+  const ir = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+  }
+  return ir;
+}
+
+/** Build the per-deck FX rack on first use and splice it into the chain between
+ *  the filter and the crossfader gain: filter → fx.input → (dry + wet) → out → gain. */
+function ensureDeckFx(d: Deck): DeckFx {
+  if (d.fx) return d.fx;
+  const ctx = getEngineCtx();
+  const input = ctx.createGain();
+  const out = ctx.createGain();
+  const dry = ctx.createGain(); dry.gain.value = 1;
+  input.connect(dry).connect(out);
+
+  // Flanger: short modulated delay + feedback (comb sweep), summed via wet.
+  const flDelay = ctx.createDelay(0.05); flDelay.delayTime.value = 0.003;
+  const flFb = ctx.createGain(); flFb.gain.value = 0.35;
+  const flDepth = ctx.createGain(); flDepth.gain.value = 0.002;
+  const lfoFlanger = ctx.createOscillator(); lfoFlanger.type = 'sine'; lfoFlanger.frequency.value = 0.2;
+  lfoFlanger.connect(flDepth).connect(flDelay.delayTime);
+  input.connect(flDelay);
+  flDelay.connect(flFb).connect(flDelay);
+  const flangerWet = ctx.createGain(); flangerWet.gain.value = 0;
+  flDelay.connect(flangerWet).connect(out);
+
+  // Wah: LFO-swept resonant bandpass.
+  const wahBp = ctx.createBiquadFilter(); wahBp.type = 'bandpass'; wahBp.frequency.value = 800; wahBp.Q.value = 5;
+  const wahDepth = ctx.createGain(); wahDepth.gain.value = 600;
+  const lfoWah = ctx.createOscillator(); lfoWah.type = 'sine'; lfoWah.frequency.value = 1.2;
+  lfoWah.connect(wahDepth).connect(wahBp.frequency);
+  input.connect(wahBp);
+  const wahWet = ctx.createGain(); wahWet.gain.value = 0;
+  wahBp.connect(wahWet).connect(out);
+
+  // Reverb: convolver with a generated IR.
+  const conv = ctx.createConvolver(); conv.buffer = makeReverbIR(ctx);
+  const reverbWet = ctx.createGain(); reverbWet.gain.value = 0;
+  input.connect(conv).connect(reverbWet).connect(out);
+
+  // Splice between the filter and the crossfader gain (one-time; a brief click
+  // is possible if done mid-playback — acceptable for a first FX-knob touch).
+  try { d.filter.disconnect(); } catch { /* not yet connected */ }
+  d.filter.connect(input);
+  out.connect(d.gain);
+
+  lfoFlanger.start();
+  lfoWah.start();
+  const fx: DeckFx = {
+    input, out, flangerWet, reverbWet, wahWet, lfoFlanger, lfoWah,
+    nodes: [input, out, dry, flDelay, flFb, flDepth, flangerWet, wahBp, wahDepth, wahWet, conv, reverbWet],
+  };
+  d.fx = fx;
+  return fx;
+}
+
+/** Set a per-deck FX wet amount in [0, 1] (0 = off). Builds the FX rack lazily. */
+export function setDeckFx(id: DeckId, fx: DjFx, amount: number): void {
+  const d = getDeck(id);
+  const f = ensureDeckFx(d);
+  const ctx = getEngineCtx();
+  const a = clamp(amount, 0, 1);
+  const wet = fx === 'flanger' ? f.flangerWet : fx === 'reverb' ? f.reverbWet : f.wahWet;
+  const scale = fx === 'reverb' ? 0.6 : 0.8; // keep a full twist musical, not overpowering
+  wet.gain.setTargetAtTime(a * scale, ctx.currentTime, RAMP_TC);
+}
+
+/** Master brickwall limiter on the DJ bus (clip safety). On by default. */
+export function setLimiter(on: boolean): void {
+  limiterEnabled = on;
+  ensureMaster();
+  if (!djMaster || !limiter) return;
+  try { djMaster.disconnect(); } catch { /* gone */ }
+  djMaster.connect(on ? limiter : getMasterGain());
+}
+
+export function getLimiter(): boolean {
+  return limiterEnabled;
+}
+
 /** Crossfader position in [-1, 1] (equal-power). */
 export function setCrossfade(x: number): void {
   crossfade = clamp(x, -1, 1);
@@ -558,18 +717,27 @@ export function dispose(): void {
     if (!d) continue;
     try {
       stopSource(d);
+      if (d.fx) {
+        try { d.fx.lfoFlanger.stop(); } catch { /* gone */ }
+        try { d.fx.lfoWah.stop(); } catch { /* gone */ }
+        for (const n of d.fx.nodes) { try { n.disconnect(); } catch { /* gone */ } }
+        d.fx = null;
+      }
       if (d.stretch) { try { void d.stretch.stop(); } catch { /* gone */ } d.stretch.disconnect(); }
       d.delayComp.disconnect();
       d.trim.disconnect();
+      d.vol.disconnect();
       d.low.disconnect();
       d.mid.disconnect();
       d.high.disconnect();
+      d.filter.disconnect();
       d.gain.disconnect();
     } catch { /* already gone */ }
     d.buffer = null;
     d.stretch = null;
     delete decks[id];
   }
+  if (limiter) { try { limiter.disconnect(); } catch { /* gone */ } limiter = null; }
   if (djMaster) { try { djMaster.disconnect(); } catch { /* gone */ } djMaster = null; }
   listeners.clear();
 }

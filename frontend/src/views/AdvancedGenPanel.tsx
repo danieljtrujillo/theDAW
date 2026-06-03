@@ -5,11 +5,12 @@ import {
   LayoutList, AudioWaveform, Volume2, Sliders,
   Wand2, Loader2, BookOpen, Layers, Sparkles, Download,
 } from 'lucide-react';
-import { useGenerateParamsStore, GenerateParamsState } from '../state/generateParamsStore';
+import { useGenerateParamsStore, type GenerateParamsState } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
+import { FooterScrubWave } from '../components/audio/FooterScrubWave';
 import { uuid } from '../orb-kit/utils';
 import { InfoTip } from '../components/ui/Tooltip';
 import { RICH_TOOLTIPS } from '../components/ui/tooltips';
@@ -20,41 +21,42 @@ import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideFader } from '../components/audio/SlideFader';
 import { SlideRow } from '../components/audio/SlideRow';
 import { RoundToggle } from '../components/audio/RoundToggle';
-import { VisualizerPanel } from '../components/audio/CymaticsVisualizer';
-import { getMasterGain } from '../state/playerStore';
+import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
+import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import '../components/layout/track-controls.css';
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
-function FullAudioPlayer({ src }: { src: string }) {
-  const ref = useRef<HTMLAudioElement | null>(null);
-  const [playing, setPlaying] = useState(false);
-  const [time, setTime] = useState(0);
-  const [dur, setDur] = useState(0);
+/* Drives the global footer transport (playerStore) — the generated output is
+   loaded into that single engine after generation, so this player and the
+   footer share one source and the visualizers react to playback. */
+function FullAudioPlayer() {
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const time = usePlayerStore((s) => s.currentTime);
+  const dur = usePlayerStore((s) => s.duration);
+  const toggle = usePlayerStore((s) => s.toggle);
+  const stop = usePlayerStore((s) => s.stop);
+  const seekByFraction = usePlayerStore((s) => s.seekByFraction);
+  const setMasterGain = usePlayerStore((s) => s.setMasterGain);
   const [vol, setVol] = useState(1);
   const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
   return (
     <div className="flex items-center gap-2 px-1">
-      <audio ref={ref} src={src} preload="metadata"
-        onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}
-        onTimeUpdate={() => setTime(ref.current?.currentTime ?? 0)}
-        onLoadedMetadata={() => setDur(ref.current?.duration ?? 0)} />
-      <button onClick={() => { if (!ref.current) return; playing ? ref.current.pause() : ref.current.play(); }}
+      <button onClick={toggle} title={isPlaying ? 'Pause (footer)' : 'Play (footer)'}
         className="text-purple-400 hover:text-purple-300 cursor-pointer w-6 h-6 rounded-full bg-purple-500/10 flex items-center justify-center shrink-0">
-        {playing ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+        {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
       </button>
-      <button onClick={() => { if (ref.current) { ref.current.pause(); ref.current.currentTime = 0; } }}
-        className="text-zinc-400 hover:text-zinc-200 cursor-pointer shrink-0">
+      <button onClick={stop} title="Stop" className="text-zinc-400 hover:text-zinc-200 cursor-pointer shrink-0">
         <Square className="w-3.5 h-3.5" />
       </button>
       <span className="text-[10px] font-mono text-zinc-400 tabular-nums shrink-0">{fmt(time)} / {fmt(dur)}</span>
       <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden cursor-pointer"
-        onClick={(e) => { if (!ref.current || !dur) return; ref.current.currentTime = ((e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.offsetWidth) * dur; }}>
+        onClick={(e) => { if (!dur) return; seekByFraction((e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.offsetWidth); }}>
         <div className="h-full bg-purple-500 rounded-full" style={{ width: `${dur ? (time / dur) * 100 : 0}%` }} />
       </div>
       <Volume2 className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
       <input type="range" min={0} max={1} step={0.01} value={vol}
-        onChange={(e) => { const v = +e.target.value; setVol(v); if (ref.current) ref.current.volume = v; }}
-        className="pro-slider w-16 shrink-0" />
+        onChange={(e) => { const v = +e.target.value; setVol(v); setMasterGain(v); }}
+        className="pro-slider w-16 shrink-0" aria-label="Master volume" />
     </div>
   );
 }
@@ -214,7 +216,7 @@ export const AdvancedGenPanel: React.FC<{
     prevAudioRef.current = lastAudioUrl;
   }, [lastAudioUrl]);
 
-  const [cmpLayers, setCmpLayers] = useState<Set<string>>(() => new Set(['output', 'mel']));
+  const [cmpLayers, setCmpLayers] = useState<Set<string>>(() => new Set(['output']));
   const [cmpOverlay, setCmpOverlay] = useState(false);
   const toggleLayer = (k: string) => setCmpLayers((prev) => {
     const next = new Set(prev);
@@ -352,6 +354,12 @@ export const AdvancedGenPanel: React.FC<{
               <select className="compact-input h-5 py-0 text-[9px] w-20" value={p.initType} onChange={(e) => sf('initType', e.target.value)} style={{ colorScheme: 'dark' }}>
                 <option value="Audio">Audio</option><option value="RF-Inversion">RF-Inv</option>
               </select>
+            </div>
+            <div className="flex items-center gap-1 shrink-0" title="Init noise — denoising strength for the init audio (0 = keep init exactly, 1 = full noise / ignore init). Set this BEFORE generating.">
+              <span className="text-[9px] text-zinc-400">Nz</span>
+              <input type="range" min={0} max={1} step={0.01} value={p.initNoise}
+                onChange={(e) => sf('initNoise', +e.target.value)} className="pro-slider w-14" aria-label="Init noise" />
+              <span className="text-[9px] font-mono text-purple-300 tabular-nums w-7 text-right">{p.initNoise.toFixed(2)}</span>
             </div>
             <button onClick={() => sf('initAudioEnabled', !p.initAudioEnabled)}
               className={`mono-tag cursor-pointer shrink-0 ${p.initAudioEnabled ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
@@ -518,7 +526,7 @@ export const AdvancedGenPanel: React.FC<{
                       <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
                     </select>
                   </div>
-                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5">
+                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
                     <SlideFader label="Sigma" value={p.sigmaMax} onChange={(v) => sf('sigmaMax', v)} min={0} max={1} tipKey="sigmaMax" />
                     <SlideFader label="DurPad" value={p.durationPaddingSec} onChange={(v) => sf('durationPaddingSec', v)} min={0} max={30} step={0.1} tipKey="durationPadding" />
                     <SlideFader label="APG" value={p.apgScale} onChange={(v) => sf('apgScale', v)} min={0} max={1} tipKey="apg" />
@@ -551,7 +559,7 @@ export const AdvancedGenPanel: React.FC<{
                       ))}
                     </div>
                   </div>
-                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5">
+                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
                     {shiftFaders()}
                   </div>
                 </div>
@@ -578,12 +586,12 @@ export const AdvancedGenPanel: React.FC<{
                 ))}
                 {specLoading && <span className="text-[8px] text-zinc-600 ml-1 animate-pulse font-mono">analyzing…</span>}
               </div>
-              {lastAudioUrl && <div className="shrink-0"><FullAudioPlayer src={lastAudioUrl} /></div>}
+              {lastAudioUrl && <div className="shrink-0"><FullAudioPlayer /></div>}
               <div className={`flex-1 min-h-0 ${cmpOverlay ? 'relative' : 'flex flex-col gap-1.5 overflow-y-auto'}`}>
                 {cmpLayers.has('output') && lastAudioUrl && (
                   <div className={cmpOverlay ? 'absolute inset-0' : 'h-28 shrink-0'}>
                     <div className="h-full rounded overflow-hidden border border-white/5 bg-black/40">
-                      <WaveformPreview audioUrl={lastAudioUrl} height={cmpOverlay ? 220 : 108} />
+                      <FooterScrubWave src={lastAudioUrl} height={cmpOverlay ? 220 : 108} />
                     </div>
                   </div>
                 )}

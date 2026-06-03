@@ -44,11 +44,11 @@ import { logError, logInfo } from '../state/logStore';
  * display. When popped out, we collapse the in-tab iframe and show a
  * placeholder with a "Pop back in" button.
  *
- * Audio / mic / MIDI plumbing (postMessage bridge to the iframe) is
- * intentionally a TODO for the follow-up commit — wiring those
- * requires reading the SA3 playerStore + MIDI subsystem and adding a
- * matching listener on the VJ side. Mic input already works without
- * any plumbing because the iframe can request mic permission itself.
+ * Audio / MIDI / SET / control bridges are wired via postMessage (the effects
+ * below). The audio bridge is throttled to ~30fps and pauses when the VJ tab
+ * isn't visible (or SA3 is backgrounded). When popped out, the bridges target
+ * the detached window. Mic capture is handled by the iframe itself (it requests
+ * browser permission on first use).
  */
 export const VJView: React.FC = () => {
   const [url, setUrl] = useState<string | null>(null);
@@ -62,6 +62,7 @@ export const VJView: React.FC = () => {
   const [mobileUrl, setMobileUrl] = useState<string | null>(null);
   const [showMobile, setShowMobile] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [popoutErr, setPopoutErr] = useState<string | null>(null);
 
   // Active VJ inputs — user toggles which signals feed the iframe.
   // Invariant: at least one must stay active; clicking the last
@@ -116,13 +117,27 @@ export const VJView: React.FC = () => {
 
 
 
+  // VJ is a localhost sibling we control: pin the target origin to the iframe's
+  // URL (fallback '*' if unparseable) instead of a blanket wildcard, and route
+  // to the popped-out window when detached, else the in-tab iframe.
+  const vjOrigin = (() => { try { return url ? new URL(url).origin : '*'; } catch { return '*'; } })();
   const postToIframe = (payload: Record<string, unknown>) => {
-    try {
-      iframeRef.current?.contentWindow?.postMessage(payload, '*');
-    } catch {
-      // iframe can be mid-navigation; the next lifecycle tick retries.
-    }
+    const w = popped ? poppedWindowRef.current : iframeRef.current?.contentWindow;
+    if (!w) return;
+    try { w.postMessage(payload, vjOrigin); } catch { /* mid-navigation; retried next tick */ }
   };
+  // Trust inbound messages only from our own in-tab iframe (a popped-out window
+  // is a separate top-level window and can't postMessage back to us anyway).
+  const isFromVj = (e: MessageEvent) => e.source != null && e.source === iframeRef.current?.contentWindow;
+
+  // OS/browser page visibility — pause the bridge when SA3 is minimised or
+  // backgrounded, not only when another in-app tab is shown.
+  const [docVisible, setDocVisible] = useState<boolean>(() => (typeof document === 'undefined' ? true : !document.hidden));
+  useEffect(() => {
+    const onVis = () => setDocVisible(!document.hidden);
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
 
   // Fetch the VJ URL on mount. The backend will spawn the dev server
   // if it isn't already running — this can take ~30s on first launch
@@ -160,13 +175,19 @@ export const VJView: React.FC = () => {
   // reacts to whatever's playing in SA3's global player instead of
   // requiring its own mic capture.
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready') return;
+    // Active when the VJ is actually on-screen: the visible in-tab iframe, or a
+    // popped-out window (its own monitor — independent of SA3's page visibility).
+    // A hidden, warm in-tab iframe gets nothing — no point feeding a parked loop.
+    if (!(popped || (isVjVisible && docVisible))) return;
+    const targetWin = () => (popped ? poppedWindowRef.current : iframeRef.current?.contentWindow) ?? null;
+    if (!targetWin()) return;
 
     let raf = 0;
     let frameCount = 0;
     let fpsTick = performance.now();
+    let lastPost = 0;
+    const POST_DT = 1000 / 30; // throttle the IPC to ~30fps; the visualizer smooths it
     const analyser = getAnalyser();
     const buf = new Uint8Array(analyser.frequencyBinCount);
     // 2048 fft → 1024 bins; carve into low/mid/high using approx
@@ -176,37 +197,27 @@ export const VJView: React.FC = () => {
     const highEnd = buf.length;
 
     const tick = () => {
-      analyser.getByteFrequencyData(buf);
-      let bassSum = 0, midSum = 0, highSum = 0;
-      for (let i = 0; i < lowEnd; i++) bassSum += buf[i];
-      for (let i = lowEnd; i < midEnd; i++) midSum += buf[i];
-      for (let i = midEnd; i < highEnd; i++) highSum += buf[i];
-      const bass = lowEnd > 0 ? (bassSum / lowEnd) / 255 : 0;
-      const mid = midEnd - lowEnd > 0 ? (midSum / (midEnd - lowEnd)) / 255 : 0;
-      const high = highEnd - midEnd > 0 ? (highSum / (highEnd - midEnd)) / 255 : 0;
-      const volume = (bassSum + midSum + highSum) / (buf.length * 255);
-      try {
-        iframe.contentWindow?.postMessage(
-          {
-            type: 'sa3-vj/audio-levels',
-            bass,
-            mid,
-            high,
-            volume,
-            t: performance.now(),
-          },
-          '*',
-        );
-      } catch {
-        // contentWindow unavailable (iframe still loading or popped) —
-        // skip this frame and try again next tick.
-      }
-      frameCount += 1;
       const now = performance.now();
-      if (now - fpsTick > 1000) {
-        setBridgeFps(Math.round((frameCount * 1000) / (now - fpsTick)));
-        frameCount = 0;
-        fpsTick = now;
+      if (now - lastPost >= POST_DT) {
+        lastPost = now;
+        analyser.getByteFrequencyData(buf);
+        let bassSum = 0, midSum = 0, highSum = 0;
+        for (let i = 0; i < lowEnd; i++) bassSum += buf[i];
+        for (let i = lowEnd; i < midEnd; i++) midSum += buf[i];
+        for (let i = midEnd; i < highEnd; i++) highSum += buf[i];
+        const bass = lowEnd > 0 ? (bassSum / lowEnd) / 255 : 0;
+        const mid = midEnd - lowEnd > 0 ? (midSum / (midEnd - lowEnd)) / 255 : 0;
+        const high = highEnd - midEnd > 0 ? (highSum / (highEnd - midEnd)) / 255 : 0;
+        const volume = (bassSum + midSum + highSum) / (buf.length * 255);
+        try {
+          targetWin()?.postMessage({ type: 'sa3-vj/audio-levels', bass, mid, high, volume, t: now }, vjOrigin);
+        } catch { /* target unavailable this frame — retry next tick */ }
+        frameCount += 1;
+        if (now - fpsTick > 1000) {
+          setBridgeFps(Math.round((frameCount * 1000) / (now - fpsTick)));
+          frameCount = 0;
+          fpsTick = now;
+        }
       }
       raf = requestAnimationFrame(tick);
     };
@@ -215,15 +226,13 @@ export const VJView: React.FC = () => {
       cancelAnimationFrame(raf);
       setBridgeFps(0);
     };
-  }, [status, popped]);
+  }, [status, popped, isVjVisible, docVisible, vjOrigin]);
 
   // Forward input-toggle state to the iframe whenever it changes.
   // VJ side listens for sa3-vj/inputs and mutes / unmutes its own
   // mic-capture / audio-bridge / MIDI listener accordingly.
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready') return;
     postToIframe({ type: 'sa3-vj/inputs', ...vjInputs });
   }, [status, popped, vjInputs]);
 
@@ -235,18 +244,9 @@ export const VJView: React.FC = () => {
   // App-level synth trigger). Now App's synth trigger + VJ iframe
   // forwarding + MidiMapper popups all share one input.
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    if (!vjInputs.midi) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready' || !vjInputs.midi) return;
     const unsub = subscribeToMidi((msg) => {
-      if (!iframe.contentWindow) return;
-      try {
-        iframe.contentWindow.postMessage(
-          { type: 'sa3-vj/midi', data: msg.data, t: msg.t },
-          '*',
-        );
-      } catch { /* ignored */ }
+      postToIframe({ type: 'sa3-vj/midi', data: msg.data, t: msg.t });
     });
     return unsub;
   }, [status, popped, vjInputs.midi]);
@@ -257,9 +257,7 @@ export const VJView: React.FC = () => {
   // the handler around the iframe's lifecycle. The VJ side listens
   // for sa3-vj/playback messages and calls video.play() / video.pause().
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready') return;
     let lastState: 'playing' | 'paused' = getVjPlaybackState() === 'playing' ? 'playing' : 'paused';
     const post = (action: 'play' | 'pause') => {
       postToIframe({ type: 'sa3-vj/playback', action });
@@ -276,6 +274,7 @@ export const VJView: React.FC = () => {
     // Listen for state echoes from the VJ side ("I'm now playing/paused")
     // so the SA3 UI's icon stays in sync with the actual video element.
     const onMsg = (event: MessageEvent) => {
+      if (!isFromVj(event)) return;
       const d = event.data;
       if (!d || typeof d !== 'object') return;
       if (d.type === 'sa3-vj/playback-state') {
@@ -303,15 +302,14 @@ export const VJView: React.FC = () => {
   //      values) and sa3-vj/control-changed (a VJ-side move) → feed the bus;
   //   3. request the manifest now (and on iframe (re)load via handleIframeLoad).
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready') return;
 
     const unregisterSink = registerControlSink((key, value) => {
       postToIframe({ type: 'sa3-vj/control-set', key, value });
     });
 
     const onMsg = (event: MessageEvent) => {
+      if (!isFromVj(event)) return;
       const d = event.data;
       if (!d || typeof d !== 'object') return;
       if (d.type === 'sa3-vj/controls-manifest') {
@@ -343,9 +341,7 @@ export const VJView: React.FC = () => {
   // buffers a payload queued before this tab mounted, so a SET sent
   // from the DJ tab arrives the moment the VJ tab opens.
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready') return;
     const unregister = registerVjSetHandler({
       loadSet: (payload) => {
         postToIframe({ type: 'sa3-vj/load-set', ...payload });
@@ -358,9 +354,7 @@ export const VJView: React.FC = () => {
   // (or playback toggles), post the current track's metadata to the
   // iframe so VJ can sync its bpm slider, show the title in HUDs, etc.
   useEffect(() => {
-    if (status !== 'ready' || popped) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (status !== 'ready') return;
     const entry = libraryEntries.find((e) => e.id === currentEntryId) ?? null;
     postToIframe({
       type: 'sa3-vj/track-meta',
@@ -382,8 +376,8 @@ export const VJView: React.FC = () => {
   // GPU. Re-sent on iframe (re)load via handleIframeLoad's sync().
   useEffect(() => {
     if (status !== 'ready' || popped) return;
-    postToIframe({ type: 'sa3-vj/visibility', visible: isVjVisible });
-  }, [status, popped, isVjVisible]);
+    postToIframe({ type: 'sa3-vj/visibility', visible: isVjVisible && docVisible });
+  }, [status, popped, isVjVisible, docVisible]);
 
   // Camera-state echo + SET-loaded ACK from the VJ side. Active while the VJ tab
   // is warm-mounted (even when another center tab is shown), so a set sent from
@@ -391,6 +385,7 @@ export const VJView: React.FC = () => {
   useEffect(() => {
     if (status !== 'ready' || popped) return;
     const onMsg = (event: MessageEvent) => {
+      if (!isFromVj(event)) return;
       const d = event.data;
       if (!d || typeof d !== 'object') return;
       if (d.type === 'sa3-vj/camera-state') {
@@ -460,11 +455,13 @@ export const VJView: React.FC = () => {
       'noopener=no,width=1280,height=800,location=no,menubar=no,toolbar=no,status=no',
     );
     if (!w) {
-      setDetail(
-        'Pop-out blocked by the browser — allow pop-ups for this origin and try again.',
-      );
+      const m = 'Pop-out blocked — allow pop-ups for this origin, then try again.';
+      logError('vj', m);
+      setPopoutErr(m);
+      window.setTimeout(() => setPopoutErr(null), 6000);
       return;
     }
+    setPopoutErr(null);
     poppedWindowRef.current = w;
     setPopped(true);
   };
@@ -502,6 +499,11 @@ export const VJView: React.FC = () => {
             >
               {vjSetAcked ? <Check className="w-2.5 h-2.5" /> : <Loader2 className="w-2.5 h-2.5 animate-spin" />}
               SET {vjSetCount}
+            </span>
+          )}
+          {popoutErr && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-200 text-[8px] font-mono" title={popoutErr}>
+              <AlertCircle className="w-2.5 h-2.5" /> {popoutErr}
             </span>
           )}
         </div>
