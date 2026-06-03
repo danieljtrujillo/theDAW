@@ -1,6 +1,6 @@
 import React, { useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import {
-  Play, Pause, Square, RefreshCw, X, Plus,
+  Play, Pause, Square, X, Plus,
   Scissors, Mic2, Search, ChevronDown,
   LayoutList, AudioWaveform, Volume2, Sliders,
   Wand2, Loader2, BookOpen, Layers, Sparkles, Download,
@@ -11,104 +11,18 @@ import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { uuid } from '../orb-kit/utils';
-import { HoverTip, InfoTip } from '../components/ui/Tooltip';
-import { RICH_TOOLTIPS, HOVER_TOOLTIPS } from '../components/ui/tooltips';
+import { InfoTip } from '../components/ui/Tooltip';
+import { RICH_TOOLTIPS } from '../components/ui/tooltips';
 import { GENERATION_PRESETS, type GenerationPreset } from '../data/generationPresets';
 import { enhanceStableAudioPrompt } from '../orb-kit/promptEnhancer';
 import { ChimeraStack } from '../components/chimera/ChimeraStack';
 import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideFader } from '../components/audio/SlideFader';
+import { SlideRow } from '../components/audio/SlideRow';
+import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/CymaticsVisualizer';
 import { getMasterGain } from '../state/playerStore';
-import { accentVars, colorAt, rgb, rgba } from '../lib/trackColor';
 import '../components/layout/track-controls.css';
-
-const clampN = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
-
-/* ── RoundToggle: circular LED-style toggle that echoes the knobs.
-   Label ABOVE; the button sits in a fixed-height box so its center aligns with
-   the NORM THR knob's dial center when laid out in a row. ─────────────────── */
-function RoundToggle({ label, icon: Icon, on, onChange, box = 46 }: {
-  label: string; icon: React.ComponentType<{ className?: string }>; on: boolean; onChange: (v: boolean) => void; box?: number;
-}) {
-  return (
-    <button type="button" onClick={() => onChange(!on)} title={label}
-      className="flex flex-col items-center gap-1 group shrink-0">
-      <span className={`text-[8px] font-bold uppercase tracking-wider leading-none transition-colors ${on ? 'text-purple-200' : 'text-zinc-400'}`}>{label}</span>
-      <span className="grid place-items-center" style={{ height: box }}>
-        <span
-          className={`grid place-items-center rounded-full border-2 transition-all duration-200 ${
-            on
-              ? 'border-purple-400/70 bg-purple-600/30 text-purple-100 shadow-[0_0_12px_rgba(168,85,247,0.65)]'
-              : 'border-white/15 bg-black/40 text-zinc-500 group-hover:text-zinc-300 group-hover:border-white/30'
-          }`}
-          style={{ width: 34, height: 34 }}>
-          <Icon className="w-3.5 h-3.5" />
-        </span>
-      </span>
-    </button>
-  );
-}
-
-/* ── SlideRow: horizontal SLIDE-style fader row for the Controls rail ───
-   Glass-capsule track + glowing colored fill/knob (the SLIDE look, laid out
-   horizontally), a value field that tints with the value, and fixed slots so
-   every row's number/suffix/randomize line up in a column. */
-function SlideRow({ label, value, onChange, min, max, step = 1, tipKey, onRandomize }: {
-  label: string; value: number; onChange: (v: number) => void;
-  min: number; max: number; step?: number; tipKey?: string; onRandomize?: () => void;
-}) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const dragging = useRef(false);
-  const [drag, setDrag] = useState(false);
-  const span = max - min || 1;
-  const t = clampN((value - min) / span, 0, 1);
-  const base = colorAt(t);
-  const fromX = (clientX: number) => {
-    const el = trackRef.current;
-    if (!el) return value;
-    const r = el.getBoundingClientRect();
-    const nt = clampN((clientX - r.left) / r.width, 0, 1);
-    return clampN(min + Math.round((nt * span) / step) * step, min, max);
-  };
-  const onDown = (e: React.PointerEvent) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    dragging.current = true; setDrag(true);
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    onChange(fromX(e.clientX)); e.preventDefault();
-  };
-  const onMove = (e: React.PointerEvent) => { if (dragging.current) onChange(fromX(e.clientX)); };
-  const onUp = (e: React.PointerEvent) => {
-    dragging.current = false; setDrag(false);
-    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-  };
-  const tip = tipKey ? HOVER_TOOLTIPS[tipKey] : undefined;
-  const labelEl = <span className="text-[11px] text-zinc-300 whitespace-nowrap">{label}</span>;
-  return (
-    <div className="flex items-center gap-2" style={accentVars(t)}>
-      <div className="w-16 shrink-0 flex items-center gap-1">
-        {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
-        {onRandomize && (
-          <button onClick={onRandomize} title="Randomize" className="btn-ghost cursor-pointer p-0.5 shrink-0 text-zinc-500 hover:text-purple-300">
-            <RefreshCw className="w-2.5 h-2.5" />
-          </button>
-        )}
-      </div>
-      <div ref={trackRef}
-        className="relative flex-1 min-w-0 h-3 rounded-full bg-black/50 border border-white/10 cursor-pointer select-none"
-        style={{ touchAction: 'none' }}
-        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
-        <div className="absolute inset-y-0.5 left-0.5 rounded-full"
-          style={{ width: `calc(${t * 100}% - 2px)`, background: rgb(base), boxShadow: `0 0 8px ${rgba(base, 0.7)}`, transition: drag ? 'none' : 'width 0.08s ease' }} />
-        <div className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white"
-          style={{ left: `${t * 100}%`, transform: 'translate(-50%,-50%)', boxShadow: `0 0 8px ${rgba(base, 0.9)}`, transition: drag ? 'none' : 'left 0.08s ease' }} />
-      </div>
-      <input type="number" className="compact-input w-11 text-center tabular-nums shrink-0"
-        style={{ color: rgb(base), fontWeight: 700 }}
-        min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value || 0)} />
-    </div>
-  );
-}
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
 function FullAudioPlayer({ src }: { src: string }) {

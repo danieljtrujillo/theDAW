@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { WaveformEditor } from '../audio/WaveformEditor';
 import { AdvancedView } from '../../views/AdvancedView';
-import { AdvancedEditorPanel } from '../../views/AdvancedEditorPanel';
-import { StudioView } from '../../views/StudioView';
+import { MixPanel } from '../../views/MixPanel';
 import { TrainingView } from '../../views/TrainingView';
 import { LineageView } from '../library/LineageModal';
 import { VJView } from '../../views/VJView';
@@ -67,19 +66,13 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <WaveformEditor onSwitchTab={onSwitchTab} />
           )}
           {centerTab === 'mix' && (
-            // PROCESS → MIX content move. Whole MIX column is now
-            // wrapped at max-w-5xl mx-auto so it doesn't stretch
-            // edge-to-edge on ultra-wide monitors. StudioView's
-            // macros + process history sit at the top (natural
-            // height, in the outer scroll); AdvancedEditorPanel
-            // takes the remaining viewport height below.
-            <div className="absolute inset-0 overflow-y-auto">
-              <div className="max-w-5xl mx-auto w-full px-4 flex flex-col gap-2">
-                <StudioView />
-                <div className="shrink-0" style={{ minHeight: '720px' }}>
-                  <AdvancedEditorPanel />
-                </div>
-              </div>
+            // PROCESS → MIX. The unified, single-screen MIX workspace
+            // (MixPanel): source waveform on top, the real effect-chain
+            // workflow (library + chain + Quick Master) in the middle,
+            // output + effects-viz on the bottom. Edge-to-edge with no
+            // page scroll — MixPanel owns the viewport like the MAKE tab.
+            <div className="absolute inset-0 overflow-hidden">
+              <MixPanel />
             </div>
           )}
           {centerTab === 'learn' && (
