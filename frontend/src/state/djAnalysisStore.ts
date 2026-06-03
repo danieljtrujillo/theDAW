@@ -93,6 +93,32 @@ export function analyzeEntries(ids: Array<string | null | undefined>): void {
 function pickFields(raw: Record<string, unknown>): DjAnalysis {
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null;
+
+  // Beats: the DB/API row carries them as a JSON string in `beats_json`; some
+  // payloads may use a parsed `beats` array. Accept either (the field-name
+  // mismatch is why decks had no real beatgrid before).
+  let beats: number[] | null = Array.isArray(raw.beats) ? (raw.beats as number[]) : null;
+  if (!beats && typeof raw.beats_json === 'string') {
+    try {
+      const arr = JSON.parse(raw.beats_json);
+      if (Array.isArray(arr)) beats = arr.filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+    } catch {
+      /* leave null */
+    }
+  }
+
+  // Duration: an explicit field if present, else pull it from ffprobe metadata.
+  let duration = num(raw.duration_sec) ?? num(raw.duration);
+  if (duration == null && typeof raw.ffprobe_json === 'string') {
+    try {
+      const fp = JSON.parse(raw.ffprobe_json) as { format?: { duration?: unknown }; duration?: unknown };
+      const d = Number(fp?.format?.duration ?? fp?.duration);
+      if (Number.isFinite(d) && d > 0) duration = d;
+    } catch {
+      /* leave null */
+    }
+  }
+
   return {
     bpm: num(raw.bpm),
     key: typeof raw.key === 'string' ? raw.key : null,
@@ -100,8 +126,8 @@ function pickFields(raw: Record<string, unknown>): DjAnalysis {
     key_confidence: num(raw.key_confidence ?? raw.confidence),
     bars_estimated: num(raw.bars_estimated),
     rms_db: num(raw.rms_db),
-    duration_sec: num(raw.duration_sec),
-    beats: Array.isArray(raw.beats) ? (raw.beats as number[]) : null,
+    duration_sec: duration,
+    beats,
     analyzed_at: num(raw.analyzed_at),
   };
 }

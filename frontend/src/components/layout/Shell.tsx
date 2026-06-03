@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, GripVertical } from 'lucide-react';
+import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, GripVertical } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
+import { CenterTabBar } from './CenterTabBar';
 import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel } from './BottomMultiTabPanel';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
 import { useAppUiStore } from '../../state/appUiStore';
-import { useLibraryStore } from '../../state/libraryStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 
 const RIGHT_RAIL_MIN = 280;
@@ -15,30 +15,14 @@ const RIGHT_RAIL_MAX = 640;
 
 export const Shell: React.FC = () => {
   const setActiveView = useAppUiStore((state) => state.setActiveView);
+  const centerTab = useAppUiStore((state) => state.centerTab);
+  const setCenterTab = useAppUiStore((state) => state.setCenterTab);
   const isRightPanelOpen = useAppUiStore((state) => state.isRightPanelOpen);
   const setIsRightPanelOpen = useAppUiStore((state) => state.setRightPanelOpen);
   const rightPanelWidth = useAppUiStore((state) => state.rightPanelWidth);
   const setRightPanelWidth = useAppUiStore((state) => state.setRightPanelWidth);
   const docsOpen = useAppUiStore((state) => state.docsOpen);
   const setDocsOpen = useAppUiStore((state) => state.setDocsOpen);
-  const setLibrarySearch = useLibraryStore((s) => s.setSearchQuery);
-  const librarySearch = useLibraryStore((s) => s.searchQuery);
-  const globalSearchInputRef = React.useRef<HTMLInputElement | null>(null);
-
-  // Cmd-K / Ctrl-K focuses the global search bar. Matches the keybinding
-  // convention used by VS Code / Notion / Linear so users have one less
-  // thing to learn.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        globalSearchInputRef.current?.focus();
-        globalSearchInputRef.current?.select();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {
@@ -138,65 +122,41 @@ export const Shell: React.FC = () => {
       className="flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
       style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))' }}
     >
-      {/* Full-width header — spans entire window including over the left panel */}
-      <header className="h-10 border-b border-white/5 flex items-center justify-between px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
-        {/* Logo block — user moved "theDAW" branding out of the
-            header center into this two-line logo at the left edge.
-            Matches the SUBSTRATA / BY GANTASMO reference screenshot:
-            an isometric stacked-cube icon + a chunky title + a
-            mono-style "by GANTASMO" subtitle. */}
-        <div className="flex items-center gap-2 relative z-10 select-none">
+      {/* Combined header + tab bar — logo (left), workspace tabs (center),
+          Docs / Mobile / Settings icons (right). G-Search moved to the footer. */}
+      <header className="h-11 border-b border-white/5 flex items-center gap-3 px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
+        <div className="flex items-center gap-2 relative z-10 select-none shrink-0">
           <BrandLogo />
           <div className="flex flex-col leading-none">
             <span className="text-[13px] font-black tracking-[0.18em] text-zinc-100">theDAW</span>
             <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by GANTASMO</span>
           </div>
         </div>
-        <div className="flex items-center gap-2.5">
-          <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5">
-            <Search className="w-3 h-3 text-zinc-600" />
-            <input
-              id="global-search"
-              name="global-search"
-              ref={globalSearchInputRef}
-              type="search"
-              aria-label="Global library search (Ctrl-K / Cmd-K)"
-              placeholder="G-SEARCH (ctrl-k)"
-              className="bg-transparent border-none outline-none text-[9px] text-zinc-300 w-32 font-mono placeholder:text-zinc-500"
-              value={librarySearch}
-              onChange={(e) => {
-                setLibrarySearch(e.target.value);
-                // Typing into G-Search auto-opens the right-side
-                // Library panel so the filtered list is visible.
-                if (e.target.value && !isRightPanelOpen) setIsRightPanelOpen(true);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setLibrarySearch('');
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
-            />
-          </div>
+
+        {/* Workspace tabs — embedded so they share this row instead of a
+            separate strip below. */}
+        <CenterTabBar
+          activeTab={centerTab}
+          onTabChange={setCenterTab}
+          isRightPanelOpen={isRightPanelOpen}
+          onToggleRightPanel={() => setIsRightPanelOpen(!isRightPanelOpen)}
+          embedded
+        />
+
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* Icon-only — the hover tooltip (title) names each one. */}
           <TopBarButton
             onClick={() => setDocsOpen(true)}
             icon={<BookOpen className="w-3.5 h-3.5" />}
-            label="Docs"
             title="Open documentation"
             accent="purple"
           />
           <TopBarButton
             onClick={() => setShareOpen(true)}
             icon={<Smartphone className="w-3.5 h-3.5" />}
-            label="Mobile"
-            hideLabelBelowMd
             title="Open mobile access QR/link"
             accent="emerald"
           />
-          {/* Library toggle removed from the header — the only library
-              show/hide handle now lives at the right edge of the
-              CenterTabBar (the PanelRightOpen/Close arrow), matching
-              the user's "one handle, one place" preference. */}
           <TopBarButton
             onClick={() => setSettingsOpen(true)}
             icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}

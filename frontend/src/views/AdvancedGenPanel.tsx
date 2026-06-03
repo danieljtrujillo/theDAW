@@ -1,14 +1,13 @@
 import React, { useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import {
   Play, Pause, Square, RefreshCw, X, Plus,
-  Music, Scissors, Mic2, Search, ChevronDown,
-  LayoutList, Grid3x3, AudioWaveform, Volume2, Sliders,
-  Wand2, Loader2, Save, BookOpen,
+  Scissors, Mic2, Search, ChevronDown,
+  LayoutList, AudioWaveform, Volume2, Sliders,
+  Wand2, Loader2, BookOpen, Layers, Sparkles, Download,
 } from 'lucide-react';
 import { useGenerateParamsStore, GenerateParamsState } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
 import { useLibraryStore } from '../state/libraryStore';
-import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
 import { useEditorStore } from '../state/editorStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { uuid } from '../orb-kit/utils';
@@ -17,120 +16,34 @@ import { RICH_TOOLTIPS, HOVER_TOOLTIPS } from '../components/ui/tooltips';
 import { GENERATION_PRESETS, type GenerationPreset } from '../data/generationPresets';
 import { enhanceStableAudioPrompt } from '../orb-kit/promptEnhancer';
 import { ChimeraStack } from '../components/chimera/ChimeraStack';
+import { SlideKnob } from '../components/audio/SlideKnob';
+import { SlideFader } from '../components/audio/SlideFader';
+import { VisualizerPanel } from '../components/audio/CymaticsVisualizer';
+import { getMasterGain } from '../state/playerStore';
+import '../components/layout/track-controls.css';
 
-/* ── ChimeraQuickBanner: top-of-MAKE always-visible chimera status ─ */
-function ChimeraQuickBanner() {
-  const clips = useGenerateParamsStore((s) => s.chimera.clips);
-  const lastMeta = useGenerateParamsStore((s) => s.chimera.lastMeta);
-  // Scrolls the surrounding scroll container to the INIT AUDIO card.
-  const onJump = () => {
-    const el = document.querySelector('[data-chimera-anchor="init-audio"]');
-    if (el && 'scrollIntoView' in el) {
-      (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  };
-  const empty = clips.length === 0;
-  return (
-    <div
-      className={`relative flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] font-mono uppercase tracking-widest shrink-0 ${
-        empty
-          ? 'border-purple-500/15 bg-purple-500/5 text-zinc-500'
-          : 'border-purple-500/40 bg-purple-500/10 text-purple-200'
-      }`}
-    >
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${empty ? 'bg-zinc-700' : 'bg-purple-400 animate-pulse'}`} />
-      <span className="font-black">CHIMERA</span>
-      <span className="text-zinc-600">·</span>
-      {empty ? (
-        <>
-          <span className="text-zinc-500">stack 2+ tracks into one fused init signal</span>
-          <button
-            type="button"
-            onClick={onJump}
-            className="ml-auto px-2 py-0.5 rounded border border-purple-500/30 hover:border-purple-400/60 hover:bg-purple-500/15 text-purple-300 hover:text-purple-100"
-            title="Jump to the INIT AUDIO card below"
-          >
-            ADD →
-          </button>
-        </>
-      ) : (
-        <>
-          <span className="text-purple-200 font-black">{clips.length}</span>
-          <span className="text-zinc-400">{clips.length === 1 ? 'track loaded' : 'tracks stacked'}</span>
-          {lastMeta && (
-            <span className="text-zinc-500 normal-case tracking-normal">
-              · last: {lastMeta.duration_sec.toFixed(1)}s @ {lastMeta.target_bpm_used.toFixed(0)} BPM
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={onJump}
-            className="ml-auto px-2 py-0.5 rounded border border-purple-500/40 hover:border-purple-400/60 hover:bg-purple-500/20 text-purple-200 hover:text-purple-100"
-            title="Scroll to the chimera controls in INIT AUDIO"
-          >
-            OPEN →
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ── SField: label / slider / number / default ────────────────────── */
-function SField({ label, value, onChange, min, max, step = 0.01, hint, defaultValue, tipKey }: {
-  label: string; value: number; onChange: (v: number) => void;
-  min: number; max: number; step?: number; hint?: string; defaultValue?: number; tipKey?: string;
+/* ── RoundToggle: circular LED-style toggle that echoes the knobs ──────── */
+function RoundToggle({ label, icon: Icon, on, onChange }: {
+  label: string; icon: React.ComponentType<{ className?: string }>; on: boolean; onChange: (v: boolean) => void;
 }) {
-  const tip = tipKey ? HOVER_TOOLTIPS[tipKey] : undefined;
-  const labelEl = (
-    <div className="flex flex-col min-w-0">
-      <span className="text-[10px] text-zinc-300 truncate">{label}</span>
-      {hint && <span className="text-[8px] text-zinc-500 font-mono">{hint}</span>}
-    </div>
-  );
   return (
-    <div className="flex flex-col gap-0.5 min-w-0">
-      <div className="flex items-center gap-2">
-        <div className="min-w-0 w-17.5">{tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}</div>
-        <input type="range" className="pro-slider flex-1" min={min} max={max} step={step}
-          value={value} onChange={(e) => onChange(+e.target.value)} />
-        <input type="number" className="compact-input w-14 text-center text-[10px] tabular-nums shrink-0"
-          min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value || 0)} />
-      </div>
-      {defaultValue !== undefined && (
-        <span className="text-[8px] text-zinc-500 ml-19.5">Default: {defaultValue.toFixed(1)}</span>
-      )}
-    </div>
+    <button type="button" onClick={() => onChange(!on)} title={label}
+      className="flex flex-col items-center gap-1 group shrink-0">
+      <span
+        className={`relative grid place-items-center rounded-full border-2 transition-all duration-200 ${
+          on
+            ? 'border-purple-400/70 bg-purple-600/30 text-purple-100 shadow-[0_0_12px_rgba(168,85,247,0.65)]'
+            : 'border-white/15 bg-black/40 text-zinc-500 group-hover:text-zinc-300 group-hover:border-white/30'
+        }`}
+        style={{ width: 34, height: 34 }}>
+        <Icon className="w-3.5 h-3.5" />
+      </span>
+      <span className={`text-[8px] font-bold uppercase tracking-wide transition-colors ${on ? 'text-purple-200' : 'text-zinc-500'}`}>{label}</span>
+    </button>
   );
 }
 
-/* ── Spin: label + number + up/down arrows ────────────────────────── */
-function Spin({ label, value, onChange, min, max, step = 1, tipKey }: {
-  label: string; value: number; onChange: (v: number) => void;
-  min: number; max: number; step?: number; tipKey?: string;
-}) {
-  const tip = tipKey ? HOVER_TOOLTIPS[tipKey] : undefined;
-  const labelEl = <span className="text-[10px] text-zinc-300 truncate">{label}</span>;
-  return (
-    <div className="flex items-center justify-between gap-1 min-w-0">
-      <div className="truncate min-w-0 flex-1">{tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}</div>
-      <div className="flex items-center shrink-0">
-        <input type="number" className="compact-input w-14 text-center text-[10px]"
-          value={value} onChange={(e) => onChange(+e.target.value || 0)} min={min} max={max} step={step} />
-        <div className="flex flex-col">
-          <button onClick={() => onChange(Math.min(max, value + step))} className="text-zinc-500 hover:text-purple-300 cursor-pointer p-0.5">
-            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg>
-          </button>
-          <button onClick={() => onChange(Math.max(min, value - step))} className="text-zinc-500 hover:text-purple-300 cursor-pointer p-0.5">
-            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Inline number+slider row (for Controls section) ──────────────── */
+/* ── Inline number+slider row (high-level Controls rail) ──────────────── */
 function CtrlRow({ label, value, onChange, min, max, step = 1, suffix, tipKey, onRandomize }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step?: number; suffix?: string; tipKey?: string; onRandomize?: () => void;
@@ -139,10 +52,10 @@ function CtrlRow({ label, value, onChange, min, max, step = 1, suffix, tipKey, o
   const labelEl = <span className="text-[11px] text-zinc-300">{label}</span>;
   return (
     <div className="flex items-center gap-2">
-      <div className="w-14 shrink-0">{tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}</div>
-      <input type="range" className="pro-slider flex-1" min={min} max={max} step={step}
+      <div className="w-12 shrink-0">{tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}</div>
+      <input type="range" className="pro-slider flex-1 min-w-0" min={min} max={max} step={step}
         value={value} onChange={(e) => onChange(+e.target.value)} />
-      <input type="number" className="compact-input w-14 text-center tabular-nums shrink-0"
+      <input type="number" className="compact-input w-13 text-center tabular-nums shrink-0"
         min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value || 0)} />
       {suffix && <span className="text-[9px] text-zinc-600 w-2 shrink-0">{suffix}</span>}
       {onRandomize && (
@@ -154,7 +67,7 @@ function CtrlRow({ label, value, onChange, min, max, step = 1, suffix, tipKey, o
   );
 }
 
-/* ── Full audio player (OUTPUT row) ───────────────────────────────── */
+/* ── Full audio player (Compare row) ──────────────────────────────────── */
 function FullAudioPlayer({ src }: { src: string }) {
   const ref = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -189,7 +102,7 @@ function FullAudioPlayer({ src }: { src: string }) {
   );
 }
 
-/* ── Saved Prompts Dropdown ───────────────────────────────────────── */
+/* ── Saved Prompts Dropdown ───────────────────────────────────────────── */
 function SavedPromptsDropdown({ type, value, onChange }: {
   type: 'positive' | 'negative'; value: string; onChange: (text: string) => void;
 }) {
@@ -240,7 +153,7 @@ function SavedPromptsDropdown({ type, value, onChange }: {
   );
 }
 
-/* ── Templates Panel ──────────────────────────────────────────────── */
+/* ── Templates Panel ──────────────────────────────────────────────────── */
 interface Template { id: string; name: string; createdAt: string; params: Partial<GenerateParamsState>; }
 
 function TemplatesPanel() {
@@ -273,7 +186,7 @@ function TemplatesPanel() {
   };
   const filtered = templates.filter((t) => t.name.toLowerCase().includes(searchQuery.toLowerCase()));
   return (
-    <div className="hardware-card flex flex-col">
+    <div className="hardware-card flex flex-col min-h-0">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">TEMPLATES</span>
         <button className="btn-ghost cursor-pointer p-1" onClick={handleSave} title="Save current">
@@ -285,7 +198,7 @@ function TemplatesPanel() {
         <input className="compact-input flex-1 text-[9px]" placeholder="Search templates..." value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)} />
       </div>
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="overflow-y-auto min-h-0 flex-1">
         {filtered.length === 0 ? (
           <div className="text-center py-1"><span className="text-[9px] text-zinc-600 font-mono">No templates</span></div>
         ) : (
@@ -306,7 +219,7 @@ function TemplatesPanel() {
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════ */
 
 export const AdvancedGenPanel: React.FC<{
   onAddTo?: (target: 'timeline' | 'editor' | 'sequencer' | 'newTrack') => void;
@@ -315,33 +228,41 @@ export const AdvancedGenPanel: React.FC<{
   const sf = p.setField;
   const patch = p.patch;
 
-  const isGenerating = useGenerateStore((s) => s.isGenerating);
   const lastAudioUrl = useGenerateStore((s) => s.lastAudioUrl);
-  const lastFilename = useGenerateStore((s) => s.lastFilename);
-  const submitGeneration = useGenerateStore((s) => s.submitGeneration);
   const libraryEntries = useLibraryStore((s) => s.entries);
-  const setEditorSource = useAdvancedEditorSourceStore((s) => s.setSource);
   const addTrack = useEditorStore((s) => s.addTrack);
   const addClip = useEditorStore((s) => s.addClipToTrack);
 
   const initRef = useRef<HTMLInputElement>(null);
   const inpaintRef = useRef<HTMLInputElement>(null);
 
-  // Prompt enhance state
   const [enhancingPositive, setEnhancingPositive] = useState(false);
   const [enhancingNegative, setEnhancingNegative] = useState(false);
 
-  // Presets dropdown
   const [presetsOpen, setPresetsOpen] = useState(false);
   const applyPreset = useCallback((preset: GenerationPreset) => {
     patch(preset.params);
     setPresetsOpen(false);
   }, [patch]);
 
-  // Spectrogram state
   const [spectrograms, setSpectrograms] = useState<{mel:string,stft:string,chromagram:string,cqt:string}|null>(null);
-  const [specTab, setSpecTab] = useState<'mel'|'stft'|'chromagram'|'cqt'>('mel');
   const [specLoading, setSpecLoading] = useState(false);
+
+  // Center hero tab — Chimera (setup) ↔ Compare (post-gen inspection).
+  const [heroTab, setHeroTab] = useState<'chimera' | 'compare'>('chimera');
+  const prevAudioRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastAudioUrl && lastAudioUrl !== prevAudioRef.current) setHeroTab('compare');
+    prevAudioRef.current = lastAudioUrl;
+  }, [lastAudioUrl]);
+
+  const [cmpLayers, setCmpLayers] = useState<Set<string>>(() => new Set(['output', 'mel']));
+  const [cmpOverlay, setCmpOverlay] = useState(false);
+  const toggleLayer = (k: string) => setCmpLayers((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
 
   useEffect(() => {
     if (!lastAudioUrl) { setSpectrograms(null); setSpecLoading(false); return; }
@@ -356,11 +277,7 @@ export const AdvancedGenPanel: React.FC<{
         if (cancelled) return;
         const form = new FormData();
         form.append('audio_file', blob, 'output.wav');
-        const res = await fetch('/api/spectrogram', {
-          method: 'POST',
-          body: form,
-          signal: AbortSignal.timeout(30000),
-        });
+        const res = await fetch('/api/spectrogram', { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
         if (!res.ok) throw new Error(`/api/spectrogram ${res.status}`);
         const data = await res.json();
         if (cancelled) return;
@@ -382,31 +299,19 @@ export const AdvancedGenPanel: React.FC<{
       const entry = libraryEntries.find((en) => en.id === libId);
       if (entry) {
         const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
-        return new File(
-          [blob],
-          `${entry.title.slice(0, 40)}.wav`,
-          { type: entry.mimeType || 'audio/wav' },
-        );
+        return new File([blob], `${entry.title.slice(0, 40)}.wav`, { type: entry.mimeType || 'audio/wav' });
       }
     }
     return e.dataTransfer.files[0] || null;
   }, [libraryEntries]);
 
+  // Shared player-engine master gain → live audio-reactive visualizers.
+  const masterAudio = useMemo<AudioNode | null>(() => { try { return getMasterGain(); } catch { return null; } }, []);
+
   const initAudioUrl = useMemo(() => p.initAudioFile ? URL.createObjectURL(p.initAudioFile) : null, [p.initAudioFile]);
   const inpaintAudioUrl = useMemo(() => p.inpaintAudioFile ? URL.createObjectURL(p.inpaintAudioFile) : null, [p.inpaintAudioFile]);
   useEffect(() => () => { if (initAudioUrl) URL.revokeObjectURL(initAudioUrl); }, [initAudioUrl]);
   useEffect(() => () => { if (inpaintAudioUrl) URL.revokeObjectURL(inpaintAudioUrl); }, [inpaintAudioUrl]);
-
-  const handleGenerate = () => {
-    if (isGenerating) return;
-    void submitGeneration({
-      prompt: p.prompt, negativePrompt: p.negativePrompt, model: p.model,
-      duration: p.duration, steps: p.steps, cfg: p.cfg, seed: p.seed, batch: p.batch,
-      initNoise: p.initNoise, initType: p.initType, initAudioFile: p.initAudioFile,
-      inpaintAudioFile: p.inpaintAudioFile, inpaintEnabled: p.inpaintEnabled,
-      maskStart: p.maskStart, maskEnd: p.maskEnd,
-    });
-  };
 
   const handleSendToDaw = async () => {
     if (!lastAudioUrl) return;
@@ -419,27 +324,16 @@ export const AdvancedGenPanel: React.FC<{
       offsetIntoSource: 0, durationSec: audio.duration || p.duration, startSec: 0,
       color: '#8b5cf6', sourceKind: 'audio' });
   };
-
-  const handleSendToEditor = async () => {
-    if (!lastAudioUrl) return;
-    const blob = await (await fetch(lastAudioUrl)).blob();
-    setEditorSource(new File([blob], lastFilename || 'output.wav', { type: blob.type }));
-  };
-
   const handleSendToInit = async () => {
     if (!lastAudioUrl) return;
     const blob = await (await fetch(lastAudioUrl)).blob();
-    const file = new File([blob], lastFilename || 'output.wav', { type: blob.type || 'audio/wav' });
-    patch({ initAudioFile: file, initAudioEnabled: true });
+    patch({ initAudioFile: new File([blob], 'output.wav', { type: blob.type || 'audio/wav' }), initAudioEnabled: true });
   };
-
   const handleSendToInpaint = async () => {
     if (!lastAudioUrl) return;
     const blob = await (await fetch(lastAudioUrl)).blob();
-    const file = new File([blob], lastFilename || 'output.wav', { type: blob.type || 'audio/wav' });
-    patch({ inpaintAudioFile: file, inpaintEnabled: true, maskStart: 0, maskEnd: 0 });
+    patch({ inpaintAudioFile: new File([blob], 'output.wav', { type: blob.type || 'audio/wav' }), inpaintEnabled: true, maskStart: 0, maskEnd: 0 });
   };
-
   type QuickTarget = 'daw' | 'init' | 'inpaint' | 'effects';
   const handleQuickAction = (target: QuickTarget) => {
     if (target === 'daw') { void handleSendToDaw(); return; }
@@ -448,505 +342,443 @@ export const AdvancedGenPanel: React.FC<{
     if (target === 'effects' && onAddTo) { onAddTo('editor'); return; }
   };
 
-  /* ────────────────────────────────────────────────────────────────── */
+  const sectionTitle = 'text-[10px] font-black uppercase tracking-widest text-purple-300';
+  const subTitle = 'text-[9px] font-black uppercase tracking-widest text-purple-300/70';
+  const accentBox = 'rounded-lg border border-purple-500/15 bg-[#0c0a12]/70';
+  const colBox = 'rounded-lg bg-black/20 border border-white/5';
+  const SHIFT_MODES = ['LogSNR', 'Flux', 'Full', 'None'] as const;
+  const tabBtn = (on: boolean) =>
+    `flex items-center gap-1.5 px-5 py-1 rounded text-[10px] font-black uppercase tracking-widest transition-colors ${
+      on ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'}`;
+
+  // schedule-shift faders for the active mode
+  const shiftFaders = () => {
+    if (p.shiftMode === 'LogSNR') return (<>
+      <SlideFader label="Anchor" value={p.logsnrAnchorLength} onChange={(v) => sf('logsnrAnchorLength', v)} min={100} max={10000} step={100} tipKey="logsnrAnchorLength" />
+      <SlideFader label="A.SNR" value={p.logsnrAnchorLogsnr} onChange={(v) => sf('logsnrAnchorLogsnr', v)} min={-12} max={0} step={0.1} tipKey="logsnrAnchorLogsnr" />
+      <SlideFader label="Rate" value={p.logsnrRate} onChange={(v) => sf('logsnrRate', v)} min={-2} max={2} step={0.05} tipKey="logsnrRate" />
+      <SlideFader label="End" value={p.logsnrEnd} onChange={(v) => sf('logsnrEnd', v)} min={-2} max={6} step={0.1} tipKey="logsnrEnd" />
+    </>);
+    if (p.shiftMode === 'Flux') return (<>
+      <SlideFader label="Min" value={p.fluxMinLen} onChange={(v) => sf('fluxMinLen', v)} min={1} max={10000} step={1} tipKey="fluxMinLen" />
+      <SlideFader label="Max" value={p.fluxMaxLen} onChange={(v) => sf('fluxMaxLen', v)} min={1} max={10000} step={1} tipKey="fluxMaxLen" />
+      <SlideFader label="α min" value={p.fluxAlphaMin} onChange={(v) => sf('fluxAlphaMin', v)} min={0.1} max={20} step={0.1} tipKey="fluxAlphaMin" />
+      <SlideFader label="α max" value={p.fluxAlphaMax} onChange={(v) => sf('fluxAlphaMax', v)} min={0.1} max={20} step={0.1} tipKey="fluxAlphaMax" />
+    </>);
+    if (p.shiftMode === 'Full') return (<>
+      <SlideFader label="Base" value={p.fullBaseShift} onChange={(v) => sf('fullBaseShift', v)} min={0} max={5} step={0.1} tipKey="fullBaseShift" />
+      <SlideFader label="Max" value={p.fullMaxShift} onChange={(v) => sf('fullMaxShift', v)} min={0} max={5} step={0.1} tipKey="fullMaxShift" />
+      <SlideFader label="Min L" value={p.fullMinLen} onChange={(v) => sf('fullMinLen', v)} min={1} max={10000} step={1} tipKey="fullMinLen" />
+      <SlideFader label="Max L" value={p.fullMaxLen} onChange={(v) => sf('fullMaxLen', v)} min={1} max={10000} step={1} tipKey="fullMaxLen" />
+    </>);
+    return <div className="col-span-4 flex items-center justify-center text-[9px] text-zinc-600">No schedule shift</div>;
+  };
+
+  /* ────────────────────────────────────────────────────────────────────── */
 
   return (
-    <div className="h-full overflow-hidden text-[11px]">
-    <div className="h-full grid grid-cols-[1fr_280px] gap-2 p-2">
+    <div className="h-full w-full overflow-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
 
-      {/* ═══ LEFT MAIN COLUMN ═══ */}
-      <div className="overflow-y-auto flex flex-col gap-2 pr-1">
-
-      {/* Chimera status banner — sits ABOVE the prompt row so the user
-          always sees the chimera state at a glance. Shows the clip
-          count, a "scroll to INIT AUDIO" jump, and a hint when empty.
-          Visibility was a user complaint — the ChimeraStack itself
-          lives inside the INIT AUDIO card (ROW 2 below) and that
-          card scrolls out of sight on smaller viewports. */}
-      <ChimeraQuickBanner />
-
-      {/* ═══ ROW 1: PROMPTING | TEMPLATES+LORA | CONTROLS+GENERATE | OUTPUT SETTINGS ═══ */}
-      <div className="grid grid-cols-[1.4fr_220px_280px_240px] gap-2">
-
-        {/* PROMPTING (Prompt + Negative SIDE BY SIDE) */}
-        <div className="hardware-card flex flex-col">
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 mb-2">PROMPTING</span>
-          <div className="grid grid-cols-2 gap-3 flex-1">
-            {/* Prompt */}
-            <div className="flex flex-col">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] text-zinc-300 flex items-center gap-1.5">Prompt <InfoTip {...RICH_TOOLTIPS.prompt} /></span>
-                <div className="flex items-center gap-1.5">
-                  <SavedPromptsDropdown type="positive" value={p.prompt} onChange={(v) => sf('prompt', v)} />
-                  <button
-                    onClick={async () => {
-                      if (enhancingPositive || !p.prompt.trim()) return;
-                      setEnhancingPositive(true);
-                      try {
-                        const result = await enhanceStableAudioPrompt({ target: 'positive', positivePrompt: p.prompt, negativePrompt: p.negativePrompt });
-                        if (result) sf('prompt', result);
-                      } catch { /* non-fatal */ }
-                      finally { setEnhancingPositive(false); }
-                    }}
-                    disabled={enhancingPositive || !p.prompt.trim()}
-                    className="p-1 rounded hover:bg-purple-500/20 text-zinc-500 hover:text-purple-300 transition-colors disabled:opacity-30"
-                    title="AI-enhance prompt"
-                  >
-                    {enhancingPositive ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
-              </div>
-              <div className="relative flex-1">
-                <textarea
-                  className="compact-input w-full resize-none h-full min-h-20"
-                  placeholder="120 BPM house loop, deep sub bass, crispy hi-hats, minimal percussion..."
-                  value={p.prompt}
-                  onChange={(e) => sf('prompt', e.target.value)}
-                  maxLength={1000} />
-                <span className="absolute bottom-1 right-2 text-[9px] text-zinc-500">{p.prompt.length}/1000</span>
-              </div>
-            </div>
-            {/* Negative Prompt */}
-            <div className="flex flex-col">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] text-zinc-300 flex items-center gap-1.5">Negative Prompt <InfoTip {...RICH_TOOLTIPS.negativePrompt} /></span>
-                <div className="flex items-center gap-1.5">
-                  <SavedPromptsDropdown type="negative" value={p.negativePrompt} onChange={(v) => sf('negativePrompt', v)} />
-                  <button
-                    onClick={async () => {
-                      if (enhancingNegative || !p.negativePrompt.trim()) return;
-                      setEnhancingNegative(true);
-                      try {
-                        const result = await enhanceStableAudioPrompt({ target: 'negative', positivePrompt: p.prompt, negativePrompt: p.negativePrompt });
-                        if (result) sf('negativePrompt', result);
-                      } catch { /* non-fatal */ }
-                      finally { setEnhancingNegative(false); }
-                    }}
-                    disabled={enhancingNegative || !p.negativePrompt.trim()}
-                    className="p-1 rounded hover:bg-purple-500/20 text-zinc-500 hover:text-purple-300 transition-colors disabled:opacity-30"
-                    title="AI-enhance negative prompt"
-                  >
-                    {enhancingNegative ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
-              </div>
-              <div className="relative flex-1">
-                <textarea
-                  className="compact-input w-full resize-none h-full min-h-20"
-                  placeholder="vocals, speech, distortion, harshness..."
-                  value={p.negativePrompt}
-                  onChange={(e) => sf('negativePrompt', e.target.value)}
-                  maxLength={500} />
-                <span className="absolute bottom-1 right-2 text-[9px] text-zinc-500">{p.negativePrompt.length}/500</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* TEMPLATES + LORA stacked */}
-        <div className="flex flex-col gap-2 min-h-0">
-          <TemplatesPanel />
-          <div className="hardware-card flex flex-col">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">LORA <InfoTip {...RICH_TOOLTIPS.lora} /></span>
-              <button className="btn-ghost cursor-pointer p-1"
-                onClick={() => sf('loras', [...p.loras, { name: '', weight: 1.0, file: null }])}>
-                <Plus className="w-3 h-3" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto min-h-0 max-h-20">
-              {p.loras.length > 0 ? p.loras.map((lora, i) => (
-                <div key={i} className="flex items-center gap-1 bg-purple-500/5 rounded px-1.5 py-1 border border-purple-500/10 mb-1">
-                  {lora.file ? (
-                    <span className="text-[9px] text-purple-200 flex-1 truncate">{lora.file.name}</span>
-                  ) : (
-                    <button className="btn-ghost cursor-pointer text-[9px]" onClick={() => {
-                      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.safetensors,.pt,.bin';
-                      inp.onchange = () => { if (inp.files?.[0]) { const u = p.loras.map((l, idx) => idx === i ? { ...l, file: inp.files![0], name: inp.files![0].name } : l); sf('loras', u); } };
-                      inp.click();
-                    }}>File</button>
-                  )}
-                  <input type="number" className="compact-input w-10 text-center text-[9px]" value={lora.weight} step={0.05} min={0} max={2}
-                    onChange={(e) => { const u = p.loras.map((l, idx) => idx === i ? { ...l, weight: +e.target.value } : l); sf('loras', u); }} />
-                  <button className="text-zinc-500 hover:text-red-400 cursor-pointer" onClick={() => sf('loras', p.loras.filter((_, idx) => idx !== i))}><X className="w-3 h-3" /></button>
-                </div>
-              )) : <span className="text-[9px] text-zinc-600 font-mono">No LoRAs added</span>}
-            </div>
-          </div>
-        </div>
-
-        {/* CONTROLS + GENERATE button */}
-        <div className="hardware-card flex flex-col">
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 mb-2">CONTROLS</span>
-          <div className="flex flex-col gap-1.5 mb-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] text-zinc-300 w-16 shrink-0">Model</span>
-              <select className="compact-input flex-1" value={p.model} onChange={(e) => {
-                const m = e.target.value;
-                const isRf = m.endsWith('-rf');
-                patch({ model: m, steps: isRf ? 50 : 8, cfg: isRf ? 7.0 : 1.0 });
-              }}>
-                <option value="small">Small (ARC)</option>
-                <option value="medium">Medium (ARC)</option>
-                <option value="small-rf">Small-RF</option>
-                <option value="medium-rf">Medium-RF</option>
-              </select>
-            </div>
-            <CtrlRow label="Duration" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} suffix="s" tipKey="duration" />
-            <CtrlRow label="Steps" value={p.steps} onChange={(v) => sf('steps', v)} min={1} max={500} step={1} tipKey="steps" />
-            <CtrlRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
-            <CtrlRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
-              onRandomize={() => sf('seed', Math.floor(Math.random() * 2147483647))} />
-          </div>
-          <button className="btn-primary flex items-center justify-center gap-2 cursor-pointer py-2.5 mt-auto"
-            disabled={isGenerating || !p.prompt.trim()} onClick={handleGenerate}>
-            <Sliders className="w-3.5 h-3.5" />{isGenerating ? 'Generating...' : 'GENERATE'}
-          </button>
-        </div>
-
-        {/* OUTPUT SETTINGS */}
-        <div className="hardware-card flex flex-col">
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 mb-2">OUTPUT SETTINGS</span>
-          <div className="grid grid-cols-2 gap-2 mb-2">
-            <div>
-              <label className="text-[10px] text-zinc-300 flex items-center gap-1.5">Format <InfoTip {...RICH_TOOLTIPS.outputFormat} /></label>
-              <select className="compact-input w-full mt-0.5" value={p.fileFormat} onChange={(e) => sf('fileFormat', e.target.value)}>
-                <option value="wav">WAV</option><option value="flac">FLAC</option><option value="ogg">OGG</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-zinc-300 flex items-center gap-1.5">Naming <InfoTip {...RICH_TOOLTIPS.fileNaming} /></label>
-              <select className="compact-input w-full mt-0.5" value={p.fileNaming} onChange={(e) => sf('fileNaming', e.target.value)}>
-                <option value="verbose">Verbose</option><option value="prompt">Prompt</option><option value="seed">Seed</option>
-              </select>
-            </div>
-          </div>
-          <label className="flex items-center gap-1.5 text-[10px] text-zinc-300 cursor-pointer mb-0.5"><input type="checkbox" checked={p.cutToDuration} onChange={(e) => sf('cutToDuration', e.target.checked)} className="accent-purple-500" /> Cut to duration</label>
-          <label className="flex items-center gap-1.5 text-[10px] text-zinc-300 cursor-pointer mb-0.5"><input type="checkbox" checked={p.autoplay} onChange={(e) => sf('autoplay', e.target.checked)} className="accent-purple-500" /> Autoplay</label>
-          <label className="flex items-center gap-1.5 text-[10px] text-zinc-300 cursor-pointer"><input type="checkbox" checked={p.autoDownload} onChange={(e) => sf('autoDownload', e.target.checked)} className="accent-purple-500" /> Auto download</label>
-        </div>
-      </div>
-
-      {/* ═══ ROW 2: INIT AUDIO | INPAINTING (large waveforms) ═══ */}
-      <div className="grid grid-cols-2 gap-2">
-
-        {/* INIT AUDIO */}
-        <div data-chimera-anchor="init-audio" className="hardware-card flex flex-col"
+      {/* ═══ TOP: input waveforms (INIT | INPAINT) ═══ */}
+      <div className="shrink-0 grid grid-cols-2 gap-1.5" style={{ height: 128 }}>
+        {/* INIT */}
+        <div className={`${accentBox} flex flex-col px-2 py-1.5 min-w-0`}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
           onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ initAudioFile: f, initAudioEnabled: true }); }}>
-          <div className="flex items-center gap-1.5 mb-2">
-            <Mic2 className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">INIT AUDIO <InfoTip {...RICH_TOOLTIPS.initAudio} /></span>
-            <span className="text-[10px] text-purple-200 truncate ml-2 flex-1">{p.initAudioFile ? p.initAudioFile.name : 'Drop audio or click Load'}</span>
+          <div className="flex items-center gap-1.5 mb-1 shrink-0">
+            <Mic2 className="w-3 h-3 text-purple-400 shrink-0" />
+            <span className={`${subTitle} flex items-center gap-1`}>INIT <InfoTip {...RICH_TOOLTIPS.initAudio} /></span>
+            <span className="text-[9px] text-purple-200 truncate flex-1 min-w-0">{p.initAudioFile ? p.initAudioFile.name : 'drop audio / load'}</span>
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[9px] text-zinc-400">Type</span>
+              <select className="compact-input h-5 py-0 text-[9px] w-20" value={p.initType} onChange={(e) => sf('initType', e.target.value)} style={{ colorScheme: 'dark' }}>
+                <option value="Audio">Audio</option><option value="RF-Inversion">RF-Inv</option>
+              </select>
+            </div>
             <button onClick={() => sf('initAudioEnabled', !p.initAudioEnabled)}
-              className={`mono-tag cursor-pointer ${p.initAudioEnabled ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
+              className={`mono-tag cursor-pointer shrink-0 ${p.initAudioEnabled ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
               {p.initAudioEnabled ? 'ON' : 'OFF'}
             </button>
             {p.initAudioFile ? (
-              <button className="btn-ghost cursor-pointer" onClick={() => patch({ initAudioFile: null, initAudioEnabled: false })}><X className="w-3 h-3" /></button>
+              <button className="btn-ghost cursor-pointer shrink-0" onClick={() => patch({ initAudioFile: null, initAudioEnabled: false })}><X className="w-3 h-3" /></button>
             ) : (
-              <button className="btn-ghost cursor-pointer text-[9px]" onClick={() => initRef.current?.click()}>LOAD</button>
+              <button className="btn-ghost cursor-pointer text-[9px] shrink-0" onClick={() => initRef.current?.click()}>LOAD</button>
             )}
             <input ref={initRef} type="file" accept="audio/*" multiple className="hidden"
               onChange={async (e) => {
                 const files = Array.from(e.target.files ?? []);
                 e.target.value = '';
                 if (files.length === 0) return;
-                if (files.length === 1) {
-                  // Single file → standard init audio.
-                  patch({ initAudioFile: files[0], initAudioEnabled: true });
-                  return;
-                }
-                // Multi-select → push them all into the chimera stack
-                // (one fused init signal from 2+ tracks). Matches the
-                // "select multiple library entries → send to init" flow.
-                const items = await Promise.all(
-                  files.map(async (f) => ({
-                    blob: f,
-                    mimeType: f.type || 'audio/wav',
-                    label: f.name,
-                  })),
-                );
+                if (files.length === 1) { patch({ initAudioFile: files[0], initAudioEnabled: true }); return; }
+                const items = await Promise.all(files.map(async (f) => ({ blob: f, mimeType: f.type || 'audio/wav', label: f.name })));
                 const { addBlobsToChimera } = await import('../lib/chimeraClient');
                 addBlobsToChimera(items);
               }} />
           </div>
-          {initAudioUrl ? (
-            <div className="rounded overflow-hidden border border-white/5 bg-black/40 h-27.5 mb-2">
-              <WaveformPreview audioUrl={initAudioUrl} height={110} />
-            </div>
-          ) : (
-            <div className="rounded border border-dashed border-white/10 bg-zinc-900/50 h-27.5 mb-2 flex items-center justify-center">
-              <span className="text-[9px] text-zinc-600">No audio loaded</span>
-            </div>
-          )}
-          {/* ChimeraStack — multi-source init audio builder (Pass 3:
-              CREATE → MAKE content move). Lets the user stack
-              multiple library clips / dropped files into one fused
-              init signal, matching the affordance that used to live
-              in the (now-merged) CREATE / GenerateView. */}
-          <div className="mb-2">
-            <ChimeraStack />
+          <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
+            {initAudioUrl ? <WaveformPreview audioUrl={initAudioUrl} height={88} />
+              : <div className="h-full flex items-center justify-center"><span className="text-[9px] text-zinc-600">No init audio</span></div>}
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-zinc-400">Type</span>
-              <select className="compact-input w-24" value={p.initType} onChange={(e) => sf('initType', e.target.value)}>
-                <option value="Audio">Audio</option><option value="RF-Inversion">RF-Inversion</option>
-              </select>
-            </div>
-            <div className="flex-1">
-              <SField label="Init noise" hint="[0-1]" value={p.initNoise} onChange={(v) => sf('initNoise', v)} min={0} max={1} defaultValue={0.7} tipKey="initNoise" />
-            </div>
-          </div>
-          {p.initType === 'RF-Inversion' && (
-            <div className="flex flex-wrap gap-2 mt-1.5 pt-1.5 border-t border-white/5">
-              <div className="flex items-center gap-1"><span className="text-[10px] text-zinc-300">Steps</span><input type="number" className="compact-input w-12 text-center" value={p.inversionSteps} onChange={(e) => sf('inversionSteps', +e.target.value)} min={1} max={100} /></div>
-              <div className="flex items-center gap-1"><span className="text-[10px] text-zinc-300">Gamma</span><input type="number" className="compact-input w-12 text-center" value={p.inversionGamma} onChange={(e) => sf('inversionGamma', +e.target.value)} min={0} max={1} step={0.05} /></div>
-              <label className="flex items-center gap-1 text-[10px] text-zinc-300 cursor-pointer"><input type="checkbox" checked={p.inversionUnconditional} onChange={(e) => sf('inversionUnconditional', e.target.checked)} className="accent-purple-500" /> Uncond</label>
-            </div>
-          )}
         </div>
-
-        {/* INPAINTING */}
-        <div className="hardware-card flex flex-col"
+        {/* INPAINT */}
+        <div className={`${accentBox} flex flex-col px-2 py-1.5 min-w-0`}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
           onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ inpaintAudioFile: f, inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); }}>
-          <div className="flex items-center gap-1.5 mb-2">
-            <Scissors className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">INPAINTING <InfoTip {...RICH_TOOLTIPS.inpainting} /></span>
-            <span className="text-[10px] text-purple-200 truncate ml-2 flex-1">{p.inpaintAudioFile ? p.inpaintAudioFile.name : 'Drop audio or click Load'}</span>
+          <div className="flex items-center gap-1.5 mb-1 shrink-0">
+            <Scissors className="w-3 h-3 text-purple-400 shrink-0" />
+            <span className={`${subTitle} flex items-center gap-1`}>INPAINT <InfoTip {...RICH_TOOLTIPS.inpainting} /></span>
+            <span className="text-[9px] text-purple-200 truncate flex-1 min-w-0">{p.inpaintAudioFile ? p.inpaintAudioFile.name : 'drop audio / load'}</span>
+            {p.inpaintAudioFile && <span className="text-[9px] font-mono text-purple-300/80 shrink-0">{p.maskStart.toFixed(1)}–{p.maskEnd.toFixed(1)}s</span>}
             <button onClick={() => sf('inpaintEnabled', !p.inpaintEnabled)}
-              className={`mono-tag cursor-pointer ${p.inpaintEnabled ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
+              className={`mono-tag cursor-pointer shrink-0 ${p.inpaintEnabled ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
               {p.inpaintEnabled ? 'ON' : 'OFF'}
             </button>
             {p.inpaintAudioFile ? (
-              <button className="btn-ghost cursor-pointer" onClick={() => patch({ inpaintAudioFile: null, inpaintEnabled: false, maskStart: 0, maskEnd: 0 })}><X className="w-3 h-3" /></button>
+              <button className="btn-ghost cursor-pointer shrink-0" onClick={() => patch({ inpaintAudioFile: null, inpaintEnabled: false, maskStart: 0, maskEnd: 0 })}><X className="w-3 h-3" /></button>
             ) : (
-              <button className="btn-ghost cursor-pointer text-[9px]" onClick={() => inpaintRef.current?.click()}>LOAD</button>
+              <button className="btn-ghost cursor-pointer text-[9px] shrink-0" onClick={() => inpaintRef.current?.click()}>LOAD</button>
             )}
             <input ref={inpaintRef} type="file" accept="audio/*" className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) patch({ inpaintAudioFile: e.target.files[0], inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); e.target.value = ''; }} />
           </div>
-          {inpaintAudioUrl ? (
-            <>
-              <div className="rounded overflow-hidden border border-white/5 bg-black/40 h-27.5 mb-2">
-                <WaveformPreview audioUrl={inpaintAudioUrl} height={110} enableRegions regionStart={p.maskStart} regionEnd={p.maskEnd}
-                  onRegionChange={(s, e) => patch({ maskStart: s, maskEnd: e })} />
-              </div>
-              <div className="text-[10px] font-mono text-purple-300">Start: {p.maskStart.toFixed(2)}s  End: {p.maskEnd.toFixed(2)}s</div>
-            </>
-          ) : (
-            <div className="rounded border border-dashed border-white/10 bg-zinc-900/50 h-27.5 flex items-center justify-center">
-              <span className="text-[9px] text-zinc-600">No file loaded</span>
-            </div>
-          )}
+          <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
+            {inpaintAudioUrl ? <WaveformPreview audioUrl={inpaintAudioUrl} height={88} enableRegions regionStart={p.maskStart} regionEnd={p.maskEnd} onRegionChange={(s, e) => patch({ maskStart: s, maskEnd: e })} />
+              : <div className="h-full flex items-center justify-center"><span className="text-[9px] text-zinc-600">No inpaint audio</span></div>}
+          </div>
         </div>
       </div>
 
-      {/* ═══ ROW 3: SAMPLING & GENERATION PARAMETERS (single big card, 4 horizontal sections) ═══ */}
-      <div className="hardware-card flex flex-col">
-        <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 mb-2">SAMPLING &amp; GENERATION PARAMETERS</span>
-        <div className="grid grid-cols-[1fr_1fr_1fr_2.4fr] gap-4">
+      {/* ═══ UPPER: left rail | chimera area | output rail ═══ */}
+      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '190px minmax(0,1fr) 190px' }}>
 
-          {/* SAMPLER */}
-          <div className="flex flex-col gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/80">SAMPLER</span>
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] text-zinc-300 w-10 shrink-0">Core</label>
-              <select className="compact-input flex-1" value={p.samplerType} onChange={(e) => sf('samplerType', e.target.value)}>
-                <option value="pingpong">pingpong</option><option value="euler">euler</option>
-                <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
-              </select>
-            </div>
-            <SField label="Sigma max" hint="[0-1]" value={p.sigmaMax} onChange={(v) => sf('sigmaMax', v)} min={0} max={1} defaultValue={1.0} tipKey="sigmaMax" />
-            <SField label="Dur pad" hint="[0-30s]" value={p.durationPaddingSec} onChange={(v) => sf('durationPaddingSec', v)} min={0} max={30} step={0.1} defaultValue={6.0} tipKey="durationPadding" />
+        {/* ── LEFT RAIL: Presets · Controls · Templates (GENERATE lives in footer CREATE) ── */}
+        <div className="flex flex-col gap-1.5 min-h-0">
+          {/* Presets — moved here, above Controls */}
+          <div className="relative shrink-0">
+            <button onClick={() => setPresetsOpen(!presetsOpen)}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded border border-white/10 bg-white/5 hover:bg-purple-500/15 hover:border-purple-500/30 text-zinc-300 hover:text-white transition-colors">
+              <BookOpen className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-black uppercase tracking-widest">Presets</span>
+              <ChevronDown className={`w-3 h-3 transition-transform ${presetsOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {presetsOpen && (
+              <div className="absolute left-0 top-full mt-1 z-50 w-full max-h-80 overflow-y-auto rounded border border-white/10 bg-[#0c0a12] shadow-2xl">
+                {GENERATION_PRESETS.map((preset) => (
+                  <button key={preset.id} onClick={() => applyPreset(preset)}
+                    className="w-full text-left px-3 py-2 hover:bg-purple-500/15 border-b border-white/5 last:border-0 transition-colors group">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: preset.color }} />
+                      <span className="text-[11px] font-bold text-zinc-200 group-hover:text-white">{preset.name}</span>
+                    </div>
+                    <p className="text-[9px] text-zinc-500 mt-0.5 leading-tight pl-4">{preset.description}</p>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* GUIDANCE */}
-          <div className="flex flex-col gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/80">GUIDANCE</span>
-            <SField label="APG" hint="[0-1]" value={p.apgScale} onChange={(v) => sf('apgScale', v)} min={0} max={1} defaultValue={1.0} tipKey="apg" />
-            <SField label="Rescale" hint="[0-1]" value={p.cfgRescale} onChange={(v) => sf('cfgRescale', v)} min={0} max={1} defaultValue={0.0} tipKey="cfgRescale" />
-          </div>
-
-          {/* CONDITIONAL CFG */}
-          <div className="flex flex-col gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/80">CONDITIONAL CFG</span>
-            <SField label="CFG min" hint="[0-1]" value={p.cfgIntervalMin} onChange={(v) => sf('cfgIntervalMin', v)} min={0} max={1} defaultValue={0.0} tipKey="cfgIntervalMin" />
-            <SField label="CFG max" hint="[0-1]" value={p.cfgIntervalMax} onChange={(v) => sf('cfgIntervalMax', v)} min={0} max={1} defaultValue={1.0} tipKey="cfgIntervalMax" />
-            <SField label="Norm thr." hint="[0-100]" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} defaultValue={0.0} tipKey="cfgNormThreshold" />
-          </div>
-
-          {/* SAMPLING SCHEDULE SHIFT */}
-          <div className="flex flex-col gap-2 min-w-0">
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/80">SAMPLING SCHEDULE SHIFT</span>
-            <div className="grid grid-cols-[1fr_1fr_1fr_70px] gap-2">
-              {/* LogSNR */}
-              <div onClick={(e) => { if (!(e.target as HTMLElement).closest('input, button')) sf('shiftMode', 'LogSNR'); }}
-                className={`cursor-pointer rounded-lg p-2 border transition-all ${p.shiftMode === 'LogSNR' ? 'bg-purple-600/10 border-purple-500/30' : 'bg-black/20 border-transparent hover:border-white/10'}`}>
-                <div className={`text-[10px] font-bold mb-1.5 ${p.shiftMode === 'LogSNR' ? 'text-purple-300' : 'text-zinc-400'}`}>LogSNR</div>
-                <div className="flex flex-col gap-1">
-                  <Spin label="Anchor length" value={p.logsnrAnchorLength} onChange={(v) => sf('logsnrAnchorLength', v)} min={100} max={10000} step={100} tipKey="logsnrAnchorLength" />
-                  <Spin label="Anchor logSNR" value={p.logsnrAnchorLogsnr} onChange={(v) => sf('logsnrAnchorLogsnr', v)} min={-12} max={0} step={0.1} tipKey="logsnrAnchorLogsnr" />
-                  <Spin label="Rate" value={p.logsnrRate} onChange={(v) => sf('logsnrRate', v)} min={-2} max={2} step={0.05} tipKey="logsnrRate" />
-                  <Spin label="logSNR end" value={p.logsnrEnd} onChange={(v) => sf('logsnrEnd', v)} min={-2} max={6} step={0.1} tipKey="logsnrEnd" />
-                </div>
+          {/* Controls */}
+          <div className="hardware-card flex flex-col shrink-0">
+            <span className={`${sectionTitle} mb-1.5`}>CONTROLS</span>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-zinc-300 w-10 shrink-0">Model</span>
+                <select className="compact-input flex-1" value={p.model} onChange={(e) => {
+                  const m = e.target.value; const isRf = m.endsWith('-rf');
+                  patch({ model: m, steps: isRf ? 50 : 8, cfg: isRf ? 7.0 : 1.0 });
+                }} style={{ colorScheme: 'dark' }}>
+                  <option value="small">Small (ARC)</option>
+                  <option value="medium">Medium (ARC)</option>
+                  <option value="small-rf">Small-RF</option>
+                  <option value="medium-rf">Medium-RF</option>
+                </select>
               </div>
-              {/* Flux */}
-              <div onClick={(e) => { if (!(e.target as HTMLElement).closest('input, button')) sf('shiftMode', 'Flux'); }}
-                className={`cursor-pointer rounded-lg p-2 border transition-all ${p.shiftMode === 'Flux' ? 'bg-purple-600/10 border-purple-500/30' : 'bg-black/20 border-transparent hover:border-white/10'}`}>
-                <div className={`text-[10px] font-bold mb-1.5 ${p.shiftMode === 'Flux' ? 'text-purple-300' : 'text-zinc-400'}`}>Flux</div>
-                <div className="flex flex-col gap-1">
-                  <Spin label="Min seq len" value={p.fluxMinLen} onChange={(v) => sf('fluxMinLen', v)} min={1} max={10000} tipKey="fluxMinLen" />
-                  <Spin label="Max seq len" value={p.fluxMaxLen} onChange={(v) => sf('fluxMaxLen', v)} min={1} max={10000} tipKey="fluxMaxLen" />
-                  <Spin label="Alpha min" value={p.fluxAlphaMin} onChange={(v) => sf('fluxAlphaMin', v)} min={0.1} max={20} step={0.1} tipKey="fluxAlphaMin" />
-                  <Spin label="Alpha max" value={p.fluxAlphaMax} onChange={(v) => sf('fluxAlphaMax', v)} min={0.1} max={20} step={0.1} tipKey="fluxAlphaMax" />
-                </div>
-              </div>
-              {/* Full */}
-              <div onClick={(e) => { if (!(e.target as HTMLElement).closest('input, button')) sf('shiftMode', 'Full'); }}
-                className={`cursor-pointer rounded-lg p-2 border transition-all ${p.shiftMode === 'Full' ? 'bg-purple-600/10 border-purple-500/30' : 'bg-black/20 border-transparent hover:border-white/10'}`}>
-                <div className={`text-[10px] font-bold mb-1.5 ${p.shiftMode === 'Full' ? 'text-purple-300' : 'text-zinc-400'}`}>Full</div>
-                <div className="flex flex-col gap-1">
-                  <Spin label="Base shift" value={p.fullBaseShift} onChange={(v) => sf('fullBaseShift', v)} min={0} max={5} step={0.1} tipKey="fullBaseShift" />
-                  <Spin label="Max shift" value={p.fullMaxShift} onChange={(v) => sf('fullMaxShift', v)} min={0} max={5} step={0.1} tipKey="fullMaxShift" />
-                  <Spin label="Min length" value={p.fullMinLen} onChange={(v) => sf('fullMinLen', v)} min={1} max={10000} tipKey="fullMinLen" />
-                  <Spin label="Max length" value={p.fullMaxLen} onChange={(v) => sf('fullMaxLen', v)} min={1} max={10000} tipKey="fullMaxLen" />
-                </div>
-              </div>
-              {/* None */}
-              <div onClick={() => sf('shiftMode', 'None')}
-                className={`cursor-pointer rounded-lg p-2 border transition-all flex flex-col items-center justify-center ${p.shiftMode === 'None' ? 'bg-purple-600/10 border-purple-500/30' : 'bg-black/20 border-transparent hover:border-white/10'}`}>
-                <div className={`text-[10px] font-bold mb-1.5 ${p.shiftMode === 'None' ? 'text-purple-300' : 'text-zinc-400'}`}>None</div>
-                <Sliders className="w-4 h-4 text-zinc-600" />
+              <CtrlRow label="Dur" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} suffix="s" tipKey="duration" />
+              <CtrlRow label="Steps" value={p.steps} onChange={(v) => sf('steps', v)} min={1} max={500} step={1} tipKey="steps" />
+              <CtrlRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
+              <CtrlRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
+                onRandomize={() => sf('seed', Math.floor(Math.random() * 2147483647))} />
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-zinc-300 w-10 shrink-0">Batch</span>
+                <input type="number" className="compact-input w-16 text-center" min={1} max={16} step={1} value={p.batch} onChange={(e) => sf('batch', +e.target.value || 1)} />
               </div>
             </div>
           </div>
 
-        </div>
-      </div>
-
-      </div>{/* end LEFT MAIN COLUMN */}
-
-      {/* ═══ RIGHT SIDEBAR: OUTPUT | SPECTROGRAM | QUICK ACTIONS ═══ */}
-      <div className="overflow-y-auto flex flex-col gap-2">
-
-        {/* PRESETS DROPDOWN */}
-        <div className="relative">
-          <button
-            onClick={() => setPresetsOpen(!presetsOpen)}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded border border-white/10 bg-white/5 hover:bg-purple-500/15 hover:border-purple-500/30 text-zinc-300 hover:text-white transition-colors"
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            <span className="text-[10px] font-black uppercase tracking-widest">Presets</span>
-            <ChevronDown className={`w-3 h-3 transition-transform ${presetsOpen ? 'rotate-180' : ''}`} />
-          </button>
-          {presetsOpen && (
-            <div className="absolute left-0 top-full mt-1 z-50 w-full max-h-80 overflow-y-auto rounded border border-white/10 bg-[#0c0a12] shadow-2xl">
-              {GENERATION_PRESETS.map((preset) => (
-                <button
-                  key={preset.id}
-                  onClick={() => applyPreset(preset)}
-                  className="w-full text-left px-3 py-2 hover:bg-purple-500/15 border-b border-white/5 last:border-0 transition-colors group"
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: preset.color }} />
-                    <span className="text-[11px] font-bold text-zinc-200 group-hover:text-white">{preset.name}</span>
-                  </div>
-                  <p className="text-[9px] text-zinc-500 mt-0.5 leading-tight pl-4">{preset.description}</p>
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Templates — fills the rail's lower region */}
+          <div className="flex-1 min-h-0"><TemplatesPanel /></div>
         </div>
 
-        {/* OUTPUT */}
-        <div className="hardware-card flex flex-col">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Play className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">OUTPUT (GENERATED AUDIO)</span>
-            <span className={`mono-tag ml-auto ${lastAudioUrl ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
-              {lastAudioUrl ? 'ON' : 'OFF'}
-            </span>
-          </div>
-          {lastAudioUrl ? (
-            <>
-              <div className="mb-2"><FullAudioPlayer src={lastAudioUrl} /></div>
-              <div className="rounded overflow-hidden border border-white/5 bg-black/40 h-27.5">
-                <WaveformPreview audioUrl={lastAudioUrl} height={110} />
-              </div>
-            </>
-          ) : (
-            <div className="rounded border border-dashed border-white/10 bg-zinc-900/50 h-35 flex flex-col items-center justify-center gap-1">
-              <Music className="w-5 h-5 text-zinc-700" />
-              <span className="text-[10px] text-zinc-600">Generate audio to view</span>
-            </div>
-          )}
-        </div>
-
-        {/* SPECTROGRAM */}
-        <div className="hardware-card flex flex-col">
-          <div className="flex items-center gap-1.5 mb-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">SPECTROGRAM</span>
-            <div className="flex gap-0.5 ml-2">
-              {(['mel','stft','chromagram','cqt'] as const).map(tab => (
-                <button key={tab} onClick={() => setSpecTab(tab)}
-                  className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider transition-all
-                    ${specTab === tab ? 'bg-purple-600/30 text-purple-300 border border-purple-500/40' : 'text-zinc-600 hover:text-zinc-400 border border-transparent'}`}>
-                  {tab === 'mel' ? 'Mel' : tab === 'stft' ? 'STFT' : tab === 'chromagram' ? 'Chroma' : 'CQT'}
-                </button>
-              ))}
-            </div>
-            {specLoading && <span className="text-[8px] text-zinc-600 ml-auto animate-pulse font-mono">computing...</span>}
-          </div>
-          <div className="flex gap-1.5 h-35">
-            <div className="flex-1 rounded overflow-hidden bg-black/60 border border-white/5 flex items-center justify-center">
-              {spectrograms && spectrograms[specTab] ? (
-                <img src={`data:image/png;base64,${spectrograms[specTab]}`} alt={`${specTab} spectrogram`} className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-[10px] text-zinc-600 font-mono opacity-40">
-                  {specLoading ? 'generating...' : spectrograms && !spectrograms[specTab] ? 'unavailable' : lastAudioUrl ? 'failed to load' : 'generate audio to view'}
-                </span>
-              )}
-            </div>
-            <div className="flex items-stretch gap-1 shrink-0">
-              <div className="w-3 rounded-sm" style={{ background: 'linear-gradient(to bottom, #f9f871, #35b779, #31688e, #443983, #440154)' }} />
-              <div className="flex flex-col justify-between py-1">
-                {[120,100,80,60,50].map(v => <span key={v} className="text-[7px] text-zinc-500 font-mono leading-none">{v}</span>)}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* QUICK ACTIONS */}
-        <div className="hardware-card flex flex-col">
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 mb-2">QUICK ACTIONS</span>
-          <div className="flex flex-col gap-1.5">
-            {([
-              { label: 'DAW', icon: LayoutList, target: 'daw' as QuickTarget, desc: 'Send to timeline as new track' },
-              { label: 'Init', icon: Mic2, target: 'init' as QuickTarget, desc: 'Load into Init Audio module' },
-              { label: 'Inpaint', icon: Scissors, target: 'inpaint' as QuickTarget, desc: 'Load into Inpainting module' },
-              { label: 'Effects', icon: Sliders, target: 'effects' as QuickTarget, desc: 'Send to Effects tab' },
-            ] as const).map(({ label, icon: Icon, target, desc }) => (
-              <button key={label}
-                disabled={!lastAudioUrl}
-                onClick={() => handleQuickAction(target)}
-                title={desc}
-                className={`group flex items-center gap-2 px-2 py-1.5 rounded border transition-all
-                  ${lastAudioUrl
-                    ? 'border-purple-900/40 bg-purple-950/20 hover:bg-purple-900/30 hover:border-purple-700/50 cursor-pointer'
-                    : 'border-white/5 bg-white/3 opacity-30 cursor-not-allowed'}`}>
-                <Icon className={`w-3.5 h-3.5 ${lastAudioUrl ? 'text-purple-400' : 'text-zinc-600'}`} />
-                <span className={`text-[10px] font-semibold ${lastAudioUrl ? 'text-zinc-300' : 'text-zinc-600'}`}>{label}</span>
+        {/* ── CHIMERA AREA ── */}
+        <div className="hardware-card flex flex-col min-h-0 gap-1.5">
+          {/* tabs — centered + wider */}
+          <div className="relative flex items-center justify-center gap-2 shrink-0">
+            <button onClick={() => setHeroTab('chimera')} className={tabBtn(heroTab === 'chimera')}>
+              <Layers className="w-3 h-3" /> Chimera
+            </button>
+            <button onClick={() => lastAudioUrl && setHeroTab('compare')} disabled={!lastAudioUrl}
+              className={`${tabBtn(heroTab === 'compare')} disabled:opacity-30 disabled:cursor-not-allowed`}>
+              <AudioWaveform className="w-3 h-3" /> Compare
+            </button>
+            {heroTab === 'compare' && (
+              <button onClick={() => setCmpOverlay((v) => !v)}
+                className={`absolute right-0 px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-colors ${cmpOverlay ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
+                {cmpOverlay ? 'Overlay' : 'Stacked'}
               </button>
-            ))}
+            )}
+          </div>
+
+          {/* CHIMERA tab */}
+          {heroTab === 'chimera' && (
+            <div className="flex-1 min-h-0 flex flex-col gap-1.5">
+              {/* Renderweave / latent visual strip */}
+              <div className="shrink-0 h-12 rounded-lg border border-purple-500/20 overflow-hidden relative bg-linear-to-r from-purple-900/30 via-fuchsia-900/15 to-cyan-900/25 flex items-center justify-center">
+                <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_30%_50%,rgba(168,85,247,0.5),transparent_60%),radial-gradient(circle_at_75%_50%,rgba(34,211,238,0.4),transparent_55%)]" />
+                <div className="relative flex items-center gap-2 text-purple-200/80">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Renderweave · Latent</span>
+                </div>
+              </div>
+
+              {/* SAMPLER(+TEMP) | chimera STACK (~prompt width) | SCHEDULE(+FX) */}
+              <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) 600px minmax(0,1fr)' }}>
+
+                {/* SAMPLER column — TEMP knobs ride above the faders */}
+                <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
+                  <span className={subTitle}>TEMP</span>
+                  <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
+                    <SlideKnob label="Init nz" value={p.initNoise} onChange={(v) => sf('initNoise', v)} min={0} max={1} tipKey="initNoise" size={32} />
+                    <SlideKnob label="CFG min" value={p.cfgIntervalMin} onChange={(v) => sf('cfgIntervalMin', v)} min={0} max={1} tipKey="cfgIntervalMin" size={32} />
+                    <SlideKnob label="CFG max" value={p.cfgIntervalMax} onChange={(v) => sf('cfgIntervalMax', v)} min={0} max={1} tipKey="cfgIntervalMax" size={32} />
+                  </div>
+                  <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                    <span className={`${subTitle} shrink-0`}>SAMPLER</span>
+                    <select className="compact-input flex-1 h-6 py-0 text-[9px]" value={p.samplerType} onChange={(e) => sf('samplerType', e.target.value)} style={{ colorScheme: 'dark' }}>
+                      <option value="pingpong">pingpong</option><option value="euler">euler</option>
+                      <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
+                    </select>
+                  </div>
+                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5">
+                    <SlideFader label="Sigma" value={p.sigmaMax} onChange={(v) => sf('sigmaMax', v)} min={0} max={1} tipKey="sigmaMax" />
+                    <SlideFader label="DurPad" value={p.durationPaddingSec} onChange={(v) => sf('durationPaddingSec', v)} min={0} max={30} step={0.1} tipKey="durationPadding" />
+                    <SlideFader label="APG" value={p.apgScale} onChange={(v) => sf('apgScale', v)} min={0} max={1} tipKey="apg" />
+                    <SlideFader label="Rescale" value={p.cfgRescale} onChange={(v) => sf('cfgRescale', v)} min={0} max={1} tipKey="cfgRescale" />
+                  </div>
+                </div>
+
+                {/* CENTER — chimera stack, full height */}
+                <div className="rounded-lg bg-black/20 border border-purple-500/15 p-2 min-h-0 overflow-y-auto" data-chimera-anchor="init-audio">
+                  <ChimeraStack />
+                </div>
+
+                {/* SCHEDULE column — FX thin rows ride above the faders */}
+                <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
+                  <span className={subTitle}>FX</span>
+                  <div className="flex items-center justify-around gap-1 shrink-0">
+                    <SlideKnob label="Norm thr" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} tipKey="cfgNormThreshold" size={34} />
+                    <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
+                    <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
+                    <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
+                  </div>
+                  <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                    <span className={`${subTitle} shrink-0`}>SHIFT</span>
+                    <div className="grid grid-cols-4 gap-0.5 flex-1">
+                      {SHIFT_MODES.map((m) => (
+                        <button key={m} onClick={() => sf('shiftMode', m)}
+                          className={`px-0.5 py-0.5 rounded text-[7px] font-bold uppercase tracking-wide transition-colors ${p.shiftMode === m ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5">
+                    {shiftFaders()}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* COMPARE tab — fills the whole area */}
+          {heroTab === 'compare' && (
+            <div className="flex-1 min-h-0 flex flex-col gap-1.5">
+              <div className="flex items-center gap-1 flex-wrap shrink-0">
+                {([
+                  { k: 'output', label: 'Output WF', on: !!lastAudioUrl },
+                  { k: 'init', label: 'Init WF', on: !!initAudioUrl },
+                  { k: 'mel', label: 'Mel', on: true },
+                  { k: 'stft', label: 'STFT', on: true },
+                  { k: 'chromagram', label: 'Chroma', on: true },
+                  { k: 'cqt', label: 'CQT', on: true },
+                ] as const).map(({ k, label, on }) => (
+                  <button key={k} disabled={!on} onClick={() => toggleLayer(k)}
+                    className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider transition-colors disabled:opacity-25 disabled:cursor-not-allowed ${cmpLayers.has(k) ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'}`}>
+                    {label}
+                  </button>
+                ))}
+                {specLoading && <span className="text-[8px] text-zinc-600 ml-1 animate-pulse font-mono">analyzing…</span>}
+              </div>
+              {lastAudioUrl && <div className="shrink-0"><FullAudioPlayer src={lastAudioUrl} /></div>}
+              <div className={`flex-1 min-h-0 ${cmpOverlay ? 'relative' : 'flex flex-col gap-1.5 overflow-y-auto'}`}>
+                {cmpLayers.has('output') && lastAudioUrl && (
+                  <div className={cmpOverlay ? 'absolute inset-0' : 'h-28 shrink-0'}>
+                    <div className="h-full rounded overflow-hidden border border-white/5 bg-black/40">
+                      <WaveformPreview audioUrl={lastAudioUrl} height={cmpOverlay ? 220 : 108} />
+                    </div>
+                  </div>
+                )}
+                {cmpLayers.has('init') && initAudioUrl && (
+                  <div className={cmpOverlay ? 'absolute inset-0 opacity-50 mix-blend-screen pointer-events-none' : 'h-28 shrink-0'}>
+                    <div className="h-full rounded overflow-hidden border border-cyan-500/20 bg-black/20">
+                      <WaveformPreview audioUrl={initAudioUrl} height={cmpOverlay ? 220 : 108} />
+                    </div>
+                  </div>
+                )}
+                {(['mel', 'stft', 'chromagram', 'cqt'] as const).filter((t) => cmpLayers.has(t)).map((t, i) => (
+                  <div key={t} className={cmpOverlay ? `absolute inset-0 ${i > 0 || cmpLayers.has('output') || cmpLayers.has('init') ? 'opacity-60 mix-blend-screen' : ''} pointer-events-none` : 'flex-1 min-h-28'}>
+                    <div className="h-full rounded overflow-hidden border border-white/5 bg-black/60 flex items-center justify-center">
+                      {spectrograms && spectrograms[t] ? (
+                        <img src={`data:image/png;base64,${spectrograms[t]}`} alt={`${t} spectrogram`} className="w-full h-full object-fill" />
+                      ) : (
+                        <span className="text-[9px] text-zinc-600 font-mono">{specLoading ? 'generating…' : 'unavailable'}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {cmpLayers.size === 0 && (
+                  <div className="h-full flex items-center justify-center"><span className="text-[10px] text-zinc-600">Select layers to inspect</span></div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── OUTPUT RAIL: LoRA · Output · Quick Actions ── */}
+        <div className="flex flex-col gap-1.5 min-h-0 overflow-y-auto">
+            {/* LoRA — above Output */}
+            <div className="hardware-card flex flex-col shrink-0">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className={`${sectionTitle} flex items-center gap-1`}>LORA <InfoTip {...RICH_TOOLTIPS.lora} /></span>
+                <button className="btn-ghost cursor-pointer p-1" onClick={() => sf('loras', [...p.loras, { name: '', weight: 1.0, file: null }])}>
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="overflow-y-auto min-h-0 max-h-16">
+                {p.loras.length > 0 ? p.loras.map((lora, i) => (
+                  <div key={i} className="flex items-center gap-1 bg-purple-500/5 rounded px-1.5 py-1 border border-purple-500/10 mb-1">
+                    {lora.file ? (
+                      <span className="text-[9px] text-purple-200 flex-1 truncate">{lora.file.name}</span>
+                    ) : (
+                      <button className="btn-ghost cursor-pointer text-[9px]" onClick={() => {
+                        const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.safetensors,.pt,.bin';
+                        inp.onchange = () => { if (inp.files?.[0]) { const u = p.loras.map((l, idx) => idx === i ? { ...l, file: inp.files![0], name: inp.files![0].name } : l); sf('loras', u); } };
+                        inp.click();
+                      }}>File</button>
+                    )}
+                    <input type="number" className="compact-input w-10 text-center text-[9px]" value={lora.weight} step={0.05} min={0} max={2}
+                      onChange={(e) => { const u = p.loras.map((l, idx) => idx === i ? { ...l, weight: +e.target.value } : l); sf('loras', u); }} />
+                    <button className="text-zinc-500 hover:text-red-400 cursor-pointer" onClick={() => sf('loras', p.loras.filter((_, idx) => idx !== i))}><X className="w-3 h-3" /></button>
+                  </div>
+                )) : <span className="text-[9px] text-zinc-600 font-mono">No LoRAs added</span>}
+              </div>
+            </div>
+
+            {/* Output settings */}
+            <div className="hardware-card flex flex-col shrink-0">
+              <span className={`${sectionTitle} mb-1.5`}>OUTPUT</span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-zinc-300 flex items-center gap-1">Format <InfoTip {...RICH_TOOLTIPS.outputFormat} /></label>
+                  <select className="compact-input w-full mt-0.5" value={p.fileFormat} onChange={(e) => sf('fileFormat', e.target.value)} style={{ colorScheme: 'dark' }}>
+                    <option value="wav">WAV</option><option value="flac">FLAC</option><option value="ogg">OGG</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-300 flex items-center gap-1">Naming <InfoTip {...RICH_TOOLTIPS.fileNaming} /></label>
+                  <select className="compact-input w-full mt-0.5" value={p.fileNaming} onChange={(e) => sf('fileNaming', e.target.value)} style={{ colorScheme: 'dark' }}>
+                    <option value="verbose">Verbose</option><option value="prompt">Prompt</option><option value="seed">Seed</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick actions */}
+            <div className="hardware-card flex flex-col shrink-0">
+              <span className={`${sectionTitle} mb-1.5`}>QUICK ACTIONS</span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {([
+                  { label: 'DAW', icon: LayoutList, target: 'daw' as QuickTarget, desc: 'Send to timeline as new track' },
+                  { label: 'Init', icon: Mic2, target: 'init' as QuickTarget, desc: 'Load into Init Audio' },
+                  { label: 'Inpaint', icon: Scissors, target: 'inpaint' as QuickTarget, desc: 'Load into Inpainting' },
+                  { label: 'Effects', icon: Sliders, target: 'effects' as QuickTarget, desc: 'Send to Effects tab' },
+                ] as const).map(({ label, icon: Icon, target, desc }) => (
+                  <button key={label} disabled={!lastAudioUrl} onClick={() => handleQuickAction(target)} title={desc}
+                    className={`group flex items-center gap-1.5 px-2 py-1.5 rounded border transition-all ${lastAudioUrl ? 'border-purple-900/40 bg-purple-950/20 hover:bg-purple-900/30 hover:border-purple-700/50 cursor-pointer' : 'border-white/5 bg-white/3 opacity-30 cursor-not-allowed'}`}>
+                    <Icon className={`w-3.5 h-3.5 ${lastAudioUrl ? 'text-purple-400' : 'text-zinc-600'}`} />
+                    <span className={`text-[10px] font-semibold ${lastAudioUrl ? 'text-zinc-300' : 'text-zinc-600'}`}>{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+        </div>
+      </div>
+
+      {/* ═══ BOTTOM: edge-to-edge visualizers flanking the prompt ═══ */}
+      <div className="shrink-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,560px) minmax(0,1fr)', height: 196 }}>
+        {/* VIZ LEFT — orb tilted +90 (poles oppose the right panel) */}
+        <VisualizerPanel initialMode="orb" orbTilt={90} audioNode={masterAudio} className="border border-purple-500/15" />
+
+        {/* PROMPT */}
+        <div className="hardware-card flex flex-col gap-1.5 min-h-0">
+          <div className="flex items-center justify-between shrink-0">
+            <span className={`${sectionTitle} flex items-center gap-1`}>PROMPT <InfoTip {...RICH_TOOLTIPS.prompt} /></span>
+            <div className="flex items-center gap-1">
+              <SavedPromptsDropdown type="positive" value={p.prompt} onChange={(v) => sf('prompt', v)} />
+              <button
+                onClick={async () => {
+                  if (enhancingPositive || !p.prompt.trim()) return;
+                  setEnhancingPositive(true);
+                  try { const r = await enhanceStableAudioPrompt({ target: 'positive', positivePrompt: p.prompt, negativePrompt: p.negativePrompt }); if (r) sf('prompt', r); }
+                  catch { /* non-fatal */ } finally { setEnhancingPositive(false); }
+                }}
+                disabled={enhancingPositive || !p.prompt.trim()}
+                className="p-1 rounded hover:bg-purple-500/20 text-zinc-500 hover:text-purple-300 transition-colors disabled:opacity-30"
+                title="AI-enhance prompt">
+                {enhancingPositive ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          </div>
+          <div className="relative flex-1 min-h-0">
+            <textarea className="compact-input w-full resize-none h-full"
+              placeholder="120 BPM house loop, deep sub bass, crispy hi-hats, minimal percussion…"
+              value={p.prompt} onChange={(e) => sf('prompt', e.target.value)} maxLength={1000} />
+            <span className="absolute bottom-1 right-2 text-[9px] text-zinc-500">{p.prompt.length}/1000</span>
+          </div>
+          <div className="relative shrink-0">
+            <textarea className="compact-input w-full resize-none h-9"
+              placeholder="negative: vocals, distortion, harshness…"
+              value={p.negativePrompt} onChange={(e) => sf('negativePrompt', e.target.value)} maxLength={500} />
+            <div className="absolute top-1 right-2 flex items-center gap-1">
+              <SavedPromptsDropdown type="negative" value={p.negativePrompt} onChange={(v) => sf('negativePrompt', v)} />
+              <button
+                onClick={async () => {
+                  if (enhancingNegative || !p.negativePrompt.trim()) return;
+                  setEnhancingNegative(true);
+                  try { const r = await enhanceStableAudioPrompt({ target: 'negative', positivePrompt: p.prompt, negativePrompt: p.negativePrompt }); if (r) sf('negativePrompt', r); }
+                  catch { /* non-fatal */ } finally { setEnhancingNegative(false); }
+                }}
+                disabled={enhancingNegative || !p.negativePrompt.trim()}
+                className="p-1 rounded hover:bg-purple-500/20 text-zinc-500 hover:text-purple-300 transition-colors disabled:opacity-30"
+                title="AI-enhance negative prompt">
+                {enhancingNegative ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+              </button>
+            </div>
           </div>
         </div>
-      </div>{/* end RIGHT SIDEBAR */}
 
-    </div>
+        {/* VIZ RIGHT — orb tilted -90 (poles oppose the left panel) */}
+        <VisualizerPanel initialMode="orb" orbTilt={-90} audioNode={masterAudio} className="border border-purple-500/15" />
+      </div>
     </div>
   );
 };
-

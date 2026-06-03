@@ -19,6 +19,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
@@ -79,16 +80,20 @@ def download_audio(url: str) -> DownloadedAudio:
         ydl_opts["ffmpeg_location"] = ff_dir
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        # cast: ydl_opts is an ordinary dict; YoutubeDL's params is a strict
+        # TypedDict (_Params). We build it dynamically, so hand it over as Any.
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as e:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise YtImportError(str(e)) from e
 
     # A playlist URL (despite noplaylist) can yield an info dict with entries.
-    if isinstance(info, dict) and info.get("entries"):
-        entries = [e for e in info["entries"] if e]
-        info = entries[0] if entries else info
+    # `.get` (not []) — "entries" is an optional TypedDict key.
+    if isinstance(info, dict):
+        entries = [e for e in (info.get("entries") or []) if e]
+        if entries:
+            info = entries[0]
 
     produced = sorted(tmpdir.glob("*.opus")) or [
         p for p in tmpdir.iterdir() if p.is_file()

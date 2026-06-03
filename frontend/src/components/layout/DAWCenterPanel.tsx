@@ -7,7 +7,6 @@ import { TrainingView } from '../../views/TrainingView';
 import { LineageView } from '../library/LineageModal';
 import { VJView } from '../../views/VJView';
 import { DJView } from '../../views/DJView';
-import { CenterTabBar } from './CenterTabBar';
 import { useAppUiStore } from '../../state/appUiStore';
 
 /**
@@ -29,9 +28,6 @@ import { useAppUiStore } from '../../state/appUiStore';
  */
 export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const centerTab = useAppUiStore((s) => s.centerTab);
-  const setCenterTab = useAppUiStore((s) => s.setCenterTab);
-  const isRightPanelOpen = useAppUiStore((s) => s.isRightPanelOpen);
-  const setRightPanelOpen = useAppUiStore((s) => s.setRightPanelOpen);
 
   // Track which heavy live-performance tabs have been opened at least
   // once. We only mount DJ / VJ after first visit (so a user who never
@@ -50,16 +46,9 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, [centerTab]);
 
   return (
-    <div className="flex-1 h-full flex flex-col pt-0 px-0 pb-0 gap-2 bg-[#0a080f]/40 relative z-0 min-h-0">
+    <div className="flex-1 h-full flex flex-col pt-1 px-0 pb-0 gap-2 bg-[#0a080f]/40 relative z-0 min-h-0">
 
-      <CenterTabBar
-        activeTab={centerTab}
-        onTabChange={setCenterTab}
-        isRightPanelOpen={isRightPanelOpen}
-        onToggleRightPanel={() => setRightPanelOpen(!isRightPanelOpen)}
-      />
-
-      {/* Main workspace — fills below the tab bar; the active center
+      {/* Main workspace — the tab bar now lives in the global header; the active center
           tab takes the whole area. Bottom panel is rendered globally
           in Shell.tsx, no longer inside this card. */}
       <div className="flex-1 min-h-0 hardware-card flex flex-col mx-2 pt-1">
