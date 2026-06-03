@@ -45,6 +45,7 @@ import { JogWheel } from '../components/audio/JogWheel';
 import { sendSetToVj, sendTrackToVj, isVjSetTargetActive, type VjSetItem } from '../state/vjSetBus';
 import { registerDjMasterHandler, reportDjMasterState } from '../state/djMasterBus';
 import { importUrlToLibrary } from '../lib/onlineImport';
+import { ensureStems } from '../lib/djStems';
 import * as djEngine from '../state/djEngine';
 
 const DJ_TRACK_MIME = 'application/x-thedaw-djtrack';
@@ -391,9 +392,9 @@ export const DJView: React.FC = () => {
           </div>
           {/* FX/STEMS racks flanking the track browser */}
           <div className="shrink-0 grid gap-1.5" style={{ gridTemplateColumns: '168px minmax(0,1fr) 168px', height: 176 }}>
-            <DeckRack deck="A" accent="purple" />
+            <DeckRack deck="A" accent="purple" entryId={deckATrack} />
             <TrackBrowser source={source} setSource={setSource} onLoadDeck={loadDeck} />
-            <DeckRack deck="B" accent="cyan" />
+            <DeckRack deck="B" accent="cyan" entryId={deckBTrack} />
           </div>
         </div>
 
@@ -665,14 +666,40 @@ const Mixer: React.FC<MixerProps> = ({
 const DJ_FX: Array<{ key: djEngine.DjFx; label: string }> = [
   { key: 'flanger', label: 'Flng' }, { key: 'reverb', label: 'Verb' }, { key: 'wahwah', label: 'Wah' },
 ];
-const STEM_PADS = ['Vocal', 'Instru', 'Bass', 'Kick', 'HiHat', 'StemFX'];
+const STEM_LABEL: Record<string, string> = { vocals: 'Voc', drums: 'Drm', bass: 'Bass', other: 'Oth', guitar: 'Gtr', piano: 'Pno' };
+const stemLabel = (n: string) => STEM_LABEL[n.toLowerCase()] ?? (n.charAt(0).toUpperCase() + n.slice(1, 4));
 
-const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan' }> = ({ deck, accent }) => {
+const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: string | null }> = ({ deck, accent, entryId }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
   // Per-deck FX wet amounts (0..1), wired live to the engine (D5). Lazy-builds
   // the deck's FX rack on first non-zero touch.
   const [fx, setFx] = useState<Record<string, number>>({ flanger: 0, reverb: 0, wahwah: 0 });
   const onFx = (k: djEngine.DjFx, v: number) => { setFx((p) => ({ ...p, [k]: v })); djEngine.setDeckFx(deck, k, v); };
+
+  // Live stems (D4): load (separate if needed) cached stems, then per-stem faders.
+  const [stemNames, setStemNames] = useState<string[]>(() => djEngine.getDeckStemNames(deck));
+  const [stemLevels, setStemLevels] = useState<Record<string, number>>({});
+  const [stemBusy, setStemBusy] = useState(false);
+  const [stemMsg, setStemMsg] = useState<string | null>(null);
+  // The engine clears stems on track change (loadDeck) — mirror that here.
+  useEffect(() => { setStemNames(djEngine.getDeckStemNames(deck)); setStemMsg(null); }, [entryId, deck]);
+  const loadStems = async () => {
+    if (!entryId || stemBusy) return;
+    setStemBusy(true); setStemMsg('checking…');
+    try {
+      const refs = await ensureStems(entryId, { stems: 4, quality: 'fast' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
+      if (!refs.length) { setStemMsg('no stems'); return; }
+      setStemMsg('loading…');
+      const names = await djEngine.loadDeckStems(deck, refs);
+      setStemNames(names);
+      setStemLevels(Object.fromEntries(names.map((n) => [n, 1])));
+      setStemMsg(null);
+    } catch (e) {
+      setStemMsg(e instanceof Error ? e.message.slice(0, 24) : 'failed');
+    } finally { setStemBusy(false); }
+  };
+  const onStem = (name: string, v: number) => { setStemLevels((p) => ({ ...p, [name]: v })); djEngine.setStemGain(deck, name, v); };
+
   return (
     <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
@@ -686,17 +713,29 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan' }> = ({ de
             <SlideKnob key={key} label={label} value={fx[key]} onChange={(v) => onFx(key, v)} min={0} max={1} step={0.01} size={30} centerReadout />
           ))}
         </div>
-        {/* stems — coming soon (D4) */}
+        {/* Live stems (D4) — per-stem gain faders, or a load/separate button */}
         <div className="mt-auto">
           <div className="flex items-center gap-1 mb-1">
-            <span className="text-[7px] font-black uppercase tracking-widest text-zinc-600">Stems</span>
-            <span className="text-[7px] font-bold uppercase tracking-wider text-zinc-600 px-1 rounded bg-white/5">soon</span>
+            <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Stems</span>
+            {stemNames.length === 0 ? (
+              <button onClick={() => void loadStems()} disabled={!entryId || stemBusy}
+                className="ml-auto text-[7px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/20 disabled:opacity-30 disabled:pointer-events-none"
+                title={entryId ? 'Separate this track into stems (cached if already done) → 4 live faders' : 'Load a track first'}>
+                {stemBusy ? (stemMsg ?? 'working…') : 'Load'}
+              </button>
+            ) : stemMsg ? (
+              <span className="ml-auto text-[7px] font-mono text-rose-300 truncate" title={stemMsg}>{stemMsg}</span>
+            ) : null}
           </div>
-          <div className="grid grid-cols-3 gap-1">
-            {STEM_PADS.map((s) => (
-              <div key={s} className="rounded border border-white/8 bg-black/30 py-1 text-center text-[7px] font-mono uppercase tracking-wide text-zinc-600" title="Live stem control — coming soon (D4)">{s}</div>
-            ))}
-          </div>
+          {stemNames.length > 0 ? (
+            <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${Math.min(stemNames.length, 4)}, minmax(0,1fr))` }}>
+              {stemNames.slice(0, 4).map((name) => (
+                <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStem(name, v)} min={0} max={1} step={0.01} size={28} centerReadout />
+              ))}
+            </div>
+          ) : (
+            stemBusy && <div className="text-[8px] font-mono text-zinc-600 truncate" title={stemMsg ?? ''}>{stemMsg ?? 'working…'}</div>
+          )}
         </div>
       </div>
     </div>
