@@ -53,9 +53,11 @@ export interface DeckStatus {
 interface Deck {
   delayComp: DelayNode; // A/B latency match when one deck is key-locked
   trim: GainNode; // auto-gain / leveling trim (independent of crossfader)
+  vol: GainNode; // channel volume fader (manual), post-trim
   low: BiquadFilterNode;
   mid: BiquadFilterNode;
   high: BiquadFilterNode;
+  filter: BiquadFilterNode; // single-knob DJ filter (LP↔HP sweep), post-EQ
   gain: GainNode; // crossfader-controlled
   // Key-lock (master tempo): a Signalsmith Stretch node inserted as a LIVE pitch
   // corrector. The source still rides playbackRate for speed; the insert shifts
@@ -153,21 +155,29 @@ function buildDeck(id: DeckId): Deck {
   const high = ctx.createBiquadFilter();
   high.type = 'highshelf';
   high.frequency.value = 3200;
+  // Single-knob DJ filter: flat (allpass) at center, sweeps to LP / HP.
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'allpass';
+  filter.frequency.value = 1000;
+  filter.Q.value = 0.0001;
   const gain = ctx.createGain();
-  const trim = ctx.createGain(); // auto-gain / leveling, before EQ + crossfader
+  const trim = ctx.createGain(); // auto-gain / leveling, before the channel fader
   trim.gain.value = 1;
+  const vol = ctx.createGain(); // channel volume fader (manual), post-trim
+  vol.gain.value = 1;
   const delayComp = ctx.createDelay(1.0); // 0 normally; matches A/B key-lock latency
 
   const cg = crossGains(crossfade);
   gain.gain.value = id === 'A' ? cg.a : cg.b;
 
-  // src → [stretch?] → delayComp → trim → low → mid → high → gain(crossfader) → djMaster
+  // src → [stretch?] → delayComp → trim → vol → low → mid → high → filter → gain(crossfader) → djMaster
   delayComp.connect(trim);
-  trim.connect(low);
-  low.connect(mid).connect(high).connect(gain).connect(master);
+  trim.connect(vol);
+  vol.connect(low);
+  low.connect(mid).connect(high).connect(filter).connect(gain).connect(master);
 
   const deck: Deck = {
-    delayComp, trim, low, mid, high, gain,
+    delayComp, trim, vol, low, mid, high, filter, gain,
     stretch: null, stretchLatency: 0, keylock: false,
     buffer: null, src: null, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
@@ -467,6 +477,37 @@ export function setDeckTrim(id: DeckId, db: number): void {
   d.trim.gain.setTargetAtTime(lin, ctx.currentTime, RAMP_TC);
 }
 
+/** Channel volume fader (linear, 0..1). 1 = unity. */
+export function setDeckVolume(id: DeckId, level: number): void {
+  const d = getDeck(id);
+  const ctx = getEngineCtx();
+  d.vol.gain.setTargetAtTime(clamp(level, 0, 1), ctx.currentTime, RAMP_TC);
+}
+
+/** Single-knob DJ filter. amount in [-1, 1]: 0 = bypass (flat), <0 sweeps a
+ *  lowpass down toward 200 Hz, >0 sweeps a highpass up toward 8 kHz. Resonance
+ *  rises with travel for the classic filter "bite". */
+export function setDeckFilter(id: DeckId, amount: number): void {
+  const d = getDeck(id);
+  const ctx = getEngineCtx();
+  const a = clamp(amount, -1, 1);
+  const f = d.filter;
+  const now = ctx.currentTime;
+  if (Math.abs(a) < 0.02) {
+    f.type = 'allpass';
+    f.frequency.setTargetAtTime(1000, now, RAMP_TC);
+    f.Q.setTargetAtTime(0.0001, now, RAMP_TC);
+  } else if (a < 0) {
+    f.type = 'lowpass';
+    f.frequency.setTargetAtTime(20000 * Math.pow(200 / 20000, -a), now, RAMP_TC);
+    f.Q.setTargetAtTime(1 + -a * 6, now, RAMP_TC);
+  } else {
+    f.type = 'highpass';
+    f.frequency.setTargetAtTime(20 * Math.pow(8000 / 20, a), now, RAMP_TC);
+    f.Q.setTargetAtTime(1 + a * 6, now, RAMP_TC);
+  }
+}
+
 /** Crossfader position in [-1, 1] (equal-power). */
 export function setCrossfade(x: number): void {
   crossfade = clamp(x, -1, 1);
@@ -561,9 +602,11 @@ export function dispose(): void {
       if (d.stretch) { try { void d.stretch.stop(); } catch { /* gone */ } d.stretch.disconnect(); }
       d.delayComp.disconnect();
       d.trim.disconnect();
+      d.vol.disconnect();
       d.low.disconnect();
       d.mid.disconnect();
       d.high.disconnect();
+      d.filter.disconnect();
       d.gain.disconnect();
     } catch { /* already gone */ }
     d.buffer = null;

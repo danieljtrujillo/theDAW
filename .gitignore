@@ -205,3 +205,8 @@ _RECOVERY_BACKUP/
 
 # Reference PDFs kept locally, not version-controlled (large binaries)
 docs/*.pdf
+
+# Local archive of superseded/scratch files (see archive/README.md) — not tracked
+/archive/
+.vite/
+.orb_attachments/

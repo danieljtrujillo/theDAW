@@ -33,10 +33,13 @@ interface SlideKnobProps {
   size?: number;
   /** Render the value in the CENTER of the dial, colored by the dial value. */
   centerReadout?: boolean;
+  /** Bipolar: fill the arc OUTWARD from the 12-o'clock midpoint (neutral at
+   *  center), for ±params like EQ / filter / pitch. */
+  center?: boolean;
 }
 
 const SlideKnobImpl: React.FC<SlideKnobProps> = ({
-  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false,
+  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false, center = false,
 }) => {
   const dragging = useRef(false);
   const lastY = useRef(0);
@@ -46,10 +49,17 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
   const t = clamp((value - min) / span, 0, 1);
   const base = colorAt(t);
   const sweep = t * 270;
-  // gap centered at the BOTTOM: sweep clockwise from 7:30 (225°)
-  const arcBg =
-    `conic-gradient(from 225deg, ${rgb(base)} 0deg ${sweep}deg, ` +
-    `rgba(255,255,255,0.09) ${sweep}deg 270deg, rgba(255,255,255,0) 270deg 360deg)`;
+  // gap centered at the BOTTOM: sweep clockwise from 7:30 (225°). In `center`
+  // (bipolar) mode the fill grows out from the 12-o'clock midpoint (135° into
+  // the sweep) so the dial reads neutral at the center value.
+  const MIDPOINT = 135;
+  const fStart = Math.min(sweep, MIDPOINT);
+  const fEnd = Math.max(sweep, MIDPOINT);
+  const arcBg = center
+    ? `conic-gradient(from 225deg, rgba(255,255,255,0.09) 0deg ${fStart}deg, ${rgb(base)} ${fStart}deg ${fEnd}deg, ` +
+      `rgba(255,255,255,0.09) ${fEnd}deg 270deg, rgba(255,255,255,0) 270deg 360deg)`
+    : `conic-gradient(from 225deg, ${rgb(base)} 0deg ${sweep}deg, ` +
+      `rgba(255,255,255,0.09) ${sweep}deg 270deg, rgba(255,255,255,0) 270deg 360deg)`;
 
   const snap = (v: number) => clamp(+(Math.round(v / step) * step).toFixed(6), min, max);
   const fmt = (v: number) =>

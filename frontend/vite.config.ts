@@ -15,6 +15,23 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      // Modern output → less transpilation across the ~3.5k modules.
+      target: 'es2022',
+      rollupOptions: {
+        output: {
+          // Split the big, stable leaf vendors into their own long-cached
+          // chunks so an app-code edit doesn't bust them, and the main chunk
+          // shrinks. (three + react-force-graph are already code-split via
+          // dynamic import in CymaticsVisualizer's lazy wrapper + LineageModal.)
+          manualChunks: {
+            'react-vendor': ['react', 'react-dom'],
+            wavesurfer: ['wavesurfer.js', '@wavesurfer/react'],
+            icons: ['lucide-react'],
+          },
+        },
+      },
+    },
     server: {
       // Auto-reload is OFF BY DEFAULT so agent edits don't nuke app state.
       // To turn live reload back on: set ENABLE_HMR=true in the environment.

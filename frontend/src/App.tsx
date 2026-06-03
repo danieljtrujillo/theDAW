@@ -13,6 +13,7 @@ import { AssistantPanel } from './orb-kit/AssistantPanel';
 import { logInfo, logWarn } from './state/logStore';
 import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
+import { useLibraryStore } from './state/libraryStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
@@ -58,6 +59,21 @@ export default function App() {
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
   }, [refreshHealth]);
+
+  // Populate the library store the moment the backend port is bound — so the
+  // right-side Library / DJ source panels are filled on startup, not only when
+  // the Library tab is first opened. Idle-scheduled so it doesn't pile onto
+  // first paint; load() is guarded by loaded/loading, so the Library tab
+  // mounting later won't double-fetch.
+  useEffect(() => {
+    if (!isBackendReady) return;
+    const lib = useLibraryStore.getState();
+    if (lib.loaded || lib.loading) return;
+    type IdleCb = (cb: () => void, opts?: { timeout: number }) => number;
+    const ric = (window as unknown as { requestIdleCallback?: IdleCb }).requestIdleCallback;
+    if (typeof ric === 'function') ric(() => void useLibraryStore.getState().load(), { timeout: 1500 });
+    else setTimeout(() => void useLibraryStore.getState().load(), 0);
+  }, [isBackendReady]);
 
   useEffect(() => {
     logInfo('system', 'theDAW UI initialized');

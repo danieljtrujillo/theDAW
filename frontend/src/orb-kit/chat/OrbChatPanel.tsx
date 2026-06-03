@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Paperclip } from 'lucide-react';
-import { useOrbChat, OrbChatMessage, OrbChatConfig } from './useOrbChat';
+import { useOrbChat, type OrbChatMessage, type OrbChatConfig } from './useOrbChat';
 import { ProviderModelSelector } from '../ProviderModelSelector';
 
 export interface OrbChatPanelProps extends OrbChatConfig {

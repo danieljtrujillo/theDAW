@@ -13,9 +13,10 @@ import { usePlayerStore, getMasterGain } from '../state/playerStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
+import { FooterScrubWave } from '../components/audio/FooterScrubWave';
 import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideRow } from '../components/audio/SlideRow';
-import { VisualizerPanel } from '../components/audio/CymaticsVisualizer';
+import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { EffectsVizPanel } from './EffectsVizPanel';
 import {
   EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory,
@@ -495,7 +496,7 @@ export const MixPanel: React.FC = () => {
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 relative">
             {outputUrl ? (
-              <WaveformPreview audioUrl={outputUrl} height={108} />
+              <FooterScrubWave src={outputUrl} height={108} />
             ) : (
               <div className="h-full grid place-items-center">
                 <span className="text-[10px] font-mono text-zinc-600">output appears after processing</span>
