@@ -267,6 +267,20 @@
     color 0.16s ease;
 }
 
+/* Right-side ruler: scale sits to the RIGHT of the track, tick nearest the
+   track and the number on the outer (right) edge — a mirror of the default. */
+.ts-scale--right {
+  right: auto;
+  left: calc(50% + var(--track-w) / 2 + var(--scale-gap));
+}
+.ts-scale--right .ts-mark {
+  right: auto;
+  left: 0;
+  justify-content: flex-start;
+  flex-direction: row-reverse;
+  transform-origin: left center;
+}
+
 .ts-num {
   position: relative;
   z-index: 1;
