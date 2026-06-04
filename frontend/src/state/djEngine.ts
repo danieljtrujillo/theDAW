@@ -48,6 +48,7 @@ export interface DeckStatus {
   slip: boolean;
   pitchPct: number;
   keylock: boolean;
+  stems: string[]; // loaded stem names (D4); empty = full-track mode
 }
 
 export type DjFx = 'flanger' | 'reverb' | 'wahwah';
@@ -63,6 +64,15 @@ interface DeckFx {
   lfoFlanger: OscillatorNode;
   lfoWah: OscillatorNode;
   nodes: AudioNode[];
+}
+
+/** One separated stem playing in sync on a deck (D4): its own gain (live fader)
+ *  feeds the deck's srcBus alongside the other stems. */
+interface DeckStem {
+  name: string;
+  buffer: AudioBuffer;
+  gain: GainNode;
+  level: number;
 }
 
 interface Deck {
@@ -82,7 +92,10 @@ interface Deck {
   stretchLatency: number; // live-input latency (sec) of the stretch node
   keylock: boolean;
   buffer: AudioBuffer | null;
-  src: AudioBufferSourceNode | null; // current playing source (recreated per start)
+  srcBus: GainNode; // fixed sum node all sources feed → [stretch?] → delayComp
+  srcs: AudioBufferSourceNode[]; // current playing source(s): 1 full / N stems, recreated per start
+  stems: DeckStem[] | null; // D4 live stems (per-stem gain → srcBus); null = full-track mode
+  stemMode: boolean;
   playing: boolean;
   startCtxTime: number; // ctx.currentTime when src started
   startOffset: number; // buffer position (sec) at that start / paused position
@@ -102,6 +115,8 @@ interface Deck {
   virtualStart: number;
   // FX rack (D5) — lazily built on first setDeckFx; spliced filter → fx → gain.
   fx: DeckFx | null;
+  // Cue/headphone send (D6): filter → cueSend → cueBus → headphone sink. 0 = off.
+  cueSend: GainNode;
 }
 
 const RAMP_TC = 0.012;
@@ -109,6 +124,12 @@ const RAMP_TC = 0.012;
 let djMaster: GainNode | null = null;
 let limiter: DynamicsCompressorNode | null = null;
 let limiterEnabled = true; // brickwall on the DJ bus for clip safety (D5)
+// Cue/headphone bus (D6): per-deck cueSend → cueBus → MediaStreamDestination →
+// a hidden <audio> whose setSinkId routes pre-listen to a second (headphone) output.
+let cueBus: GainNode | null = null;
+let cueDest: MediaStreamAudioDestinationNode | null = null;
+let cueAudioEl: HTMLAudioElement | null = null;
+let cueSinkId = '';
 const decks: Partial<Record<DeckId, Deck>> = {};
 let crossfade = 0; // -1 = full A, 0 = center, +1 = full B
 let rafId = 0;
@@ -133,6 +154,19 @@ function ensureMaster(): GainNode {
   limiter.connect(getMasterGain());
   djMaster.connect(limiterEnabled ? limiter : getMasterGain());
   return djMaster;
+}
+
+/** The cue (headphone) bus: a MediaStreamDestination fed by per-deck cue sends,
+ *  played through a hidden <audio> we can route to a 2nd output via setSinkId. */
+function ensureCueBus(): GainNode {
+  if (cueBus) return cueBus;
+  const ctx = getEngineCtx();
+  cueBus = ctx.createGain();
+  cueDest = ctx.createMediaStreamDestination();
+  cueBus.connect(cueDest);
+  cueAudioEl = new Audio();
+  cueAudioEl.srcObject = cueDest.stream;
+  return cueBus;
 }
 
 /** The node a playing source feeds into: the key-lock pitch insert when engaged,
@@ -193,20 +227,26 @@ function buildDeck(id: DeckId): Deck {
   const vol = ctx.createGain(); // channel volume fader (manual), post-trim
   vol.gain.value = 1;
   const delayComp = ctx.createDelay(1.0); // 0 normally; matches A/B key-lock latency
+  const srcBus = ctx.createGain(); // all sources (full or stems) sum here → insert → delayComp
+  const cueSend = ctx.createGain(); // pre-listen send → cue bus (headphones); 0 = off
+  cueSend.gain.value = 0;
 
   const cg = crossGains(crossfade);
   gain.gain.value = id === 'A' ? cg.a : cg.b;
 
-  // src → [stretch?] → delayComp → trim → vol → low → mid → high → filter → gain(crossfader) → djMaster
+  // srcBus → [stretch?] → delayComp → trim → vol → low → mid → high → filter → [fx?] → gain(crossfader) → djMaster
+  srcBus.connect(delayComp);
   delayComp.connect(trim);
   trim.connect(vol);
   vol.connect(low);
   low.connect(mid).connect(high).connect(filter).connect(gain).connect(master);
+  filter.connect(cueSend); // post-EQ/filter pre-listen tap (survives the FX splice)
+  cueSend.connect(ensureCueBus());
 
   const deck: Deck = {
-    delayComp, trim, vol, low, mid, high, filter, gain,
+    delayComp, trim, vol, low, mid, high, filter, gain, srcBus, cueSend,
     stretch: null, stretchLatency: 0, keylock: false,
-    buffer: null, src: null, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
+    buffer: null, srcs: [], stems: null, stemMode: false, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
     loopActive: false, loopIn: 0, loopOut: 0, rollResume: false,
     slip: false, virtualBase: 0, virtualStart: 0,
@@ -220,9 +260,15 @@ function getDeck(id: DeckId): Deck {
   return decks[id] ?? buildDeck(id);
 }
 
+/** Track duration (sec) — from the loaded stems in stem mode, else the buffer. */
+function deckDuration(d: Deck): number {
+  if (d.stemMode && d.stems && d.stems[0]) return d.stems[0].buffer.duration;
+  return d.buffer?.duration ?? 0;
+}
+
 /** Current audible buffer position (sec), mirroring native loop wrap. */
 function audiblePos(d: Deck): number {
-  const dur = d.buffer?.duration ?? 0;
+  const dur = deckDuration(d);
   if (!d.playing) return clamp(d.startOffset, 0, dur);
   let pos = d.startOffset + (ctxNow() - d.startCtxTime) * d.rate;
   if (d.loopActive && d.loopOut > d.loopIn && pos >= d.loopOut) {
@@ -234,48 +280,53 @@ function audiblePos(d: Deck): number {
 
 /** Virtual (slip) position — where playback would be if no loop were engaged. */
 function virtualPos(d: Deck): number {
-  const dur = d.buffer?.duration ?? 0;
+  const dur = deckDuration(d);
   if (!d.loopActive) return audiblePos(d);
   return clamp(d.virtualBase + (ctxNow() - d.virtualStart) * d.rate, 0, dur);
 }
 
 function stopSource(d: Deck): void {
-  const s = d.src;
-  if (!s) return;
-  d.src = null;
-  try {
-    s.onended = null;
-    s.stop();
-  } catch { /* already stopped */ }
-  try { s.disconnect(); } catch { /* gone */ }
+  if (d.srcs.length === 0) return;
+  const srcs = d.srcs;
+  d.srcs = [];
+  for (const s of srcs) {
+    try { s.onended = null; s.stop(); } catch { /* already stopped */ }
+    try { s.disconnect(); } catch { /* gone */ }
+  }
 }
 
-/** (Re)start a source playing from `offset`, honoring the deck's loop state. */
+/** (Re)start the deck's source(s) from `offset`, honoring loop state. In stem
+ *  mode this starts N stem sources in lock-step (each → its stem gain → srcBus);
+ *  in full mode a single source → srcBus. */
 function startSource(d: Deck, offset: number): void {
-  if (!d.buffer) return;
+  if ((d.stemMode && (!d.stems || d.stems.length === 0)) || (!d.stemMode && !d.buffer)) return;
   stopSource(d);
   const ctx = getEngineCtx();
-  const src = ctx.createBufferSource();
-  src.buffer = d.buffer;
-  src.playbackRate.value = d.rate;
-  if (d.loopActive && d.loopOut > d.loopIn) {
-    src.loop = true;
-    src.loopStart = d.loopIn;
-    src.loopEnd = d.loopOut;
-  }
-  src.connect(deckInputNode(d));
-  src.onended = () => {
-    // Only a NATURAL end (not our stop/restart, not a loop) parks the deck.
-    if (d.src === src && !d.loopActive) {
-      d.src = null;
+  const dur = deckDuration(d);
+  const start = clamp(offset, 0, dur);
+  const mk = (buffer: AudioBuffer, dest: AudioNode): AudioBufferSourceNode => {
+    const s = ctx.createBufferSource();
+    s.buffer = buffer;
+    s.playbackRate.value = d.rate;
+    if (d.loopActive && d.loopOut > d.loopIn) { s.loop = true; s.loopStart = d.loopIn; s.loopEnd = d.loopOut; }
+    s.connect(dest);
+    s.start(0, start);
+    return s;
+  };
+  d.srcs = d.stemMode && d.stems
+    ? d.stems.map((st) => mk(st.buffer, st.gain))
+    : d.buffer ? [mk(d.buffer, d.srcBus)] : [];
+  // Park on a NATURAL end (not our stop/restart, not a loop). Stems end together,
+  // so watch the first source.
+  const ender = d.srcs[0];
+  if (ender) ender.onended = () => {
+    if (d.srcs[0] === ender && !d.loopActive) {
+      stopSource(d);
       d.playing = false;
-      d.startOffset = d.buffer?.duration ?? 0;
+      d.startOffset = deckDuration(d);
       emit();
     }
   };
-  const start = clamp(offset, 0, d.buffer.duration);
-  src.start(0, start);
-  d.src = src;
   d.startCtxTime = ctx.currentTime;
   d.startOffset = start;
   d.playing = true;
@@ -287,7 +338,7 @@ function statusOf(id: DeckId): DeckStatus {
     return {
       loadedUrl: null, label: null, playing: false, decoding: false, hasBuffer: false,
       currentTime: 0, duration: 0, loopActive: false, loopIn: null, loopOut: null,
-      slip: false, pitchPct: 0, keylock: false,
+      slip: false, pitchPct: 0, keylock: false, stems: [],
     };
   }
   return {
@@ -295,15 +346,16 @@ function statusOf(id: DeckId): DeckStatus {
     label: d.label,
     playing: d.playing,
     decoding: d.decoding,
-    hasBuffer: !!d.buffer,
+    hasBuffer: !!d.buffer || (d.stemMode && !!d.stems?.length),
     currentTime: audiblePos(d),
-    duration: d.buffer?.duration ?? 0,
+    duration: deckDuration(d),
     loopActive: d.loopActive,
     loopIn: d.loopActive ? d.loopIn : null,
     loopOut: d.loopActive ? d.loopOut : null,
     slip: d.slip,
     pitchPct: d.pitchPct,
     keylock: d.keylock,
+    stems: d.stems?.map((s) => s.name) ?? [],
   };
 }
 
@@ -343,6 +395,7 @@ export function getStatus(id: DeckId): DeckStatus {
 export async function loadDeck(id: DeckId, url: string | null, label: string | null): Promise<void> {
   const d = getDeck(id);
   stopSource(d);
+  teardownStems(d); // the previous track's stems no longer apply
   d.playing = false;
   d.startOffset = 0;
   d.loopActive = false;
@@ -384,7 +437,7 @@ export async function loadDeck(id: DeckId, url: string | null, label: string | n
 
 export function playDeck(id: DeckId): void {
   const d = decks[id];
-  if (!d || !d.buffer || d.playing) return;
+  if (!d || (!d.buffer && !d.stemMode) || d.playing) return;
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume().catch(() => { /* retry next gesture */ });
   startSource(d, d.startOffset);
@@ -403,7 +456,7 @@ export function pauseDeck(id: DeckId): void {
 
 export function toggleDeck(id: DeckId): void {
   const d = decks[id];
-  if (!d || !d.buffer) return;
+  if (!d || (!d.buffer && !d.stemMode)) return;
   if (d.playing) pauseDeck(id);
   else playDeck(id);
 }
@@ -415,8 +468,8 @@ export function cueDeck(id: DeckId): void {
 
 export function seekDeck(id: DeckId, sec: number): void {
   const d = decks[id];
-  if (!d || !d.buffer || !Number.isFinite(sec)) return;
-  const pos = clamp(sec, 0, d.buffer.duration);
+  if (!d || (!d.buffer && !d.stemMode) || !Number.isFinite(sec)) return;
+  const pos = clamp(sec, 0, deckDuration(d));
   if (d.playing) startSource(d, pos);
   else d.startOffset = pos;
   emit();
@@ -436,7 +489,7 @@ export function setDeckPitch(id: DeckId, pct: number): void {
     }
     d.startOffset = pos;
     d.startCtxTime = ctxNow();
-    if (d.src) d.src.playbackRate.setValueAtTime(rate, ctxNow());
+    for (const s of d.srcs) s.playbackRate.setValueAtTime(rate, ctxNow());
   }
   d.rate = rate;
   d.pitchPct = pct;
@@ -485,8 +538,10 @@ export async function setDeckKeylock(id: DeckId, on: boolean): Promise<void> {
     void d.stretch.stop(); // idle the worklet so it costs ~0 CPU while bypassed
   }
   updateLatencyComp();
-  // Reroute the live source through (or around) the insert.
-  if (d.playing && d.buffer) startSource(d, audiblePos(d));
+  // Route the source bus through (or around) the stretch insert — no restart needed
+  // (works for both full-track and live-stem sources, which all feed srcBus).
+  try { d.srcBus.disconnect(); } catch { /* not connected */ }
+  d.srcBus.connect(deckInputNode(d));
   emit();
 }
 
@@ -588,7 +643,7 @@ function ensureDeckFx(d: Deck): DeckFx {
 
   // Splice between the filter and the crossfader gain (one-time; a brief click
   // is possible if done mid-playback — acceptable for a first FX-knob touch).
-  try { d.filter.disconnect(); } catch { /* not yet connected */ }
+  try { d.filter.disconnect(d.gain); } catch { /* not connected */ } // keep the filter → cueSend tap
   d.filter.connect(input);
   out.connect(d.gain);
 
@@ -626,6 +681,35 @@ export function getLimiter(): boolean {
   return limiterEnabled;
 }
 
+/* -------------------------------- cue / headphones (D6) -------------------- */
+
+/** Whether the runtime supports per-element output routing (`setSinkId`). */
+export function isCueSupported(): boolean {
+  return typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+}
+
+/** Pre-listen a deck in the cue (headphone) bus — independent of the crossfader. */
+export function setDeckCue(id: DeckId, on: boolean): void {
+  const d = getDeck(id);
+  ensureCueBus();
+  d.cueSend.gain.setTargetAtTime(on ? 1 : 0, ctxNow(), RAMP_TC);
+  if (on && cueAudioEl) void cueAudioEl.play().catch(() => { /* needs a gesture — the toggle click is one */ });
+}
+
+/** Route the cue bus to a specific output device (headphones). '' = default. */
+export async function setCueSinkId(deviceId: string): Promise<void> {
+  ensureCueBus();
+  cueSinkId = deviceId;
+  const el = cueAudioEl as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+  if (el?.setSinkId) {
+    try { await el.setSinkId(deviceId); } catch (e) { logError('dj', `cue setSinkId failed: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+}
+
+export function getCueSinkId(): string {
+  return cueSinkId;
+}
+
 /** Crossfader position in [-1, 1] (equal-power). */
 export function setCrossfade(x: number): void {
   crossfade = clamp(x, -1, 1);
@@ -644,7 +728,7 @@ export function getCrossfade(): number {
 /* -------------------------- loops / slip / roll ---------------------------- */
 
 function engageLoop(d: Deck, inSec: number, outSec: number, roll: boolean): void {
-  const dur = d.buffer?.duration ?? 0;
+  const dur = deckDuration(d);
   const lin = clamp(inSec, 0, dur);
   const lout = clamp(outSec, lin + 0.02, dur); // keep a sane minimum span
   // Capture the audible position BEFORE engaging the loop (so it isn't wrapped).
@@ -668,7 +752,7 @@ function engageLoop(d: Deck, inSec: number, outSec: number, roll: boolean): void
 /** Engage a sustained loop between two times (sec). */
 export function setLoop(id: DeckId, inSec: number, outSec: number): void {
   const d = decks[id];
-  if (!d || !d.buffer) return;
+  if (!d || (!d.buffer && !d.stemMode)) return;
   engageLoop(d, inSec, outSec, false);
 }
 
@@ -676,7 +760,7 @@ export function setLoop(id: DeckId, inSec: number, outSec: number): void {
  *  Always slip-resumes on end (jumps to where playback would have reached). */
 export function startLoopRoll(id: DeckId, lengthSec: number): void {
   const d = decks[id];
-  if (!d || !d.buffer || lengthSec <= 0) return;
+  if (!d || (!d.buffer && !d.stemMode) || lengthSec <= 0) return;
   const inPt = audiblePos(d);
   engageLoop(d, inPt, inPt + lengthSec, true);
 }
@@ -709,6 +793,63 @@ export function isLooping(id: DeckId): boolean {
   return !!decks[id]?.loopActive;
 }
 
+/* -------------------------------- live stems (D4) -------------------------- */
+
+function teardownStems(d: Deck): void {
+  if (d.stems) for (const st of d.stems) { try { st.gain.disconnect(); } catch { /* gone */ } }
+  d.stems = null;
+  d.stemMode = false;
+}
+
+/** Load N separated stems onto a deck and switch it to stem mode: each stem
+ *  plays in lock-step through its own gain (the live faders) summed at srcBus.
+ *  Frees the full-track buffer (stems are the playback source now). D4 Tier 1 —
+ *  the stems must already be separated + cached; `url` = /api/library/stems/…/audio.
+ *  Returns the loaded stem names. */
+export async function loadDeckStems(id: DeckId, stems: Array<{ name: string; url: string }>): Promise<string[]> {
+  const d = getDeck(id);
+  const ctx = getEngineCtx();
+  const decoded = await Promise.all(stems.map(async (s) => {
+    const r = await fetch(s.url);
+    if (!r.ok) throw new Error(`stem "${s.name}" fetch ${r.status}`);
+    return { name: s.name, buffer: await ctx.decodeAudioData(await r.arrayBuffer()) };
+  }));
+  if (decoded.length === 0) return [];
+  const wasPlaying = d.playing;
+  const pos = audiblePos(d);
+  stopSource(d);
+  teardownStems(d);
+  d.stems = decoded.map(({ name, buffer }) => {
+    const g = ctx.createGain();
+    g.gain.value = 1;
+    g.connect(d.srcBus);
+    return { name, buffer, gain: g, level: 1 };
+  });
+  d.stemMode = true;
+  d.buffer = null; // stems replace the full buffer for playback (frees ~85 MB)
+  const dur = deckDuration(d);
+  if (wasPlaying) startSource(d, clamp(pos, 0, dur));
+  else d.startOffset = clamp(pos, 0, dur);
+  emit();
+  return d.stems.map((s) => s.name);
+}
+
+/** Set a stem's live gain (0..1). 0 = pulled out (e.g. mute the vocals). */
+export function setStemGain(id: DeckId, name: string, level: number): void {
+  const st = decks[id]?.stems?.find((s) => s.name === name);
+  if (!st) return;
+  st.level = clamp(level, 0, 1);
+  st.gain.gain.setTargetAtTime(st.level, ctxNow(), RAMP_TC);
+}
+
+export function getDeckStemNames(id: DeckId): string[] {
+  return decks[id]?.stems?.map((s) => s.name) ?? [];
+}
+
+export function hasStems(id: DeckId): boolean {
+  return !!decks[id]?.stemMode;
+}
+
 /** Tear everything down (DJ tab unmount). Rarely called — the tab is warmed. */
 export function dispose(): void {
   if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
@@ -717,6 +858,9 @@ export function dispose(): void {
     if (!d) continue;
     try {
       stopSource(d);
+      teardownStems(d);
+      try { d.srcBus.disconnect(); } catch { /* gone */ }
+      try { d.cueSend.disconnect(); } catch { /* gone */ }
       if (d.fx) {
         try { d.fx.lfoFlanger.stop(); } catch { /* gone */ }
         try { d.fx.lfoWah.stop(); } catch { /* gone */ }
@@ -738,6 +882,9 @@ export function dispose(): void {
     delete decks[id];
   }
   if (limiter) { try { limiter.disconnect(); } catch { /* gone */ } limiter = null; }
+  if (cueBus) { try { cueBus.disconnect(); } catch { /* gone */ } cueBus = null; }
+  if (cueAudioEl) { try { cueAudioEl.pause(); cueAudioEl.srcObject = null; } catch { /* gone */ } cueAudioEl = null; }
+  cueDest = null;
   if (djMaster) { try { djMaster.disconnect(); } catch { /* gone */ } djMaster = null; }
   listeners.clear();
 }
