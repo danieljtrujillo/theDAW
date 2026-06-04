@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { subscribeToMidi } from '../state/midiBus';
 import { useDjControlMap, sigLabel, type MidiKind } from '../state/djControlMap';
+import { useDjSampler } from '../state/djSamplerStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -579,37 +580,79 @@ const WaveLane: React.FC<WaveLaneProps> = ({ deckId, accent, hasTrack, audioUrl,
 
 /* ═══════════════════════════════ SamplerRail ════════════════════════════════ */
 
-const SAMPLER_PADS: Array<{ k: string; name: string }> = [
-  { k: 'F', name: 'Hi Horn' }, { k: 'S', name: 'Siren' },
-  { k: 'X', name: 'Zap' }, { k: 'A', name: 'Sample' },
-  { k: 'P', name: 'Laser' }, { k: 'L', name: 'Impact' },
-  { k: 'A', name: 'La La' }, { k: 'E', name: 'Uplifter' },
-  { k: 'S', name: 'Stabs' }, { k: 'X', name: 'Noise' },
-];
+const SAMPLER_SLOTS = 10;
 
-const SamplerRail: React.FC = () => (
-  <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
-    <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
-      <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
-      <span className="text-[9px] font-black uppercase tracking-wider text-amber-200 leading-tight">Sampler / FX Pads</span>
-      <span className="ml-auto text-[7px] font-bold uppercase tracking-wider text-zinc-600 px-1 py-0.5 rounded bg-white/5">soon</span>
+/** Sampler bank (D7): 10 one-shot pads. Drop a library track onto a pad to load
+ *  it; click fires it (polyphonic, through the DJ master); right-click clears.
+ *  Pad→track assignments persist (djSamplerStore); buffers re-decode on mount. */
+const SamplerRail: React.FC = () => {
+  const pads = useDjSampler((s) => s.pads);
+  const setPad = useDjSampler((s) => s.setPad);
+  const clearPad = useDjSampler((s) => s.clearPad);
+  const entries = useLibraryStore((s) => s.entries);
+  const [over, setOver] = useState<number | null>(null);
+  const loadedRef = useRef<Set<string>>(new Set());
+
+  // Decode each persisted pad's sample into the engine once (after a reload).
+  useEffect(() => {
+    for (const [k, pad] of Object.entries(pads)) {
+      const i = Number(k);
+      const tag = `sampler:${i}:${pad.entryId}`;
+      if (loadedRef.current.has(tag)) continue;
+      const entry = entries.find((e) => e.id === pad.entryId);
+      if (!entry?.audioUrl) continue;
+      loadedRef.current.add(tag);
+      void djEngine.loadSample(`sampler:${i}`, entry.audioUrl).catch(() => loadedRef.current.delete(tag));
+    }
+  }, [pads, entries]);
+
+  const drop = async (i: number, e: React.DragEvent) => {
+    setOver(null);
+    const entryId = e.dataTransfer.getData(DJ_TRACK_MIME);
+    if (!entryId) return;
+    e.preventDefault();
+    const entry = entries.find((x) => x.id === entryId);
+    if (!entry?.audioUrl) return;
+    try {
+      await djEngine.loadSample(`sampler:${i}`, entry.audioUrl);
+      loadedRef.current.add(`sampler:${i}:${entryId}`);
+      setPad(i, { entryId, name: entry.title });
+    } catch { /* decode/fetch failed — leave the pad empty */ }
+  };
+
+  return (
+    <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
+      <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
+        <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
+        <span className="text-[9px] font-black uppercase tracking-wider text-amber-200 leading-tight">Sampler</span>
+        <span className="ml-auto text-[7px] font-mono text-zinc-600">drag tracks →</span>
+      </div>
+      <div className="flex-1 min-h-0 grid grid-cols-2 gap-1 p-1.5 content-start">
+        {Array.from({ length: SAMPLER_SLOTS }, (_, i) => {
+          const pad = pads[i];
+          return (
+            <button key={i} type="button"
+              onClick={() => { if (pad) djEngine.triggerSample(`sampler:${i}`); }}
+              onContextMenu={(e) => { e.preventDefault(); if (pad) { djEngine.clearSample(`sampler:${i}`); clearPad(i); } }}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes(DJ_TRACK_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(i); } }}
+              onDragLeave={() => setOver((o) => (o === i ? null : o))}
+              onDrop={(e) => void drop(i, e)}
+              title={pad ? `${pad.name} — click to fire, right-click to clear` : 'Drop a library track here to load a one-shot'}
+              className={`flex flex-col items-center justify-center gap-0.5 rounded-md border py-1.5 transition-colors active:scale-95 ${
+                over === i ? 'border-amber-400/70 bg-amber-500/15'
+                  : pad ? 'border-amber-500/40 bg-amber-500/8 text-amber-200 hover:bg-amber-500/15'
+                    : 'border-white/10 bg-black/40 text-zinc-600 hover:border-white/20'
+              }`}>
+              <span className="text-[11px] font-black leading-none">{i === 9 ? 0 : i + 1}</span>
+              <span className="text-[7px] font-mono uppercase tracking-wide leading-none truncate max-w-full px-0.5">{pad ? pad.name : '—'}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="shrink-0 px-1.5 pb-1.5 text-[7px] font-mono text-zinc-600 text-center">click fires · right-click clears</div>
     </div>
-    <div className="flex-1 min-h-0 grid grid-cols-2 gap-1 p-1.5 content-start">
-      {SAMPLER_PADS.map((p, i) => (
-        <button key={i} type="button" title="Sampler / audio-FX pad — coming soon (D5)"
-          className="flex flex-col items-center justify-center gap-0.5 rounded-md border border-white/10 bg-black/40 py-1.5 text-zinc-500 hover:text-zinc-300 hover:border-white/20 transition-colors">
-          <span className="text-[13px] font-black leading-none text-zinc-300">{p.k}</span>
-          <span className="text-[7px] font-mono uppercase tracking-wide text-zinc-600 leading-none">{p.name}</span>
-        </button>
-      ))}
-    </div>
-    <div className="shrink-0 grid grid-cols-4 gap-1 px-1.5 pb-1.5">
-      {['Bank', 'Hold', 'Roll', 'Mode'].map((b) => (
-        <div key={b} className="rounded border border-white/8 bg-black/30 py-1 text-center text-[7px] font-mono uppercase tracking-wide text-zinc-700" title="Pad bank / mode controls — coming soon">{b}</div>
-      ))}
-    </div>
-  </div>
-);
+  );
+};
 
 /* ═══════════════════════════════ DeckColumn ═════════════════════════════════ */
 
