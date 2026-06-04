@@ -130,6 +130,10 @@ let cueBus: GainNode | null = null;
 let cueDest: MediaStreamAudioDestinationNode | null = null;
 let cueAudioEl: HTMLAudioElement | null = null;
 let cueSinkId = '';
+// Sampler bank (D7): one-shot pads routed through djMaster (so they ride the DJ
+// mix + limiter + visualizer). Decoded buffers keyed by pad id.
+const samples = new Map<string, AudioBuffer>();
+let samplerGain: GainNode | null = null;
 const decks: Partial<Record<DeckId, Deck>> = {};
 let crossfade = 0; // -1 = full A, 0 = center, +1 = full B
 let rafId = 0;
@@ -167,6 +171,13 @@ function ensureCueBus(): GainNode {
   cueAudioEl = new Audio();
   cueAudioEl.srcObject = cueDest.stream;
   return cueBus;
+}
+
+function ensureSamplerGain(): GainNode {
+  if (samplerGain) return samplerGain;
+  samplerGain = getEngineCtx().createGain();
+  samplerGain.connect(ensureMaster());
+  return samplerGain;
 }
 
 /** The node a playing source feeds into: the key-lock pitch insert when engaged,
@@ -710,6 +721,32 @@ export function getCueSinkId(): string {
   return cueSinkId;
 }
 
+/* -------------------------------- sampler bank (D7) ------------------------ */
+
+/** Load a one-shot sample into a pad (decode the URL to a buffer). */
+export async function loadSample(padId: string, url: string): Promise<void> {
+  const ctx = getEngineCtx();
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`sample fetch ${r.status}`);
+  samples.set(padId, await ctx.decodeAudioData(await r.arrayBuffer()));
+}
+
+/** Fire a pad's sample as a one-shot through the DJ master (polyphonic). */
+export function triggerSample(padId: string): void {
+  const buf = samples.get(padId);
+  if (!buf) return;
+  const ctx = getEngineCtx();
+  if (ctx.state === 'suspended') void ctx.resume().catch(() => { /* retry next gesture */ });
+  const s = ctx.createBufferSource();
+  s.buffer = buf;
+  s.connect(ensureSamplerGain());
+  s.onended = () => { try { s.disconnect(); } catch { /* gone */ } };
+  s.start();
+}
+
+export function clearSample(padId: string): void { samples.delete(padId); }
+export function hasSample(padId: string): boolean { return samples.has(padId); }
+
 /** Crossfader position in [-1, 1] (equal-power). */
 export function setCrossfade(x: number): void {
   crossfade = clamp(x, -1, 1);
@@ -885,6 +922,8 @@ export function dispose(): void {
   if (cueBus) { try { cueBus.disconnect(); } catch { /* gone */ } cueBus = null; }
   if (cueAudioEl) { try { cueAudioEl.pause(); cueAudioEl.srcObject = null; } catch { /* gone */ } cueAudioEl = null; }
   cueDest = null;
+  if (samplerGain) { try { samplerGain.disconnect(); } catch { /* gone */ } samplerGain = null; }
+  samples.clear();
   if (djMaster) { try { djMaster.disconnect(); } catch { /* gone */ } djMaster = null; }
   listeners.clear();
 }
