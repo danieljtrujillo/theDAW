@@ -1,7 +1,7 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-04T00:59:56.920Z · Git revision: `558142ceb17c` · Repomix tracked: **no**
+> Generated: 2026-06-04T21:11:22.263Z · Git revision: `4cddff097cc4` · Repomix tracked: **no**
 
 ## Audit Dashboard
 

@@ -210,3 +210,7 @@ docs/*.pdf
 /archive/
 .vite/
 .orb_attachments/
+
+# Generated exports (VJ renders, transcodes, PNG-sequence zips, etc.) — NEVER
+# commit exports of any kind. The VJ exporter writes here by default.
+/exports/

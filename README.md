@@ -1,10 +1,14 @@
-# Stable Audio 3 — theDAW
+# theDAW
 
-A research and production platform for high-quality, text-conditioned audio generation, built on the Stability AI Stable Audio 3 diffusion pipeline. This fork layers a FastAPI backend and a bespoke React DAW interface (theDAW) on top of the upstream Python pipeline, providing a complete browser-based studio for generation, editing, and composition.
+**by Gantasmo**
 
-> **Complete documentation:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — the source of truth for every feature, endpoint, and control. The in-app **Docs** button renders it as an interactive modal with PDF export.
+theDAW is an all-in-one application for music creation. You describe a sound and the generative engine renders it from your prompt or from audio you bring, and the Chimera engine blends and beat-aligns several sources into a single generation. The workspace opens into a full studio for composition, arrangement, editing, and mixing, and into a live rig for DJing and VJing with a deep MIDI mapping system for any controller you own. Audio and visual effects, real-time visualizers, and an interactive genealogy graph round out the environment. From idea to live performance, theDAW can do it all.
 
-[Discord](https://discord.gg/cKpvjey8b) · [User Guide](docs/USER_GUIDE.md) · [Windows Setup](docs/windows/setup-guide.md)
+Live coding and Unity integration are on the way.
+
+> **Complete documentation:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md) is the source of truth for every feature, endpoint, and control. The in-app **Docs** button renders it as an interactive modal with PDF export.
+
+[User Guide](docs/USER_GUIDE.md) · [Windows Setup](docs/windows/setup-guide.md)
 
 ---
 
@@ -14,9 +18,8 @@ A research and production platform for high-quality, text-conditioned audio gene
 |---|---|---|
 | **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | Async HTTP wrapper. Manages a job queue for generation, synchronous FFmpeg-based audio processing, model introspection endpoints. Binds to port 8600. |
-| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory contains `module.json` (metadata, enabled flag, API prefix) and `router.py` (FastAPI APIRouter). The loader mounts all enabled modules at startup; failures are non-fatal. Currently ships the `effects` module (mounted at `/api/studio`). |
-| **theDAW React UI** | `frontend/` | React 19 + Vite 6 + Tailwind 4 + Zustand 5. Browser-based DAW with multi-track editor, step sequencer, piano roll, persistent library, real-time spectral analyzer, and AI assistant panel. Proxies `/api/*` to the backend. Runs on port 5173 in development. |
-| **Gradio UI (legacy)** | `run_gradio.py`, `stable_audio_3/interface/` | Upstream Gradio interface. Functional for direct pipeline access; theDAW supersedes it for daily use. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory holds `module.json` (metadata, enabled flag, API prefix) and `router.py` (FastAPI APIRouter). The loader mounts every enabled module at startup and isolates any module that fails to load. Shipped modules: `analysis` (`/api/analysis`), `chimera` (`/api/chimera`), `controllervision` (`/api/controllervision`), `effects` (`/api/studio`), `library` (`/api/library`), `midi` (`/api/midi`), `settings` (`/api/settings`), `stems` (`/api/stems`), `vj` (`/api/vj`), and `ytimport` (`/api/ytimport`). |
+| **theDAW interface** | `frontend/` | React 19, Vite 6, Tailwind 4, Zustand 5. The full studio across seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN): generation with Chimera blending, the multi-track waveform editor, step sequencer, piano roll, live mixer, the two-deck DJ console with live stems and MIDI control, the VJ visualizer, the persistent library, the spectral analyzer, and the LEARN genealogy graph. Proxies `/api/*` to the backend. Runs on port 5173 in development. |
 
 ---
 
@@ -33,10 +36,10 @@ The launcher kills stale processes on ports 5173 and 8600, starts the backend, w
 ### Manual launch
 
 ```bash
-# Terminal 1 — backend
+# Terminal 1: backend
 uv run uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload
 
-# Terminal 2 — frontend
+# Terminal 2: frontend
 cd frontend && npm run dev
 ```
 
@@ -128,8 +131,8 @@ See [docs/workflows/autoencoder.md](docs/workflows/autoencoder.md) for batch enc
 | `medium` | ARC | 1.4 B | SAME-L | GPU (CUDA) | 380 s |
 | `small-rf` | RF | 433 M | SAME-S | CPU | 120 s |
 | `medium-rf` | RF | 1.4 B | SAME-L | GPU (CUDA) | 380 s |
-| `same-s` | Autoencoder | 266 M | — | CPU | — |
-| `same-l` | Autoencoder | 1.7 B | — | GPU | — |
+| `same-s` | Autoencoder | 266 M | n/a | CPU | n/a |
+| `same-l` | Autoencoder | 1.7 B | n/a | GPU | n/a |
 
 **ARC** checkpoints are post-trained for 8-step inference (`cfg_scale=1`). **RF** checkpoints are rectified-flow bases used as LoRA training starting points (`cfg_scale=7`, ~50 steps at inference). ARC and RF checkpoints each bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled versions and reuse the cached full checkpoint when available.
 
@@ -137,107 +140,88 @@ See [docs/workflows/autoencoder.md](docs/workflows/autoencoder.md) for batch enc
 
 ## theDAW Feature Summary
 
-### Generation (CREATE tab)
-- Text-to-audio, audio-to-audio, and inpainting/continuation from a single form.
-- Per-field controls: model selector (auto-adjusts steps/CFG for RF variants), duration, batch size, sampler steps, CFG scale, and seed with one-click reroll.
-- Magic prompt button populates a sample prompt when the field is empty. Clicking the sparkles icon sends the current text to the AI Assistant to optimize the prompt for Stable Audio conditioning.
-- The Advanced Generation Panel provides a dense layout containing Output Settings for automatic playback and downloading. Quick Actions route generated audio directly to the Waveform Editor, Init Audio, or Inpainting modules.
-- A standalone Templates Panel allows users to save and restore full generation parameters. A Saved Prompts Dropdown maintains a history of user-defined prompts.
-- A Spectrogram Viewer displays Mel, STFT, Chromagram, and CQT visualizations of generated audio.
-- Inpainting: WaveSurfer waveform preview with draggable purple region defining the regeneration window; mask coordinates are computed relative to the visible clip region to handle trimmed and split clips correctly.
-- Async job queue: submit, then poll `/api/jobs/{id}` at 1-second intervals until completion; binary abort available mid-flight.
-- All completed generations auto-save to the persistent IndexedDB library.
+### MAKE generation
+- One form covers text-to-audio, audio-to-audio, inpainting, and continuation. The model selector adjusts steps and CFG for RF variants on its own, and you set duration, batch size, sampler steps, CFG scale, the seed with one-click reroll, and the initial noise level for variation passes.
+- The **Chimera** stack accepts several source clips and blends them into one generation. It beat aligns every clip to a target tempo (auto or fixed), and the align mode sets how they line up: **Start**, **Downbeat**, or **Phrase Weave**. Phrase Weave interleaves the clips bar by bar up to a polyphony you choose, so separate ideas merge into one take.
+- **Inpainting** runs on a WaveSurfer preview where you drag a region to mark the window for regeneration. Mask coordinates resolve against the visible clip region, so trimmed and split clips map correctly.
+- The Advanced Generation Panel holds output settings for automatic playback and download, and Quick Actions route a finished render to the waveform editor, the init-audio slot, or the inpainting module.
+- The Templates Panel stores and restores full parameter sets, and the Saved Prompts dropdown keeps a history of your prompts. The magic-prompt button fills an empty field with a starting prompt, and the sparkles icon sends your text to the assistant for prompt optimization.
+- The Spectrogram Viewer renders Mel, STFT, Chromagram, and CQT views of a render.
+- The job queue runs asynchronously. You submit, the client polls `/api/jobs/{id}` once a second until completion, and a binary abort stops a run mid-flight. Every finished render saves to the library with its full metadata.
 
-### Studio Effects (EDIT tab)
-- 24 FFmpeg-backed effects: mastering chain, compression, highpass/lowpass filters, volume, tempo, vocal processing, lo-fi vinyl, stereo widening, reverb/delay, sub exciter, phase isolation, parametric mid EQ, loudness normalization (LUFS), pitch shift, echo, fade, declick, silence removal, denoise, and format export (FLAC, MP3, AAC, Opus).
-- Four macro sliders (Drive, Width, Air, Punch) map to effect-specific parameters.
-- Process history: the last 8 invocations are retained; any prior output can be promoted to the current source.
+### EDIT multi-track editor
+- The timeline holds many tracks. Each clip points at a source audio Blob, and its waveform peaks compute through `AudioContext.decodeAudioData` (240 normalized bins) and cache per clip.
+- **Move** drags clips along the timeline and between tracks, and **Cut** splits a clip at any point while keeping source alignment through `offsetIntoSource`. The snap grid offers Off, 1/4, 1/8, and 1/16 divisions against the editor BPM, and zoom spans 5 to 400 px/s with horizontal scroll that follows it.
+- Each track carries an editable name, mute, exclusive solo, volume, pan, and removal. The **live mixer** applies these track faders, pan, mute, and solo during playback, so a balance change sounds the moment you make it.
+- Each clip exposes left and right trim handles, where the left handle keeps source content aligned by moving `startSec` and `offsetIntoSource` together, plus fade-in and fade-out handles that set linear envelope durations.
+- **Inpaint from editor** lets you draw a region on any clip and open the inpaint panel for prompt, steps, and seed. The visible region crops and travels to the backend, and the returned audio replaces the clip's source Blob or drops away.
+- **Commit Edit** renders the audible tracks into one 44.1 kHz stereo WAV through `OfflineAudioContext`, applying fades, per-track volume, and stereo pan in the render. The result saves to the library and downloads, and the mixdown name field sets the filename with a fallback of `mixdown_<id>.wav`.
+- The status bar shows live timecode, clip and track counts, and the selected clip's bounds. **Preview** plays the selected clip through the shared engine, and the Player Footer takes over transport after the first render.
 
-### LoRA (TRAIN tab + Python API)
-- Eight adapter types: `lora`, `dora-rows`, `dora-cols`, `bora`, `lora-xs`, `dora-rows-xs`, `dora-cols-xs`, `bora-xs`.
-- Layer filtering via `--include` / `--exclude` with bracket-range expansion (`layers[0-11]`).
-- Runtime strength control, per-LoRA interval gating (active only within a sigma range), and per-LoRA layer filter at inference.
-- Multiple LoRAs stack additively; each is independently configurable.
-- Pre-computed SVD bases (`--svd_bases_path`) accelerate startup for `-XS` adapter variants.
-- VRAM reduction via `--base_precision bf16`.
-- Certain training endpoints are currently unimplemented on the backend and return HTTP 501 status codes. The frontend intercepts these responses to provide specific error messages in the user interface instead of generic network errors.
+### MIX studio effects
+- A processing chain of twenty-four FFmpeg effects covers a mastering chain, compression, highpass and lowpass filters, volume, tempo, vocal processing, lo-fi vinyl, stereo widening, reverb and delay, a sub exciter, phase isolation, parametric mid EQ, loudness normalization to LUFS, pitch shift, echo, fade, declick, silence removal, denoise, and export to FLAC, MP3, AAC, and Opus.
+- Four macro sliders (Drive, Width, Air, Punch) map onto the active effect's parameters.
+- Process history keeps the last eight runs, and any prior output promotes back to the current source for another pass.
 
-### Library (LIBRARY tab)
-- Persistent IndexedDB storage (`sa3-library` / `generations` object store). Every generation auto-saves with full metadata (prompt, model, duration, steps, CFG, seed, MIME type, timestamp).
-- List and grid view modes; full-text search across title, prompt, model, tags, and notes.
-- Filters: favorites only; sort by newest, duration, or title.
-- Per-entry: inline play/pause routed through the shared Web Audio engine, download, delete, favorite star, and scissors icon (sends the entry to the waveform editor as a new clip).
-- Details panel (bottom panel): full metadata table with audition, send-to-editor, and download actions.
+### DJ performance console
+- Two decks run from a pro layout with jog wheels, a central mixer, scrolling waveform overviews, and a track browser. Each deck loads from the library, a saved set, or an online import.
+- The engine handles beatmatch **sync** with octave-aware tempo matching and beat-phase alignment, a continuous sync-lock, **key-lock** that holds pitch while tempo moves, a 3-band EQ, a single-knob filter, and channel trim with auto-gain toward a target level.
+- Performance controls cover four persistent hotcues, beat loops, momentary loop rolls, slip mode, and beat jumps, and quantize snaps them to the beat grid.
+- The **FX rack** adds a flanger, a reverb built on a generated impulse response, and a resonant wah per deck, and a master limiter sits on the DJ bus.
+- **Live stems** split a loaded track into separated parts you ride on per-stem faders while the deck plays in lock-step.
+- **Cue output** pre-listens a deck through a headphone device chosen with `setSinkId`, independent of the crossfader.
+- **Automix** sequences the active set across both decks on its own, beatmatching and crossfading each transition. A ten-pad **sampler bank** fires one-shots through the DJ master, and a **Next** staging lane holds the tracks you queue to play next.
+- **Design Mode** turns the whole console into a layout you arrange by hand. You drag the borders to resize regions, drag panels to reorder them, and drag the mixer's own control groups into position. The arrangement persists, and a copy action exports it.
 
-### Waveform Editor (DAW — EDIT workspace)
-- Multi-track timeline. Each clip references a source audio Blob; waveform peaks are computed via `AudioContext.decodeAudioData` (240 bins, normalized) and cached per clip.
-- Tool modes: **Move** (drag clips horizontally and between tracks), **Cut** (click-to-split at arbitrary positions, preserving source alignment via `offsetIntoSource`).
-- Snap grid: Off, 1/4, 1/8, 1/16 note divisions relative to editor BPM.
-- Zoom: 5–400 px/s; horizontal scroll follows the zoom level.
-- Per-track controls: editable name, mute, solo (exclusive across all tracks), volume (0–1), pan (−1 to +1), remove.
-- Per-clip: left/right resize handles trim in/out points (left handle adjusts both `startSec` and `offsetIntoSource` to keep source content aligned); fade-in and fade-out handles drag to set linear envelope durations.
-- **Inpaint from editor**: draw a selection region on any clip (Paintbrush tool or right-drag), then open the inpaint panel to set prompt, steps, and seed. The visible clip region is cropped and sent to the backend; mask coordinates are relative to the cropped audio's start. Completed audio can be accepted (replaces the source Blob on the clip) or discarded.
-- **COMMIT EDIT**: renders all non-muted (or exclusively soloed) tracks into a single 44.1 kHz stereo WAV via `OfflineAudioContext`. Fade envelopes, per-track volume, and stereo pan are applied in the offline render. Output is saved to the library and downloaded automatically.
-- Mixdown name field: set the output filename before committing. If left empty, defaults to `mixdown_<id>.wav`.
-- Status bar: live timecode (playhead / total duration), clip and track counts, selected clip's start/end.
-- Transport: **Preview** plays the selected clip through the shared Web Audio engine (visible in the spectral analyzer); playback is controllable from the Player Footer after the first render.
+### VJ visual engine
+- A 3D reactive visualizer renders a glowing spectrogram terrain with bloom, particles, fog, and shader effects, and several camera flight modes and color themes shape the look.
+- It takes its signal from the session audio, a microphone, or MIDI, and it receives a set sent over from the DJ tab.
+- The visualizer runs inside theDAW and pops out into its own floating window for a second screen.
 
-### Step Sequencer (DAW — SEQUENCER workspace)
-- 16-step drum machine with a BPM-driven clock (40–240 BPM, 16th-note resolution).
-- Five synthesized voices: **kick** (pitched sine + exponential decay), **snare** (noise burst + tonal body), **hat** (bandpass-filtered noise), **tone** (sawtooth + LP filter + ADSR), **noise** (white noise + LP filter).
-- Per-track: editable name, voice selection (cycles through all five), volume, and a 16-button step grid (beats 1/5/9/13 visually emphasized). Voice preview and track removal are hover-revealed.
-- Utility controls: Random Fill (randomizes all patterns), Clear (empties all patterns), Add Track.
-- All voices route through the shared engine master gain and analyser node, so the spectral analyzer reflects live sequencer output.
-- **Send to editor**: renders the current pattern offline to a WAV Blob and appends it to the waveform editor as a new clip.
+### TRAIN LoRA
+- Eight adapter types are available: `lora`, `dora-rows`, `dora-cols`, `bora`, `lora-xs`, `dora-rows-xs`, `dora-cols-xs`, and `bora-xs`.
+- Layer filtering runs through `--include` and `--exclude` with bracket-range expansion such as `layers[0-11]`.
+- Inference exposes runtime strength, per-LoRA interval gating that activates an adapter within a sigma range, and a per-LoRA layer filter. Adapters stack additively and each stays independently configurable.
+- Pre-computed SVD bases (`--svd_bases_path`) speed startup for the `-XS` variants, and `--base_precision bf16` lowers VRAM use.
+- Some training endpoints return HTTP 501 today, and the frontend reads that status and shows a specific message for it.
 
-### Piano Roll (bottom panel)
-- MIDI-style note editor with a chromatic keyboard on the left axis and a step-quantized grid.
-- Click to add notes, drag to reposition, drag the right edge to resize duration. Delete key removes the selected note.
-- Configurable BPM (40–240) and total grid length (steps).
-- Live playback routes through the shared engine context (audible through the spectral analyzer).
-- MIDI import (`parseMidi`) and MIDI export (`downloadMidi`).
-- **Send to editor**: renders the current note pattern offline via `OfflineAudioContext` to a WAV Blob, appends it to the waveform editor, and links the clip back to the piano roll state (`sourceKind: 'piano-roll'`).
-- **Edit in Piano Roll**: clips derived from the piano roll can be re-opened for editing; the original note list and BPM are recovered from the clip's metadata.
+### LEARN genealogy graph
+- The LEARN tab renders every track and the relationships between them as an interactive force-directed graph in 3D and 2D.
+- Edges trace how a piece descended from its sources, so a remix, an inpaint, a stem split, and a chimera blend each show their parentage.
+- You fly the camera through the graph, focus a node, and open any track straight from its node.
 
-### Media Bucket (bottom panel)
-- Session-scoped drag-and-drop holding area for arbitrary audio files.
-- Drop or click-to-upload multiple files; supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus. Users can drag entries from the Library tab and drop them directly into the Media Bucket, Waveform Editor, and Step Sequencer using the application/x-stabledaw-library-id data transfer protocol to locate the source file from the IndexedDB store.
-- Per-item actions: **Send to Editor** (decodes peaks and appends to the waveform editor as a new track), **Send to Library** (decodes audio, measures duration, and persists the entry to IndexedDB), **Remove**.
-- Clear all button.
+### Library
+- The library lives on the backend. Audio files sit on disk, metadata sits in `data/library.db`, and the frontend talks to it over `/api/library/*`. The list loads as soon as the backend reports ready.
+- Every render saves automatically with its prompt, model, duration, steps, CFG, seed, MIME type, and timestamp.
+- List and grid views, full-text search across title, prompt, model, tags, and notes, a favorites filter, and sorting by newest, duration, or title organize the collection.
+- Each row plays inline through the shared engine and offers download, delete, a favorite star, and a send-to-editor action. The details panel shows the full metadata table with audition, send-to-editor, and download.
 
-### Real-time Spectral Analyzer (bottom panel)
-- Three display modes: **Oscilloscope** (time-domain waveform, purple glow), **Spectrum** (log-scaled frequency bars, purple-to-lavender gradient), **Radial** (frequency data mapped to a polar shape).
-- Mode selector buttons (O / S / R) positioned vertically in the top-left of the canvas.
-- Live RMS and peak dB meters sampled every 5 frames, displayed in a bottom canvas overlay with a gradient backdrop and text shadow for legibility.
-- LIVE / SILENT indicator (pulse animation when signal exceeds −60 dBFS).
-- Fullscreen toggle expands the canvas to the full browser viewport.
-- Audio context sample rate and FFT size displayed in the status overlay.
-- All modes read from the shared engine analyser node, so every audio source (playback, sequencer, piano roll, preview) is reflected.
+### Bottom panel tools
+- **Spectral analyzer** displays oscilloscope, spectrum, and radial modes, with live RMS and peak dB meters, a LIVE indicator above -60 dBFS, the context sample rate and FFT size, and a fullscreen toggle. It reads the shared analyser node, so every source reaches it.
+- **Piano roll** edits MIDI-style notes on a chromatic keyboard and a quantized grid, plays through the shared engine, imports and exports MIDI, and renders its pattern into the editor as a clip that reopens for further editing.
+- **Step sequencer** runs a 16-step drum machine at 40 to 240 BPM with five synthesized voices (kick, snare, hat, tone, noise), per-track voice selection and volume, random fill, clear, and a render-to-editor action.
+- **Media bucket** holds dropped or uploaded audio for the session in WAV, MP3, FLAC, OGG, AAC, M4A, and Opus, and sends an item to the editor or the library.
+- **SLIDE** presents a glass control surface of faders and knobs that drive parameters and sync with the VJ engine and the audio.
+- **Details** shows the selected library entry's metadata and actions.
 
-### Player Footer
-- Fixed to the viewport bottom across all views and tabs.
-- Track info: current title, model chip (or LIBRARY / IDLE), and total duration at 48 kHz.
-- Transport: play/pause (dispatches to `playerStore` or triggers the first editor timeline render via `editorPlaybackBridge`), skip to start, skip to end, loop toggle.
-- Seekable progress bar (click-to-seek, hover reveals a scrubber handle). The Player Footer synchronizes its playhead position with the Waveform Editor. Scrubbing the transport progress bar updates the editor timeline position when the editor timeline is the active audio source.
-- Volume slider and mute toggle; drives the `playbackStore` master gain shared by all audio sources.
-- Download button retrieves the currently loaded library entry.
-- Like / share decorative actions (heartbeat state persisted per session).
+### MIDI controller mapping
+- A controller recognition system identifies your hardware across three tiers: a library of roughly 110 device profiles, a scored auto-detect that matches an unknown rig to the closest profile, and a learn-by-capture mode that binds any control the moment you move it, even on a 92-control board.
+- The DJ tab maps CC and note messages to deck, mixer, and hotcue actions through its own action-based map. You arm an action and move a control to bind it.
+- A photo-driven layout inference that reads a controller's shape from an image is planned.
 
-### Processing Log
-- Ring buffer of up to 500 entries, auto-scrolling to the latest.
-- Sources: `system`, `health`, `generate`, `training`, `studio`, `sequencer`, `library`.
-- Severity levels: info, warn, error, debug, each with a distinct color indicator.
-- Download exports the full buffer as a timestamped `.txt` file. Clear wipes the buffer.
-- Collapse/expand by clicking the header bar.
+### Player footer
+- The footer stays at the bottom across every tab. It shows the current title, a model or status chip, and total duration.
+- Transport offers play and pause, skip to start, skip to end, and a loop toggle, and it drives the shared player or hands off to the active editor timeline.
+- The progress bar seeks on click and reveals a scrubber on hover, and it stays in sync with the waveform editor while the editor is the active source. A volume slider and mute drive the shared master gain, and a download button retrieves the loaded entry.
 
-### AI Assistant Panel
-- Collapsible orb panel accessible from the header bar. Streams chat completions from any configured provider.
-- Supported providers: Claude Code (CLI, no key required), Google Gemini, Anthropic, OpenAI, xAI Grok, Groq, OpenRouter (free and paid tiers), Ollama, LM Studio, llama.cpp, vLLM.
-- Provider and model selection with live model discovery from each provider's API.
-- Key pool: multiple API keys per provider for load distribution and failover. Keys are hashed for display; the backend selects the next available key per request.
-- RAG context: USER_GUIDE.md is chunked and indexed at startup via ChromaDB and sentence-transformers. Relevant sections are injected into the system prompt for each chat turn. `/api/assistant/reindex` triggers a forced reindex.
-- Streaming responses over SSE via `POST /api/assistant/chat`. Conversation history is maintained client-side and sent with each request.
-- Attachment support: audio files and images can be attached to messages; supported providers receive them as base64-encoded content blocks.
+### Processing log
+- A ring buffer holds up to 500 entries and auto-scrolls to the newest. Sources span system, health, generate, training, studio, sequencer, and library, and each line carries an info, warn, error, or debug level with its own color.
+- Download exports the buffer to a timestamped `.txt`, clear empties it, and the header bar collapses and expands the panel.
+
+### Assistant
+- A collapsible orb panel streams chat completions from any configured provider: Claude Code over the CLI, Google Gemini, Anthropic, OpenAI, xAI Grok, Groq, OpenRouter, Ollama, LM Studio, llama.cpp, and vLLM.
+- Provider and model selection pulls live model lists from each provider, and a key pool holds several keys per provider for load distribution and failover, hashed for display.
+- USER_GUIDE.md indexes at startup through ChromaDB and sentence-transformers, and the relevant sections feed the system prompt each turn. `/api/assistant/reindex` forces a rebuild. Responses stream over SSE from `POST /api/assistant/chat`, and audio and image attachments reach the providers that accept them as base64 blocks.
 
 ---
 
@@ -272,7 +256,7 @@ audio = pipe.generate(
 
 | Document | Contents |
 |---|---|
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Complete manual — every feature, every control, every endpoint. Rendered in-app by the Docs button. |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | The complete manual covering every feature, control, and endpoint, rendered in-app by the Docs button. |
 | [docs/workflows/inference.md](docs/workflows/inference.md) | Inference-mode reference (upstream). |
 | [docs/workflows/lora.md](docs/workflows/lora.md) | LoRA adapter types, training configuration, layer filtering, multi-LoRA inference. |
 | [docs/workflows/autoencoder.md](docs/workflows/autoencoder.md) | Standalone SAME autoencoder usage, batch encoding, dataset pre-encoding. |
@@ -302,8 +286,8 @@ On Windows, `.\start-dev.bat` kills stale processes automatically. Manually: `ta
 **Out-of-memory on Medium model**
 The Medium pipeline requires approximately 8 GB VRAM. Workarounds: use `small`, reduce `duration`, or ensure no competing CUDA processes are active. The RTX 3060 (6 GB) is limited to the Small model.
 
-**IndexedDB quota exhausted**
-The browser storage cap has been reached. Remove old library entries using the trash icon per row.
+**Library entries slow to load or failing to save**
+The library is served by the backend from `data/library.db` and the audio files under `data/`. Confirm the backend is running on port 8600 (the list loads once it reports ready), and free disk space if writes begin to fail.
 
 ---
 

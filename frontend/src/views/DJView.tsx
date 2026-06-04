@@ -31,6 +31,8 @@ import { subscribeToMidi } from '../state/midiBus';
 import { useDjControlMap, sigLabel, type MidiKind } from '../state/djControlMap';
 import { useDjSampler } from '../state/djSamplerStore';
 import { useDjSideList } from '../state/djSideListStore';
+import { useDjLayout } from '../state/djLayoutStore';
+import { LayoutRow, Splitter, DesignToolbar } from '../components/dj/DesignLayout';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -90,8 +92,22 @@ const MIDI_ACTIONS: Array<{ id: string; label: string; group: string; kind: Midi
   ...deckMidiActions('B'),
 ];
 
-/** Source feeding the center Track Browser. */
-type Source = { kind: 'library' } | { kind: 'set'; id: string };
+/** Source feeding the center Track Browser. The non-set kinds are live filtered
+ *  views over the library (favorites / by origin) — all real, no placeholders. */
+type LibSourceKind = 'library' | 'favorites' | 'gen' | 'import';
+type Source = { kind: LibSourceKind } | { kind: 'set'; id: string };
+
+const LIB_SOURCE_LABEL: Record<LibSourceKind, string> = {
+  library: 'Library', favorites: 'Favorites', gen: 'Generated', import: 'Imports',
+};
+const libSourceFilter = (entries: LibraryEntry[], kind: LibSourceKind): LibraryEntry[] => {
+  switch (kind) {
+    case 'favorites': return entries.filter((e) => e.favorite);
+    case 'gen': return entries.filter((e) => e.source === 'generate');
+    case 'import': return entries.filter((e) => e.source === 'import');
+    default: return entries;
+  }
+};
 
 /* ═══════════════════════════ per-deck controller ═══════════════════════════ */
 
@@ -509,48 +525,83 @@ export const DJView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [automixOn]);
 
+  const designMode = useDjLayout((s) => s.designMode);
+  const heroH = useDjLayout((s) => s.heroH);
+  const bottomH = useDjLayout((s) => s.bottomH);
+  const setHeroH = useDjLayout((s) => s.setHeroH);
+  const setBottomH = useDjLayout((s) => s.setBottomH);
+
   return (
-    <div className="h-full w-full overflow-hidden flex flex-col gap-1.5 p-1.5 bg-[#07050a] text-white">
+    <div className="relative h-full w-full overflow-hidden flex flex-col gap-1.5 p-1.5 bg-[#07050a] text-white">
 
       {/* ═══ TOP: dual scrolling-overview waveforms (hero) ═══ */}
-      <div className="shrink-0 flex flex-col gap-1.5" style={{ height: 138 }}>
+      <div className="shrink-0 flex flex-col gap-1.5" style={{ height: heroH }}>
         <WaveLane deckId="A" accent="purple" entryId={deckATrack} hasTrack={!!deckATrack} audioUrl={deckAUrl} ctl={ctlA} onLoadId={(id) => setDeckATrack(id)} />
         <WaveLane deckId="B" accent="cyan" entryId={deckBTrack} hasTrack={!!deckBTrack} audioUrl={deckBUrl} ctl={ctlB} onLoadId={(id) => setDeckBTrack(id)} />
       </div>
+      {designMode && <Splitter axis="y" onDelta={(d) => setHeroH(heroH + d)} title="Resize the waveform band" className="shrink-0 h-1.5 w-40 mx-auto" />}
 
-      {/* ═══ BELOW: sampler rail │ center (decks/mixer + racks/browser) │ source tree ═══ */}
-      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '186px minmax(0,1fr) 210px' }}>
-        <SamplerRail />
-
-        <div className="min-h-0 flex flex-col gap-1.5">
-          {/* decks + mixer */}
-          <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) 168px minmax(0,1fr)' }}>
-            <DeckColumn deckId="A" accent="purple" ctl={ctlA} title={deckATitle} cam={camA} hasTrack={!!deckATrack} isPlaying={deckAPlaying} pitch={deckAPitch} onPitch={(v) => onPitch('A', v)} onPlay={() => djEngine.toggleDeck('A')} onCue={() => djEngine.cueDeck('A')} onSync={() => syncDeck('A')} onSyncLock={() => toggleSyncLock('A')} syncLocked={syncLock === 'A'} canSync={canSync} onSendVj={() => sendDeckToVj('A')} onAddSet={() => addDeckToSet('A')} headCued={cueA} onHeadCue={() => toggleCue('A')} />
-            <Mixer
-              gainA={gainA} gainB={gainB} eqA={eqA} eqB={eqB} filterA={filterA} filterB={filterB} volA={volA} volB={volB}
-              onGain={onGain} onEq={onEq} onFilter={onFilter} onVol={onVol}
-              crossfader={crossfader} onCrossfade={applyCrossfade}
-              quantize={quantize} setQuantize={setQuantize} autoGain={autoGain} setAutoGain={setAutoGain}
-              camA={camA} camB={camB} harmonic={harmonic} flash={flash}
-              midiMapOn={midiMapOpen} onToggleMidiMap={() => setMidiMapOpen((v) => !v)}
-              automixOn={automixOn} onToggleAutomix={() => setAutomixOn((v) => !v)}
-            />
-            <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror pitch={deckBPitch} onPitch={(v) => onPitch('B', v)} onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} headCued={cueB} onHeadCue={() => toggleCue('B')} />
-          </div>
-          {/* FX/STEMS racks flanking the track browser */}
-          <div className="shrink-0 grid gap-1.5" style={{ gridTemplateColumns: '168px minmax(0,1fr) 168px', height: 176 }}>
-            <DeckRack deck="A" accent="purple" entryId={deckATrack} />
-            <div className="min-h-0 flex flex-col gap-1.5">
-              <SideListLane onLoadDeck={loadDeck} />
-              <TrackBrowser source={source} setSource={setSource} onLoadDeck={loadDeck} />
+      {/* ═══ BELOW: sampler rail │ center (decks/mixer + FX·NEXT·FX) │ browser ═══
+          Store-driven (Design Mode): drag panels to reorder, drag borders to resize. */}
+      <LayoutRow
+        rowKey="outer"
+        axis="x"
+        reorderable={false}
+        className="flex-1 min-h-0"
+        nodes={{
+          sampler: <SamplerRail />,
+          center: (
+            <div className="h-full min-h-0 flex flex-col gap-1.5">
+              <LayoutRow
+                rowKey="deckRow"
+                axis="x"
+                className="flex-1 min-h-0"
+                nodes={{
+                  deckA: <DeckColumn deckId="A" accent="purple" ctl={ctlA} title={deckATitle} cam={camA} hasTrack={!!deckATrack} isPlaying={deckAPlaying} onPlay={() => djEngine.toggleDeck('A')} onCue={() => djEngine.cueDeck('A')} onSync={() => syncDeck('A')} onSyncLock={() => toggleSyncLock('A')} syncLocked={syncLock === 'A'} canSync={canSync} onSendVj={() => sendDeckToVj('A')} onAddSet={() => addDeckToSet('A')} headCued={cueA} onHeadCue={() => toggleCue('A')} />,
+                  mixer: (
+                    <Mixer
+                      gainA={gainA} gainB={gainB} eqA={eqA} eqB={eqB} filterA={filterA} filterB={filterB} volA={volA} volB={volB}
+                      pitchA={deckAPitch} pitchB={deckBPitch} bpmA={ctlA.bpm ?? null} bpmB={ctlB.bpm ?? null}
+                      onGain={onGain} onEq={onEq} onFilter={onFilter} onVol={onVol} onPitch={onPitch}
+                      crossfader={crossfader} onCrossfade={applyCrossfade}
+                      quantize={quantize} setQuantize={setQuantize} autoGain={autoGain} setAutoGain={setAutoGain}
+                      camA={camA} camB={camB} harmonic={harmonic} flash={flash}
+                      midiMapOn={midiMapOpen} onToggleMidiMap={() => setMidiMapOpen((v) => !v)}
+                      automixOn={automixOn} onToggleAutomix={() => setAutomixOn((v) => !v)}
+                    />
+                  ),
+                  deckB: <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} headCued={cueB} onHeadCue={() => toggleCue('B')} />,
+                }}
+              />
+              {designMode && <Splitter axis="y" onDelta={(d) => setBottomH(bottomH - d)} title="Resize the rack row" className="shrink-0 h-1.5 w-40 mx-auto" />}
+              <LayoutRow
+                rowKey="bottomRow"
+                axis="x"
+                className="shrink-0"
+                style={{ height: bottomH }}
+                nodes={{
+                  fxA: <DeckRack deck="A" accent="purple" entryId={deckATrack} />,
+                  next: <SideListLane onLoadDeck={loadDeck} />,
+                  fxB: <DeckRack deck="B" accent="cyan" entryId={deckBTrack} />,
+                }}
+              />
             </div>
-            <DeckRack deck="B" accent="cyan" entryId={deckBTrack} />
-          </div>
-        </div>
+          ),
+          browser: (
+            <LayoutRow
+              rowKey="rightCol"
+              axis="y"
+              className="h-full min-h-0"
+              nodes={{
+                sourceTree: <SourceTree source={source} setSource={setSource} libCount={entries.length} />,
+                library: <TrackBrowser source={source} setSource={setSource} onLoadDeck={loadDeck} />,
+              }}
+            />
+          ),
+        }}
+      />
 
-        <SourceTree source={source} setSource={setSource} libCount={entries.length} />
-      </div>
-
+      <DesignToolbar />
       {midiMapOpen && <DjMidiMap onClose={() => { setMidiMapOpen(false); useDjControlMap.getState().arm(null); }} />}
     </div>
   );
@@ -664,7 +715,7 @@ const SamplerRail: React.FC = () => {
 interface DeckColumnProps {
   deckId: djEngine.DeckId; accent: 'purple' | 'cyan'; ctl: DeckCtl; title: string | null;
   cam: ReturnType<typeof toCamelot> | null; hasTrack: boolean; isPlaying: boolean; mirror?: boolean;
-  pitch: number; onPitch: (v: number) => void; onPlay: () => void; onCue: () => void;
+  onPlay: () => void; onCue: () => void;
   onSync: () => void; onSyncLock: () => void; syncLocked: boolean; canSync: boolean;
   onSendVj: () => void; onAddSet: () => void;
   headCued: boolean; onHeadCue: () => void;
@@ -673,12 +724,11 @@ interface DeckColumnProps {
 const PAD_SM = 'px-1.5 py-1 text-[8px] min-w-0';
 
 const DeckColumn: React.FC<DeckColumnProps> = ({
-  deckId, accent, ctl, title, cam, hasTrack, isPlaying, mirror, pitch, onPitch,
+  deckId, accent, ctl, title, cam, hasTrack, isPlaying, mirror,
   onPlay, onCue, onSync, onSyncLock, syncLocked, canSync, onSendVj, onAddSet, headCued, onHeadCue,
 }) => {
   const rgbc = DECK_RGB[accent];
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
-  const effBpm = ctl.bpm != null ? (ctl.bpm * (1 + pitch / 100)).toFixed(1) : null;
 
   const header = (
     <div className={`shrink-0 flex items-center gap-1.5 ${mirror ? 'flex-row-reverse' : ''}`}>
@@ -702,15 +752,8 @@ const DeckColumn: React.FC<DeckColumnProps> = ({
     </div>
   );
 
-  const pitchCol = (
-    <div className="shrink-0 flex flex-col items-center gap-0.5 w-10 min-h-0">
-      <div className="flex-1 min-h-0 w-full flex justify-center"><SlideFader label={`Pitch ${deckId}`} value={pitch} onChange={onPitch} min={-50} max={50} step={0.1} /></div>
-      {effBpm && <span className="shrink-0 text-[8px] font-mono tabular-nums text-zinc-500" title="Effective BPM at this pitch">{effBpm}</span>}
-    </div>
-  );
-
   const jog = (
-    <div className="flex-1 min-h-0"><JogWheel deckId={deckId} color={rgbc} disabled={!hasTrack} fill /></div>
+    <div className="flex-1 min-h-0 max-h-80 grid place-items-center"><JogWheel deckId={deckId} color={rgbc} disabled={!hasTrack} fill /></div>
   );
   const PAD_HC = 'w-8 py-1 text-[8px]';
   const PAD_BT = 'w-7 py-1 text-[8px]';
@@ -719,10 +762,8 @@ const DeckColumn: React.FC<DeckColumnProps> = ({
     <div className="hardware-card flex flex-col gap-1.5 p-1.5 min-h-0 overflow-hidden">
       {header}
 
-      {/* jog wheel (fills, inner edge) + pitch fader (outer edge) */}
-      <div className="flex-1 min-h-0 flex gap-1.5 items-stretch">
-        {mirror ? <>{jog}{pitchCol}</> : <>{pitchCol}{jog}</>}
-      </div>
+      {/* jog wheel — fills the deck (pitch lives in the mixer now) */}
+      {jog}
 
       {/* transport — compact, centered */}
       <div className="shrink-0 flex items-center justify-center gap-1">
@@ -784,9 +825,11 @@ interface MixerProps {
   gainA: number; gainB: number;
   eqA: { low: number; mid: number; high: number }; eqB: { low: number; mid: number; high: number };
   filterA: number; filterB: number; volA: number; volB: number;
+  pitchA: number; pitchB: number; bpmA: number | null; bpmB: number | null;
   onGain: (which: djEngine.DeckId, v: number) => void;
   onEq: (which: djEngine.DeckId, band: 'low' | 'mid' | 'high', v: number) => void;
   onFilter: (which: djEngine.DeckId, v: number) => void; onVol: (which: djEngine.DeckId, v: number) => void;
+  onPitch: (which: djEngine.DeckId, v: number) => void;
   crossfader: number; onCrossfade: (v: number) => void;
   quantize: boolean; setQuantize: (v: boolean) => void; autoGain: boolean; setAutoGain: (v: boolean) => void;
   camA: ReturnType<typeof toCamelot> | null; camB: ReturnType<typeof toCamelot> | null; harmonic: boolean | null; flash: string | null;
@@ -795,7 +838,8 @@ interface MixerProps {
 }
 
 const Mixer: React.FC<MixerProps> = ({
-  gainA, gainB, eqA, eqB, filterA, filterB, volA, volB, onGain, onEq, onFilter, onVol,
+  gainA, gainB, eqA, eqB, filterA, filterB, volA, volB, pitchA, pitchB, bpmA, bpmB,
+  onGain, onEq, onFilter, onVol, onPitch,
   crossfader, onCrossfade, quantize, setQuantize, autoGain, setAutoGain, camA, camB, harmonic, flash,
   midiMapOn, onToggleMidiMap, automixOn, onToggleAutomix,
 }) => {
@@ -811,42 +855,63 @@ const Mixer: React.FC<MixerProps> = ({
       .catch(() => { /* ignore — labels need permission, ids still resolve */ });
   }, [cueSupported]);
   // A deck's EQ + filter as a vertical knob column (HI · MID · LO · FLT),
-  // spread to fill the channel height alongside the tall VOL fader.
+  // pinned to the outer edge of the mixer (per the wireframe).
   const eqCol = (which: djEngine.DeckId, eq: { low: number; mid: number; high: number }, filter: number) => (
-    <div className="flex flex-col items-center justify-between min-h-0 py-0.5">
-      <SlideKnob label="Hi" value={eq.high} onChange={(v) => onEq(which, 'high', v)} min={-12} max={12} step={0.5} size={26} center centerReadout />
-      <SlideKnob label="Mid" value={eq.mid} onChange={(v) => onEq(which, 'mid', v)} min={-12} max={12} step={0.5} size={26} center centerReadout />
-      <SlideKnob label="Lo" value={eq.low} onChange={(v) => onEq(which, 'low', v)} min={-12} max={12} step={0.5} size={26} center centerReadout />
-      <SlideKnob label="Flt" value={filter} onChange={(v) => onFilter(which, v)} min={-1} max={1} step={0.01} size={26} center centerReadout />
+    <div className="shrink-0 flex flex-col items-center justify-between gap-2 min-h-0 py-0.5">
+      <SlideKnob label="Hi" value={eq.high} onChange={(v) => onEq(which, 'high', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
+      <SlideKnob label="Mid" value={eq.mid} onChange={(v) => onEq(which, 'mid', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
+      <SlideKnob label="Lo" value={eq.low} onChange={(v) => onEq(which, 'low', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
+      <SlideKnob label="Flt" value={filter} onChange={(v) => onFilter(which, v)} min={-1} max={1} step={0.01} size={28} center centerReadout />
     </div>
   );
+  // A center channel strip: GAIN knob over a (short) VOL fader, per the wireframe.
+  // The B (right) channel's ruler points outward to the right.
+  const channelStrip = (which: djEngine.DeckId, gain: number, vol: number) => (
+    <div className="flex flex-col items-center gap-1.5 min-h-0">
+      <SlideKnob label="Gain" value={gain} onChange={(v) => onGain(which, v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
+      <div className="flex-1 min-h-0 flex justify-center"><SlideFader label={which} value={vol} onChange={(v) => onVol(which, v)} min={0} max={1} step={0.01} rulerSide={which === 'B' ? 'right' : 'left'} /></div>
+    </div>
+  );
+  // Pitch fader on the OUTER edge of the mixer (moved off the decks). Ruler
+  // points outward; effective-BPM readout below.
+  const pitchCol = (which: djEngine.DeckId, pitch: number, bpm: number | null) => {
+    const effBpm = bpm != null ? (bpm * (1 + pitch / 100)).toFixed(1) : null;
+    return (
+      <div className="shrink-0 flex flex-col items-center gap-0.5 min-h-0">
+        <div className="flex-1 min-h-0 flex justify-center"><SlideFader label={`Pch ${which}`} value={pitch} onChange={(v) => onPitch(which, v)} min={-50} max={50} step={0.1} rulerSide={which === 'A' ? 'left' : 'right'} /></div>
+        <span className="shrink-0 text-[8px] font-mono tabular-nums text-zinc-500" title="Effective BPM at this pitch">{effBpm ?? '—'}</span>
+      </div>
+    );
+  };
 
   return (
     <div className="hardware-card flex flex-col items-center gap-1 p-1.5 min-h-0 overflow-hidden">
       <span className="shrink-0 text-[9px] font-black uppercase tracking-widest text-zinc-400">Mixer</span>
 
-      {/* GAIN A · B */}
-      <div className="shrink-0 flex items-center justify-center gap-1" title={autoGain ? 'Channel gain — overridden by Auto-Gain (toggle off to set manually)' : 'Channel gain (trim)'}>
-        <SlideKnob label="" value={gainA} onChange={(v) => onGain('A', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
-        <span className="text-[7px] font-mono uppercase text-zinc-500 w-8 text-center">Gain</span>
-        <SlideKnob label="" value={gainB} onChange={(v) => onGain('B', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
-      </div>
-
-      {/* EQ/FILTER knob columns flanking the channel VOL faders */}
-      <div className="flex-1 min-h-0 w-full flex items-stretch justify-center gap-1">
-        {eqCol('A', eqA, filterA)}
-        <SlideFader label="A" value={volA} onChange={(v) => onVol('A', v)} min={0} max={1} step={0.01} />
-        <SlideFader label="B" value={volB} onChange={(v) => onVol('B', v)} min={0} max={1} step={0.01} />
-        {eqCol('B', eqB, filterB)}
-      </div>
-
-      {/* toggles */}
+      {/* toggles — above the GAIN knobs */}
       <div className="shrink-0 flex items-center justify-center gap-1.5">
         <RoundToggle label="Qtz" icon={Magnet} on={quantize} onChange={setQuantize} box={24} />
         <RoundToggle label="Gain" icon={Gauge} on={autoGain} onChange={setAutoGain} box={24} />
         <RoundToggle label="Lim" icon={Shield} on={limiterOn} onChange={(v) => { setLimiterOn(v); djEngine.setLimiter(v); }} box={24} />
         <RoundToggle label="MIDI" icon={Piano} on={midiMapOn} onChange={onToggleMidiMap} box={24} />
       </div>
+
+      {/* channels — each control group (pitch / EQ / GAIN+VOL) is an editable
+          block: in Design Mode drag a group's handle to reorder, drag the
+          borders to resize. Groups fill the row so the fader/knob bottoms line up. */}
+      <LayoutRow
+        rowKey="mixerChan"
+        axis="x"
+        className="flex-1 min-h-0 w-full px-2"
+        nodes={{
+          pchA: pitchCol('A', pitchA, bpmA),
+          eqA: eqCol('A', eqA, filterA),
+          chA: channelStrip('A', gainA, volA),
+          chB: channelStrip('B', gainB, volB),
+          eqB: eqCol('B', eqB, filterB),
+          pchB: pitchCol('B', pitchB, bpmB),
+        }}
+      />
 
       {/* harmonic key match */}
       {camA && camB && (
@@ -897,6 +962,9 @@ const stemLabel = (n: string) => STEM_LABEL[n.toLowerCase()] ?? (n.charAt(0).toU
 
 const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: string | null }> = ({ deck, accent, entryId }) => {
   const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
+  // Deck A's rack sits on the left — push its contents to the right (toward the
+  // center) so A and B mirror symmetrically around the browser.
+  const toCenter = deck === 'A';
   // Per-deck FX wet amounts (0..1), wired live to the engine (D5). Lazy-builds
   // the deck's FX rack on first non-zero touch.
   const [fx, setFx] = useState<Record<string, number>>({ flanger: 0, reverb: 0, wahwah: 0 });
@@ -928,20 +996,20 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
 
   return (
     <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
-      <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
+      <div className={`shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5 ${toCenter ? 'flex-row-reverse' : ''}`}>
         <Layers className={`w-3 h-3 shrink-0 ${accentText}`} />
         <span className={`text-[9px] font-black uppercase tracking-wider ${accentText}`}>FX · Stems {deck}</span>
       </div>
-      <div className="flex-1 min-h-0 flex flex-col gap-1.5 p-1.5 overflow-hidden">
+      <div className={`flex-1 min-h-0 flex flex-col gap-1.5 p-1.5 overflow-hidden ${toCenter ? 'items-end' : 'items-start'}`}>
         {/* FX rack — live wet knobs (flanger / reverb / wah) */}
-        <div className="grid grid-cols-3 gap-1 place-items-center">
+        <div className="grid grid-cols-3 gap-1 place-items-center w-fit">
           {DJ_FX.map(({ key, label }) => (
             <SlideKnob key={key} label={label} value={fx[key]} onChange={(v) => onFx(key, v)} min={0} max={1} step={0.01} size={30} centerReadout />
           ))}
         </div>
         {/* Live stems (D4) — per-stem gain faders, or a load/separate button */}
-        <div className="mt-auto">
-          <div className="flex items-center gap-1 mb-1">
+        <div className="mt-auto w-fit">
+          <div className={`flex items-center gap-1 mb-1 ${toCenter ? 'flex-row-reverse' : ''}`}>
             <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Stems</span>
             {stemNames.length === 0 ? (
               <button onClick={() => void loadStems()} disabled={!entryId || stemBusy}
@@ -970,11 +1038,12 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
 
 /* ═══════════════════════════════ SideListLane ═══════════════════════════════ */
 
-/** Slim staging queue ("prepare / play-next"), docked above the Track Browser.
- *  Drag library/set rows in to stage them; reorder into play order; fire each
- *  onto a deck (→A/→B) or push the whole queue into the active Automix set.
- *  Chips re-emit the shared DJ_TRACK_MIME so they also drop straight onto the
- *  waveform lanes / sampler. Backed by the ephemeral useDjSideList store. */
+/** Staging queue ("prepare / play-next") — a compact card in the center-bottom
+ *  rack row, flanked by the FX racks. Drag library/set rows in to stage them;
+ *  reorder into play order; fire each onto a deck (→A/→B) or push the whole
+ *  queue into the active Automix set. Staged rows re-emit the shared
+ *  DJ_TRACK_MIME so they also drop straight onto the waveform lanes / sampler.
+ *  Backed by the ephemeral useDjSideList store. */
 const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.DeckId) => void }> = ({ onLoadDeck }) => {
   const items = useDjSideList((s) => s.items);
   const add = useDjSideList((s) => s.add);
@@ -1003,45 +1072,51 @@ const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.Deck
       onDragOver={(e) => { if (e.dataTransfer.types.includes(DJ_TRACK_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(true); } }}
       onDragLeave={() => setOver(false)}
       onDrop={onDrop}
-      className={`hardware-card shrink-0 flex items-center gap-1.5 px-2 py-1 overflow-hidden transition-colors ${over ? 'ring-1 ring-purple-400/60 bg-purple-500/5' : ''}`}
+      className={`hardware-card min-h-0 overflow-hidden transition-colors ${over ? 'ring-1 ring-purple-400/60 bg-purple-500/5' : ''}`}
     >
-      <ListMusic className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-      <span className="text-[9px] font-black uppercase tracking-widest text-purple-300 shrink-0">Next</span>
+      {/* header band */}
+      <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
+        <ListMusic className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+        <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Next</span>
+        <span className="text-[8px] font-mono text-zinc-600 tabular-nums">{items.length}</span>
+        <div className="flex items-center gap-0.5 ml-auto">
+          <button onClick={pushToSet} disabled={!activeId || items.length === 0} className="p-0.5 text-zinc-500 hover:text-purple-300 disabled:opacity-25" title={activeId ? 'Append the whole queue to the active set' : 'Open or create a set first (Source Tree ›)'}><Plus className="w-3 h-3" /></button>
+          <button onClick={clear} disabled={items.length === 0} className="p-0.5 text-zinc-500 hover:text-rose-400 disabled:opacity-25" title="Clear the queue"><Trash2 className="w-3 h-3" /></button>
+        </div>
+      </div>
 
-      {items.length === 0 ? (
-        <span className="flex-1 text-[9px] font-mono text-zinc-600 truncate">drag tracks here to stage them next ▸</span>
-      ) : (
-        <div className="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto">
-          {items.map((it, i) => {
-            const lib = entries.find((e) => e.id === it.entryId) ?? null;
-            const bpm = analysisById[it.entryId]?.data?.bpm ?? null;
-            return (
-              <div
-                key={it.entryId}
-                draggable={!!lib}
-                onDragStart={(ev) => { if (!lib) return; ev.dataTransfer.effectAllowed = 'copy'; ev.dataTransfer.setData(DJ_TRACK_MIME, it.entryId); ev.dataTransfer.setData('text/plain', it.label); }}
-                className={`group/chip shrink-0 flex items-center gap-1 pl-1 pr-0.5 py-0.5 rounded bg-black/40 border border-white/10 ${lib ? 'cursor-grab active:cursor-grabbing' : 'opacity-40'}`}
-                title={lib ? it.label : `${it.label} — no longer in library`}
-              >
-                <span className="text-[7px] font-mono text-zinc-600 tabular-nums">{String(i + 1).padStart(2, '0')}</span>
-                <span className="text-[9px] font-mono text-zinc-300 truncate max-w-24">{it.label}</span>
-                {bpm != null && <span className="text-[7px] font-mono text-zinc-600 tabular-nums">{bpm.toFixed(0)}</span>}
-                <button onClick={() => lib && onLoadDeck(it.entryId, 'A')} disabled={!lib} className="px-0.5 rounded text-[8px] font-black text-purple-300 hover:bg-purple-500/20 disabled:opacity-30" title="Load onto Deck A">→A</button>
-                <button onClick={() => lib && onLoadDeck(it.entryId, 'B')} disabled={!lib} className="px-0.5 rounded text-[8px] font-black text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-30" title="Load onto Deck B">→B</button>
+      {/* staged-track list (vertical, fills the cell) */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {items.length === 0 ? (
+          <div className="h-full grid place-items-center text-[9px] font-mono text-zinc-600 px-3 text-center">Drag tracks here to stage them play-next.</div>
+        ) : items.map((it, i) => {
+          const lib = entries.find((e) => e.id === it.entryId) ?? null;
+          const bpm = analysisById[it.entryId]?.data?.bpm ?? null;
+          return (
+            <div
+              key={it.entryId}
+              draggable={!!lib}
+              onDragStart={(ev) => { if (!lib) return; ev.dataTransfer.effectAllowed = 'copy'; ev.dataTransfer.setData(DJ_TRACK_MIME, it.entryId); ev.dataTransfer.setData('text/plain', it.label); }}
+              className={`group/chip grid items-center gap-1 px-2 py-0.5 border-b border-white/3 hover:bg-white/5 ${lib ? 'cursor-grab active:cursor-grabbing' : 'opacity-40'}`}
+              style={{ gridTemplateColumns: '1.4rem minmax(0,1fr) 2.4rem 3.6rem' }}
+              title={lib ? it.label : `${it.label} — no longer in library`}
+            >
+              <span className="text-[8px] font-mono text-zinc-600 tabular-nums text-right">{String(i + 1).padStart(2, '0')}</span>
+              <span className="text-[10px] font-mono text-zinc-300 truncate">{it.label}</span>
+              <span className="text-[8px] font-mono text-zinc-500 tabular-nums text-right">{bpm != null ? bpm.toFixed(0) : '—'}</span>
+              <span className="flex items-center justify-end gap-0.5">
                 <span className="hidden group-hover/chip:flex items-center gap-0.5">
-                  <button onClick={() => reorder(i, i - 1)} disabled={i === 0} className="text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move earlier"><ChevronRight className="w-2.5 h-2.5 rotate-180" /></button>
-                  <button onClick={() => reorder(i, i + 1)} disabled={i === items.length - 1} className="text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move later"><ChevronRight className="w-2.5 h-2.5" /></button>
+                  <button onClick={() => reorder(i, i - 1)} disabled={i === 0} className="text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move earlier"><ChevronDown className="w-2.5 h-2.5 rotate-180" /></button>
+                  <button onClick={() => reorder(i, i + 1)} disabled={i === items.length - 1} className="text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move later"><ChevronDown className="w-2.5 h-2.5" /></button>
                   <button onClick={() => remove(it.entryId)} className="text-zinc-600 hover:text-rose-400" title="Remove from queue"><X className="w-2.5 h-2.5" /></button>
                 </span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <span className="shrink-0 text-[8px] font-mono text-zinc-600 tabular-nums">{items.length}</span>
-      <button onClick={pushToSet} disabled={!activeId || items.length === 0} className="shrink-0 p-0.5 text-zinc-500 hover:text-purple-300 disabled:opacity-25" title={activeId ? 'Append the whole queue to the active set' : 'Open or create a set first (Source Tree ›)'}><Plus className="w-3 h-3" /></button>
-      <button onClick={clear} disabled={items.length === 0} className="shrink-0 p-0.5 text-zinc-500 hover:text-rose-400 disabled:opacity-25" title="Clear the queue"><Trash2 className="w-3 h-3" /></button>
+                <button onClick={() => lib && onLoadDeck(it.entryId, 'A')} disabled={!lib} className="px-0.5 rounded text-[8px] font-black text-purple-300 hover:bg-purple-500/20 disabled:opacity-30" title="Load onto Deck A">→A</button>
+                <button onClick={() => lib && onLoadDeck(it.entryId, 'B')} disabled={!lib} className="px-0.5 rounded text-[8px] font-black text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-30" title="Load onto Deck B">→B</button>
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -1071,10 +1146,11 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
         const d = e.entryId ? analysisById[e.entryId]?.data ?? null : null;
         return { entryId: e.entryId, title: e.label, bpm: d?.bpm ?? null, key: d?.key ? keyLabel(d.key, d.scale) : null, dur: d?.duration_sec ?? lib?.duration ?? null, setIndex: i };
       })
-    : entries.map((e) => {
+    : libSourceFilter(entries, source.kind as LibSourceKind).map((e) => {
         const d = analysisById[e.id]?.data ?? null;
         return { entryId: e.id, title: e.title, bpm: d?.bpm ?? null, key: d?.key ? keyLabel(d.key, d.scale) : null, dur: d?.duration_sec ?? e.duration ?? null };
       });
+  const sourceLabel = isSet ? set!.name : (LIB_SOURCE_LABEL[source.kind as LibSourceKind] ?? 'Library');
   const rows = q.trim() ? baseRows.filter((r) => r.title.toLowerCase().includes(q.trim().toLowerCase())) : baseRows;
 
   const commitRename = () => { if (set && editName.trim()) renameSetlist(set.id, editName.trim()); setEditing(false); };
@@ -1094,14 +1170,14 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
   };
 
   return (
-    <div className="hardware-card flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="hardware-card flex-3 flex flex-col min-h-0 overflow-hidden">
       {/* header: source name + count + search + (set actions) */}
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         {isSet ? <ListMusic className="w-3.5 h-3.5 text-purple-400 shrink-0" /> : <LibraryIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />}
         {editing && set ? (
           <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditing(false); }} onBlur={commitRename} className="bg-black/50 border border-purple-400/50 rounded px-1.5 py-0.5 text-[10px] text-zinc-100 focus:outline-none w-36" />
         ) : (
-          <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 truncate max-w-40" title={isSet ? set!.name : 'Library'}>{isSet ? set!.name : 'Library'}</span>
+          <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 truncate max-w-40" title={sourceLabel}>{sourceLabel}</span>
         )}
         <span className="text-[8px] font-mono text-zinc-600">{rows.length} {isSet ? 'tracks' : 'files'}</span>
         <div className="flex items-center gap-1 ml-auto bg-black/40 border border-white/10 rounded px-1.5 w-36 max-w-[40%]">
@@ -1160,16 +1236,18 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
 
 /* ═══════════════════════════════ SourceTree ═════════════════════════════════ */
 
-/** Aspirational source tree (MIX.png). Local "Library" and the user's Sets are
- *  live; the rest are labelled placeholders for future streaming/import. */
-const LOCAL_SOON = ['Musikk', 'Videoer', 'Skrivebord', 'Crates', 'iTunes · RekordBox'];
-const ONLINE_SOON = ['iDJPool · VJPro', 'Digitrax Karaoke', 'Deezer · TIDAL', 'SoundCloud', 'Beatport · Beatsource'];
-
+/** Source tree — every entry is live: filtered views over the library
+ *  (Library / Favorites / Generated / Imports), real Online Download, and the
+ *  user's Sets. No placeholder/streaming stubs. */
 const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; libCount: number }> = ({ source, setSource, libCount }) => {
+  const entries = useLibraryStore((s) => s.entries);
   const setlists = useSetlistStore((s) => s.setlists);
   const createSetlist = useSetlistStore((s) => s.create);
   const setActive = useSetlistStore((s) => s.setActive);
   const sets = Object.values(setlists).sort((a, b) => b.updatedAt - a.updatedAt);
+  const favCount = entries.filter((e) => e.favorite).length;
+  const genCount = entries.filter((e) => e.source === 'generate').length;
+  const impCount = entries.filter((e) => e.source === 'import').length;
 
   // Online Download — same backend as the Media tab (/api/ytimport/fetch),
   // routed straight into the library so the imported track appears below.
@@ -1205,15 +1283,17 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
   );
 
   return (
-    <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
+    <div className="hardware-card flex-2 flex flex-col min-h-0 overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         <LibraryIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />
         <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 leading-tight">Source Tree</span>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto py-1">
-        <Group label="Local Music" />
-        <Item active={source.kind === 'library'} onClick={() => setSource({ kind: 'library' })} right={<span className="text-[8px] text-zinc-600">{libCount}</span>} title="Your generated + imported audio">Library</Item>
-        {LOCAL_SOON.map((s) => <Item key={s} soon>{s}</Item>)}
+        <Group label="Library" />
+        <Item active={source.kind === 'library'} onClick={() => setSource({ kind: 'library' })} right={<span className="text-[8px] text-zinc-600">{libCount}</span>} title="All of your generated + imported audio">Library</Item>
+        <Item active={source.kind === 'favorites'} onClick={() => setSource({ kind: 'favorites' })} right={<span className="text-[8px] text-zinc-600">{favCount}</span>} title="Tracks you've starred">Favorites</Item>
+        <Item active={source.kind === 'gen'} onClick={() => setSource({ kind: 'gen' })} right={<span className="text-[8px] text-zinc-600">{genCount}</span>} title="Tracks made in MAKE / MIX">Generated</Item>
+        <Item active={source.kind === 'import'} onClick={() => setSource({ kind: 'import' })} right={<span className="text-[8px] text-zinc-600">{impCount}</span>} title="Tracks imported from disk or online">Imports</Item>
 
         <Group label="Online Music" />
         <Item active={dlOpen} onClick={() => setDlOpen((v) => !v)} title="Download a track from a YouTube / SoundCloud / Bandcamp URL straight into your library">
@@ -1234,12 +1314,8 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
             <span className="text-[7px] font-mono text-zinc-600 px-1 leading-tight">YouTube · SoundCloud · Bandcamp — Spotify is DRM-locked</span>
           </div>
         )}
-        {ONLINE_SOON.map((s) => <Item key={s} soon>{s}</Item>)}
 
-        <Group label="Cache" />
-        <Item soon>Offline Cache</Item>
-
-        <Group label="Lists & Advice" right={<button onClick={() => { const id = createSetlist(`Set ${new Date().toLocaleDateString()}`); setActive(id); setSource({ kind: 'set', id }); }} className="ml-auto p-0.5 text-purple-300 hover:text-purple-100" title="New set"><Plus className="w-3 h-3" /></button>} />
+        <Group label="Sets" right={<button onClick={() => { const id = createSetlist(`Set ${new Date().toLocaleDateString()}`); setActive(id); setSource({ kind: 'set', id }); }} className="ml-auto p-0.5 text-purple-300 hover:text-purple-100" title="New set"><Plus className="w-3 h-3" /></button>} />
         {sets.length === 0 ? (
           <div className="pl-4 pr-1.5 py-0.5 text-[9px] font-mono text-zinc-700">No sets — click +</div>
         ) : sets.map((s) => (

@@ -1,8 +1,8 @@
-# Stable Audio 3 - theDAW User Guide
+# theDAW User Guide
 
-## theDAW User Guide - by GANTASMO
+_by GANTASMO_
 
-This guide focuses on the highest-value workflows in theDAW: AI-native music generation, live remix and editor routing, performance-linked DJ/VJ control surfaces, reactive media playback, and export-ready output paths for real sessions. The in-app **Docs** button renders this guide as an interactive modal with Markdown download and print/PDF export.
+This guide documents theDAW end to end, from generating a piece out of a prompt through arranging it, mixing it, performing it live, and exporting the finished master. The in-app **Docs** button renders this guide as an interactive modal with Markdown download and print and PDF export.
 
 ---
 

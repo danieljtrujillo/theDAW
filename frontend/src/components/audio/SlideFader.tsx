@@ -37,9 +37,12 @@ interface SlideFaderProps {
   max: number;
   step?: number;
   tipKey?: string;
+  /** Which side the number ruler sits on. Default 'left'; use 'right' for
+   *  faders on the right of a layout so the ticks/numbers point outward. */
+  rulerSide?: 'left' | 'right';
 }
 
-const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min, max, step = 0.01, tipKey }) => {
+const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min, max, step = 0.01, tipKey, rulerSide = 'left' }) => {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const [drag, setDrag] = useState(false);
@@ -91,6 +94,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
   // ruler: 5 ticks across the range, numbers on the ends + middle, all
   // magnifying as the handle nears them (the SLIDE "bulge").
   const marks: React.ReactNode[] = [];
+  const markDir = rulerSide === 'right' ? 1 : -1; // magnify outward (away from the track)
   const TICKS = 20;                     // dense ruler — many ticks
   for (let i = 0; i <= TICKS; i++) {
     const tt = i / TICKS;
@@ -101,7 +105,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
     marks.push(
       <div key={i} className="ts-mark" style={{
         top: `${(1 - tt) * 100}%`,
-        transform: `translate(${-p * 5}px, -50%) scale(${1 + p * 0.55})`,
+        transform: `translate(${markDir * p * 5}px, -50%) scale(${1 + p * 0.55})`,
         opacity: lerp(0.22, 1, p),
         color: rgb(txt),
         zIndex: 1 + Math.round(p * 10),
@@ -133,7 +137,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
     >
       {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
       <div className="ts-stage flex-1 min-h-0" style={{ width: 'var(--body-w)' }}>
-        <div className="ts-scale">{marks}</div>
+        <div className={`ts-scale${rulerSide === 'right' ? ' ts-scale--right' : ''}`}>{marks}</div>
         <div
           className="ts-body"
           style={{ height: '100%' }}
