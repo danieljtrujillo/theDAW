@@ -24,8 +24,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, Plus, Save, Trash2, Cast, Music2,
   ChevronDown, ChevronRight, Repeat, Magnet, Gauge, Lock,
-  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield, Headphones,
+  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield, Headphones, Piano, X,
 } from 'lucide-react';
+import { subscribeToMidi } from '../state/midiBus';
+import { useDjControlMap, sigLabel, type MidiKind } from '../state/djControlMap';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -59,6 +61,29 @@ const ROLL_SIZES: Array<{ beats: number; label: string }> = [
   { beats: 0.25, label: '¼' }, { beats: 0.5, label: '½' }, { beats: 1, label: '1' },
 ];
 const AUTO_GAIN_TARGET_DB = -12;
+
+/* DJ MIDI-learn (D6): the bindable actions, grouped for the map panel. CC →
+ * continuous (xfader/vol/eq/filter/pitch); note → trigger (play/cue/sync/hotcue). */
+const deckMidiActions = (d: 'A' | 'B'): Array<{ id: string; label: string; group: string; kind: MidiKind }> =>
+  ([
+    { id: `play${d}`, label: 'Play', kind: 'note' as MidiKind },
+    { id: `cue${d}`, label: 'Cue', kind: 'note' as MidiKind },
+    { id: `sync${d}`, label: 'Sync', kind: 'note' as MidiKind },
+    { id: `headcue${d}`, label: 'Cue (HP)', kind: 'note' as MidiKind },
+    { id: `vol${d}`, label: 'Volume', kind: 'cc' as MidiKind },
+    { id: `filter${d}`, label: 'Filter', kind: 'cc' as MidiKind },
+    { id: `pitch${d}`, label: 'Pitch', kind: 'cc' as MidiKind },
+    { id: `eq${d}.high`, label: 'EQ Hi', kind: 'cc' as MidiKind },
+    { id: `eq${d}.mid`, label: 'EQ Mid', kind: 'cc' as MidiKind },
+    { id: `eq${d}.low`, label: 'EQ Lo', kind: 'cc' as MidiKind },
+    ...[1, 2, 3, 4].map((n) => ({ id: `hotcue${d}${n}`, label: `Hotcue ${n}`, kind: 'note' as MidiKind })),
+  ]).map((a) => ({ ...a, group: `Deck ${d}` }));
+
+const MIDI_ACTIONS: Array<{ id: string; label: string; group: string; kind: MidiKind }> = [
+  { id: 'xfader', label: 'Crossfader', group: 'Mixer', kind: 'cc' },
+  ...deckMidiActions('A'),
+  ...deckMidiActions('B'),
+];
 
 /** Source feeding the center Track Browser. */
 type Source = { kind: 'library' } | { kind: 'set'; id: string };
@@ -185,6 +210,7 @@ export const DJView: React.FC = () => {
   const [volB, setVolB] = useState(1);
   const [cueA, setCueA] = useState(false);
   const [cueB, setCueB] = useState(false);
+  const [midiMapOpen, setMidiMapOpen] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [source, setSource] = useState<Source>({ kind: 'library' });
 
@@ -370,6 +396,51 @@ export const DJView: React.FC = () => {
     if (which === 'A') setCueA(next); else setCueB(next);
     djEngine.setDeckCue(which, next);
   };
+  const applyCrossfade = (v: number) => { setCrossfader(v); djEngine.setCrossfade(v); };
+
+  // DJ MIDI-learn (D6): rebuild the action→handler map each render (cheap; closes
+  // over current state) and read it from a ref inside the one midiBus subscriber.
+  const midiHandlersRef = useRef<Record<string, (v: number) => void>>({});
+  midiHandlersRef.current = (() => {
+    const h: Record<string, (v: number) => void> = { xfader: (v) => applyCrossfade((v / 127) * 2 - 1) };
+    for (const d of ['A', 'B'] as djEngine.DeckId[]) {
+      const ctl = d === 'A' ? ctlA : ctlB;
+      h[`play${d}`] = () => djEngine.toggleDeck(d);
+      h[`cue${d}`] = () => djEngine.cueDeck(d);
+      h[`sync${d}`] = () => syncDeck(d);
+      h[`headcue${d}`] = () => toggleCue(d);
+      h[`vol${d}`] = (v) => onVol(d, v / 127);
+      h[`filter${d}`] = (v) => onFilter(d, (v / 127) * 2 - 1);
+      h[`pitch${d}`] = (v) => onPitch(d, (v / 127) * 100 - 50);
+      h[`eq${d}.high`] = (v) => onEq(d, 'high', (v / 127) * 24 - 12);
+      h[`eq${d}.mid`] = (v) => onEq(d, 'mid', (v / 127) * 24 - 12);
+      h[`eq${d}.low`] = (v) => onEq(d, 'low', (v / 127) * 24 - 12);
+      for (const n of [1, 2, 3, 4]) h[`hotcue${d}${n}`] = () => ctl.setHotcue(n - 1);
+    }
+    return h;
+  })();
+  useEffect(() => {
+    return subscribeToMidi((msg) => {
+      const data = msg.data;
+      if (!data || data.length < 2) return;
+      const status = data[0] & 0xf0;
+      const channel = data[0] & 0x0f;
+      const number = data[1];
+      const value = data.length > 2 ? data[2] : 0;
+      const kind: MidiKind | null = status === 0xb0 ? 'cc' : (status === 0x90 || status === 0x80) ? 'note' : null;
+      if (!kind) return;
+      const store = useDjControlMap.getState();
+      if (store.learnAction) { store.bind(store.learnAction, { kind, number, channel }); return; }
+      for (const actionId in store.bindings) {
+        const sig = store.bindings[actionId];
+        if (sig.kind !== kind || sig.number !== number || sig.channel !== channel) continue;
+        const fn = midiHandlersRef.current[actionId];
+        if (!fn) continue;
+        if (kind === 'note') { if (status === 0x90 && value > 0) fn(value); }
+        else fn(value);
+      }
+    });
+  }, []);
 
   return (
     <div className="h-full w-full overflow-hidden flex flex-col gap-1.5 p-1.5 bg-[#07050a] text-white">
@@ -391,9 +462,10 @@ export const DJView: React.FC = () => {
             <Mixer
               gainA={gainA} gainB={gainB} eqA={eqA} eqB={eqB} filterA={filterA} filterB={filterB} volA={volA} volB={volB}
               onGain={onGain} onEq={onEq} onFilter={onFilter} onVol={onVol}
-              crossfader={crossfader} onCrossfade={(v) => { setCrossfader(v); djEngine.setCrossfade(v); }}
+              crossfader={crossfader} onCrossfade={applyCrossfade}
               quantize={quantize} setQuantize={setQuantize} autoGain={autoGain} setAutoGain={setAutoGain}
               camA={camA} camB={camB} harmonic={harmonic} flash={flash}
+              midiMapOn={midiMapOpen} onToggleMidiMap={() => setMidiMapOpen((v) => !v)}
             />
             <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror pitch={deckBPitch} onPitch={(v) => onPitch('B', v)} onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} headCued={cueB} onHeadCue={() => toggleCue('B')} />
           </div>
@@ -407,6 +479,8 @@ export const DJView: React.FC = () => {
 
         <SourceTree source={source} setSource={setSource} libCount={entries.length} />
       </div>
+
+      {midiMapOpen && <DjMidiMap onClose={() => { setMidiMapOpen(false); useDjControlMap.getState().arm(null); }} />}
     </div>
   );
 };
@@ -603,11 +677,13 @@ interface MixerProps {
   crossfader: number; onCrossfade: (v: number) => void;
   quantize: boolean; setQuantize: (v: boolean) => void; autoGain: boolean; setAutoGain: (v: boolean) => void;
   camA: ReturnType<typeof toCamelot> | null; camB: ReturnType<typeof toCamelot> | null; harmonic: boolean | null; flash: string | null;
+  midiMapOn: boolean; onToggleMidiMap: () => void;
 }
 
 const Mixer: React.FC<MixerProps> = ({
   gainA, gainB, eqA, eqB, filterA, filterB, volA, volB, onGain, onEq, onFilter, onVol,
   crossfader, onCrossfade, quantize, setQuantize, autoGain, setAutoGain, camA, camB, harmonic, flash,
+  midiMapOn, onToggleMidiMap,
 }) => {
   const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
   // Cue (headphone) output device picker — only when the runtime supports setSinkId.
@@ -651,10 +727,11 @@ const Mixer: React.FC<MixerProps> = ({
       </div>
 
       {/* toggles */}
-      <div className="shrink-0 flex items-center justify-center gap-2">
+      <div className="shrink-0 flex items-center justify-center gap-1.5">
         <RoundToggle label="Qtz" icon={Magnet} on={quantize} onChange={setQuantize} box={24} />
         <RoundToggle label="Gain" icon={Gauge} on={autoGain} onChange={setAutoGain} box={24} />
         <RoundToggle label="Lim" icon={Shield} on={limiterOn} onChange={(v) => { setLimiterOn(v); djEngine.setLimiter(v); }} box={24} />
+        <RoundToggle label="MIDI" icon={Piano} on={midiMapOn} onChange={onToggleMidiMap} box={24} />
       </div>
 
       {/* harmonic key match */}
@@ -968,6 +1045,54 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
         ) : sets.map((s) => (
           <Item key={s.id} active={source.kind === 'set' && source.id === s.id} onClick={() => { setActive(s.id); setSource({ kind: 'set', id: s.id }); }} right={<span className="text-[8px] text-zinc-600">{s.entries.length}</span>} title={`Open set "${s.name}"`}>{s.name}</Item>
         ))}
+      </div>
+    </div>
+  );
+};
+
+/* ═══════════════════════════════ DjMidiMap (D6) ═════════════════════════════ */
+
+const DJ_MIDI_GROUPS = ['Mixer', 'Deck A', 'Deck B'];
+
+/** Learn overlay: arm an action, move a control on your MIDI gear, it binds.
+ *  Binding + dispatch run in DJView's one midiBus subscriber. */
+const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const bindings = useDjControlMap((s) => s.bindings);
+  const learnAction = useDjControlMap((s) => s.learnAction);
+  const arm = useDjControlMap((s) => s.arm);
+  const clear = useDjControlMap((s) => s.clear);
+  const clearAll = useDjControlMap((s) => s.clearAll);
+  return (
+    <div className="fixed inset-0 z-200 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-115 max-h-[82%] overflow-y-auto rounded-lg border border-purple-500/30 bg-[#0c0a14] shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-white/5 sticky top-0 bg-[#0c0a14]">
+          <Piano className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 shrink-0">DJ MIDI Map</span>
+          <span className="text-[8px] font-mono text-zinc-500 truncate">Click Learn, then move a control (MIDI must be ON)</span>
+          <button onClick={clearAll} className="ml-auto shrink-0 text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-rose-300">Clear all</button>
+          <button onClick={onClose} className="shrink-0 p-1 text-zinc-500 hover:text-white rounded hover:bg-white/5"><X className="w-3.5 h-3.5" /></button>
+        </div>
+        <div className="p-3 flex flex-col gap-2">
+          {DJ_MIDI_GROUPS.map((g) => (
+            <div key={g}>
+              <div className="text-[8px] font-black uppercase tracking-widest text-zinc-500 mb-1">{g}</div>
+              <div className="grid grid-cols-2 gap-1">
+                {MIDI_ACTIONS.filter((a) => a.group === g).map((a) => {
+                  const sig = bindings[a.id];
+                  const learning = learnAction === a.id;
+                  return (
+                    <div key={a.id} className={`flex items-center gap-1 px-1.5 py-1 rounded border ${learning ? 'border-amber-400/60 bg-amber-500/10' : 'border-white/8 bg-black/30'}`}>
+                      <span className="flex-1 min-w-0 text-[9px] font-mono text-zinc-300 truncate" title={a.label}>{a.label}</span>
+                      <span className={`text-[8px] font-mono shrink-0 ${sig ? 'text-emerald-300' : 'text-zinc-600'}`}>{sigLabel(sig)}</span>
+                      <button onClick={() => arm(learning ? null : a.id)} className={`shrink-0 text-[8px] font-bold uppercase px-1 py-0.5 rounded border ${learning ? 'border-amber-400 text-amber-300 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100'}`}>{learning ? '…' : 'Learn'}</button>
+                      {sig && <button onClick={() => clear(a.id)} className="shrink-0 text-zinc-600 hover:text-rose-400" title="Clear binding"><X className="w-2.5 h-2.5" /></button>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
