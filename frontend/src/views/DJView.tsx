@@ -61,6 +61,8 @@ const ROLL_SIZES: Array<{ beats: number; label: string }> = [
   { beats: 0.25, label: '¼' }, { beats: 0.5, label: '½' }, { beats: 1, label: '1' },
 ];
 const AUTO_GAIN_TARGET_DB = -12;
+const AUTOMIX_TAIL = 18;   // s before a track ends to begin the blend
+const AUTOMIX_XFADE = 10;  // s the auto-crossfade takes
 
 /* DJ MIDI-learn (D6): the bindable actions, grouped for the map panel. CC →
  * continuous (xfader/vol/eq/filter/pitch); note → trigger (play/cue/sync/hotcue). */
@@ -211,7 +213,9 @@ export const DJView: React.FC = () => {
   const [cueA, setCueA] = useState(false);
   const [cueB, setCueB] = useState(false);
   const [midiMapOpen, setMidiMapOpen] = useState(false);
+  const [automixOn, setAutomixOn] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
+  const automixRef = useRef<{ current: djEngine.DeckId; fading: boolean; fadeStart: number; fadeFrom: number; fadeTo: number } | null>(null);
   const [source, setSource] = useState<Source>({ kind: 'library' });
 
   const entries = useLibraryStore((s) => s.entries);
@@ -442,6 +446,66 @@ export const DJView: React.FC = () => {
     });
   }, []);
 
+  // Automix (D7): auto-sequence the active set across the 2 decks — beatmatch
+  // the next track and crossfade at each tail, then advance. Pure orchestration
+  // over the existing engine (no new deps). Drives the real deck loaders + sync.
+  useEffect(() => {
+    if (!automixOn) { automixRef.current = null; return; }
+    const seq = (): string[] => {
+      const sl = useSetlistStore.getState();
+      const set = sl.activeId ? sl.setlists[sl.activeId] : null;
+      return (set?.entries ?? []).map((e) => e.entryId).filter((x): x is string => !!x);
+    };
+    const list = seq();
+    if (list.length < 2) { setFlash('Automix needs an active set with ≥2 tracks'); setAutomixOn(false); return; }
+    const other = (d: djEngine.DeckId): djEngine.DeckId => (d === 'A' ? 'B' : 'A');
+    const loadOnto = (d: djEngine.DeckId, entryId: string) => (d === 'A' ? setDeckATrack : setDeckBTrack)(entryId);
+    const loadNextAfter = (entryId: string | null, onto: djEngine.DeckId) => {
+      const l = seq();
+      const i = entryId ? l.indexOf(entryId) : -1;
+      const ni = i >= 0 ? i + 1 : 1;
+      if (ni < l.length && l[ni] !== deckATrackRef.current && l[ni] !== deckBTrackRef.current) loadOnto(onto, l[ni]);
+    };
+
+    // Init: current = a playing deck, else Deck A seeded with the first track.
+    const current: djEngine.DeckId = djEngine.getStatus('A').playing ? 'A' : djEngine.getStatus('B').playing ? 'B' : 'A';
+    const curEntry = current === 'A' ? deckATrackRef.current : deckBTrackRef.current;
+    if (!curEntry) { loadOnto(current, list[0]); pendingPlayRef.current = current; }
+    automixRef.current = { current, fading: false, fadeStart: 0, fadeFrom: 0, fadeTo: 0 };
+    loadNextAfter(curEntry ?? list[0], other(current));
+    setFlash('Automix on — sequencing the set');
+
+    const id = window.setInterval(() => {
+      const mix = automixRef.current;
+      if (!mix) return;
+      const cur = mix.current;
+      const nxt = other(cur);
+      const cs = djEngine.getStatus(cur);
+      const ns = djEngine.getStatus(nxt);
+      const now = performance.now();
+      if (!mix.fading) {
+        if (cs.playing && cs.duration > 0 && cs.duration - cs.currentTime <= AUTOMIX_TAIL && ns.hasBuffer) {
+          syncDeck(nxt);              // beatmatch the incoming deck to the outgoing tempo + phase
+          djEngine.seekDeck(nxt, 0);
+          djEngine.playDeck(nxt);
+          mix.fading = true; mix.fadeStart = now; mix.fadeFrom = djEngine.getCrossfade(); mix.fadeTo = nxt === 'B' ? 1 : -1;
+          setFlash(`Automix: blending → Deck ${nxt}`);
+        }
+      } else {
+        const t = Math.min(1, (now - mix.fadeStart) / (AUTOMIX_XFADE * 1000));
+        applyCrossfade(mix.fadeFrom + (mix.fadeTo - mix.fadeFrom) * t);
+        if (t >= 1 || !cs.playing) {
+          if (cs.playing) djEngine.pauseDeck(cur);
+          mix.current = nxt;
+          mix.fading = false;
+          loadNextAfter(nxt === 'A' ? deckATrackRef.current : deckBTrackRef.current, cur); // queue the following track on the freed deck
+        }
+      }
+    }, 500);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [automixOn]);
+
   return (
     <div className="h-full w-full overflow-hidden flex flex-col gap-1.5 p-1.5 bg-[#07050a] text-white">
 
@@ -466,6 +530,7 @@ export const DJView: React.FC = () => {
               quantize={quantize} setQuantize={setQuantize} autoGain={autoGain} setAutoGain={setAutoGain}
               camA={camA} camB={camB} harmonic={harmonic} flash={flash}
               midiMapOn={midiMapOpen} onToggleMidiMap={() => setMidiMapOpen((v) => !v)}
+              automixOn={automixOn} onToggleAutomix={() => setAutomixOn((v) => !v)}
             />
             <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror pitch={deckBPitch} onPitch={(v) => onPitch('B', v)} onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} headCued={cueB} onHeadCue={() => toggleCue('B')} />
           </div>
@@ -678,12 +743,13 @@ interface MixerProps {
   quantize: boolean; setQuantize: (v: boolean) => void; autoGain: boolean; setAutoGain: (v: boolean) => void;
   camA: ReturnType<typeof toCamelot> | null; camB: ReturnType<typeof toCamelot> | null; harmonic: boolean | null; flash: string | null;
   midiMapOn: boolean; onToggleMidiMap: () => void;
+  automixOn: boolean; onToggleAutomix: () => void;
 }
 
 const Mixer: React.FC<MixerProps> = ({
   gainA, gainB, eqA, eqB, filterA, filterB, volA, volB, onGain, onEq, onFilter, onVol,
   crossfader, onCrossfade, quantize, setQuantize, autoGain, setAutoGain, camA, camB, harmonic, flash,
-  midiMapOn, onToggleMidiMap,
+  midiMapOn, onToggleMidiMap, automixOn, onToggleAutomix,
 }) => {
   const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
   // Cue (headphone) output device picker — only when the runtime supports setSinkId.
@@ -750,6 +816,12 @@ const Mixer: React.FC<MixerProps> = ({
         </div>
         <div className="text-center text-[8px] font-mono text-zinc-600 tabular-nums leading-tight mt-0.5">
           {crossfader < -0.05 ? `A ${Math.round(-crossfader * 100)}%` : crossfader > 0.05 ? `B ${Math.round(crossfader * 100)}%` : 'CENTER'}
+        </div>
+        <div className="flex justify-center mt-1">
+          <button onClick={onToggleAutomix} title="Automix — auto-sequence + beatmatch-crossfade the active set"
+            className={`px-3 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border transition-colors ${automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>
+            {automixOn ? 'Automix ●' : 'Automix'}
+          </button>
         </div>
       </div>
       {flash && <span className="shrink-0 text-center text-[8px] font-mono text-cyan-300 truncate w-full">{flash}</span>}
