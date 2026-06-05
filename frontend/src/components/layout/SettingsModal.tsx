@@ -289,10 +289,12 @@ const LayoutSettingsSection: React.FC = () => {
   const gapPx = useLayoutPrefs((s) => s.gapPx);
   const snapPx = useLayoutPrefs((s) => s.snapPx);
   const showGuides = useLayoutPrefs((s) => s.showGuides);
+  const matchSizes = useLayoutPrefs((s) => s.matchSizes);
   const setFillMode = useLayoutPrefs((s) => s.setFillMode);
   const setGapPx = useLayoutPrefs((s) => s.setGapPx);
   const setSnapPx = useLayoutPrefs((s) => s.setSnapPx);
   const setShowGuides = useLayoutPrefs((s) => s.setShowGuides);
+  const setMatchSizes = useLayoutPrefs((s) => s.setMatchSizes);
   return (
     <>
       <div className="flex items-center gap-1.5 mb-2">
@@ -354,6 +356,18 @@ const LayoutSettingsSection: React.FC = () => {
             title="Show centre + increment alignment guides while editing a layout"
           >
             {showGuides ? 'On' : 'Off'}
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Match:</span>
+          <button
+            onClick={() => setMatchSizes(!matchSizes)}
+            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+              matchSizes ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+            }`}
+            title="Match same-kind control sizes — equal height across a row, equal width down a column"
+          >
+            {matchSizes ? 'On' : 'Off'}
           </button>
         </div>
         <p className="text-[8px] text-zinc-600 leading-relaxed">

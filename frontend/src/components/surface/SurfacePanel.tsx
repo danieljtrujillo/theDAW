@@ -12,14 +12,14 @@
  * (reversed widget order + per-widget mirror opt) come from the layout store.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, CirclePlus, Link2, X } from 'lucide-react';
+import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, CirclePlus, Link2, Combine, X } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { Splitter } from './Splitter';
 import { WidgetCell } from './WidgetCell';
 import { AddControlModal } from './AddControlModal';
 import { PANEL_MIME, WIDGET_MIME, encode, decodeWidget, decodePanel } from './dnd';
-import { companionOf } from '../../state/surfaceLayoutStore';
+import { companionOf, absorbableSibling } from '../../state/surfaceLayoutStore';
 import type { Axis, EdgeDir, NodeId, PanelNode, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 
 const PanelHeader: React.FC<{
@@ -32,8 +32,9 @@ const PanelHeader: React.FC<{
   surfaceId: string;
   store: SurfaceStoreApi;
   companionId?: NodeId | null;
+  absorbId?: NodeId | null;
   onAddControl?: () => void;
-}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store, companionId, onAddControl }) => {
+}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store, companionId, absorbId, onAddControl }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -132,6 +133,17 @@ const PanelHeader: React.FC<{
       >
         <SplitSquareVertical className="w-3 h-3" />
       </button>
+      {absorbId && (
+        <button
+          onClick={() => store.getState().fillAdjacent(nodeId)}
+          onMouseEnter={() => store.getState().setHighlight(absorbId)}
+          onMouseLeave={() => store.getState().setHighlight(null)}
+          title="Fill — absorb the adjacent empty gap into this panel"
+          className="text-cyan-200/90 hover:text-cyan-100"
+        >
+          <Combine className="w-3 h-3" />
+        </button>
+      )}
       {companionId && (
         <button
           onClick={() => store.getState().mirrorToCompanion(nodeId)}
@@ -164,10 +176,11 @@ const PanelHeader: React.FC<{
 };
 
 export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
-  const { store, surfaceId, registry } = useSurface();
+  const { store, surfaceId, registry, openMenu } = useSurface();
   const node = store((s) => s.layout.nodes[nodeId]) as PanelNode | undefined;
   const design = store((s) => s.designMode);
   const companionId = store((s) => companionOf(s.layout.nodes, nodeId));
+  const absorbId = store((s) => absorbableSibling(s.layout.nodes, nodeId));
   const highlighted = store((s) => s.highlightId === nodeId);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [bodySize, setBodySize] = useState({ w: 0, h: 0 });
@@ -195,9 +208,11 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   // card. In Design Mode a faint dashed outline keeps each panel grabbable.
   const chrome = isPinned
     ? 'bg-transparent'
-    : design
-      ? 'rounded border border-dashed border-purple-400/30'
-      : 'bg-transparent';
+    : node.bgFill
+      ? `rounded bg-(--panel) border ${design ? 'border-purple-400/40' : 'border-(--panel-border)'}`
+      : design
+        ? 'rounded border border-dashed border-purple-400/30'
+        : 'bg-transparent';
   // Pinned panels host scrollable components and must clip; widget panels stay
   // overflow-visible so a control's bulging readout/number can spill into the
   // (empty) gap instead of being clipped at the panel edge.
@@ -221,11 +236,14 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   return (
     <div
       className={`relative h-full w-full min-h-0 min-w-0 flex flex-col ${clip} ${chrome} ${highlighted ? 'ring-2 ring-amber-300/70 shadow-[0_0_12px_rgba(252,211,77,0.5)]' : ''}`}
+      onContextMenu={design ? (e) => { e.stopPropagation(); openMenu(e, { kind: 'panel', nodeId }); } : undefined}
+      onPointerEnter={design ? () => store.getState().setHoverNode(nodeId) : undefined}
+      onPointerLeave={design ? () => { if (store.getState().hoverNodeId === nodeId) store.getState().setHoverNode(null); } : undefined}
       onDragOver={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'; setDockEdge(computeEdge(e)); } : undefined}
       onDragLeave={design ? (e) => { e.stopPropagation(); setDockEdge(null); } : undefined}
       onDrop={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; const p = decodePanel(e.dataTransfer.getData(PANEL_MIME)); const edge = computeEdge(e); setDockEdge(null); if (!p || p.surfaceId !== surfaceId) return; e.preventDefault(); e.stopPropagation(); store.getState().dockNode(p.panelId, nodeId, edge); } : undefined}
     >
-      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} companionId={companionId} onAddControl={isPinned ? undefined : () => setAddOpen(true)} />}
+      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} companionId={companionId} absorbId={absorbId} onAddControl={isPinned ? undefined : () => setAddOpen(true)} />}
       {addOpen && <AddControlModal panelId={nodeId} onClose={() => setAddOpen(false)} />}
 
       <div
@@ -280,6 +298,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
                 mirror={node.mirror}
                 uniform={node.uniform}
                 shape={node.widgetShapes?.[wid]}
+                flow={node.flow}
                 margins={node.widgetMargins?.[wid]}
               />
             )}

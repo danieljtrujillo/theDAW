@@ -31,6 +31,8 @@ interface Props {
   mirror?: boolean;
   uniform?: boolean;
   shape?: ButtonShape;
+  /** Host panel flow, forwarded so size helpers pick the shared cross-axis. */
+  flow?: 'row' | 'column';
   margins?: { t: number; r: number; b: number; l: number };
 }
 
@@ -115,16 +117,15 @@ const JUSTIFY_ICON: Record<Justify, React.ComponentType<{ className?: string }>>
 // Cap a control's size in 'natural' (compact) fill mode so dead space appears
 // and the control can be justified within the cell.
 const NATURAL_CAP = 60;
-// One shared size for every control when a panel is in uniform mode.
-const UNIFORM_CAP = 46;
 
 // Deliberately NOT memoized: the host tab rebuilds its registry (with fresh
 // closures carrying live values) on each render, so the cell must re-render
 // with the surface to reflect live control state.
-export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, uniform, shape, margins }) => {
-  const { surfaceId, store, registry, targets } = useSurface();
+export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, uniform, shape, flow, margins }) => {
+  const { surfaceId, store, registry, targets, openMenu } = useSurface();
   const custom = store((s) => s.layout.customWidgets?.[widgetId]);
   const fillMode = useLayoutPrefs((s) => s.fillMode);
+  const matchSizes = useLayoutPrefs((s) => s.matchSizes);
   const snapPx = useLayoutPrefs((s) => s.snapPx);
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -148,10 +149,13 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
   const label = def?.label ?? custom?.label ?? (spacer ? 'Spacer' : widgetId);
   const acceptDrop = (e: React.DragEvent) => design && e.dataTransfer.types.includes(WIDGET_MIME);
 
-  // Uniform mode forces compact, equal-sized controls regardless of fill mode.
-  const fill = uniform ? false : fillMode === 'scale';
-  const cap = uniform ? UNIFORM_CAP : NATURAL_CAP;
-  const effSize = fill ? size : { w: Math.min(size.w, cap), h: Math.min(size.h, cap) };
+  // Scale mode → controls fill the cell; natural mode → a compact cap so dead
+  // space appears. `match` (global pref OR panel uniform) tells the control to
+  // size to the shared cross-axis so same-kind controls match across a row /
+  // column — the size helpers in the tab registry act on it.
+  const fill = fillMode === 'scale';
+  const match = matchSizes || !!uniform;
+  const effSize = fill ? size : { w: Math.min(size.w, NATURAL_CAP), h: Math.min(size.h, NATURAL_CAP) };
   const JustIcon = JUSTIFY_ICON[justify];
   const m = margins ?? { t: 0, r: 0, b: 0, l: 0 };
   const showMargins = design && (hover || marginDragging);
@@ -167,6 +171,7 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
       style={{ paddingTop: m.t, paddingRight: m.r, paddingBottom: m.b, paddingLeft: m.l }}
       onPointerEnter={design ? () => setHover(true) : undefined}
       onPointerLeave={design ? () => setHover(false) : undefined}
+      onContextMenu={design && (def || custom) ? (e) => { e.stopPropagation(); openMenu(e, { kind: 'widget', nodeId: panelId, widgetId }); } : undefined}
       onDragOver={
         design
           ? (e) => {
@@ -193,7 +198,7 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
       }
     >
       {def ? (
-        def.render(effSize, { mirror, justify, fill, shape })
+        def.render(effSize, { mirror, justify, fill, shape, flow, match })
       ) : custom ? (
         <CustomControl def={custom} targets={targets} size={effSize} shapeOverride={shape} />
       ) : spacer ? (
