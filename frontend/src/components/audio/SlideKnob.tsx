@@ -140,7 +140,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
               fontSize: active ? '13px' : '11px',
               fontWeight: 800,
               textShadow: `0 0 8px ${rgba(base, 0.85)}`,
-              zIndex: 3,
+              zIndex: 8, // above the rotating pointer (.tk-point z-5) so the readout is never occluded
               transition: 'font-size 0.1s ease',
             }}
           >

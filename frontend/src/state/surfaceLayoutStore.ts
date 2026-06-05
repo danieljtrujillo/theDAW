@@ -1,0 +1,617 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+import type { WidgetId } from '../components/surface/widgetTypes';
+
+/* Generic, data-driven control-surface layout.
+ *
+ * A surface is a TREE of containers (row | column) whose leaves are PANELS, and
+ * each panel holds an ordered list of placed widget ids. The tree is stored as
+ * a FLAT id-keyed `nodes` map so every reducer is an O(1) map update with no
+ * recursive cloning — the tree is reconstructed by walking root → children.
+ *
+ * Design Mode lets the user drag splitters to RESIZE siblings, drag panel
+ * headers to MOVE/reorder panels across containers, drag individual widgets
+ * between panels, add/remove panels, and split a panel into a row/column. The
+ * layout persists per-surface (localStorage `thedaw.surface.<id>.v1`); a
+ * `merge`/`version` guard falls back to the default on schema mismatch or
+ * corruption, and an auto-prune keeps the tree minimal (no empty/▢single-child
+ * containers) so the grid is always valid and nothing overlaps.
+ *
+ * This supersedes the DJ-only `djLayoutStore` + `DesignLayout`; the DJ tab is
+ * the first consumer via `createLayoutStore('dj', defaultDjLayout)`. */
+
+export type NodeId = string;
+export type Axis = 'row' | 'column';
+/** A directional dock target relative to a node. */
+export type EdgeDir = 'left' | 'right' | 'top' | 'bottom';
+/** Widget ids beginning with this prefix are flexible empty spacers (not in any
+ *  tab registry); they render blank and only push other controls around. */
+export const SPACER_PREFIX = 'spacer:';
+export const isSpacer = (id: string) => id.startsWith(SPACER_PREFIX);
+
+export interface ContainerNode {
+  id: NodeId;
+  type: 'container';
+  axis: Axis;
+  /** Ordered child node ids (containers or panels). */
+  children: NodeId[];
+  /** fr weight per child id (relative track size). */
+  fr: Record<NodeId, number>;
+}
+
+export interface PanelNode {
+  id: NodeId;
+  type: 'panel';
+  title: string;
+  /** Ordered placed widget ids. */
+  widgets: WidgetId[];
+  /** Inner flow of the placed widgets. */
+  flow: Axis;
+  /** Optional fr weight per placed widget (equal when absent). */
+  widgetFr?: Record<WidgetId, number>;
+  /** Per-widget content alignment within its cell (center when absent). */
+  widgetJustify?: Record<WidgetId, 'start' | 'center' | 'end'>;
+  /** Mirror this panel: reverse widget order + flip composite controls/icons
+   *  (left/right deck symmetry). */
+  mirror?: boolean;
+  /** Inner padding (px) between the panel border and its controls. */
+  padPx?: number;
+  /** Fixed-content panel: hosts ONE widget full-bleed, no widget DnD, hidden
+   *  from the palette (e.g. the library, the source tree). */
+  pinned?: WidgetId | null;
+  /** Optional fixed cross-axis size in px (used for bands). */
+  fixedPx?: number | null;
+}
+
+export type LayoutNode = ContainerNode | PanelNode;
+
+export interface SurfaceLayout {
+  version: number;
+  root: NodeId;
+  nodes: Record<NodeId, LayoutNode>;
+}
+
+export const MIN_FR = 0.45;
+
+/* ── id generation (runtime only; never used in persisted defaults) ───────── */
+let idCounter = 0;
+function newId(prefix: string): string {
+  idCounter += 1;
+  const rnd =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `${prefix}-${idCounter}-${rnd}`;
+}
+
+/* ── pure helpers ─────────────────────────────────────────────────────────── */
+export function cloneLayout(l: SurfaceLayout): SurfaceLayout {
+  const nodes: Record<NodeId, LayoutNode> = {};
+  for (const id in l.nodes) {
+    const n = l.nodes[id];
+    if (n.type === 'container') {
+      nodes[id] = { ...n, children: [...n.children], fr: { ...n.fr } };
+    } else {
+      nodes[id] = {
+        ...n,
+        widgets: [...n.widgets],
+        widgetFr: n.widgetFr ? { ...n.widgetFr } : undefined,
+        widgetJustify: n.widgetJustify ? { ...n.widgetJustify } : undefined,
+      };
+    }
+  }
+  return { version: l.version, root: l.root, nodes };
+}
+
+export function findParentId(nodes: Record<NodeId, LayoutNode>, childId: NodeId): NodeId | null {
+  for (const id in nodes) {
+    const n = nodes[id];
+    if (n.type === 'container' && n.children.includes(childId)) return id;
+  }
+  return null;
+}
+
+function findPanelOfWidget(nodes: Record<NodeId, LayoutNode>, widgetId: WidgetId): NodeId | null {
+  for (const id in nodes) {
+    const n = nodes[id];
+    if (n.type === 'panel' && n.widgets.includes(widgetId)) return id;
+  }
+  return null;
+}
+
+/** True if `nodeId` is `ancestorId` or lives anywhere in its subtree. Used to
+ *  stop a container being docked into itself (which would cycle the tree). */
+function isDescendant(nodes: Record<NodeId, LayoutNode>, ancestorId: NodeId, nodeId: NodeId): boolean {
+  if (ancestorId === nodeId) return true;
+  const a = nodes[ancestorId];
+  if (!a || a.type !== 'container') return false;
+  return a.children.some((c) => isDescendant(nodes, c, nodeId));
+}
+
+/** Every widget id currently placed in (or pinned to) a panel. */
+export function collectPlacedWidgets(layout: SurfaceLayout): Set<WidgetId> {
+  const set = new Set<WidgetId>();
+  for (const id in layout.nodes) {
+    const n = layout.nodes[id];
+    if (n.type === 'panel') {
+      n.widgets.forEach((w) => set.add(w));
+      if (n.pinned) set.add(n.pinned);
+    }
+  }
+  return set;
+}
+
+function medianFr(c: ContainerNode): number {
+  const vals = c.children.map((id) => c.fr[id] ?? 1).sort((a, b) => a - b);
+  if (!vals.length) return 1;
+  return vals[Math.floor(vals.length / 2)];
+}
+
+/** Remove empty containers and dissolve single-child containers; drop dangling
+ *  refs; re-normalize fr. Keeps the tree minimal and the grid always valid. */
+function prune(l: SurfaceLayout): SurfaceLayout {
+  for (let guard = 0; guard < 500; guard++) {
+    let mutated = false;
+    for (const id of Object.keys(l.nodes)) {
+      const n = l.nodes[id];
+      if (!n || n.type !== 'container' || id === l.root) continue;
+
+      const valid = n.children.filter((c) => l.nodes[c]);
+      if (valid.length !== n.children.length) {
+        n.children = valid;
+        mutated = true;
+        break;
+      }
+      const parentId = findParentId(l.nodes, id);
+      if (!parentId) continue;
+      const parent = l.nodes[parentId] as ContainerNode;
+
+      if (n.children.length === 0) {
+        parent.children = parent.children.filter((c) => c !== id);
+        delete parent.fr[id];
+        delete l.nodes[id];
+        mutated = true;
+        break;
+      }
+      if (n.children.length === 1) {
+        const only = n.children[0];
+        const idx = parent.children.indexOf(id);
+        parent.children[idx] = only;
+        parent.fr[only] = parent.fr[id] ?? 1;
+        delete parent.fr[id];
+        delete l.nodes[id];
+        mutated = true;
+        break;
+      }
+    }
+    const root = l.nodes[l.root];
+    if (root && root.type === 'container') {
+      const valid = root.children.filter((c) => l.nodes[c]);
+      if (valid.length !== root.children.length) {
+        root.children = valid;
+        mutated = true;
+      }
+    }
+    if (!mutated) break;
+  }
+  return l;
+}
+
+/** Move/reorder a widget into a panel at `toIndex`, removing it from wherever it
+ *  currently lives. `toIndex` is interpreted against the target panel WITHOUT
+ *  the dragged widget, so within-panel reordering is off-by-one safe. */
+function internalMove(layout: SurfaceLayout, widgetId: WidgetId, toPanelId: NodeId, toIndex: number): void {
+  const target = layout.nodes[toPanelId];
+  if (!target || target.type !== 'panel' || target.pinned) return;
+  const fromId = findPanelOfWidget(layout.nodes, widgetId);
+  if (fromId && fromId !== toPanelId) {
+    const from = layout.nodes[fromId] as PanelNode;
+    from.widgets = from.widgets.filter((w) => w !== widgetId);
+  }
+  const without = target.widgets.filter((w) => w !== widgetId);
+  const idx = Math.max(0, Math.min(toIndex, without.length));
+  without.splice(idx, 0, widgetId);
+  target.widgets = without;
+}
+
+/* ── store ────────────────────────────────────────────────────────────────── */
+export interface SurfaceStore {
+  designMode: boolean;
+  layout: SurfaceLayout;
+
+  setDesignMode: (v: boolean) => void;
+
+  resize: (containerId: NodeId, leftId: NodeId, rightId: NodeId, frac: number) => void;
+  resizeWidget: (panelId: NodeId, left: WidgetId, right: WidgetId, frac: number) => void;
+
+  moveWidget: (widgetId: WidgetId, toPanelId: NodeId, toIndex: number) => void;
+  placeWidget: (widgetId: WidgetId, toPanelId: NodeId, toIndex: number) => void;
+  removeWidget: (widgetId: WidgetId) => void;
+
+  addPanel: (containerId: NodeId, atIndex: number, title?: string) => NodeId;
+  removePanel: (panelId: NodeId) => void;
+  renamePanel: (panelId: NodeId, title: string) => void;
+  reorderPanel: (panelId: NodeId, toContainerId: NodeId, toIndex: number) => void;
+  togglePanelMirror: (panelId: NodeId) => void;
+  togglePanelFlow: (panelId: NodeId) => void;
+  setPanelPad: (panelId: NodeId, px: number) => void;
+  cycleWidgetJustify: (panelId: NodeId, widgetId: WidgetId) => void;
+  /** Insert a flexible empty spacer into a panel. Returns the spacer id. */
+  addSpacer: (panelId: NodeId) => NodeId;
+  /** Dock a panel/container to an edge of a target node, creating the row or
+   *  column structure as needed (directional drag-drop). */
+  dockNode: (draggedId: NodeId, targetId: NodeId, edge: EdgeDir) => void;
+
+  addContainer: (parentId: NodeId, axis: Axis, atIndex: number) => NodeId;
+  splitPanel: (panelId: NodeId, axis: Axis) => NodeId;
+  removeContainer: (containerId: NodeId) => void;
+
+  reset: () => void;
+  exportJSON: () => string;
+}
+
+export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayout) {
+  return create<SurfaceStore>()(
+    persist(
+      (set, get) => ({
+        designMode: false,
+        layout: cloneLayout(defaultLayout),
+
+        setDesignMode: (v) => set({ designMode: v }),
+
+        resize: (containerId, leftId, rightId, frac) =>
+          set((s) => {
+            const node = s.layout.nodes[containerId];
+            if (!node || node.type !== 'container') return s;
+            const total = node.children.reduce((a, id) => a + (node.fr[id] ?? 1), 0);
+            const d = frac * total;
+            const l0 = (node.fr[leftId] ?? 1) + d;
+            const r0 = (node.fr[rightId] ?? 1) - d;
+            if (l0 < MIN_FR || r0 < MIN_FR) return s;
+            const layout = cloneLayout(s.layout);
+            const c = layout.nodes[containerId] as ContainerNode;
+            c.fr[leftId] = l0;
+            c.fr[rightId] = r0;
+            return { layout };
+          }),
+
+        resizeWidget: (panelId, left, right, frac) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const fr = node.widgetFr ?? {};
+            const total = node.widgets.reduce((a, id) => a + (fr[id] ?? 1), 0);
+            const d = frac * total;
+            const l0 = (fr[left] ?? 1) + d;
+            const r0 = (fr[right] ?? 1) - d;
+            if (l0 < MIN_FR || r0 < MIN_FR) return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            const wf = { ...(p.widgetFr ?? {}) };
+            for (const id of p.widgets) if (wf[id] == null) wf[id] = 1;
+            wf[left] = l0;
+            wf[right] = r0;
+            p.widgetFr = wf;
+            return { layout };
+          }),
+
+        moveWidget: (widgetId, toPanelId, toIndex) =>
+          set((s) => {
+            const layout = cloneLayout(s.layout);
+            internalMove(layout, widgetId, toPanelId, toIndex);
+            return { layout };
+          }),
+
+        placeWidget: (widgetId, toPanelId, toIndex) =>
+          set((s) => {
+            const layout = cloneLayout(s.layout);
+            internalMove(layout, widgetId, toPanelId, toIndex);
+            return { layout };
+          }),
+
+        removeWidget: (widgetId) =>
+          set((s) => {
+            const fromId = findPanelOfWidget(s.layout.nodes, widgetId);
+            if (!fromId) return s;
+            const layout = cloneLayout(s.layout);
+            const from = layout.nodes[fromId] as PanelNode;
+            from.widgets = from.widgets.filter((w) => w !== widgetId);
+            if (from.widgetFr) delete from.widgetFr[widgetId];
+            return { layout };
+          }),
+
+        addPanel: (containerId, atIndex, title) => {
+          let newPanelId = '';
+          set((s) => {
+            const node = s.layout.nodes[containerId];
+            if (!node || node.type !== 'container') return s;
+            const layout = cloneLayout(s.layout);
+            const c = layout.nodes[containerId] as ContainerNode;
+            newPanelId = newId('panel');
+            layout.nodes[newPanelId] = {
+              id: newPanelId,
+              type: 'panel',
+              title: title ?? 'Panel',
+              widgets: [],
+              flow: 'row',
+            };
+            const idx = Math.max(0, Math.min(atIndex, c.children.length));
+            c.children.splice(idx, 0, newPanelId);
+            c.fr[newPanelId] = medianFr(c);
+            return { layout };
+          });
+          return newPanelId;
+        },
+
+        removePanel: (panelId) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const parentId = findParentId(layout.nodes, panelId);
+            if (parentId) {
+              const parent = layout.nodes[parentId] as ContainerNode;
+              parent.children = parent.children.filter((c) => c !== panelId);
+              delete parent.fr[panelId];
+            }
+            delete layout.nodes[panelId];
+            return { layout: prune(layout) };
+          }),
+
+        renamePanel: (panelId, title) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            (layout.nodes[panelId] as PanelNode).title = title;
+            return { layout };
+          }),
+
+        togglePanelMirror: (panelId) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            p.mirror = !p.mirror;
+            return { layout };
+          }),
+
+        togglePanelFlow: (panelId) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            p.flow = p.flow === 'row' ? 'column' : 'row';
+            return { layout };
+          }),
+
+        addSpacer: (panelId) => {
+          let spacerId = '';
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel' || node.pinned) return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            spacerId = `${SPACER_PREFIX}${newId('s')}`;
+            p.widgets = [...p.widgets, spacerId];
+            return { layout };
+          });
+          return spacerId;
+        },
+
+        dockNode: (draggedId, targetId, edge) =>
+          set((s) => {
+            if (draggedId === targetId) return s;
+            const dragged = s.layout.nodes[draggedId];
+            const target = s.layout.nodes[targetId];
+            if (!dragged || !target) return s;
+            // never dock a container into its own subtree (would cycle)
+            if (isDescendant(s.layout.nodes, draggedId, targetId)) return s;
+
+            const layout = cloneLayout(s.layout);
+            // detach dragged from its current parent
+            const fromParentId = findParentId(layout.nodes, draggedId);
+            let carriedFr = 1;
+            if (fromParentId) {
+              const fp = layout.nodes[fromParentId] as ContainerNode;
+              carriedFr = fp.fr[draggedId] ?? 1;
+              fp.children = fp.children.filter((c) => c !== draggedId);
+              delete fp.fr[draggedId];
+            }
+
+            const wantAxis: Axis = edge === 'left' || edge === 'right' ? 'row' : 'column';
+            const before = edge === 'left' || edge === 'top';
+            const parentId = findParentId(layout.nodes, targetId);
+
+            if (parentId) {
+              const parent = layout.nodes[parentId] as ContainerNode;
+              if (parent.axis === wantAxis) {
+                const idx = parent.children.indexOf(targetId);
+                parent.children.splice(before ? idx : idx + 1, 0, draggedId);
+                parent.fr[draggedId] = parent.fr[targetId] ?? carriedFr;
+              } else {
+                const wrapId = newId('cont');
+                const slotFr = parent.fr[targetId] ?? 1;
+                const tIdx = parent.children.indexOf(targetId);
+                parent.children[tIdx] = wrapId;
+                delete parent.fr[targetId];
+                parent.fr[wrapId] = slotFr;
+                const kids = before ? [draggedId, targetId] : [targetId, draggedId];
+                layout.nodes[wrapId] = { id: wrapId, type: 'container', axis: wantAxis, children: kids, fr: { [draggedId]: 1, [targetId]: 1 } };
+              }
+            } else {
+              // target is the root → wrap it in a new root container
+              const wrapId = newId('cont');
+              const kids = before ? [draggedId, targetId] : [targetId, draggedId];
+              layout.nodes[wrapId] = { id: wrapId, type: 'container', axis: wantAxis, children: kids, fr: { [draggedId]: 1, [targetId]: 1 } };
+              layout.root = wrapId;
+            }
+            return { layout: prune(layout) };
+          }),
+
+        setPanelPad: (panelId, px) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            (layout.nodes[panelId] as PanelNode).padPx = Math.max(0, Math.min(Math.round(px), 48));
+            return { layout };
+          }),
+
+        cycleWidgetJustify: (panelId, widgetId) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            const order: Array<'start' | 'center' | 'end'> = ['center', 'start', 'end'];
+            const cur = p.widgetJustify?.[widgetId] ?? 'center';
+            const next = order[(order.indexOf(cur) + 1) % order.length];
+            p.widgetJustify = { ...(p.widgetJustify ?? {}), [widgetId]: next };
+            return { layout };
+          }),
+
+        reorderPanel: (panelId, toContainerId, toIndex) =>
+          set((s) => {
+            const panel = s.layout.nodes[panelId];
+            const target = s.layout.nodes[toContainerId];
+            if (!panel || panel.type !== 'panel' || !target || target.type !== 'container') return s;
+            const layout = cloneLayout(s.layout);
+            const fromParentId = findParentId(layout.nodes, panelId);
+            let carriedFr = 1;
+            if (fromParentId) {
+              const fromParent = layout.nodes[fromParentId] as ContainerNode;
+              carriedFr = fromParent.fr[panelId] ?? 1;
+              fromParent.children = fromParent.children.filter((c) => c !== panelId);
+              delete fromParent.fr[panelId];
+            }
+            const tgt = layout.nodes[toContainerId] as ContainerNode;
+            const without = tgt.children.filter((c) => c !== panelId);
+            const idx = Math.max(0, Math.min(toIndex, without.length));
+            without.splice(idx, 0, panelId);
+            tgt.children = without;
+            tgt.fr[panelId] = carriedFr;
+            return { layout: prune(layout) };
+          }),
+
+        addContainer: (parentId, axis, atIndex) => {
+          let newContainerId = '';
+          set((s) => {
+            const parent = s.layout.nodes[parentId];
+            if (!parent || parent.type !== 'container') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[parentId] as ContainerNode;
+            newContainerId = newId('cont');
+            const panelId = newId('panel');
+            layout.nodes[panelId] = { id: panelId, type: 'panel', title: 'Panel', widgets: [], flow: 'row' };
+            layout.nodes[newContainerId] = {
+              id: newContainerId,
+              type: 'container',
+              axis,
+              children: [panelId],
+              fr: { [panelId]: 1 },
+            };
+            const idx = Math.max(0, Math.min(atIndex, p.children.length));
+            p.children.splice(idx, 0, newContainerId);
+            p.fr[newContainerId] = medianFr(p);
+            return { layout };
+          });
+          return newContainerId;
+        },
+
+        splitPanel: (panelId, axis) => {
+          let siblingId = '';
+          set((s) => {
+            const panel = s.layout.nodes[panelId];
+            if (!panel || panel.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const parentId = findParentId(layout.nodes, panelId);
+            siblingId = newId('panel');
+            layout.nodes[siblingId] = { id: siblingId, type: 'panel', title: 'Panel', widgets: [], flow: 'row' };
+            if (parentId) {
+              const parent = layout.nodes[parentId] as ContainerNode;
+              if (parent.axis === axis) {
+                const idx = parent.children.indexOf(panelId);
+                parent.children.splice(idx + 1, 0, siblingId);
+                parent.fr[siblingId] = parent.fr[panelId] ?? 1;
+              } else {
+                const wrapId = newId('cont');
+                const slotFr = parent.fr[panelId] ?? 1;
+                const idx = parent.children.indexOf(panelId);
+                parent.children[idx] = wrapId;
+                delete parent.fr[panelId];
+                parent.fr[wrapId] = slotFr;
+                layout.nodes[wrapId] = {
+                  id: wrapId,
+                  type: 'container',
+                  axis,
+                  children: [panelId, siblingId],
+                  fr: { [panelId]: 1, [siblingId]: 1 },
+                };
+              }
+            } else {
+              const wrapId = newId('cont');
+              layout.nodes[wrapId] = {
+                id: wrapId,
+                type: 'container',
+                axis,
+                children: [panelId, siblingId],
+                fr: { [panelId]: 1, [siblingId]: 1 },
+              };
+              layout.root = wrapId;
+            }
+            return { layout };
+          });
+          return siblingId;
+        },
+
+        removeContainer: (containerId) =>
+          set((s) => {
+            const node = s.layout.nodes[containerId];
+            if (!node || node.type !== 'container' || containerId === s.layout.root) return s;
+            const layout = cloneLayout(s.layout);
+            const parentId = findParentId(layout.nodes, containerId);
+            if (parentId) {
+              const parent = layout.nodes[parentId] as ContainerNode;
+              parent.children = parent.children.filter((c) => c !== containerId);
+              delete parent.fr[containerId];
+            }
+            const stack = [containerId];
+            while (stack.length) {
+              const id = stack.pop() as NodeId;
+              const n = layout.nodes[id];
+              if (n && n.type === 'container') stack.push(...n.children);
+              delete layout.nodes[id];
+            }
+            return { layout: prune(layout) };
+          }),
+
+        reset: () => set({ layout: cloneLayout(defaultLayout) }),
+        exportJSON: () => JSON.stringify(get().layout, null, 2),
+      }),
+      {
+        name: `thedaw.surface.${surfaceId}.v1`,
+        version: defaultLayout.version,
+        // designMode is session-only; never persist it.
+        partialize: (s) => ({ layout: s.layout }),
+        // Pass the persisted blob straight to `merge`, which does the real
+        // version/shape validation and falls back to the default. Without this
+        // a `version` bump logs "no migrate function was provided".
+        migrate: (persisted) => persisted as { layout: SurfaceLayout },
+        // Fall back to the default on schema mismatch / corruption / missing root.
+        merge: (persisted, current) => {
+          const p = (persisted ?? {}) as Partial<SurfaceStore>;
+          const pl = p.layout;
+          if (!pl || !pl.nodes || !pl.root || !pl.nodes[pl.root] || pl.version !== current.layout.version) {
+            return current;
+          }
+          return { ...current, layout: pl };
+        },
+      },
+    ),
+  );
+}
+
+export type SurfaceStoreApi = ReturnType<typeof createLayoutStore>;
