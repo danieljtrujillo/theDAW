@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-04T21:11:22.263Z",
-  "repoRevision": "4cddff097cc4",
+  "generatedAt": "2026-06-05T05:18:19.553Z",
+  "repoRevision": "0f6225f259e6",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -445,14 +445,14 @@
         "#zustand-store-architecture"
       ],
       "coverage": "documented",
-      "notes": "Matched 4/4 guide terms."
+      "notes": "Matched 3/4 guide terms."
     },
     {
       "featureId": "docs-modal-download-print-rag",
       "docAnchors": [
         "#5-ui-shell",
-        "#16-11-assistant",
-        "#22-4-documentation-maintenance-rule"
+        "#19-11-assistant",
+        "#25-4-documentation-maintenance-rule"
       ],
       "coverage": "documented",
       "notes": "Matched 2/4 guide terms."
@@ -461,7 +461,7 @@
       "featureId": "assistant-orb-providers-keys-attachments",
       "docAnchors": [
         "#5-ui-shell",
-        "#16-11-assistant"
+        "#19-11-assistant"
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
@@ -478,12 +478,15 @@
     {
       "featureId": "create-chimera-fusion-stack",
       "docAnchors": [
-        "#6-3-1-chimera-fusion-stack",
+        "#1-repository-anatomy",
         "#purpose",
-        "#9-1-automatic-entry-creation",
-        "#9-5-bundle-downloads-and-lineage",
-        "#16-14-chimera",
-        "#22-3-current-feature-to-screenshot-map"
+        "#6-3-1-chimera-fusion-stack",
+        "#6-4-init-signal-conditioning",
+        "#12-2-3d-graph-controls",
+        "#13-1-automatic-entry-creation",
+        "#13-5-bundle-downloads-and-lineage",
+        "#19-14-chimera",
+        "#25-3-current-feature-to-screenshot-map"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -493,7 +496,9 @@
       "docAnchors": [
         "#6-3-1-chimera-fusion-stack",
         "#6-4-1-microphone-recorder",
-        "#9-1-automatic-entry-creation"
+        "#10-1-inputs",
+        "#10-4-export",
+        "#13-1-automatic-entry-creation"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -501,19 +506,20 @@
     {
       "featureId": "edit-advanced-effects-chain-analyzer",
       "docAnchors": [
-        "#7-5-advanced-editor-panel"
+        "#8-3-effect-catalog-and-chain"
       ],
-      "coverage": "documented",
-      "notes": "Matched 2/5 guide terms."
+      "coverage": "partial",
+      "notes": "Only matched 1/5 guide terms: Effect Catalog"
     },
     {
       "featureId": "library-backend-local-storage",
       "docAnchors": [
         "#6-4-1-microphone-recorder",
         "#purpose",
-        "#9-1-automatic-entry-creation",
-        "#16-13-disk-backed-library",
-        "#16-15-stems",
+        "#13-1-automatic-entry-creation",
+        "#19-13-disk-backed-library",
+        "#19-15-stems",
+        "#library-storage-fills-the-disk",
         "#zustand-store-architecture"
       ],
       "coverage": "documented",
@@ -522,9 +528,10 @@
     {
       "featureId": "library-bundle-download-lineage-export",
       "docAnchors": [
-        "#9-4-per-entry-controls",
-        "#9-5-bundle-downloads-and-lineage",
-        "#16-13-disk-backed-library"
+        "#12-2-3d-graph-controls",
+        "#13-4-per-entry-controls",
+        "#13-5-bundle-downloads-and-lineage",
+        "#19-13-disk-backed-library"
       ],
       "coverage": "documented",
       "notes": "Matched 2/4 guide terms."
@@ -532,9 +539,9 @@
     {
       "featureId": "library-stems-sidecar",
       "docAnchors": [
-        "#9-4-per-entry-controls",
-        "#9-6-stem-separation",
-        "#16-15-stems"
+        "#13-4-per-entry-controls",
+        "#13-6-stem-separation",
+        "#19-15-stems"
       ],
       "coverage": "documented",
       "notes": "Matched 3/4 guide terms."
@@ -543,9 +550,9 @@
       "featureId": "library-midi-conversion",
       "docAnchors": [
         "#6-4-1-microphone-recorder",
-        "#9-4-per-entry-controls",
-        "#9-7-midi-conversion",
-        "#16-16-midi"
+        "#13-4-per-entry-controls",
+        "#13-7-midi-conversion",
+        "#19-16-midi"
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."
@@ -554,12 +561,12 @@
       "featureId": "settings-feature-toggles-modules-admin",
       "docAnchors": [
         "#one-shot-launcher-windows",
-        "#16-8-jobs-list",
-        "#16-11-assistant",
-        "#16-12-module-loader",
-        "#api-unreachable-banner-in-the-thedaw-header",
+        "#19-8-jobs-list",
+        "#19-11-assistant",
+        "#19-12-module-loader",
+        "#api-unreachable-banner-in-the-header",
         "#backend-job-persistence",
-        "#22-3-current-feature-to-screenshot-map"
+        "#25-3-current-feature-to-screenshot-map"
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
@@ -570,14 +577,14 @@
         "#frontend-dependencies",
         "#6-5-inpainting-regen-region",
         "#6-8-run-generation",
-        "#10-4-inpainting-from-the-editor",
-        "#11-2-voice-synthesis",
-        "#13-4-media-bucket",
+        "#7-4-inpainting-from-the-editor",
+        "#14-2-voice-synthesis",
+        "#16-5-media",
         "#controls",
-        "#16-3-generation-async-thedaw-ui",
-        "#16-12-module-loader",
-        "#16-13-disk-backed-library",
-        "#16-14-chimera"
+        "#19-4-generation-async-thedaw-ui",
+        "#19-12-module-loader",
+        "#19-13-disk-backed-library",
+        "#19-14-chimera"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -585,29 +592,30 @@
     {
       "featureId": "sequencer-midi-export-render",
       "docAnchors": [
-        "#9-7-midi-conversion",
-        "#11-5-midi-export",
-        "#12-5-midi-import-and-export"
+        "#13-7-midi-conversion",
+        "#14-5-midi-export",
+        "#15-5-midi-import-and-export"
       ],
       "coverage": "documented",
-      "notes": "Matched 3/4 guide terms."
+      "notes": "Matched 2/4 guide terms."
     },
     {
       "featureId": "piano-roll-linked-clip-editing",
       "docAnchors": [
-        "#12-5-midi-import-and-export",
-        "#12-7-edit-in-piano-roll"
+        "#15-5-midi-import-and-export",
+        "#15-7-edit-in-piano-roll",
+        "#16-6-slide"
       ],
       "coverage": "documented",
-      "notes": "Matched 3/4 guide terms."
+      "notes": "Matched 4/4 guide terms."
     },
     {
       "featureId": "media-bucket-routing",
       "docAnchors": [
         "#6-3-1-chimera-fusion-stack",
-        "#7-5-advanced-editor-panel",
-        "#9-4-per-entry-controls",
-        "#13-4-media-bucket"
+        "#8-4-source-output-and-routing",
+        "#13-4-per-entry-controls",
+        "#16-5-media"
       ],
       "coverage": "documented",
       "notes": "Matched 3/4 guide terms."
@@ -615,8 +623,13 @@
     {
       "featureId": "vj-sidecar-tab-mobile-share",
       "docAnchors": [
+        "#table-of-contents",
         "#5-ui-shell",
-        "#16-17-vj"
+        "#10-vj-tab",
+        "#purpose",
+        "#10-3-bridges",
+        "#10-4-export",
+        "#19-17-vj"
       ],
       "coverage": "documented",
       "notes": "Matched 3/4 guide terms."
@@ -625,15 +638,18 @@
       "featureId": "backend-module-loader-settings",
       "docAnchors": [
         "#1-repository-anatomy",
-        "#16-12-module-loader",
-        "#adding-a-backend-module"
+        "#19-12-module-loader",
+        "#adding-a-backend-module",
+        "#zustand-store-architecture"
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."
     }
   ],
   "missingFeatureIds": [],
-  "partialFeatureIds": [],
+  "partialFeatureIds": [
+    "edit-advanced-effects-chain-analyzer"
+  ],
   "screenshotSpecs": [
     {
       "sceneId": "01-shell-make",

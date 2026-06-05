@@ -24,15 +24,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, Plus, Save, Trash2, Cast, Music2,
-  ChevronDown, ChevronRight, Repeat, Magnet, Gauge, Lock,
+  ChevronDown, ChevronRight, Magnet, Gauge, Lock,
   KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield, Headphones, Piano, X,
 } from 'lucide-react';
 import { subscribeToMidi } from '../state/midiBus';
 import { useDjControlMap, sigLabel, type MidiKind } from '../state/djControlMap';
 import { useDjSampler } from '../state/djSamplerStore';
 import { useDjSideList } from '../state/djSideListStore';
-import { useDjLayout } from '../state/djLayoutStore';
-import { LayoutRow, Splitter, DesignToolbar } from '../components/dj/DesignLayout';
+import { ControlSurface } from '../components/surface/ControlSurface';
+import { DJ_TARGETS } from '../state/bindableTargets';
+import type { WidgetRegistry } from '../components/surface/widgetTypes';
+import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -208,6 +210,80 @@ function useDeck(deckId: djEngine.DeckId, entryId: string | null, hasTrack: bool
 
 type DeckCtl = ReturnType<typeof useDeck>;
 
+/* ═══ Control-surface default layout ═════════════════════════════════════════
+ * Reproduces the console arrangement as a structured rows/columns tree. Pinned
+ * panels (hero waveforms, sampler, FX racks, Next lane, source tree, library)
+ * host a whole component; every mixer + deck control is an individual widget the
+ * user can relocate in Design Mode. Nothing moves until the user drags. */
+const DJ_LAYOUT_VERSION = 5;
+
+const defaultDjLayout: SurfaceLayout = {
+  version: DJ_LAYOUT_VERSION,
+  root: 'root',
+  nodes: {
+    root: { id: 'root', type: 'container', axis: 'column', children: ['heroP', 'body'], fr: { heroP: 1.4, body: 8 } },
+    heroP: { id: 'heroP', type: 'panel', title: 'Waveforms', flow: 'row', widgets: [], pinned: 'hero' },
+    // Left/right rails equalized by default (samplerP == browser).
+    body: { id: 'body', type: 'container', axis: 'row', children: ['samplerP', 'center', 'browser'], fr: { samplerP: 2.0, center: 14.963177570093462, browser: 2.0 } },
+    samplerP: { id: 'samplerP', type: 'panel', title: 'Sampler', flow: 'row', widgets: [], pinned: 'sampler', uniform: false },
+    center: { id: 'center', type: 'container', axis: 'column', children: ['deckmix', 'fxrow'], fr: { deckmix: 5, fxrow: 2 } },
+    deckmix: { id: 'deckmix', type: 'container', axis: 'row', children: ['deckAcont', 'mixer', 'deckBcont'], fr: { deckAcont: 4.17953863997903, mixer: 5.180662235484642, deckBcont: 4.439799124536327 } },
+    // ── Deck A (pad-rows wrapped with spacer panels in cont-* containers) ──
+    deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'cont-10-e11250c4', 'cont-13-90c67ecb', 'cont-16-c9fc3a59', 'cont-18-cd01de17'], fr: { 'cont-10-e11250c4': 3.4, 'cont-13-90c67ecb': 0.9, 'cont-16-c9fc3a59': 0.9, 'cont-18-cd01de17': 1.1, 'pdA-head': 1 }, framed: true },
+    'pdA-head': { id: 'pdA-head', type: 'panel', title: 'Deck A', flow: 'row', widgets: ['keylockA', 'keyA', 'bpmA', 'headerA'], mirror: false, uniform: true },
+    'pdA-jog': { id: 'pdA-jog', type: 'panel', title: 'A · Jog', flow: 'row', widgets: ['jogA'] },
+    'pdA-trans': { id: 'pdA-trans', type: 'panel', title: 'A · Transport', flow: 'column', widgets: ['cueA', 'playA', 'syncA', 'syncLockA', 'headCueA'] },
+    'pdA-hc': { id: 'pdA-hc', type: 'panel', title: 'A · Hotcues', flow: 'row', widgets: ['hcA1', 'hcA2', 'hcA3', 'hcA4'], uniform: true },
+    'pdA-loop': { id: 'pdA-loop', type: 'panel', title: 'A · Loop', flow: 'row', widgets: ['loopA_0', 'loopA_1', 'loopA_2', 'loopA_3', 'loopA_4', 'loopOutA'], uniform: true },
+    'pdA-perf': { id: 'pdA-perf', type: 'panel', title: 'A · Perf', flow: 'row', widgets: ['rollA_0', 'rollA_1', 'rollA_2', 'slipA', 'jumpA_0', 'jumpA_1', 'jumpA_2', 'jumpA_3'], widgetFr: { rollA_0: 1.217687074829932, rollA_1: 0.782312925170068, rollA_2: 1, slipA: 1, jumpA_0: 1, jumpA_1: 1, jumpA_2: 1, jumpA_3: 1 }, uniform: true },
+    // ── Deck B ──
+    deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'cont-2-a0e79010', 'cont-4-4f4c96d2', 'cont-6-29de8ab7', 'cont-9-aebcd780'], fr: { 'pdB-head': 1, 'cont-2-a0e79010': 3.4, 'cont-4-4f4c96d2': 0.9, 'cont-6-29de8ab7': 0.9, 'cont-9-aebcd780': 1.1 }, framed: true },
+    'pdB-head': { id: 'pdB-head', type: 'panel', title: 'Deck B', flow: 'row', widgets: ['keylockB', 'keyB', 'bpmB', 'headerB'], widgetFr: { keylockB: 1.384615384615385, keyB: 1, bpmB: 0.5192307692307693, headerB: 1.4807692307692313 }, widgetJustify: { headerB: 'start' }, mirror: true, uniform: true },
+    'pdB-jog': { id: 'pdB-jog', type: 'panel', title: 'B · Jog', flow: 'row', widgets: ['jogB'], widgetMargins: { jogB: { t: 0, r: 64, b: 0, l: 0 } } },
+    'pdB-trans': { id: 'pdB-trans', type: 'panel', title: 'B · Transport', flow: 'column', widgets: ['cueB', 'playB', 'syncB', 'syncLockB', 'headCueB'] },
+    'pdB-hc': { id: 'pdB-hc', type: 'panel', title: 'B · Hotcues', flow: 'row', widgets: ['hcB1', 'hcB2', 'hcB3', 'hcB4'], uniform: true },
+    'pdB-loop': { id: 'pdB-loop', type: 'panel', title: 'B · Loop', flow: 'row', widgets: ['loopB_0', 'loopB_1', 'loopB_2', 'loopB_3', 'loopB_4', 'loopOutB'], uniform: true },
+    'pdB-perf': { id: 'pdB-perf', type: 'panel', title: 'B · Perf', flow: 'row', widgets: ['rollB_0', 'rollB_1', 'rollB_2', 'slipB', 'jumpB_0', 'jumpB_1', 'jumpB_2', 'jumpB_3'], uniform: true },
+    // ── Mixer ──
+    mixer: { id: 'mixer', type: 'container', axis: 'column', children: ['mixToggles', 'mixChans', 'mixXfade'], fr: { mixToggles: 1, mixChans: 6, mixXfade: 1.6 }, framed: true },
+    mixToggles: { id: 'mixToggles', type: 'panel', title: 'Modes', flow: 'row', widgets: ['spacer:s-24-02c5d864', 'qtz', 'autoGain', 'automix', 'lim', 'midiMap', 'spacer:s-23-936b468e'], uniform: true },
+    mixChans: { id: 'mixChans', type: 'container', axis: 'row', children: ['pchAP', 'eqAP', 'chAP', 'chBP', 'eqBP', 'pchBP'], fr: { pchAP: 1.9619631901840493, eqAP: 1.6633325420748168, chAP: 1.5103255906150865, chBP: 1.4272893076328357, eqBP: 1.3476793102143942, pchBP: 1.8894100592788177 } },
+    pchAP: { id: 'pchAP', type: 'panel', title: 'Pitch A', flow: 'column', widgets: ['pitchA'], widgetMargins: { pitchA: { t: 8, r: 0, b: 0, l: 32 } } },
+    eqAP: { id: 'eqAP', type: 'panel', title: 'EQ A', flow: 'column', widgets: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'] },
+    chAP: { id: 'chAP', type: 'panel', title: 'Ch A', flow: 'column', widgets: ['gainA', 'volA'], widgetFr: { gainA: 1, volA: 3 }, widgetMargins: { volA: { t: 8, r: 40, b: 8, l: 32 } } },
+    chBP: { id: 'chBP', type: 'panel', title: 'Ch B', flow: 'column', widgets: ['gainB', 'volB'], widgetFr: { gainB: 1, volB: 3 }, widgetMargins: { volB: { t: 8, r: 24, b: 8, l: 0 } } },
+    eqBP: { id: 'eqBP', type: 'panel', title: 'EQ B', flow: 'column', widgets: ['eqB.hi', 'eqB.mid', 'eqB.lo', 'fltB'] },
+    pchBP: { id: 'pchBP', type: 'panel', title: 'Pitch B', flow: 'column', widgets: ['pitchB'], widgetMargins: { pitchB: { t: 8, r: 64, b: 0, l: 8 } }, uniform: false },
+    mixXfade: { id: 'mixXfade', type: 'panel', title: 'Crossfade', flow: 'row', widgets: ['spacer:s-22-ffca8259', 'crossfader', 'spacer:s-21-cb584c7d'], uniform: true },
+    // ── FX row + rails ──
+    fxrow: { id: 'fxrow', type: 'container', axis: 'row', children: ['fxAP', 'nextP', 'fxBP'], fr: { fxAP: 0.7703206562266971, nextP: 1.9175988068605512, fxBP: 0.812080536912752 } },
+    fxAP: { id: 'fxAP', type: 'panel', title: 'FX A', flow: 'row', widgets: [], pinned: 'fxA' },
+    nextP: { id: 'nextP', type: 'panel', title: 'Next', flow: 'row', widgets: [], pinned: 'next' },
+    fxBP: { id: 'fxBP', type: 'panel', title: 'FX B', flow: 'row', widgets: [], pinned: 'fxB', uniform: false },
+    browser: { id: 'browser', type: 'container', axis: 'column', children: ['sourceTreeP', 'libraryP'], fr: { sourceTreeP: 2, libraryP: 3 } },
+    sourceTreeP: { id: 'sourceTreeP', type: 'panel', title: 'Sources', flow: 'row', widgets: [], pinned: 'sourceTree' },
+    libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library', uniform: true },
+    // ── Deck B pad-row wrappers (pad row + spacer panel) ──
+    'panel-1-eff655d2': { id: 'panel-1-eff655d2', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-25-e6518f32'] },
+    'cont-2-a0e79010': { id: 'cont-2-a0e79010', type: 'container', axis: 'row', children: ['pdB-trans', 'pdB-jog', 'panel-1-eff655d2'], fr: { 'pdB-jog': 1.114832535885168, 'panel-1-eff655d2': 1.4019138755980862, 'pdB-trans': 0.48325358851674666 } },
+    'panel-3-e0911657': { id: 'panel-3-e0911657', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-32-4c52fb39'] },
+    'cont-4-4f4c96d2': { id: 'cont-4-4f4c96d2', type: 'container', axis: 'row', children: ['pdB-hc', 'panel-3-e0911657'], fr: { 'pdB-hc': 1, 'panel-3-e0911657': 1 } },
+    'panel-5-e8707245': { id: 'panel-5-e8707245', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-31-c7e28dbf'] },
+    'cont-6-29de8ab7': { id: 'cont-6-29de8ab7', type: 'container', axis: 'row', children: ['pdB-loop', 'panel-5-e8707245'], fr: { 'pdB-loop': 1.3444976076555022, 'panel-5-e8707245': 0.6555023923444977 } },
+    'panel-8-81228019': { id: 'panel-8-81228019', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-30-3282c3a3'] },
+    'cont-9-aebcd780': { id: 'cont-9-aebcd780', type: 'container', axis: 'row', children: ['pdB-perf', 'panel-8-81228019'], fr: { 'pdB-perf': 1.5358851674641145, 'panel-8-81228019': 0.46411483253588537 } },
+    // ── Deck A pad-row wrappers ──
+    'cont-10-e11250c4': { id: 'cont-10-e11250c4', type: 'container', axis: 'row', children: ['panel-11-95a4a261', 'pdA-jog', 'pdA-trans'], fr: { 'pdA-trans': 0.47073791348600486, 'pdA-jog': 1.529262086513994, 'panel-11-95a4a261': 1.529262086513994 } },
+    'panel-11-95a4a261': { id: 'panel-11-95a4a261', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-26-79f129b0'] },
+    'panel-12-8772ebc6': { id: 'panel-12-8772ebc6', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-29-e3c2d4fe'] },
+    'cont-13-90c67ecb': { id: 'cont-13-90c67ecb', type: 'container', axis: 'row', children: ['panel-12-8772ebc6', 'pdA-hc'], fr: { 'pdA-hc': 1.0814249363867683, 'panel-12-8772ebc6': 0.9185750636132315 } },
+    'panel-15-4eb1b108': { id: 'panel-15-4eb1b108', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-28-3698f484'] },
+    'cont-16-c9fc3a59': { id: 'cont-16-c9fc3a59', type: 'container', axis: 'row', children: ['panel-15-4eb1b108', 'pdA-loop'], fr: { 'pdA-loop': 1.3664122137404573, 'panel-15-4eb1b108': 0.6335877862595417 } },
+    'panel-17-44cba1fb': { id: 'panel-17-44cba1fb', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-27-8799ff7e'] },
+    'cont-18-cd01de17': { id: 'cont-18-cd01de17', type: 'container', axis: 'row', children: ['panel-17-44cba1fb', 'pdA-perf'], fr: { 'pdA-perf': 1.4885496183206104, 'panel-17-44cba1fb': 0.5114503816793893 } },
+  },
+};
+
 /* ═══════════════════════════════ DJView ════════════════════════════════════ */
 
 export const DJView: React.FC = () => {
@@ -236,6 +312,24 @@ export const DJView: React.FC = () => {
   const [flash, setFlash] = useState<string | null>(null);
   const automixRef = useRef<{ current: djEngine.DeckId; fading: boolean; fadeStart: number; fadeFrom: number; fadeTo: number } | null>(null);
   const [source, setSource] = useState<Source>({ kind: 'library' });
+  // Lifted out of the old Mixer so the surface widget closures can drive them.
+  const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
+  const cueSupported = djEngine.isCueSupported();
+  const [cueDevices, setCueDevices] = useState<Array<{ id: string; label: string }>>([]);
+  const [cueDev, setCueDev] = useState(() => djEngine.getCueSinkId());
+  useEffect(() => {
+    if (!cueSupported || !navigator.mediaDevices?.enumerateDevices) return;
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((ds) =>
+        setCueDevices(
+          ds.filter((d) => d.kind === 'audiooutput').map((d) => ({ id: d.deviceId, label: d.label || 'Output' })),
+        ),
+      )
+      .catch(() => {
+        /* labels need permission; ids still resolve */
+      });
+  }, [cueSupported]);
 
   const entries = useLibraryStore((s) => s.entries);
   const analyzeAll = useDjAnalysisStore((s) => s.analyzeAll);
@@ -525,84 +619,48 @@ export const DJView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [automixOn]);
 
-  const designMode = useDjLayout((s) => s.designMode);
-  const heroH = useDjLayout((s) => s.heroH);
-  const bottomH = useDjLayout((s) => s.bottomH);
-  const setHeroH = useDjLayout((s) => s.setHeroH);
-  const setBottomH = useDjLayout((s) => s.setBottomH);
+  // Build the surface widget registry every render so each control's closure
+  // carries live state/wiring; relocating a widget only changes where it draws.
+  const registry = buildDjRegistry({
+    ctlA, ctlB,
+    deckATitle, deckBTitle, camA, camB, harmonic,
+    hasA: !!deckATrack, hasB: !!deckBTrack,
+    playingA: deckAPlaying, playingB: deckBPlaying,
+    cueA, cueB, syncLock, canSync,
+    onPlayA: () => djEngine.toggleDeck('A'), onPlayB: () => djEngine.toggleDeck('B'),
+    onCueA: () => djEngine.cueDeck('A'), onCueB: () => djEngine.cueDeck('B'),
+    onSync: syncDeck, onSyncLock: toggleSyncLock, onHeadCue: toggleCue,
+    onSendVj: sendDeckToVj, onAddSet: addDeckToSet,
+    deckAUrl, deckBUrl, deckATrack, deckBTrack, setDeckATrack, setDeckBTrack,
+    source, setSource, libCount: entries.length, loadDeck,
+    gainA, gainB, eqA, eqB, filterA, filterB, volA, volB,
+    pitchA: deckAPitch, pitchB: deckBPitch, bpmA: ctlA.bpm ?? null, bpmB: ctlB.bpm ?? null,
+    onGain, onEq, onFilter, onVol, onPitch,
+    crossfader, onCrossfade: applyCrossfade,
+    quantize, setQuantize, autoGain, setAutoGain,
+    limiterOn, setLimiterOn, cueSupported, cueDevices, cueDev, setCueDev,
+    midiMapOn: midiMapOpen, onToggleMidiMap: () => setMidiMapOpen((v) => !v),
+    automixOn, onToggleAutomix: () => setAutomixOn((v) => !v),
+  });
 
   return (
-    <div className="relative h-full w-full overflow-hidden flex flex-col gap-1.5 p-1.5 bg-[#07050a] text-white">
-
-      {/* ═══ TOP: dual scrolling-overview waveforms (hero) ═══ */}
-      <div className="shrink-0 flex flex-col gap-1.5" style={{ height: heroH }}>
-        <WaveLane deckId="A" accent="purple" entryId={deckATrack} hasTrack={!!deckATrack} audioUrl={deckAUrl} ctl={ctlA} onLoadId={(id) => setDeckATrack(id)} />
-        <WaveLane deckId="B" accent="cyan" entryId={deckBTrack} hasTrack={!!deckBTrack} audioUrl={deckBUrl} ctl={ctlB} onLoadId={(id) => setDeckBTrack(id)} />
-      </div>
-      {designMode && <Splitter axis="y" onDelta={(d) => setHeroH(heroH + d)} title="Resize the waveform band" className="shrink-0 h-1.5 w-40 mx-auto" />}
-
-      {/* ═══ BELOW: sampler rail │ center (decks/mixer + FX·NEXT·FX) │ browser ═══
-          Store-driven (Design Mode): drag panels to reorder, drag borders to resize. */}
-      <LayoutRow
-        rowKey="outer"
-        axis="x"
-        reorderable={false}
-        className="flex-1 min-h-0"
-        nodes={{
-          sampler: <SamplerRail />,
-          center: (
-            <div className="h-full min-h-0 flex flex-col gap-1.5">
-              <LayoutRow
-                rowKey="deckRow"
-                axis="x"
-                className="flex-1 min-h-0"
-                nodes={{
-                  deckA: <DeckColumn deckId="A" accent="purple" ctl={ctlA} title={deckATitle} cam={camA} hasTrack={!!deckATrack} isPlaying={deckAPlaying} onPlay={() => djEngine.toggleDeck('A')} onCue={() => djEngine.cueDeck('A')} onSync={() => syncDeck('A')} onSyncLock={() => toggleSyncLock('A')} syncLocked={syncLock === 'A'} canSync={canSync} onSendVj={() => sendDeckToVj('A')} onAddSet={() => addDeckToSet('A')} headCued={cueA} onHeadCue={() => toggleCue('A')} />,
-                  mixer: (
-                    <Mixer
-                      gainA={gainA} gainB={gainB} eqA={eqA} eqB={eqB} filterA={filterA} filterB={filterB} volA={volA} volB={volB}
-                      pitchA={deckAPitch} pitchB={deckBPitch} bpmA={ctlA.bpm ?? null} bpmB={ctlB.bpm ?? null}
-                      onGain={onGain} onEq={onEq} onFilter={onFilter} onVol={onVol} onPitch={onPitch}
-                      crossfader={crossfader} onCrossfade={applyCrossfade}
-                      quantize={quantize} setQuantize={setQuantize} autoGain={autoGain} setAutoGain={setAutoGain}
-                      camA={camA} camB={camB} harmonic={harmonic} flash={flash}
-                      midiMapOn={midiMapOpen} onToggleMidiMap={() => setMidiMapOpen((v) => !v)}
-                      automixOn={automixOn} onToggleAutomix={() => setAutomixOn((v) => !v)}
-                    />
-                  ),
-                  deckB: <DeckColumn deckId="B" accent="cyan" ctl={ctlB} title={deckBTitle} cam={camB} hasTrack={!!deckBTrack} isPlaying={deckBPlaying} mirror onPlay={() => djEngine.toggleDeck('B')} onCue={() => djEngine.cueDeck('B')} onSync={() => syncDeck('B')} onSyncLock={() => toggleSyncLock('B')} syncLocked={syncLock === 'B'} canSync={canSync} onSendVj={() => sendDeckToVj('B')} onAddSet={() => addDeckToSet('B')} headCued={cueB} onHeadCue={() => toggleCue('B')} />,
-                }}
-              />
-              {designMode && <Splitter axis="y" onDelta={(d) => setBottomH(bottomH - d)} title="Resize the rack row" className="shrink-0 h-1.5 w-40 mx-auto" />}
-              <LayoutRow
-                rowKey="bottomRow"
-                axis="x"
-                className="shrink-0"
-                style={{ height: bottomH }}
-                nodes={{
-                  fxA: <DeckRack deck="A" accent="purple" entryId={deckATrack} />,
-                  next: <SideListLane onLoadDeck={loadDeck} />,
-                  fxB: <DeckRack deck="B" accent="cyan" entryId={deckBTrack} />,
-                }}
-              />
-            </div>
-          ),
-          browser: (
-            <LayoutRow
-              rowKey="rightCol"
-              axis="y"
-              className="h-full min-h-0"
-              nodes={{
-                sourceTree: <SourceTree source={source} setSource={setSource} libCount={entries.length} />,
-                library: <TrackBrowser source={source} setSource={setSource} onLoadDeck={loadDeck} />,
-              }}
-            />
-          ),
-        }}
+    <div className="relative h-full w-full overflow-hidden bg-[#07050a] text-white">
+      <ControlSurface
+        surfaceId="dj"
+        registry={registry}
+        defaultLayout={defaultDjLayout}
+        targets={DJ_TARGETS}
+        legacyKeyToClear="thedaw.dj.layout.v1"
+        className="p-1.5"
       />
-
-      <DesignToolbar />
-      {midiMapOpen && <DjMidiMap onClose={() => { setMidiMapOpen(false); useDjControlMap.getState().arm(null); }} />}
+      {midiMapOpen && (
+        <DjMidiMap
+          onClose={() => {
+            setMidiMapOpen(false);
+            useDjControlMap.getState().arm(null);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -710,98 +768,6 @@ const SamplerRail: React.FC = () => {
   );
 };
 
-/* ═══════════════════════════════ DeckColumn ═════════════════════════════════ */
-
-interface DeckColumnProps {
-  deckId: djEngine.DeckId; accent: 'purple' | 'cyan'; ctl: DeckCtl; title: string | null;
-  cam: ReturnType<typeof toCamelot> | null; hasTrack: boolean; isPlaying: boolean; mirror?: boolean;
-  onPlay: () => void; onCue: () => void;
-  onSync: () => void; onSyncLock: () => void; syncLocked: boolean; canSync: boolean;
-  onSendVj: () => void; onAddSet: () => void;
-  headCued: boolean; onHeadCue: () => void;
-}
-
-const PAD_SM = 'px-1.5 py-1 text-[8px] min-w-0';
-
-const DeckColumn: React.FC<DeckColumnProps> = ({
-  deckId, accent, ctl, title, cam, hasTrack, isPlaying, mirror,
-  onPlay, onCue, onSync, onSyncLock, syncLocked, canSync, onSendVj, onAddSet, headCued, onHeadCue,
-}) => {
-  const rgbc = DECK_RGB[accent];
-  const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
-
-  const header = (
-    <div className={`shrink-0 flex items-center gap-1.5 ${mirror ? 'flex-row-reverse' : ''}`}>
-      <div className="shrink-0 grid place-items-center rounded border w-7 h-7" style={{ borderColor: rgba(rgbc, 0.4), background: rgba(rgbc, 0.12) }} title={`Deck ${deckId}`}>
-        <Music2 className="w-3.5 h-3.5" style={{ color: rgb(rgbc) }} />
-      </div>
-      <div className={`min-w-0 flex-1 flex flex-col ${mirror ? 'items-end text-right' : ''}`}>
-        <span className="text-[10px] font-bold text-zinc-200 truncate max-w-full leading-tight" title={title ?? ''}>{title ?? 'Empty deck'}</span>
-        <DeckTimes deckId={deckId} mirror={mirror} />
-      </div>
-      <div className={`shrink-0 flex flex-col gap-0.5 items-center font-mono`}>
-        <span className="px-1 py-0.5 rounded bg-black/40 border border-white/10 text-[8px] text-zinc-300 tabular-nums whitespace-nowrap"><span className="text-zinc-600">BPM </span>{ctl.bpm != null ? ctl.bpm.toFixed(1) : (ctl.analyzing ? '…' : '—')}</span>
-        {cam ? (
-          <span className="px-1 py-0.5 rounded text-[8px] font-black border whitespace-nowrap" style={{ color: `hsl(${cam.hue} 80% 75%)`, borderColor: `hsl(${cam.hue} 70% 45% / 0.6)`, background: `hsl(${cam.hue} 70% 45% / 0.12)` }} title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}>{cam.code}</span>
-        ) : <span className="px-1 py-0.5 rounded bg-black/40 border border-white/10 text-[8px] text-zinc-600">KEY {ctl.a?.key ? keyLabel(ctl.a.key, ctl.a.scale) : '—'}</span>}
-      </div>
-      <div className="shrink-0 flex flex-col gap-0.5">
-        <button onClick={onSendVj} disabled={!hasTrack} className="p-0.5 text-zinc-600 hover:text-cyan-300 disabled:opacity-30 disabled:pointer-events-none transition-colors" title="Send this deck's track to the VJ"><Cast className="w-3 h-3" /></button>
-        <button onClick={onAddSet} disabled={!hasTrack} className="p-0.5 text-zinc-600 hover:text-emerald-300 disabled:opacity-30 disabled:pointer-events-none transition-colors" title="Add this deck's track to the active set"><Save className="w-3 h-3" /></button>
-      </div>
-    </div>
-  );
-
-  const jog = (
-    <div className="flex-1 min-h-0 max-h-80 grid place-items-center"><JogWheel deckId={deckId} color={rgbc} disabled={!hasTrack} fill /></div>
-  );
-  const PAD_HC = 'w-8 py-1 text-[8px]';
-  const PAD_BT = 'w-7 py-1 text-[8px]';
-
-  return (
-    <div className="hardware-card flex flex-col gap-1.5 p-1.5 min-h-0 overflow-hidden">
-      {header}
-
-      {/* jog wheel — fills the deck (pitch lives in the mixer now) */}
-      {jog}
-
-      {/* transport — compact, centered */}
-      <div className="shrink-0 flex items-center justify-center gap-1">
-        <SlidePad color={rgbc} disabled={!hasTrack} onClick={onCue} className={PAD_SM} title="Cue to start">Cue</SlidePad>
-        <SlidePad color={rgbc} disabled={!hasTrack} onClick={onPlay} className="px-3 py-1" title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}</SlidePad>
-        <SlidePad color={rgbc} disabled={!canSync} onClick={onSync} className={PAD_SM} title={canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}>Sync</SlidePad>
-        <SlidePad color={rgbc} on={syncLocked} disabled={!canSync} onClick={onSyncLock} className="px-1.5 py-1" title={canSync ? 'Sync-Lock — hold tempo + phase (grab pitch to release)' : 'Sync-Lock needs BPM on both decks'}><Lock className="w-3 h-3" /></SlidePad>
-        <SlidePad color={[34, 211, 238]} on={headCued} disabled={!hasTrack} onClick={onHeadCue} className="px-1.5 py-1" title="Cue — pre-listen this deck in the headphone output"><Headphones className="w-3 h-3" /></SlidePad>
-        {/* hotcues ride the same row */}
-        <span className="w-px h-4 bg-white/10 mx-0.5" />
-        {Array.from({ length: HOTCUE_SLOTS }, (_, i) => {
-          const c = ctl.cues?.[i] ?? null; const set = c != null;
-          return (
-            <SlidePad key={i} on={set} color={rgbc} disabled={!hasTrack} className={PAD_HC} onClick={() => ctl.setHotcue(i)} onContextMenu={(e) => { e.preventDefault(); ctl.dropHotcue(i); }} title={set ? `Cue ${i + 1} @ ${fmtTime(c)} — click to jump, right-click to clear` : `Set cue ${i + 1} at the playhead`}>{set ? `▶${i + 1}` : `○${i + 1}`}</SlidePad>
-          );
-        })}
-      </div>
-
-      {/* loop — centered */}
-      <div className="shrink-0 flex items-center justify-center gap-1">
-        <Repeat className={`w-3 h-3 shrink-0 ${ctl.loopActive ? accentText : 'text-zinc-600'}`} />
-        {BEAT_SIZES.map((b) => (<SlidePad key={b.beats} className={PAD_BT} on={ctl.loopActive && ctl.activeLoopBeats === b.beats} color={rgbc} disabled={!hasTrack} onClick={() => ctl.toggleBeatLoop(b.beats)} title={`${b.label}-beat loop`}>{b.label}</SlidePad>))}
-        <SlidePad className={PAD_BT} danger disabled={!ctl.loopActive} onClick={ctl.exitLoop} title="Exit loop">Out</SlidePad>
-      </div>
-
-      {/* roll · slip · jump · keylock — centered */}
-      <div className="shrink-0 flex items-center justify-center gap-1 flex-wrap">
-        <span className="text-[7px] font-mono uppercase text-zinc-600">Roll</span>
-        {ROLL_SIZES.map((b) => (<SlidePad key={b.beats} className={PAD_BT} color={rgbc} disabled={!hasTrack} onPointerDown={(e) => { e.preventDefault(); ctl.rollDown(b.beats); }} onPointerUp={ctl.rollUp} onPointerLeave={(e) => { if (e.buttons) ctl.rollUp(); }} title={`${b.label}-beat loop-roll (hold)`}>{b.label}</SlidePad>))}
-        <SlidePad className={PAD_BT} on={ctl.slip} color={[245, 158, 11]} disabled={!hasTrack} onClick={() => ctl.setSlip(!ctl.slip)} title="Slip mode">Slip</SlidePad>
-        <span className="text-[7px] font-mono uppercase text-zinc-600 ml-0.5">Jump</span>
-        {([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).map(([n, lbl]) => (<SlidePad key={n} className={PAD_BT} color={rgbc} disabled={!hasTrack} onClick={() => ctl.beatJump(n)} title={`Jump ${n > 0 ? '+' : ''}${n} beat${Math.abs(n) === 1 ? '' : 's'}`}>{lbl}</SlidePad>))}
-        <SlidePad className="px-1.5 py-1" on={ctl.keylock} color={rgbc} disabled={!hasTrack} onClick={() => ctl.setKeylock(!ctl.keylock)} title="Key-lock / Master Tempo"><KeyRound className="w-3 h-3" /></SlidePad>
-      </div>
-    </div>
-  );
-};
-
 /* elapsed / remaining time — updated imperatively off the engine (no re-render). */
 const DeckTimes: React.FC<{ deckId: djEngine.DeckId; mirror?: boolean }> = ({ deckId, mirror }) => {
   const elapRef = useRef<HTMLSpanElement>(null);
@@ -816,139 +782,6 @@ const DeckTimes: React.FC<{ deckId: djEngine.DeckId; mirror?: boolean }> = ({ de
       <span ref={elapRef}>0:00</span>
       <span className="text-zinc-700" ref={remRef}>-0:00</span>
     </span>
-  );
-};
-
-/* ═══════════════════════════════ Mixer ══════════════════════════════════════ */
-
-interface MixerProps {
-  gainA: number; gainB: number;
-  eqA: { low: number; mid: number; high: number }; eqB: { low: number; mid: number; high: number };
-  filterA: number; filterB: number; volA: number; volB: number;
-  pitchA: number; pitchB: number; bpmA: number | null; bpmB: number | null;
-  onGain: (which: djEngine.DeckId, v: number) => void;
-  onEq: (which: djEngine.DeckId, band: 'low' | 'mid' | 'high', v: number) => void;
-  onFilter: (which: djEngine.DeckId, v: number) => void; onVol: (which: djEngine.DeckId, v: number) => void;
-  onPitch: (which: djEngine.DeckId, v: number) => void;
-  crossfader: number; onCrossfade: (v: number) => void;
-  quantize: boolean; setQuantize: (v: boolean) => void; autoGain: boolean; setAutoGain: (v: boolean) => void;
-  camA: ReturnType<typeof toCamelot> | null; camB: ReturnType<typeof toCamelot> | null; harmonic: boolean | null; flash: string | null;
-  midiMapOn: boolean; onToggleMidiMap: () => void;
-  automixOn: boolean; onToggleAutomix: () => void;
-}
-
-const Mixer: React.FC<MixerProps> = ({
-  gainA, gainB, eqA, eqB, filterA, filterB, volA, volB, pitchA, pitchB, bpmA, bpmB,
-  onGain, onEq, onFilter, onVol, onPitch,
-  crossfader, onCrossfade, quantize, setQuantize, autoGain, setAutoGain, camA, camB, harmonic, flash,
-  midiMapOn, onToggleMidiMap, automixOn, onToggleAutomix,
-}) => {
-  const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
-  // Cue (headphone) output device picker — only when the runtime supports setSinkId.
-  const cueSupported = djEngine.isCueSupported();
-  const [cueDevices, setCueDevices] = useState<Array<{ id: string; label: string }>>([]);
-  const [cueDev, setCueDev] = useState(() => djEngine.getCueSinkId());
-  useEffect(() => {
-    if (!cueSupported || !navigator.mediaDevices?.enumerateDevices) return;
-    navigator.mediaDevices.enumerateDevices()
-      .then((ds) => setCueDevices(ds.filter((d) => d.kind === 'audiooutput').map((d) => ({ id: d.deviceId, label: d.label || 'Output' }))))
-      .catch(() => { /* ignore — labels need permission, ids still resolve */ });
-  }, [cueSupported]);
-  // A deck's EQ + filter as a vertical knob column (HI · MID · LO · FLT),
-  // pinned to the outer edge of the mixer (per the wireframe).
-  const eqCol = (which: djEngine.DeckId, eq: { low: number; mid: number; high: number }, filter: number) => (
-    <div className="shrink-0 flex flex-col items-center justify-between gap-2 min-h-0 py-0.5">
-      <SlideKnob label="Hi" value={eq.high} onChange={(v) => onEq(which, 'high', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
-      <SlideKnob label="Mid" value={eq.mid} onChange={(v) => onEq(which, 'mid', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
-      <SlideKnob label="Lo" value={eq.low} onChange={(v) => onEq(which, 'low', v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
-      <SlideKnob label="Flt" value={filter} onChange={(v) => onFilter(which, v)} min={-1} max={1} step={0.01} size={28} center centerReadout />
-    </div>
-  );
-  // A center channel strip: GAIN knob over a (short) VOL fader, per the wireframe.
-  // The B (right) channel's ruler points outward to the right.
-  const channelStrip = (which: djEngine.DeckId, gain: number, vol: number) => (
-    <div className="flex flex-col items-center gap-1.5 min-h-0">
-      <SlideKnob label="Gain" value={gain} onChange={(v) => onGain(which, v)} min={-12} max={12} step={0.5} size={28} center centerReadout />
-      <div className="flex-1 min-h-0 flex justify-center"><SlideFader label={which} value={vol} onChange={(v) => onVol(which, v)} min={0} max={1} step={0.01} rulerSide={which === 'B' ? 'right' : 'left'} /></div>
-    </div>
-  );
-  // Pitch fader on the OUTER edge of the mixer (moved off the decks). Ruler
-  // points outward; effective-BPM readout below.
-  const pitchCol = (which: djEngine.DeckId, pitch: number, bpm: number | null) => {
-    const effBpm = bpm != null ? (bpm * (1 + pitch / 100)).toFixed(1) : null;
-    return (
-      <div className="shrink-0 flex flex-col items-center gap-0.5 min-h-0">
-        <div className="flex-1 min-h-0 flex justify-center"><SlideFader label={`Pch ${which}`} value={pitch} onChange={(v) => onPitch(which, v)} min={-50} max={50} step={0.1} rulerSide={which === 'A' ? 'left' : 'right'} /></div>
-        <span className="shrink-0 text-[8px] font-mono tabular-nums text-zinc-500" title="Effective BPM at this pitch">{effBpm ?? '—'}</span>
-      </div>
-    );
-  };
-
-  return (
-    <div className="hardware-card flex flex-col items-center gap-1 p-1.5 min-h-0 overflow-hidden">
-      <span className="shrink-0 text-[9px] font-black uppercase tracking-widest text-zinc-400">Mixer</span>
-
-      {/* toggles — above the GAIN knobs */}
-      <div className="shrink-0 flex items-center justify-center gap-1.5">
-        <RoundToggle label="Qtz" icon={Magnet} on={quantize} onChange={setQuantize} box={24} />
-        <RoundToggle label="Gain" icon={Gauge} on={autoGain} onChange={setAutoGain} box={24} />
-        <RoundToggle label="Lim" icon={Shield} on={limiterOn} onChange={(v) => { setLimiterOn(v); djEngine.setLimiter(v); }} box={24} />
-        <RoundToggle label="MIDI" icon={Piano} on={midiMapOn} onChange={onToggleMidiMap} box={24} />
-      </div>
-
-      {/* channels — each control group (pitch / EQ / GAIN+VOL) is an editable
-          block: in Design Mode drag a group's handle to reorder, drag the
-          borders to resize. Groups fill the row so the fader/knob bottoms line up. */}
-      <LayoutRow
-        rowKey="mixerChan"
-        axis="x"
-        className="flex-1 min-h-0 w-full px-2"
-        nodes={{
-          pchA: pitchCol('A', pitchA, bpmA),
-          eqA: eqCol('A', eqA, filterA),
-          chA: channelStrip('A', gainA, volA),
-          chB: channelStrip('B', gainB, volB),
-          eqB: eqCol('B', eqB, filterB),
-          pchB: pitchCol('B', pitchB, bpmB),
-        }}
-      />
-
-      {/* harmonic key match */}
-      {camA && camB && (
-        <div className={`shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold border ${harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`} title={harmonic ? `Harmonic — ${camA.code} ↔ ${camB.code} mix in key` : `Key clash — ${camA.code} vs ${camB.code}`}>
-          <Music2 className="w-2.5 h-2.5" />{harmonic ? 'In Key' : 'Clash'}
-        </div>
-      )}
-
-      {/* crossfader */}
-      <div className="shrink-0 w-full">
-        <div className="flex items-center gap-1">
-          <span className="text-[9px] font-black text-purple-300">A</span>
-          <div className="flex-1"><SlideCrossfader value={crossfader} onChange={onCrossfade} ariaLabel="Crossfader" title="Crossfade A ↔ B (double-click to center)" /></div>
-          <span className="text-[9px] font-black text-cyan-300">B</span>
-        </div>
-        <div className="text-center text-[8px] font-mono text-zinc-600 tabular-nums leading-tight mt-0.5">
-          {crossfader < -0.05 ? `A ${Math.round(-crossfader * 100)}%` : crossfader > 0.05 ? `B ${Math.round(crossfader * 100)}%` : 'CENTER'}
-        </div>
-        <div className="flex justify-center mt-1">
-          <button onClick={onToggleAutomix} title="Automix — auto-sequence + beatmatch-crossfade the active set"
-            className={`px-3 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border transition-colors ${automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>
-            {automixOn ? 'Automix ●' : 'Automix'}
-          </button>
-        </div>
-      </div>
-      {flash && <span className="shrink-0 text-center text-[8px] font-mono text-cyan-300 truncate w-full">{flash}</span>}
-      {cueSupported && cueDevices.length > 0 && (
-        <div className="shrink-0 flex items-center gap-1 w-full" title="Headphone (cue) output device">
-          <Headphones className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
-          <select value={cueDev} onChange={(e) => { setCueDev(e.target.value); void djEngine.setCueSinkId(e.target.value); }}
-            className="flex-1 min-w-0 bg-[#0e0c18] border border-white/10 text-zinc-300 text-[8px] font-mono px-1 py-0.5 rounded focus:outline-none" style={{ colorScheme: 'dark' }}>
-            <option value="">Default out</option>
-            {cueDevices.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-          </select>
-        </div>
-      )}
-    </div>
   );
 };
 
@@ -1467,3 +1300,255 @@ const DeckWaveform: React.FC<{ deckId: djEngine.DeckId; audioUrl: string; beats:
     </div>
   );
 };
+
+/* ═══════════════════════════ control-surface registry ═══════════════════════
+ * Every relocatable DJ control as a WidgetDef. Built each render (inside DJView)
+ * so each `render` closure carries live state + wiring; relocating a widget only
+ * changes where it draws, never what it calls. Pinned composites (hero, sampler,
+ * FX racks, Next lane, source tree, library) host a whole component and stay out
+ * of the palette; the source/library are never decomposed (per the design). */
+interface DjRegArgs {
+  ctlA: DeckCtl; ctlB: DeckCtl;
+  deckATitle: string | null; deckBTitle: string | null;
+  camA: ReturnType<typeof toCamelot> | null; camB: ReturnType<typeof toCamelot> | null; harmonic: boolean | null;
+  hasA: boolean; hasB: boolean;
+  playingA: boolean; playingB: boolean;
+  cueA: boolean; cueB: boolean;
+  syncLock: djEngine.DeckId | null; canSync: boolean;
+  onPlayA: () => void; onPlayB: () => void;
+  onCueA: () => void; onCueB: () => void;
+  onSync: (d: djEngine.DeckId) => void; onSyncLock: (d: djEngine.DeckId) => void; onHeadCue: (d: djEngine.DeckId) => void;
+  onSendVj: (d: 'A' | 'B') => void; onAddSet: (d: 'A' | 'B') => void;
+  deckAUrl: string | null; deckBUrl: string | null;
+  deckATrack: string | null; deckBTrack: string | null;
+  setDeckATrack: (id: string) => void; setDeckBTrack: (id: string) => void;
+  source: Source; setSource: (s: Source) => void; libCount: number; loadDeck: (entryId: string, deck: djEngine.DeckId) => void;
+  gainA: number; gainB: number;
+  eqA: { low: number; mid: number; high: number }; eqB: { low: number; mid: number; high: number };
+  filterA: number; filterB: number; volA: number; volB: number;
+  pitchA: number; pitchB: number; bpmA: number | null; bpmB: number | null;
+  onGain: (which: djEngine.DeckId, v: number) => void;
+  onEq: (which: djEngine.DeckId, band: 'low' | 'mid' | 'high', v: number) => void;
+  onFilter: (which: djEngine.DeckId, v: number) => void; onVol: (which: djEngine.DeckId, v: number) => void;
+  onPitch: (which: djEngine.DeckId, v: number) => void;
+  crossfader: number; onCrossfade: (v: number) => void;
+  quantize: boolean; setQuantize: (v: boolean) => void; autoGain: boolean; setAutoGain: (v: boolean) => void;
+  limiterOn: boolean; setLimiterOn: (v: boolean) => void;
+  cueSupported: boolean; cueDevices: Array<{ id: string; label: string }>; cueDev: string; setCueDev: (v: string) => void;
+  midiMapOn: boolean; onToggleMidiMap: () => void;
+  automixOn: boolean; onToggleAutomix: () => void;
+}
+
+const PAD_SM = 'px-1.5 py-1 text-[8px] min-w-0';
+const PAD_HC = 'w-8 py-1 text-[8px]';
+const PAD_BT = 'w-7 py-1 text-[8px]';
+
+function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
+  const reg: WidgetRegistry = {};
+  const knobSize = (s: { w: number; h: number }) => Math.max(20, Math.min(s.w - 6, s.h - 28, 54));
+  const toggleBox = (s: { w: number; h: number }) => Math.max(24, Math.min(s.h - 12, 46));
+  const center = (node: React.ReactNode) => <div className="h-full w-full grid place-items-center overflow-hidden">{node}</div>;
+  const faderWrap = (node: React.ReactNode) => <div className="h-full w-full min-h-0 flex justify-center">{node}</div>;
+  const pinned = (id: string, label: string, node: React.ReactNode) => {
+    reg[id] = { id, label, group: 'Panels', kind: 'fixed', source: 'builtin', render: () => <div className="h-full w-full min-h-0 overflow-hidden">{node}</div> };
+  };
+  const knob = (id: string, label: string, group: string, value: number, onChange: (v: number) => void, min: number, max: number, step: number) => {
+    reg[id] = { id, label, group, kind: 'knob', source: 'builtin', render: (s) => center(<SlideKnob label={label} value={value} onChange={onChange} min={min} max={max} step={step} size={knobSize(s)} center centerReadout />) };
+  };
+
+  /* ── pinned composites ── */
+  pinned('hero', 'Waveforms', (
+    <div className="h-full w-full flex flex-col gap-1.5">
+      <WaveLane deckId="A" accent="purple" entryId={p.deckATrack} hasTrack={p.hasA} audioUrl={p.deckAUrl} ctl={p.ctlA} onLoadId={(id) => p.setDeckATrack(id)} />
+      <WaveLane deckId="B" accent="cyan" entryId={p.deckBTrack} hasTrack={p.hasB} audioUrl={p.deckBUrl} ctl={p.ctlB} onLoadId={(id) => p.setDeckBTrack(id)} />
+    </div>
+  ));
+  pinned('sampler', 'Sampler', <SamplerRail />);
+  pinned('fxA', 'FX · Stems A', <DeckRack deck="A" accent="purple" entryId={p.deckATrack} />);
+  pinned('fxB', 'FX · Stems B', <DeckRack deck="B" accent="cyan" entryId={p.deckBTrack} />);
+  pinned('next', 'Next / Staging', <SideListLane onLoadDeck={p.loadDeck} />);
+  pinned('sourceTree', 'Source Tree', <SourceTree source={p.source} setSource={p.setSource} libCount={p.libCount} />);
+  pinned('library', 'Library', <TrackBrowser source={p.source} setSource={p.setSource} onLoadDeck={p.loadDeck} />);
+
+  /* ── per-deck performance controls ── */
+  const addDeck = (d: 'A' | 'B') => {
+    const accent = d === 'A' ? 'purple' : 'cyan';
+    const rgbc = DECK_RGB[accent];
+    const ctl = d === 'A' ? p.ctlA : p.ctlB;
+    const hasTrack = d === 'A' ? p.hasA : p.hasB;
+    const isPlaying = d === 'A' ? p.playingA : p.playingB;
+    const title = d === 'A' ? p.deckATitle : p.deckBTitle;
+    const cam = d === 'A' ? p.camA : p.camB;
+    const headCued = d === 'A' ? p.cueA : p.cueB;
+    const onPlay = d === 'A' ? p.onPlayA : p.onPlayB;
+    const onCue = d === 'A' ? p.onCueA : p.onCueB;
+    const syncLocked = p.syncLock === d;
+    const grp = `Deck ${d}`;
+
+    reg[`header${d}`] = { id: `header${d}`, label: `Deck ${d} Info`, group: grp, kind: 'fixed', source: 'builtin', render: (_s, opts) => (
+      <div className={`h-full w-full flex items-center gap-1.5 px-1 overflow-hidden ${opts?.mirror ? 'flex-row-reverse' : ''}`}>
+        <div className="shrink-0 grid place-items-center rounded border w-7 h-7" style={{ borderColor: rgba(rgbc, 0.4), background: rgba(rgbc, 0.12) }} title={`Deck ${d}`}>
+          <Music2 className="w-3.5 h-3.5" style={{ color: rgb(rgbc) }} />
+        </div>
+        <div className={`min-w-0 flex-1 flex flex-col ${opts?.mirror ? 'items-end text-right' : ''}`}>
+          <span className="text-[10px] font-bold text-zinc-200 truncate max-w-full leading-tight" title={title ?? ''}>{title ?? 'Empty deck'}</span>
+          <DeckTimes deckId={d} mirror={opts?.mirror} />
+        </div>
+        <div className="shrink-0 flex flex-col gap-0.5">
+          <button onClick={() => p.onSendVj(d)} disabled={!hasTrack} className="p-0.5 text-zinc-600 hover:text-cyan-300 disabled:opacity-30 disabled:pointer-events-none transition-colors" title="Send this deck's track to the VJ"><Cast className="w-3 h-3" /></button>
+          <button onClick={() => p.onAddSet(d)} disabled={!hasTrack} className="p-0.5 text-zinc-600 hover:text-emerald-300 disabled:opacity-30 disabled:pointer-events-none transition-colors" title="Add this deck's track to the active set"><Save className="w-3 h-3" /></button>
+        </div>
+      </div>
+    ) };
+
+    reg[`bpm${d}`] = { id: `bpm${d}`, label: `BPM ${d}`, group: grp, kind: 'fixed', source: 'builtin', render: () => (
+      <div className="h-full w-full grid place-items-center px-1 overflow-hidden">
+        <div
+          className="flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border tabular-nums"
+          style={{
+            borderColor: rgba(rgbc, 0.5),
+            background: `linear-gradient(180deg, ${rgba(rgbc, 0.18)}, ${rgba(rgbc, 0.04)})`,
+            boxShadow: `0 0 12px ${rgba(rgbc, 0.3)}, inset 0 0 6px ${rgba(rgbc, 0.12)}`,
+          }}
+          title="Detected tempo"
+        >
+          <span className="text-[7px] font-black uppercase tracking-[0.22em]" style={{ color: rgba(rgbc, 0.85) }}>BPM</span>
+          <span className="text-[15px] font-black leading-none text-white" style={{ textShadow: `0 0 8px ${rgba(rgbc, 0.6)}` }}>
+            {ctl.bpm != null ? ctl.bpm.toFixed(1) : ctl.analyzing ? '…' : '—'}
+          </span>
+        </div>
+      </div>
+    ) };
+
+    reg[`key${d}`] = { id: `key${d}`, label: `Key ${d}`, group: grp, kind: 'fixed', source: 'builtin', render: () => (
+      <div className="h-full w-full grid place-items-center px-1 overflow-hidden">
+        {cam ? (
+          <div
+            className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-md border"
+            style={{
+              borderColor: `hsl(${cam.hue} 70% 55% / 0.6)`,
+              background: `linear-gradient(180deg, hsl(${cam.hue} 70% 50% / 0.22), hsl(${cam.hue} 70% 50% / 0.05))`,
+              boxShadow: `0 0 12px hsl(${cam.hue} 80% 55% / 0.4)`,
+            }}
+            title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
+          >
+            <span className="grid place-items-center w-5 h-5 rounded-full text-[8px] font-black shrink-0" style={{ background: `hsl(${cam.hue} 85% 62%)`, color: '#0a0a0a', boxShadow: `0 0 6px hsl(${cam.hue} 85% 60% / 0.7)` }}>
+              {cam.code.replace(/[AB]/i, '')}
+            </span>
+            <span className="text-[15px] font-black leading-none" style={{ color: `hsl(${cam.hue} 85% 70%)`, textShadow: `0 0 8px hsl(${cam.hue} 80% 55% / 0.55)` }}>{cam.code}</span>
+          </div>
+        ) : (
+          <div className="flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-black/40">
+            <span className="text-[7px] font-black uppercase tracking-[0.22em] text-zinc-500">KEY</span>
+            <span className="text-[13px] font-black leading-none text-zinc-300">{ctl.a?.key ? keyLabel(ctl.a.key, ctl.a.scale) : '—'}</span>
+          </div>
+        )}
+      </div>
+    ) };
+
+    reg[`jog${d}`] = { id: `jog${d}`, label: `Jog ${d}`, group: grp, kind: 'jog', source: 'builtin', render: () => (
+      <div className="h-full w-full grid place-items-center"><JogWheel deckId={d} color={rgbc} disabled={!hasTrack} fill /></div>
+    ) };
+
+    // Each pad is its own relocatable widget (atomized transport / hotcues / loop / perf).
+    const padW = (id: string, label: string, node: React.ReactElement) => {
+      reg[id] = {
+        id, label, group: grp, kind: 'pad', source: 'builtin',
+        // Forward the per-widget shape (Design-Mode shape grip) into the pad.
+        render: (_s, opts) =>
+          center(
+            opts?.shape && opts.shape !== 'default'
+              ? React.cloneElement(node as React.ReactElement<{ shape?: typeof opts.shape }>, { shape: opts.shape })
+              : node,
+          ),
+      };
+    };
+
+    padW(`cue${d}`, `Cue ${d}`, <SlidePad color={rgbc} disabled={!hasTrack} onClick={onCue} className={PAD_SM} title="Cue to start">Cue</SlidePad>);
+    padW(`play${d}`, `Play ${d}`, <SlidePad color={rgbc} disabled={!hasTrack} onClick={onPlay} className="px-3 py-1" title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}</SlidePad>);
+    padW(`sync${d}`, `Sync ${d}`, <SlidePad color={rgbc} disabled={!p.canSync} onClick={() => p.onSync(d)} className={PAD_SM} title={p.canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}>Sync</SlidePad>);
+    padW(`syncLock${d}`, `Sync-Lock ${d}`, <SlidePad color={rgbc} on={syncLocked} disabled={!p.canSync} onClick={() => p.onSyncLock(d)} className="px-1.5 py-1" title="Sync-Lock — hold tempo + phase"><Lock className="w-3 h-3" /></SlidePad>);
+    padW(`headCue${d}`, `HP Cue ${d}`, <SlidePad color={[34, 211, 238]} on={headCued} disabled={!hasTrack} onClick={() => p.onHeadCue(d)} className="px-1.5 py-1" title="Cue — pre-listen in the headphone output"><Headphones className="w-3 h-3" /></SlidePad>);
+
+    for (let i = 0; i < HOTCUE_SLOTS; i++) {
+      const c = ctl.cues?.[i] ?? null; const set = c != null;
+      padW(`hc${d}${i + 1}`, `Hotcue ${d}${i + 1}`, <SlidePad on={set} color={rgbc} disabled={!hasTrack} className={PAD_HC} onClick={() => ctl.setHotcue(i)} onContextMenu={(e) => { e.preventDefault(); ctl.dropHotcue(i); }} title={set ? `Cue ${i + 1} @ ${fmtTime(c)} — click to jump, right-click to clear` : `Set cue ${i + 1} at the playhead`}>{set ? `▶${i + 1}` : `○${i + 1}`}</SlidePad>);
+    }
+
+    BEAT_SIZES.forEach((b, bi) => padW(`loop${d}_${bi}`, `Loop ${b.label} ${d}`, <SlidePad className={PAD_BT} on={ctl.loopActive && ctl.activeLoopBeats === b.beats} color={rgbc} disabled={!hasTrack} onClick={() => ctl.toggleBeatLoop(b.beats)} title={`${b.label}-beat loop`}>{b.label}</SlidePad>));
+    padW(`loopOut${d}`, `Loop Out ${d}`, <SlidePad className={PAD_BT} danger disabled={!ctl.loopActive} onClick={ctl.exitLoop} title="Exit loop">Out</SlidePad>);
+
+    ROLL_SIZES.forEach((b, ri) => padW(`roll${d}_${ri}`, `Roll ${b.label} ${d}`, <SlidePad className={PAD_BT} color={rgbc} disabled={!hasTrack} onPointerDown={(e) => { e.preventDefault(); ctl.rollDown(b.beats); }} onPointerUp={ctl.rollUp} onPointerLeave={(e) => { if (e.buttons) ctl.rollUp(); }} title={`${b.label}-beat loop-roll (hold)`}>{b.label}</SlidePad>));
+    padW(`slip${d}`, `Slip ${d}`, <SlidePad className={PAD_BT} on={ctl.slip} color={[245, 158, 11]} disabled={!hasTrack} onClick={() => ctl.setSlip(!ctl.slip)} title="Slip mode">Slip</SlidePad>);
+    ([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).forEach(([n, lbl], ji) => padW(`jump${d}_${ji}`, `Jump ${lbl} ${d}`, <SlidePad className={PAD_BT} color={rgbc} disabled={!hasTrack} onClick={() => ctl.beatJump(n)} title={`Jump ${n > 0 ? '+' : ''}${n} beat${Math.abs(n) === 1 ? '' : 's'}`}>{lbl}</SlidePad>));
+    padW(`keylock${d}`, `Keylock ${d}`, <SlidePad className="px-1.5 py-1" on={ctl.keylock} color={rgbc} disabled={!hasTrack} onClick={() => ctl.setKeylock(!ctl.keylock)} title="Key-lock / Master Tempo"><KeyRound className="w-3 h-3" /></SlidePad>);
+  };
+  addDeck('A');
+  addDeck('B');
+
+  /* ── per-deck mixer controls ── */
+  const addMixerDeck = (d: 'A' | 'B') => {
+    const grp = `Mixer ${d}`;
+    const eq = d === 'A' ? p.eqA : p.eqB;
+    knob(`eq${d}.hi`, 'Hi', grp, eq.high, (v) => p.onEq(d, 'high', v), -12, 12, 0.5);
+    knob(`eq${d}.mid`, 'Mid', grp, eq.mid, (v) => p.onEq(d, 'mid', v), -12, 12, 0.5);
+    knob(`eq${d}.lo`, 'Lo', grp, eq.low, (v) => p.onEq(d, 'low', v), -12, 12, 0.5);
+    knob(`flt${d}`, 'Flt', grp, d === 'A' ? p.filterA : p.filterB, (v) => p.onFilter(d, v), -1, 1, 0.01);
+    knob(`gain${d}`, 'Gain', grp, d === 'A' ? p.gainA : p.gainB, (v) => p.onGain(d, v), -12, 12, 0.5);
+    reg[`vol${d}`] = { id: `vol${d}`, label: `Vol ${d}`, group: grp, kind: 'fader', source: 'builtin', render: () => faderWrap(<SlideFader label={d} value={d === 'A' ? p.volA : p.volB} onChange={(v) => p.onVol(d, v)} min={0} max={1} step={0.01} rulerSide={d === 'B' ? 'right' : 'left'} />) };
+    const pitch = d === 'A' ? p.pitchA : p.pitchB;
+    const bpm = d === 'A' ? p.bpmA : p.bpmB;
+    const effBpm = bpm != null ? (bpm * (1 + pitch / 100)).toFixed(1) : '—';
+    reg[`pitch${d}`] = { id: `pitch${d}`, label: `Pitch ${d}`, group: grp, kind: 'fader', source: 'builtin', render: () => (
+      <div className="h-full w-full min-h-0 flex flex-col items-center">
+        <div className="flex-1 min-h-0 flex justify-center"><SlideFader label={`Pch ${d}`} value={pitch} onChange={(v) => p.onPitch(d, v)} min={-50} max={50} step={0.1} rulerSide={d === 'A' ? 'left' : 'right'} /></div>
+        <span className="shrink-0 text-[8px] font-mono tabular-nums text-zinc-500" title="Effective BPM at this pitch">{effBpm}</span>
+      </div>
+    ) };
+  };
+  addMixerDeck('A');
+  addMixerDeck('B');
+
+  /* ── shared mixer controls ── */
+  reg.qtz = { id: 'qtz', label: 'Quantize', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="Qtz" icon={Magnet} on={p.quantize} onChange={p.setQuantize} box={toggleBox(s)} />) };
+  reg.autoGain = { id: 'autoGain', label: 'Auto-gain', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="Gain" icon={Gauge} on={p.autoGain} onChange={p.setAutoGain} box={toggleBox(s)} />) };
+  reg.lim = { id: 'lim', label: 'Limiter', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="Lim" icon={Shield} on={p.limiterOn} onChange={(v) => { p.setLimiterOn(v); djEngine.setLimiter(v); }} box={toggleBox(s)} />) };
+  reg.midiMap = { id: 'midiMap', label: 'MIDI Map', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="MIDI" icon={Piano} on={p.midiMapOn} onChange={() => p.onToggleMidiMap()} box={toggleBox(s)} />) };
+
+  reg.crossfader = { id: 'crossfader', label: 'Crossfader', group: 'Mixer', kind: 'crossfader', source: 'builtin', render: () => (
+    <div className="h-full w-full flex flex-col justify-center px-1">
+      <div className="flex items-center gap-1">
+        <span className="text-[9px] font-black text-purple-300">A</span>
+        <div className="flex-1"><SlideCrossfader value={p.crossfader} onChange={p.onCrossfade} ariaLabel="Crossfader" title="Crossfade A ↔ B (double-click to center)" /></div>
+        <span className="text-[9px] font-black text-cyan-300">B</span>
+      </div>
+      <div className="text-center text-[8px] font-mono text-zinc-600 tabular-nums leading-tight mt-0.5">{p.crossfader < -0.05 ? `A ${Math.round(-p.crossfader * 100)}%` : p.crossfader > 0.05 ? `B ${Math.round(p.crossfader * 100)}%` : 'CENTER'}</div>
+    </div>
+  ) };
+
+  reg.automix = { id: 'automix', label: 'Automix', group: 'Mixer', kind: 'button', source: 'builtin', render: () => center(
+    <button onClick={p.onToggleAutomix} title="Automix — auto-sequence + beatmatch-crossfade the active set" className={`px-3 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border transition-colors ${p.automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>{p.automixOn ? 'Automix ●' : 'Automix'}</button>
+  ) };
+
+  reg.keymatch = { id: 'keymatch', label: 'Key Match', group: 'Mixer', kind: 'button', source: 'builtin', render: () => center(
+    p.camA && p.camB ? (
+      <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold border ${p.harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`} title={p.harmonic ? `In key — ${p.camA.code} / ${p.camB.code}` : `Key clash — ${p.camA.code} vs ${p.camB.code}`}><Music2 className="w-2.5 h-2.5" />{p.harmonic ? 'In Key' : 'Clash'}</div>
+    ) : <span className="text-[7px] font-mono text-zinc-700">key</span>
+  ) };
+
+  reg.cueDevice = { id: 'cueDevice', label: 'Cue Output', group: 'Mixer', kind: 'button', source: 'builtin', render: () => (
+    <div className="h-full w-full grid place-items-center px-1">
+      {p.cueSupported ? (
+        <div className="flex items-center gap-1 w-full" title="Headphone (cue) output device">
+          <Headphones className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
+          <select value={p.cueDev} onChange={(e) => { p.setCueDev(e.target.value); void djEngine.setCueSinkId(e.target.value); }} className="flex-1 min-w-0 bg-[#0e0c18] border border-white/10 text-zinc-300 text-[8px] font-mono px-1 py-0.5 rounded focus:outline-none" style={{ colorScheme: 'dark' }} title="Cue output device">
+            <option value="">Default out</option>
+            {p.cueDevices.map((dv) => <option key={dv.id} value={dv.id}>{dv.label}</option>)}
+          </select>
+        </div>
+      ) : <span className="text-[7px] font-mono text-zinc-700">cue n/a</span>}
+    </div>
+  ) };
+
+  return reg;
+}

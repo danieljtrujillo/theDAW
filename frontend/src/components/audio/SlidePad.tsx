@@ -1,5 +1,20 @@
 import React from 'react';
 import { rgb, rgba, shade, type RGB } from '../../lib/trackColor';
+import type { ButtonShape } from '../surface/widgetTypes';
+
+// Per-shape style overrides (inline so they beat the default `rounded-md`). The
+// four triangles are right-angle halves of a square via clip-path; two
+// complementary ones tile a square.
+const SHAPE_STYLE: Record<ButtonShape, React.CSSProperties> = {
+  default: {},
+  square: { borderRadius: 0, aspectRatio: '1 / 1' },
+  rect: { borderRadius: 0 },
+  circle: { borderRadius: '50%', aspectRatio: '1 / 1' },
+  'tri-tl': { borderRadius: 0, clipPath: 'polygon(0 0, 100% 0, 0 100%)' },
+  'tri-tr': { borderRadius: 0, clipPath: 'polygon(0 0, 100% 0, 100% 100%)' },
+  'tri-bl': { borderRadius: 0, clipPath: 'polygon(0 0, 0 100%, 100% 100%)' },
+  'tri-br': { borderRadius: 0, clipPath: 'polygon(100% 0, 100% 100%, 0 100%)' },
+};
 
 /* ── SlidePad ──────────────────────────────────────────────────────────
    A SLIDE-language pad button: rounded glass cell, glows in its accent
@@ -24,6 +39,8 @@ export interface SlidePadProps {
   title?: string;
   className?: string;
   style?: React.CSSProperties;
+  /** Pad outline shape (default rounded; square/rect/circle/diagonal tris). */
+  shape?: ButtonShape;
   onClick?: (e: React.MouseEvent) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   onPointerDown?: (e: React.PointerEvent) => void;
@@ -32,7 +49,7 @@ export interface SlidePadProps {
 }
 
 export function SlidePad({
-  children, on, color, disabled, danger, title, className, style,
+  children, on, color, disabled, danger, title, className, style, shape,
   onClick, onContextMenu, onPointerDown, onPointerUp, onPointerLeave,
 }: SlidePadProps) {
   const c = danger ? DANGER : (color ?? PURPLE);
@@ -62,7 +79,7 @@ export function SlidePad({
         on ? '' : 'border-white/12 bg-black/40 text-zinc-400 hover:text-zinc-200 hover:border-white/25',
         className ?? '',
       ].join(' ')}
-      style={{ ...litStyle, ...style }}
+      style={{ ...litStyle, ...(shape && shape !== 'default' ? SHAPE_STYLE[shape] : {}), ...style }}
     >
       {children}
     </button>

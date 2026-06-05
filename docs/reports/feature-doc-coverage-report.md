@@ -1,17 +1,17 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-04T21:11:22.263Z · Git revision: `4cddff097cc4` · Repomix tracked: **no**
+> Generated: 2026-06-05T05:18:19.553Z · Git revision: `0f6225f259e6` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
 | Metric | Value |
 |---|---:|
-| Documentation coverage | **100%** |
+| Documentation coverage | **94%** |
 | Features inventoried | **18** |
-| Documented features | **18** |
+| Documented features | **17** |
 | Missing docs | **0** |
-| Partial docs | **0** |
+| Partial docs | **1** |
 | Full screenshot scenes | **9** |
 | Cropped screenshot assets | **10** |
 
@@ -22,24 +22,24 @@
 
 | Feature ID | Feature | Domain | Status | Coverage | Anchors | Notes |
 |---|---|---|---|---|---|---|
-| `shell-center-tabs-right-library` | Center-tab workspace shell with collapsible right library rail | daw | implemented | **documented** | #5-ui-shell<br>#zustand-store-architecture | Matched 4/4 guide terms. |
-| `docs-modal-download-print-rag` | In-app docs modal with raw Markdown download, print/PDF, anchors, and RAG source copy | assistant | implemented | **documented** | #5-ui-shell<br>#16-11-assistant<br>#22-4-documentation-maintenance-rule | Matched 2/4 guide terms. |
-| `assistant-orb-providers-keys-attachments` | AI Assistant orb with provider/model selection, key pools, attachments, voice input, and streaming chat | assistant | implemented | **documented** | #5-ui-shell<br>#16-11-assistant | Matched 4/5 guide terms. |
+| `shell-center-tabs-right-library` | Center-tab workspace shell with collapsible right library rail | daw | implemented | **documented** | #5-ui-shell<br>#zustand-store-architecture | Matched 3/4 guide terms. |
+| `docs-modal-download-print-rag` | In-app docs modal with raw Markdown download, print/PDF, anchors, and RAG source copy | assistant | implemented | **documented** | #5-ui-shell<br>#19-11-assistant<br>#25-4-documentation-maintenance-rule | Matched 2/4 guide terms. |
+| `assistant-orb-providers-keys-attachments` | AI Assistant orb with provider/model selection, key pools, attachments, voice input, and streaming chat | assistant | implemented | **documented** | #5-ui-shell<br>#19-11-assistant | Matched 4/5 guide terms. |
 | `create-advanced-generation-templates-prompts-spectrograms` | Advanced generation controls with templates, saved prompts, prompt enhancer, output settings, and spectrogram viewer | create | implemented | **documented** | #6-1-primary-synthesis-prompt<br>#6-3-advanced-generation-panel | Matched 4/4 guide terms. |
-| `create-chimera-fusion-stack` | Chimera multi-clip fusion stack with BPM alignment, base clip, noise weights, and weave scheduling | chimera | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#purpose<br>#9-1-automatic-entry-creation<br>#9-5-bundle-downloads-and-lineage<br>#16-14-chimera<br>#22-3-current-feature-to-screenshot-map | Matched 5/5 guide terms. |
-| `create-mic-recorder-send-targets` | Browser microphone recorder that can send recordings to editor, init, inpaint, or library | create | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#6-4-1-microphone-recorder<br>#9-1-automatic-entry-creation | Matched 5/5 guide terms. |
-| `edit-advanced-effects-chain-analyzer` | Advanced effects chain with categorized FFmpeg processors, column resizing, waveform previews, and source/output stats | edit | implemented | **documented** | #7-5-advanced-editor-panel | Matched 2/5 guide terms. |
-| `library-backend-local-storage` | Disk-backed backend library provider with range-streamed audio and mutable metadata | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#purpose<br>#9-1-automatic-entry-creation<br>#16-13-disk-backed-library<br>#16-15-stems<br>#zustand-store-architecture | Matched 4/5 guide terms. |
-| `library-bundle-download-lineage-export` | Library bundle downloads and lineage graph exports including metadata, stems, MIDI, and relations | library | implemented | **documented** | #9-4-per-entry-controls<br>#9-5-bundle-downloads-and-lineage<br>#16-13-disk-backed-library | Matched 2/4 guide terms. |
-| `library-stems-sidecar` | Stem separation sidecar with install/start/stop/status/progress/abort and persisted stem rows | library | implemented | **documented** | #9-4-per-entry-controls<br>#9-6-stem-separation<br>#16-15-stems | Matched 3/4 guide terms. |
-| `library-midi-conversion` | Audio-to-MIDI conversion with installable engines, persisted MIDI rows, and editor send targets | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#9-4-per-entry-controls<br>#9-7-midi-conversion<br>#16-16-midi | Matched 4/4 guide terms. |
-| `settings-feature-toggles-modules-admin` | Settings modal for feature toggles, module enablement, restart, and shutdown controls | settings | implemented | **documented** | #one-shot-launcher-windows<br>#16-8-jobs-list<br>#16-11-assistant<br>#16-12-module-loader<br>#api-unreachable-banner-in-the-thedaw-header<br>#backend-job-persistence<br>#22-3-current-feature-to-screenshot-map | Matched 4/5 guide terms. |
-| `waveform-editor-inpaint-review` | Waveform editor paintbrush inpainting workflow with crop-aware mask submission and accept/discard review | daw | implemented | **documented** | #frontend-dependencies<br>#6-5-inpainting-regen-region<br>#6-8-run-generation<br>#10-4-inpainting-from-the-editor<br>#11-2-voice-synthesis<br>#13-4-media-bucket<br>#controls<br>#16-3-generation-async-thedaw-ui<br>#16-12-module-loader<br>#16-13-disk-backed-library<br>#16-14-chimera | Matched 5/5 guide terms. |
-| `sequencer-midi-export-render` | Step sequencer Standard MIDI export plus single-track/multi-track render-to-editor flows | daw | implemented | **documented** | #9-7-midi-conversion<br>#11-5-midi-export<br>#12-5-midi-import-and-export | Matched 3/4 guide terms. |
-| `piano-roll-linked-clip-editing` | Piano roll MIDI import/export, render-to-editor, and linked clip re-editing | daw | implemented | **documented** | #12-5-midi-import-and-export<br>#12-7-edit-in-piano-roll | Matched 3/4 guide terms. |
-| `media-bucket-routing` | Media Bucket send targets for editor, library, init audio, and Chimera stack | daw | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#7-5-advanced-editor-panel<br>#9-4-per-entry-controls<br>#13-4-media-bucket | Matched 3/4 guide terms. |
-| `vj-sidecar-tab-mobile-share` | VJ tab and mobile share link for iframe/tunnel-backed performance access | vj | experimental | **documented** | #5-ui-shell<br>#16-17-vj | Matched 3/4 guide terms. |
-| `backend-module-loader-settings` | Backend module loader with module manifests and runtime enable/disable settings | backend-module | implemented | **documented** | #1-repository-anatomy<br>#16-12-module-loader<br>#adding-a-backend-module | Matched 4/4 guide terms. |
+| `create-chimera-fusion-stack` | Chimera multi-clip fusion stack with BPM alignment, base clip, noise weights, and weave scheduling | chimera | implemented | **documented** | #1-repository-anatomy<br>#purpose<br>#6-3-1-chimera-fusion-stack<br>#6-4-init-signal-conditioning<br>#12-2-3d-graph-controls<br>#13-1-automatic-entry-creation<br>#13-5-bundle-downloads-and-lineage<br>#19-14-chimera<br>#25-3-current-feature-to-screenshot-map | Matched 5/5 guide terms. |
+| `create-mic-recorder-send-targets` | Browser microphone recorder that can send recordings to editor, init, inpaint, or library | create | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#6-4-1-microphone-recorder<br>#10-1-inputs<br>#10-4-export<br>#13-1-automatic-entry-creation | Matched 5/5 guide terms. |
+| `edit-advanced-effects-chain-analyzer` | Advanced effects chain with categorized FFmpeg processors, column resizing, waveform previews, and source/output stats | edit | implemented | **partial** | #8-3-effect-catalog-and-chain | Only matched 1/5 guide terms: Effect Catalog |
+| `library-backend-local-storage` | Disk-backed backend library provider with range-streamed audio and mutable metadata | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#purpose<br>#13-1-automatic-entry-creation<br>#19-13-disk-backed-library<br>#19-15-stems<br>#library-storage-fills-the-disk<br>#zustand-store-architecture | Matched 4/5 guide terms. |
+| `library-bundle-download-lineage-export` | Library bundle downloads and lineage graph exports including metadata, stems, MIDI, and relations | library | implemented | **documented** | #12-2-3d-graph-controls<br>#13-4-per-entry-controls<br>#13-5-bundle-downloads-and-lineage<br>#19-13-disk-backed-library | Matched 2/4 guide terms. |
+| `library-stems-sidecar` | Stem separation sidecar with install/start/stop/status/progress/abort and persisted stem rows | library | implemented | **documented** | #13-4-per-entry-controls<br>#13-6-stem-separation<br>#19-15-stems | Matched 3/4 guide terms. |
+| `library-midi-conversion` | Audio-to-MIDI conversion with installable engines, persisted MIDI rows, and editor send targets | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#13-4-per-entry-controls<br>#13-7-midi-conversion<br>#19-16-midi | Matched 4/4 guide terms. |
+| `settings-feature-toggles-modules-admin` | Settings modal for feature toggles, module enablement, restart, and shutdown controls | settings | implemented | **documented** | #one-shot-launcher-windows<br>#19-8-jobs-list<br>#19-11-assistant<br>#19-12-module-loader<br>#api-unreachable-banner-in-the-header<br>#backend-job-persistence<br>#25-3-current-feature-to-screenshot-map | Matched 4/5 guide terms. |
+| `waveform-editor-inpaint-review` | Waveform editor paintbrush inpainting workflow with crop-aware mask submission and accept/discard review | daw | implemented | **documented** | #frontend-dependencies<br>#6-5-inpainting-regen-region<br>#6-8-run-generation<br>#7-4-inpainting-from-the-editor<br>#14-2-voice-synthesis<br>#16-5-media<br>#controls<br>#19-4-generation-async-thedaw-ui<br>#19-12-module-loader<br>#19-13-disk-backed-library<br>#19-14-chimera | Matched 5/5 guide terms. |
+| `sequencer-midi-export-render` | Step sequencer Standard MIDI export plus single-track/multi-track render-to-editor flows | daw | implemented | **documented** | #13-7-midi-conversion<br>#14-5-midi-export<br>#15-5-midi-import-and-export | Matched 2/4 guide terms. |
+| `piano-roll-linked-clip-editing` | Piano roll MIDI import/export, render-to-editor, and linked clip re-editing | daw | implemented | **documented** | #15-5-midi-import-and-export<br>#15-7-edit-in-piano-roll<br>#16-6-slide | Matched 4/4 guide terms. |
+| `media-bucket-routing` | Media Bucket send targets for editor, library, init audio, and Chimera stack | daw | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#8-4-source-output-and-routing<br>#13-4-per-entry-controls<br>#16-5-media | Matched 3/4 guide terms. |
+| `vj-sidecar-tab-mobile-share` | VJ tab and mobile share link for iframe/tunnel-backed performance access | vj | experimental | **documented** | #table-of-contents<br>#5-ui-shell<br>#10-vj-tab<br>#purpose<br>#10-3-bridges<br>#10-4-export<br>#19-17-vj | Matched 3/4 guide terms. |
+| `backend-module-loader-settings` | Backend module loader with module manifests and runtime enable/disable settings | backend-module | implemented | **documented** | #1-repository-anatomy<br>#19-12-module-loader<br>#adding-a-backend-module<br>#zustand-store-architecture | Matched 4/4 guide terms. |
 
 ## Screenshot Mapping
 
@@ -67,5 +67,4 @@
 
 ## Required Documentation Follow-up
 
-> [!TIP]
-> Coverage is currently clean. Keep it that way by updating `scripts/screenshots/specs.ts`, `docs/USER_GUIDE.md`, and screenshot mappings in the same change whenever a feature changes.
+Patch `docs/USER_GUIDE.md` for every feature marked missing or partial. One screenshot may intentionally cover multiple feature IDs; use the screenshot mapping above rather than duplicating captures.

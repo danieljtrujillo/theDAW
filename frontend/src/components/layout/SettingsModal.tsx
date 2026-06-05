@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
+import { useLayoutPrefs } from '../../state/layoutPrefsStore';
 
 interface ModuleConfig {
   name: string;
+  label?: string;
   description?: string;
   version?: string;
   enabled: boolean;
@@ -36,7 +38,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
     void refreshFeatures();
     fetch('/api/modules/all')
       .then((r) => r.json() as Promise<ModuleConfig[]>)
-      .then(setModules)
+      .then((data) => setModules(Array.isArray(data) ? data : []))
       .catch(() => setModules([]))
       .finally(() => setLoading(false));
   }, [open, refreshFeatures]);
@@ -76,8 +78,23 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
           </button>
         </div>
 
+        {/* Pinned Admin — always at the top, never scrolls away */}
+        <div className="shrink-0 border-b border-white/5 bg-[#0a080f] px-4 py-3 flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <Power className="w-3 h-3 text-purple-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Admin</span>
+            <span className="text-[8px] font-mono text-zinc-600 ml-auto">supervisor required</span>
+          </div>
+          <div className="flex gap-2">
+            <RestartServerButton />
+            <ShutdownServerButton />
+          </div>
+        </div>
+
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
+
+          <LayoutSettingsSection />
 
           {/* Section: Background features (auto-analysis / stems / midi) */}
           <div className="flex items-center gap-1.5 mb-2">
@@ -257,73 +274,171 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
           ) : modules.length === 0 ? (
             <div className="text-center py-10 text-[9px] text-zinc-600 font-mono">No modules found in backend/modules/</div>
           ) : (
-            <div className="flex flex-col gap-1.5">
-              {modules.map((mod) => {
-                const key = mod._dir || mod.name;
-                const isToggling = toggling === key;
-                return (
-                  <div
-                    key={key}
-                    className={`flex items-center gap-3 px-3 py-2.5 border rounded transition-colors ${
-                      mod.enabled ? 'bg-white/3 border-white/8' : 'bg-black/20 border-white/5 opacity-60'
-                    }`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[10px] font-bold text-zinc-100 truncate">{mod.name}</span>
-                        {mod.version && (
-                          <span className="text-[8px] font-mono text-zinc-600 shrink-0">v{mod.version}</span>
-                        )}
-                        {mod._loaded && (
-                          <span className="text-[7px] font-mono text-green-400 bg-green-500/10 border border-green-500/20 px-1 py-0.5 rounded shrink-0">RUNNING</span>
-                        )}
-                      </div>
-                      {mod.description && (
-                        <p className="text-[9px] text-zinc-500 truncate">{mod.description}</p>
-                      )}
-                      {mod.api_prefix && (
-                        <span className="text-[8px] font-mono text-zinc-700">{mod.api_prefix}</span>
-                      )}
-                    </div>
-
-                    {/* Toggle switch */}
-                    <button
-                      onClick={() => void toggleModule(key, !mod.enabled)}
-                      disabled={isToggling}
-                      className="shrink-0 transition-opacity disabled:opacity-50"
-                      title={mod.enabled ? 'Disable module' : 'Enable module'}
-                    >
-                      {isToggling ? (
-                        <RefreshCw className="w-4 h-4 text-zinc-500 animate-spin" />
-                      ) : mod.enabled ? (
-                        <ToggleRight className="w-6 h-6 text-purple-400" />
-                      ) : (
-                        <ToggleLeft className="w-6 h-6 text-zinc-600" />
-                      )}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+            <ModuleTree modules={modules} toggling={toggling} onToggle={(dir, en) => void toggleModule(dir, en)} />
           )}
 
         </div>
+      </div>
+    </div>
+  );
+};
 
-        {/* Pinned footer — Restart + Shutdown are ALWAYS visible no
-            matter how far down the user has scrolled in the module
-            list. Locked here per user request 2026-05-28. */}
-        <div className="shrink-0 border-t border-white/5 bg-[#0a080f] px-4 py-3 flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <Power className="w-3 h-3 text-purple-400" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Admin</span>
-            <span className="text-[8px] font-mono text-zinc-600 ml-auto">supervisor required</span>
-          </div>
-          <div className="flex gap-2">
-            <RestartServerButton />
-            <ShutdownServerButton />
+/* ── Edit Layout Settings (global surface prefs) ──────────────────────────── */
+const LayoutSettingsSection: React.FC = () => {
+  const fillMode = useLayoutPrefs((s) => s.fillMode);
+  const gapPx = useLayoutPrefs((s) => s.gapPx);
+  const snapPx = useLayoutPrefs((s) => s.snapPx);
+  const showGuides = useLayoutPrefs((s) => s.showGuides);
+  const setFillMode = useLayoutPrefs((s) => s.setFillMode);
+  const setGapPx = useLayoutPrefs((s) => s.setGapPx);
+  const setSnapPx = useLayoutPrefs((s) => s.setSnapPx);
+  const setShowGuides = useLayoutPrefs((s) => s.setShowGuides);
+  return (
+    <>
+      <div className="flex items-center gap-1.5 mb-2">
+        <LayoutGrid className="w-3 h-3 text-purple-400" />
+        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Edit Layout Settings</span>
+        <span className="text-[8px] font-mono text-zinc-600 ml-auto">applies to every workspace</span>
+      </div>
+      <div className="border border-white/5 rounded px-3 py-2.5 bg-white/3 mb-4 flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Fill:</span>
+          <div className="flex items-center gap-1">
+            {([['scale', 'Scale controls'], ['natural', 'Compact']] as const).map(([v, lbl]) => (
+              <button
+                key={v}
+                onClick={() => setFillMode(v)}
+                className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                  fillMode === v ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                }`}
+                title={v === 'scale' ? 'Controls grow to fill their cell' : 'Controls stay compact, centered'}
+              >
+                {lbl}
+              </button>
+            ))}
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Gap:</span>
+          <input
+            type="range"
+            min={0}
+            max={24}
+            value={gapPx}
+            onChange={(e) => setGapPx(Number(e.target.value))}
+            className="flex-1 accent-purple-500"
+            title="Gap between panels"
+          />
+          <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{gapPx}px</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Snap:</span>
+          <input
+            type="range"
+            min={0}
+            max={24}
+            value={snapPx}
+            onChange={(e) => setSnapPx(Number(e.target.value))}
+            className="flex-1 accent-purple-500"
+            title="Snap step when dragging margins (0 = off; hold Ctrl while dragging for a 1px fine step)"
+          />
+          <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{snapPx === 0 ? 'off' : `${snapPx}px`}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Guides:</span>
+          <button
+            onClick={() => setShowGuides(!showGuides)}
+            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+              showGuides ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+            }`}
+            title="Show centre + increment alignment guides while editing a layout"
+          >
+            {showGuides ? 'On' : 'Off'}
+          </button>
+        </div>
+        <p className="text-[8px] text-zinc-600 leading-relaxed">
+          Scale grows controls to fill empty space; Compact keeps them at a natural size. Gap sets the spacing between panels. Per-panel padding, mirror, and control placement are edited inside each workspace's Edit Layout mode.
+        </p>
       </div>
+    </>
+  );
+};
+
+/* ── Modules grouped into a collapsible tree ──────────────────────────────── */
+const MODULE_GROUPS: Record<string, string> = {
+  chimera: 'Generation',
+  analysis: 'Audio', effects: 'Audio', stems: 'Audio', midi: 'Audio',
+  library: 'Library', ytimport: 'Library',
+  vj: 'Performance', controllervision: 'Performance',
+  settings: 'System',
+};
+const GROUP_ORDER = ['Generation', 'Audio', 'Library', 'Performance', 'System', 'Other'];
+
+const ModuleTree: React.FC<{ modules: ModuleConfig[]; toggling: string | null; onToggle: (dir: string, enabled: boolean) => void }> = ({ modules, toggling, onToggle }) => {
+  const groups: Record<string, ModuleConfig[]> = {};
+  for (const m of Array.isArray(modules) ? modules : []) {
+    const g = MODULE_GROUPS[m.name] ?? 'Other';
+    (groups[g] ??= []).push(m);
+  }
+  const names = GROUP_ORDER.filter((g) => groups[g]?.length);
+  return (
+    <div className="flex flex-col gap-1.5">
+      {names.map((g) => (
+        <ModuleGroup key={g} name={g} mods={groups[g]} toggling={toggling} onToggle={onToggle} />
+      ))}
+    </div>
+  );
+};
+
+const ModuleGroup: React.FC<{ name: string; mods: ModuleConfig[]; toggling: string | null; onToggle: (dir: string, enabled: boolean) => void }> = ({ name, mods, toggling, onToggle }) => {
+  const [open, setOpen] = useState(false);
+  const onCount = mods.filter((m) => m.enabled).length;
+  return (
+    <div className="border border-white/5 rounded bg-white/3">
+      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-2 px-3 py-2">
+        <ChevronRight className={`w-3 h-3 text-purple-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-200">{name}</span>
+        <span className="text-[8px] font-mono text-zinc-600 ml-auto">{onCount}/{mods.length} on</span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {mods.map((mod) => (
+            <ModuleRow key={mod._dir || mod.name} mod={mod} toggling={toggling} onToggle={onToggle} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ModuleRow: React.FC<{ mod: ModuleConfig; toggling: string | null; onToggle: (dir: string, enabled: boolean) => void }> = ({ mod, toggling, onToggle }) => {
+  const key = mod._dir || mod.name;
+  const isToggling = toggling === key;
+  return (
+    <div className={`flex items-center gap-3 px-3 py-2.5 border rounded transition-colors ${mod.enabled ? 'bg-white/3 border-white/8' : 'bg-black/20 border-white/5 opacity-60'}`}>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="text-[10px] font-bold text-zinc-100 truncate">{mod.label || mod.name}</span>
+          {mod.version && <span className="text-[8px] font-mono text-zinc-600 shrink-0">v{mod.version}</span>}
+          {mod._loaded && <span className="text-[7px] font-mono text-green-400 bg-green-500/10 border border-green-500/20 px-1 py-0.5 rounded shrink-0">RUNNING</span>}
+        </div>
+        {mod.description && <p className="text-[9px] text-zinc-500 truncate">{mod.description}</p>}
+        {mod.api_prefix && <span className="text-[8px] font-mono text-zinc-700">{mod.api_prefix}</span>}
+      </div>
+      <button
+        onClick={() => onToggle(key, !mod.enabled)}
+        disabled={isToggling}
+        className="shrink-0 transition-opacity disabled:opacity-50"
+        title={mod.enabled ? 'Disable module' : 'Enable module'}
+      >
+        {isToggling ? (
+          <RefreshCw className="w-4 h-4 text-zinc-500 animate-spin" />
+        ) : mod.enabled ? (
+          <ToggleRight className="w-6 h-6 text-purple-400" />
+        ) : (
+          <ToggleLeft className="w-6 h-6 text-zinc-600" />
+        )}
+      </button>
     </div>
   );
 };

@@ -36,10 +36,13 @@ interface SlideKnobProps {
   /** Bipolar: fill the arc OUTWARD from the 12-o'clock midpoint (neutral at
    *  center), for ±params like EQ / filter / pitch. */
   center?: boolean;
+  /** Fixed accent colour position 0..1 (a style/skin override). When set, the
+   *  dial colour no longer tracks the value — used by custom controls. */
+  tint?: number;
 }
 
 const SlideKnobImpl: React.FC<SlideKnobProps> = ({
-  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false, center = false,
+  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false, center = false, tint,
 }) => {
   const dragging = useRef(false);
   const lastY = useRef(0);
@@ -47,7 +50,9 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
 
   const span = max - min || 1;
   const t = clamp((value - min) / span, 0, 1);
-  const base = colorAt(t);
+  // Geometry follows the value (`t`); colour follows `tint` when given.
+  const colorT = tint ?? t;
+  const base = colorAt(colorT);
   const sweep = t * 270;
   // gap centered at the BOTTOM: sweep clockwise from 7:30 (225°). In `center`
   // (bipolar) mode the fill grows out from the 12-o'clock midpoint (135° into
@@ -109,7 +114,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
   const tip = tipKey ? HOVER_TOOLTIPS[tipKey] : undefined;
 
   return (
-    <div className="flex flex-col items-center gap-1 select-none min-w-0" style={accentVars(t)}>
+    <div className="flex flex-col items-center gap-1 select-none min-w-0" style={accentVars(colorT)}>
       {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
       <div
         className={`tk-dial${active ? ' is-active' : ''}`}
@@ -140,7 +145,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
               fontSize: active ? '13px' : '11px',
               fontWeight: 800,
               textShadow: `0 0 8px ${rgba(base, 0.85)}`,
-              zIndex: 3,
+              zIndex: 8, // above the rotating pointer (.tk-point z-5) so the readout is never occluded
               transition: 'font-size 0.1s ease',
             }}
           >
