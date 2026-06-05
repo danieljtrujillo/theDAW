@@ -1347,7 +1347,7 @@ Full parameter reference: `stable_audio_3/model.py:StableAudioModel.generate`.
 | `same-s` | Autoencoder | 266 M | n/a | CPU | n/a |
 | `same-l` | Autoencoder | 1.7 B | n/a | GPU | n/a |
 
-ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled version and reuse the cached full checkpoint when both are available. The RTX 3060 (6 GB VRAM) supports the Small model; the Medium model needs around 8 GB.
+ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled version and reuse the cached full checkpoint when both are available. The Small model runs on modest GPUs; the Medium model needs around 8 GB of VRAM.
 
 ---
 
@@ -1427,7 +1427,7 @@ The Medium model needs around 8 GB VRAM. Workarounds:
 - Use the `small` model.
 - Reduce `duration`; shorter sequences consume less peak memory.
 - Confirm no other CUDA processes are active on the same device.
-- The RTX 3060 Laptop (6 GB) runs the Small model.
+- The Small model runs on modest GPUs; the Medium model needs ~8 GB of VRAM.
 
 ### Library storage fills the disk
 

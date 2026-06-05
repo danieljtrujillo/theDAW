@@ -1,7 +1,7 @@
 /**
  * Type definitions for the theDAW AI Assistant (Orb Kit)
  *
- * Ported from SunoHarvester's Gantasmo assistant types,
+ * Ported from SunoHarvester's GANTASMO assistant types,
  * adapted for the theDAW audio generation domain.
  */
 
