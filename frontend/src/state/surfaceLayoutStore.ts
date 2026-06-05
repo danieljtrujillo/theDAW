@@ -1,6 +1,6 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { WidgetId } from '../components/surface/widgetTypes';
+import type { WidgetId, CustomWidgetDef } from '../components/surface/widgetTypes';
 
 /* Generic, data-driven control-surface layout.
  *
@@ -78,6 +78,9 @@ export interface SurfaceLayout {
   version: number;
   root: NodeId;
   nodes: Record<NodeId, LayoutNode>;
+  /** User-created controls (Add-Control picker), keyed by their widget id. They
+   *  persist with the layout and are rendered by `CustomControl`. */
+  customWidgets?: Record<WidgetId, CustomWidgetDef>;
 }
 
 export const MIN_FR = 0.45;
@@ -112,7 +115,10 @@ export function cloneLayout(l: SurfaceLayout): SurfaceLayout {
       };
     }
   }
-  return { version: l.version, root: l.root, nodes };
+  const customWidgets = l.customWidgets
+    ? Object.fromEntries(Object.entries(l.customWidgets).map(([k, v]) => [k, { ...v }]))
+    : undefined;
+  return { version: l.version, root: l.root, nodes, customWidgets };
 }
 
 export function findParentId(nodes: Record<NodeId, LayoutNode>, childId: NodeId): NodeId | null {
@@ -248,6 +254,10 @@ export interface SurfaceStore {
   moveWidget: (widgetId: WidgetId, toPanelId: NodeId, toIndex: number) => void;
   placeWidget: (widgetId: WidgetId, toPanelId: NodeId, toIndex: number) => void;
   removeWidget: (widgetId: WidgetId) => void;
+  /** Create a user-defined control and place it in a panel. Returns its id. */
+  addCustomWidget: (panelId: NodeId, def: Omit<CustomWidgetDef, 'id'>) => WidgetId;
+  /** Patch an existing custom control's definition (label/kind/tint/target). */
+  updateCustomWidget: (id: WidgetId, patch: Partial<Omit<CustomWidgetDef, 'id'>>) => void;
 
   addPanel: (containerId: NodeId, atIndex: number, title?: string) => NodeId;
   removePanel: (panelId: NodeId) => void;
@@ -413,11 +423,45 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
         removeWidget: (widgetId) =>
           set((s) => {
             const fromId = findPanelOfWidget(s.layout.nodes, widgetId);
-            if (!fromId) return s;
             const layout = cloneLayout(s.layout);
-            const from = layout.nodes[fromId] as PanelNode;
-            from.widgets = from.widgets.filter((w) => w !== widgetId);
-            if (from.widgetFr) delete from.widgetFr[widgetId];
+            if (fromId) {
+              const from = layout.nodes[fromId] as PanelNode;
+              from.widgets = from.widgets.filter((w) => w !== widgetId);
+              if (from.widgetFr) delete from.widgetFr[widgetId];
+            }
+            // A removed custom control is gone for good (not returned to a
+            // palette — its definition lived only here).
+            if (layout.customWidgets && layout.customWidgets[widgetId]) {
+              const cw = { ...layout.customWidgets };
+              delete cw[widgetId];
+              layout.customWidgets = cw;
+            } else if (!fromId) {
+              return s;
+            }
+            return { layout };
+          }),
+
+        addCustomWidget: (panelId, def) => {
+          let id = '';
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel' || node.pinned) return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            id = newId('custom');
+            layout.customWidgets = { ...(layout.customWidgets ?? {}), [id]: { ...def, id } };
+            p.widgets = [...p.widgets, id];
+            return { layout };
+          });
+          return id;
+        },
+
+        updateCustomWidget: (id, patch) =>
+          set((s) => {
+            const cur = s.layout.customWidgets?.[id];
+            if (!cur) return s;
+            const layout = cloneLayout(s.layout);
+            layout.customWidgets = { ...(layout.customWidgets ?? {}), [id]: { ...cur, ...patch, id } };
             return { layout };
           }),
 

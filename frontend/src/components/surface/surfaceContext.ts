@@ -3,12 +3,14 @@
  *  import graph. */
 import React, { useContext } from 'react';
 import type { SurfaceStoreApi } from '../../state/surfaceLayoutStore';
-import type { WidgetRegistry } from './widgetTypes';
+import type { WidgetRegistry, BindableTarget } from './widgetTypes';
 
 export interface SurfaceCtx {
   surfaceId: string;
   store: SurfaceStoreApi;
   registry: WidgetRegistry;
+  /** Backend endpoints a custom control can bind to (tab-supplied, may be empty). */
+  targets: BindableTarget[];
 }
 
 export const SurfaceContext = React.createContext<SurfaceCtx | null>(null);

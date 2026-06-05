@@ -12,11 +12,12 @@
  * (reversed widget order + per-widget mirror opt) come from the layout store.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, X } from 'lucide-react';
+import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, CirclePlus, X } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { Splitter } from './Splitter';
 import { WidgetCell } from './WidgetCell';
+import { AddControlModal } from './AddControlModal';
 import { PANEL_MIME, WIDGET_MIME, encode, decodeWidget, decodePanel } from './dnd';
 import type { Axis, EdgeDir, NodeId, PanelNode, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 
@@ -29,7 +30,8 @@ const PanelHeader: React.FC<{
   padPx: number;
   surfaceId: string;
   store: SurfaceStoreApi;
-}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store }) => {
+  onAddControl?: () => void;
+}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store, onAddControl }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -128,6 +130,15 @@ const PanelHeader: React.FC<{
       >
         <SplitSquareVertical className="w-3 h-3" />
       </button>
+      {onAddControl && (
+        <button
+          onClick={onAddControl}
+          title="Add a control bound to the backend (knob / fader / toggle / pad / visualizer)"
+          className="text-emerald-200/90 hover:text-emerald-100"
+        >
+          <CirclePlus className="w-3 h-3" />
+        </button>
+      )}
       <button
         onClick={() => store.getState().removePanel(nodeId)}
         title="Remove this panel (its controls return to the palette)"
@@ -146,6 +157,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [bodySize, setBodySize] = useState({ w: 0, h: 0 });
   const [dockEdge, setDockEdge] = useState<EdgeDir | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -198,7 +210,8 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
       onDragLeave={design ? (e) => { e.stopPropagation(); setDockEdge(null); } : undefined}
       onDrop={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; const p = decodePanel(e.dataTransfer.getData(PANEL_MIME)); const edge = computeEdge(e); setDockEdge(null); if (!p || p.surfaceId !== surfaceId) return; e.preventDefault(); e.stopPropagation(); store.getState().dockNode(p.panelId, nodeId, edge); } : undefined}
     >
-      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} />}
+      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} onAddControl={isPinned ? undefined : () => setAddOpen(true)} />}
+      {addOpen && <AddControlModal panelId={nodeId} onClose={() => setAddOpen(false)} />}
 
       <div
         ref={bodyRef}

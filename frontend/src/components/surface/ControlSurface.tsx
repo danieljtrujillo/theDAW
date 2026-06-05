@@ -16,7 +16,9 @@ import { PaletteDrawer } from './PaletteDrawer';
 import { SurfaceToolbar } from './SurfaceToolbar';
 import { createLayoutStore } from '../../state/surfaceLayoutStore';
 import type { SurfaceLayout, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
-import type { WidgetRegistry } from './widgetTypes';
+import type { WidgetRegistry, BindableTarget } from './widgetTypes';
+
+const NO_TARGETS: BindableTarget[] = [];
 
 // One persisted store instance per surface id, reused across (re)mounts + HMR.
 const storeCache = new Map<string, SurfaceStoreApi>();
@@ -34,11 +36,15 @@ export const ControlSurface: React.FC<{
   registry: WidgetRegistry;
   defaultLayout: SurfaceLayout;
   className?: string;
+  /** Backend endpoints a user-added control can bind to (for the Add-Control
+   *  picker). Omit on surfaces with no bindable targets yet. */
+  targets?: BindableTarget[];
   /** A stale localStorage key to clear once (migration cleanup). */
   legacyKeyToClear?: string;
-}> = ({ surfaceId, registry, defaultLayout, className, legacyKeyToClear }) => {
+}> = ({ surfaceId, registry, defaultLayout, className, targets, legacyKeyToClear }) => {
   const store = getStore(surfaceId, defaultLayout);
-  const ctx = useMemo(() => ({ surfaceId, store, registry }), [surfaceId, store, registry]);
+  const tgts = targets ?? NO_TARGETS;
+  const ctx = useMemo(() => ({ surfaceId, store, registry, targets: tgts }), [surfaceId, store, registry, tgts]);
   const root = store((s) => s.layout.root);
   const design = store((s) => s.designMode);
 

@@ -32,6 +32,7 @@ import { useDjControlMap, sigLabel, type MidiKind } from '../state/djControlMap'
 import { useDjSampler } from '../state/djSamplerStore';
 import { useDjSideList } from '../state/djSideListStore';
 import { ControlSurface } from '../components/surface/ControlSurface';
+import { DJ_TARGETS } from '../state/bindableTargets';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { useAppUiStore } from '../state/appUiStore';
@@ -629,6 +630,7 @@ export const DJView: React.FC = () => {
         surfaceId="dj"
         registry={registry}
         defaultLayout={defaultDjLayout}
+        targets={DJ_TARGETS}
         legacyKeyToClear="thedaw.dj.layout.v1"
         className="p-1.5"
       />

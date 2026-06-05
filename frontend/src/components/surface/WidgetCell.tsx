@@ -13,6 +13,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GripVertical, X, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
 import { useSurface } from './surfaceContext';
+import { CustomControl } from './CustomControl';
 import { WIDGET_MIME, encode, decodeWidget } from './dnd';
 import { useLayoutPrefs } from '../../state/layoutPrefsStore';
 import { isSpacer } from '../../state/surfaceLayoutStore';
@@ -119,7 +120,8 @@ const UNIFORM_CAP = 46;
 // closures carrying live values) on each render, so the cell must re-render
 // with the surface to reflect live control state.
 export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, uniform, margins }) => {
-  const { surfaceId, store, registry } = useSurface();
+  const { surfaceId, store, registry, targets } = useSurface();
+  const custom = store((s) => s.layout.customWidgets?.[widgetId]);
   const fillMode = useLayoutPrefs((s) => s.fillMode);
   const snapPx = useLayoutPrefs((s) => s.snapPx);
   const ref = useRef<HTMLDivElement>(null);
@@ -141,7 +143,7 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
 
   const def = registry[widgetId];
   const spacer = isSpacer(widgetId);
-  const label = def?.label ?? (spacer ? 'Spacer' : widgetId);
+  const label = def?.label ?? custom?.label ?? (spacer ? 'Spacer' : widgetId);
   const acceptDrop = (e: React.DragEvent) => design && e.dataTransfer.types.includes(WIDGET_MIME);
 
   // Uniform mode forces compact, equal-sized controls regardless of fill mode.
@@ -186,6 +188,8 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
     >
       {def ? (
         def.render(effSize, { mirror, justify, fill })
+      ) : custom ? (
+        <CustomControl def={custom} targets={targets} size={effSize} />
       ) : spacer ? (
         design ? (
           <div className="w-full h-full border border-dashed border-white/15 rounded grid place-items-center">

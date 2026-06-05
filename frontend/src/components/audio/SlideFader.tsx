@@ -40,9 +40,12 @@ interface SlideFaderProps {
   /** Which side the number ruler sits on. Default 'left'; use 'right' for
    *  faders on the right of a layout so the ticks/numbers point outward. */
   rulerSide?: 'left' | 'right';
+  /** Fixed accent colour position 0..1 (style/skin override); when set the
+   *  colour no longer tracks the value. Used by custom controls. */
+  tint?: number;
 }
 
-const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min, max, step = 0.01, tipKey, rulerSide = 'left' }) => {
+const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min, max, step = 0.01, tipKey, rulerSide = 'left', tint }) => {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const [drag, setDrag] = useState(false);
@@ -50,7 +53,8 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
 
   const span = max - min || 1;
   const t = clamp((value - min) / span, 0, 1);
-  const base = colorAt(t);
+  const colorT = tint ?? t;
+  const base = colorAt(colorT);
 
   const fromClientY = (clientY: number): number => {
     const el = trackRef.current;
@@ -126,7 +130,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
     <div
       className="flex flex-col items-center gap-1 min-w-0 h-full select-none"
       style={{
-        ...accentVars(t),
+        ...accentVars(colorT),
         ['--body-w' as string]: '26px',
         ['--track-w' as string]: '14px',
         ['--track-inset' as string]: '8px',

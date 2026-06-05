@@ -68,3 +68,47 @@ export interface WidgetDef {
 }
 
 export type WidgetRegistry = Record<WidgetId, WidgetDef>;
+
+/* ── custom (user-created) controls ───────────────────────────────────────────
+ * A custom control is added at runtime from the Add-Control picker: the user
+ * chooses a control KIND + a STYLE tint, then either binds it to a backend
+ * TARGET (it drives that setter live) or drops in a VISUALIZER. Unlike builtin
+ * widgets (whose render closures are baked into the tab registry), a custom
+ * control is pure data persisted in the layout and rendered by `CustomControl`.
+ */
+export type ControlKind = 'knob' | 'fader' | 'toggle' | 'pad' | 'crossfader';
+
+/** A bindable backend endpoint a custom control can drive. The tab supplies the
+ *  catalogue (e.g. DJ_TARGETS); the surface stays generic. */
+export interface BindableTarget {
+  id: string;
+  label: string;
+  /** Picker grouping bucket (e.g. 'Deck A', 'Mixer'). */
+  group: string;
+  /** The control kind that fits this target best (pre-selects in the picker). */
+  kind: ControlKind;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  /** Push a value: a number for ranges, a boolean for toggles; triggers (pads)
+   *  ignore the argument. */
+  invoke: (v: number | boolean) => void;
+}
+
+export type VisualizerKind = 'spectrum';
+
+/** Persisted definition of one user-created control (lives in SurfaceLayout). */
+export interface CustomWidgetDef {
+  id: WidgetId;
+  /** A bound control, or an embedded visualizer. */
+  mode: 'control' | 'visualizer';
+  label: string;
+  /** control mode — the chosen kind + the target it drives + a style tint. */
+  kind?: ControlKind;
+  targetId?: string;
+  /** Accent tint 0..1 (style/skin colour); undefined = value-driven default. */
+  tint?: number;
+  /** visualizer mode — which visualizer to embed. */
+  visualizer?: VisualizerKind;
+}
