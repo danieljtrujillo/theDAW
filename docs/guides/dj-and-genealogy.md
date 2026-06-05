@@ -41,13 +41,20 @@ The center mixer sits between the decks.
 - **MIDI-learn** — bind a hardware controller's knobs, faders, and pads to deck, mixer, and hotcue actions. Enter learn mode, move a control, then trigger the on-screen action to map it.
 - **Controller recognition** — theDAW can auto-detect a connected controller by name and apply a matching template, learn any rig by capturing its controls, or infer a layout from a product photo.
 
-## Layout editing (DJ and other surfaces)
+## Layout editing (DJ, MIX, TRAIN)
 
-The DJ surface (and other control surfaces) can be rearranged in a design mode:
-drag controls into your own layout, add custom controls bound to engine
-parameters, resize and align panels, and the layout saves per surface. Controls
-fill their cells; right-click a control or panel for actions (shape, mirror,
-match-size, flow, split, fill) with keyboard shortcuts.
+The DJ, MIX, and TRAIN tabs run on the same Control-Surface editor. Click
+**Edit Layout** (top-right) to enter design mode: drag panels and controls into
+your own arrangement, add custom controls bound to engine parameters, resize and
+align panels, and the layout saves per surface. Controls fill their cells;
+right-click a control or panel for actions (shape, mirror, match-size, flow,
+split, fill) with keyboard shortcuts.
+
+On MIX, the top two rows are input/output visualizations (toggle waveform / live
+scope, with an A/B overlay-compare), the middle is the effect workflow (effect
+rail + Quick Master, the effect library, and the active chain), and the lower
+region is the effect stage. On TRAIN, the LoRA-config, datasource, autoencoder
+bench, telemetry, and console sections are each a rearrangeable panel.
 
 ## Library & genealogy
 
