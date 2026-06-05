@@ -5,7 +5,7 @@
  * Done. Reads/writes the surface's own store instance through context.
  */
 import React, { useState } from 'react';
-import { LayoutGrid, Plus, Copy, RotateCcw, Check, Move, Undo2, Redo2, Save } from 'lucide-react';
+import { LayoutGrid, Plus, Copy, RotateCcw, Check, Move, Undo2, Redo2, Save, Crosshair, FlipHorizontal2 } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 
 export const SurfaceToolbar: React.FC = () => {
@@ -75,6 +75,27 @@ export const SurfaceToolbar: React.FC = () => {
         title="Add an empty panel"
       >
         <Plus className="w-3 h-3" /> Panel
+      </button>
+      <button
+        onClick={() => store.getState().centerHero()}
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-white/10 text-zinc-300 hover:text-amber-200 hover:border-amber-400/50 text-[8px] font-bold uppercase tracking-wider"
+        title="Balance the layout symmetrically — centre the hero (equalize each row/column around its middle)"
+      >
+        <Crosshair className="w-3 h-3" /> Center
+      </button>
+      <button
+        onClick={() => store.getState().mirrorSide('left')}
+        className="grid place-items-center w-6 h-6 rounded border border-white/10 text-zinc-300 hover:text-amber-200 hover:border-amber-400/50"
+        title="Mirror the LEFT side onto the right (left is the base)"
+      >
+        <FlipHorizontal2 className="w-3 h-3" />
+      </button>
+      <button
+        onClick={() => store.getState().mirrorSide('right')}
+        className="grid place-items-center w-6 h-6 rounded border border-white/10 text-zinc-300 hover:text-amber-200 hover:border-amber-400/50"
+        title="Mirror the RIGHT side onto the left (right is the base)"
+      >
+        <FlipHorizontal2 className="w-3 h-3 -scale-x-100" />
       </button>
       <button
         onClick={() => void copy()}

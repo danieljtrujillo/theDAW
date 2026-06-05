@@ -33,6 +33,18 @@ export interface WidgetSize {
   h: number;
 }
 
+/** Shape of a pad/button. The four `tri-*` are right-angle halves of a square
+ *  (the right angle sits at that corner); two complementary tris tile a square. */
+export type ButtonShape =
+  | 'default'
+  | 'square'
+  | 'rect'
+  | 'circle'
+  | 'tri-tl'
+  | 'tri-tr'
+  | 'tri-bl'
+  | 'tri-br';
+
 /** Render-time hints the surface passes per cell. */
 export interface WidgetRenderOpts {
   /** Mirror composite controls (reverse order + flip icon/name side). */
@@ -41,6 +53,8 @@ export interface WidgetRenderOpts {
   justify?: 'start' | 'center' | 'end';
   /** True when the surface fill mode wants the control to grow to fill. */
   fill?: boolean;
+  /** Pad/button shape override (applied by SlidePad). */
+  shape?: ButtonShape;
 }
 
 /** Reserved for the future custom-control phase; unused for built-in widgets. */
@@ -109,6 +123,8 @@ export interface CustomWidgetDef {
   targetId?: string;
   /** Accent tint 0..1 (style/skin colour); undefined = value-driven default. */
   tint?: number;
+  /** Pad/button shape (control mode, pad kind). */
+  shape?: ButtonShape;
   /** visualizer mode — which visualizer to embed. */
   visualizer?: VisualizerKind;
 }

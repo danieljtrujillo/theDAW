@@ -10,7 +10,18 @@ import React, { useMemo, useState } from 'react';
 import { X, Plus, Activity } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { colorAt, rgb } from '../../lib/trackColor';
-import type { BindableTarget, ControlKind, CustomWidgetDef } from './widgetTypes';
+import type { BindableTarget, ButtonShape, ControlKind, CustomWidgetDef } from './widgetTypes';
+
+const SHAPES: { s: ButtonShape; label: string }[] = [
+  { s: 'default', label: 'Default' },
+  { s: 'square', label: 'Square' },
+  { s: 'rect', label: 'Rect' },
+  { s: 'circle', label: 'Circle' },
+  { s: 'tri-tl', label: '◤' },
+  { s: 'tri-tr', label: '◥' },
+  { s: 'tri-bl', label: '◣' },
+  { s: 'tri-br', label: '◢' },
+];
 
 const KINDS: { k: ControlKind; label: string }[] = [
   { k: 'knob', label: 'Knob' },
@@ -28,6 +39,7 @@ export const AddControlModal: React.FC<{ panelId: string; onClose: () => void }>
   const [targetId, setTargetId] = useState('');
   const [kind, setKind] = useState<ControlKind>('knob');
   const [tint, setTint] = useState<number | undefined>(undefined);
+  const [shape, setShape] = useState<ButtonShape>('default');
   const [label, setLabel] = useState('');
 
   const groups = useMemo(() => {
@@ -52,7 +64,7 @@ export const AddControlModal: React.FC<{ panelId: string; onClose: () => void }>
     const def: Omit<CustomWidgetDef, 'id'> =
       mode === 'visualizer'
         ? { mode: 'visualizer', label: label.trim() || 'Spectrum', visualizer: 'spectrum' }
-        : { mode: 'control', label: label.trim() || 'Control', kind, targetId, tint };
+        : { mode: 'control', label: label.trim() || 'Control', kind, targetId, tint, ...(kind === 'pad' ? { shape } : {}) };
     store.getState().addCustomWidget(panelId, def);
     onClose();
   };
@@ -128,6 +140,17 @@ export const AddControlModal: React.FC<{ panelId: string; onClose: () => void }>
                 />
               ))}
             </div>
+
+            {kind === 'pad' && (
+              <>
+                <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">4 · Shape</div>
+                <div className="flex flex-wrap gap-1">
+                  {SHAPES.map(({ s, label: sl }) => (
+                    <button key={s} onClick={() => setShape(s)} className={chip(shape === s)}>{sl}</button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 px-3 pb-2 text-center">

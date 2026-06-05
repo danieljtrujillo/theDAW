@@ -20,9 +20,12 @@ interface LayoutPrefsState {
   /** Snap step (px) for dragging margins/handles; 0 = no snapping. Hold Ctrl
    *  while dragging to override with a 1px fine step. */
   snapPx: number;
+  /** Show the centre + increment alignment guides while editing. */
+  showGuides: boolean;
   setFillMode: (m: FillMode) => void;
   setGapPx: (px: number) => void;
   setSnapPx: (px: number) => void;
+  setShowGuides: (v: boolean) => void;
   reset: () => void;
 }
 
@@ -34,10 +37,12 @@ export const useLayoutPrefs = create<LayoutPrefsState>()(
       fillMode: 'scale',
       gapPx: DEFAULT_GAP,
       snapPx: DEFAULT_SNAP,
+      showGuides: true,
       setFillMode: (m) => set({ fillMode: m }),
       setGapPx: (px) => set({ gapPx: clamp(Math.round(px), 0, 40) }),
       setSnapPx: (px) => set({ snapPx: clamp(Math.round(px), 0, 32) }),
-      reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP, snapPx: DEFAULT_SNAP }),
+      setShowGuides: (v) => set({ showGuides: v }),
+      reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP, snapPx: DEFAULT_SNAP, showGuides: true }),
     }),
     { name: 'thedaw.layoutprefs.v1' },
   ),

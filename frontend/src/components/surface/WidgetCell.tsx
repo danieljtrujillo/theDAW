@@ -11,13 +11,13 @@
  * applied here and forwarded into the widget's render opts.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { GripVertical, X, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
+import { GripVertical, X, AlignLeft, AlignCenter, AlignRight, Shapes } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { CustomControl } from './CustomControl';
 import { WIDGET_MIME, encode, decodeWidget } from './dnd';
 import { useLayoutPrefs } from '../../state/layoutPrefsStore';
 import { isSpacer } from '../../state/surfaceLayoutStore';
-import type { WidgetId } from './widgetTypes';
+import type { WidgetId, ButtonShape } from './widgetTypes';
 import type { NodeId } from '../../state/surfaceLayoutStore';
 
 type Justify = 'start' | 'center' | 'end';
@@ -30,10 +30,12 @@ interface Props {
   justify?: Justify;
   mirror?: boolean;
   uniform?: boolean;
+  shape?: ButtonShape;
   margins?: { t: number; r: number; b: number; l: number };
 }
 
 type Side = 't' | 'r' | 'b' | 'l';
+const SHAPE_ORDER: ButtonShape[] = ['default', 'square', 'rect', 'circle', 'tri-tl', 'tri-tr', 'tri-bl', 'tri-br'];
 
 /** A draggable edge handle that sets one side's margin. Snaps to `snapPx`
  *  (0 = off); hold Ctrl while dragging for a 1px fine step. Shows a live px
@@ -119,7 +121,7 @@ const UNIFORM_CAP = 46;
 // Deliberately NOT memoized: the host tab rebuilds its registry (with fresh
 // closures carrying live values) on each render, so the cell must re-render
 // with the surface to reflect live control state.
-export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, uniform, margins }) => {
+export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, uniform, shape, margins }) => {
   const { surfaceId, store, registry, targets } = useSurface();
   const custom = store((s) => s.layout.customWidgets?.[widgetId]);
   const fillMode = useLayoutPrefs((s) => s.fillMode);
@@ -153,6 +155,10 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
   const JustIcon = JUSTIFY_ICON[justify];
   const m = margins ?? { t: 0, r: 0, b: 0, l: 0 };
   const showMargins = design && (hover || marginDragging);
+  // Shape applies only to pad/button-kind widgets (builtin or custom).
+  const kind = def?.kind ?? (custom?.mode === 'control' ? custom.kind : undefined);
+  const isPadLike = kind === 'pad' || kind === 'button';
+  const curShape: ButtonShape = shape ?? 'default';
 
   return (
     <div
@@ -187,9 +193,9 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
       }
     >
       {def ? (
-        def.render(effSize, { mirror, justify, fill })
+        def.render(effSize, { mirror, justify, fill, shape })
       ) : custom ? (
-        <CustomControl def={custom} targets={targets} size={effSize} />
+        <CustomControl def={custom} targets={targets} size={effSize} shapeOverride={shape} />
       ) : spacer ? (
         design ? (
           <div className="w-full h-full border border-dashed border-white/15 rounded grid place-items-center">
@@ -224,6 +230,19 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
           >
             <JustIcon className="w-2.5 h-2.5" />
           </button>
+          {isPadLike && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                const next = SHAPE_ORDER[(SHAPE_ORDER.indexOf(curShape) + 1) % SHAPE_ORDER.length];
+                store.getState().setWidgetShape(panelId, widgetId, next);
+              }}
+              title={`Shape: ${curShape} (click to cycle: square / rect / circle / triangles)`}
+              className="absolute top-0 left-8 z-50 h-3.5 w-3.5 grid place-items-center rounded-b bg-amber-600/80 hover:bg-amber-500 text-amber-50"
+            >
+              <Shapes className="w-2.5 h-2.5" />
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();

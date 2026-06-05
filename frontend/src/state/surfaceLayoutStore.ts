@@ -1,6 +1,6 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { WidgetId, CustomWidgetDef } from '../components/surface/widgetTypes';
+import type { WidgetId, CustomWidgetDef, ButtonShape } from '../components/surface/widgetTypes';
 
 /* Generic, data-driven control-surface layout.
  *
@@ -57,6 +57,8 @@ export interface PanelNode {
   widgetJustify?: Record<WidgetId, 'start' | 'center' | 'end'>;
   /** Per-widget four-side margins in px (top/right/bottom/left). */
   widgetMargins?: Record<WidgetId, { t: number; r: number; b: number; l: number }>;
+  /** Per-widget pad/button shape override. */
+  widgetShapes?: Record<WidgetId, ButtonShape>;
   /** Mirror this panel: reverse widget order + flip composite controls/icons
    *  (left/right deck symmetry). */
   mirror?: boolean;
@@ -112,6 +114,7 @@ export function cloneLayout(l: SurfaceLayout): SurfaceLayout {
         widgetMargins: n.widgetMargins
           ? Object.fromEntries(Object.entries(n.widgetMargins).map(([k, v]) => [k, { ...v }]))
           : undefined,
+        widgetShapes: n.widgetShapes ? { ...n.widgetShapes } : undefined,
       };
     }
   }
@@ -144,6 +147,66 @@ function isDescendant(nodes: Record<NodeId, LayoutNode>, ancestorId: NodeId, nod
   const a = nodes[ancestorId];
   if (!a || a.type !== 'container') return false;
   return a.children.some((c) => isDescendant(nodes, c, nodeId));
+}
+
+/** The mirror-companion of a node id by swapping the A↔B deck token
+ *  (pdA-trans↔pdB-trans, eqAP↔eqBP, deckAcont↔deckBcont, fxAP↔fxBP, …). Returns
+ *  null when no such sibling exists — ids without an uppercase A/B token (rails,
+ *  spacer wrappers, `cont-*`) have no companion, so the user's asymmetric
+ *  wrappers are never touched. */
+export function companionOf(nodes: Record<NodeId, LayoutNode>, id: NodeId): NodeId | null {
+  const cands: string[] = [];
+  if (id.includes('A')) cands.push(id.replace('A', 'B'));
+  if (id.includes('B')) cands.push(id.replace('B', 'A'));
+  for (const c of cands) if (c !== id && nodes[c]) return c;
+  return null;
+}
+
+const MIRROR_SHAPE: Partial<Record<ButtonShape, ButtonShape>> = {
+  'tri-tl': 'tri-tr',
+  'tri-tr': 'tri-tl',
+  'tri-bl': 'tri-br',
+  'tri-br': 'tri-bl',
+};
+
+/** Copy size/padding/margins/shapes from src → dst as a horizontal MIRROR
+ *  (margins l↔r swapped, triangle shapes flipped, dst.mirror inverted). Panels
+ *  copy per-widget data BY POSITION (companions hold different widget ids);
+ *  containers copy fr by position only when child counts match (no deep recurse,
+ *  so asymmetric subtrees are safe). Mutates `layout` in place. */
+function mirrorNode(layout: SurfaceLayout, srcId: NodeId, dstId: NodeId): void {
+  const a = layout.nodes[srcId];
+  const b = layout.nodes[dstId];
+  if (!a || !b || a.type !== b.type) return;
+  if (a.type === 'panel' && b.type === 'panel') {
+    b.padPx = a.padPx;
+    b.uniform = a.uniform;
+    b.flow = a.flow;
+    b.mirror = !a.mirror;
+    const n = Math.min(a.widgets.length, b.widgets.length);
+    const fr: Record<WidgetId, number> = {};
+    const mg: Record<WidgetId, { t: number; r: number; b: number; l: number }> = {};
+    const sh: Record<WidgetId, ButtonShape> = {};
+    for (let i = 0; i < n; i++) {
+      const aw = a.widgets[i];
+      const bw = b.widgets[i];
+      const af = a.widgetFr?.[aw];
+      if (af != null) fr[bw] = af;
+      const am = a.widgetMargins?.[aw];
+      if (am) mg[bw] = { t: am.t, r: am.l, b: am.b, l: am.r };
+      const as = a.widgetShapes?.[aw];
+      if (as) sh[bw] = MIRROR_SHAPE[as] ?? as;
+    }
+    b.widgetFr = Object.keys(fr).length ? fr : undefined;
+    b.widgetMargins = Object.keys(mg).length ? mg : undefined;
+    b.widgetShapes = Object.keys(sh).length ? sh : undefined;
+  } else if (a.type === 'container' && b.type === 'container' && a.children.length === b.children.length) {
+    const fr: Record<NodeId, number> = {};
+    a.children.forEach((ac, i) => {
+      fr[b.children[i]] = a.fr[ac] ?? 1;
+    });
+    b.fr = fr;
+  }
 }
 
 /** Every widget id currently placed in (or pinned to) a panel. */
@@ -239,8 +302,21 @@ export interface SurfaceStore {
   /** Undo/redo history of layout snapshots (session-only, never persisted). */
   past: SurfaceLayout[];
   future: SurfaceLayout[];
+  /** Node to softly glow (its symmetric companion when hovering a Sync button);
+   *  session-only, never persisted. */
+  highlightId: NodeId | null;
 
   setDesignMode: (v: boolean) => void;
+  setHighlight: (id: NodeId | null) => void;
+
+  /** Mirror size/padding/margins/shapes from a node onto its A↔B companion. */
+  mirrorToCompanion: (id: NodeId) => void;
+  /** Symmetrize every container's track sizes (palindromic fr) so the layout is
+   *  balanced around its centre — "centre the hero". */
+  centerHero: () => void;
+  /** Make the other side follow the preferred side: mirror every A↔B companion
+   *  panel from `side` onto its counterpart, layout-wide. */
+  mirrorSide: (side: 'left' | 'right') => void;
 
   /** Step layout history (Ctrl+Z / Ctrl+Shift+Z). No-op at the ends. */
   undo: () => void;
@@ -274,6 +350,8 @@ export interface SurfaceStore {
   setPanelPad: (panelId: NodeId, px: number) => void;
   cycleWidgetJustify: (panelId: NodeId, widgetId: WidgetId) => void;
   setWidgetMargin: (panelId: NodeId, widgetId: WidgetId, side: 't' | 'r' | 'b' | 'l', px: number) => void;
+  /** Set the pad/button shape for a placed widget. */
+  setWidgetShape: (panelId: NodeId, widgetId: WidgetId, shape: ButtonShape) => void;
   /** Insert a flexible empty spacer into a panel. Returns the spacer id. */
   addSpacer: (panelId: NodeId) => NodeId;
   /** Dock a panel/container to an edge of a target node, creating the row or
@@ -367,8 +445,50 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
       withHistory((set, get) => ({
         designMode: false,
         layout: cloneLayout(defaultLayout),
+        highlightId: null,
 
         setDesignMode: (v) => set({ designMode: v }),
+        setHighlight: (id) => set({ highlightId: id }),
+
+        mirrorToCompanion: (id) =>
+          set((s) => {
+            const dst = companionOf(s.layout.nodes, id);
+            if (!dst) return s;
+            const layout = cloneLayout(s.layout);
+            mirrorNode(layout, id, dst);
+            return { layout };
+          }),
+
+        centerHero: () =>
+          set((s) => {
+            const layout = cloneLayout(s.layout);
+            for (const nid in layout.nodes) {
+              const n = layout.nodes[nid];
+              if (n.type !== 'container') continue;
+              const ids = n.children;
+              const len = ids.length;
+              for (let i = 0; i < Math.floor(len / 2); i++) {
+                const j = len - 1 - i;
+                const avg = ((n.fr[ids[i]] ?? 1) + (n.fr[ids[j]] ?? 1)) / 2;
+                n.fr[ids[i]] = avg;
+                n.fr[ids[j]] = avg;
+              }
+            }
+            return { layout };
+          }),
+
+        mirrorSide: (side) =>
+          set((s) => {
+            const layout = cloneLayout(s.layout);
+            for (const id of Object.keys(layout.nodes)) {
+              const comp = companionOf(layout.nodes, id);
+              if (!comp) continue;
+              const isA = id.includes('A') && id.replace('A', 'B') === comp;
+              const isB = id.includes('B') && id.replace('B', 'A') === comp;
+              if (side === 'left' ? isA : isB) mirrorNode(layout, id, comp);
+            }
+            return { layout };
+          }),
 
         resize: (containerId, leftId, rightId, frac) =>
           set((s) => {
@@ -660,6 +780,16 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             const cur = m[widgetId] ?? { t: 0, r: 0, b: 0, l: 0 };
             m[widgetId] = { ...cur, [side]: Math.max(0, Math.min(Math.round(px), 64)) };
             p.widgetMargins = m;
+            return { layout };
+          }),
+
+        setWidgetShape: (panelId, widgetId, shape) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            p.widgetShapes = { ...(p.widgetShapes ?? {}), [widgetId]: shape };
             return { layout };
           }),
 

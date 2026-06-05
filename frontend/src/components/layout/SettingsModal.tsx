@@ -288,9 +288,11 @@ const LayoutSettingsSection: React.FC = () => {
   const fillMode = useLayoutPrefs((s) => s.fillMode);
   const gapPx = useLayoutPrefs((s) => s.gapPx);
   const snapPx = useLayoutPrefs((s) => s.snapPx);
+  const showGuides = useLayoutPrefs((s) => s.showGuides);
   const setFillMode = useLayoutPrefs((s) => s.setFillMode);
   const setGapPx = useLayoutPrefs((s) => s.setGapPx);
   const setSnapPx = useLayoutPrefs((s) => s.setSnapPx);
+  const setShowGuides = useLayoutPrefs((s) => s.setShowGuides);
   return (
     <>
       <div className="flex items-center gap-1.5 mb-2">
@@ -341,6 +343,18 @@ const LayoutSettingsSection: React.FC = () => {
             title="Snap step when dragging margins (0 = off; hold Ctrl while dragging for a 1px fine step)"
           />
           <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{snapPx === 0 ? 'off' : `${snapPx}px`}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Guides:</span>
+          <button
+            onClick={() => setShowGuides(!showGuides)}
+            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+              showGuides ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+            }`}
+            title="Show centre + increment alignment guides while editing a layout"
+          >
+            {showGuides ? 'On' : 'Off'}
+          </button>
         </div>
         <p className="text-[8px] text-zinc-600 leading-relaxed">
           Scale grows controls to fill empty space; Compact keeps them at a natural size. Gap sets the spacing between panels. Per-panel padding, mirror, and control placement are edited inside each workspace's Edit Layout mode.

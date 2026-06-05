@@ -6,12 +6,13 @@
  * across containers because the store's `reorderPanel` accepts any target).
  */
 import React, { useState } from 'react';
-import { GripVertical, Rows3, Columns3, Square, SquareDashedBottom } from 'lucide-react';
+import { GripVertical, Rows3, Columns3, Square, SquareDashedBottom, Link2 } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { SurfacePanel } from './SurfacePanel';
 import { PANEL_MIME, encode, decodePanel } from './dnd';
 import { useLayoutPrefs } from '../../state/layoutPrefsStore';
+import { companionOf } from '../../state/surfaceLayoutStore';
 import type { ContainerNode, NodeId, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 
 const ContainerCell: React.FC<{
@@ -68,6 +69,8 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   const { store, surfaceId } = useSurface();
   const node = store((s) => s.layout.nodes[nodeId]) as ContainerNode | undefined;
   const design = store((s) => s.designMode);
+  const companionId = store((s) => companionOf(s.layout.nodes, nodeId));
+  const highlighted = store((s) => s.highlightId === nodeId);
   const gapPx = useLayoutPrefs((s) => s.gapPx);
   if (!node || node.type !== 'container') return null;
 
@@ -80,7 +83,7 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
     : '';
 
   return (
-    <div className={`relative h-full w-full min-h-0 min-w-0 ${frameChrome}`}>
+    <div className={`relative h-full w-full min-h-0 min-w-0 ${frameChrome} ${highlighted ? 'ring-2 ring-amber-300/70 shadow-[0_0_12px_rgba(252,211,77,0.5)] rounded-md' : ''}`}>
       <FrGrid
         axis={node.axis}
         ids={node.children}
@@ -103,6 +106,17 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
       />
       {design && (
         <div className="absolute bottom-0 right-0 z-50 flex items-center gap-px">
+          {companionId && (
+            <button
+              onClick={() => store.getState().mirrorToCompanion(nodeId)}
+              onMouseEnter={() => store.getState().setHighlight(companionId)}
+              onMouseLeave={() => store.getState().setHighlight(null)}
+              title="Sync: mirror this region's track sizes onto its symmetric companion"
+              className="h-3 w-3 grid place-items-center rounded-t bg-amber-600/85 hover:bg-amber-500 text-amber-50"
+            >
+              <Link2 className="w-2 h-2" />
+            </button>
+          )}
           <button
             onClick={() => store.getState().toggleContainerFramed(nodeId)}
             title={framed ? 'Region frame ON — click to remove the border/background' : 'Add a region frame (border + filled background) around this group'}

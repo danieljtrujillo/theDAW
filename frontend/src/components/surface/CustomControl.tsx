@@ -29,7 +29,10 @@ export const CustomControl: React.FC<{
   def: CustomWidgetDef;
   targets: BindableTarget[];
   size: WidgetSize;
-}> = ({ def, targets, size }) => {
+  /** Per-widget shape override (the Design-Mode shape grip); falls back to the
+   *  shape chosen when the control was created. */
+  shapeOverride?: import('./widgetTypes').ButtonShape;
+}> = ({ def, targets, size, shapeOverride }) => {
   const target = def.targetId ? targets.find((t) => t.id === def.targetId) : undefined;
   const [val, setVal] = useState<number | boolean>(() => initialValue(def, target));
   const push = (v: number | boolean) => {
@@ -64,7 +67,7 @@ export const CustomControl: React.FC<{
       return <RoundToggle label={def.label} icon={Power} on={Boolean(val)} onChange={push} box={Math.min(dim, 46)} />;
     case 'pad':
       return (
-        <SlidePad color={colorAt(def.tint ?? 0.7)} onClick={() => target?.invoke(true)} className="px-3 py-1" title={def.label}>
+        <SlidePad color={colorAt(def.tint ?? 0.7)} shape={shapeOverride ?? def.shape} onClick={() => target?.invoke(true)} className="px-3 py-1" title={def.label}>
           {def.label}
         </SlidePad>
       );

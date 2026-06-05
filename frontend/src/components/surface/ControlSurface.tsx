@@ -14,6 +14,8 @@ import { SurfaceContext } from './surfaceContext';
 import { SurfaceNode } from './SurfaceContainer';
 import { PaletteDrawer } from './PaletteDrawer';
 import { SurfaceToolbar } from './SurfaceToolbar';
+import { AlignmentGuides } from './AlignmentGuides';
+import { useLayoutPrefs } from '../../state/layoutPrefsStore';
 import { createLayoutStore } from '../../state/surfaceLayoutStore';
 import type { SurfaceLayout, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 import type { WidgetRegistry, BindableTarget } from './widgetTypes';
@@ -47,6 +49,7 @@ export const ControlSurface: React.FC<{
   const ctx = useMemo(() => ({ surfaceId, store, registry, targets: tgts }), [surfaceId, store, registry, tgts]);
   const root = store((s) => s.layout.root);
   const design = store((s) => s.designMode);
+  const showGuides = useLayoutPrefs((s) => s.showGuides);
 
   useEffect(() => {
     if (!legacyKeyToClear) return;
@@ -92,6 +95,7 @@ export const ControlSurface: React.FC<{
         <div className="absolute inset-0">
           <SurfaceNode nodeId={root} />
         </div>
+        {design && showGuides && <AlignmentGuides />}
         {design && <PaletteDrawer />}
         <SurfaceToolbar />
       </div>

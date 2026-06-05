@@ -12,13 +12,14 @@
  * (reversed widget order + per-widget mirror opt) come from the layout store.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, CirclePlus, X } from 'lucide-react';
+import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, CirclePlus, Link2, X } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { Splitter } from './Splitter';
 import { WidgetCell } from './WidgetCell';
 import { AddControlModal } from './AddControlModal';
 import { PANEL_MIME, WIDGET_MIME, encode, decodeWidget, decodePanel } from './dnd';
+import { companionOf } from '../../state/surfaceLayoutStore';
 import type { Axis, EdgeDir, NodeId, PanelNode, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 
 const PanelHeader: React.FC<{
@@ -30,8 +31,9 @@ const PanelHeader: React.FC<{
   padPx: number;
   surfaceId: string;
   store: SurfaceStoreApi;
+  companionId?: NodeId | null;
   onAddControl?: () => void;
-}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store, onAddControl }) => {
+}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store, companionId, onAddControl }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -130,6 +132,17 @@ const PanelHeader: React.FC<{
       >
         <SplitSquareVertical className="w-3 h-3" />
       </button>
+      {companionId && (
+        <button
+          onClick={() => store.getState().mirrorToCompanion(nodeId)}
+          onMouseEnter={() => store.getState().setHighlight(companionId)}
+          onMouseLeave={() => store.getState().setHighlight(null)}
+          title="Sync: mirror this panel's size, padding, margins and shapes onto its symmetric companion"
+          className="text-amber-200/90 hover:text-amber-100"
+        >
+          <Link2 className="w-3 h-3" />
+        </button>
+      )}
       {onAddControl && (
         <button
           onClick={onAddControl}
@@ -154,6 +167,8 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   const { store, surfaceId, registry } = useSurface();
   const node = store((s) => s.layout.nodes[nodeId]) as PanelNode | undefined;
   const design = store((s) => s.designMode);
+  const companionId = store((s) => companionOf(s.layout.nodes, nodeId));
+  const highlighted = store((s) => s.highlightId === nodeId);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [bodySize, setBodySize] = useState({ w: 0, h: 0 });
   const [dockEdge, setDockEdge] = useState<EdgeDir | null>(null);
@@ -205,12 +220,12 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
 
   return (
     <div
-      className={`relative h-full w-full min-h-0 min-w-0 flex flex-col ${clip} ${chrome}`}
+      className={`relative h-full w-full min-h-0 min-w-0 flex flex-col ${clip} ${chrome} ${highlighted ? 'ring-2 ring-amber-300/70 shadow-[0_0_12px_rgba(252,211,77,0.5)]' : ''}`}
       onDragOver={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'; setDockEdge(computeEdge(e)); } : undefined}
       onDragLeave={design ? (e) => { e.stopPropagation(); setDockEdge(null); } : undefined}
       onDrop={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; const p = decodePanel(e.dataTransfer.getData(PANEL_MIME)); const edge = computeEdge(e); setDockEdge(null); if (!p || p.surfaceId !== surfaceId) return; e.preventDefault(); e.stopPropagation(); store.getState().dockNode(p.panelId, nodeId, edge); } : undefined}
     >
-      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} onAddControl={isPinned ? undefined : () => setAddOpen(true)} />}
+      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} companionId={companionId} onAddControl={isPinned ? undefined : () => setAddOpen(true)} />}
       {addOpen && <AddControlModal panelId={nodeId} onClose={() => setAddOpen(false)} />}
 
       <div
@@ -264,6 +279,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
                 justify={node.widgetJustify?.[wid]}
                 mirror={node.mirror}
                 uniform={node.uniform}
+                shape={node.widgetShapes?.[wid]}
                 margins={node.widgetMargins?.[wid]}
               />
             )}
