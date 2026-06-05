@@ -1365,9 +1365,13 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   const knobSize = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(20, fitDim(s, opts, 26, 112));
   const toggleBox = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(24, fitDim(s, opts, 12, 84));
   const center = (node: React.ReactNode) => <div className="h-full w-full grid place-items-center overflow-hidden">{node}</div>;
-  // Pads/buttons stretch to fill their cell (the panel border/gap is the only
-  // padding). Label/icon stay centred inside the (now large) button.
-  const fillCell = (node: React.ReactNode) => <div className="h-full w-full grid place-items-stretch overflow-hidden">{node}</div>;
+  // Pads render LANDSCAPE (like CUE/PLAY): fill the cell width, cap the height so
+  // the button stays wider than tall, centred vertically in its cell.
+  const padBox = (s: { w: number; h: number }, node: React.ReactNode) => (
+    <div className="h-full w-full grid place-items-center overflow-hidden">
+      <div className="w-full grid" style={{ height: Math.max(16, Math.min(s.h, s.w * 0.6)) }}>{node}</div>
+    </div>
+  );
   const faderWrap = (node: React.ReactNode) => <div className="h-full w-full min-h-0 flex justify-center">{node}</div>;
   const pinned = (id: string, label: string, node: React.ReactNode) => {
     reg[id] = { id, label, group: 'Panels', kind: 'fixed', source: 'builtin', render: () => <div className="h-full w-full min-h-0 overflow-hidden">{node}</div> };
@@ -1474,10 +1478,11 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
     const padW = (id: string, label: string, node: React.ReactElement) => {
       reg[id] = {
         id, label, group: grp, kind: 'pad', source: 'builtin',
-        // Pads FILL their cell (gap/border is the only padding). Forward the
-        // per-widget shape (Design-Mode shape grip) into the pad.
-        render: (_s, opts) =>
-          fillCell(
+        // Pads render LANDSCAPE filling the cell width. Forward the per-widget
+        // shape (Design-Mode shape grip) into the pad.
+        render: (s, opts) =>
+          padBox(
+            s,
             opts?.shape && opts.shape !== 'default'
               ? React.cloneElement(node as React.ReactElement<{ shape?: typeof opts.shape }>, { shape: opts.shape })
               : node,

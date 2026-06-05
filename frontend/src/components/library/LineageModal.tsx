@@ -257,32 +257,27 @@ const BG_COLORS: Record<GraphAppearance['background'], string> = {
   'pure-black': '#000000',
 };
 
-/** Directed BFS from `start`: ancestors via `parentsOf` + descendants via
- *  `childrenOf`, each up to `maxDepth` generations. Returns id → generation
- *  distance (0 = the hovered node, 1 = its parents/children, 2 = grandparents/
- *  grandchildren, …). Used to highlight a node's lineage on hover. */
-function computeLineageDepths(
+/** Directed BFS from `start`: the FULL ancestry (via `parentsOf`) + the FULL
+ *  descendant set (via `childrenOf`), all the way to the ends in both
+ *  directions. Returns the set of lineage-connected node ids. */
+function computeLineage(
   start: string | null,
   parentsOf: Record<string, string[]>,
   childrenOf: Record<string, string[]>,
-  maxDepth: number,
-): Map<string, number> {
-  const out = new Map<string, number>();
+): Set<string> {
+  const out = new Set<string>();
   if (!start) return out;
-  out.set(start, 0);
+  out.add(start);
   const walk = (adj: Record<string, string[]>) => {
-    let frontier = [start];
-    for (let d = 1; d <= maxDepth; d += 1) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        for (const nb of adj[id] ?? []) {
-          if (!out.has(nb)) {
-            out.set(nb, d);
-            next.push(nb);
-          }
+    const stack = [start];
+    while (stack.length) {
+      const id = stack.pop() as string;
+      for (const nb of adj[id] ?? []) {
+        if (!out.has(nb)) {
+          out.add(nb);
+          stack.push(nb);
         }
       }
-      frontier = next;
     }
   };
   walk(parentsOf);
@@ -290,10 +285,9 @@ function computeLineageDepths(
   return out;
 }
 
-/** Opacity multiplier for a node/edge at generation distance `depth` from the
- *  hovered node (undefined = off the lineage path → heavily dimmed). */
-const depthOpacity = (depth: number | undefined): number =>
-  depth === undefined ? 0.12 : Math.max(0.25, 1 - 0.25 * depth);
+/** Uniform highlight: every lineage-connected node/edge is full brightness, the
+ *  rest is heavily dimmed (no per-generation falloff). */
+const lineageOpacity = (onPath: boolean): number => (onPath ? 1 : 0.12);
 
 const EDGE_COLOR_BY_KIND: Record<string, string> = {
   chimera_source_of: '#a78bfa',
@@ -655,9 +649,9 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     return { nodeMap: nm, childrenOf: co, parentsOf: po };
   }, [connected]);
 
-  const hoverDepths = useMemo(
-    () => computeLineageDepths(hovered, parentsOf, childrenOf, appearance.hoverDepth),
-    [hovered, parentsOf, childrenOf, appearance.hoverDepth],
+  const lineage = useMemo(
+    () => computeLineage(hovered, parentsOf, childrenOf),
+    [hovered, parentsOf, childrenOf],
   );
 
   // -- Step 1: assign layer = longest path from any root --------------
@@ -746,8 +740,10 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
   // doesn't run off the bottom of the modal. Alternating sub-columns
   // are offset vertically by NODE_H/2 to stagger like the user's
   // reference screenshot.
-  const NODE_W = 190;
-  const NODE_H = 54;
+  // Cards are a 4:3 landscape block (was a long 3.5:1 strip) so they can show
+  // more per-entry info without overlapping.
+  const NODE_W = 168;
+  const NODE_H = 126;
   const COL_GAP = appearance.colGap;                          // gap between GENERATIONS
   const SUBCOL_GAP = Math.max(8, Math.round(appearance.colGap * 0.31)); // sub-columns within a generation
   const ROW_GAP = appearance.rowGap;                          // gap between stacked nodes in a sub-column
@@ -933,10 +929,10 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
 
       {/* Spacing + hover controls for the genealogy DAG. */}
       <div className="absolute top-10 right-2 z-10 w-44 bg-[#0c0a14]/90 border border-purple-500/30 rounded-lg p-2 flex flex-col gap-1.5 backdrop-blur-sm">
-        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Spacing &amp; hover</span>
-        <SliderRow label={`Gen gap ${appearance.colGap}px`} min={40} max={220} step={5} value={appearance.colGap} onChange={(v) => onChange({ ...appearance, colGap: v })} />
-        <SliderRow label={`Row gap ${appearance.rowGap}px`} min={4} max={48} step={1} value={appearance.rowGap} onChange={(v) => onChange({ ...appearance, rowGap: v })} />
-        <SliderRow label={`Hover depth ${appearance.hoverDepth} gen`} min={1} max={5} step={1} value={appearance.hoverDepth} onChange={(v) => onChange({ ...appearance, hoverDepth: v })} />
+        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Spacing</span>
+        <SliderRow label={`Gen gap ${appearance.colGap}px`} min={40} max={320} step={5} value={appearance.colGap} onChange={(v) => onChange({ ...appearance, colGap: v })} />
+        <SliderRow label={`Row gap ${appearance.rowGap}px`} min={4} max={200} step={2} value={appearance.rowGap} onChange={(v) => onChange({ ...appearance, rowGap: v })} />
+        <span className="text-[7px] font-mono text-zinc-600 leading-tight">Hover lights the full lineage both ways.</span>
       </div>
 
       <div
@@ -967,8 +963,8 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const color = EDGE_COLOR_BY_KIND[edge.kind] ?? '#71717a';
             // Lineage hover: an edge is "on the path" when both endpoints are in
             // the highlighted set; off-path edges fade right back.
-            const onPath = hoverDepths.has(edge.from_id) && hoverDepths.has(edge.to_id);
-            const eOp = !hovered ? 1 : onPath ? depthOpacity(Math.max(hoverDepths.get(edge.from_id) ?? 0, hoverDepths.get(edge.to_id) ?? 0)) : 0.06;
+            const onPath = lineage.has(edge.from_id) && lineage.has(edge.to_id);
+            const eOp = !hovered ? 1 : onPath ? 1 : 0.06;
             return (
               <g key={i} opacity={eOp}>
                 <path
@@ -992,9 +988,9 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const p = positions[n.id];
             if (!p) return null;
             const sourceColor = pickNodeColor(n);
-            const depth = hoverDepths.get(n.id);
-            const nOp = !hovered ? 1 : depthOpacity(depth);
-            const onPath = hovered && depth !== undefined;
+            const onPath = lineage.has(n.id);
+            const nOp = !hovered ? 1 : lineageOpacity(onPath);
+            const isHovered = hovered === n.id;
             return (
               <g
                 key={n.id}
@@ -1011,7 +1007,7 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   ry={6}
                   fill="#0c0a14"
                   stroke={sourceColor}
-                  strokeWidth={onPath && depth === 0 ? 3 : 1.5}
+                  strokeWidth={isHovered ? 3 : 1.5}
                 />
                 <rect
                   width={NODE_W}
@@ -1021,36 +1017,24 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   fill={sourceColor}
                   opacity={0.85}
                 />
-                <text
-                  x={10}
-                  y={22}
-                  fill="#e5e5e5"
-                  fontSize={11}
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                  fontWeight={700}
-                >
-                  {truncate(n.title ?? n.id, 26)}
+                <text x={10} y={24} fill="#f4f4f5" fontSize={12} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace" fontWeight={700}>
+                  {truncate(n.title ?? n.id, 21)}
                 </text>
-                <text
-                  x={10}
-                  y={38}
-                  fill="#a3a3a3"
-                  fontSize={9}
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                >
-                  {(n.source ?? '—')} · {n.model ?? n.kind ?? 'entry'}
-                </text>
-                <text
-                  x={10}
-                  y={52}
-                  fill="#71717a"
-                  fontSize={8}
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                >
-                  {typeof n.duration_sec === 'number' && n.duration_sec > 0
-                    ? `${n.duration_sec.toFixed(1)}s`
-                    : ''}
-                </text>
+                <line x1={10} y1={31} x2={NODE_W - 10} y2={31} stroke="#ffffff" strokeOpacity={0.08} />
+                {(
+                  [
+                    ['SRC', n.source ?? '—'],
+                    ['KIND', n.kind ?? 'entry'],
+                    ['MODEL', n.model ?? '—'],
+                    ['DUR', typeof n.duration_sec === 'number' && n.duration_sec > 0 ? `${n.duration_sec.toFixed(1)}s` : '—'],
+                    ['ID', n.id],
+                  ] as const
+                ).map(([k, v], i) => (
+                  <text key={k} x={10} y={48 + i * 15} fontSize={8.5} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace">
+                    <tspan fill="#6b7280">{k} </tspan>
+                    <tspan fill="#cbd5e1">{truncate(String(v), 19)}</tspan>
+                  </text>
+                ))}
               </g>
             );
           })}
@@ -1254,13 +1238,7 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
       />
 
       <div className="mt-1 pt-2 border-t border-white/5 flex flex-col gap-2">
-        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Forces &amp; hover</span>
-        <SliderRow
-          label={`Hover depth ${value.hoverDepth} gen`}
-          min={1} max={5} step={1}
-          value={value.hoverDepth}
-          onChange={(v) => patch({ hoverDepth: v })}
-        />
+        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Forces</span>
         <SliderRow
           label={`Repulsion ${Math.round(-value.charge)}`}
           min={20} max={400} step={10}
@@ -1476,9 +1454,9 @@ const Graph3DView: React.FC<{
     return { childrenOf, parentsOf };
   }, [connected]);
 
-  const hoverDepths = useMemo(
-    () => computeLineageDepths(hoveredId, dirAdj.parentsOf, dirAdj.childrenOf, appearance.hoverDepth),
-    [hoveredId, dirAdj, appearance.hoverDepth],
+  const lineage = useMemo(
+    () => computeLineage(hoveredId, dirAdj.parentsOf, dirAdj.childrenOf),
+    [hoveredId, dirAdj],
   );
 
   // Node-mesh dimming on hover. Walks the Three.js scene; each node
@@ -1518,9 +1496,9 @@ const Graph3DView: React.FC<{
       }
       // Per-generation falloff: lineage nodes stay bright (parents/children
       // brightest), everything off the lineage fades.
-      if (m.material) m.material.opacity = base * depthOpacity(hoverDepths.get(ownerId));
+      if (m.material) m.material.opacity = base * lineageOpacity(lineage.has(ownerId));
     });
-  }, [hoveredId, hoverDepths, appearance.renderMode, data]);
+  }, [hoveredId, lineage, appearance.renderMode, data]);
 
   // Fit-to-view at three checkpoints so we catch both early- and late-
   // settling force layouts. Without this the camera lingers at its
@@ -2054,7 +2032,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return l.color ?? '#a78bfa';
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? (l.color ?? '#a78bfa') : '#1c1828';
           }}
           linkOpacity={appearance.linkOpacity}
@@ -2062,7 +2040,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return appearance.linkWidth;
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? appearance.linkWidth * 2.2 : appearance.linkWidth * 0.4;
           }}
           linkCurvature={appearance.edgeCurve}
@@ -2100,7 +2078,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return l.color ?? '#a78bfa';
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? (l.color ?? '#a78bfa') : '#1c1828';
           }}
           linkLineDash={() => null}
@@ -2108,7 +2086,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return appearance.linkWidth;
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? appearance.linkWidth * 2.2 : appearance.linkWidth * 0.4;
           }}
           linkCurvature={appearance.edgeCurve}
