@@ -2,11 +2,12 @@ import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom';
 import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import { NodeInspector } from './NodeInspector';
 
 const ForceGraph3D = lazy(() => import('react-force-graph-3d').then((m) => ({ default: m.default })));
 const ForceGraph2D = lazy(() => import('react-force-graph-2d').then((m) => ({ default: m.default })));
 
-interface GraphNode {
+export interface GraphNode {
   id: string;
   kind?: string;
   title?: string;
@@ -15,7 +16,7 @@ interface GraphNode {
   model?: string;
 }
 
-interface GraphEdge {
+export interface GraphEdge {
   from_id: string;
   to_id: string;
   kind: string;
@@ -464,7 +465,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
             <TrackTreeView root={rootEntryId} payload={perTrack} />
           )}
           {tab === 'genealogy' && libraryGraph && (
-            <GenealogyView payload={libraryGraph} appearance={appearance} onChange={setAppearance} />
+            <GenealogyView payload={libraryGraph} appearance={appearance} />
           )}
           {tab === 'graph3d' && libraryGraph && (
             <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-zinc-500">Loading 3D engine…</div>}>
@@ -485,7 +486,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
           )}
         </div>
 
-        {/* Footer legend */}
+        {/* Footer: edge-kind color key (left) + genealogy spacing (right). */}
         <div className="flex items-center flex-wrap gap-3 px-4 py-2 border-t border-white/5 text-[8px] font-mono uppercase tracking-wider text-zinc-500 shrink-0">
           {Object.entries(EDGE_COLOR_BY_KIND).map(([kind, color]) => (
             <span key={kind} className="flex items-center gap-1">
@@ -493,6 +494,12 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
               {kind}
             </span>
           ))}
+          {tab === 'genealogy' && (
+            <div className="ml-auto flex items-center gap-4 normal-case">
+              <FooterRange label="Gen gap" value={appearance.colGap} min={40} max={320} step={5} onChange={(v) => setAppearance({ ...appearance, colGap: v })} />
+              <FooterRange label="Row gap" value={appearance.rowGap} min={4} max={200} step={2} onChange={(v) => setAppearance({ ...appearance, rowGap: v })} />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -614,10 +621,11 @@ const Column: React.FC<{ title: string; nodes: GraphNode[]; accent: string; high
  *     the child end.
  *  5. Pan via mouse drag, zoom via wheel, Reset View button.
  */
-const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearance; onChange: (next: GraphAppearance) => void }> = ({ payload, appearance, onChange }) => {
-  // Hover lights up a node's lineage (parents/children bright, grandparents/
-  // grandchildren dimmer) up to appearance.hoverDepth generations.
+const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearance }> = ({ payload, appearance }) => {
+  // Hover lights up a node's full lineage (uniform brightness both ways).
   const [hovered, setHovered] = useState<string | null>(null);
+  // Click opens the detail/analytics inspector for that node.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   // -- Filter to the connected subgraph --------------------------------
   const connected = useMemo(() => {
     const involved = new Set<string>();
@@ -826,9 +834,43 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
   }, [positions]);
 
   // -- Pan + zoom -----------------------------------------------------
+  // `view` is what renders; `targetRef` is where zoom is heading. A rAF loop
+  // eases view → target so wheel-zoom glides (and zooms toward the cursor)
+  // instead of snapping. Pan writes both view + target so dragging stays 1:1.
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
-  const draggingRef = useRef<{ x: number; y: number } | null>(null);
+  const viewRef = useRef(view);
+  const targetRef = useRef(view);
+  const rafRef = useRef<number | null>(null);
+  const draggingRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const draggedRef = useRef(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Snap view + target together (Fit / Reset / autofit) — no animation.
+  const setViewImmediate = React.useCallback((v: { x: number; y: number; k: number }) => {
+    if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    viewRef.current = v;
+    targetRef.current = v;
+    setView(v);
+  }, []);
+
+  // Ease view → target each frame; stop once converged.
+  const kick = React.useCallback(() => {
+    if (rafRef.current != null) return;
+    const tick = () => {
+      const v = viewRef.current;
+      const t = targetRef.current;
+      const nx = v.x + (t.x - v.x) * 0.28;
+      const ny = v.y + (t.y - v.y) * 0.28;
+      const nk = v.k + (t.k - v.k) * 0.28;
+      const done = Math.abs(t.x - nx) < 0.4 && Math.abs(t.y - ny) < 0.4 && Math.abs(t.k - nk) < 0.0008;
+      const next = done ? t : { x: nx, y: ny, k: nk };
+      viewRef.current = next;
+      setView(next);
+      if (done) { rafRef.current = null; } else { rafRef.current = requestAnimationFrame(tick); }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  }, []);
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); }, []);
 
   // Auto-fit on first mount + when bounds change so the whole tree
   // lands visible inside the modal regardless of how wide the widest
@@ -849,13 +891,21 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     );
     const x = (cw - gw * k) / 2 - bounds.minX * k;
     const y = (ch - gh * k) / 2 - bounds.minY * k;
-    setView({ x, y, k });
-  }, [bounds]);
+    setViewImmediate({ x, y, k });
+  }, [bounds, setViewImmediate]);
 
   // Fit once the layout settles + whenever the bounds change shape.
   useEffect(() => {
     fitToView();
   }, [fitToView]);
+
+  // Esc closes the inspector.
+  useEffect(() => {
+    if (!selectedId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelectedId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedId]);
 
   if (connected.nodes.length === 0) {
     return (
@@ -877,38 +927,59 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     if (!el) return;
     const onNativeWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      setView((v) => ({ ...v, k: Math.max(0.2, Math.min(4, v.k * factor)) }));
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const t = targetRef.current;
+      const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+      const newK = Math.max(0.2, Math.min(4, t.k * factor));
+      // Keep the world point under the cursor fixed as we zoom.
+      const worldX = (cx - t.x) / t.k;
+      const worldY = (cy - t.y) / t.k;
+      targetRef.current = { k: newK, x: cx - worldX * newK, y: cy - worldY * newK };
+      kick();
     };
     el.addEventListener('wheel', onNativeWheel, { passive: false });
     return () => el.removeEventListener('wheel', onNativeWheel);
-  }, []);
+  }, [kick]);
 
+  // Pan: capture only once a real drag begins (>4px) so a plain click still
+  // reaches a node's onClick. `draggedRef` suppresses the click that ends a drag.
   const onPointerDown = (e: React.PointerEvent) => {
-    draggingRef.current = { x: e.clientX - view.x, y: e.clientY - view.y };
-    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    draggingRef.current = { x: e.clientX, y: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y };
+    draggedRef.current = false;
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = draggingRef.current;
     if (!d) return;
-    setView((v) => ({ ...v, x: e.clientX - d.x, y: e.clientY - d.y }));
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!draggedRef.current && Math.hypot(dx, dy) > 4) {
+      draggedRef.current = true;
+      try { containerRef.current?.setPointerCapture(e.pointerId); } catch { /* */ }
+    }
+    if (!draggedRef.current) return;
+    const v = { ...viewRef.current, x: d.vx + dx, y: d.vy + dy };
+    viewRef.current = v;
+    targetRef.current = { ...targetRef.current, x: v.x, y: v.y };
+    setView(v);
   };
   const onPointerUp = (e: React.PointerEvent) => {
     draggingRef.current = null;
-    try {
-      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
-    } catch {
-      /* */
-    }
+    try { containerRef.current?.releasePointerCapture(e.pointerId); } catch { /* */ }
+    // Reset AFTER the click event (which fires right after pointerup) so a
+    // drag-release doesn't select/clear.
+    setTimeout(() => { draggedRef.current = false; }, 0);
   };
 
   return (
     <div
       ref={containerRef}
-      className="absolute inset-0 bg-[#06030c] overflow-hidden cursor-grab active:cursor-grabbing"
+      className="absolute inset-0 bg-[#06030c] overflow-hidden cursor-grab active:cursor-grabbing select-none"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onClick={() => { if (!draggedRef.current) setSelectedId(null); }}
     >
       <div className="absolute top-2 right-2 z-10 flex gap-1">
         <button
@@ -919,20 +990,12 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
           <Maximize className="w-2.5 h-2.5" /> Fit
         </button>
         <button
-          onClick={() => setView({ x: 0, y: 0, k: 1 })}
+          onClick={() => setViewImmediate({ x: 0, y: 0, k: 1 })}
           className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:text-zinc-200 bg-black/40 border border-white/10 px-2 py-1 rounded"
           title="Reset to native scale"
         >
           Reset
         </button>
-      </div>
-
-      {/* Spacing + hover controls for the genealogy DAG. */}
-      <div className="absolute top-10 right-2 z-10 w-44 bg-[#0c0a14]/90 border border-purple-500/30 rounded-lg p-2 flex flex-col gap-1.5 backdrop-blur-sm">
-        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Spacing</span>
-        <SliderRow label={`Gen gap ${appearance.colGap}px`} min={40} max={320} step={5} value={appearance.colGap} onChange={(v) => onChange({ ...appearance, colGap: v })} />
-        <SliderRow label={`Row gap ${appearance.rowGap}px`} min={4} max={200} step={2} value={appearance.rowGap} onChange={(v) => onChange({ ...appearance, rowGap: v })} />
-        <span className="text-[7px] font-mono text-zinc-600 leading-tight">Hover lights the full lineage both ways.</span>
       </div>
 
       <div
@@ -966,13 +1029,14 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const onPath = lineage.has(edge.from_id) && lineage.has(edge.to_id);
             const eOp = !hovered ? 1 : onPath ? 1 : 0.06;
             return (
-              <g key={i} opacity={eOp}>
+              <g key={i} opacity={eOp} style={{ transition: 'opacity 220ms ease' }}>
                 <path
                   d={d}
                   stroke={color}
                   strokeWidth={hovered && onPath ? 2.5 : 1.5}
                   fill="none"
                   opacity={0.7}
+                  style={{ transition: 'stroke-width 160ms ease' }}
                 />
                 <polygon
                   points={`${x2 - 7},${y2 - 4} ${x2 - 7},${y2 + 4} ${x2},${y2}`}
@@ -991,14 +1055,21 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const onPath = lineage.has(n.id);
             const nOp = !hovered ? 1 : lineageOpacity(onPath);
             const isHovered = hovered === n.id;
+            const isSelected = selectedId === n.id;
             return (
               <g
                 key={n.id}
                 transform={`translate(${p.x}, ${p.y})`}
                 opacity={nOp}
-                style={{ cursor: 'pointer' }}
+                style={{ cursor: 'pointer', transition: 'opacity 220ms ease' }}
                 onMouseEnter={() => setHovered(n.id)}
                 onMouseLeave={() => setHovered(null)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Suppress the click that ends a pan-drag.
+                  if (draggedRef.current) return;
+                  setSelectedId((cur) => (cur === n.id ? null : n.id));
+                }}
               >
                 <rect
                   width={NODE_W}
@@ -1007,7 +1078,8 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   ry={6}
                   fill="#0c0a14"
                   stroke={sourceColor}
-                  strokeWidth={isHovered ? 3 : 1.5}
+                  strokeWidth={isHovered || isSelected ? 3 : 1.5}
+                  style={{ transition: 'stroke-width 160ms ease' }}
                 />
                 <rect
                   width={NODE_W}
@@ -1066,8 +1138,17 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
 
       {/* Help hint */}
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
-        drag to pan · wheel to zoom · {connected.nodes.length} connected entries · {connected.edges.length} relationships
+        drag to pan · wheel to zoom · click a node for details · {connected.nodes.length} connected entries · {connected.edges.length} relationships
       </div>
+
+      {/* Detail / analytics inspector (screen-space; outside the pan/zoom transform). */}
+      <NodeInspector
+        nodeId={selectedId}
+        nodes={connected.nodes}
+        edges={connected.edges}
+        edgeColor={(k) => EDGE_COLOR_BY_KIND[k] ?? '#71717a'}
+        onClose={() => setSelectedId(null)}
+      />
     </div>
   );
 };
@@ -1273,6 +1354,24 @@ const SliderRow: React.FC<{ label: string; min: number; max: number; step: numbe
 );
 
 
+/** Compact inline range for the footer bar: "Label [====O==] 220". */
+const FooterRange: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => (
+  <label className="flex items-center gap-1.5">
+    <span className="text-zinc-400">{label}</span>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className="pro-slider w-24"
+    />
+    <span className="text-zinc-300 tabular-nums w-7 text-right">{value}</span>
+  </label>
+);
+
+
 const ToggleRow: React.FC<{ label: string; on: boolean; onChange: (on: boolean) => void }> = ({ label, on, onChange }) => (
   <button
     onClick={() => onChange(!on)}
@@ -1429,17 +1528,6 @@ const Graph3DView: React.FC<{
       nodeName: node.name ?? node.id,
     });
   };
-  const selectedNode = useMemo(() => {
-    if (!selectedId) return null;
-    return connected.nodes.find((n) => n.id === selectedId) ?? null;
-  }, [selectedId, connected.nodes]);
-  const selectedEdges = useMemo(() => {
-    if (!selectedId) return { incoming: [], outgoing: [] };
-    const incoming = connected.edges.filter((e) => e.to_id === selectedId);
-    const outgoing = connected.edges.filter((e) => e.from_id === selectedId);
-    return { incoming, outgoing };
-  }, [selectedId, connected.edges]);
-
   // Neighbor adjacency for the mesh-dim effect below. Rebuilt only
   // when data changes — cheap for small graphs.
   // Directed adjacency (parent → child) for the lineage hover. Built from the
@@ -2141,13 +2229,14 @@ const Graph3DView: React.FC<{
           </span>
         )}
       </div>
-      <NodeDetailsPanel
-        node={selectedNode}
-        incoming={selectedEdges.incoming}
-        outgoing={selectedEdges.outgoing}
+      <NodeInspector
+        nodeId={selectedId}
+        nodes={connected.nodes}
+        edges={connected.edges}
+        edgeColor={(k) => EDGE_COLOR_BY_KIND[k] ?? '#71717a'}
         onClose={() => setSelectedId(null)}
       />
-      <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 z-10 px-3 py-1 text-[9px] font-mono text-zinc-500 bg-linear-to-t from-black/70 to-transparent pointer-events-none">
         {appearance.renderMode === '3d'
           ? 'click-drag rotate · right-click-drag pan · wheel zoom · WASD/arrows fly (Q/E up-down, ⇧ faster) · click node for details · right-click node for actions'
           : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
@@ -2278,97 +2367,6 @@ const Graph3DView: React.FC<{
     </div>
   );
 };
-
-/** Slide-out details panel that mounts on the right edge of the graph
- *  container whenever a node is clicked. Read-only for now — Step 3b's
- *  MAKE/MIX integration will wire up the "Open in Editor / Add Stems /
- *  Send to MAKE" actions per the plan. */
-const NodeDetailsPanel: React.FC<{
-  node: GraphNode | null;
-  incoming: GraphEdge[];
-  outgoing: GraphEdge[];
-  onClose: () => void;
-}> = ({ node, incoming, outgoing, onClose }) => {
-  if (!node) return null;
-  return (
-    <div className="absolute top-2 right-2 bottom-2 z-10 w-72 bg-[#0c0a14]/95 backdrop-blur-sm border border-purple-500/30 rounded shadow-xl flex flex-col">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
-        <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Node details</span>
-        <button
-          onClick={onClose}
-          className="p-0.5 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
-          title="Close (click empty area or the node again)"
-        >
-          <X className="w-3 h-3" />
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2">
-        <div>
-          <div className="text-[10px] font-bold text-zinc-100 wrap-break-word leading-snug">
-            {node.title || node.id}
-          </div>
-          <div className="text-[8px] font-mono text-zinc-600 break-all mt-0.5">{node.id}</div>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {node.source && (
-            <span className="text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-purple-500/10 border border-purple-500/20 rounded text-purple-200">
-              {node.source}
-            </span>
-          )}
-          {node.kind && (
-            <span className="text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-zinc-500/10 border border-zinc-500/20 rounded text-zinc-300">
-              {node.kind}
-            </span>
-          )}
-          {node.model && (
-            <span className="text-[8px] font-mono px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-emerald-200">
-              {node.model}
-            </span>
-          )}
-          {typeof node.duration_sec === 'number' && (
-            <span className="text-[8px] font-mono px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded text-amber-200">
-              {node.duration_sec.toFixed(1)}s
-            </span>
-          )}
-        </div>
-        {incoming.length > 0 && (
-          <div className="flex flex-col gap-0.5 pt-1">
-            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Incoming ({incoming.length})</span>
-            {incoming.slice(0, 12).map((e, i) => (
-              <div key={`in-${i}`} className="flex items-center gap-1.5 text-[9px] font-mono">
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa' }} />
-                <span className="text-zinc-500 shrink-0">{e.kind}</span>
-                <span className="text-zinc-400 truncate">{e.from_id.slice(0, 16)}…</span>
-              </div>
-            ))}
-            {incoming.length > 12 && (
-              <span className="text-[8px] font-mono text-zinc-700 italic">+ {incoming.length - 12} more</span>
-            )}
-          </div>
-        )}
-        {outgoing.length > 0 && (
-          <div className="flex flex-col gap-0.5 pt-1">
-            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Outgoing ({outgoing.length})</span>
-            {outgoing.slice(0, 12).map((e, i) => (
-              <div key={`out-${i}`} className="flex items-center gap-1.5 text-[9px] font-mono">
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa' }} />
-                <span className="text-zinc-500 shrink-0">{e.kind}</span>
-                <span className="text-zinc-400 truncate">{e.to_id.slice(0, 16)}…</span>
-              </div>
-            ))}
-            {outgoing.length > 12 && (
-              <span className="text-[8px] font-mono text-zinc-700 italic">+ {outgoing.length - 12} more</span>
-            )}
-          </div>
-        )}
-        {incoming.length === 0 && outgoing.length === 0 && (
-          <span className="text-[9px] font-mono text-zinc-600 italic">No related nodes.</span>
-        )}
-      </div>
-    </div>
-  );
-};
-
 
 function pickNodeColor(n: GraphNode): string {
   switch (n.source) {
