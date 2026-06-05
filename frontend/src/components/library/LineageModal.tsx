@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon } from 'lucide-react';
+import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon, Home, Rocket } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { NodeInspector } from './NodeInspector';
 
@@ -1010,7 +1010,21 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
           viewBox={`${bounds.minX} ${bounds.minY} ${bounds.maxX - bounds.minX} ${bounds.maxY - bounds.minY}`}
           style={{ display: 'block' }}
         >
-          {/* Edges first so nodes paint on top. Flow is left-to-right:
+          {/* Per-generation background bands: a subtle, alternating shade behind
+              each generation's nodes so the gen-0 / gen-1 / … columns read as
+              distinct zones (gentle variations of the canvas color). */}
+          {generationLayouts.map((g) => (
+            <rect
+              key={`genbg-${g.layer}`}
+              x={g.genStartX - appearance.colGap / 2}
+              y={bounds.minY}
+              width={g.genEndX - g.genStartX + appearance.colGap}
+              height={bounds.maxY - bounds.minY}
+              fill={`hsl(258 38% ${3.4 + (g.layer % 2) * 2.4}%)`}
+            />
+          ))}
+
+          {/* Edges next so nodes paint on top. Flow is left-to-right:
               parent on the left, child on the right of the next column. */}
           {connected.edges.map((edge, i) => {
             const from = positions[edge.from_id];
@@ -1487,6 +1501,10 @@ const Graph3DView: React.FC<{
     }),
     [connected, highlight, appearance.nodeSizeScale, matchSet],
   );
+  // react-force-graph mutates these node objects in place with x/y/z during
+  // layout; the flight loop reads them through this ref for the cluster center.
+  const dataRef = useRef(data);
+  dataRef.current = data;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
@@ -1509,6 +1527,16 @@ const Graph3DView: React.FC<{
     if (!node?.id) return;
     setSelectedId((cur) => (cur === node.id ? null : node.id ?? null));
   };
+
+  // Spaceship flight state. `flyRef` exposes imperative jumps to the Home/FTL
+  // buttons; `centroidRef` is the settled cluster center (set on engine stop);
+  // `streakRef` holds the lazily-built hyperspace streak mesh (disposed on
+  // unmount); `farFromHome` toggles the prominent "return" affordance.
+  const flyRef = useRef<{ flyHome: () => void; flyForward: () => void }>({ flyHome: () => {}, flyForward: () => {} });
+  const centroidRef = useRef<{ x: number; y: number; z: number; radius: number } | null>(null);
+  const streakRef = useRef<unknown>(null);
+  const vignetteRef = useRef<HTMLDivElement>(null);
+  const [farFromHome, setFarFromHome] = useState(false);
 
   // Right-click on a graph node opens the shared ContextMenu primitive
   // (plan step 3d rollout to graph nodes). Actions are navigation +
@@ -1554,38 +1582,39 @@ const Graph3DView: React.FC<{
   // back to baseOpacity when the cursor leaves.
   useEffect(() => {
     if (appearance.renderMode !== '3d') return;
-    const ref = fgRef.current as { scene?: () => unknown } | null;
-    if (!ref?.scene) return;
-    type SceneLike = {
-      traverse: (cb: (obj: unknown) => void) => void;
-    };
-    const scene = ref.scene() as SceneLike;
-    if (!scene || typeof scene.traverse !== 'function') return;
-
+    type SceneLike = { traverse: (cb: (obj: unknown) => void) => void };
     type MeshLike = {
       isMesh?: boolean;
-      material?: {
-        opacity?: number;
-        userData?: { baseOpacity?: number };
-      };
+      material?: { opacity?: number; userData?: { baseOpacity?: number } };
       parent?: { userData?: { nodeId?: string } };
     };
-
-    scene.traverse((obj: unknown) => {
-      const m = obj as MeshLike;
-      if (!m.isMesh) return;
-      const base = m.material?.userData?.baseOpacity;
-      if (typeof base !== 'number') return;
-      const ownerId = m.parent?.userData?.nodeId;
-      if (!ownerId) return;
-      if (!hoveredId) {
-        if (m.material) m.material.opacity = base;
-        return;
-      }
-      // Per-generation falloff: lineage nodes stay bright (parents/children
-      // brightest), everything off the lineage fades.
-      if (m.material) m.material.opacity = base * lineageOpacity(lineage.has(ownerId));
-    });
+    // Ease each mesh's opacity toward its lineage target (no flash). Runs a
+    // rAF until everything settles, then stops; a hover change re-runs the
+    // effect and restarts the tween toward the new targets.
+    let raf = 0;
+    const apply = () => {
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = ref?.scene?.() as SceneLike | undefined;
+      if (!scene || typeof scene.traverse !== 'function') { raf = requestAnimationFrame(apply); return; }
+      let animating = false;
+      scene.traverse((obj: unknown) => {
+        const m = obj as MeshLike;
+        if (!m.isMesh || !m.material) return;
+        const base = m.material.userData?.baseOpacity;
+        if (typeof base !== 'number') return;
+        const ownerId = m.parent?.userData?.nodeId;
+        if (!ownerId) return;
+        const target = !hoveredId ? base : base * lineageOpacity(lineage.has(ownerId));
+        const cur = m.material.opacity ?? base;
+        const diff = target - cur;
+        if (Math.abs(diff) < 0.004) { m.material.opacity = target; return; }
+        m.material.opacity = cur + diff * 0.18;
+        animating = true;
+      });
+      raf = animating ? requestAnimationFrame(apply) : 0;
+    };
+    raf = requestAnimationFrame(apply);
+    return () => { if (raf) cancelAnimationFrame(raf); };
   }, [hoveredId, lineage, appearance.renderMode, data]);
 
   // Fit-to-view at three checkpoints so we catch both early- and late-
@@ -1907,52 +1936,238 @@ const Graph3DView: React.FC<{
     });
   }, [selectedId, appearance.renderMode, data]);
 
-  // WASD / arrow-key fly controls (3D). W/S dolly along the view
-  // direction, A/D strafe, Q/E raise/lower. Hold Shift for a bigger
-  // step. Ignored while typing in the search box so keys don't hijack
-  // text entry.
+  // Spaceship flight (3D). A single rAF loop integrates a velocity from the
+  // held keys (W/S forward, A/D strafe, Q/E up-down, arrows too) with ease-in
+  // acceleration and exponential drag, so holding a key accelerates and
+  // releasing coasts then smoothly stops to a hover. Shift = afterburner. F
+  // (or the FTL button) fires a hyperspace jump with a star-streak; the Home
+  // button FTLs back to the cluster. Ignored while typing in the search box.
   useEffect(() => {
     if (appearance.renderMode !== '3d') return;
-    const MOVE: Record<string, [number, number, number]> = {
-      w: [0, 0, 1], arrowup: [0, 0, 1],
-      s: [0, 0, -1], arrowdown: [0, 0, -1],
-      a: [-1, 0, 0], arrowleft: [-1, 0, 0],
-      d: [1, 0, 0], arrowright: [1, 0, 0],
-      q: [0, -1, 0], e: [0, 1, 0],
+    const FLY = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+    const keys = new Set<string>();
+    let raf = 0;
+    let last = 0;
+    let vx = 0, vy = 0, vz = 0;     // world-space velocity
+    let ftlHeld = false;            // F held → continuous warp
+    let ftlPulseUntil = 0;          // tap / FTL button → brief warp window (rAF-clock ms)
+    let ftlVis = 0;                 // 0..1 warp visual (streak + vignette)
+    let homeTween: null | { t: number; dur: number; px: number; py: number; pz: number; tx: number; ty: number; tz: number; mx: number; my: number; mz: number; lx: number; ly: number; lz: number } = null;
+    let wasFar = false;
+    let frame = 0;
+
+    type FgApi = {
+      camera?: () => import('three').PerspectiveCamera;
+      controls?: () => { target?: import('three').Vector3; update?: () => void } | null;
+      scene?: () => import('three').Scene;
     };
-    const onKey = (ev: KeyboardEvent) => {
-      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      const dir = MOVE[ev.key.toLowerCase()];
-      if (!dir) return;
+    const getCtx = () => {
       const THREE = threeRef.current;
-      const ref = fgRef.current as {
-        camera?: () => import('three').PerspectiveCamera;
-        controls?: () => { target?: import('three').Vector3; update?: () => void } | null;
-      } | null;
-      if (!THREE || !ref?.camera) return;
-      ev.preventDefault();
-      const cam = ref.camera();
-      const controls = ref.controls?.() ?? null;
-      const step = ev.shiftKey ? 70 : 28;
-      const forward = new THREE.Vector3();
-      cam.getWorldDirection(forward);
-      forward.y = 0;
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(forward, cam.up).normalize();
-      const delta = new THREE.Vector3()
-        .addScaledVector(forward, dir[2] * step)
-        .addScaledVector(right, dir[0] * step)
-        .addScaledVector(cam.up, dir[1] * step);
-      cam.position.add(delta);
-      if (controls?.target) {
-        controls.target.add(delta);
-        controls.update?.();
+      const ref = fgRef.current as FgApi | null;
+      if (!THREE || !ref?.camera) return null;
+      return { THREE, cam: ref.camera(), controls: ref.controls?.() ?? null, scene: ref.scene?.() ?? null };
+    };
+
+    // Hyperspace streaks: additive near-white LineSegments ringing the flight
+    // axis, scaled along z with the warp intensity.
+    const ensureStreak = (THREE: typeof import('three'), scene: import('three').Scene) => {
+      if (streakRef.current) return streakRef.current as import('three').LineSegments;
+      const N = 600;
+      const arr = new Float32Array(N * 6);
+      for (let i = 0; i < N; i++) {
+        const a = (i / N) * Math.PI * 2 + (i % 11);
+        const r = 10 + ((i * 53) % 260);
+        const x = Math.cos(a) * r, y = Math.sin(a) * r;
+        const z = -((i * 37) % 700);
+        arr[i * 6] = x; arr[i * 6 + 1] = y; arr[i * 6 + 2] = z;
+        arr[i * 6 + 3] = x; arr[i * 6 + 4] = y; arr[i * 6 + 5] = z + 6;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const seg = new THREE.LineSegments(geo, mat);
+      seg.frustumCulled = false;
+      scene.add(seg);
+      streakRef.current = seg;
+      return seg;
+    };
+
+    // FTL forward = a hefty velocity impulse (a tap launches you far). Holding F
+    // keeps `ftlHeld` true so the loop keeps thrusting at warp speed.
+    const impulse = () => {
+      const ctx = getCtx();
+      if (!ctx) return;
+      const f = new ctx.THREE.Vector3();
+      ctx.cam.getWorldDirection(f);
+      vx += f.x * 4200; vy += f.y * 4200; vz += f.z * 4200;
+    };
+    const flyForward = () => { impulse(); ftlPulseUntil = last + 800; };
+    const flyHome = () => {
+      const ctx = getCtx();
+      const c = centroidRef.current;
+      if (!ctx || !c) return;
+      const d = Math.max(180, c.radius * 2.4);
+      homeTween = {
+        t: 0, dur: 1.3,
+        px: ctx.cam.position.x, py: ctx.cam.position.y, pz: ctx.cam.position.z,
+        tx: c.x + d * 0.3, ty: c.y + d * 0.25, tz: c.z + d,
+        mx: ctx.controls?.target?.x ?? c.x, my: ctx.controls?.target?.y ?? c.y, mz: ctx.controls?.target?.z ?? c.z,
+        lx: c.x, ly: c.y, lz: c.z,
+      };
+      vx = vy = vz = 0;
+    };
+    flyRef.current = { flyHome, flyForward };
+
+    const easeInOut = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+
+    const loop = (t: number) => {
+      raf = requestAnimationFrame(loop);
+      const dt = last ? Math.min(0.05, (t - last) / 1000) : 0.016;
+      last = t;
+      const ctx = getCtx();
+      if (!ctx) return;
+      const { THREE, cam, controls, scene } = ctx;
+
+      // Refresh cluster center/radius from the engine's live node positions
+      // (react-force-graph mutates these objects in place), robust to
+      // engine-stop timing, so Home + the far affordance work.
+      frame += 1;
+      if (!centroidRef.current || frame % 45 === 0) {
+        const ns = dataRef.current.nodes as unknown as Array<{ x?: number; y?: number; z?: number }>;
+        let sx = 0, sy = 0, sz = 0, cnt = 0;
+        for (const p of ns) {
+          if (typeof p.x !== 'number') continue;
+          sx += p.x; sy += p.y ?? 0; sz += p.z ?? 0; cnt += 1;
+        }
+        if (cnt >= 2) {
+          const cx = sx / cnt, cy = sy / cnt, cz = sz / cnt;
+          let rad = 0;
+          for (const p of ns) {
+            if (typeof p.x !== 'number') continue;
+            rad = Math.max(rad, Math.hypot(p.x - cx, (p.y ?? 0) - cy, (p.z ?? 0) - cz));
+          }
+          centroidRef.current = { x: cx, y: cy, z: cz, radius: rad || 120 };
+        }
+      }
+
+      // Warp visuals (streak + radial motion-blur vignette), eased so they fade
+      // in/out smoothly whether warping via hold-F, a tap, or the Home jump.
+      const warp = ftlHeld || t < ftlPulseUntil;
+      const ftlActive = warp || !!homeTween;
+      ftlVis += ((ftlActive ? 1 : 0) - ftlVis) * (ftlActive ? 0.16 : 0.07);
+      if (scene && ftlVis > 0.01) {
+        const seg = ensureStreak(THREE, scene);
+        (seg.material as import('three').LineBasicMaterial).opacity = 0.95 * ftlVis;
+        seg.position.copy(cam.position);
+        const fdir = new THREE.Vector3();
+        cam.getWorldDirection(fdir);
+        seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), fdir.multiplyScalar(-1));
+        seg.scale.set(1, 1, 1 + ftlVis * 60);
+      } else if (streakRef.current) {
+        ((streakRef.current as import('three').LineSegments).material as import('three').LineBasicMaterial).opacity = 0;
+      }
+      if (vignetteRef.current) vignetteRef.current.style.opacity = String(Math.min(1, ftlVis));
+
+      // Home warp: eased precise move to the cluster framing.
+      if (homeTween) {
+        homeTween.t += dt;
+        const p = Math.min(1, homeTween.t / homeTween.dur);
+        const e = easeInOut(p);
+        cam.position.set(homeTween.px + (homeTween.tx - homeTween.px) * e, homeTween.py + (homeTween.ty - homeTween.py) * e, homeTween.pz + (homeTween.tz - homeTween.pz) * e);
+        if (controls?.target) {
+          controls.target.set(homeTween.mx + (homeTween.lx - homeTween.mx) * e, homeTween.my + (homeTween.ly - homeTween.my) * e, homeTween.mz + (homeTween.lz - homeTween.mz) * e);
+          controls.update?.();
+        }
+        if (p >= 1) homeTween = null;
+        return;
+      }
+
+      // Velocity flight (+ FTL forward thrust while warping).
+      const boost = keys.has('shift');
+      const accelMag = boost ? 1100 : 420;
+      let maxSpeed = boost ? 1600 : 560;
+      const fwd = new THREE.Vector3();
+      cam.getWorldDirection(fwd);
+      fwd.normalize();
+      const right = new THREE.Vector3().crossVectors(fwd, cam.up).normalize();
+      const up = cam.up;
+      let ax = 0, ay = 0, az = 0;
+      const add = (v: import('three').Vector3, s: number) => { ax += v.x * s; ay += v.y * s; az += v.z * s; };
+      if (keys.has('w') || keys.has('arrowup')) add(fwd, 1);
+      if (keys.has('s') || keys.has('arrowdown')) add(fwd, -1);
+      if (keys.has('d') || keys.has('arrowright')) add(right, 1);
+      if (keys.has('a') || keys.has('arrowleft')) add(right, -1);
+      if (keys.has('e')) add(up, 1);
+      if (keys.has('q')) add(up, -1);
+      const aLen = Math.hypot(ax, ay, az);
+      if (aLen > 0) { ax = (ax / aLen) * accelMag; ay = (ay / aLen) * accelMag; az = (az / aLen) * accelMag; }
+      if (warp) { ax += fwd.x * 9000; ay += fwd.y * 9000; az += fwd.z * 9000; maxSpeed = 9000; }
+      vx += ax * dt; vy += ay * dt; vz += az * dt;
+      const sp0 = Math.hypot(vx, vy, vz);
+      // Light drag while warping/fast (carry the boost far); coast-to-stop when
+      // slow and idle.
+      const fast = warp || sp0 > 700;
+      const damp = Math.pow(fast ? 0.86 : (aLen > 0 ? 0.45 : 0.05), dt);
+      vx *= damp; vy *= damp; vz *= damp;
+      const sp = Math.hypot(vx, vy, vz);
+      if (sp > maxSpeed) { const f = maxSpeed / sp; vx *= f; vy *= f; vz *= f; }
+      if (sp > 0.06) {
+        cam.position.x += vx * dt; cam.position.y += vy * dt; cam.position.z += vz * dt;
+        if (controls?.target) {
+          controls.target.x += vx * dt; controls.target.y += vy * dt; controls.target.z += vz * dt;
+          controls.update?.();
+        }
+      }
+
+      // Far affordance: the normal fit distance is ~2.5× the cluster radius, so
+      // "lost" means much farther, or flown past so the cluster is behind you.
+      const c = centroidRef.current;
+      if (c) {
+        const dx = c.x - cam.position.x, dy = c.y - cam.position.y, dz = c.z - cam.position.z;
+        const dist = Math.hypot(dx, dy, dz) || 1;
+        const cos = (dx * fwd.x + dy * fwd.y + dz * fwd.z) / dist; // 1 = dead ahead, <0 = behind
+        const lost = dist > c.radius * 5 || (cos < 0 && dist > c.radius * 2.5);
+        const back = dist < c.radius * 4 && cos > 0.2;
+        const far = wasFar ? !back : lost;
+        if (far !== wasFar) { wasFar = far; setFarFromHome(far); }
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    raf = requestAnimationFrame(loop);
+
+    const onDown = (ev: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      const k = ev.key.toLowerCase();
+      if (k === 'f') { ev.preventDefault(); if (!ftlHeld) { ftlHeld = true; impulse(); } return; }
+      if (k === 'shift') { keys.add('shift'); return; }
+      if (FLY.has(k)) { keys.add(k); ev.preventDefault(); }
+    };
+    const onUp = (ev: KeyboardEvent) => {
+      const k = ev.key.toLowerCase();
+      if (k === 'f') ftlHeld = false;
+      else keys.delete(k);
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      if (vignetteRef.current) vignetteRef.current.style.opacity = '0';
+      flyRef.current = { flyHome: () => {}, flyForward: () => {} };
+    };
   }, [appearance.renderMode]);
+
+  // Dispose the streak mesh on unmount (three objects must be freed manually).
+  useEffect(() => () => {
+    const seg = streakRef.current as { geometry?: { dispose?: () => void }; material?: { dispose?: () => void }; parent?: { remove?: (o: unknown) => void } } | null;
+    if (!seg) return;
+    seg.parent?.remove?.(seg);
+    seg.geometry?.dispose?.();
+    seg.material?.dispose?.();
+    streakRef.current = null;
+  }, []);
 
   if (connected.nodes.length === 0) {
     return (
@@ -2228,7 +2443,55 @@ const Graph3DView: React.FC<{
             {matchSet.size} / {connected.nodes.length}
           </span>
         )}
+        {appearance.renderMode === '3d' && (
+          <>
+            <button
+              onClick={() => flyRef.current.flyForward()}
+              title="FTL jump forward (F)"
+              className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-2 py-1 rounded bg-black/60 backdrop-blur-sm border border-cyan-500/30 text-cyan-200 hover:border-cyan-400/60 hover:bg-cyan-500/10"
+            >
+              <Rocket className="w-2.5 h-2.5" /> FTL
+            </button>
+            <button
+              onClick={() => flyRef.current.flyHome()}
+              title="FTL back to the cluster"
+              className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-2 py-1 rounded bg-black/60 backdrop-blur-sm border border-purple-500/30 text-purple-200 hover:border-purple-400/60 hover:bg-purple-500/10"
+            >
+              <Home className="w-2.5 h-2.5" /> Home
+            </button>
+          </>
+        )}
       </div>
+
+      {/* Radial motion-blur vignette during FTL warp — perimeter blurs +
+          glows, the center stays clear. Opacity is driven each frame from the
+          warp intensity by the flight loop (via vignetteRef). */}
+      {appearance.renderMode === '3d' && (
+        <div
+          ref={vignetteRef}
+          className="absolute inset-0 z-30 pointer-events-none"
+          style={{
+            opacity: 0,
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+            maskImage: 'radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.6) 62%, black 100%)',
+            WebkitMaskImage: 'radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.6) 62%, black 100%)',
+            background: 'radial-gradient(ellipse at center, transparent 42%, rgba(150,180,255,0.10) 80%, rgba(200,220,255,0.18) 100%)',
+          }}
+        />
+      )}
+
+      {/* Far-from-cluster affordance: a prominent FTL-home button when the
+          camera has drifted well outside the node cloud. */}
+      {appearance.renderMode === '3d' && farFromHome && (
+        <button
+          onClick={() => flyRef.current.flyHome()}
+          title="FTL back to the cluster"
+          className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3.5 py-2 rounded-full bg-purple-600/30 backdrop-blur-sm border border-purple-400/60 text-purple-100 text-[11px] font-mono uppercase tracking-wider shadow-xl animate-pulse hover:bg-purple-600/50 hover:animate-none"
+        >
+          <Home className="w-3.5 h-3.5" /> Return to cluster
+        </button>
+      )}
       <NodeInspector
         nodeId={selectedId}
         nodes={connected.nodes}
@@ -2238,7 +2501,7 @@ const Graph3DView: React.FC<{
       />
       <div className="absolute bottom-0 left-0 right-0 z-10 px-3 py-1 text-[9px] font-mono text-zinc-500 bg-linear-to-t from-black/70 to-transparent pointer-events-none">
         {appearance.renderMode === '3d'
-          ? 'click-drag rotate · right-click-drag pan · wheel zoom · WASD/arrows fly (Q/E up-down, ⇧ faster) · click node for details · right-click node for actions'
+          ? 'click-drag rotate · wheel zoom · WASD/arrows fly — hold to accelerate, release to coast (Q/E up-down, ⇧ afterburner) · F = FTL jump · Home button warps back · click node for details'
           : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
         {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
       </div>
