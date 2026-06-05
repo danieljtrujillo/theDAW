@@ -47,6 +47,9 @@ export interface ContainerNode {
   frameTint?: number;
   frameGlow?: boolean;
   frameTitle?: string;
+  /** Paint a filled panel background over the whole cell (the contextual
+   *  "fill" affordance, bg mode) so interior dead space isn't bare black. */
+  bgFill?: boolean;
 }
 
 export interface PanelNode {
@@ -68,9 +71,11 @@ export interface PanelNode {
   /** Mirror this panel: reverse widget order + flip composite controls/icons
    *  (left/right deck symmetry). */
   mirror?: boolean;
-  /** Uniform control sizing: equalize widget fr and render every control at one
-   *  shared compact size (tidy a row of mismatched buttons/knobs). */
+  /** Uniform control sizing: match same-kind control sizes (fill + equalize)
+   *  within this panel. */
   uniform?: boolean;
+  /** Paint a filled background over the whole cell (contextual "fill", bg mode). */
+  bgFill?: boolean;
   /** Inner padding (px) between the panel border and its controls. */
   padPx?: number;
   /** Fixed-content panel: hosts ONE widget full-bleed, no widget DnD, hidden
@@ -165,6 +170,27 @@ export function companionOf(nodes: Record<NodeId, LayoutNode>, id: NodeId): Node
   if (id.includes('A')) cands.push(id.replace('A', 'B'));
   if (id.includes('B')) cands.push(id.replace('B', 'A'));
   for (const c of cands) if (c !== id && nodes[c]) return c;
+  return null;
+}
+
+/** A panel is "empty" (absorbable dead space) when it's not pinned and holds
+ *  only spacers / nothing. The deck wrappers' `panel-N` spacer panels qualify. */
+function isEmptyPanel(n: LayoutNode | undefined): boolean {
+  return !!n && n.type === 'panel' && !n.pinned && n.widgets.every((w) => isSpacer(w));
+}
+
+/** An immediate sibling of `nodeId` (in its parent container) that is an empty
+ *  panel — i.e. a black gap this node could absorb. Null when none. */
+export function absorbableSibling(nodes: Record<NodeId, LayoutNode>, nodeId: NodeId): NodeId | null {
+  if (isEmptyPanel(nodes[nodeId])) return null; // the gap itself never absorbs
+  const parentId = findParentId(nodes, nodeId);
+  if (!parentId) return null;
+  const parent = nodes[parentId];
+  if (!parent || parent.type !== 'container') return null;
+  const i = parent.children.indexOf(nodeId);
+  for (const sib of [parent.children[i - 1], parent.children[i + 1]]) {
+    if (sib && isEmptyPanel(nodes[sib])) return sib;
+  }
   return null;
 }
 
@@ -311,9 +337,12 @@ export interface SurfaceStore {
   /** Node to softly glow (its symmetric companion when hovering a Sync button);
    *  session-only, never persisted. */
   highlightId: NodeId | null;
+  /** Node the cursor is over (target for design-mode hotkeys); session-only. */
+  hoverNodeId: NodeId | null;
 
   setDesignMode: (v: boolean) => void;
   setHighlight: (id: NodeId | null) => void;
+  setHoverNode: (id: NodeId | null) => void;
 
   /** Mirror size/padding/margins/shapes from a node onto its A↔B companion. */
   mirrorToCompanion: (id: NodeId) => void;
@@ -355,6 +384,10 @@ export interface SurfaceStore {
   setContainerFrame: (containerId: NodeId, patch: Partial<Pick<ContainerNode, 'frameShape' | 'frameTint' | 'frameGlow' | 'frameTitle'>>) => void;
   /** Toggle uniform control sizing on a panel. */
   togglePanelUniform: (panelId: NodeId) => void;
+  /** Absorb an adjacent empty/spacer sibling into this node (eat the gap). */
+  fillAdjacent: (nodeId: NodeId) => void;
+  /** Toggle a filled background on a node (bg-fill mode of the fill affordance). */
+  toggleBgFill: (nodeId: NodeId) => void;
   setPanelPad: (panelId: NodeId, px: number) => void;
   cycleWidgetJustify: (panelId: NodeId, widgetId: WidgetId) => void;
   setWidgetMargin: (panelId: NodeId, widgetId: WidgetId, side: 't' | 'r' | 'b' | 'l', px: number) => void;
@@ -454,9 +487,11 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
         designMode: false,
         layout: cloneLayout(defaultLayout),
         highlightId: null,
+        hoverNodeId: null,
 
         setDesignMode: (v) => set({ designMode: v }),
         setHighlight: (id) => set({ highlightId: id }),
+        setHoverNode: (id) => set({ hoverNodeId: id }),
 
         mirrorToCompanion: (id) =>
           set((s) => {
@@ -698,6 +733,29 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             p.uniform = !p.uniform;
             // Equalize fr so uniform sizing isn't fighting old per-widget weights.
             if (p.uniform) p.widgetFr = {};
+            return { layout };
+          }),
+
+        fillAdjacent: (nodeId) =>
+          set((s) => {
+            const sib = absorbableSibling(s.layout.nodes, nodeId);
+            const parentId = findParentId(s.layout.nodes, nodeId);
+            if (!sib || !parentId) return s;
+            const layout = cloneLayout(s.layout);
+            const parent = layout.nodes[parentId] as ContainerNode;
+            parent.fr[nodeId] = (parent.fr[nodeId] ?? 1) + (parent.fr[sib] ?? 1);
+            parent.children = parent.children.filter((c) => c !== sib);
+            delete parent.fr[sib];
+            delete layout.nodes[sib];
+            return { layout: prune(layout) };
+          }),
+
+        toggleBgFill: (nodeId) =>
+          set((s) => {
+            const node = s.layout.nodes[nodeId];
+            if (!node) return s;
+            const layout = cloneLayout(s.layout);
+            layout.nodes[nodeId].bgFill = !layout.nodes[nodeId].bgFill;
             return { layout };
           }),
 

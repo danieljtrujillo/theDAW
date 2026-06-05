@@ -58,6 +58,11 @@ export interface WidgetRenderOpts {
   fill?: boolean;
   /** Pad/button shape override (applied by SlidePad). */
   shape?: ButtonShape;
+  /** The host panel's flow — controls size to the shared cross-axis (row →
+   *  height, column → width) so same-kind controls match. */
+  flow?: 'row' | 'column';
+  /** Match-sizes is active for this cell (global pref OR panel.uniform). */
+  match?: boolean;
 }
 
 /** Reserved for the future custom-control phase; unused for built-in widgets. */

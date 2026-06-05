@@ -6,13 +6,13 @@
  * across containers because the store's `reorderPanel` accepts any target).
  */
 import React, { useState } from 'react';
-import { GripVertical, Rows3, Columns3, Square, SquareDashedBottom, Link2, Palette, X } from 'lucide-react';
+import { GripVertical, Rows3, Columns3, Square, SquareDashedBottom, Link2, Combine, Palette, X } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { SurfacePanel } from './SurfacePanel';
 import { PANEL_MIME, encode, decodePanel } from './dnd';
 import { useLayoutPrefs } from '../../state/layoutPrefsStore';
-import { companionOf } from '../../state/surfaceLayoutStore';
+import { companionOf, absorbableSibling } from '../../state/surfaceLayoutStore';
 import type { ContainerNode, NodeId, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 import type { FrameShape } from './widgetTypes';
 
@@ -131,10 +131,11 @@ export const SurfaceNode: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
 };
 
 export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
-  const { store, surfaceId } = useSurface();
+  const { store, surfaceId, openMenu } = useSurface();
   const node = store((s) => s.layout.nodes[nodeId]) as ContainerNode | undefined;
   const design = store((s) => s.designMode);
   const companionId = store((s) => companionOf(s.layout.nodes, nodeId));
+  const absorbId = store((s) => absorbableSibling(s.layout.nodes, nodeId));
   const highlighted = store((s) => s.highlightId === nodeId);
   const gapPx = useLayoutPrefs((s) => s.gapPx);
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
@@ -154,12 +155,20 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
     : undefined;
 
   return (
-    <div className="relative h-full w-full min-h-0 min-w-0">
+    <div
+      className="relative h-full w-full min-h-0 min-w-0"
+      onContextMenu={design ? (e) => { e.stopPropagation(); openMenu(e, { kind: 'container', nodeId }); } : undefined}
+      onPointerEnter={design ? () => store.getState().setHoverNode(nodeId) : undefined}
+      onPointerLeave={design ? () => { if (store.getState().hoverNodeId === nodeId) store.getState().setHoverNode(null); } : undefined}
+    >
       {framed && (
         <>
           <div className="absolute inset-0 pointer-events-none" style={{ ...shapeCss, background: borderCol, filter: glowCss }} />
           <div className="absolute inset-[1.5px] pointer-events-none" style={{ ...shapeCss, background: fillCol }} />
         </>
+      )}
+      {!framed && node.bgFill && (
+        <div className="absolute inset-0 pointer-events-none rounded bg-(--panel) border border-(--panel-border)" />
       )}
       <div className={`relative h-full w-full min-h-0 min-w-0 ${framed ? 'p-1.5' : ''} ${highlighted ? 'ring-2 ring-amber-300/70 shadow-[0_0_12px_rgba(252,211,77,0.5)] rounded-md' : ''}`}>
         <FrGrid
@@ -193,6 +202,17 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
       )}
       {design && (
         <div className="absolute bottom-0 right-0 z-50 flex items-center gap-px">
+          {absorbId && (
+            <button
+              onClick={() => store.getState().fillAdjacent(nodeId)}
+              onMouseEnter={() => store.getState().setHighlight(absorbId)}
+              onMouseLeave={() => store.getState().setHighlight(null)}
+              title="Fill — absorb the adjacent empty gap into this region"
+              className="h-3 w-3 grid place-items-center rounded-t bg-cyan-600/85 hover:bg-cyan-400 text-cyan-50"
+            >
+              <Combine className="w-2 h-2" />
+            </button>
+          )}
           {companionId && (
             <button
               onClick={() => store.getState().mirrorToCompanion(nodeId)}

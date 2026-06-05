@@ -22,10 +22,14 @@ interface LayoutPrefsState {
   snapPx: number;
   /** Show the centre + increment alignment guides while editing. */
   showGuides: boolean;
+  /** Match same-kind control sizes within a panel: equal height across a row,
+   *  equal width down a column (sized to the shared cross-axis). On by default. */
+  matchSizes: boolean;
   setFillMode: (m: FillMode) => void;
   setGapPx: (px: number) => void;
   setSnapPx: (px: number) => void;
   setShowGuides: (v: boolean) => void;
+  setMatchSizes: (v: boolean) => void;
   reset: () => void;
 }
 
@@ -38,11 +42,13 @@ export const useLayoutPrefs = create<LayoutPrefsState>()(
       gapPx: DEFAULT_GAP,
       snapPx: DEFAULT_SNAP,
       showGuides: true,
+      matchSizes: true,
       setFillMode: (m) => set({ fillMode: m }),
       setGapPx: (px) => set({ gapPx: clamp(Math.round(px), 0, 40) }),
       setSnapPx: (px) => set({ snapPx: clamp(Math.round(px), 0, 32) }),
       setShowGuides: (v) => set({ showGuides: v }),
-      reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP, snapPx: DEFAULT_SNAP, showGuides: true }),
+      setMatchSizes: (v) => set({ matchSizes: v }),
+      reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP, snapPx: DEFAULT_SNAP, showGuides: true, matchSizes: true }),
     }),
     { name: 'thedaw.layoutprefs.v1' },
   ),

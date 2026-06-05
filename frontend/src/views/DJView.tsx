@@ -215,7 +215,7 @@ type DeckCtl = ReturnType<typeof useDeck>;
  * panels (hero waveforms, sampler, FX racks, Next lane, source tree, library)
  * host a whole component; every mixer + deck control is an individual widget the
  * user can relocate in Design Mode. Nothing moves until the user drags. */
-const DJ_LAYOUT_VERSION = 5;
+const DJ_LAYOUT_VERSION = 6;
 
 const defaultDjLayout: SurfaceLayout = {
   version: DJ_LAYOUT_VERSION,
@@ -230,16 +230,16 @@ const defaultDjLayout: SurfaceLayout = {
     deckmix: { id: 'deckmix', type: 'container', axis: 'row', children: ['deckAcont', 'mixer', 'deckBcont'], fr: { deckAcont: 4.17953863997903, mixer: 5.180662235484642, deckBcont: 4.439799124536327 } },
     // ── Deck A (pad-rows wrapped with spacer panels in cont-* containers) ──
     deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'cont-10-e11250c4', 'cont-13-90c67ecb', 'cont-16-c9fc3a59', 'cont-18-cd01de17'], fr: { 'cont-10-e11250c4': 3.4, 'cont-13-90c67ecb': 0.9, 'cont-16-c9fc3a59': 0.9, 'cont-18-cd01de17': 1.1, 'pdA-head': 1 }, framed: true },
-    'pdA-head': { id: 'pdA-head', type: 'panel', title: 'Deck A', flow: 'row', widgets: ['keylockA', 'keyA', 'bpmA', 'headerA'], mirror: false, uniform: true },
-    'pdA-jog': { id: 'pdA-jog', type: 'panel', title: 'A · Jog', flow: 'row', widgets: ['jogA'] },
-    'pdA-trans': { id: 'pdA-trans', type: 'panel', title: 'A · Transport', flow: 'column', widgets: ['cueA', 'playA', 'syncA', 'syncLockA', 'headCueA'] },
-    'pdA-hc': { id: 'pdA-hc', type: 'panel', title: 'A · Hotcues', flow: 'row', widgets: ['hcA1', 'hcA2', 'hcA3', 'hcA4'], uniform: true },
-    'pdA-loop': { id: 'pdA-loop', type: 'panel', title: 'A · Loop', flow: 'row', widgets: ['loopA_0', 'loopA_1', 'loopA_2', 'loopA_3', 'loopA_4', 'loopOutA'], uniform: true },
-    'pdA-perf': { id: 'pdA-perf', type: 'panel', title: 'A · Perf', flow: 'row', widgets: ['rollA_0', 'rollA_1', 'rollA_2', 'slipA', 'jumpA_0', 'jumpA_1', 'jumpA_2', 'jumpA_3'], widgetFr: { rollA_0: 1.217687074829932, rollA_1: 0.782312925170068, rollA_2: 1, slipA: 1, jumpA_0: 1, jumpA_1: 1, jumpA_2: 1, jumpA_3: 1 }, uniform: true },
+    'pdA-head': { id: 'pdA-head', type: 'panel', title: 'Deck A', flow: 'row', widgets: ['spacer:s-2-7f6f8905', 'keylockA', 'keyA', 'bpmA', 'headerA'], widgetFr: { keylockA: 0.49871465295629847, keyA: 0.8892624085426142, bpmA: 0.8514435436029266, headerA: 2.255932370970932, 'spacer:s-2-7f6f8905': 0.8892624085426142 }, widgetJustify: { headerA: 'start' }, widgetMargins: { 'spacer:s-2-7f6f8905': { t: 0, r: 8, b: 0, l: 0 } }, mirror: false, uniform: false },
+    'pdA-jog': { id: 'pdA-jog', type: 'panel', title: 'A · Jog', flow: 'row', widgets: ['jogA'], mirror: true },
+    'pdA-trans': { id: 'pdA-trans', type: 'panel', title: 'A · Transport', flow: 'column', widgets: ['cueA', 'playA', 'syncA', 'syncLockA', 'headCueA'], mirror: true },
+    'pdA-hc': { id: 'pdA-hc', type: 'panel', title: 'A · Hotcues', flow: 'row', widgets: ['hcA1', 'hcA2', 'hcA3', 'hcA4'], uniform: true, mirror: true },
+    'pdA-loop': { id: 'pdA-loop', type: 'panel', title: 'A · Loop', flow: 'row', widgets: ['loopA_0', 'loopA_1', 'loopA_2', 'loopA_3', 'loopA_4', 'loopOutA'], uniform: true, mirror: true },
+    'pdA-perf': { id: 'pdA-perf', type: 'panel', title: 'A · Perf', flow: 'row', widgets: ['rollA_0', 'rollA_1', 'rollA_2', 'slipA', 'jumpA_0', 'jumpA_1', 'jumpA_2', 'jumpA_3'], uniform: true, mirror: true },
     // ── Deck B ──
     deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'cont-2-a0e79010', 'cont-4-4f4c96d2', 'cont-6-29de8ab7', 'cont-9-aebcd780'], fr: { 'pdB-head': 1, 'cont-2-a0e79010': 3.4, 'cont-4-4f4c96d2': 0.9, 'cont-6-29de8ab7': 0.9, 'cont-9-aebcd780': 1.1 }, framed: true },
-    'pdB-head': { id: 'pdB-head', type: 'panel', title: 'Deck B', flow: 'row', widgets: ['keylockB', 'keyB', 'bpmB', 'headerB'], widgetFr: { keylockB: 1.384615384615385, keyB: 1, bpmB: 0.5192307692307693, headerB: 1.4807692307692313 }, widgetJustify: { headerB: 'start' }, mirror: true, uniform: true },
-    'pdB-jog': { id: 'pdB-jog', type: 'panel', title: 'B · Jog', flow: 'row', widgets: ['jogB'], widgetMargins: { jogB: { t: 0, r: 64, b: 0, l: 0 } } },
+    'pdB-head': { id: 'pdB-head', type: 'panel', title: 'Deck B', flow: 'row', widgets: ['spacer:s-1-95993441', 'keylockB', 'keyB', 'bpmB', 'headerB'], widgetFr: { keylockB: 0.5522110739502047, keyB: 1.1040505388331472, bpmB: 1.039483463396507, headerB: 2.209123002601264, 'spacer:s-1-95993441': 0.4797473058342624 }, widgetJustify: { headerB: 'end' }, widgetMargins: { 'spacer:s-1-95993441': { t: 0, r: 0, b: 0, l: 64 } }, mirror: true, uniform: false },
+    'pdB-jog': { id: 'pdB-jog', type: 'panel', title: 'B · Jog', flow: 'row', widgets: ['jogB'] },
     'pdB-trans': { id: 'pdB-trans', type: 'panel', title: 'B · Transport', flow: 'column', widgets: ['cueB', 'playB', 'syncB', 'syncLockB', 'headCueB'] },
     'pdB-hc': { id: 'pdB-hc', type: 'panel', title: 'B · Hotcues', flow: 'row', widgets: ['hcB1', 'hcB2', 'hcB3', 'hcB4'], uniform: true },
     'pdB-loop': { id: 'pdB-loop', type: 'panel', title: 'B · Loop', flow: 'row', widgets: ['loopB_0', 'loopB_1', 'loopB_2', 'loopB_3', 'loopB_4', 'loopOutB'], uniform: true },
@@ -248,16 +248,16 @@ const defaultDjLayout: SurfaceLayout = {
     mixer: { id: 'mixer', type: 'container', axis: 'column', children: ['mixToggles', 'mixChans', 'mixXfade'], fr: { mixToggles: 1, mixChans: 6, mixXfade: 1.6 }, framed: true },
     mixToggles: { id: 'mixToggles', type: 'panel', title: 'Modes', flow: 'row', widgets: ['spacer:s-24-02c5d864', 'qtz', 'autoGain', 'automix', 'lim', 'midiMap', 'spacer:s-23-936b468e'], uniform: true },
     mixChans: { id: 'mixChans', type: 'container', axis: 'row', children: ['pchAP', 'eqAP', 'chAP', 'chBP', 'eqBP', 'pchBP'], fr: { pchAP: 1.9619631901840493, eqAP: 1.6633325420748168, chAP: 1.5103255906150865, chBP: 1.4272893076328357, eqBP: 1.3476793102143942, pchBP: 1.8894100592788177 } },
-    pchAP: { id: 'pchAP', type: 'panel', title: 'Pitch A', flow: 'column', widgets: ['pitchA'], widgetMargins: { pitchA: { t: 8, r: 0, b: 0, l: 32 } } },
-    eqAP: { id: 'eqAP', type: 'panel', title: 'EQ A', flow: 'column', widgets: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'] },
-    chAP: { id: 'chAP', type: 'panel', title: 'Ch A', flow: 'column', widgets: ['gainA', 'volA'], widgetFr: { gainA: 1, volA: 3 }, widgetMargins: { volA: { t: 8, r: 40, b: 8, l: 32 } } },
+    pchAP: { id: 'pchAP', type: 'panel', title: 'Pitch A', flow: 'column', widgets: ['pitchA'], widgetMargins: { pitchA: { t: 8, r: 8, b: 0, l: 64 } }, mirror: true },
+    eqAP: { id: 'eqAP', type: 'panel', title: 'EQ A', flow: 'column', widgets: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'], mirror: true },
+    chAP: { id: 'chAP', type: 'panel', title: 'Ch A', flow: 'column', widgets: ['volA', 'gainA'], widgetFr: { gainA: 1, volA: 3 }, widgetMargins: { volA: { t: 8, r: 0, b: 8, l: 24 } }, mirror: true },
     chBP: { id: 'chBP', type: 'panel', title: 'Ch B', flow: 'column', widgets: ['gainB', 'volB'], widgetFr: { gainB: 1, volB: 3 }, widgetMargins: { volB: { t: 8, r: 24, b: 8, l: 0 } } },
     eqBP: { id: 'eqBP', type: 'panel', title: 'EQ B', flow: 'column', widgets: ['eqB.hi', 'eqB.mid', 'eqB.lo', 'fltB'] },
     pchBP: { id: 'pchBP', type: 'panel', title: 'Pitch B', flow: 'column', widgets: ['pitchB'], widgetMargins: { pitchB: { t: 8, r: 64, b: 0, l: 8 } }, uniform: false },
-    mixXfade: { id: 'mixXfade', type: 'panel', title: 'Crossfade', flow: 'row', widgets: ['spacer:s-22-ffca8259', 'crossfader', 'spacer:s-21-cb584c7d'], uniform: true },
+    mixXfade: { id: 'mixXfade', type: 'panel', title: 'Crossfade', flow: 'row', widgets: ['spacer:s-22-ffca8259', 'crossfader', 'spacer:s-21-cb584c7d'], widgetFr: { 'spacer:s-22-ffca8259': 0.4556701030927834, crossfader: 2.039175257731959, 'spacer:s-21-cb584c7d': 0.5051546391752577 }, widgetMargins: { crossfader: { t: 16, r: 0, b: 0, l: 0 } }, uniform: false },
     // ── FX row + rails ──
     fxrow: { id: 'fxrow', type: 'container', axis: 'row', children: ['fxAP', 'nextP', 'fxBP'], fr: { fxAP: 0.7703206562266971, nextP: 1.9175988068605512, fxBP: 0.812080536912752 } },
-    fxAP: { id: 'fxAP', type: 'panel', title: 'FX A', flow: 'row', widgets: [], pinned: 'fxA' },
+    fxAP: { id: 'fxAP', type: 'panel', title: 'FX A', flow: 'row', widgets: [], pinned: 'fxA', mirror: true },
     nextP: { id: 'nextP', type: 'panel', title: 'Next', flow: 'row', widgets: [], pinned: 'next' },
     fxBP: { id: 'fxBP', type: 'panel', title: 'FX B', flow: 'row', widgets: [], pinned: 'fxB', uniform: false },
     browser: { id: 'browser', type: 'container', axis: 'column', children: ['sourceTreeP', 'libraryP'], fr: { sourceTreeP: 2, libraryP: 3 } },
@@ -265,7 +265,7 @@ const defaultDjLayout: SurfaceLayout = {
     libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library', uniform: true },
     // ── Deck B pad-row wrappers (pad row + spacer panel) ──
     'panel-1-eff655d2': { id: 'panel-1-eff655d2', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-25-e6518f32'] },
-    'cont-2-a0e79010': { id: 'cont-2-a0e79010', type: 'container', axis: 'row', children: ['pdB-trans', 'pdB-jog', 'panel-1-eff655d2'], fr: { 'pdB-jog': 1.114832535885168, 'panel-1-eff655d2': 1.4019138755980862, 'pdB-trans': 0.48325358851674666 } },
+    'cont-2-a0e79010': { id: 'cont-2-a0e79010', type: 'container', axis: 'row', children: ['pdB-trans', 'pdB-jog', 'panel-1-eff655d2'], fr: { 'pdB-jog': 1.4609863820390143, 'panel-1-eff655d2': 1.05576002944424, 'pdB-trans': 0.48325358851674666 } },
     'panel-3-e0911657': { id: 'panel-3-e0911657', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-32-4c52fb39'] },
     'cont-4-4f4c96d2': { id: 'cont-4-4f4c96d2', type: 'container', axis: 'row', children: ['pdB-hc', 'panel-3-e0911657'], fr: { 'pdB-hc': 1, 'panel-3-e0911657': 1 } },
     'panel-5-e8707245': { id: 'panel-5-e8707245', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-31-c7e28dbf'] },
@@ -273,7 +273,7 @@ const defaultDjLayout: SurfaceLayout = {
     'panel-8-81228019': { id: 'panel-8-81228019', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-30-3282c3a3'] },
     'cont-9-aebcd780': { id: 'cont-9-aebcd780', type: 'container', axis: 'row', children: ['pdB-perf', 'panel-8-81228019'], fr: { 'pdB-perf': 1.5358851674641145, 'panel-8-81228019': 0.46411483253588537 } },
     // ── Deck A pad-row wrappers ──
-    'cont-10-e11250c4': { id: 'cont-10-e11250c4', type: 'container', axis: 'row', children: ['panel-11-95a4a261', 'pdA-jog', 'pdA-trans'], fr: { 'pdA-trans': 0.47073791348600486, 'pdA-jog': 1.529262086513994, 'panel-11-95a4a261': 1.529262086513994 } },
+    'cont-10-e11250c4': { id: 'cont-10-e11250c4', type: 'container', axis: 'row', children: ['panel-11-95a4a261', 'pdA-jog', 'pdA-trans'], fr: { 'pdA-trans': 0.6151578454149662, 'pdA-jog': 1.7458919844074359, 'panel-11-95a4a261': 1.1682122566915911 } },
     'panel-11-95a4a261': { id: 'panel-11-95a4a261', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-26-79f129b0'] },
     'panel-12-8772ebc6': { id: 'panel-12-8772ebc6', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-29-e3c2d4fe'] },
     'cont-13-90c67ecb': { id: 'cont-13-90c67ecb', type: 'container', axis: 'row', children: ['panel-12-8772ebc6', 'pdA-hc'], fr: { 'pdA-hc': 1.0814249363867683, 'panel-12-8772ebc6': 0.9185750636132315 } },
@@ -1345,15 +1345,39 @@ const PAD_BT = 'w-7 py-1 text-[8px]';
 
 function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   const reg: WidgetRegistry = {};
-  const knobSize = (s: { w: number; h: number }) => Math.max(20, Math.min(s.w - 6, s.h - 28, 54));
-  const toggleBox = (s: { w: number; h: number }) => Math.max(24, Math.min(s.h - 12, 46));
+  type SizeOpts = { match?: boolean; flow?: 'row' | 'column' } | undefined;
+  // Control sizing: grow to fill the cell. When `match` is on, size to the
+  // SHARED cross-axis (row → cell height, column → cell width) so same-kind
+  // controls line up (equal height across a row / width down a column), clamped
+  // so a narrow cell never overflows.
+  const fitDim = (s: { w: number; h: number }, opts: SizeOpts, labelH: number, cap: number) => {
+    const byH = s.h - labelH;
+    const byW = s.w - 6;
+    const base = opts?.match
+      ? opts.flow === 'row'
+        ? byH
+        : opts.flow === 'column'
+          ? byW
+          : Math.min(byW, byH)
+      : Math.min(byW, byH);
+    return Math.min(base, byW, byH, cap);
+  };
+  const knobSize = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(20, fitDim(s, opts, 26, 112));
+  const toggleBox = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(24, fitDim(s, opts, 12, 84));
   const center = (node: React.ReactNode) => <div className="h-full w-full grid place-items-center overflow-hidden">{node}</div>;
+  // Pads render LANDSCAPE (like CUE/PLAY): fill the cell width, cap the height so
+  // the button stays wider than tall, centred vertically in its cell.
+  const padBox = (s: { w: number; h: number }, node: React.ReactNode) => (
+    <div className="h-full w-full grid place-items-center overflow-hidden">
+      <div className="w-full grid" style={{ height: Math.max(16, Math.min(s.h, s.w * 0.6)) }}>{node}</div>
+    </div>
+  );
   const faderWrap = (node: React.ReactNode) => <div className="h-full w-full min-h-0 flex justify-center">{node}</div>;
   const pinned = (id: string, label: string, node: React.ReactNode) => {
     reg[id] = { id, label, group: 'Panels', kind: 'fixed', source: 'builtin', render: () => <div className="h-full w-full min-h-0 overflow-hidden">{node}</div> };
   };
   const knob = (id: string, label: string, group: string, value: number, onChange: (v: number) => void, min: number, max: number, step: number) => {
-    reg[id] = { id, label, group, kind: 'knob', source: 'builtin', render: (s) => center(<SlideKnob label={label} value={value} onChange={onChange} min={min} max={max} step={step} size={knobSize(s)} center centerReadout />) };
+    reg[id] = { id, label, group, kind: 'knob', source: 'builtin', render: (s, opts) => center(<SlideKnob label={label} value={value} onChange={onChange} min={min} max={max} step={step} size={knobSize(s, opts)} center centerReadout />) };
   };
 
   /* ── pinned composites ── */
@@ -1454,9 +1478,11 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
     const padW = (id: string, label: string, node: React.ReactElement) => {
       reg[id] = {
         id, label, group: grp, kind: 'pad', source: 'builtin',
-        // Forward the per-widget shape (Design-Mode shape grip) into the pad.
-        render: (_s, opts) =>
-          center(
+        // Pads render LANDSCAPE filling the cell width. Forward the per-widget
+        // shape (Design-Mode shape grip) into the pad.
+        render: (s, opts) =>
+          padBox(
+            s,
             opts?.shape && opts.shape !== 'default'
               ? React.cloneElement(node as React.ReactElement<{ shape?: typeof opts.shape }>, { shape: opts.shape })
               : node,
@@ -1510,10 +1536,10 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   addMixerDeck('B');
 
   /* ── shared mixer controls ── */
-  reg.qtz = { id: 'qtz', label: 'Quantize', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="Qtz" icon={Magnet} on={p.quantize} onChange={p.setQuantize} box={toggleBox(s)} />) };
-  reg.autoGain = { id: 'autoGain', label: 'Auto-gain', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="Gain" icon={Gauge} on={p.autoGain} onChange={p.setAutoGain} box={toggleBox(s)} />) };
-  reg.lim = { id: 'lim', label: 'Limiter', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="Lim" icon={Shield} on={p.limiterOn} onChange={(v) => { p.setLimiterOn(v); djEngine.setLimiter(v); }} box={toggleBox(s)} />) };
-  reg.midiMap = { id: 'midiMap', label: 'MIDI Map', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s) => center(<RoundToggle label="MIDI" icon={Piano} on={p.midiMapOn} onChange={() => p.onToggleMidiMap()} box={toggleBox(s)} />) };
+  reg.qtz = { id: 'qtz', label: 'Quantize', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s, opts) => center(<RoundToggle label="Qtz" icon={Magnet} on={p.quantize} onChange={p.setQuantize} box={toggleBox(s, opts)} />) };
+  reg.autoGain = { id: 'autoGain', label: 'Auto-gain', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s, opts) => center(<RoundToggle label="Gain" icon={Gauge} on={p.autoGain} onChange={p.setAutoGain} box={toggleBox(s, opts)} />) };
+  reg.lim = { id: 'lim', label: 'Limiter', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s, opts) => center(<RoundToggle label="Lim" icon={Shield} on={p.limiterOn} onChange={(v) => { p.setLimiterOn(v); djEngine.setLimiter(v); }} box={toggleBox(s, opts)} />) };
+  reg.midiMap = { id: 'midiMap', label: 'MIDI Map', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s, opts) => center(<RoundToggle label="MIDI" icon={Piano} on={p.midiMapOn} onChange={() => p.onToggleMidiMap()} box={toggleBox(s, opts)} />) };
 
   reg.crossfader = { id: 'crossfader', label: 'Crossfader', group: 'Mixer', kind: 'crossfader', source: 'builtin', render: () => (
     <div className="h-full w-full flex flex-col justify-center px-1">

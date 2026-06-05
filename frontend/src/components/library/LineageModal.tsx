@@ -1,12 +1,13 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon } from 'lucide-react';
+import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon, Home, Rocket } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import { NodeInspector } from './NodeInspector';
 
 const ForceGraph3D = lazy(() => import('react-force-graph-3d').then((m) => ({ default: m.default })));
 const ForceGraph2D = lazy(() => import('react-force-graph-2d').then((m) => ({ default: m.default })));
 
-interface GraphNode {
+export interface GraphNode {
   id: string;
   kind?: string;
   title?: string;
@@ -15,7 +16,7 @@ interface GraphNode {
   model?: string;
 }
 
-interface GraphEdge {
+export interface GraphEdge {
   from_id: string;
   to_id: string;
   kind: string;
@@ -257,32 +258,27 @@ const BG_COLORS: Record<GraphAppearance['background'], string> = {
   'pure-black': '#000000',
 };
 
-/** Directed BFS from `start`: ancestors via `parentsOf` + descendants via
- *  `childrenOf`, each up to `maxDepth` generations. Returns id → generation
- *  distance (0 = the hovered node, 1 = its parents/children, 2 = grandparents/
- *  grandchildren, …). Used to highlight a node's lineage on hover. */
-function computeLineageDepths(
+/** Directed BFS from `start`: the FULL ancestry (via `parentsOf`) + the FULL
+ *  descendant set (via `childrenOf`), all the way to the ends in both
+ *  directions. Returns the set of lineage-connected node ids. */
+function computeLineage(
   start: string | null,
   parentsOf: Record<string, string[]>,
   childrenOf: Record<string, string[]>,
-  maxDepth: number,
-): Map<string, number> {
-  const out = new Map<string, number>();
+): Set<string> {
+  const out = new Set<string>();
   if (!start) return out;
-  out.set(start, 0);
+  out.add(start);
   const walk = (adj: Record<string, string[]>) => {
-    let frontier = [start];
-    for (let d = 1; d <= maxDepth; d += 1) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        for (const nb of adj[id] ?? []) {
-          if (!out.has(nb)) {
-            out.set(nb, d);
-            next.push(nb);
-          }
+    const stack = [start];
+    while (stack.length) {
+      const id = stack.pop() as string;
+      for (const nb of adj[id] ?? []) {
+        if (!out.has(nb)) {
+          out.add(nb);
+          stack.push(nb);
         }
       }
-      frontier = next;
     }
   };
   walk(parentsOf);
@@ -290,10 +286,9 @@ function computeLineageDepths(
   return out;
 }
 
-/** Opacity multiplier for a node/edge at generation distance `depth` from the
- *  hovered node (undefined = off the lineage path → heavily dimmed). */
-const depthOpacity = (depth: number | undefined): number =>
-  depth === undefined ? 0.12 : Math.max(0.25, 1 - 0.25 * depth);
+/** Uniform highlight: every lineage-connected node/edge is full brightness, the
+ *  rest is heavily dimmed (no per-generation falloff). */
+const lineageOpacity = (onPath: boolean): number => (onPath ? 1 : 0.12);
 
 const EDGE_COLOR_BY_KIND: Record<string, string> = {
   chimera_source_of: '#a78bfa',
@@ -470,7 +465,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
             <TrackTreeView root={rootEntryId} payload={perTrack} />
           )}
           {tab === 'genealogy' && libraryGraph && (
-            <GenealogyView payload={libraryGraph} appearance={appearance} onChange={setAppearance} />
+            <GenealogyView payload={libraryGraph} appearance={appearance} />
           )}
           {tab === 'graph3d' && libraryGraph && (
             <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-zinc-500">Loading 3D engine…</div>}>
@@ -491,7 +486,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
           )}
         </div>
 
-        {/* Footer legend */}
+        {/* Footer: edge-kind color key (left) + genealogy spacing (right). */}
         <div className="flex items-center flex-wrap gap-3 px-4 py-2 border-t border-white/5 text-[8px] font-mono uppercase tracking-wider text-zinc-500 shrink-0">
           {Object.entries(EDGE_COLOR_BY_KIND).map(([kind, color]) => (
             <span key={kind} className="flex items-center gap-1">
@@ -499,6 +494,12 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
               {kind}
             </span>
           ))}
+          {tab === 'genealogy' && (
+            <div className="ml-auto flex items-center gap-4 normal-case">
+              <FooterRange label="Gen gap" value={appearance.colGap} min={40} max={320} step={5} onChange={(v) => setAppearance({ ...appearance, colGap: v })} />
+              <FooterRange label="Row gap" value={appearance.rowGap} min={4} max={200} step={2} onChange={(v) => setAppearance({ ...appearance, rowGap: v })} />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -620,10 +621,11 @@ const Column: React.FC<{ title: string; nodes: GraphNode[]; accent: string; high
  *     the child end.
  *  5. Pan via mouse drag, zoom via wheel, Reset View button.
  */
-const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearance; onChange: (next: GraphAppearance) => void }> = ({ payload, appearance, onChange }) => {
-  // Hover lights up a node's lineage (parents/children bright, grandparents/
-  // grandchildren dimmer) up to appearance.hoverDepth generations.
+const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearance }> = ({ payload, appearance }) => {
+  // Hover lights up a node's full lineage (uniform brightness both ways).
   const [hovered, setHovered] = useState<string | null>(null);
+  // Click opens the detail/analytics inspector for that node.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   // -- Filter to the connected subgraph --------------------------------
   const connected = useMemo(() => {
     const involved = new Set<string>();
@@ -655,9 +657,9 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     return { nodeMap: nm, childrenOf: co, parentsOf: po };
   }, [connected]);
 
-  const hoverDepths = useMemo(
-    () => computeLineageDepths(hovered, parentsOf, childrenOf, appearance.hoverDepth),
-    [hovered, parentsOf, childrenOf, appearance.hoverDepth],
+  const lineage = useMemo(
+    () => computeLineage(hovered, parentsOf, childrenOf),
+    [hovered, parentsOf, childrenOf],
   );
 
   // -- Step 1: assign layer = longest path from any root --------------
@@ -746,8 +748,10 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
   // doesn't run off the bottom of the modal. Alternating sub-columns
   // are offset vertically by NODE_H/2 to stagger like the user's
   // reference screenshot.
-  const NODE_W = 190;
-  const NODE_H = 54;
+  // Cards are a 4:3 landscape block (was a long 3.5:1 strip) so they can show
+  // more per-entry info without overlapping.
+  const NODE_W = 168;
+  const NODE_H = 126;
   const COL_GAP = appearance.colGap;                          // gap between GENERATIONS
   const SUBCOL_GAP = Math.max(8, Math.round(appearance.colGap * 0.31)); // sub-columns within a generation
   const ROW_GAP = appearance.rowGap;                          // gap between stacked nodes in a sub-column
@@ -830,9 +834,43 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
   }, [positions]);
 
   // -- Pan + zoom -----------------------------------------------------
+  // `view` is what renders; `targetRef` is where zoom is heading. A rAF loop
+  // eases view → target so wheel-zoom glides (and zooms toward the cursor)
+  // instead of snapping. Pan writes both view + target so dragging stays 1:1.
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
-  const draggingRef = useRef<{ x: number; y: number } | null>(null);
+  const viewRef = useRef(view);
+  const targetRef = useRef(view);
+  const rafRef = useRef<number | null>(null);
+  const draggingRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const draggedRef = useRef(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Snap view + target together (Fit / Reset / autofit) — no animation.
+  const setViewImmediate = React.useCallback((v: { x: number; y: number; k: number }) => {
+    if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    viewRef.current = v;
+    targetRef.current = v;
+    setView(v);
+  }, []);
+
+  // Ease view → target each frame; stop once converged.
+  const kick = React.useCallback(() => {
+    if (rafRef.current != null) return;
+    const tick = () => {
+      const v = viewRef.current;
+      const t = targetRef.current;
+      const nx = v.x + (t.x - v.x) * 0.28;
+      const ny = v.y + (t.y - v.y) * 0.28;
+      const nk = v.k + (t.k - v.k) * 0.28;
+      const done = Math.abs(t.x - nx) < 0.4 && Math.abs(t.y - ny) < 0.4 && Math.abs(t.k - nk) < 0.0008;
+      const next = done ? t : { x: nx, y: ny, k: nk };
+      viewRef.current = next;
+      setView(next);
+      if (done) { rafRef.current = null; } else { rafRef.current = requestAnimationFrame(tick); }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  }, []);
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); }, []);
 
   // Auto-fit on first mount + when bounds change so the whole tree
   // lands visible inside the modal regardless of how wide the widest
@@ -853,13 +891,21 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     );
     const x = (cw - gw * k) / 2 - bounds.minX * k;
     const y = (ch - gh * k) / 2 - bounds.minY * k;
-    setView({ x, y, k });
-  }, [bounds]);
+    setViewImmediate({ x, y, k });
+  }, [bounds, setViewImmediate]);
 
   // Fit once the layout settles + whenever the bounds change shape.
   useEffect(() => {
     fitToView();
   }, [fitToView]);
+
+  // Esc closes the inspector.
+  useEffect(() => {
+    if (!selectedId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelectedId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedId]);
 
   if (connected.nodes.length === 0) {
     return (
@@ -881,38 +927,59 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     if (!el) return;
     const onNativeWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      setView((v) => ({ ...v, k: Math.max(0.2, Math.min(4, v.k * factor)) }));
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const t = targetRef.current;
+      const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+      const newK = Math.max(0.2, Math.min(4, t.k * factor));
+      // Keep the world point under the cursor fixed as we zoom.
+      const worldX = (cx - t.x) / t.k;
+      const worldY = (cy - t.y) / t.k;
+      targetRef.current = { k: newK, x: cx - worldX * newK, y: cy - worldY * newK };
+      kick();
     };
     el.addEventListener('wheel', onNativeWheel, { passive: false });
     return () => el.removeEventListener('wheel', onNativeWheel);
-  }, []);
+  }, [kick]);
 
+  // Pan: capture only once a real drag begins (>4px) so a plain click still
+  // reaches a node's onClick. `draggedRef` suppresses the click that ends a drag.
   const onPointerDown = (e: React.PointerEvent) => {
-    draggingRef.current = { x: e.clientX - view.x, y: e.clientY - view.y };
-    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    draggingRef.current = { x: e.clientX, y: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y };
+    draggedRef.current = false;
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = draggingRef.current;
     if (!d) return;
-    setView((v) => ({ ...v, x: e.clientX - d.x, y: e.clientY - d.y }));
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!draggedRef.current && Math.hypot(dx, dy) > 4) {
+      draggedRef.current = true;
+      try { containerRef.current?.setPointerCapture(e.pointerId); } catch { /* */ }
+    }
+    if (!draggedRef.current) return;
+    const v = { ...viewRef.current, x: d.vx + dx, y: d.vy + dy };
+    viewRef.current = v;
+    targetRef.current = { ...targetRef.current, x: v.x, y: v.y };
+    setView(v);
   };
   const onPointerUp = (e: React.PointerEvent) => {
     draggingRef.current = null;
-    try {
-      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
-    } catch {
-      /* */
-    }
+    try { containerRef.current?.releasePointerCapture(e.pointerId); } catch { /* */ }
+    // Reset AFTER the click event (which fires right after pointerup) so a
+    // drag-release doesn't select/clear.
+    setTimeout(() => { draggedRef.current = false; }, 0);
   };
 
   return (
     <div
       ref={containerRef}
-      className="absolute inset-0 bg-[#06030c] overflow-hidden cursor-grab active:cursor-grabbing"
+      className="absolute inset-0 bg-[#06030c] overflow-hidden cursor-grab active:cursor-grabbing select-none"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onClick={() => { if (!draggedRef.current) setSelectedId(null); }}
     >
       <div className="absolute top-2 right-2 z-10 flex gap-1">
         <button
@@ -923,20 +990,12 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
           <Maximize className="w-2.5 h-2.5" /> Fit
         </button>
         <button
-          onClick={() => setView({ x: 0, y: 0, k: 1 })}
+          onClick={() => setViewImmediate({ x: 0, y: 0, k: 1 })}
           className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:text-zinc-200 bg-black/40 border border-white/10 px-2 py-1 rounded"
           title="Reset to native scale"
         >
           Reset
         </button>
-      </div>
-
-      {/* Spacing + hover controls for the genealogy DAG. */}
-      <div className="absolute top-10 right-2 z-10 w-44 bg-[#0c0a14]/90 border border-purple-500/30 rounded-lg p-2 flex flex-col gap-1.5 backdrop-blur-sm">
-        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Spacing &amp; hover</span>
-        <SliderRow label={`Gen gap ${appearance.colGap}px`} min={40} max={220} step={5} value={appearance.colGap} onChange={(v) => onChange({ ...appearance, colGap: v })} />
-        <SliderRow label={`Row gap ${appearance.rowGap}px`} min={4} max={48} step={1} value={appearance.rowGap} onChange={(v) => onChange({ ...appearance, rowGap: v })} />
-        <SliderRow label={`Hover depth ${appearance.hoverDepth} gen`} min={1} max={5} step={1} value={appearance.hoverDepth} onChange={(v) => onChange({ ...appearance, hoverDepth: v })} />
       </div>
 
       <div
@@ -951,7 +1010,21 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
           viewBox={`${bounds.minX} ${bounds.minY} ${bounds.maxX - bounds.minX} ${bounds.maxY - bounds.minY}`}
           style={{ display: 'block' }}
         >
-          {/* Edges first so nodes paint on top. Flow is left-to-right:
+          {/* Per-generation background bands: a subtle, alternating shade behind
+              each generation's nodes so the gen-0 / gen-1 / … columns read as
+              distinct zones (gentle variations of the canvas color). */}
+          {generationLayouts.map((g) => (
+            <rect
+              key={`genbg-${g.layer}`}
+              x={g.genStartX - appearance.colGap / 2}
+              y={bounds.minY}
+              width={g.genEndX - g.genStartX + appearance.colGap}
+              height={bounds.maxY - bounds.minY}
+              fill={`hsl(258 38% ${3.4 + (g.layer % 2) * 2.4}%)`}
+            />
+          ))}
+
+          {/* Edges next so nodes paint on top. Flow is left-to-right:
               parent on the left, child on the right of the next column. */}
           {connected.edges.map((edge, i) => {
             const from = positions[edge.from_id];
@@ -967,16 +1040,17 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const color = EDGE_COLOR_BY_KIND[edge.kind] ?? '#71717a';
             // Lineage hover: an edge is "on the path" when both endpoints are in
             // the highlighted set; off-path edges fade right back.
-            const onPath = hoverDepths.has(edge.from_id) && hoverDepths.has(edge.to_id);
-            const eOp = !hovered ? 1 : onPath ? depthOpacity(Math.max(hoverDepths.get(edge.from_id) ?? 0, hoverDepths.get(edge.to_id) ?? 0)) : 0.06;
+            const onPath = lineage.has(edge.from_id) && lineage.has(edge.to_id);
+            const eOp = !hovered ? 1 : onPath ? 1 : 0.06;
             return (
-              <g key={i} opacity={eOp}>
+              <g key={i} opacity={eOp} style={{ transition: 'opacity 220ms ease' }}>
                 <path
                   d={d}
                   stroke={color}
                   strokeWidth={hovered && onPath ? 2.5 : 1.5}
                   fill="none"
                   opacity={0.7}
+                  style={{ transition: 'stroke-width 160ms ease' }}
                 />
                 <polygon
                   points={`${x2 - 7},${y2 - 4} ${x2 - 7},${y2 + 4} ${x2},${y2}`}
@@ -992,17 +1066,24 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const p = positions[n.id];
             if (!p) return null;
             const sourceColor = pickNodeColor(n);
-            const depth = hoverDepths.get(n.id);
-            const nOp = !hovered ? 1 : depthOpacity(depth);
-            const onPath = hovered && depth !== undefined;
+            const onPath = lineage.has(n.id);
+            const nOp = !hovered ? 1 : lineageOpacity(onPath);
+            const isHovered = hovered === n.id;
+            const isSelected = selectedId === n.id;
             return (
               <g
                 key={n.id}
                 transform={`translate(${p.x}, ${p.y})`}
                 opacity={nOp}
-                style={{ cursor: 'pointer' }}
+                style={{ cursor: 'pointer', transition: 'opacity 220ms ease' }}
                 onMouseEnter={() => setHovered(n.id)}
                 onMouseLeave={() => setHovered(null)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Suppress the click that ends a pan-drag.
+                  if (draggedRef.current) return;
+                  setSelectedId((cur) => (cur === n.id ? null : n.id));
+                }}
               >
                 <rect
                   width={NODE_W}
@@ -1011,7 +1092,8 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   ry={6}
                   fill="#0c0a14"
                   stroke={sourceColor}
-                  strokeWidth={onPath && depth === 0 ? 3 : 1.5}
+                  strokeWidth={isHovered || isSelected ? 3 : 1.5}
+                  style={{ transition: 'stroke-width 160ms ease' }}
                 />
                 <rect
                   width={NODE_W}
@@ -1021,36 +1103,24 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   fill={sourceColor}
                   opacity={0.85}
                 />
-                <text
-                  x={10}
-                  y={22}
-                  fill="#e5e5e5"
-                  fontSize={11}
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                  fontWeight={700}
-                >
-                  {truncate(n.title ?? n.id, 26)}
+                <text x={10} y={24} fill="#f4f4f5" fontSize={12} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace" fontWeight={700}>
+                  {truncate(n.title ?? n.id, 21)}
                 </text>
-                <text
-                  x={10}
-                  y={38}
-                  fill="#a3a3a3"
-                  fontSize={9}
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                >
-                  {(n.source ?? '—')} · {n.model ?? n.kind ?? 'entry'}
-                </text>
-                <text
-                  x={10}
-                  y={52}
-                  fill="#71717a"
-                  fontSize={8}
-                  fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                >
-                  {typeof n.duration_sec === 'number' && n.duration_sec > 0
-                    ? `${n.duration_sec.toFixed(1)}s`
-                    : ''}
-                </text>
+                <line x1={10} y1={31} x2={NODE_W - 10} y2={31} stroke="#ffffff" strokeOpacity={0.08} />
+                {(
+                  [
+                    ['SRC', n.source ?? '—'],
+                    ['KIND', n.kind ?? 'entry'],
+                    ['MODEL', n.model ?? '—'],
+                    ['DUR', typeof n.duration_sec === 'number' && n.duration_sec > 0 ? `${n.duration_sec.toFixed(1)}s` : '—'],
+                    ['ID', n.id],
+                  ] as const
+                ).map(([k, v], i) => (
+                  <text key={k} x={10} y={48 + i * 15} fontSize={8.5} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace">
+                    <tspan fill="#6b7280">{k} </tspan>
+                    <tspan fill="#cbd5e1">{truncate(String(v), 19)}</tspan>
+                  </text>
+                ))}
               </g>
             );
           })}
@@ -1082,8 +1152,17 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
 
       {/* Help hint */}
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
-        drag to pan · wheel to zoom · {connected.nodes.length} connected entries · {connected.edges.length} relationships
+        drag to pan · wheel to zoom · click a node for details · {connected.nodes.length} connected entries · {connected.edges.length} relationships
       </div>
+
+      {/* Detail / analytics inspector (screen-space; outside the pan/zoom transform). */}
+      <NodeInspector
+        nodeId={selectedId}
+        nodes={connected.nodes}
+        edges={connected.edges}
+        edgeColor={(k) => EDGE_COLOR_BY_KIND[k] ?? '#71717a'}
+        onClose={() => setSelectedId(null)}
+      />
     </div>
   );
 };
@@ -1254,13 +1333,7 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
       />
 
       <div className="mt-1 pt-2 border-t border-white/5 flex flex-col gap-2">
-        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Forces &amp; hover</span>
-        <SliderRow
-          label={`Hover depth ${value.hoverDepth} gen`}
-          min={1} max={5} step={1}
-          value={value.hoverDepth}
-          onChange={(v) => patch({ hoverDepth: v })}
-        />
+        <span className="text-[8px] font-black uppercase tracking-widest text-purple-300/80">Forces</span>
         <SliderRow
           label={`Repulsion ${Math.round(-value.charge)}`}
           min={20} max={400} step={10}
@@ -1291,6 +1364,24 @@ const SliderRow: React.FC<{ label: string; min: number; max: number; step: numbe
       onChange={(e) => onChange(parseFloat(e.target.value))}
       className="pro-slider"
     />
+  </label>
+);
+
+
+/** Compact inline range for the footer bar: "Label [====O==] 220". */
+const FooterRange: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => (
+  <label className="flex items-center gap-1.5">
+    <span className="text-zinc-400">{label}</span>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className="pro-slider w-24"
+    />
+    <span className="text-zinc-300 tabular-nums w-7 text-right">{value}</span>
   </label>
 );
 
@@ -1410,6 +1501,10 @@ const Graph3DView: React.FC<{
     }),
     [connected, highlight, appearance.nodeSizeScale, matchSet],
   );
+  // react-force-graph mutates these node objects in place with x/y/z during
+  // layout; the flight loop reads them through this ref for the cluster center.
+  const dataRef = useRef(data);
+  dataRef.current = data;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
@@ -1433,6 +1528,16 @@ const Graph3DView: React.FC<{
     setSelectedId((cur) => (cur === node.id ? null : node.id ?? null));
   };
 
+  // Spaceship flight state. `flyRef` exposes imperative jumps to the Home/FTL
+  // buttons; `centroidRef` is the settled cluster center (set on engine stop);
+  // `streakRef` holds the lazily-built hyperspace streak mesh (disposed on
+  // unmount); `farFromHome` toggles the prominent "return" affordance.
+  const flyRef = useRef<{ flyHome: () => void; flyForward: () => void }>({ flyHome: () => {}, flyForward: () => {} });
+  const centroidRef = useRef<{ x: number; y: number; z: number; radius: number } | null>(null);
+  const streakRef = useRef<unknown>(null);
+  const vignetteRef = useRef<HTMLDivElement>(null);
+  const [farFromHome, setFarFromHome] = useState(false);
+
   // Right-click on a graph node opens the shared ContextMenu primitive
   // (plan step 3d rollout to graph nodes). Actions are navigation +
   // routing — "go to / open / send" — kept distinct from the per-entry
@@ -1451,17 +1556,6 @@ const Graph3DView: React.FC<{
       nodeName: node.name ?? node.id,
     });
   };
-  const selectedNode = useMemo(() => {
-    if (!selectedId) return null;
-    return connected.nodes.find((n) => n.id === selectedId) ?? null;
-  }, [selectedId, connected.nodes]);
-  const selectedEdges = useMemo(() => {
-    if (!selectedId) return { incoming: [], outgoing: [] };
-    const incoming = connected.edges.filter((e) => e.to_id === selectedId);
-    const outgoing = connected.edges.filter((e) => e.from_id === selectedId);
-    return { incoming, outgoing };
-  }, [selectedId, connected.edges]);
-
   // Neighbor adjacency for the mesh-dim effect below. Rebuilt only
   // when data changes — cheap for small graphs.
   // Directed adjacency (parent → child) for the lineage hover. Built from the
@@ -1476,9 +1570,9 @@ const Graph3DView: React.FC<{
     return { childrenOf, parentsOf };
   }, [connected]);
 
-  const hoverDepths = useMemo(
-    () => computeLineageDepths(hoveredId, dirAdj.parentsOf, dirAdj.childrenOf, appearance.hoverDepth),
-    [hoveredId, dirAdj, appearance.hoverDepth],
+  const lineage = useMemo(
+    () => computeLineage(hoveredId, dirAdj.parentsOf, dirAdj.childrenOf),
+    [hoveredId, dirAdj],
   );
 
   // Node-mesh dimming on hover. Walks the Three.js scene; each node
@@ -1488,39 +1582,40 @@ const Graph3DView: React.FC<{
   // back to baseOpacity when the cursor leaves.
   useEffect(() => {
     if (appearance.renderMode !== '3d') return;
-    const ref = fgRef.current as { scene?: () => unknown } | null;
-    if (!ref?.scene) return;
-    type SceneLike = {
-      traverse: (cb: (obj: unknown) => void) => void;
-    };
-    const scene = ref.scene() as SceneLike;
-    if (!scene || typeof scene.traverse !== 'function') return;
-
+    type SceneLike = { traverse: (cb: (obj: unknown) => void) => void };
     type MeshLike = {
       isMesh?: boolean;
-      material?: {
-        opacity?: number;
-        userData?: { baseOpacity?: number };
-      };
+      material?: { opacity?: number; userData?: { baseOpacity?: number } };
       parent?: { userData?: { nodeId?: string } };
     };
-
-    scene.traverse((obj: unknown) => {
-      const m = obj as MeshLike;
-      if (!m.isMesh) return;
-      const base = m.material?.userData?.baseOpacity;
-      if (typeof base !== 'number') return;
-      const ownerId = m.parent?.userData?.nodeId;
-      if (!ownerId) return;
-      if (!hoveredId) {
-        if (m.material) m.material.opacity = base;
-        return;
-      }
-      // Per-generation falloff: lineage nodes stay bright (parents/children
-      // brightest), everything off the lineage fades.
-      if (m.material) m.material.opacity = base * depthOpacity(hoverDepths.get(ownerId));
-    });
-  }, [hoveredId, hoverDepths, appearance.renderMode, data]);
+    // Ease each mesh's opacity toward its lineage target (no flash). Runs a
+    // rAF until everything settles, then stops; a hover change re-runs the
+    // effect and restarts the tween toward the new targets.
+    let raf = 0;
+    const apply = () => {
+      const ref = fgRef.current as { scene?: () => unknown } | null;
+      const scene = ref?.scene?.() as SceneLike | undefined;
+      if (!scene || typeof scene.traverse !== 'function') { raf = requestAnimationFrame(apply); return; }
+      let animating = false;
+      scene.traverse((obj: unknown) => {
+        const m = obj as MeshLike;
+        if (!m.isMesh || !m.material) return;
+        const base = m.material.userData?.baseOpacity;
+        if (typeof base !== 'number') return;
+        const ownerId = m.parent?.userData?.nodeId;
+        if (!ownerId) return;
+        const target = !hoveredId ? base : base * lineageOpacity(lineage.has(ownerId));
+        const cur = m.material.opacity ?? base;
+        const diff = target - cur;
+        if (Math.abs(diff) < 0.004) { m.material.opacity = target; return; }
+        m.material.opacity = cur + diff * 0.18;
+        animating = true;
+      });
+      raf = animating ? requestAnimationFrame(apply) : 0;
+    };
+    raf = requestAnimationFrame(apply);
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, [hoveredId, lineage, appearance.renderMode, data]);
 
   // Fit-to-view at three checkpoints so we catch both early- and late-
   // settling force layouts. Without this the camera lingers at its
@@ -1841,52 +1936,238 @@ const Graph3DView: React.FC<{
     });
   }, [selectedId, appearance.renderMode, data]);
 
-  // WASD / arrow-key fly controls (3D). W/S dolly along the view
-  // direction, A/D strafe, Q/E raise/lower. Hold Shift for a bigger
-  // step. Ignored while typing in the search box so keys don't hijack
-  // text entry.
+  // Spaceship flight (3D). A single rAF loop integrates a velocity from the
+  // held keys (W/S forward, A/D strafe, Q/E up-down, arrows too) with ease-in
+  // acceleration and exponential drag, so holding a key accelerates and
+  // releasing coasts then smoothly stops to a hover. Shift = afterburner. F
+  // (or the FTL button) fires a hyperspace jump with a star-streak; the Home
+  // button FTLs back to the cluster. Ignored while typing in the search box.
   useEffect(() => {
     if (appearance.renderMode !== '3d') return;
-    const MOVE: Record<string, [number, number, number]> = {
-      w: [0, 0, 1], arrowup: [0, 0, 1],
-      s: [0, 0, -1], arrowdown: [0, 0, -1],
-      a: [-1, 0, 0], arrowleft: [-1, 0, 0],
-      d: [1, 0, 0], arrowright: [1, 0, 0],
-      q: [0, -1, 0], e: [0, 1, 0],
+    const FLY = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+    const keys = new Set<string>();
+    let raf = 0;
+    let last = 0;
+    let vx = 0, vy = 0, vz = 0;     // world-space velocity
+    let ftlHeld = false;            // F held → continuous warp
+    let ftlPulseUntil = 0;          // tap / FTL button → brief warp window (rAF-clock ms)
+    let ftlVis = 0;                 // 0..1 warp visual (streak + vignette)
+    let homeTween: null | { t: number; dur: number; px: number; py: number; pz: number; tx: number; ty: number; tz: number; mx: number; my: number; mz: number; lx: number; ly: number; lz: number } = null;
+    let wasFar = false;
+    let frame = 0;
+
+    type FgApi = {
+      camera?: () => import('three').PerspectiveCamera;
+      controls?: () => { target?: import('three').Vector3; update?: () => void } | null;
+      scene?: () => import('three').Scene;
     };
-    const onKey = (ev: KeyboardEvent) => {
-      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      const dir = MOVE[ev.key.toLowerCase()];
-      if (!dir) return;
+    const getCtx = () => {
       const THREE = threeRef.current;
-      const ref = fgRef.current as {
-        camera?: () => import('three').PerspectiveCamera;
-        controls?: () => { target?: import('three').Vector3; update?: () => void } | null;
-      } | null;
-      if (!THREE || !ref?.camera) return;
-      ev.preventDefault();
-      const cam = ref.camera();
-      const controls = ref.controls?.() ?? null;
-      const step = ev.shiftKey ? 70 : 28;
-      const forward = new THREE.Vector3();
-      cam.getWorldDirection(forward);
-      forward.y = 0;
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(forward, cam.up).normalize();
-      const delta = new THREE.Vector3()
-        .addScaledVector(forward, dir[2] * step)
-        .addScaledVector(right, dir[0] * step)
-        .addScaledVector(cam.up, dir[1] * step);
-      cam.position.add(delta);
-      if (controls?.target) {
-        controls.target.add(delta);
-        controls.update?.();
+      const ref = fgRef.current as FgApi | null;
+      if (!THREE || !ref?.camera) return null;
+      return { THREE, cam: ref.camera(), controls: ref.controls?.() ?? null, scene: ref.scene?.() ?? null };
+    };
+
+    // Hyperspace streaks: additive near-white LineSegments ringing the flight
+    // axis, scaled along z with the warp intensity.
+    const ensureStreak = (THREE: typeof import('three'), scene: import('three').Scene) => {
+      if (streakRef.current) return streakRef.current as import('three').LineSegments;
+      const N = 600;
+      const arr = new Float32Array(N * 6);
+      for (let i = 0; i < N; i++) {
+        const a = (i / N) * Math.PI * 2 + (i % 11);
+        const r = 10 + ((i * 53) % 260);
+        const x = Math.cos(a) * r, y = Math.sin(a) * r;
+        const z = -((i * 37) % 700);
+        arr[i * 6] = x; arr[i * 6 + 1] = y; arr[i * 6 + 2] = z;
+        arr[i * 6 + 3] = x; arr[i * 6 + 4] = y; arr[i * 6 + 5] = z + 6;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const seg = new THREE.LineSegments(geo, mat);
+      seg.frustumCulled = false;
+      scene.add(seg);
+      streakRef.current = seg;
+      return seg;
+    };
+
+    // FTL forward = a hefty velocity impulse (a tap launches you far). Holding F
+    // keeps `ftlHeld` true so the loop keeps thrusting at warp speed.
+    const impulse = () => {
+      const ctx = getCtx();
+      if (!ctx) return;
+      const f = new ctx.THREE.Vector3();
+      ctx.cam.getWorldDirection(f);
+      vx += f.x * 4200; vy += f.y * 4200; vz += f.z * 4200;
+    };
+    const flyForward = () => { impulse(); ftlPulseUntil = last + 800; };
+    const flyHome = () => {
+      const ctx = getCtx();
+      const c = centroidRef.current;
+      if (!ctx || !c) return;
+      const d = Math.max(180, c.radius * 2.4);
+      homeTween = {
+        t: 0, dur: 1.3,
+        px: ctx.cam.position.x, py: ctx.cam.position.y, pz: ctx.cam.position.z,
+        tx: c.x + d * 0.3, ty: c.y + d * 0.25, tz: c.z + d,
+        mx: ctx.controls?.target?.x ?? c.x, my: ctx.controls?.target?.y ?? c.y, mz: ctx.controls?.target?.z ?? c.z,
+        lx: c.x, ly: c.y, lz: c.z,
+      };
+      vx = vy = vz = 0;
+    };
+    flyRef.current = { flyHome, flyForward };
+
+    const easeInOut = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+
+    const loop = (t: number) => {
+      raf = requestAnimationFrame(loop);
+      const dt = last ? Math.min(0.05, (t - last) / 1000) : 0.016;
+      last = t;
+      const ctx = getCtx();
+      if (!ctx) return;
+      const { THREE, cam, controls, scene } = ctx;
+
+      // Refresh cluster center/radius from the engine's live node positions
+      // (react-force-graph mutates these objects in place), robust to
+      // engine-stop timing, so Home + the far affordance work.
+      frame += 1;
+      if (!centroidRef.current || frame % 45 === 0) {
+        const ns = dataRef.current.nodes as unknown as Array<{ x?: number; y?: number; z?: number }>;
+        let sx = 0, sy = 0, sz = 0, cnt = 0;
+        for (const p of ns) {
+          if (typeof p.x !== 'number') continue;
+          sx += p.x; sy += p.y ?? 0; sz += p.z ?? 0; cnt += 1;
+        }
+        if (cnt >= 2) {
+          const cx = sx / cnt, cy = sy / cnt, cz = sz / cnt;
+          let rad = 0;
+          for (const p of ns) {
+            if (typeof p.x !== 'number') continue;
+            rad = Math.max(rad, Math.hypot(p.x - cx, (p.y ?? 0) - cy, (p.z ?? 0) - cz));
+          }
+          centroidRef.current = { x: cx, y: cy, z: cz, radius: rad || 120 };
+        }
+      }
+
+      // Warp visuals (streak + radial motion-blur vignette), eased so they fade
+      // in/out smoothly whether warping via hold-F, a tap, or the Home jump.
+      const warp = ftlHeld || t < ftlPulseUntil;
+      const ftlActive = warp || !!homeTween;
+      ftlVis += ((ftlActive ? 1 : 0) - ftlVis) * (ftlActive ? 0.16 : 0.07);
+      if (scene && ftlVis > 0.01) {
+        const seg = ensureStreak(THREE, scene);
+        (seg.material as import('three').LineBasicMaterial).opacity = 0.95 * ftlVis;
+        seg.position.copy(cam.position);
+        const fdir = new THREE.Vector3();
+        cam.getWorldDirection(fdir);
+        seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), fdir.multiplyScalar(-1));
+        seg.scale.set(1, 1, 1 + ftlVis * 60);
+      } else if (streakRef.current) {
+        ((streakRef.current as import('three').LineSegments).material as import('three').LineBasicMaterial).opacity = 0;
+      }
+      if (vignetteRef.current) vignetteRef.current.style.opacity = String(Math.min(1, ftlVis));
+
+      // Home warp: eased precise move to the cluster framing.
+      if (homeTween) {
+        homeTween.t += dt;
+        const p = Math.min(1, homeTween.t / homeTween.dur);
+        const e = easeInOut(p);
+        cam.position.set(homeTween.px + (homeTween.tx - homeTween.px) * e, homeTween.py + (homeTween.ty - homeTween.py) * e, homeTween.pz + (homeTween.tz - homeTween.pz) * e);
+        if (controls?.target) {
+          controls.target.set(homeTween.mx + (homeTween.lx - homeTween.mx) * e, homeTween.my + (homeTween.ly - homeTween.my) * e, homeTween.mz + (homeTween.lz - homeTween.mz) * e);
+          controls.update?.();
+        }
+        if (p >= 1) homeTween = null;
+        return;
+      }
+
+      // Velocity flight (+ FTL forward thrust while warping).
+      const boost = keys.has('shift');
+      const accelMag = boost ? 1100 : 420;
+      let maxSpeed = boost ? 1600 : 560;
+      const fwd = new THREE.Vector3();
+      cam.getWorldDirection(fwd);
+      fwd.normalize();
+      const right = new THREE.Vector3().crossVectors(fwd, cam.up).normalize();
+      const up = cam.up;
+      let ax = 0, ay = 0, az = 0;
+      const add = (v: import('three').Vector3, s: number) => { ax += v.x * s; ay += v.y * s; az += v.z * s; };
+      if (keys.has('w') || keys.has('arrowup')) add(fwd, 1);
+      if (keys.has('s') || keys.has('arrowdown')) add(fwd, -1);
+      if (keys.has('d') || keys.has('arrowright')) add(right, 1);
+      if (keys.has('a') || keys.has('arrowleft')) add(right, -1);
+      if (keys.has('e')) add(up, 1);
+      if (keys.has('q')) add(up, -1);
+      const aLen = Math.hypot(ax, ay, az);
+      if (aLen > 0) { ax = (ax / aLen) * accelMag; ay = (ay / aLen) * accelMag; az = (az / aLen) * accelMag; }
+      if (warp) { ax += fwd.x * 9000; ay += fwd.y * 9000; az += fwd.z * 9000; maxSpeed = 9000; }
+      vx += ax * dt; vy += ay * dt; vz += az * dt;
+      const sp0 = Math.hypot(vx, vy, vz);
+      // Light drag while warping/fast (carry the boost far); coast-to-stop when
+      // slow and idle.
+      const fast = warp || sp0 > 700;
+      const damp = Math.pow(fast ? 0.86 : (aLen > 0 ? 0.45 : 0.05), dt);
+      vx *= damp; vy *= damp; vz *= damp;
+      const sp = Math.hypot(vx, vy, vz);
+      if (sp > maxSpeed) { const f = maxSpeed / sp; vx *= f; vy *= f; vz *= f; }
+      if (sp > 0.06) {
+        cam.position.x += vx * dt; cam.position.y += vy * dt; cam.position.z += vz * dt;
+        if (controls?.target) {
+          controls.target.x += vx * dt; controls.target.y += vy * dt; controls.target.z += vz * dt;
+          controls.update?.();
+        }
+      }
+
+      // Far affordance: the normal fit distance is ~2.5× the cluster radius, so
+      // "lost" means much farther, or flown past so the cluster is behind you.
+      const c = centroidRef.current;
+      if (c) {
+        const dx = c.x - cam.position.x, dy = c.y - cam.position.y, dz = c.z - cam.position.z;
+        const dist = Math.hypot(dx, dy, dz) || 1;
+        const cos = (dx * fwd.x + dy * fwd.y + dz * fwd.z) / dist; // 1 = dead ahead, <0 = behind
+        const lost = dist > c.radius * 5 || (cos < 0 && dist > c.radius * 2.5);
+        const back = dist < c.radius * 4 && cos > 0.2;
+        const far = wasFar ? !back : lost;
+        if (far !== wasFar) { wasFar = far; setFarFromHome(far); }
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    raf = requestAnimationFrame(loop);
+
+    const onDown = (ev: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      const k = ev.key.toLowerCase();
+      if (k === 'f') { ev.preventDefault(); if (!ftlHeld) { ftlHeld = true; impulse(); } return; }
+      if (k === 'shift') { keys.add('shift'); return; }
+      if (FLY.has(k)) { keys.add(k); ev.preventDefault(); }
+    };
+    const onUp = (ev: KeyboardEvent) => {
+      const k = ev.key.toLowerCase();
+      if (k === 'f') ftlHeld = false;
+      else keys.delete(k);
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      if (vignetteRef.current) vignetteRef.current.style.opacity = '0';
+      flyRef.current = { flyHome: () => {}, flyForward: () => {} };
+    };
   }, [appearance.renderMode]);
+
+  // Dispose the streak mesh on unmount (three objects must be freed manually).
+  useEffect(() => () => {
+    const seg = streakRef.current as { geometry?: { dispose?: () => void }; material?: { dispose?: () => void }; parent?: { remove?: (o: unknown) => void } } | null;
+    if (!seg) return;
+    seg.parent?.remove?.(seg);
+    seg.geometry?.dispose?.();
+    seg.material?.dispose?.();
+    streakRef.current = null;
+  }, []);
 
   if (connected.nodes.length === 0) {
     return (
@@ -2054,7 +2335,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return l.color ?? '#a78bfa';
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? (l.color ?? '#a78bfa') : '#1c1828';
           }}
           linkOpacity={appearance.linkOpacity}
@@ -2062,7 +2343,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return appearance.linkWidth;
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? appearance.linkWidth * 2.2 : appearance.linkWidth * 0.4;
           }}
           linkCurvature={appearance.edgeCurve}
@@ -2100,7 +2381,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return l.color ?? '#a78bfa';
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? (l.color ?? '#a78bfa') : '#1c1828';
           }}
           linkLineDash={() => null}
@@ -2108,7 +2389,7 @@ const Graph3DView: React.FC<{
             if (!hoveredId) return appearance.linkWidth;
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
-            const onPath = hoverDepths.has(srcId ?? '') && hoverDepths.has(tgtId ?? '');
+            const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
             return onPath ? appearance.linkWidth * 2.2 : appearance.linkWidth * 0.4;
           }}
           linkCurvature={appearance.edgeCurve}
@@ -2162,16 +2443,65 @@ const Graph3DView: React.FC<{
             {matchSet.size} / {connected.nodes.length}
           </span>
         )}
+        {appearance.renderMode === '3d' && (
+          <>
+            <button
+              onClick={() => flyRef.current.flyForward()}
+              title="FTL jump forward (F)"
+              className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-2 py-1 rounded bg-black/60 backdrop-blur-sm border border-cyan-500/30 text-cyan-200 hover:border-cyan-400/60 hover:bg-cyan-500/10"
+            >
+              <Rocket className="w-2.5 h-2.5" /> FTL
+            </button>
+            <button
+              onClick={() => flyRef.current.flyHome()}
+              title="FTL back to the cluster"
+              className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-2 py-1 rounded bg-black/60 backdrop-blur-sm border border-purple-500/30 text-purple-200 hover:border-purple-400/60 hover:bg-purple-500/10"
+            >
+              <Home className="w-2.5 h-2.5" /> Home
+            </button>
+          </>
+        )}
       </div>
-      <NodeDetailsPanel
-        node={selectedNode}
-        incoming={selectedEdges.incoming}
-        outgoing={selectedEdges.outgoing}
+
+      {/* Radial motion-blur vignette during FTL warp — perimeter blurs +
+          glows, the center stays clear. Opacity is driven each frame from the
+          warp intensity by the flight loop (via vignetteRef). */}
+      {appearance.renderMode === '3d' && (
+        <div
+          ref={vignetteRef}
+          className="absolute inset-0 z-30 pointer-events-none"
+          style={{
+            opacity: 0,
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+            maskImage: 'radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.6) 62%, black 100%)',
+            WebkitMaskImage: 'radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.6) 62%, black 100%)',
+            background: 'radial-gradient(ellipse at center, transparent 42%, rgba(150,180,255,0.10) 80%, rgba(200,220,255,0.18) 100%)',
+          }}
+        />
+      )}
+
+      {/* Far-from-cluster affordance: a prominent FTL-home button when the
+          camera has drifted well outside the node cloud. */}
+      {appearance.renderMode === '3d' && farFromHome && (
+        <button
+          onClick={() => flyRef.current.flyHome()}
+          title="FTL back to the cluster"
+          className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3.5 py-2 rounded-full bg-purple-600/30 backdrop-blur-sm border border-purple-400/60 text-purple-100 text-[11px] font-mono uppercase tracking-wider shadow-xl animate-pulse hover:bg-purple-600/50 hover:animate-none"
+        >
+          <Home className="w-3.5 h-3.5" /> Return to cluster
+        </button>
+      )}
+      <NodeInspector
+        nodeId={selectedId}
+        nodes={connected.nodes}
+        edges={connected.edges}
+        edgeColor={(k) => EDGE_COLOR_BY_KIND[k] ?? '#71717a'}
         onClose={() => setSelectedId(null)}
       />
-      <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 z-10 px-3 py-1 text-[9px] font-mono text-zinc-500 bg-linear-to-t from-black/70 to-transparent pointer-events-none">
         {appearance.renderMode === '3d'
-          ? 'click-drag rotate · right-click-drag pan · wheel zoom · WASD/arrows fly (Q/E up-down, ⇧ faster) · click node for details · right-click node for actions'
+          ? 'click-drag rotate · wheel zoom · WASD/arrows fly — hold to accelerate, release to coast (Q/E up-down, ⇧ afterburner) · F = FTL jump · Home button warps back · click node for details'
           : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
         {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
       </div>
@@ -2300,97 +2630,6 @@ const Graph3DView: React.FC<{
     </div>
   );
 };
-
-/** Slide-out details panel that mounts on the right edge of the graph
- *  container whenever a node is clicked. Read-only for now — Step 3b's
- *  MAKE/MIX integration will wire up the "Open in Editor / Add Stems /
- *  Send to MAKE" actions per the plan. */
-const NodeDetailsPanel: React.FC<{
-  node: GraphNode | null;
-  incoming: GraphEdge[];
-  outgoing: GraphEdge[];
-  onClose: () => void;
-}> = ({ node, incoming, outgoing, onClose }) => {
-  if (!node) return null;
-  return (
-    <div className="absolute top-2 right-2 bottom-2 z-10 w-72 bg-[#0c0a14]/95 backdrop-blur-sm border border-purple-500/30 rounded shadow-xl flex flex-col">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
-        <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Node details</span>
-        <button
-          onClick={onClose}
-          className="p-0.5 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
-          title="Close (click empty area or the node again)"
-        >
-          <X className="w-3 h-3" />
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2">
-        <div>
-          <div className="text-[10px] font-bold text-zinc-100 wrap-break-word leading-snug">
-            {node.title || node.id}
-          </div>
-          <div className="text-[8px] font-mono text-zinc-600 break-all mt-0.5">{node.id}</div>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {node.source && (
-            <span className="text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-purple-500/10 border border-purple-500/20 rounded text-purple-200">
-              {node.source}
-            </span>
-          )}
-          {node.kind && (
-            <span className="text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-zinc-500/10 border border-zinc-500/20 rounded text-zinc-300">
-              {node.kind}
-            </span>
-          )}
-          {node.model && (
-            <span className="text-[8px] font-mono px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-emerald-200">
-              {node.model}
-            </span>
-          )}
-          {typeof node.duration_sec === 'number' && (
-            <span className="text-[8px] font-mono px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded text-amber-200">
-              {node.duration_sec.toFixed(1)}s
-            </span>
-          )}
-        </div>
-        {incoming.length > 0 && (
-          <div className="flex flex-col gap-0.5 pt-1">
-            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Incoming ({incoming.length})</span>
-            {incoming.slice(0, 12).map((e, i) => (
-              <div key={`in-${i}`} className="flex items-center gap-1.5 text-[9px] font-mono">
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa' }} />
-                <span className="text-zinc-500 shrink-0">{e.kind}</span>
-                <span className="text-zinc-400 truncate">{e.from_id.slice(0, 16)}…</span>
-              </div>
-            ))}
-            {incoming.length > 12 && (
-              <span className="text-[8px] font-mono text-zinc-700 italic">+ {incoming.length - 12} more</span>
-            )}
-          </div>
-        )}
-        {outgoing.length > 0 && (
-          <div className="flex flex-col gap-0.5 pt-1">
-            <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Outgoing ({outgoing.length})</span>
-            {outgoing.slice(0, 12).map((e, i) => (
-              <div key={`out-${i}`} className="flex items-center gap-1.5 text-[9px] font-mono">
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: EDGE_COLOR_BY_KIND[e.kind] ?? '#a78bfa' }} />
-                <span className="text-zinc-500 shrink-0">{e.kind}</span>
-                <span className="text-zinc-400 truncate">{e.to_id.slice(0, 16)}…</span>
-              </div>
-            ))}
-            {outgoing.length > 12 && (
-              <span className="text-[8px] font-mono text-zinc-700 italic">+ {outgoing.length - 12} more</span>
-            )}
-          </div>
-        )}
-        {incoming.length === 0 && outgoing.length === 0 && (
-          <span className="text-[9px] font-mono text-zinc-600 italic">No related nodes.</span>
-        )}
-      </div>
-    </div>
-  );
-};
-
 
 function pickNodeColor(n: GraphNode): string {
   switch (n.source) {
