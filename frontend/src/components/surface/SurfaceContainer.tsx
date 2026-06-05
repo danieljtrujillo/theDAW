@@ -6,7 +6,7 @@
  * across containers because the store's `reorderPanel` accepts any target).
  */
 import React, { useState } from 'react';
-import { GripVertical, Rows3, Columns3 } from 'lucide-react';
+import { GripVertical, Rows3, Columns3, Square, SquareDashedBottom } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { SurfacePanel } from './SurfacePanel';
@@ -71,8 +71,16 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   const gapPx = useLayoutPrefs((s) => s.gapPx);
   if (!node || node.type !== 'container') return null;
 
+  // A framed region draws one border + filled background spanning the whole
+  // cell, with a little inner padding so controls float inside it. Leaf panels
+  // stay transparent so the region reads as a single box, not a grid of boxes.
+  const framed = !!node.framed;
+  const frameChrome = framed
+    ? `rounded-md border bg-(--panel) p-1 ${design ? 'border-purple-400/50' : 'border-(--panel-border)'}`
+    : '';
+
   return (
-    <div className="relative h-full w-full min-h-0 min-w-0">
+    <div className={`relative h-full w-full min-h-0 min-w-0 ${frameChrome}`}>
       <FrGrid
         axis={node.axis}
         ids={node.children}
@@ -95,6 +103,13 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
       />
       {design && (
         <div className="absolute bottom-0 right-0 z-50 flex items-center gap-px">
+          <button
+            onClick={() => store.getState().toggleContainerFramed(nodeId)}
+            title={framed ? 'Region frame ON — click to remove the border/background' : 'Add a region frame (border + filled background) around this group'}
+            className={`h-3 w-3 grid place-items-center rounded-t ${framed ? 'bg-amber-500/90 text-amber-50' : 'bg-cyan-800/85 hover:bg-cyan-600 text-cyan-50'}`}
+          >
+            {framed ? <Square className="w-2 h-2" /> : <SquareDashedBottom className="w-2 h-2" />}
+          </button>
           <button
             onClick={() => store.getState().toggleContainerAxis(nodeId)}
             title={`This row/column is ${node.axis === 'row' ? 'horizontal' : 'vertical'} — click to flip`}

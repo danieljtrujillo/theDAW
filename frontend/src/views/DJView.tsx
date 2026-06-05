@@ -214,7 +214,7 @@ type DeckCtl = ReturnType<typeof useDeck>;
  * panels (hero waveforms, sampler, FX racks, Next lane, source tree, library)
  * host a whole component; every mixer + deck control is an individual widget the
  * user can relocate in Design Mode. Nothing moves until the user drags. */
-const DJ_LAYOUT_VERSION = 3;
+const DJ_LAYOUT_VERSION = 4;
 
 const defaultDjLayout: SurfaceLayout = {
   version: DJ_LAYOUT_VERSION,
@@ -227,7 +227,7 @@ const defaultDjLayout: SurfaceLayout = {
     center: { id: 'center', type: 'container', axis: 'column', children: ['deckmix', 'fxrow'], fr: { deckmix: 5, fxrow: 2 } },
     deckmix: { id: 'deckmix', type: 'container', axis: 'row', children: ['deckAcont', 'mixer', 'deckBcont'], fr: { deckAcont: 5.3, mixer: 3.2, deckBcont: 5.3 } },
     // Deck A — a column of pad-row sub-panels so every control is its own widget.
-    deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'pdA-meta', 'pdA-jog', 'pdA-trans', 'pdA-hc', 'pdA-loop', 'pdA-perf'], fr: { 'pdA-head': 1, 'pdA-meta': 0.7, 'pdA-jog': 3.4, 'pdA-trans': 1, 'pdA-hc': 0.9, 'pdA-loop': 0.9, 'pdA-perf': 1.1 } },
+    deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'pdA-meta', 'pdA-jog', 'pdA-trans', 'pdA-hc', 'pdA-loop', 'pdA-perf'], fr: { 'pdA-head': 1, 'pdA-meta': 0.7, 'pdA-jog': 3.4, 'pdA-trans': 1, 'pdA-hc': 0.9, 'pdA-loop': 0.9, 'pdA-perf': 1.1 }, framed: true },
     'pdA-head': { id: 'pdA-head', type: 'panel', title: 'Deck A', flow: 'row', widgets: ['headerA'] },
     'pdA-meta': { id: 'pdA-meta', type: 'panel', title: 'A · Info', flow: 'row', widgets: ['bpmA', 'keyA'] },
     'pdA-jog': { id: 'pdA-jog', type: 'panel', title: 'A · Jog', flow: 'row', widgets: ['jogA'] },
@@ -236,7 +236,7 @@ const defaultDjLayout: SurfaceLayout = {
     'pdA-loop': { id: 'pdA-loop', type: 'panel', title: 'A · Loop', flow: 'row', widgets: ['loopA_0', 'loopA_1', 'loopA_2', 'loopA_3', 'loopA_4', 'loopOutA'] },
     'pdA-perf': { id: 'pdA-perf', type: 'panel', title: 'A · Perf', flow: 'row', widgets: ['rollA_0', 'rollA_1', 'rollA_2', 'slipA', 'jumpA_0', 'jumpA_1', 'jumpA_2', 'jumpA_3', 'keylockA'] },
     // Deck B — mirror structure.
-    deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'pdB-meta', 'pdB-jog', 'pdB-trans', 'pdB-hc', 'pdB-loop', 'pdB-perf'], fr: { 'pdB-head': 1, 'pdB-meta': 0.7, 'pdB-jog': 3.4, 'pdB-trans': 1, 'pdB-hc': 0.9, 'pdB-loop': 0.9, 'pdB-perf': 1.1 } },
+    deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'pdB-meta', 'pdB-jog', 'pdB-trans', 'pdB-hc', 'pdB-loop', 'pdB-perf'], fr: { 'pdB-head': 1, 'pdB-meta': 0.7, 'pdB-jog': 3.4, 'pdB-trans': 1, 'pdB-hc': 0.9, 'pdB-loop': 0.9, 'pdB-perf': 1.1 }, framed: true },
     'pdB-head': { id: 'pdB-head', type: 'panel', title: 'Deck B', flow: 'row', widgets: ['headerB'] },
     'pdB-meta': { id: 'pdB-meta', type: 'panel', title: 'B · Info', flow: 'row', widgets: ['bpmB', 'keyB'] },
     'pdB-jog': { id: 'pdB-jog', type: 'panel', title: 'B · Jog', flow: 'row', widgets: ['jogB'] },
@@ -244,7 +244,7 @@ const defaultDjLayout: SurfaceLayout = {
     'pdB-hc': { id: 'pdB-hc', type: 'panel', title: 'B · Hotcues', flow: 'row', widgets: ['hcB1', 'hcB2', 'hcB3', 'hcB4'] },
     'pdB-loop': { id: 'pdB-loop', type: 'panel', title: 'B · Loop', flow: 'row', widgets: ['loopB_0', 'loopB_1', 'loopB_2', 'loopB_3', 'loopB_4', 'loopOutB'] },
     'pdB-perf': { id: 'pdB-perf', type: 'panel', title: 'B · Perf', flow: 'row', widgets: ['rollB_0', 'rollB_1', 'rollB_2', 'slipB', 'jumpB_0', 'jumpB_1', 'jumpB_2', 'jumpB_3', 'keylockB'] },
-    mixer: { id: 'mixer', type: 'container', axis: 'column', children: ['mixToggles', 'mixChans', 'mixXfade'], fr: { mixToggles: 1, mixChans: 6, mixXfade: 1.6 } },
+    mixer: { id: 'mixer', type: 'container', axis: 'column', children: ['mixToggles', 'mixChans', 'mixXfade'], fr: { mixToggles: 1, mixChans: 6, mixXfade: 1.6 }, framed: true },
     mixToggles: { id: 'mixToggles', type: 'panel', title: 'Modes', flow: 'row', widgets: ['qtz', 'autoGain', 'lim', 'midiMap'] },
     mixChans: { id: 'mixChans', type: 'container', axis: 'row', children: ['pchAP', 'eqAP', 'chAP', 'chBP', 'eqBP', 'pchBP'], fr: { pchAP: 1, eqAP: 1.5, chAP: 2.4, chBP: 2.4, eqBP: 1.5, pchBP: 1 } },
     pchAP: { id: 'pchAP', type: 'panel', title: 'Pitch A', flow: 'column', widgets: ['pitchA'] },

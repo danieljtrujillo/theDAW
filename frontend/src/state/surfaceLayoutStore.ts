@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { WidgetId } from '../components/surface/widgetTypes';
 
@@ -37,6 +37,10 @@ export interface ContainerNode {
   children: NodeId[];
   /** fr weight per child id (relative track size). */
   fr: Record<NodeId, number>;
+  /** Draw a region frame (border + filled background spanning the whole cell)
+   *  around this container. Borders live on framed REGION containers, not on
+   *  every leaf panel, so a region reads as one box instead of many. */
+  framed?: boolean;
 }
 
 export interface PanelNode {
@@ -56,6 +60,9 @@ export interface PanelNode {
   /** Mirror this panel: reverse widget order + flip composite controls/icons
    *  (left/right deck symmetry). */
   mirror?: boolean;
+  /** Uniform control sizing: equalize widget fr and render every control at one
+   *  shared compact size (tidy a row of mismatched buttons/knobs). */
+  uniform?: boolean;
   /** Inner padding (px) between the panel border and its controls. */
   padPx?: number;
   /** Fixed-content panel: hosts ONE widget full-bleed, no widget DnD, hidden
@@ -223,8 +230,17 @@ function internalMove(layout: SurfaceLayout, widgetId: WidgetId, toPanelId: Node
 export interface SurfaceStore {
   designMode: boolean;
   layout: SurfaceLayout;
+  /** Undo/redo history of layout snapshots (session-only, never persisted). */
+  past: SurfaceLayout[];
+  future: SurfaceLayout[];
 
   setDesignMode: (v: boolean) => void;
+
+  /** Step layout history (Ctrl+Z / Ctrl+Shift+Z). No-op at the ends. */
+  undo: () => void;
+  redo: () => void;
+  /** Persist the current layout as this surface's reset target (Ctrl+S). */
+  saveAsDefault: () => void;
 
   resize: (containerId: NodeId, leftId: NodeId, rightId: NodeId, frac: number) => void;
   resizeWidget: (panelId: NodeId, left: WidgetId, right: WidgetId, frac: number) => void;
@@ -241,6 +257,10 @@ export interface SurfaceStore {
   togglePanelFlow: (panelId: NodeId) => void;
   /** Flip a container between a row and a column (flow at every nesting level). */
   toggleContainerAxis: (containerId: NodeId) => void;
+  /** Toggle a region frame (border + filled bg) on a container. */
+  toggleContainerFramed: (containerId: NodeId) => void;
+  /** Toggle uniform control sizing on a panel. */
+  togglePanelUniform: (panelId: NodeId) => void;
   setPanelPad: (panelId: NodeId, px: number) => void;
   cycleWidgetJustify: (panelId: NodeId, widgetId: WidgetId) => void;
   setWidgetMargin: (panelId: NodeId, widgetId: WidgetId, side: 't' | 'r' | 'b' | 'l', px: number) => void;
@@ -258,10 +278,83 @@ export interface SurfaceStore {
   exportJSON: () => string;
 }
 
+/* ── undo/redo history ────────────────────────────────────────────────────── */
+const HISTORY_LIMIT = 60;
+// Consecutive layout changes closer together than this collapse into ONE undo
+// step, so a continuous splitter/margin drag (which fires many mutations) is a
+// single undo rather than dozens.
+const COALESCE_MS = 350;
+
+/** The store's own actions, minus the history fields the middleware injects. */
+type BaseStore = Omit<SurfaceStore, 'past' | 'future' | 'undo' | 'redo'>;
+
+/* A tiny history middleware: it wraps `set` so every action that changes
+ * `layout` snapshots the PREVIOUS layout into `past` (coalescing rapid drags)
+ * and clears `future`. `undo`/`redo` use the raw `set` so they don't record
+ * themselves. This needs zero changes to the ~20 existing actions. */
+type AnySet = (partial: unknown, replace?: boolean) => void;
+type SurfacePersist = [['zustand/persist', { layout: SurfaceLayout }]];
+const withHistory =
+  (config: (set: AnySet, get: () => SurfaceStore, api: unknown) => BaseStore): StateCreator<SurfaceStore, [], SurfacePersist> =>
+  (set, get, api) => {
+    const rawSet = set as unknown as AnySet;
+    let lastPush = 0;
+    const recordingSet: AnySet = (partial, replace) => {
+      const prev = get().layout;
+      rawSet(partial, replace);
+      const next = get().layout;
+      if (next !== prev) {
+        const now = Date.now();
+        if (now - lastPush > COALESCE_MS) {
+          rawSet({ past: [...get().past, prev].slice(-HISTORY_LIMIT), future: [] });
+        }
+        lastPush = now;
+      }
+    };
+    return {
+      ...config(recordingSet, get, api),
+      past: [],
+      future: [],
+      undo: () => {
+        const { past, future, layout } = get();
+        if (!past.length) return;
+        rawSet({
+          layout: past[past.length - 1],
+          past: past.slice(0, -1),
+          future: [layout, ...future].slice(0, HISTORY_LIMIT),
+        });
+      },
+      redo: () => {
+        const { past, future, layout } = get();
+        if (!future.length) return;
+        rawSet({
+          layout: future[0],
+          past: [...past, layout].slice(-HISTORY_LIMIT),
+          future: future.slice(1),
+        });
+      },
+    };
+  };
+
 export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayout) {
+  // A user "Save as default" target, separate from the live persisted layout.
+  // Versioned so a default-tree bump invalidates a stale saved default.
+  const defaultKey = `thedaw.surface.${surfaceId}.default.v${defaultLayout.version}`;
+  const readUserDefault = (): SurfaceLayout | null => {
+    try {
+      const raw = localStorage.getItem(defaultKey);
+      if (!raw) return null;
+      const l = JSON.parse(raw) as SurfaceLayout;
+      if (l && l.nodes && l.root && l.nodes[l.root] && l.version === defaultLayout.version) return l;
+    } catch {
+      /* ignore corrupt saved default */
+    }
+    return null;
+  };
+
   return create<SurfaceStore>()(
     persist(
-      (set, get) => ({
+      withHistory((set, get) => ({
         designMode: false,
         layout: cloneLayout(defaultLayout),
 
@@ -402,6 +495,28 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             const layout = cloneLayout(s.layout);
             const c = layout.nodes[containerId] as ContainerNode;
             c.axis = c.axis === 'row' ? 'column' : 'row';
+            return { layout };
+          }),
+
+        toggleContainerFramed: (containerId) =>
+          set((s) => {
+            const node = s.layout.nodes[containerId];
+            if (!node || node.type !== 'container') return s;
+            const layout = cloneLayout(s.layout);
+            const c = layout.nodes[containerId] as ContainerNode;
+            c.framed = !c.framed;
+            return { layout };
+          }),
+
+        togglePanelUniform: (panelId) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            p.uniform = !p.uniform;
+            // Equalize fr so uniform sizing isn't fighting old per-widget weights.
+            if (p.uniform) p.widgetFr = {};
             return { layout };
           }),
 
@@ -619,9 +734,16 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             return { layout: prune(layout) };
           }),
 
-        reset: () => set({ layout: cloneLayout(defaultLayout) }),
+        reset: () => set({ layout: readUserDefault() ?? cloneLayout(defaultLayout) }),
+        saveAsDefault: () => {
+          try {
+            localStorage.setItem(defaultKey, JSON.stringify(get().layout));
+          } catch {
+            /* storage blocked / full */
+          }
+        },
         exportJSON: () => JSON.stringify(get().layout, null, 2),
-      }),
+      })),
       {
         name: `thedaw.surface.${surfaceId}.v1`,
         version: defaultLayout.version,

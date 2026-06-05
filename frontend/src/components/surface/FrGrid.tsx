@@ -8,6 +8,7 @@
 import React, { useRef } from 'react';
 import { Splitter } from './Splitter';
 import { GAP } from './dnd';
+import { useLayoutPrefs } from '../../state/layoutPrefsStore';
 import type { Axis } from '../../state/surfaceLayoutStore';
 
 export const FrGrid: React.FC<{
@@ -23,6 +24,7 @@ export const FrGrid: React.FC<{
   gap?: number;
 }> = ({ axis, ids, fr, design, onResize, renderItem, className, style, gap }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const snapPx = useLayoutPrefs((s) => s.snapPx);
   const tracks: string[] = [];
   const children: React.ReactNode[] = [];
   const gapPx = gap ?? GAP;
@@ -35,6 +37,7 @@ export const FrGrid: React.FC<{
           <Splitter
             key={`s-${id}`}
             axis={axis === 'row' ? 'x' : 'y'}
+            snap={snapPx}
             onDelta={(dpx) => {
               const el = ref.current;
               const sz = el ? (axis === 'row' ? el.clientWidth : el.clientHeight) : 0;

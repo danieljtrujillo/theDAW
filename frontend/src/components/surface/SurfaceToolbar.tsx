@@ -5,13 +5,16 @@
  * Done. Reads/writes the surface's own store instance through context.
  */
 import React, { useState } from 'react';
-import { LayoutGrid, Plus, Copy, RotateCcw, Check, Move } from 'lucide-react';
+import { LayoutGrid, Plus, Copy, RotateCcw, Check, Move, Undo2, Redo2, Save } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 
 export const SurfaceToolbar: React.FC = () => {
   const { store } = useSurface();
   const design = store((s) => s.designMode);
+  const canUndo = store((s) => s.past.length > 0);
+  const canRedo = store((s) => s.future.length > 0);
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const addPanel = () => {
     const { layout, addPanel: add, splitPanel } = store.getState();
@@ -47,9 +50,25 @@ export const SurfaceToolbar: React.FC = () => {
       <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-purple-200">
         <Move className="w-3 h-3" /> Design
       </span>
-      <span className="text-[8px] font-mono text-zinc-500 max-w-44 leading-tight">
-        drag controls + panels · drag borders to resize
+      <span className="text-[8px] font-mono text-zinc-500 max-w-40 leading-tight">
+        drag controls + panels · Ctrl+Z undo · Ctrl+S save
       </span>
+      <button
+        onClick={() => store.getState().undo()}
+        disabled={!canUndo}
+        className="grid place-items-center w-6 h-6 rounded border border-white/10 text-zinc-300 enabled:hover:text-purple-200 enabled:hover:border-purple-400/50 disabled:opacity-30"
+        title="Undo (Ctrl+Z)"
+      >
+        <Undo2 className="w-3 h-3" />
+      </button>
+      <button
+        onClick={() => store.getState().redo()}
+        disabled={!canRedo}
+        className="grid place-items-center w-6 h-6 rounded border border-white/10 text-zinc-300 enabled:hover:text-purple-200 enabled:hover:border-purple-400/50 disabled:opacity-30"
+        title="Redo (Ctrl+Shift+Z / Ctrl+Y)"
+      >
+        <Redo2 className="w-3 h-3" />
+      </button>
       <button
         onClick={addPanel}
         className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-white/10 text-zinc-300 hover:text-purple-200 hover:border-purple-400/50 text-[8px] font-bold uppercase tracking-wider"
@@ -65,9 +84,20 @@ export const SurfaceToolbar: React.FC = () => {
         <Copy className="w-3 h-3" /> {copied ? 'Copied' : 'Copy'}
       </button>
       <button
+        onClick={() => {
+          store.getState().saveAsDefault();
+          setSaved(true);
+          window.setTimeout(() => setSaved(false), 1400);
+        }}
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-white/10 text-zinc-300 hover:text-emerald-200 hover:border-emerald-400/50 text-[8px] font-bold uppercase tracking-wider"
+        title="Save the current layout as the default this surface resets to (Ctrl+S)"
+      >
+        <Save className="w-3 h-3" /> {saved ? 'Saved' : 'Save'}
+      </button>
+      <button
         onClick={() => store.getState().reset()}
         className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-white/10 text-zinc-300 hover:text-rose-300 hover:border-rose-400/50 text-[8px] font-bold uppercase tracking-wider"
-        title="Reset to the default layout"
+        title="Reset to the saved/shipped default layout"
       >
         <RotateCcw className="w-3 h-3" /> Reset
       </button>

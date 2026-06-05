@@ -28,6 +28,7 @@ interface Props {
   design: boolean;
   justify?: Justify;
   mirror?: boolean;
+  uniform?: boolean;
   margins?: { t: number; r: number; b: number; l: number };
 }
 
@@ -111,11 +112,13 @@ const JUSTIFY_ICON: Record<Justify, React.ComponentType<{ className?: string }>>
 // Cap a control's size in 'natural' (compact) fill mode so dead space appears
 // and the control can be justified within the cell.
 const NATURAL_CAP = 60;
+// One shared size for every control when a panel is in uniform mode.
+const UNIFORM_CAP = 46;
 
 // Deliberately NOT memoized: the host tab rebuilds its registry (with fresh
 // closures carrying live values) on each render, so the cell must re-render
 // with the surface to reflect live control state.
-export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, margins }) => {
+export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, uniform, margins }) => {
   const { surfaceId, store, registry } = useSurface();
   const fillMode = useLayoutPrefs((s) => s.fillMode);
   const snapPx = useLayoutPrefs((s) => s.snapPx);
@@ -141,8 +144,10 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
   const label = def?.label ?? (spacer ? 'Spacer' : widgetId);
   const acceptDrop = (e: React.DragEvent) => design && e.dataTransfer.types.includes(WIDGET_MIME);
 
-  const fill = fillMode === 'scale';
-  const effSize = fill ? size : { w: Math.min(size.w, NATURAL_CAP), h: Math.min(size.h, NATURAL_CAP) };
+  // Uniform mode forces compact, equal-sized controls regardless of fill mode.
+  const fill = uniform ? false : fillMode === 'scale';
+  const cap = uniform ? UNIFORM_CAP : NATURAL_CAP;
+  const effSize = fill ? size : { w: Math.min(size.w, cap), h: Math.min(size.h, cap) };
   const JustIcon = JUSTIFY_ICON[justify];
   const m = margins ?? { t: 0, r: 0, b: 0, l: 0 };
   const showMargins = design && (hover || marginDragging);

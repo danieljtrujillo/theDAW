@@ -12,7 +12,7 @@
  * (reversed widget order + per-widget mirror opt) come from the layout store.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, X } from 'lucide-react';
+import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, X } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { Splitter } from './Splitter';
@@ -24,11 +24,12 @@ const PanelHeader: React.FC<{
   nodeId: NodeId;
   title: string;
   mirror: boolean;
+  uniform: boolean;
   flow: Axis;
   padPx: number;
   surfaceId: string;
   store: SurfaceStoreApi;
-}> = ({ nodeId, title, mirror, flow, padPx, surfaceId, store }) => {
+}> = ({ nodeId, title, mirror, uniform, flow, padPx, surfaceId, store }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -100,6 +101,13 @@ const PanelHeader: React.FC<{
         <SeparatorHorizontal className="w-3 h-3" />
       </button>
       <button
+        onClick={() => store.getState().togglePanelUniform(nodeId)}
+        title={uniform ? 'Uniform sizing ON — click for free sizing' : 'Uniform control sizing (equal size for every control here)'}
+        className={uniform ? 'text-amber-200' : 'text-purple-50/80 hover:text-white'}
+      >
+        <Grid2x2 className="w-3 h-3" />
+      </button>
+      <button
         onClick={() => store.getState().togglePanelMirror(nodeId)}
         title={mirror ? 'Mirrored — click to un-mirror' : 'Mirror this panel (reverse order, flip icons)'}
         className={mirror ? 'text-amber-200' : 'text-purple-50/80 hover:text-white'}
@@ -155,11 +163,14 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   const isPinned = !!node.pinned;
   const padPx = node.padPx ?? 0;
 
-  // Uniform chrome: widget panels match the hardware-card frame so all panel
-  // edges read the same; pinned panels stay transparent (host owns its card).
+  // Frames live on REGION CONTAINERS now, so leaf widget panels are transparent
+  // (controls float on the region's background). Pinned panels host their own
+  // card. In Design Mode a faint dashed outline keeps each panel grabbable.
   const chrome = isPinned
     ? 'bg-transparent'
-    : `rounded border bg-(--panel) ${design ? 'border-purple-400/60' : 'border-(--panel-border)'}`;
+    : design
+      ? 'rounded border border-dashed border-purple-400/30'
+      : 'bg-transparent';
   // Pinned panels host scrollable components and must clip; widget panels stay
   // overflow-visible so a control's bulging readout/number can spill into the
   // (empty) gap instead of being clipped at the panel edge.
@@ -187,7 +198,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
       onDragLeave={design ? (e) => { e.stopPropagation(); setDockEdge(null); } : undefined}
       onDrop={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; const p = decodePanel(e.dataTransfer.getData(PANEL_MIME)); const edge = computeEdge(e); setDockEdge(null); if (!p || p.surfaceId !== surfaceId) return; e.preventDefault(); e.stopPropagation(); store.getState().dockNode(p.panelId, nodeId, edge); } : undefined}
     >
-      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} />}
+      {design && <PanelHeader nodeId={nodeId} title={node.title} mirror={!!node.mirror} uniform={!!node.uniform} flow={node.flow} padPx={padPx} surfaceId={surfaceId} store={store} />}
 
       <div
         ref={bodyRef}
@@ -226,7 +237,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
           <FrGrid
             axis={node.flow}
             ids={displayIds}
-            fr={node.widgetFr ?? {}}
+            fr={node.uniform ? {} : (node.widgetFr ?? {})}
             design={design}
             gap={4}
             className="flex-1 min-h-0 min-w-0"
@@ -239,6 +250,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
                 design={design}
                 justify={node.widgetJustify?.[wid]}
                 mirror={node.mirror}
+                uniform={node.uniform}
                 margins={node.widgetMargins?.[wid]}
               />
             )}
