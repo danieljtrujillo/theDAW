@@ -6,7 +6,7 @@
  * across containers because the store's `reorderPanel` accepts any target).
  */
 import React, { useState } from 'react';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, Rows3, Columns3 } from 'lucide-react';
 import { useSurface } from './surfaceContext';
 import { FrGrid } from './FrGrid';
 import { SurfacePanel } from './SurfacePanel';
@@ -94,17 +94,26 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
         )}
       />
       {design && (
-        <div
-          draggable
-          onDragStart={(e) => {
-            e.stopPropagation();
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData(PANEL_MIME, encode({ surfaceId, panelId: nodeId }));
-          }}
-          title="Drag this row/column to dock it elsewhere"
-          className="absolute bottom-0 right-0 z-50 h-3 w-3 grid place-items-center rounded-tl bg-cyan-600/85 hover:bg-cyan-500 cursor-grab active:cursor-grabbing"
-        >
-          <GripVertical className="w-2 h-2 text-cyan-50" />
+        <div className="absolute bottom-0 right-0 z-50 flex items-center gap-px">
+          <button
+            onClick={() => store.getState().toggleContainerAxis(nodeId)}
+            title={`This row/column is ${node.axis === 'row' ? 'horizontal' : 'vertical'} — click to flip`}
+            className="h-3 w-3 grid place-items-center rounded-t bg-cyan-700/85 hover:bg-cyan-500 text-cyan-50"
+          >
+            {node.axis === 'row' ? <Columns3 className="w-2 h-2" /> : <Rows3 className="w-2 h-2" />}
+          </button>
+          <div
+            draggable
+            onDragStart={(e) => {
+              e.stopPropagation();
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData(PANEL_MIME, encode({ surfaceId, panelId: nodeId }));
+            }}
+            title="Drag this row/column to dock it elsewhere"
+            className="h-3 w-3 grid place-items-center rounded-tl bg-cyan-600/85 hover:bg-cyan-500 cursor-grab active:cursor-grabbing"
+          >
+            <GripVertical className="w-2 h-2 text-cyan-50" />
+          </div>
         </div>
       )}
     </div>

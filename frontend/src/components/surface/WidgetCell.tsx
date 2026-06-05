@@ -28,7 +28,74 @@ interface Props {
   design: boolean;
   justify?: Justify;
   mirror?: boolean;
+  margins?: { t: number; r: number; b: number; l: number };
 }
+
+type Side = 't' | 'r' | 'b' | 'l';
+
+/** A draggable edge handle that sets one side's margin. Snaps to `snapPx`
+ *  (0 = off); hold Ctrl while dragging for a 1px fine step. Shows a live px
+ *  label while dragging. */
+const MarginHandle: React.FC<{
+  side: Side;
+  value: number;
+  snapPx: number;
+  onSet: (px: number) => void;
+  onDragState: (active: boolean) => void;
+}> = ({ side, value, snapPx, onSet, onDragState }) => {
+  const drag = useRef(false);
+  const startPos = useRef(0);
+  const startVal = useRef(0);
+  const [lbl, setLbl] = useState<number | null>(null);
+  const axisY = side === 't' || side === 'b';
+  const sign = side === 't' || side === 'l' ? 1 : -1;
+  const down = (e: React.PointerEvent) => {
+    drag.current = true;
+    startPos.current = axisY ? e.clientY : e.clientX;
+    startVal.current = value;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
+    onDragState(true);
+    setLbl(value);
+  };
+  const move = (e: React.PointerEvent) => {
+    if (!drag.current) return;
+    const cur = axisY ? e.clientY : e.clientX;
+    const delta = (cur - startPos.current) * sign;
+    const step = e.ctrlKey ? 1 : Math.max(1, snapPx);
+    let next = Math.round((startVal.current + delta) / step) * step;
+    next = Math.max(0, Math.min(64, next));
+    onSet(next);
+    setLbl(next);
+  };
+  const up = (e: React.PointerEvent) => {
+    drag.current = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    onDragState(false);
+    setLbl(null);
+  };
+  const pos =
+    side === 't' ? 'top-0 left-0 right-0 h-1.5 cursor-row-resize'
+      : side === 'b' ? 'bottom-0 left-0 right-0 h-1.5 cursor-row-resize'
+        : side === 'l' ? 'left-0 top-0 bottom-0 w-1.5 cursor-col-resize'
+          : 'right-0 top-0 bottom-0 w-1.5 cursor-col-resize';
+  const name = side === 't' ? 'top' : side === 'b' ? 'bottom' : side === 'l' ? 'left' : 'right';
+  return (
+    <div
+      onPointerDown={down}
+      onPointerMove={move}
+      onPointerUp={up}
+      onPointerCancel={up}
+      title={`Drag to set ${name} margin (Ctrl = fine)`}
+      className={`absolute z-40 bg-amber-400/30 hover:bg-amber-300/70 ${pos}`}
+    >
+      {lbl != null && (
+        <span className="absolute top-0 left-1 text-[7px] font-mono text-amber-100 bg-black/80 px-0.5 rounded pointer-events-none">{lbl}</span>
+      )}
+    </div>
+  );
+};
 
 const JUSTIFY_CLASS: Record<Justify, string> = {
   start: 'justify-items-start',
@@ -48,12 +115,15 @@ const NATURAL_CAP = 60;
 // Deliberately NOT memoized: the host tab rebuilds its registry (with fresh
 // closures carrying live values) on each render, so the cell must re-render
 // with the surface to reflect live control state.
-export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror }) => {
+export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, justify = 'center', mirror, margins }) => {
   const { surfaceId, store, registry } = useSurface();
   const fillMode = useLayoutPrefs((s) => s.fillMode);
+  const snapPx = useLayoutPrefs((s) => s.snapPx);
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [over, setOver] = useState(false);
+  const [hover, setHover] = useState(false);
+  const [marginDragging, setMarginDragging] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -74,11 +144,16 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
   const fill = fillMode === 'scale';
   const effSize = fill ? size : { w: Math.min(size.w, NATURAL_CAP), h: Math.min(size.h, NATURAL_CAP) };
   const JustIcon = JUSTIFY_ICON[justify];
+  const m = margins ?? { t: 0, r: 0, b: 0, l: 0 };
+  const showMargins = design && (hover || marginDragging);
 
   return (
     <div
       ref={ref}
       className={`relative min-w-0 min-h-0 h-full w-full grid items-center ${JUSTIFY_CLASS[justify]} ${over ? 'ring-2 ring-inset ring-emerald-300/80 rounded' : ''}`}
+      style={{ paddingTop: m.t, paddingRight: m.r, paddingBottom: m.b, paddingLeft: m.l }}
+      onPointerEnter={design ? () => setHover(true) : undefined}
+      onPointerLeave={design ? () => setHover(false) : undefined}
       onDragOver={
         design
           ? (e) => {
@@ -150,6 +225,21 @@ export const WidgetCell: React.FC<Props> = ({ widgetId, panelId, index, design, 
           >
             <X className="w-2.5 h-2.5" />
           </button>
+        </>
+      )}
+
+      {showMargins && (
+        <>
+          {(['t', 'r', 'b', 'l'] as const).map((side) => (
+            <MarginHandle
+              key={side}
+              side={side}
+              value={m[side]}
+              snapPx={snapPx}
+              onSet={(px) => store.getState().setWidgetMargin(panelId, widgetId, side, px)}
+              onDragState={setMarginDragging}
+            />
+          ))}
         </>
       )}
     </div>

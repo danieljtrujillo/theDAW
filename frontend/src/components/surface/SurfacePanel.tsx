@@ -160,6 +160,10 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   const chrome = isPinned
     ? 'bg-transparent'
     : `rounded border bg-(--panel) ${design ? 'border-purple-400/60' : 'border-(--panel-border)'}`;
+  // Pinned panels host scrollable components and must clip; widget panels stay
+  // overflow-visible so a control's bulging readout/number can spill into the
+  // (empty) gap instead of being clipped at the panel edge.
+  const clip = isPinned ? 'overflow-hidden' : 'overflow-visible';
 
   // Mirror reverses the visible widget order; the true store index is still
   // passed to each cell so drag-reorder + resize stay correct.
@@ -178,7 +182,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
 
   return (
     <div
-      className={`relative h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden ${chrome}`}
+      className={`relative h-full w-full min-h-0 min-w-0 flex flex-col ${clip} ${chrome}`}
       onDragOver={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'; setDockEdge(computeEdge(e)); } : undefined}
       onDragLeave={design ? (e) => { e.stopPropagation(); setDockEdge(null); } : undefined}
       onDrop={design ? (e) => { if (!e.dataTransfer.types.includes(PANEL_MIME)) return; const p = decodePanel(e.dataTransfer.getData(PANEL_MIME)); const edge = computeEdge(e); setDockEdge(null); if (!p || p.surfaceId !== surfaceId) return; e.preventDefault(); e.stopPropagation(); store.getState().dockNode(p.panelId, nodeId, edge); } : undefined}
@@ -235,6 +239,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
                 design={design}
                 justify={node.widgetJustify?.[wid]}
                 mirror={node.mirror}
+                margins={node.widgetMargins?.[wid]}
               />
             )}
           />

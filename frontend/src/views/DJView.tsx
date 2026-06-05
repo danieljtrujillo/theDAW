@@ -24,7 +24,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, Plus, Save, Trash2, Cast, Music2,
-  ChevronDown, ChevronRight, Repeat, Magnet, Gauge, Lock,
+  ChevronDown, ChevronRight, Magnet, Gauge, Lock,
   KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield, Headphones, Piano, X,
 } from 'lucide-react';
 import { subscribeToMidi } from '../state/midiBus';
@@ -214,7 +214,7 @@ type DeckCtl = ReturnType<typeof useDeck>;
  * panels (hero waveforms, sampler, FX racks, Next lane, source tree, library)
  * host a whole component; every mixer + deck control is an individual widget the
  * user can relocate in Design Mode. Nothing moves until the user drags. */
-const DJ_LAYOUT_VERSION = 2;
+const DJ_LAYOUT_VERSION = 3;
 
 const defaultDjLayout: SurfaceLayout = {
   version: DJ_LAYOUT_VERSION,
@@ -225,9 +225,25 @@ const defaultDjLayout: SurfaceLayout = {
     body: { id: 'body', type: 'container', axis: 'row', children: ['samplerP', 'center', 'browser'], fr: { samplerP: 1.86, center: 13.9, browser: 3.2 } },
     samplerP: { id: 'samplerP', type: 'panel', title: 'Sampler', flow: 'row', widgets: [], pinned: 'sampler' },
     center: { id: 'center', type: 'container', axis: 'column', children: ['deckmix', 'fxrow'], fr: { deckmix: 5, fxrow: 2 } },
-    deckmix: { id: 'deckmix', type: 'container', axis: 'row', children: ['deckA', 'mixer', 'deckB'], fr: { deckA: 5.3, mixer: 3.2, deckB: 5.3 } },
-    deckA: { id: 'deckA', type: 'panel', title: 'Deck A', flow: 'column', widgets: ['headerA', 'bpmA', 'keyA', 'jogA', 'transportA', 'hotcuesA', 'loopA', 'perfA'], widgetFr: { headerA: 1.2, bpmA: 0.5, keyA: 0.5, jogA: 3.4, transportA: 1, hotcuesA: 0.9, loopA: 0.9, perfA: 1.1 } },
-    deckB: { id: 'deckB', type: 'panel', title: 'Deck B', flow: 'column', widgets: ['headerB', 'bpmB', 'keyB', 'jogB', 'transportB', 'hotcuesB', 'loopB', 'perfB'], widgetFr: { headerB: 1.2, bpmB: 0.5, keyB: 0.5, jogB: 3.4, transportB: 1, hotcuesB: 0.9, loopB: 0.9, perfB: 1.1 } },
+    deckmix: { id: 'deckmix', type: 'container', axis: 'row', children: ['deckAcont', 'mixer', 'deckBcont'], fr: { deckAcont: 5.3, mixer: 3.2, deckBcont: 5.3 } },
+    // Deck A — a column of pad-row sub-panels so every control is its own widget.
+    deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'pdA-meta', 'pdA-jog', 'pdA-trans', 'pdA-hc', 'pdA-loop', 'pdA-perf'], fr: { 'pdA-head': 1, 'pdA-meta': 0.7, 'pdA-jog': 3.4, 'pdA-trans': 1, 'pdA-hc': 0.9, 'pdA-loop': 0.9, 'pdA-perf': 1.1 } },
+    'pdA-head': { id: 'pdA-head', type: 'panel', title: 'Deck A', flow: 'row', widgets: ['headerA'] },
+    'pdA-meta': { id: 'pdA-meta', type: 'panel', title: 'A · Info', flow: 'row', widgets: ['bpmA', 'keyA'] },
+    'pdA-jog': { id: 'pdA-jog', type: 'panel', title: 'A · Jog', flow: 'row', widgets: ['jogA'] },
+    'pdA-trans': { id: 'pdA-trans', type: 'panel', title: 'A · Transport', flow: 'row', widgets: ['cueA', 'playA', 'syncA', 'syncLockA', 'headCueA'] },
+    'pdA-hc': { id: 'pdA-hc', type: 'panel', title: 'A · Hotcues', flow: 'row', widgets: ['hcA1', 'hcA2', 'hcA3', 'hcA4'] },
+    'pdA-loop': { id: 'pdA-loop', type: 'panel', title: 'A · Loop', flow: 'row', widgets: ['loopA_0', 'loopA_1', 'loopA_2', 'loopA_3', 'loopA_4', 'loopOutA'] },
+    'pdA-perf': { id: 'pdA-perf', type: 'panel', title: 'A · Perf', flow: 'row', widgets: ['rollA_0', 'rollA_1', 'rollA_2', 'slipA', 'jumpA_0', 'jumpA_1', 'jumpA_2', 'jumpA_3', 'keylockA'] },
+    // Deck B — mirror structure.
+    deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'pdB-meta', 'pdB-jog', 'pdB-trans', 'pdB-hc', 'pdB-loop', 'pdB-perf'], fr: { 'pdB-head': 1, 'pdB-meta': 0.7, 'pdB-jog': 3.4, 'pdB-trans': 1, 'pdB-hc': 0.9, 'pdB-loop': 0.9, 'pdB-perf': 1.1 } },
+    'pdB-head': { id: 'pdB-head', type: 'panel', title: 'Deck B', flow: 'row', widgets: ['headerB'] },
+    'pdB-meta': { id: 'pdB-meta', type: 'panel', title: 'B · Info', flow: 'row', widgets: ['bpmB', 'keyB'] },
+    'pdB-jog': { id: 'pdB-jog', type: 'panel', title: 'B · Jog', flow: 'row', widgets: ['jogB'] },
+    'pdB-trans': { id: 'pdB-trans', type: 'panel', title: 'B · Transport', flow: 'row', widgets: ['cueB', 'playB', 'syncB', 'syncLockB', 'headCueB'] },
+    'pdB-hc': { id: 'pdB-hc', type: 'panel', title: 'B · Hotcues', flow: 'row', widgets: ['hcB1', 'hcB2', 'hcB3', 'hcB4'] },
+    'pdB-loop': { id: 'pdB-loop', type: 'panel', title: 'B · Loop', flow: 'row', widgets: ['loopB_0', 'loopB_1', 'loopB_2', 'loopB_3', 'loopB_4', 'loopOutB'] },
+    'pdB-perf': { id: 'pdB-perf', type: 'panel', title: 'B · Perf', flow: 'row', widgets: ['rollB_0', 'rollB_1', 'rollB_2', 'slipB', 'jumpB_0', 'jumpB_1', 'jumpB_2', 'jumpB_3', 'keylockB'] },
     mixer: { id: 'mixer', type: 'container', axis: 'column', children: ['mixToggles', 'mixChans', 'mixXfade'], fr: { mixToggles: 1, mixChans: 6, mixXfade: 1.6 } },
     mixToggles: { id: 'mixToggles', type: 'panel', title: 'Modes', flow: 'row', widgets: ['qtz', 'autoGain', 'lim', 'midiMap'] },
     mixChans: { id: 'mixChans', type: 'container', axis: 'row', children: ['pchAP', 'eqAP', 'chAP', 'chBP', 'eqBP', 'pchBP'], fr: { pchAP: 1, eqAP: 1.5, chAP: 2.4, chBP: 2.4, eqBP: 1.5, pchBP: 1 } },
@@ -1337,7 +1353,6 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   const addDeck = (d: 'A' | 'B') => {
     const accent = d === 'A' ? 'purple' : 'cyan';
     const rgbc = DECK_RGB[accent];
-    const accentText = accent === 'purple' ? 'text-purple-300' : 'text-cyan-300';
     const ctl = d === 'A' ? p.ctlA : p.ctlB;
     const hasTrack = d === 'A' ? p.hasA : p.hasB;
     const isPlaying = d === 'A' ? p.playingA : p.playingB;
@@ -1366,56 +1381,77 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
     ) };
 
     reg[`bpm${d}`] = { id: `bpm${d}`, label: `BPM ${d}`, group: grp, kind: 'fixed', source: 'builtin', render: () => (
-      <span className="px-1 py-0.5 rounded bg-black/40 border border-white/10 text-[8px] text-zinc-300 tabular-nums whitespace-nowrap font-mono"><span className="text-zinc-600">BPM </span>{ctl.bpm != null ? ctl.bpm.toFixed(1) : (ctl.analyzing ? '…' : '—')}</span>
+      <div className="h-full w-full grid place-items-center px-1 overflow-hidden">
+        <div
+          className="flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border tabular-nums"
+          style={{
+            borderColor: rgba(rgbc, 0.5),
+            background: `linear-gradient(180deg, ${rgba(rgbc, 0.18)}, ${rgba(rgbc, 0.04)})`,
+            boxShadow: `0 0 12px ${rgba(rgbc, 0.3)}, inset 0 0 6px ${rgba(rgbc, 0.12)}`,
+          }}
+          title="Detected tempo"
+        >
+          <span className="text-[7px] font-black uppercase tracking-[0.22em]" style={{ color: rgba(rgbc, 0.85) }}>BPM</span>
+          <span className="text-[15px] font-black leading-none text-white" style={{ textShadow: `0 0 8px ${rgba(rgbc, 0.6)}` }}>
+            {ctl.bpm != null ? ctl.bpm.toFixed(1) : ctl.analyzing ? '…' : '—'}
+          </span>
+        </div>
+      </div>
     ) };
 
     reg[`key${d}`] = { id: `key${d}`, label: `Key ${d}`, group: grp, kind: 'fixed', source: 'builtin', render: () => (
-      cam ? (
-        <span className="px-1 py-0.5 rounded text-[8px] font-black border whitespace-nowrap font-mono" style={{ color: `hsl(${cam.hue} 80% 75%)`, borderColor: `hsl(${cam.hue} 70% 45% / 0.6)`, background: `hsl(${cam.hue} 70% 45% / 0.12)` }} title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}>{cam.code}</span>
-      ) : <span className="px-1 py-0.5 rounded bg-black/40 border border-white/10 text-[8px] text-zinc-600 font-mono">KEY {ctl.a?.key ? keyLabel(ctl.a.key, ctl.a.scale) : '—'}</span>
+      <div className="h-full w-full grid place-items-center px-1 overflow-hidden">
+        {cam ? (
+          <div
+            className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-md border"
+            style={{
+              borderColor: `hsl(${cam.hue} 70% 55% / 0.6)`,
+              background: `linear-gradient(180deg, hsl(${cam.hue} 70% 50% / 0.22), hsl(${cam.hue} 70% 50% / 0.05))`,
+              boxShadow: `0 0 12px hsl(${cam.hue} 80% 55% / 0.4)`,
+            }}
+            title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
+          >
+            <span className="grid place-items-center w-5 h-5 rounded-full text-[8px] font-black shrink-0" style={{ background: `hsl(${cam.hue} 85% 62%)`, color: '#0a0a0a', boxShadow: `0 0 6px hsl(${cam.hue} 85% 60% / 0.7)` }}>
+              {cam.code.replace(/[AB]/i, '')}
+            </span>
+            <span className="text-[15px] font-black leading-none" style={{ color: `hsl(${cam.hue} 85% 70%)`, textShadow: `0 0 8px hsl(${cam.hue} 80% 55% / 0.55)` }}>{cam.code}</span>
+          </div>
+        ) : (
+          <div className="flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-black/40">
+            <span className="text-[7px] font-black uppercase tracking-[0.22em] text-zinc-500">KEY</span>
+            <span className="text-[13px] font-black leading-none text-zinc-300">{ctl.a?.key ? keyLabel(ctl.a.key, ctl.a.scale) : '—'}</span>
+          </div>
+        )}
+      </div>
     ) };
 
     reg[`jog${d}`] = { id: `jog${d}`, label: `Jog ${d}`, group: grp, kind: 'jog', source: 'builtin', render: () => (
       <div className="h-full w-full grid place-items-center"><JogWheel deckId={d} color={rgbc} disabled={!hasTrack} fill /></div>
     ) };
 
-    reg[`transport${d}`] = { id: `transport${d}`, label: `Transport ${d}`, group: grp, kind: 'pad', source: 'builtin', render: (_s, opts) => center(
-      <div className={`flex items-center justify-center gap-1 flex-wrap ${opts?.mirror ? 'flex-row-reverse' : ''}`}>
-        <SlidePad color={rgbc} disabled={!hasTrack} onClick={onCue} className={PAD_SM} title="Cue to start">Cue</SlidePad>
-        <SlidePad color={rgbc} disabled={!hasTrack} onClick={onPlay} className="px-3 py-1" title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}</SlidePad>
-        <SlidePad color={rgbc} disabled={!p.canSync} onClick={() => p.onSync(d)} className={PAD_SM} title={p.canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}>Sync</SlidePad>
-        <SlidePad color={rgbc} on={syncLocked} disabled={!p.canSync} onClick={() => p.onSyncLock(d)} className="px-1.5 py-1" title="Sync-Lock — hold tempo + phase"><Lock className="w-3 h-3" /></SlidePad>
-        <SlidePad color={[34, 211, 238]} on={headCued} disabled={!hasTrack} onClick={() => p.onHeadCue(d)} className="px-1.5 py-1" title="Cue — pre-listen in the headphone output"><Headphones className="w-3 h-3" /></SlidePad>
-      </div>
-    ) };
+    // Each pad is its own relocatable widget (atomized transport / hotcues / loop / perf).
+    const padW = (id: string, label: string, node: React.ReactNode) => {
+      reg[id] = { id, label, group: grp, kind: 'pad', source: 'builtin', render: () => center(node) };
+    };
 
-    reg[`hotcues${d}`] = { id: `hotcues${d}`, label: `Hotcues ${d}`, group: grp, kind: 'pad', source: 'builtin', render: (_s, opts) => center(
-      <div className={`flex items-center justify-center gap-1 flex-wrap ${opts?.mirror ? 'flex-row-reverse' : ''}`}>
-        {Array.from({ length: HOTCUE_SLOTS }, (_, i) => {
-          const c = ctl.cues?.[i] ?? null; const set = c != null;
-          return <SlidePad key={i} on={set} color={rgbc} disabled={!hasTrack} className={PAD_HC} onClick={() => ctl.setHotcue(i)} onContextMenu={(e) => { e.preventDefault(); ctl.dropHotcue(i); }} title={set ? `Cue ${i + 1} @ ${fmtTime(c)} — click to jump, right-click to clear` : `Set cue ${i + 1} at the playhead`}>{set ? `▶${i + 1}` : `○${i + 1}`}</SlidePad>;
-        })}
-      </div>
-    ) };
+    padW(`cue${d}`, `Cue ${d}`, <SlidePad color={rgbc} disabled={!hasTrack} onClick={onCue} className={PAD_SM} title="Cue to start">Cue</SlidePad>);
+    padW(`play${d}`, `Play ${d}`, <SlidePad color={rgbc} disabled={!hasTrack} onClick={onPlay} className="px-3 py-1" title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}</SlidePad>);
+    padW(`sync${d}`, `Sync ${d}`, <SlidePad color={rgbc} disabled={!p.canSync} onClick={() => p.onSync(d)} className={PAD_SM} title={p.canSync ? 'Beatmatch this deck to the other (tempo + phase)' : 'SYNC needs BPM on both decks'}>Sync</SlidePad>);
+    padW(`syncLock${d}`, `Sync-Lock ${d}`, <SlidePad color={rgbc} on={syncLocked} disabled={!p.canSync} onClick={() => p.onSyncLock(d)} className="px-1.5 py-1" title="Sync-Lock — hold tempo + phase"><Lock className="w-3 h-3" /></SlidePad>);
+    padW(`headCue${d}`, `HP Cue ${d}`, <SlidePad color={[34, 211, 238]} on={headCued} disabled={!hasTrack} onClick={() => p.onHeadCue(d)} className="px-1.5 py-1" title="Cue — pre-listen in the headphone output"><Headphones className="w-3 h-3" /></SlidePad>);
 
-    reg[`loop${d}`] = { id: `loop${d}`, label: `Loop ${d}`, group: grp, kind: 'pad', source: 'builtin', render: (_s, opts) => center(
-      <div className={`flex items-center justify-center gap-1 flex-wrap ${opts?.mirror ? 'flex-row-reverse' : ''}`}>
-        <Repeat className={`w-3 h-3 shrink-0 ${ctl.loopActive ? accentText : 'text-zinc-600'}`} />
-        {BEAT_SIZES.map((b) => (<SlidePad key={b.beats} className={PAD_BT} on={ctl.loopActive && ctl.activeLoopBeats === b.beats} color={rgbc} disabled={!hasTrack} onClick={() => ctl.toggleBeatLoop(b.beats)} title={`${b.label}-beat loop`}>{b.label}</SlidePad>))}
-        <SlidePad className={PAD_BT} danger disabled={!ctl.loopActive} onClick={ctl.exitLoop} title="Exit loop">Out</SlidePad>
-      </div>
-    ) };
+    for (let i = 0; i < HOTCUE_SLOTS; i++) {
+      const c = ctl.cues?.[i] ?? null; const set = c != null;
+      padW(`hc${d}${i + 1}`, `Hotcue ${d}${i + 1}`, <SlidePad on={set} color={rgbc} disabled={!hasTrack} className={PAD_HC} onClick={() => ctl.setHotcue(i)} onContextMenu={(e) => { e.preventDefault(); ctl.dropHotcue(i); }} title={set ? `Cue ${i + 1} @ ${fmtTime(c)} — click to jump, right-click to clear` : `Set cue ${i + 1} at the playhead`}>{set ? `▶${i + 1}` : `○${i + 1}`}</SlidePad>);
+    }
 
-    reg[`perf${d}`] = { id: `perf${d}`, label: `Roll/Jump ${d}`, group: grp, kind: 'pad', source: 'builtin', render: (_s, opts) => center(
-      <div className={`flex items-center justify-center gap-1 flex-wrap ${opts?.mirror ? 'flex-row-reverse' : ''}`}>
-        <span className="text-[7px] font-mono uppercase text-zinc-600">Roll</span>
-        {ROLL_SIZES.map((b) => (<SlidePad key={b.beats} className={PAD_BT} color={rgbc} disabled={!hasTrack} onPointerDown={(e) => { e.preventDefault(); ctl.rollDown(b.beats); }} onPointerUp={ctl.rollUp} onPointerLeave={(e) => { if (e.buttons) ctl.rollUp(); }} title={`${b.label}-beat loop-roll (hold)`}>{b.label}</SlidePad>))}
-        <SlidePad className={PAD_BT} on={ctl.slip} color={[245, 158, 11]} disabled={!hasTrack} onClick={() => ctl.setSlip(!ctl.slip)} title="Slip mode">Slip</SlidePad>
-        <span className="text-[7px] font-mono uppercase text-zinc-600 ml-0.5">Jump</span>
-        {([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).map(([n, lbl]) => (<SlidePad key={n} className={PAD_BT} color={rgbc} disabled={!hasTrack} onClick={() => ctl.beatJump(n)} title={`Jump ${n > 0 ? '+' : ''}${n} beat${Math.abs(n) === 1 ? '' : 's'}`}>{lbl}</SlidePad>))}
-        <SlidePad className="px-1.5 py-1" on={ctl.keylock} color={rgbc} disabled={!hasTrack} onClick={() => ctl.setKeylock(!ctl.keylock)} title="Key-lock / Master Tempo"><KeyRound className="w-3 h-3" /></SlidePad>
-      </div>
-    ) };
+    BEAT_SIZES.forEach((b, bi) => padW(`loop${d}_${bi}`, `Loop ${b.label} ${d}`, <SlidePad className={PAD_BT} on={ctl.loopActive && ctl.activeLoopBeats === b.beats} color={rgbc} disabled={!hasTrack} onClick={() => ctl.toggleBeatLoop(b.beats)} title={`${b.label}-beat loop`}>{b.label}</SlidePad>));
+    padW(`loopOut${d}`, `Loop Out ${d}`, <SlidePad className={PAD_BT} danger disabled={!ctl.loopActive} onClick={ctl.exitLoop} title="Exit loop">Out</SlidePad>);
+
+    ROLL_SIZES.forEach((b, ri) => padW(`roll${d}_${ri}`, `Roll ${b.label} ${d}`, <SlidePad className={PAD_BT} color={rgbc} disabled={!hasTrack} onPointerDown={(e) => { e.preventDefault(); ctl.rollDown(b.beats); }} onPointerUp={ctl.rollUp} onPointerLeave={(e) => { if (e.buttons) ctl.rollUp(); }} title={`${b.label}-beat loop-roll (hold)`}>{b.label}</SlidePad>));
+    padW(`slip${d}`, `Slip ${d}`, <SlidePad className={PAD_BT} on={ctl.slip} color={[245, 158, 11]} disabled={!hasTrack} onClick={() => ctl.setSlip(!ctl.slip)} title="Slip mode">Slip</SlidePad>);
+    ([[-4, '«4'], [-1, '‹1'], [1, '1›'], [4, '4»']] as const).forEach(([n, lbl], ji) => padW(`jump${d}_${ji}`, `Jump ${lbl} ${d}`, <SlidePad className={PAD_BT} color={rgbc} disabled={!hasTrack} onClick={() => ctl.beatJump(n)} title={`Jump ${n > 0 ? '+' : ''}${n} beat${Math.abs(n) === 1 ? '' : 's'}`}>{lbl}</SlidePad>));
+    padW(`keylock${d}`, `Keylock ${d}`, <SlidePad className="px-1.5 py-1" on={ctl.keylock} color={rgbc} disabled={!hasTrack} onClick={() => ctl.setKeylock(!ctl.keylock)} title="Key-lock / Master Tempo"><KeyRound className="w-3 h-3" /></SlidePad>);
   };
   addDeck('A');
   addDeck('B');

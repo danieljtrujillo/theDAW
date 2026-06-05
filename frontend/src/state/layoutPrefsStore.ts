@@ -17,19 +17,27 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 interface LayoutPrefsState {
   fillMode: FillMode;
   gapPx: number;
+  /** Snap step (px) for dragging margins/handles; 0 = no snapping. Hold Ctrl
+   *  while dragging to override with a 1px fine step. */
+  snapPx: number;
   setFillMode: (m: FillMode) => void;
   setGapPx: (px: number) => void;
+  setSnapPx: (px: number) => void;
   reset: () => void;
 }
+
+const DEFAULT_SNAP = 8;
 
 export const useLayoutPrefs = create<LayoutPrefsState>()(
   persist(
     (set) => ({
       fillMode: 'scale',
       gapPx: DEFAULT_GAP,
+      snapPx: DEFAULT_SNAP,
       setFillMode: (m) => set({ fillMode: m }),
       setGapPx: (px) => set({ gapPx: clamp(Math.round(px), 0, 40) }),
-      reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP }),
+      setSnapPx: (px) => set({ snapPx: clamp(Math.round(px), 0, 32) }),
+      reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP, snapPx: DEFAULT_SNAP }),
     }),
     { name: 'thedaw.layoutprefs.v1' },
   ),

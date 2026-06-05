@@ -51,6 +51,8 @@ export interface PanelNode {
   widgetFr?: Record<WidgetId, number>;
   /** Per-widget content alignment within its cell (center when absent). */
   widgetJustify?: Record<WidgetId, 'start' | 'center' | 'end'>;
+  /** Per-widget four-side margins in px (top/right/bottom/left). */
+  widgetMargins?: Record<WidgetId, { t: number; r: number; b: number; l: number }>;
   /** Mirror this panel: reverse widget order + flip composite controls/icons
    *  (left/right deck symmetry). */
   mirror?: boolean;
@@ -97,6 +99,9 @@ export function cloneLayout(l: SurfaceLayout): SurfaceLayout {
         widgets: [...n.widgets],
         widgetFr: n.widgetFr ? { ...n.widgetFr } : undefined,
         widgetJustify: n.widgetJustify ? { ...n.widgetJustify } : undefined,
+        widgetMargins: n.widgetMargins
+          ? Object.fromEntries(Object.entries(n.widgetMargins).map(([k, v]) => [k, { ...v }]))
+          : undefined,
       };
     }
   }
@@ -234,8 +239,11 @@ export interface SurfaceStore {
   reorderPanel: (panelId: NodeId, toContainerId: NodeId, toIndex: number) => void;
   togglePanelMirror: (panelId: NodeId) => void;
   togglePanelFlow: (panelId: NodeId) => void;
+  /** Flip a container between a row and a column (flow at every nesting level). */
+  toggleContainerAxis: (containerId: NodeId) => void;
   setPanelPad: (panelId: NodeId, px: number) => void;
   cycleWidgetJustify: (panelId: NodeId, widgetId: WidgetId) => void;
+  setWidgetMargin: (panelId: NodeId, widgetId: WidgetId, side: 't' | 'r' | 'b' | 'l', px: number) => void;
   /** Insert a flexible empty spacer into a panel. Returns the spacer id. */
   addSpacer: (panelId: NodeId) => NodeId;
   /** Dock a panel/container to an edge of a target node, creating the row or
@@ -387,6 +395,16 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             return { layout };
           }),
 
+        toggleContainerAxis: (containerId) =>
+          set((s) => {
+            const node = s.layout.nodes[containerId];
+            if (!node || node.type !== 'container') return s;
+            const layout = cloneLayout(s.layout);
+            const c = layout.nodes[containerId] as ContainerNode;
+            c.axis = c.axis === 'row' ? 'column' : 'row';
+            return { layout };
+          }),
+
         addSpacer: (panelId) => {
           let spacerId = '';
           set((s) => {
@@ -470,6 +488,19 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             const cur = p.widgetJustify?.[widgetId] ?? 'center';
             const next = order[(order.indexOf(cur) + 1) % order.length];
             p.widgetJustify = { ...(p.widgetJustify ?? {}), [widgetId]: next };
+            return { layout };
+          }),
+
+        setWidgetMargin: (panelId, widgetId, side, px) =>
+          set((s) => {
+            const node = s.layout.nodes[panelId];
+            if (!node || node.type !== 'panel') return s;
+            const layout = cloneLayout(s.layout);
+            const p = layout.nodes[panelId] as PanelNode;
+            const m = { ...(p.widgetMargins ?? {}) };
+            const cur = m[widgetId] ?? { t: 0, r: 0, b: 0, l: 0 };
+            m[widgetId] = { ...cur, [side]: Math.max(0, Math.min(Math.round(px), 64)) };
+            p.widgetMargins = m;
             return { layout };
           }),
 
