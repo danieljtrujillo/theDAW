@@ -629,14 +629,18 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
   // -- Filter to the connected subgraph --------------------------------
   const connected = useMemo(() => {
     const involved = new Set<string>();
-    payload.edges.forEach((e) => {
+    // Defensive: a malformed/empty payload (e.g. backend offline) must degrade
+    // to an empty graph, never crash the whole tab.
+    const allEdges = payload?.edges ?? [];
+    const allNodes = payload?.nodes ?? [];
+    allEdges.forEach((e) => {
       involved.add(e.from_id);
       involved.add(e.to_id);
     });
-    const nodes = payload.nodes.filter((n) => involved.has(n.id));
+    const nodes = allNodes.filter((n) => involved.has(n.id));
     // Also keep any edges whose endpoints both still exist (defensive).
     const idSet = new Set(nodes.map((n) => n.id));
-    const edges = payload.edges.filter(
+    const edges = allEdges.filter(
       (e) => idSet.has(e.from_id) && idSet.has(e.to_id),
     );
     return { nodes, edges };
@@ -1426,13 +1430,15 @@ const Graph3DView: React.FC<{
   // relation, otherwise 100+ disconnected dots dominate the view.
   const connected = useMemo(() => {
     const involved = new Set<string>();
-    payload.edges.forEach((e) => {
+    const allEdges = payload?.edges ?? [];
+    const allNodes = payload?.nodes ?? [];
+    allEdges.forEach((e) => {
       involved.add(e.from_id);
       involved.add(e.to_id);
     });
-    const nodes = payload.nodes.filter((n) => involved.has(n.id));
+    const nodes = allNodes.filter((n) => involved.has(n.id));
     const idSet = new Set(nodes.map((n) => n.id));
-    const edges = payload.edges.filter(
+    const edges = allEdges.filter(
       (e) => idSet.has(e.from_id) && idSet.has(e.to_id),
     );
     return { nodes, edges };

@@ -1,0 +1,509 @@
+import React, { useState, useRef, useMemo, useEffect } from 'react';
+import {
+  Upload, X, Eye, EyeOff, ChevronUp, ChevronDown, Trash2,
+  Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
+} from 'lucide-react';
+import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS } from '../state/effectChainStore';
+import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
+import { useStudioStore } from '../state/studioStore';
+import { useLibraryStore } from '../state/libraryStore';
+import { usePlayerStore } from '../state/playerStore';
+import { useGenerateParamsStore } from '../state/generateParamsStore';
+import { useAppUiStore } from '../state/appUiStore';
+import { SlideKnob } from '../components/audio/SlideKnob';
+import { SlideRow } from '../components/audio/SlideRow';
+import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
+import { EffectsVizPanel } from './EffectsVizPanel';
+import { ControlSurface } from '../components/surface/ControlSurface';
+import type { WidgetRegistry } from '../components/surface/widgetTypes';
+import type { SurfaceLayout } from '../state/surfaceLayoutStore';
+import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory } from '../lib/effectCatalog';
+import '../components/layout/track-controls.css';
+
+/* ═══ MIX (PROCESS) tab — now on the Control-Surface editor ═══════════════════
+   Layout (drag-arrangeable in Design Mode, like DJ):
+     TOP    — 2 viz rows: input + output (toggle waveform / live scope, overlay A/B)
+     MIDDLE — effect rail (categories + Quick Master) | library | chain
+     LOWER  — effectStage (active effect's UI/viz; ModuleShell + hero viz lands here later)
+   The footer is the PROCESS-CHAIN transport. */
+
+const sectionTitle = 'text-[10px] font-black uppercase tracking-widest text-purple-300';
+
+const PARAM_LABELS: Record<string, string> = {
+  lowBoost: 'Low', highBoost: 'High', limiterCeiling: 'Ceil', targetLUFS: 'LUFS',
+  attack: 'Atk', decay: 'Dec', frequency: 'Freq', level: 'Lvl', rate: 'Rate',
+  highpassFreq: 'HP', presenceBoost: 'Pres', degradation: 'Degr', lowpassFreq: 'LP',
+  delayMs: 'Delay', reverbDecay: 'Verb', subBoost: 'Sub', trebleBoost: 'Treb',
+  cancelAmount: 'Cancel', width: 'Width', gain: 'Gain', truePeak: 'Peak',
+  shift: 'Shift', leftMs: 'Left', rightMs: 'Right', fadeInDuration: 'In',
+  fadeOutDuration: 'Out', noiseReduction: 'Noise', windowSize: 'Win',
+  threshold: 'Thr', compressionLevel: 'Lvl', bitrate: 'Rate',
+};
+const prettyParam = (k: string) => PARAM_LABELS[k] ?? (k.length > 6 ? k.slice(0, 6) : k);
+
+interface AudioStats { peakDb: number; rmsDb: number; sampleRate: number; duration: number; }
+
+function analyzeAudio(source: File | string): Promise<AudioStats> {
+  return new Promise((resolve, reject) => {
+    const ctx = new AudioContext();
+    const load = typeof source === 'string'
+      ? fetch(source).then((r) => r.arrayBuffer())
+      : source.arrayBuffer();
+    load.then((buf) => ctx.decodeAudioData(buf))
+      .then((decoded) => {
+        const ch = decoded.getChannelData(0);
+        let peak = 0, sumSq = 0;
+        for (let i = 0; i < ch.length; i++) {
+          const a = Math.abs(ch[i]);
+          if (a > peak) peak = a;
+          sumSq += ch[i] * ch[i];
+        }
+        const rms = Math.sqrt(sumSq / ch.length);
+        ctx.close();
+        resolve({
+          peakDb: parseFloat((20 * Math.log10(Math.max(peak, 1e-10))).toFixed(1)),
+          rmsDb: parseFloat((20 * Math.log10(Math.max(rms, 1e-10))).toFixed(1)),
+          sampleRate: decoded.sampleRate,
+          duration: decoded.duration,
+        });
+      })
+      .catch((e) => { ctx.close(); reject(e); });
+  });
+}
+
+async function fileFromDrop(e: React.DragEvent): Promise<File | null> {
+  const libId = e.dataTransfer.getData('application/x-stabledaw-library-id');
+  if (libId) {
+    const entry = useLibraryStore.getState().entries.find((en) => en.id === libId);
+    if (entry) {
+      const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+      return new File([blob], `${entry.title.slice(0, 40)}.wav`, { type: entry.mimeType || 'audio/wav' });
+    }
+  }
+  return e.dataTransfer.files[0] || null;
+}
+
+function StatRow({ stats }: { stats: AudioStats }) {
+  const fmtDur = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}m${Math.round(s % 60)}s` : `${s.toFixed(1)}s`);
+  const Pill = ({ label, value }: { label: string; value: string }) => (
+    <span className="flex items-center gap-1">
+      <span className="text-[8px] font-mono text-zinc-600 uppercase">{label}</span>
+      <span className="text-[9px] font-mono text-zinc-300">{value}</span>
+    </span>
+  );
+  return (
+    <div className="flex items-center gap-2">
+      <Pill label="SR" value={`${(stats.sampleRate / 1000).toFixed(1)}kHz`} />
+      <span className="text-zinc-700">·</span>
+      <Pill label="Peak" value={`${stats.peakDb}dBFS`} />
+      <span className="text-zinc-700">·</span>
+      <Pill label="RMS" value={`${stats.rmsDb}dB`} />
+      <span className="text-zinc-700">·</span>
+      <Pill label="Dur" value={fmtDur(stats.duration)} />
+    </div>
+  );
+}
+
+/* ═══ default layout ═════════════════════════════════════════════════════════ */
+const MIX_LAYOUT_VERSION = 1;
+const defaultMixLayout: SurfaceLayout = {
+  version: MIX_LAYOUT_VERSION,
+  root: 'root',
+  nodes: {
+    root: { id: 'root', type: 'container', axis: 'column', children: ['topViz', 'mid', 'stageP'], fr: { topViz: 3, mid: 4, stageP: 2 } },
+    // top — 2 viz rows
+    topViz: { id: 'topViz', type: 'container', axis: 'column', children: ['inputVizP', 'outputVizP'], fr: { inputVizP: 1, outputVizP: 1 } },
+    inputVizP: { id: 'inputVizP', type: 'panel', title: 'Input', flow: 'row', widgets: [], pinned: 'inputViz' },
+    outputVizP: { id: 'outputVizP', type: 'panel', title: 'Output', flow: 'row', widgets: [], pinned: 'outputViz' },
+    // middle — effect workflow
+    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'libraryP', 'chainP'], fr: { railP: 1.1, libraryP: 2.6, chainP: 1.7 } },
+    railP: { id: 'railP', type: 'panel', title: 'Effects', flow: 'row', widgets: [], pinned: 'effectRail' },
+    libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library' },
+    chainP: { id: 'chainP', type: 'panel', title: 'Chain', flow: 'row', widgets: [], pinned: 'chain' },
+    // lower — effect stage (active effect UI/viz)
+    stageP: { id: 'stageP', type: 'panel', title: 'Effect Stage', flow: 'row', widgets: [], pinned: 'effectStage' },
+  },
+};
+
+interface ChainEntry { id: string; effect: string; enabled: boolean; params: Record<string, number>; }
+
+interface MixRegArgs {
+  // input/output viz
+  sourceUrl: string | null; outputUrl: string | null;
+  srcStats: AudioStats | null; outStats: AudioStats | null;
+  sourceFile: File | null;
+  inputMode: MixVizMode; setInputMode: (m: MixVizMode) => void;
+  outputMode: MixVizMode; setOutputMode: (m: MixVizMode) => void;
+  inputOverlay: boolean; toggleInputOverlay: () => void;
+  outputOverlay: boolean; toggleOutputOverlay: () => void;
+  dragOverSource: boolean;
+  onDrop: (e: React.DragEvent) => void; onDragOver: (e: React.DragEvent) => void; onDragLeave: () => void;
+  onClickUpload: () => void; onClearSource: () => void;
+  isChainProcessing: boolean;
+  onDownload: () => void; onSendToDAW: () => void; onSendToInpaint: () => void;
+  // rail
+  activeCategory: string; setActiveCategory: (c: string) => void; allEffectCount: number;
+  quickMaster: Record<string, number>; setQuickParam: (k: string, v: number) => void;
+  applyQuickMaster: () => void; masterEntry: boolean;
+  // library
+  activeEffects: Array<{ id: string; name: string; desc: string }>; viewMode: 'list' | 'tile';
+  setViewMode: (m: 'list' | 'tile') => void; addEffect: (id: string) => void; chainEffectIds: Set<string>;
+  // chain
+  chain: ChainEntry[]; selectedId: string | null; setSelectedId: (id: string) => void;
+  removeEffect: (id: string) => void; updateParams: (id: string, p: Record<string, number>) => void;
+  toggleEnabled: (id: string) => void; reorder: (from: number, to: number) => void; clearChain: () => void;
+  outputFormat: string; setOutputFormat: (f: string) => void;
+  showHistory: boolean; setShowHistory: (v: boolean) => void;
+  processHistory: Array<{ id: string; effect: string; createdAt: number }>;
+  selectedEntry: ChainEntry | null;
+}
+
+function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
+  const reg: WidgetRegistry = {};
+  const pinned = (id: string, label: string, node: React.ReactNode) => {
+    reg[id] = { id, label, group: 'Panels', kind: 'fixed', source: 'builtin', render: () => <div className="h-full w-full min-h-0 overflow-hidden">{node}</div> };
+  };
+
+  /* ── INPUT viz row (with drop affordance) ── */
+  pinned('inputViz', 'Input', (
+    <div
+      className={`h-full w-full min-h-0 transition-colors ${p.dragOverSource ? 'ring-1 ring-purple-500/60 bg-purple-500/5' : ''}`}
+      onDrop={p.onDrop}
+      onDragOver={p.onDragOver}
+      onDragLeave={p.onDragLeave}
+    >
+      <MixVizRow
+        label="Input" url={p.sourceUrl} overlayUrl={p.outputUrl} accent="#22d3ee" overlayAccent="#a855f7"
+        mode={p.inputMode} onMode={p.setInputMode} overlay={p.inputOverlay} onToggleOverlay={p.toggleInputOverlay}
+        placeholder="drop audio or click ⬆ to load"
+        headerExtra={
+          <>
+            {p.srcStats && <StatRow stats={p.srcStats} />}
+            <button onClick={p.onClickUpload} title={p.sourceFile ? 'Replace source' : 'Load source'} className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5">
+              <Upload className="w-3 h-3" />
+            </button>
+            {p.sourceFile && (
+              <button onClick={p.onClearSource} title="Clear source" className="p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-white/5">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </>
+        }
+      />
+    </div>
+  ));
+
+  /* ── OUTPUT viz row (with result actions) ── */
+  pinned('outputViz', 'Output', (
+    <div className="h-full w-full min-h-0 relative">
+      <MixVizRow
+        label="Output" url={p.outputUrl} overlayUrl={p.sourceUrl} accent="#a855f7" overlayAccent="#22d3ee"
+        mode={p.outputMode} onMode={p.setOutputMode} overlay={p.outputOverlay} onToggleOverlay={p.toggleOutputOverlay}
+        placeholder="output appears after processing"
+        headerExtra={
+          <>
+            {p.outStats && <StatRow stats={p.outStats} />}
+            <button onClick={p.onDownload} disabled={!p.outputUrl} title="Save" className="p-1 rounded text-zinc-400 hover:text-green-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Download className="w-3 h-3" /></button>
+            <button onClick={p.onSendToDAW} disabled={!p.outputUrl} title="Send to Edit" className="p-1 rounded text-zinc-400 hover:text-emerald-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Send className="w-3 h-3" /></button>
+            <button onClick={p.onSendToInpaint} disabled={!p.outputUrl} title="Send to Inpaint" className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Sparkles className="w-3 h-3" /></button>
+          </>
+        }
+      />
+      {p.isChainProcessing && (
+        <div className="absolute inset-0 grid place-items-center bg-black/50 backdrop-blur-sm pointer-events-none">
+          <span className="text-[10px] font-mono text-purple-300 animate-pulse">processing chain…</span>
+        </div>
+      )}
+    </div>
+  ));
+
+  /* ── effect rail: categories + Quick Master ── */
+  pinned('effectRail', 'Effects', (
+    <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-1.5 gap-1.5">
+      <span className={sectionTitle}>Effects</span>
+      <div className="flex flex-col gap-0.5 overflow-y-auto min-h-0">
+        <button onClick={() => p.setActiveCategory('all')}
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'all' ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}>
+          <Library className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[10px] font-semibold flex-1 truncate">All</span>
+          <span className="text-[8px] font-mono text-zinc-600 shrink-0">{p.allEffectCount}</span>
+        </button>
+        {CATEGORY_META.map((cat) => {
+          const Icon = cat.icon;
+          const active = p.activeCategory === cat.id;
+          return (
+            <button key={cat.id} onClick={() => p.setActiveCategory(cat.id)}
+              className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${active ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}>
+              <Icon className="w-3.5 h-3.5 shrink-0" />
+              <span className="text-[10px] font-semibold flex-1 truncate">{cat.label}</span>
+              <span className="text-[8px] font-mono text-zinc-600 shrink-0">{cat.count}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-auto pt-2 border-t border-white/8 shrink-0">
+        <div className="flex items-center gap-1 mb-2"><Gauge className="w-3 h-3 text-purple-300" /><span className={sectionTitle}>Quick Master</span></div>
+        <div className="grid grid-cols-2 gap-x-1 gap-y-2 place-items-center mb-2">
+          <SlideKnob label="Punch" value={p.quickMaster.lowBoost} onChange={(v) => p.setQuickParam('lowBoost', v)} min={-6} max={6} step={0.5} size={34} />
+          <SlideKnob label="Air" value={p.quickMaster.highBoost} onChange={(v) => p.setQuickParam('highBoost', v)} min={-6} max={6} step={0.5} size={34} />
+          <SlideKnob label="Drive" value={p.quickMaster.targetLUFS} onChange={(v) => p.setQuickParam('targetLUFS', v)} min={-24} max={-8} step={0.5} size={34} />
+          <SlideKnob label="Ceil" value={p.quickMaster.limiterCeiling} onChange={(v) => p.setQuickParam('limiterCeiling', v)} min={0.8} max={1} step={0.01} size={34} />
+        </div>
+        <button onClick={p.applyQuickMaster} className="w-full btn-ghost text-[9px] py-1 flex items-center justify-center gap-1 text-purple-300 border-purple-500/20 bg-purple-500/5">
+          <Plus className="w-3 h-3" /> {p.masterEntry ? 'Sync Master' : 'Add Quick Master'}
+        </button>
+      </div>
+    </div>
+  ));
+
+  /* ── library ── */
+  pinned('library', 'Library', (
+    <div className="h-full w-full flex flex-col min-h-0 min-w-0 overflow-hidden p-2">
+      <div className="flex items-center justify-between mb-2 shrink-0">
+        <span className={sectionTitle}>{p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
+        <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
+          <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
+          <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
+        </div>
+      </div>
+      {p.viewMode === 'list' ? (
+        <div className="flex-1 overflow-y-auto"><div className="flex flex-col gap-1 content-start">
+          {p.activeEffects.map((fx) => {
+            const inChain = p.chainEffectIds.has(fx.id);
+            return (
+              <div key={fx.id} onClick={() => p.addEffect(fx.id)}
+                className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${inChain ? 'border-purple-400/40 bg-purple-500/5' : 'border-zinc-800 hover:border-purple-500/30 hover:bg-white/5'}`}>
+                <div className="flex-1 min-w-0">
+                  <span className="text-[11px] font-medium text-zinc-100 block truncate">{fx.name}</span>
+                  <p className="text-[9px] text-zinc-500 truncate mt-0.5">{fx.desc}</p>
+                </div>
+                {inChain && <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0" />}
+              </div>
+            );
+          })}
+        </div></div>
+      ) : (
+        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start p-1">
+          {p.activeEffects.map((fx) => {
+            const inChain = p.chainEffectIds.has(fx.id);
+            const cat = fxToCategory[fx.id] ?? CATEGORY_META[0];
+            const Icon = cat.icon;
+            return (
+              <div key={fx.id} onClick={() => p.addEffect(fx.id)}
+                className={`relative flex flex-col items-center justify-start gap-1.5 rounded border cursor-pointer transition-all overflow-hidden p-2 ${cat.tile.bg} ${inChain ? `${cat.tile.border} ring-2 ${cat.tile.ring}` : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}
+                style={{ width: 72, height: 80 }}>
+                <div className={`absolute inset-0 ${cat.tile.glow} blur-xl pointer-events-none opacity-70`} />
+                <div className="relative z-10 flex items-center justify-center w-8 h-8 mt-1"><Icon className={`w-6 h-6 ${cat.tile.text}`} /></div>
+                <span className={`text-[9px] font-medium text-center leading-tight relative z-10 ${cat.tile.text} px-0.5 line-clamp-2`}>{fx.name}</span>
+                {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
+              </div>
+            );
+          })}
+        </div></div>
+      )}
+    </div>
+  ));
+
+  /* ── chain ── */
+  pinned('chain', 'Chain', (
+    <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-2">
+      <div className="flex items-center justify-between mb-2 shrink-0">
+        <span className={sectionTitle}>Chain {p.chain.length > 0 && <span className="text-zinc-600">({p.chain.length})</span>}</span>
+        {p.chain.length > 0 && <button className="text-zinc-600 hover:text-red-400 transition-colors" onClick={p.clearChain} title="Clear chain"><Trash2 className="w-3.5 h-3.5" /></button>}
+      </div>
+      <div className="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0">
+        {p.chain.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center px-2"><span className="text-[10px] text-zinc-600 text-center">Add effects from the library</span></div>
+        ) : (
+          p.chain.map((entry, index) => (
+            <div key={entry.id} onClick={() => p.setSelectedId(entry.id)}
+              className={`rounded p-1.5 border transition-all cursor-pointer shrink-0 ${p.selectedEntry?.id === entry.id ? 'border-purple-500/60 bg-purple-500/5' : 'border-zinc-800 hover:border-white/10'} ${!entry.enabled ? 'opacity-40' : ''}`}>
+              <div className="flex items-center gap-1">
+                <div className="flex flex-col shrink-0">
+                  <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20" disabled={index === 0} onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronUp className="w-2.5 h-2.5" /></button>
+                  <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20" disabled={index === p.chain.length - 1} onClick={(e) => { e.stopPropagation(); p.reorder(index, index + 1); }}><ChevronDown className="w-2.5 h-2.5" /></button>
+                </div>
+                <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{EFFECT_LABELS[entry.effect] || entry.effect}</span>
+                <button className="text-zinc-500 hover:text-purple-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.toggleEnabled(entry.id); }}>{entry.enabled ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}</button>
+                <button className="text-zinc-600 hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.removeEffect(entry.id); }}><X className="w-3 h-3" /></button>
+              </div>
+              {Object.keys(entry.params).length > 0 && (
+                <div className="flex flex-col gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
+                  {Object.entries(entry.params).map(([key, val]) => {
+                    const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || [0, 1, 0.01];
+                    return <SlideRow key={key} label={prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
+                  })}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <div className="shrink-0 pt-2 border-t border-white/8 mt-2 flex flex-col gap-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono text-zinc-500 shrink-0">FORMAT</span>
+          <select className="compact-input flex-1 text-[10px]" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
+            <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option><option value="ogg">OGG</option>
+          </select>
+          <button onClick={() => p.setShowHistory(!p.showHistory)} title="Process history" className={`btn-ghost p-1 shrink-0 ${p.showHistory ? 'text-purple-300' : 'text-zinc-500 hover:text-zinc-300'}`}><History className="w-3.5 h-3.5" /></button>
+        </div>
+        {p.showHistory && (
+          <div className="max-h-20 overflow-y-auto flex flex-col gap-0.5">
+            {p.processHistory.length === 0 ? <span className="text-[9px] font-mono text-zinc-600 px-1">No process jobs yet.</span> : p.processHistory.map((h) => (
+              <div key={h.id} className="flex items-center justify-between px-1.5 py-0.5 bg-white/5 rounded">
+                <span className="text-[9px] font-mono text-zinc-300 uppercase truncate">{EFFECT_LABELS[h.effect] || h.effect}</span>
+                <span className="text-[8px] font-mono text-zinc-600 shrink-0">{new Date(h.createdAt).toLocaleTimeString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  ));
+
+  /* ── effect stage (active effect viz; Phase 4 → ModuleShell + hero viz) ── */
+  pinned('effectStage', 'Effect Stage', (
+    <EffectsVizPanel effect={p.selectedEntry?.effect ?? null} params={p.selectedEntry?.params ?? {}} className="h-full! border-purple-500/15!" />
+  ));
+
+  return reg;
+}
+
+/* ═══════════════════════════════ MixView ═══════════════════════════════════ */
+
+export const MixView: React.FC = () => {
+  const sourceFile = useAdvancedEditorSourceStore((s) => s.sourceFile);
+  const outputUrl = useAdvancedEditorSourceStore((s) => s.outputUrl);
+  const setSource = useAdvancedEditorSourceStore((s) => s.setSource);
+
+  const chain = useEffectChainStore((s) => s.chain) as ChainEntry[];
+  const addEffect = useEffectChainStore((s) => s.addEffect);
+  const removeEffect = useEffectChainStore((s) => s.removeEffect);
+  const updateParams = useEffectChainStore((s) => s.updateParams);
+  const toggleEnabled = useEffectChainStore((s) => s.toggleEnabled);
+  const reorder = useEffectChainStore((s) => s.reorder);
+  const clearChain = useEffectChainStore((s) => s.clearChain);
+
+  const outputFormat = useStudioStore((s) => s.outputFormat);
+  const setOutputFormat = useStudioStore((s) => s.setOutputFormat);
+  const isChainProcessing = useStudioStore((s) => s.isChainProcessing);
+  const processHistory = useStudioStore((s) => s.processHistory);
+
+  const [activeCategory, setActiveCategory] = useState('all');
+  const [viewMode, setViewMode] = useState<'list' | 'tile'>('tile');
+  const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
+  const [srcStats, setSrcStats] = useState<AudioStats | null>(null);
+  const [outStats, setOutStats] = useState<AudioStats | null>(null);
+  const [dragOverSource, setDragOverSource] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [inputMode, setInputMode] = useState<MixVizMode>('wave');
+  const [outputMode, setOutputMode] = useState<MixVizMode>('wave');
+  const [inputOverlay, setInputOverlay] = useState(false);
+  const [outputOverlay, setOutputOverlay] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [quickMaster, setQuickMaster] = useState<Record<string, number>>(() => ({ ...EFFECT_DEFAULTS.mastering_chain }));
+
+  const sourceUrl = useMemo(() => (sourceFile ? URL.createObjectURL(sourceFile) : null), [sourceFile]);
+  useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
+
+  useEffect(() => {
+    if (!sourceFile) { setSrcStats(null); return; }
+    analyzeAudio(sourceFile).then(setSrcStats).catch(() => setSrcStats(null));
+  }, [sourceFile]);
+  useEffect(() => {
+    if (!outputUrl) { setOutStats(null); return; }
+    analyzeAudio(outputUrl).then(setOutStats).catch(() => setOutStats(null));
+  }, [outputUrl]);
+
+  const setSourceBoth = (file: File | null) => {
+    setSource(file);
+    useStudioStore.getState().setSourceFile(file);
+  };
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault(); setDragOverSource(false);
+    const file = await fileFromDrop(e);
+    if (file) setSourceBoth(file);
+  };
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) setSourceBoth(f);
+    e.target.value = '';
+  };
+
+  const masterEntry = chain.find((e) => e.effect === 'mastering_chain');
+  const setQuickParam = (key: string, v: number) => {
+    setQuickMaster((qm) => ({ ...qm, [key]: v }));
+    const m = useEffectChainStore.getState().chain.find((e) => e.effect === 'mastering_chain');
+    if (m) updateParams(m.id, { ...m.params, [key]: v });
+  };
+  const applyQuickMaster = () => {
+    const existing = useEffectChainStore.getState().chain.find((e) => e.effect === 'mastering_chain');
+    if (existing) {
+      updateParams(existing.id, { ...quickMaster });
+      setSelectedChainId(existing.id);
+    } else {
+      addEffect('mastering_chain');
+      const next = useEffectChainStore.getState().chain;
+      const added = next[next.length - 1];
+      if (added) { updateParams(added.id, { ...quickMaster }); setSelectedChainId(added.id); }
+    }
+  };
+
+  const handleDownload = () => {
+    if (!outputUrl) return;
+    const a = document.createElement('a');
+    a.href = outputUrl; a.download = `mix-output.${outputFormat}`; a.click();
+  };
+  const handleSendToDAW = async () => {
+    if (!outputUrl) return;
+    try {
+      const blob = await fetch(outputUrl).then((r) => r.blob());
+      await usePlayerStore.getState().load(blob, { label: `mix-output.${outputFormat}` });
+    } catch { /* non-fatal */ }
+    useAppUiStore.getState().setCenterTab('edit');
+  };
+  const handleSendToInpaint = async () => {
+    if (!outputUrl) return;
+    try {
+      const blob = await fetch(outputUrl).then((r) => r.blob());
+      const file = new File([blob], `mix-output.${outputFormat}`, { type: blob.type });
+      useGenerateParamsStore.getState().patch({ inpaintAudioFile: file, inpaintEnabled: true, maskStart: 0, maskEnd: 0 });
+    } catch { /* non-fatal */ }
+    useAppUiStore.getState().setCenterTab('make');
+  };
+
+  const allEffects = Object.values(EFFECT_CATALOG).flat();
+  const activeEffects = activeCategory === 'all' ? allEffects : (EFFECT_CATALOG[activeCategory] || []);
+  const chainEffectIds = new Set(chain.map((e) => e.effect));
+  const selectedEntry = chain.find((e) => e.id === selectedChainId) ?? chain[0] ?? null;
+
+  const registry = buildMixRegistry({
+    sourceUrl, outputUrl, srcStats, outStats, sourceFile,
+    inputMode, setInputMode, outputMode, setOutputMode,
+    inputOverlay, toggleInputOverlay: () => setInputOverlay((v) => !v),
+    outputOverlay, toggleOutputOverlay: () => setOutputOverlay((v) => !v),
+    dragOverSource,
+    onDrop: handleDrop,
+    onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOverSource(true); },
+    onDragLeave: () => setDragOverSource(false),
+    onClickUpload: () => fileInputRef.current?.click(),
+    onClearSource: () => setSourceBoth(null),
+    isChainProcessing,
+    onDownload: handleDownload, onSendToDAW: () => void handleSendToDAW(), onSendToInpaint: () => void handleSendToInpaint(),
+    activeCategory, setActiveCategory, allEffectCount: allEffects.length,
+    quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
+    activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
+    chain, selectedId: selectedChainId, setSelectedId: setSelectedChainId,
+    removeEffect, updateParams, toggleEnabled, reorder, clearChain,
+    outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
+    selectedEntry,
+  });
+
+  return (
+    <div className="relative h-full w-full overflow-hidden text-zinc-200">
+      <ControlSurface surfaceId="mix" registry={registry} defaultLayout={defaultMixLayout} className="p-1.5" />
+      <input ref={fileInputRef} type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} title="Upload audio file" />
+    </div>
+  );
+};

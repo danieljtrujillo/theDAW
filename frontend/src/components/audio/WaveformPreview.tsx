@@ -14,6 +14,12 @@ export interface WaveformPreviewProps {
   /** Let wavesurfer handle its own click-to-seek cursor. Off for the DJ decks,
    *  where an overlay drives our own engine instead. Default true. */
   interact?: boolean;
+  /** Wave/progress colours — override for A/B overlay comparison (e.g. a cyan
+   *  input behind a purple output). Defaults keep the standard purple. */
+  waveColor?: string;
+  progressColor?: string;
+  /** Transparent panel background (for overlay layering). Default opaque. */
+  transparentBg?: boolean;
 }
 
 export function WaveformPreview({
@@ -25,6 +31,9 @@ export function WaveformPreview({
   onRegionChange,
   onReady,
   interact = true,
+  waveColor = '#7c3aed',
+  progressColor = '#a855f7',
+  transparentBg = false,
 }: WaveformPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null);
@@ -33,8 +42,8 @@ export function WaveformPreview({
     container: containerRef,
     url: audioUrl,
     height,
-    waveColor: '#7c3aed',
-    progressColor: '#a855f7',
+    waveColor,
+    progressColor,
     cursorColor: '#e2e0ea',
     cursorWidth: 1,
     barWidth: 2,
@@ -100,7 +109,7 @@ export function WaveformPreview({
       style={{
         width: '100%',
         height,
-        background: '#0e0c18',
+        background: transparentBg ? 'transparent' : '#0e0c18',
         borderRadius: 4,
         overflow: 'hidden',
       }}
