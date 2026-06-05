@@ -33,6 +33,9 @@ export interface WidgetSize {
   h: number;
 }
 
+/** Preset outline shape for a framed REGION container. */
+export type FrameShape = 'rect' | 'rounded' | 'hexagon' | 'capsule' | 'beveled' | 'blob';
+
 /** Shape of a pad/button. The four `tri-*` are right-angle halves of a square
  *  (the right angle sits at that corner); two complementary tris tile a square. */
 export type ButtonShape =

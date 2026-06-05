@@ -1,6 +1,6 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { WidgetId, CustomWidgetDef, ButtonShape } from '../components/surface/widgetTypes';
+import type { WidgetId, CustomWidgetDef, ButtonShape, FrameShape } from '../components/surface/widgetTypes';
 
 /* Generic, data-driven control-surface layout.
  *
@@ -41,6 +41,12 @@ export interface ContainerNode {
    *  around this container. Borders live on framed REGION containers, not on
    *  every leaf panel, so a region reads as one box instead of many. */
   framed?: boolean;
+  /** Framed-region styling: an outline shape, an accent tint (hue 0..1), a glow
+   *  toggle, and an optional label tab. Only meaningful when `framed`. */
+  frameShape?: FrameShape;
+  frameTint?: number;
+  frameGlow?: boolean;
+  frameTitle?: string;
 }
 
 export interface PanelNode {
@@ -345,6 +351,8 @@ export interface SurfaceStore {
   toggleContainerAxis: (containerId: NodeId) => void;
   /** Toggle a region frame (border + filled bg) on a container. */
   toggleContainerFramed: (containerId: NodeId) => void;
+  /** Patch a framed region's outline shape / tint / glow / title. */
+  setContainerFrame: (containerId: NodeId, patch: Partial<Pick<ContainerNode, 'frameShape' | 'frameTint' | 'frameGlow' | 'frameTitle'>>) => void;
   /** Toggle uniform control sizing on a panel. */
   togglePanelUniform: (panelId: NodeId) => void;
   setPanelPad: (panelId: NodeId, px: number) => void;
@@ -669,6 +677,15 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             const layout = cloneLayout(s.layout);
             const c = layout.nodes[containerId] as ContainerNode;
             c.framed = !c.framed;
+            return { layout };
+          }),
+
+        setContainerFrame: (containerId, patch) =>
+          set((s) => {
+            const node = s.layout.nodes[containerId];
+            if (!node || node.type !== 'container') return s;
+            const layout = cloneLayout(s.layout);
+            Object.assign(layout.nodes[containerId] as ContainerNode, patch);
             return { layout };
           }),
 
