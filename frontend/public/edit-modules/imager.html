@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Imager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Sans',sans-serif;color:#e2e4ea;overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:#0e1018;border:1px solid #1e2230;border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER 28px ── */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:#0a0b10;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px}
+.hdr-left{display:flex;align-items:center;gap:8px}
+.mod-icon{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#7c3aed);display:flex;align-items:center;justify-content:center}
+.mod-icon svg{width:8px;height:8px;fill:#fff}
+.mod-title{font-weight:700;font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0;font-family:'IBM Plex Mono',monospace}
+.preset-nav{display:flex;align-items:center;gap:2px;font-family:'IBM Plex Mono',monospace;font-size:8px;color:#5a5e6a}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{color:#6b7080;min-width:60px;text-align:center}
+.hdr-right{display:flex;align-items:center;gap:3px}
+.pill{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:600;letter-spacing:.4px;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.pill.active{background:#1a0e2e;border-color:#a855f7;color:#a855f7}
+.pill:hover{border-color:#3a3e4a}
+.pill.ab{min-width:18px;text-align:center}
+
+/* ── BODY ── */
+.body{flex:1;display:flex;min-height:0;padding:6px;gap:6px}
+
+/* LEFT COLUMN 40% */
+.left-col{width:40%;display:flex;flex-direction:column;gap:5px;flex-shrink:0}
+
+/* Goniometer */
+.gonio-wrap{flex:1;background:#090b10;border:1px solid #14171e;border-radius:5px;position:relative;overflow:hidden;min-height:0}
+.gonio-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.gonio-mode{display:flex;gap:2px;position:absolute;bottom:6px;left:50%;transform:translateX(-50%);z-index:2}
+.gm-btn{font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:600;letter-spacing:.4px;padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.gm-btn.active{background:#1a0e2e;border-color:#a855f7;color:#a855f7}
+
+/* Band Width Section */
+.bw-section{background:#090b10;border:1px solid #14171e;border-radius:5px;padding:5px 6px;flex-shrink:0}
+.bw-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.bw-title{font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:700;letter-spacing:.8px;color:#2e3240;text-transform:uppercase}
+.bw-bands{display:flex;gap:3px}
+.bw-band{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.bw-band-label{font-family:'IBM Plex Mono',monospace;font-size:5.5px;font-weight:600;color:#3e4250;letter-spacing:.3px}
+.bw-band-freq{font-family:'IBM Plex Mono',monospace;font-size:5px;color:#22262e;letter-spacing:.2px}
+.bw-fader-track{width:8px;height:80px;background:#0c0e14;border:1px solid #1a1d28;border-radius:4px;position:relative;cursor:pointer}
+.bw-fader-fill{position:absolute;bottom:0;left:0;right:0;border-radius:0 0 3px 3px;pointer-events:none}
+.bw-fader-thumb{position:absolute;left:50%;transform:translate(-50%,-50%);width:18px;height:7px;border-radius:2px;background:linear-gradient(180deg,#e2e4ea,#b0b4c0);box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:grab;z-index:2}
+.bw-fader-thumb:active{cursor:grabbing;background:#fff}
+.bw-fader-center{position:absolute;left:-1px;right:-1px;height:1px;top:50%;background:rgba(255,255,255,.06);pointer-events:none}
+.bw-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#a855f7;cursor:pointer;user-select:none}
+.bw-val:hover{color:#c084fc}
+
+/* RIGHT COLUMN 60% */
+.right-col{width:60%;display:flex;flex-direction:column;gap:5px}
+
+/* Correlation meter */
+.corr-box{background:#090b10;border:1px solid #14171e;border-radius:5px;padding:5px 8px;flex-shrink:0}
+.corr-row{display:flex;align-items:center;gap:6px}
+.corr-label{font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:700;letter-spacing:.8px;color:#2e3240;text-transform:uppercase;white-space:nowrap}
+.corr-track{flex:1;height:10px;background:#0c0e14;border:1px solid #1a1d28;border-radius:3px;position:relative;overflow:hidden}
+.corr-fill{position:absolute;top:0;bottom:0;border-radius:2px}
+.corr-indicator{position:absolute;top:-1px;bottom:-1px;width:3px;border-radius:1px;background:#fff;box-shadow:0 0 4px rgba(255,255,255,.5);transform:translateX(-50%)}
+.corr-val{font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:700;color:#e2e4ea;min-width:32px;text-align:right}
+.corr-ticks{display:flex;justify-content:space-between;margin-top:2px;padding:0 1px}
+.corr-tick{font-family:'IBM Plex Mono',monospace;font-size:5px;color:#22262e;font-weight:600}
+
+/* Stereo Balance waveform */
+.balance-wrap{flex:1;background:#090b10;border:1px solid #14171e;border-radius:5px;position:relative;overflow:hidden;min-height:0}
+.balance-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.balance-title{position:absolute;top:5px;right:8px;font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:600;letter-spacing:.6px;color:#22262e;text-transform:uppercase;pointer-events:none;z-index:1}
+
+/* M/S Processing + Stereoize section */
+.ms-section{display:flex;gap:5px;flex-shrink:0}
+
+/* M/S Processing box */
+.ms-box{flex:1;background:#090b10;border:1px solid #14171e;border-radius:5px;padding:5px 6px}
+.ms-title{font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:700;letter-spacing:.6px;color:#2e3240;text-transform:uppercase;margin-bottom:4px}
+.ms-btns{display:flex;gap:2px;margin-bottom:5px}
+.ms-btn{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:700;padding:3px 0;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none;text-align:center;flex:1;letter-spacing:.3px}
+.ms-btn.active{background:#1a0e2e;border-color:#a855f7;color:#a855f7}
+.ms-btn:hover{border-color:#3a3e4a}
+.ms-controls{display:flex;gap:6px;align-items:flex-end}
+.ms-knob-group{display:flex;flex-direction:column;align-items:center;gap:1px}
+.ms-slider-group{flex:1;display:flex;flex-direction:column;gap:2px}
+.ms-sl-row{display:flex;align-items:center;gap:4px}
+.ms-sl-lbl{font-family:'IBM Plex Mono',monospace;font-size:5.5px;color:#3e4250;letter-spacing:.3px;text-transform:uppercase;font-weight:600;min-width:40px}
+.ms-sl-val{font-family:'IBM Plex Mono',monospace;font-size:8px;color:#c8cad0;font-weight:700;min-width:22px;text-align:right}
+.ms-slider{flex:1;-webkit-appearance:none;appearance:none;height:2px;background:#1a1d28;border-radius:1px;outline:none}
+.ms-slider::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:10px;border-radius:50%;background:#a855f7;cursor:pointer;border:2px solid rgba(255,255,255,.06);box-shadow:0 0 4px rgba(168,85,247,.3)}
+.ms-phase-row{display:flex;align-items:center;gap:4px;margin-top:3px}
+.ms-phase-lbl{font-family:'IBM Plex Mono',monospace;font-size:5.5px;color:#3e4250;letter-spacing:.3px;text-transform:uppercase;font-weight:600}
+.ms-phase-btn{font-family:'IBM Plex Mono',monospace;font-size:6px;font-weight:600;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.ms-phase-btn.active{background:#1a0e2e;border-color:#a855f7;color:#a855f7}
+
+/* Stereoize box */
+.stereo-box{width:140px;background:#090b10;border:1px solid #14171e;border-radius:5px;padding:5px 6px;display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0}
+.stereo-title{font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:700;letter-spacing:.6px;color:#2e3240;text-transform:uppercase;align-self:flex-start}
+.stereo-knobs{display:flex;gap:6px;align-items:center;justify-content:center;width:100%}
+
+/* Knob shared */
+.knob-group{display:flex;flex-direction:column;align-items:center;gap:1px}
+.knob-lbl{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.5px;color:#3e4250;text-transform:uppercase}
+.knob-wrap{position:relative;width:64px;height:64px;cursor:pointer}
+.knob-wrap svg{width:100%;height:100%}
+.knob-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#e2e4ea}
+
+/* ── FOOTER 28px ── */
+.footer{display:flex;align-items:center;gap:6px;padding:0 8px;background:#08090e;border-top:1px solid #14171e;flex-shrink:0;height:28px}
+.footer-btn{font-family:'IBM Plex Mono',monospace;font-size:7.5px;font-weight:600;padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:background 120ms,color 120ms}
+.footer-btn:hover{background:#14171e;color:#c8cad0}
+.footer-btn.active{background:#1a0e2e;border-color:#a855f7;color:#a855f7}
+.footer-spacer{flex:1}
+.footer-status{font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:#444a58}
+audio{display:none}
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="mod-icon"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" fill="none" stroke="#fff" stroke-width="1.5"/><line x1="8" y1="1" x2="8" y2="5" stroke="#fff" stroke-width="1.2"/><line x1="8" y1="11" x2="8" y2="15" stroke="#fff" stroke-width="1.2"/><line x1="1" y1="8" x2="5" y2="8" stroke="#fff" stroke-width="1.2"/><line x1="11" y1="8" x2="15" y2="8" stroke="#fff" stroke-width="1.2"/></svg></div>
+      <span class="mod-title">Imager</span>
+      <div class="preset-nav">
+        <button>&#9666;</button>
+        <span class="preset-name">Clean &amp; Open</span>
+        <button>&#9656;</button>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <button class="pill ab active" id="btnA">A</button>
+      <button class="pill ab" id="btnB">B</button>
+      <button class="pill" id="btnCopy">Copy</button>
+      <button class="pill" id="btnDelta">Delta</button>
+      <button class="pill" style="margin-left:4px">
+        <svg viewBox="0 0 12 12" width="8" height="8" style="vertical-align:middle;fill:#3e4250"><circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/><circle cx="10" cy="6" r="1.2"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="body">
+    <!-- LEFT COLUMN: Goniometer + Band Width -->
+    <div class="left-col">
+      <!-- Goniometer canvas -->
+      <div class="gonio-wrap">
+        <canvas id="gonioCanvas"></canvas>
+        <div class="gonio-mode">
+          <button class="gm-btn active" id="gmPolar">Polar</button>
+          <button class="gm-btn" id="gmLissajous">Lissajous</button>
+        </div>
+      </div>
+
+      <!-- Band Width faders -->
+      <div class="bw-section">
+        <div class="bw-hdr">
+          <span class="bw-title">Band Width</span>
+        </div>
+        <div class="bw-bands" id="bwBands">
+          <!-- 5 bands rendered by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="right-col">
+      <!-- Correlation -->
+      <div class="corr-box">
+        <div class="corr-row">
+          <span class="corr-label">Correlation</span>
+          <div class="corr-track">
+            <div class="corr-fill" id="corrFill" style="left:50%;width:0;background:linear-gradient(to right,#22c55e80,#10b981)"></div>
+            <div class="corr-indicator" id="corrIndicator" style="left:100%"></div>
+          </div>
+          <span class="corr-val" id="corrReadout">+0.26</span>
+        </div>
+        <div class="corr-ticks">
+          <span class="corr-tick">-1</span>
+          <span class="corr-tick">0</span>
+          <span class="corr-tick">+1</span>
+        </div>
+      </div>
+
+      <!-- Stereo Balance Waveform -->
+      <div class="balance-wrap">
+        <canvas id="balanceCanvas"></canvas>
+        <span class="balance-title">Stereo Balance</span>
+      </div>
+
+      <!-- M/S Processing + Stereoize -->
+      <div class="ms-section">
+        <!-- M/S Processing -->
+        <div class="ms-box">
+          <div class="ms-title">M/S Processing</div>
+          <div class="ms-btns">
+            <button class="ms-btn active" id="msM" data-mode="m">M</button>
+            <button class="ms-btn" id="msMid" data-mode="mid">Mid</button>
+            <button class="ms-btn active" id="msS" data-mode="s">S</button>
+            <button class="ms-btn" id="msSide" data-mode="side">Side</button>
+          </div>
+          <div class="ms-controls">
+            <div class="ms-knob-group">
+              <div class="knob-group">
+                <span class="knob-lbl">Girth</span>
+                <div class="knob-wrap" id="girthKnob" data-value="100" data-min="0" data-max="200">
+                  <svg viewBox="0 0 48 48">
+                    <circle cx="24" cy="24" r="19" fill="none" stroke="#14171e" stroke-width="2.5"/>
+                    <path class="knob-arc" fill="none" stroke="#a855f7" stroke-width="2.5" stroke-linecap="round" d=""/>
+                    <circle cx="24" cy="24" r="14" fill="#0c0e14" stroke="#1a1d28" stroke-width="1"/>
+                    <line class="knob-needle" x1="24" y1="24" x2="24" y2="11" stroke="#a855f7" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="knob-val" id="girthVal">100%</span>
+              </div>
+            </div>
+            <div class="ms-slider-group">
+              <div class="ms-sl-row">
+                <span class="ms-sl-lbl">Mono Low</span>
+                <input type="range" class="ms-slider" id="monoLowSlider" min="20" max="500" value="120" step="1">
+                <span class="ms-sl-val" id="monoLowVal">120</span>
+              </div>
+              <div class="ms-phase-row">
+                <span class="ms-phase-lbl">Phase Roles</span>
+                <button class="ms-phase-btn" id="phaseL">L</button>
+                <button class="ms-phase-btn" id="phaseR">R</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stereoize -->
+        <div class="stereo-box">
+          <div class="stereo-title">Stereoize</div>
+          <div class="stereo-knobs">
+            <div class="knob-group">
+              <span class="knob-lbl">Recover Sides</span>
+              <div class="knob-wrap" id="recoverKnob" data-value="0" data-min="0" data-max="100">
+                <svg viewBox="0 0 48 48">
+                  <circle cx="24" cy="24" r="19" fill="none" stroke="#14171e" stroke-width="2.5"/>
+                  <path class="knob-arc" fill="none" stroke="#a855f7" stroke-width="2.5" stroke-linecap="round" d=""/>
+                  <circle cx="24" cy="24" r="14" fill="#0c0e14" stroke="#1a1d28" stroke-width="1"/>
+                  <line class="knob-needle" x1="24" y1="24" x2="24" y2="11" stroke="#a855f7" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <span class="knob-val" id="recoverVal">0%</span>
+            </div>
+            <div class="knob-group">
+              <span class="knob-lbl">Output Width</span>
+              <div class="knob-wrap" id="outWidthKnob" data-value="100" data-min="0" data-max="200">
+                <svg viewBox="0 0 48 48">
+                  <circle cx="24" cy="24" r="19" fill="none" stroke="#14171e" stroke-width="2.5"/>
+                  <path class="knob-arc" fill="none" stroke="#a855f7" stroke-width="2.5" stroke-linecap="round" d=""/>
+                  <circle cx="24" cy="24" r="14" fill="#0c0e14" stroke="#1a1d28" stroke-width="1"/>
+                  <line class="knob-needle" x1="24" y1="24" x2="24" y2="11" stroke="#a855f7" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <span class="knob-val" id="outWidthVal">100%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <button class="footer-btn" id="btnBypass">Bypass</button>
+    <button class="footer-btn active" id="btnImager">Imager</button>
+    <button class="footer-btn" id="btnAnalyzer">Analyzer</button>
+    <div class="footer-spacer"></div>
+    <span class="footer-status" id="status">Ready</span>
+    <button class="footer-btn" id="btnProcess" style="background:#1a0e2e;border-color:#a855f7;color:#a855f7;font-weight:700">Process</button>
+    <button class="footer-btn" id="btnPrePost">Pre/Post</button>
+  </div>
+</div>
+<input type="file" id="fileInput" accept="audio/*">
+<audio id="audioEl" crossorigin="anonymous"></audio>
+
+<script>
+(function(){
+'use strict';
+
+/* ═══════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════ */
+const ACCENT = '#a855f7';
+const BANDS = [
+  {label:'Sub',  freq:'0 - 110',    width:90,  color:'#a855f7'},
+  {label:'Low',  freq:'110 - 600',  width:110, color:'#a855f7'},
+  {label:'Mid',  freq:'600 - 2.5k', width:100, color:'#a855f7'},
+  {label:'Hi-M', freq:'2.5k - 8k',  width:120, color:'#a855f7'},
+  {label:'Air',  freq:'8k - 20k',   width:105, color:'#a855f7'}
+];
+let gonioMode = 'polar'; // 'polar' | 'lissajous'
+let msMode = {m:true, mid:false, s:true, side:false};
+let monoLowFreq = 120;
+let girthVal = 100, recoverVal = 0, outWidthVal = 100;
+
+/* Audio engine */
+let actx, analyserL, analyserR, source, inputFile;
+let inSplitter, midGainL, midGainR, sideGainL, sideGainR;
+let outMerger, outputGain, outSplitter;
+const FFTSIZE = 4096;
+const timeBufL = new Float32Array(FFTSIZE);
+const timeBufR = new Float32Array(FFTSIZE);
+let corrSmooth = 0.26;
+let dragFader = null;
+
+/* A/B state */
+const presets = {A: null, B: null};
+let activeSlot = 'A';
+
+/* ═══════════════════════════════════════════════
+   BAND WIDTH FADERS
+   ═══════════════════════════════════════════════ */
+const bwContainer = document.getElementById('bwBands');
+function renderBandFaders() {
+  bwContainer.innerHTML = BANDS.map((b, i) => `
+    <div class="bw-band">
+      <span class="bw-band-label">${b.label}</span>
+      <span class="bw-band-freq">${b.freq}</span>
+      <div class="bw-fader-track" data-idx="${i}">
+        <div class="bw-fader-center"></div>
+        <div class="bw-fader-fill" id="bwFill${i}" style="background:linear-gradient(to top,${ACCENT}10,${ACCENT}60);height:${b.width/2}%"></div>
+        <div class="bw-fader-thumb" id="bwThumb${i}" style="bottom:${b.width/2}%"></div>
+      </div>
+      <span class="bw-val" id="bwVal${i}">${b.width}%</span>
+    </div>
+  `).join('');
+
+  bwContainer.querySelectorAll('.bw-fader-track').forEach(track => {
+    const idx = +track.dataset.idx;
+    function setVal(e) {
+      const rect = track.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(200, (1 - (e.clientY - rect.top) / rect.height) * 200));
+      BANDS[idx].width = Math.round(pct);
+      document.getElementById('bwFill'+idx).style.height = (pct/2)+'%';
+      document.getElementById('bwThumb'+idx).style.bottom = (pct/2)+'%';
+      document.getElementById('bwVal'+idx).textContent = Math.round(pct)+'%';
+      updateWidth();
+    }
+    track.addEventListener('pointerdown', e => { dragFader = idx; track.setPointerCapture(e.pointerId); setVal(e); });
+    track.addEventListener('pointermove', e => { if(dragFader===idx) setVal(e); });
+    track.addEventListener('pointerup', () => { dragFader = null; });
+  });
+}
+renderBandFaders();
+
+/* ═══════════════════════════════════════════════
+   ROTARY KNOB ENGINE (48px, 270deg sweep)
+   ═══════════════════════════════════════════════ */
+function updateKnobVisual(wrap) {
+  const val = +wrap.dataset.value;
+  const min = +wrap.dataset.min;
+  const max = +wrap.dataset.max;
+  const frac = (val - min) / (max - min);
+  const arc = wrap.querySelector('.knob-arc');
+  const needle = wrap.querySelector('.knob-needle');
+  const cx = 24, cy = 24, r = 19;
+
+  // Needle angle
+  const needleAngle = (-135 + frac * 270) * Math.PI / 180;
+  const nx = cx + 11 * Math.cos(needleAngle - Math.PI/2);
+  const ny = cy + 11 * Math.sin(needleAngle - Math.PI/2);
+  needle.setAttribute('x2', nx);
+  needle.setAttribute('y2', ny);
+
+  // Arc
+  if (frac < 0.01) { arc.setAttribute('d',''); return; }
+  const startAngle = -135;
+  const endAngle = startAngle + frac * 270;
+  const sA = (startAngle - 90) * Math.PI / 180;
+  const eA = (endAngle - 90) * Math.PI / 180;
+  const sx = cx + r * Math.cos(sA), sy = cy + r * Math.sin(sA);
+  const ex = cx + r * Math.cos(eA), ey = cy + r * Math.sin(eA);
+  const large = (endAngle - startAngle) > 180 ? 1 : 0;
+  arc.setAttribute('d', `M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey}`);
+}
+
+function initKnob(wrap, valEl, suffix, onChange) {
+  let dragging = false;
+  let startY, startVal;
+  const min = +wrap.dataset.min, max = +wrap.dataset.max;
+
+  function update(v) {
+    wrap.dataset.value = v;
+    valEl.textContent = Math.round(v) + suffix;
+    updateKnobVisual(wrap);
+    if (onChange) onChange(v);
+  }
+
+  wrap.addEventListener('pointerdown', e => {
+    dragging = true; startY = e.clientY; startVal = +wrap.dataset.value;
+    wrap.setPointerCapture(e.pointerId);
+  });
+  wrap.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const delta = (startY - e.clientY) * ((max - min) / 150);
+    update(Math.max(min, Math.min(max, startVal + delta)));
+  });
+  wrap.addEventListener('pointerup', () => { dragging = false; });
+  wrap.addEventListener('dblclick', () => { update(min + (max - min) / 2); });
+  updateKnobVisual(wrap);
+}
+
+// Init all knobs
+initKnob(
+  document.getElementById('girthKnob'),
+  document.getElementById('girthVal'),
+  '%',
+  v => { girthVal = v; }
+);
+initKnob(
+  document.getElementById('recoverKnob'),
+  document.getElementById('recoverVal'),
+  '%',
+  v => { recoverVal = v; }
+);
+initKnob(
+  document.getElementById('outWidthKnob'),
+  document.getElementById('outWidthVal'),
+  '%',
+  v => { outWidthVal = v; updateWidth(); }
+);
+
+/* ═══════════════════════════════════════════════
+   AUDIO: Mid/Side stereo width processing
+   ═══════════════════════════════════════════════ */
+function ensureAudio() {
+  if (actx) return;
+  actx = new AudioContext();
+  inSplitter = actx.createChannelSplitter(2);
+  midGainL  = actx.createGain();
+  sideGainL = actx.createGain();
+  midGainR  = actx.createGain();
+  sideGainR = actx.createGain();
+  outMerger = actx.createChannelMerger(2);
+  inSplitter.connect(midGainL,  0); midGainL.connect(outMerger, 0, 0);
+  inSplitter.connect(sideGainL, 1); sideGainL.connect(outMerger, 0, 0);
+  inSplitter.connect(midGainR,  1); midGainR.connect(outMerger, 0, 1);
+  inSplitter.connect(sideGainR, 0); sideGainR.connect(outMerger, 0, 1);
+  outputGain = actx.createGain();
+  outMerger.connect(outputGain);
+  outSplitter = actx.createChannelSplitter(2);
+  outputGain.connect(outSplitter);
+  analyserL = actx.createAnalyser(); analyserL.fftSize = FFTSIZE;
+  analyserR = actx.createAnalyser(); analyserR.fftSize = FFTSIZE;
+  outSplitter.connect(analyserL, 0);
+  outSplitter.connect(analyserR, 1);
+  outputGain.connect(actx.destination);
+  updateWidth();
+}
+
+function updateWidth() {
+  if (!actx) return;
+  const avgBand = BANDS.reduce((a,b) => a + b.width, 0) / BANDS.length;
+  const w = (avgBand / 100) * (outWidthVal / 100);
+  const own   = 0.5 * (1 + w);
+  const cross = 0.5 * (1 - w);
+  const now = actx.currentTime;
+  midGainL.gain.setTargetAtTime(own,   now, 0.01);
+  sideGainL.gain.setTargetAtTime(cross, now, 0.01);
+  midGainR.gain.setTargetAtTime(own,   now, 0.01);
+  sideGainR.gain.setTargetAtTime(cross, now, 0.01);
+}
+
+function connectBuf(buf) {
+  if (source) try { source.stop(); } catch(e) {}
+  source = actx.createBufferSource();
+  source.buffer = buf; source.loop = true;
+  source.connect(inSplitter);
+  source.start();
+  updateWidth();
+}
+
+async function loadFile(file) {
+  ensureAudio(); inputFile = file;
+  const ab = await file.arrayBuffer();
+  const buf = await actx.decodeAudioData(ab.slice(0));
+  connectBuf(buf);
+}
+
+/* ═══════════════════════════════════════════════
+   CORRELATION METER
+   ═══════════════════════════════════════════════ */
+function updateCorrelation(c) {
+  const indicator = document.getElementById('corrIndicator');
+  const fill = document.getElementById('corrFill');
+  const pct = (c + 1) / 2 * 100;
+  indicator.style.left = pct + '%';
+  if (c >= 0) {
+    fill.style.left = '50%';
+    fill.style.width = (c * 50) + '%';
+    fill.style.background = 'linear-gradient(to right, #22c55e80, #10b981)';
+  } else {
+    const w = Math.abs(c) * 50;
+    fill.style.left = (50 - w) + '%';
+    fill.style.width = w + '%';
+    fill.style.background = 'linear-gradient(to right, #ef4444, #ef444480)';
+  }
+  document.getElementById('corrReadout').textContent = (c >= 0 ? '+' : '') + c.toFixed(2);
+}
+
+/* ═══════════════════════════════════════════════
+   GONIOMETER + BALANCE CANVASES
+   ═══════════════════════════════════════════════ */
+const gonioCanvas = document.getElementById('gonioCanvas');
+const gonioWrap = gonioCanvas.parentElement;
+const balanceCanvas = document.getElementById('balanceCanvas');
+const balanceWrap = balanceCanvas.parentElement;
+const trailBuf = [];
+const MAX_TRAIL = 12;
+const balanceHistory = [];
+const BAL_HISTORY_LEN = 300;
+
+function draw() {
+  requestAnimationFrame(draw);
+  drawGoniometer();
+  drawBalance();
+}
+
+function drawGoniometer() {
+  const W = gonioWrap.clientWidth, H = gonioWrap.clientHeight - 24; // leave room for toggle
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (gonioCanvas.width !== gonioWrap.clientWidth * dpr || gonioCanvas.height !== gonioWrap.clientHeight * dpr) {
+    gonioCanvas.width = gonioWrap.clientWidth * dpr;
+    gonioCanvas.height = gonioWrap.clientHeight * dpr;
+  }
+  const ctx = gonioCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, gonioWrap.clientWidth, gonioWrap.clientHeight);
+
+  const cx = W / 2, cy = H;
+  const radius = Math.min(W / 2 - 10, H - 16);
+
+  // Semicircular frame
+  ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, radius, Math.PI, 0); ctx.stroke();
+  // Inner rings
+  for (let r2 = 0.25; r2 < 1; r2 += 0.25) {
+    ctx.strokeStyle = 'rgba(255,255,255,.02)';
+    ctx.beginPath(); ctx.arc(cx, cy, radius * r2, Math.PI, 0); ctx.stroke();
+  }
+  // Radial lines
+  for (let a = 0; a <= Math.PI; a += Math.PI / 4) {
+    ctx.strokeStyle = 'rgba(255,255,255,.03)';
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(Math.PI + a) * radius, cy + Math.sin(Math.PI + a) * radius);
+    ctx.stroke();
+  }
+
+  // Labels
+  ctx.font = '700 7px "IBM Plex Mono"'; ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,.2)';
+  ctx.fillText('L', cx - radius - 2, cy + 8);
+  ctx.fillText('R', cx + radius + 2, cy + 8);
+  ctx.fillText('M', cx, cy - radius - 4);
+  ctx.fillStyle = 'rgba(255,255,255,.08)';
+  ctx.fillText('S', cx - radius * 0.72, cy - radius * 0.72);
+  ctx.fillText('S', cx + radius * 0.72, cy - radius * 0.72);
+
+  // Particles from stereo data
+  if (analyserL && analyserR) {
+    analyserL.getFloatTimeDomainData(timeBufL);
+    analyserR.getFloatTimeDomainData(timeBufR);
+
+    // Correlation
+    let sumLR = 0, sumL2 = 0, sumR2 = 0;
+    for (let i = 0; i < FFTSIZE; i++) {
+      sumLR += timeBufL[i] * timeBufR[i];
+      sumL2 += timeBufL[i] * timeBufL[i];
+      sumR2 += timeBufR[i] * timeBufR[i];
+    }
+    const denom = Math.sqrt(sumL2 * sumR2);
+    const corr = denom > 0.0001 ? sumLR / denom : 1;
+    corrSmooth = corrSmooth * 0.9 + corr * 0.1;
+    updateCorrelation(corrSmooth);
+
+    // Build points
+    const pts = [];
+    const step = 4;
+    for (let i = 0; i < FFTSIZE; i += step) {
+      const l = timeBufL[i], r = timeBufR[i];
+      const side = (r - l) * 0.5;
+      const mid = (l + r) * 0.5;
+      let px, py;
+      if (gonioMode === 'polar') {
+        px = cx + side * radius * 1.4;
+        py = cy - Math.abs(mid) * radius * 1.4;
+      } else {
+        px = cx + l * radius * 0.9;
+        py = cy - r * radius * 0.9;
+      }
+      if (py < cy - radius - 2) continue;
+      pts.push({ x: px, y: py, side: Math.abs(side), mid: Math.abs(mid) });
+    }
+    trailBuf.unshift(pts);
+    if (trailBuf.length > MAX_TRAIL) trailBuf.pop();
+
+    // Draw trail (purple particles)
+    for (let t = trailBuf.length - 1; t >= 0; t--) {
+      const age = t / MAX_TRAIL;
+      const alpha = (1 - age) * 0.6;
+      const frame = trailBuf[t];
+      for (const p of frame) {
+        const spread = p.side / (p.side + p.mid + 0.001);
+        const rr = Math.round(140 + spread * 30);
+        const gg = Math.round(60 + spread * 20);
+        const bb = Math.round(220 + spread * 35);
+        ctx.fillStyle = `rgba(${rr},${gg},${bb},${alpha * 0.55})`;
+        ctx.fillRect(p.x - 0.7, p.y - 0.7, 1.8, 1.8);
+      }
+    }
+
+    // Balance history
+    let sumL = 0, sumR = 0;
+    for (let i = 0; i < FFTSIZE; i++) {
+      sumL += timeBufL[i] * timeBufL[i];
+      sumR += timeBufR[i] * timeBufR[i];
+    }
+    const rmsL = Math.sqrt(sumL / FFTSIZE);
+    const rmsR = Math.sqrt(sumR / FFTSIZE);
+    balanceHistory.push({l: rmsL, r: rmsR});
+    if (balanceHistory.length > BAL_HISTORY_LEN) balanceHistory.shift();
+  }
+}
+
+function drawBalance() {
+  const W = balanceWrap.clientWidth, H = balanceWrap.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (balanceCanvas.width !== W * dpr || balanceCanvas.height !== H * dpr) {
+    balanceCanvas.width = W * dpr; balanceCanvas.height = H * dpr;
+  }
+  const ctx = balanceCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid
+  const midY = H / 2;
+  ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(W, midY); ctx.stroke();
+  for (const f of [0.25, 0.75]) {
+    ctx.strokeStyle = 'rgba(255,255,255,.02)';
+    ctx.beginPath(); ctx.moveTo(0, H * f); ctx.lineTo(W, H * f); ctx.stroke();
+  }
+
+  if (balanceHistory.length < 2) return;
+
+  // Left channel (dim purple)
+  ctx.beginPath();
+  for (let i = 0; i < balanceHistory.length; i++) {
+    const x = (i / BAL_HISTORY_LEN) * W;
+    const y = midY - balanceHistory[i].l * H * 2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(168,85,247,.35)'; ctx.lineWidth = 1; ctx.stroke();
+
+  // Right channel (brighter purple)
+  ctx.beginPath();
+  for (let i = 0; i < balanceHistory.length; i++) {
+    const x = (i / BAL_HISTORY_LEN) * W;
+    const y = midY + balanceHistory[i].r * H * 2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(168,85,247,.6)'; ctx.lineWidth = 1; ctx.stroke();
+
+  // Fill between
+  ctx.beginPath();
+  for (let i = 0; i < balanceHistory.length; i++) {
+    const x = (i / BAL_HISTORY_LEN) * W;
+    const y = midY - balanceHistory[i].l * H * 2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  for (let i = balanceHistory.length - 1; i >= 0; i--) {
+    const x = (i / BAL_HISTORY_LEN) * W;
+    const y = midY + balanceHistory[i].r * H * 2;
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(168,85,247,.06)'; ctx.fill();
+}
+
+draw();
+
+/* ═══════════════════════════════════════════════
+   M/S BUTTONS
+   ═══════════════════════════════════════════════ */
+document.querySelectorAll('.ms-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset.mode;
+    msMode[mode] = !msMode[mode];
+    btn.classList.toggle('active', msMode[mode]);
+  });
+});
+
+/* ═══════════════════════════════════════════════
+   MONO LOW SLIDER
+   ═══════════════════════════════════════════════ */
+document.getElementById('monoLowSlider').oninput = e => {
+  monoLowFreq = +e.target.value;
+  document.getElementById('monoLowVal').textContent = monoLowFreq;
+};
+
+/* ═══════════════════════════════════════════════
+   GONIOMETER MODE TOGGLE
+   ═══════════════════════════════════════════════ */
+document.getElementById('gmPolar').addEventListener('click', () => {
+  gonioMode = 'polar';
+  document.getElementById('gmPolar').classList.add('active');
+  document.getElementById('gmLissajous').classList.remove('active');
+  trailBuf.length = 0;
+});
+document.getElementById('gmLissajous').addEventListener('click', () => {
+  gonioMode = 'lissajous';
+  document.getElementById('gmLissajous').classList.add('active');
+  document.getElementById('gmPolar').classList.remove('active');
+  trailBuf.length = 0;
+});
+
+/* ═══════════════════════════════════════════════
+   PHASE ROLES
+   ═══════════════════════════════════════════════ */
+document.querySelectorAll('.ms-phase-btn').forEach(b => b.addEventListener('click', () => b.classList.toggle('active')));
+
+/* ═══════════════════════════════════════════════
+   A/B SWITCHING
+   ═══════════════════════════════════════════════ */
+function captureState() {
+  return { bands: BANDS.map(b => b.width), girth: girthVal, recover: recoverVal, outWidth: outWidthVal, monoLow: monoLowFreq };
+}
+function restoreState(s) {
+  if (!s) return;
+  BANDS.forEach((b, i) => { b.width = s.bands[i]; });
+  girthVal = s.girth; recoverVal = s.recover; outWidthVal = s.outWidth; monoLowFreq = s.monoLow;
+  renderBandFaders();
+  document.getElementById('girthKnob').dataset.value = girthVal;
+  document.getElementById('girthVal').textContent = Math.round(girthVal) + '%';
+  updateKnobVisual(document.getElementById('girthKnob'));
+  document.getElementById('recoverKnob').dataset.value = recoverVal;
+  document.getElementById('recoverVal').textContent = Math.round(recoverVal) + '%';
+  updateKnobVisual(document.getElementById('recoverKnob'));
+  document.getElementById('outWidthKnob').dataset.value = outWidthVal;
+  document.getElementById('outWidthVal').textContent = Math.round(outWidthVal) + '%';
+  updateKnobVisual(document.getElementById('outWidthKnob'));
+  document.getElementById('monoLowSlider').value = monoLowFreq;
+  document.getElementById('monoLowVal').textContent = monoLowFreq;
+  updateWidth();
+}
+document.getElementById('btnA').addEventListener('click', () => {
+  presets[activeSlot] = captureState();
+  activeSlot = 'A';
+  restoreState(presets.A);
+  document.getElementById('btnA').classList.add('active');
+  document.getElementById('btnB').classList.remove('active');
+});
+document.getElementById('btnB').addEventListener('click', () => {
+  presets[activeSlot] = captureState();
+  activeSlot = 'B';
+  restoreState(presets.B);
+  document.getElementById('btnB').classList.add('active');
+  document.getElementById('btnA').classList.remove('active');
+});
+document.getElementById('btnCopy').addEventListener('click', () => {
+  const other = activeSlot === 'A' ? 'B' : 'A';
+  presets[other] = captureState();
+});
+
+/* ═══════════════════════════════════════════════
+   FOOTER TOGGLES
+   ═══════════════════════════════════════════════ */
+document.querySelectorAll('.footer-btn').forEach(b => {
+  if (b.id === 'btnBypass' || b.id === 'btnPrePost') {
+    b.addEventListener('click', () => b.classList.toggle('active'));
+  }
+});
+
+/* ═══════════════════════════════════════════════
+   FILE LOADING
+   ═══════════════════════════════════════════════ */
+document.getElementById('fileInput').onchange = e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+};
+
+/* ═══════════════════════════════════════════════
+   PROCESS — send to backend
+   ═══════════════════════════════════════════════ */
+async function processAudio() {
+  if (!inputFile) {
+    document.getElementById('status').textContent = 'No file loaded';
+    return;
+  }
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = 'Processing...';
+
+  const avgWidth = BANDS.reduce((a, b) => a + b.width, 0) / BANDS.length;
+
+  const formData = new FormData();
+  formData.append('audio', inputFile);
+  formData.append('effect', 'stereo_imager');
+  formData.append('output_format', 'wav');
+  formData.append('params', JSON.stringify({
+    width: avgWidth,
+    balance: 0,
+    outputGain: 0
+  }));
+
+  try {
+    const resp = await fetch('/api/edit/mastering/process', {
+      method: 'POST',
+      body: formData
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      statusEl.textContent = 'Error: ' + resp.status;
+      console.error('Process failed:', errText);
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const audioEl = document.getElementById('audioEl');
+    audioEl.src = url;
+    statusEl.textContent = 'Done';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    console.error('Process error:', err);
+  }
+}
+
+document.getElementById('btnProcess').addEventListener('click', processAudio);
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      if (typeof loadFile === 'function') { loadFile(file); }
+      else {
+        const ain = document.getElementById('audioEl') || document.querySelector('audio');
+        if (ain) { ain.src = URL.createObjectURL(blob); }
+      }
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+
+})();
+</script>
+</body>
+</html>

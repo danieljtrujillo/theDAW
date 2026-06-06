@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Repair — StableDAW</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#07080c;--panel:#0e1018;--surface:#141720;--border:#1e2230;
+  --accent:#2dd4bf;--accent2:#e879f9;--cyan:#22d3ee;--magenta:#e879f9;
+  --text:#e0e6f0;--dim:#5a6278;--mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif;
+}
+html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--sans);color:var(--text);overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER 28px ── */
+.hdr{display:flex;align-items:center;padding:0 10px;background:#0a0b10;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px;gap:8px}
+.hdr-icon{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--accent);display:flex;align-items:center;justify-content:center}
+.hdr-icon svg{width:8px;height:8px}
+.mod-title{font:700 10px/1 var(--mono);letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0}
+.preset-nav{display:flex;align-items:center;gap:2px;font:500 8px/1 var(--mono);color:#5a5e6a;margin-left:4px}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{color:#6b7080;min-width:60px;text-align:center}
+.hdr-spacer{flex:1}
+.hdr-right{display:flex;align-items:center;gap:3px}
+.pill{font:600 7px/1 var(--mono);letter-spacing:.4px;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.pill.active{background:#0e1e1e;border-color:var(--accent);color:var(--accent)}
+.pill:hover{border-color:#3a3e4a}
+
+/* ── SPLIT WAVEFORM DISPLAY (flex:1 ~50%) ── */
+.wave-zone{flex:1;position:relative;background:#060810;border-bottom:1px solid var(--border);overflow:hidden;min-height:0}
+.wave-zone canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+.split-label{position:absolute;top:8px;font:700 8px/1 var(--mono);letter-spacing:2px;text-transform:uppercase;pointer-events:none;z-index:5}
+.split-label.left{left:12px;color:rgba(34,211,238,.45)}
+.split-label.right{color:rgba(232,121,249,.45)}
+.time-axis{position:absolute;bottom:0;left:0;right:0;height:16px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;pointer-events:none;z-index:5}
+.time-axis span{font:500 7px/1 var(--mono);color:rgba(255,255,255,.15)}
+
+/* ── MODE SECTION ── */
+.mode-section{display:flex;align-items:center;gap:14px;padding:6px 14px;background:#080a12;border-bottom:1px solid var(--border);flex-shrink:0;height:36px}
+.mode-title{font:700 7px/1 var(--mono);letter-spacing:1.2px;text-transform:uppercase;color:var(--dim)}
+.mode-check{display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+.mode-check input{display:none}
+.mode-check .ck-box{width:14px;height:14px;border-radius:3px;border:1px solid #2a2e3a;background:#0c0e14;display:flex;align-items:center;justify-content:center;transition:.15s}
+.mode-check .ck-box svg{width:8px;height:8px;opacity:0;transition:.15s}
+.mode-check input:checked~.ck-box{border-color:var(--accent);background:rgba(45,212,191,.08)}
+.mode-check input:checked~.ck-box svg{opacity:1}
+.mode-check .ck-label{font:600 8px/1 var(--mono);color:var(--dim);letter-spacing:.3px;transition:.15s}
+.mode-check input:checked~.ck-label{color:var(--text)}
+.mode-sep{width:1px;height:18px;background:var(--border);flex-shrink:0}
+.focus-group{display:flex;align-items:center;gap:6px}
+.focus-label{font:700 7px/1 var(--mono);letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.focus-select{font:600 8px/1 var(--mono);padding:3px 8px;border-radius:3px;border:1px solid var(--border);background:#0c0e14;color:var(--text);cursor:pointer;outline:none;-webkit-appearance:none;appearance:none}
+.focus-select:hover{border-color:#3a3e4a}
+
+/* ── KNOBS ROW ── */
+.knobs-row{display:flex;align-items:center;justify-content:center;gap:24px;padding:8px 16px;background:#080a12;border-bottom:1px solid var(--border);flex-shrink:0;height:100px}
+.knob-unit{display:flex;flex-direction:column;align-items:center;gap:2px}
+.knob-label{font:700 10px/1 var(--mono);letter-spacing:1px;text-transform:uppercase;color:var(--dim);margin-bottom:2px}
+.knob-val{font:700 13px/1 var(--mono);color:var(--accent);margin-top:2px}
+
+/* ── BOTTOM ACTION ROW ── */
+.action-row{display:flex;align-items:center;gap:10px;padding:6px 14px;background:#080a12;border-bottom:1px solid var(--border);flex-shrink:0;height:38px}
+.ai-group{display:flex;align-items:center;gap:6px}
+.ai-label{font:700 7px/1 var(--mono);letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.ai-select{font:600 8px/1 var(--mono);padding:3px 10px;border-radius:3px;border:1px solid var(--border);background:#0c0e14;color:var(--text);cursor:pointer;outline:none;-webkit-appearance:none;appearance:none}
+.studio-label{font:700 8px/1 var(--mono);color:var(--dim);letter-spacing:.5px}
+.quality-pill{font:600 7.5px/1 var(--mono);padding:3px 10px;border-radius:3px;border:1px solid var(--border);background:#0c0e14;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:4px}
+.quality-pill.active{border-color:var(--accent);color:var(--accent);background:rgba(45,212,191,.05)}
+.quality-dot{width:5px;height:5px;border-radius:50%;background:var(--dim)}
+.quality-pill.active .quality-dot{background:var(--accent);box-shadow:0 0 6px var(--accent)}
+.action-spacer{flex:1}
+.repair-btn{font:800 10px/1 var(--mono);letter-spacing:1.2px;padding:8px 28px;border-radius:4px;cursor:pointer;border:none;background:linear-gradient(135deg,#2dd4bf,#14b8a6);color:#042f2e;transition:.15s;white-space:nowrap;text-transform:uppercase}
+.repair-btn:hover{box-shadow:0 0 18px rgba(45,212,191,.35);background:linear-gradient(135deg,#5eead4,#2dd4bf)}
+.repair-btn:active{transform:scale(.97)}
+
+/* ── FOOTER 28px ── */
+.ftr{display:flex;align-items:center;gap:6px;padding:0 8px;background:#08090e;border-top:1px solid #14171e;flex-shrink:0;height:28px}
+.ftr-btn{font:600 7.5px/1 var(--mono);padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:all 120ms}
+.ftr-btn:hover{background:#14171e;color:#c8cad0}
+.ftr-btn.active{background:#0e1e1e;border-color:var(--accent);color:var(--accent)}
+.ftr-spacer{flex:1}
+.ftr-stat{font:500 7.5px/1 var(--mono);color:var(--dim)}
+.ftr-stat.ok{color:#22c55e}
+audio{display:none}
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-icon">
+    <svg viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M5 6l3-3 3 3"/></svg>
+  </div>
+  <span class="mod-title">Repair</span>
+  <div class="preset-nav">
+    <button>&#9666;</button>
+    <span class="preset-name">AI Restoration</span>
+    <button>&#9656;</button>
+  </div>
+  <span class="hdr-spacer"></span>
+  <div class="hdr-right">
+    <button class="pill" id="btnA">A</button>
+    <button class="pill" id="btnB">B</button>
+    <button class="pill" id="btnCopy">Copy</button>
+    <button class="pill" id="btnDelta">Delta</button>
+    <button class="pill" id="btnBypassH">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+    </button>
+    <button class="pill" id="btnSettingsH">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- SPLIT WAVEFORM DISPLAY -->
+<div class="wave-zone" id="waveWrap">
+  <canvas id="waveCanvas"></canvas>
+  <span class="split-label left">DAMAGED INPUT</span>
+  <span class="split-label right" id="rightLabel">REPAIRED OUTPUT</span>
+  <div class="time-axis">
+    <span>0:00</span><span>0:01</span><span>0:02</span><span>0:03</span><span>0:04</span><span>0:05</span><span>0:06</span><span>0:07</span><span>0:08</span>
+  </div>
+</div>
+
+<!-- MODE SECTION -->
+<div class="mode-section">
+  <span class="mode-title">MODES</span>
+  <label class="mode-check"><input type="checkbox" id="ckDenoise" checked><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-noise</span></label>
+  <label class="mode-check"><input type="checkbox" id="ckDeclip"><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-clip</span></label>
+  <label class="mode-check"><input type="checkbox" id="ckDereverb"><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-reverb</span></label>
+  <div class="mode-sep"></div>
+  <div class="focus-group">
+    <span class="focus-label">FOCUS</span>
+    <select class="focus-select" id="focusSelect">
+      <option value="balanced">Balanced</option>
+      <option value="voice">Voice</option>
+      <option value="music">Music</option>
+      <option value="sfx">SFX</option>
+    </select>
+  </div>
+</div>
+
+<!-- KNOBS ROW -->
+<div class="knobs-row" id="knobsRow">
+  <div class="knob-unit">
+    <span class="knob-label">RESTORATION AMOUNT</span>
+    <svg class="rotary-knob" data-param="restoration" data-min="0" data-max="100" data-val="65" viewBox="0 0 52 52" width="66" height="66"></svg>
+    <span class="knob-val" id="valRestoration">65%</span>
+  </div>
+  <div class="knob-unit">
+    <span class="knob-label">REPAIR INTENSITY</span>
+    <svg class="rotary-knob" data-param="intensity" data-min="0" data-max="10" data-val="72" viewBox="0 0 52 52" width="66" height="66"></svg>
+    <span class="knob-val" id="valIntensity">7.2</span>
+  </div>
+  <div class="knob-unit">
+    <span class="knob-label">ARTIFACT CONTROL</span>
+    <svg class="rotary-knob" data-param="artifact" data-min="0" data-max="10" data-val="40" viewBox="0 0 52 52" width="66" height="66"></svg>
+    <span class="knob-val" id="valArtifact">4.0</span>
+  </div>
+  <div class="knob-unit">
+    <span class="knob-label">OUTPUT GAIN</span>
+    <svg class="rotary-knob" data-param="gain" data-min="-24" data-max="24" data-val="50" viewBox="0 0 52 52" width="66" height="66"></svg>
+    <span class="knob-val" id="valGain">0.0 dB</span>
+  </div>
+</div>
+
+<!-- BOTTOM ACTION ROW -->
+<div class="action-row">
+  <div class="ai-group">
+    <span class="ai-label">AI Model</span>
+    <select class="ai-select" id="aiModelSelect">
+      <option value="standard">Standard v2</option>
+      <option value="pro">Pro v3</option>
+      <option value="ultra">Ultra</option>
+    </select>
+  </div>
+  <span class="studio-label">Studio</span>
+  <button class="quality-pill active" id="qualityBtn"><span class="quality-dot"></span>Quality: High</button>
+  <span class="action-spacer"></span>
+  <button class="repair-btn" id="repairBtn">Repair</button>
+</div>
+
+<!-- FOOTER -->
+<div class="ftr">
+  <button class="ftr-btn" id="btnBypass">Bypass</button>
+  <button class="ftr-btn active" id="tabAnalyze">Analyze</button>
+  <button class="ftr-btn" id="tabAIModel">AI Model</button>
+  <button class="ftr-btn" id="tabStudio">Studio</button>
+  <span class="ftr-spacer"></span>
+  <span class="ftr-stat" id="status">ready</span>
+  <audio id="ain" controls></audio>
+  <audio id="aout" controls></audio>
+</div>
+</div>
+<input type="file" id="fileinput" accept="audio/*">
+
+<script>
+(function(){
+'use strict';
+
+/* ── STATE ── */
+const params = {
+  restoration: 65,   /* 0-100 -> displayed as % */
+  intensity: 72,     /* 0-100 -> displayed as 0.0-10.0 */
+  artifact: 40,      /* 0-100 -> displayed as 0.0-10.0 */
+  gain: 50           /* 0-100 -> displayed as -24 to +24 dB */
+};
+let actx, analyser, source, inputFile, inputBuf;
+const timeData = new Float32Array(4096);
+
+/* ── LIVE REPAIR COMPRESSOR ── */
+let liveCompressor, outputGain;
+function buildRepairChain(){
+  if(!actx) return;
+  liveCompressor = actx.createDynamicsCompressor();
+  outputGain = actx.createGain();
+  updateRepairLive();
+}
+function updateRepairLive(){
+  if(!liveCompressor) return;
+  const restore = params.restoration / 100;
+  const inten = params.intensity / 100;
+  liveCompressor.threshold.value = -10 - restore * 30;
+  liveCompressor.ratio.value = 1 + inten * 11;
+  liveCompressor.knee.value = 30 - restore * 25;
+  liveCompressor.attack.value = 0.003;
+  liveCompressor.release.value = 0.08 + (1 - inten) * 0.15;
+  if(outputGain){
+    const dbVal = ((params.gain / 100) * 48) - 24;
+    outputGain.gain.value = Math.pow(10, dbVal / 20);
+  }
+}
+function connectRepairChain(){
+  if(!actx || !source || !liveCompressor) return;
+  try{ source.disconnect() }catch(e){}
+  source.connect(liveCompressor);
+  liveCompressor.connect(outputGain);
+  outputGain.connect(analyser);
+  analyser.connect(actx.destination);
+}
+
+/* ── AUDIO ── */
+function ensureAudio(){
+  if(actx) return;
+  actx = new AudioContext();
+  analyser = actx.createAnalyser();
+  analyser.fftSize = 4096;
+  analyser.smoothingTimeConstant = 0.65;
+  buildRepairChain();
+}
+function connectBuf(buf){
+  if(source) try{ source.stop() }catch(e){}
+  source = actx.createBufferSource();
+  source.buffer = buf;
+  source.loop = true;
+  if(!liveCompressor) buildRepairChain();
+  connectRepairChain();
+  source.start();
+}
+async function loadFile(file){
+  ensureAudio();
+  inputFile = file;
+  const ab = await file.arrayBuffer();
+  inputBuf = await actx.decodeAudioData(ab.slice(0));
+  document.getElementById('ain').src = URL.createObjectURL(file);
+  connectBuf(inputBuf);
+}
+
+/* ── FILE/TONE LOAD ── */
+document.getElementById('fileinput').onchange = e => { if(e.target.files[0]) loadFile(e.target.files[0]) };
+
+/* ── SVG ROTARY KNOB RENDERING ── */
+function renderRotary(svg, pct){
+  const cx = 26, cy = 26, r = 19, r2 = 22;
+  const sA = 135, eA = 405, range = eA - sA;
+  const ang = sA + (pct / 100) * range;
+  function pol(a, rad){ const d = (a - 90) * Math.PI / 180; return { x: cx + rad * Math.cos(d), y: cy + rad * Math.sin(d) } }
+  const s = pol(sA, r), e = pol(eA, r), v = pol(ang, r);
+  const la = (ang - sA) > 180 ? 1 : 0;
+
+  /* tick marks */
+  let ticks = '';
+  for(let i = 0; i <= 20; i++){
+    const ta = sA + (i / 20) * range;
+    const p1 = pol(ta, r + 3), p2 = pol(ta, r + 5.5);
+    const bright = ((ta - sA) / range) <= (pct / 100) ? .4 : .08;
+    ticks += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="rgba(45,212,191,${bright})" stroke-width=".7" stroke-linecap="round"/>`;
+  }
+
+  /* pointer line from center */
+  const ptr = pol(ang, r - 5);
+
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="rG_${svg.dataset.param}" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#2dd4bf"/><stop offset="100%" stop-color="#14b8a6"/>
+      </linearGradient>
+      <filter id="rGl_${svg.dataset.param}"><feGaussianBlur stdDeviation="2.5" result="g"/>
+        <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+      <linearGradient id="rFace_${svg.dataset.param}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#161a28"/><stop offset="1" stop-color="#0a0d16"/>
+      </linearGradient>
+    </defs>
+    ${ticks}
+    <path d="M${s.x},${s.y} A${r},${r} 0 1 1 ${e.x},${e.y}" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M${s.x},${s.y} A${r},${r} 0 ${la} 1 ${v.x},${v.y}" fill="none" stroke="url(#rG_${svg.dataset.param})" stroke-width="3.5" stroke-linecap="round" filter="url(#rGl_${svg.dataset.param})"/>
+    <circle cx="${cx}" cy="${cy}" r="10" fill="url(#rFace_${svg.dataset.param})" stroke="rgba(45,212,191,.12)" stroke-width="1"/>
+    <line x1="${cx}" y1="${cy}" x2="${ptr.x}" y2="${ptr.y}" stroke="rgba(45,212,191,.8)" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="${v.x}" cy="${v.y}" r="3" fill="#2dd4bf" filter="url(#rGl_${svg.dataset.param})"/>
+    <circle cx="${v.x}" cy="${v.y}" r="1.5" fill="#fff"/>`;
+}
+
+/* Format display value for each param */
+function formatVal(param, pct){
+  switch(param){
+    case 'restoration': return Math.round(pct) + '%';
+    case 'intensity':   return ((pct / 100) * 10).toFixed(1);
+    case 'artifact':    return ((pct / 100) * 10).toFixed(1);
+    case 'gain':        return (((pct / 100) * 48) - 24).toFixed(1) + ' dB';
+    default: return Math.round(pct) + '%';
+  }
+}
+
+/* Init all knobs */
+const knobSvgs = document.querySelectorAll('.rotary-knob');
+knobSvgs.forEach(svg => {
+  const p = svg.dataset.param;
+  renderRotary(svg, params[p]);
+  /* drag */
+  let drag = { active: false, startY: 0, startVal: 0 };
+  svg.style.cursor = 'pointer';
+  svg.addEventListener('pointerdown', e => {
+    drag = { active: true, startY: e.clientY, startVal: params[p] };
+    svg.setPointerCapture(e.pointerId);
+  });
+  svg.addEventListener('pointermove', e => {
+    if(!drag.active) return;
+    const dy = drag.startY - e.clientY;
+    params[p] = Math.max(0, Math.min(100, drag.startVal + dy * 0.5));
+    renderRotary(svg, params[p]);
+    document.getElementById('val' + p.charAt(0).toUpperCase() + p.slice(1)).textContent = formatVal(p, params[p]);
+    updateRepairLive();
+  });
+  svg.addEventListener('pointerup', () => { drag.active = false });
+});
+
+/* ── PILL BUTTONS ── */
+document.querySelectorAll('.pill').forEach(b => b.addEventListener('click', () => b.classList.toggle('active')));
+document.getElementById('qualityBtn').addEventListener('click', function(){
+  this.classList.toggle('active');
+  this.querySelector('.quality-dot');
+});
+
+/* Footer tab switching */
+['tabAnalyze','tabAIModel','tabStudio'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(){
+    document.querySelectorAll('.ftr .ftr-btn:not(#btnBypass)').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active') });
+
+/* ── PROCESS ── */
+document.getElementById('repairBtn').onclick = async () => {
+  if(!inputFile) return;
+  const st = document.getElementById('status');
+  st.className = 'ftr-stat'; st.textContent = 'processing...';
+  const fd = new FormData();
+  fd.append('effect', 'declick');
+  fd.append('params', JSON.stringify({
+    window: Math.max(10, Math.min(100, Math.round(10 + (params.restoration / 100) * 90))),
+    overlap: 75,
+    threshold: Math.max(1, Math.min(100, Math.round(100 - (params.intensity / 100) * 99)))
+  }));
+  fd.append('output_format', 'wav');
+  fd.append('audio', inputFile);
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/edit/restoration/process', { method: 'POST', body: fd });
+    if(r.ok){
+      const blob = await r.blob();
+      document.getElementById('aout').src = URL.createObjectURL(blob);
+      st.className = 'ftr-stat ok';
+      st.textContent = 'done ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms';
+    } else { st.textContent = r.status + ' error' }
+  } catch(e){ st.textContent = 'ERR' }
+};
+
+/* ── SPLIT WAVEFORM CANVAS ── */
+const waveCanvas = document.getElementById('waveCanvas');
+const waveWrap = document.getElementById('waveWrap');
+const rightLabel = document.getElementById('rightLabel');
+
+function draw(){
+  requestAnimationFrame(draw);
+  const W = waveWrap.clientWidth, H = waveWrap.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if(waveCanvas.width !== W * dpr || waveCanvas.height !== H * dpr){
+    waveCanvas.width = W * dpr; waveCanvas.height = H * dpr;
+  }
+  const ctx = waveCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  /* bg */
+  ctx.fillStyle = '#060810'; ctx.fillRect(0, 0, W, H);
+
+  const midX = W / 2;
+  rightLabel.style.right = '12px';
+
+  /* subtle grid lines */
+  ctx.strokeStyle = 'rgba(255,255,255,.02)'; ctx.lineWidth = 0.5;
+  for(let i = 1; i < 8; i++){
+    const x = (W / 8) * i;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  [.25, .5, .75].forEach(f => {
+    const y = H * f;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  });
+
+  /* Center X divider */
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1.5;
+  /* Main vertical line */
+  ctx.beginPath(); ctx.moveTo(midX, 0); ctx.lineTo(midX, H); ctx.stroke();
+  /* X cross arms */
+  const xSize = 14;
+  const cY = H * 0.5;
+  ctx.strokeStyle = 'rgba(255,255,255,.2)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(midX - xSize, cY - xSize); ctx.lineTo(midX + xSize, cY + xSize); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(midX + xSize, cY - xSize); ctx.lineTo(midX - xSize, cY + xSize); ctx.stroke();
+  /* Circle around X */
+  ctx.beginPath(); ctx.arc(midX, cY, xSize + 4, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
+
+  if(!analyser){
+    ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.font = '10px "IBM Plex Mono"'; ctx.textAlign = 'center';
+    ctx.fillText('Load audio to analyze', W / 2, H / 2);
+    return;
+  }
+
+  analyser.getFloatTimeDomainData(timeData);
+  const m = 8, dw = W - m * 2;
+  const halfW = W / 2;
+
+  /* LEFT SIDE — Damaged Input (CYAN tint, noisy) */
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, halfW - 1, H); ctx.clip();
+
+  /* Noisy fill */
+  const gfL = ctx.createLinearGradient(0, 0, 0, H);
+  gfL.addColorStop(0, 'rgba(34,211,238,.15)');
+  gfL.addColorStop(0.5, 'rgba(34,211,238,.03)');
+  gfL.addColorStop(1, 'rgba(34,211,238,.15)');
+  ctx.beginPath(); ctx.moveTo(m, H / 2);
+  for(let i = 0; i < timeData.length; i++){
+    const x = m + (i / timeData.length) * dw;
+    if(x > halfW) break;
+    const noise = (Math.random() - 0.5) * 0.15;
+    const y = H / 2 + (timeData[i] + noise) * (H / 2 - 20);
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(halfW, H / 2); ctx.closePath();
+  ctx.fillStyle = gfL; ctx.fill();
+
+  /* Waveform stroke — noisy */
+  ctx.beginPath();
+  for(let i = 0; i < timeData.length; i++){
+    const x = m + (i / timeData.length) * dw;
+    if(x > halfW) break;
+    const noise = (Math.random() - 0.5) * 0.12;
+    const y = H / 2 + (timeData[i] + noise) * (H / 2 - 20);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(34,211,238,.55)'; ctx.lineWidth = 1.2; ctx.stroke();
+
+  /* Extra noise scatter */
+  ctx.fillStyle = 'rgba(34,211,238,.08)';
+  for(let i = 0; i < 60; i++){
+    const nx = Math.random() * halfW;
+    const ny = Math.random() * H;
+    ctx.fillRect(nx, ny, 1 + Math.random() * 2, 1);
+  }
+  ctx.restore();
+
+  /* RIGHT SIDE — Repaired Output (MAGENTA tint, clean) */
+  ctx.save();
+  ctx.beginPath(); ctx.rect(halfW + 1, 0, halfW, H); ctx.clip();
+
+  /* Clean fill */
+  const gfR = ctx.createLinearGradient(0, 0, 0, H);
+  gfR.addColorStop(0, 'rgba(232,121,249,.18)');
+  gfR.addColorStop(0.5, 'rgba(232,121,249,.03)');
+  gfR.addColorStop(1, 'rgba(232,121,249,.18)');
+  ctx.beginPath(); ctx.moveTo(halfW, H / 2);
+  for(let i = 0; i < timeData.length; i++){
+    const x = m + (i / timeData.length) * dw;
+    if(x < halfW) continue;
+    const y = H / 2 + timeData[i] * (H / 2 - 20) * 0.85;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W - m, H / 2); ctx.closePath();
+  ctx.fillStyle = gfR; ctx.fill();
+
+  /* Waveform stroke — clean */
+  ctx.beginPath();
+  let started = false;
+  for(let i = 0; i < timeData.length; i++){
+    const x = m + (i / timeData.length) * dw;
+    if(x < halfW) continue;
+    const y = H / 2 + timeData[i] * (H / 2 - 20) * 0.85;
+    if(!started){ ctx.moveTo(x, y); started = true } else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(232,121,249,.65)'; ctx.lineWidth = 1.4; ctx.stroke();
+  ctx.restore();
+
+  /* Glow at center divider */
+  const cgrd = ctx.createRadialGradient(midX, cY, 0, midX, cY, 40);
+  cgrd.addColorStop(0, 'rgba(255,255,255,.04)');
+  cgrd.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = cgrd;
+  ctx.fillRect(midX - 40, cY - 40, 80, 80);
+}
+draw();
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      if (typeof loadFile === 'function') { loadFile(file); }
+      else {
+        const ain = document.getElementById('ain') || document.querySelector('audio');
+        if (ain) { ain.src = URL.createObjectURL(blob); }
+      }
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+
+})();
+</script>
+</body>
+</html>

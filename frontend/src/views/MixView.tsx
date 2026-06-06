@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
-  Upload, X, Eye, EyeOff, ChevronUp, ChevronDown, Trash2,
+  Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, Trash2,
   Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
 } from 'lucide-react';
 import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS } from '../state/effectChainStore';
@@ -14,10 +14,14 @@ import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideRow } from '../components/audio/SlideRow';
 import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
 import { EffectsVizPanel } from './EffectsVizPanel';
+import { EffectGuiStage } from '../components/audio/EffectGuiStage';
+import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory } from '../lib/effectCatalog';
+import { STUDIO_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
+import { Boxes } from 'lucide-react';
 import '../components/layout/track-controls.css';
 
 /* ═══ MIX (PROCESS) tab — now on the Control-Surface editor ═══════════════════
@@ -105,23 +109,27 @@ function StatRow({ stats }: { stats: AudioStats }) {
 }
 
 /* ═══ default layout ═════════════════════════════════════════════════════════ */
-const MIX_LAYOUT_VERSION = 1;
+/* The user's hand-arranged MIX layout (Design Mode export):
+     top    — Input / Output viz rows
+     middle — Effects rail · [ Chain over Effect Stage ] · Library
+   Version is bumped past any previously-persisted MIX layout so this default
+   takes over cleanly. */
+const MIX_LAYOUT_VERSION = 3;
 const defaultMixLayout: SurfaceLayout = {
   version: MIX_LAYOUT_VERSION,
   root: 'root',
   nodes: {
-    root: { id: 'root', type: 'container', axis: 'column', children: ['topViz', 'mid', 'stageP'], fr: { topViz: 3, mid: 4, stageP: 2 } },
-    // top — 2 viz rows
+    root: { id: 'root', type: 'container', axis: 'column', children: ['topViz', 'mid'], fr: { topViz: 1.6506024096385525, mid: 5.349397590361448 } },
     topViz: { id: 'topViz', type: 'container', axis: 'column', children: ['inputVizP', 'outputVizP'], fr: { inputVizP: 1, outputVizP: 1 } },
     inputVizP: { id: 'inputVizP', type: 'panel', title: 'Input', flow: 'row', widgets: [], pinned: 'inputViz' },
     outputVizP: { id: 'outputVizP', type: 'panel', title: 'Output', flow: 'row', widgets: [], pinned: 'outputViz' },
-    // middle — effect workflow
-    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'libraryP', 'chainP'], fr: { railP: 1.1, libraryP: 2.6, chainP: 1.7 } },
+    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'cont-3-b45ab2a0'], fr: { railP: 0.7625161264148641, 'cont-3-b45ab2a0': 3.652897886323994 } },
     railP: { id: 'railP', type: 'panel', title: 'Effects', flow: 'row', widgets: [], pinned: 'effectRail' },
     libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library' },
     chainP: { id: 'chainP', type: 'panel', title: 'Chain', flow: 'row', widgets: [], pinned: 'chain' },
-    // lower — effect stage (active effect UI/viz)
     stageP: { id: 'stageP', type: 'panel', title: 'Effect Stage', flow: 'row', widgets: [], pinned: 'effectStage' },
+    'cont-3-b45ab2a0': { id: 'cont-3-b45ab2a0', type: 'container', axis: 'row', children: ['cont-4-4768bad0', 'libraryP'], fr: { libraryP: 0.45836297448789, 'cont-4-4768bad0': 1.5416370255121108 } },
+    'cont-4-4768bad0': { id: 'cont-4-4768bad0', type: 'container', axis: 'column', children: ['chainP', 'stageP'], fr: { chainP: 0.6536796536796542, stageP: 1.3463203463203457 } },
   },
 };
 
@@ -148,6 +156,8 @@ interface MixRegArgs {
   // library
   activeEffects: Array<{ id: string; name: string; desc: string }>; viewMode: 'list' | 'tile';
   setViewMode: (m: 'list' | 'tile') => void; addEffect: (id: string) => void; chainEffectIds: Set<string>;
+  // studio modules (exact-GUI instruments)
+  onPickModule: (id: string) => void; activeModuleId: string | null; activeModule: StudioModule | null;
   // chain
   chain: ChainEntry[]; selectedId: string | null; setSelectedId: (id: string) => void;
   removeEffect: (id: string) => void; updateParams: (id: string, p: Record<string, number>) => void;
@@ -222,6 +232,12 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-1.5 gap-1.5">
       <span className={sectionTitle}>Effects</span>
       <div className="flex flex-col gap-0.5 overflow-y-auto min-h-0">
+        <button onClick={() => p.setActiveCategory('studio')}
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'studio' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
+          <Boxes className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[10px] font-bold flex-1 truncate">Studio</span>
+          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length}</span>
+        </button>
         <button onClick={() => p.setActiveCategory('all')}
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'all' ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}>
           <Library className="w-3.5 h-3.5 shrink-0" />
@@ -260,13 +276,35 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   pinned('library', 'Library', (
     <div className="h-full w-full flex flex-col min-h-0 min-w-0 overflow-hidden p-2">
       <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className={sectionTitle}>{p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
-        <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
-          <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
-          <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
-        </div>
+        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
+        {p.activeCategory !== 'studio' && (
+          <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
+            <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
+            <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
+          </div>
+        )}
       </div>
-      {p.viewMode === 'list' ? (
+      {p.activeCategory === 'studio' ? (
+        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
+          {STUDIO_MODULES.map((m) => {
+            const active = p.activeModule?.id === m.id;
+            return (
+              <button key={m.id} onClick={() => p.onPickModule(m.id)} title={m.desc}
+                className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-cyan-400/60 ring-1 ring-cyan-400/40 bg-cyan-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                style={{ width: 132 }}>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
+                  <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                </div>
+                <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
+                  <ModuleThumb preview={m.preview} className="w-full h-full" />
+                </div>
+                <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+              </button>
+            );
+          })}
+        </div></div>
+      ) : p.viewMode === 'list' ? (
         <div className="flex-1 overflow-y-auto"><div className="flex flex-col gap-1 content-start">
           {p.activeEffects.map((fx) => {
             const inChain = p.chainEffectIds.has(fx.id);
@@ -283,7 +321,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           })}
         </div></div>
       ) : (
-        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start p-1">
+        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
           {p.activeEffects.map((fx) => {
             const inChain = p.chainEffectIds.has(fx.id);
             const cat = fxToCategory[fx.id] ?? CATEGORY_META[0];
@@ -291,10 +329,10 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
             return (
               <div key={fx.id} onClick={() => p.addEffect(fx.id)}
                 className={`relative flex flex-col items-center justify-start gap-1.5 rounded border cursor-pointer transition-all overflow-hidden p-2 ${cat.tile.bg} ${inChain ? `${cat.tile.border} ring-2 ${cat.tile.ring}` : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}
-                style={{ width: 72, height: 80 }}>
+                style={{ width: 90, height: 98 }}>
                 <div className={`absolute inset-0 ${cat.tile.glow} blur-xl pointer-events-none opacity-70`} />
-                <div className="relative z-10 flex items-center justify-center w-8 h-8 mt-1"><Icon className={`w-6 h-6 ${cat.tile.text}`} /></div>
-                <span className={`text-[9px] font-medium text-center leading-tight relative z-10 ${cat.tile.text} px-0.5 line-clamp-2`}>{fx.name}</span>
+                <div className="relative z-10 flex items-center justify-center w-10 h-10 mt-1.5"><Icon className={`w-7 h-7 ${cat.tile.text}`} /></div>
+                <span className={`text-[10px] font-medium text-center leading-tight relative z-10 ${cat.tile.text} px-0.5 line-clamp-2`}>{fx.name}</span>
                 {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
               </div>
             );
@@ -304,66 +342,72 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     </div>
   ));
 
-  /* ── chain ── */
+  /* ── chain — horizontal signal flow, left → right ── */
   pinned('chain', 'Chain', (
     <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-2">
-      <div className="flex items-center justify-between mb-2 shrink-0">
+      <div className="flex items-center gap-2 mb-1.5 shrink-0">
         <span className={sectionTitle}>Chain {p.chain.length > 0 && <span className="text-zinc-600">({p.chain.length})</span>}</span>
-        {p.chain.length > 0 && <button className="text-zinc-600 hover:text-red-400 transition-colors" onClick={p.clearChain} title="Clear chain"><Trash2 className="w-3.5 h-3.5" /></button>}
-      </div>
-      <div className="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0">
-        {p.chain.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center px-2"><span className="text-[10px] text-zinc-600 text-center">Add effects from the library</span></div>
-        ) : (
-          p.chain.map((entry, index) => (
-            <div key={entry.id} onClick={() => p.setSelectedId(entry.id)}
-              className={`rounded p-1.5 border transition-all cursor-pointer shrink-0 ${p.selectedEntry?.id === entry.id ? 'border-purple-500/60 bg-purple-500/5' : 'border-zinc-800 hover:border-white/10'} ${!entry.enabled ? 'opacity-40' : ''}`}>
-              <div className="flex items-center gap-1">
-                <div className="flex flex-col shrink-0">
-                  <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20" disabled={index === 0} onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronUp className="w-2.5 h-2.5" /></button>
-                  <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20" disabled={index === p.chain.length - 1} onClick={(e) => { e.stopPropagation(); p.reorder(index, index + 1); }}><ChevronDown className="w-2.5 h-2.5" /></button>
-                </div>
-                <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{EFFECT_LABELS[entry.effect] || entry.effect}</span>
-                <button className="text-zinc-500 hover:text-purple-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.toggleEnabled(entry.id); }}>{entry.enabled ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}</button>
-                <button className="text-zinc-600 hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.removeEffect(entry.id); }}><X className="w-3 h-3" /></button>
-              </div>
-              {Object.keys(entry.params).length > 0 && (
-                <div className="flex flex-col gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
-                  {Object.entries(entry.params).map(([key, val]) => {
-                    const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || [0, 1, 0.01];
-                    return <SlideRow key={key} label={prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
-                  })}
-                </div>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-      <div className="shrink-0 pt-2 border-t border-white/8 mt-2 flex flex-col gap-1.5">
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1.5">
           <span className="text-[9px] font-mono text-zinc-500 shrink-0">FORMAT</span>
-          <select className="compact-input flex-1 text-[10px]" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
+          <select className="compact-input text-[10px] w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
             <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option><option value="ogg">OGG</option>
           </select>
           <button onClick={() => p.setShowHistory(!p.showHistory)} title="Process history" className={`btn-ghost p-1 shrink-0 ${p.showHistory ? 'text-purple-300' : 'text-zinc-500 hover:text-zinc-300'}`}><History className="w-3.5 h-3.5" /></button>
+          {p.chain.length > 0 && <button className="text-zinc-600 hover:text-red-400 transition-colors shrink-0" onClick={p.clearChain} title="Clear chain"><Trash2 className="w-3.5 h-3.5" /></button>}
         </div>
-        {p.showHistory && (
-          <div className="max-h-20 overflow-y-auto flex flex-col gap-0.5">
-            {p.processHistory.length === 0 ? <span className="text-[9px] font-mono text-zinc-600 px-1">No process jobs yet.</span> : p.processHistory.map((h) => (
-              <div key={h.id} className="flex items-center justify-between px-1.5 py-0.5 bg-white/5 rounded">
-                <span className="text-[9px] font-mono text-zinc-300 uppercase truncate">{EFFECT_LABELS[h.effect] || h.effect}</span>
-                <span className="text-[8px] font-mono text-zinc-600 shrink-0">{new Date(h.createdAt).toLocaleTimeString()}</span>
+      </div>
+      {p.showHistory && (
+        <div className="max-h-14 overflow-y-auto flex flex-col gap-0.5 mb-1.5 shrink-0">
+          {p.processHistory.length === 0 ? <span className="text-[9px] font-mono text-zinc-600 px-1">No process jobs yet.</span> : p.processHistory.map((h) => (
+            <div key={h.id} className="flex items-center justify-between px-1.5 py-0.5 bg-white/5 rounded">
+              <span className="text-[9px] font-mono text-zinc-300 uppercase truncate">{EFFECT_LABELS[h.effect] || h.effect}</span>
+              <span className="text-[8px] font-mono text-zinc-600 shrink-0">{new Date(h.createdAt).toLocaleTimeString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex-1 overflow-x-auto overflow-y-hidden flex flex-row items-stretch gap-0 min-h-0">
+        {p.chain.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center px-2"><span className="text-[10px] text-zinc-600 text-center">Add effects from the library — they flow left → right</span></div>
+        ) : (
+          p.chain.map((entry, index) => (
+            <React.Fragment key={entry.id}>
+              {index > 0 && <div className="self-center px-0.5 text-zinc-700 shrink-0"><ChevronRight className="w-3 h-3" /></div>}
+              <div onClick={() => p.setSelectedId(entry.id)}
+                className={`rounded p-1.5 border transition-all cursor-pointer shrink-0 w-40 flex flex-col ${p.selectedEntry?.id === entry.id ? 'border-purple-500/60 bg-purple-500/5' : 'border-zinc-800 hover:border-white/10'} ${!entry.enabled ? 'opacity-40' : ''}`}>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === 0} title="Move earlier" onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronLeft className="w-3 h-3" /></button>
+                  <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{EFFECT_LABELS[entry.effect] || entry.effect}</span>
+                  <button className="text-zinc-500 hover:text-purple-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.toggleEnabled(entry.id); }}>{entry.enabled ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}</button>
+                  <button className="text-zinc-600 hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.removeEffect(entry.id); }}><X className="w-3 h-3" /></button>
+                  <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === p.chain.length - 1} title="Move later" onClick={(e) => { e.stopPropagation(); p.reorder(index, index + 1); }}><ChevronRight className="w-3 h-3" /></button>
+                </div>
+                {Object.keys(entry.params).length > 0 && (
+                  <div className="flex flex-col gap-1 mt-1.5 overflow-y-auto min-h-0" onClick={(e) => e.stopPropagation()}>
+                    {Object.entries(entry.params).map(([key, val]) => {
+                      const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || [0, 1, 0.01];
+                      return <SlideRow key={key} label={prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
+                    })}
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
+            </React.Fragment>
+          ))
         )}
       </div>
     </div>
   ));
 
-  /* ── effect stage (active effect viz; Phase 4 → ModuleShell + hero viz) ── */
+  /* ── effect stage — the active effect's EXACT GUI (the Edit Tool Stack
+     instrument, live Web-Audio preview), falling back to the generic viz for
+     chain effects that have no dedicated instrument, and a pick-a-module prompt
+     when nothing is focused. ── */
   pinned('effectStage', 'Effect Stage', (
-    <EffectsVizPanel effect={p.selectedEntry?.effect ?? null} params={p.selectedEntry?.params ?? {}} className="h-full! border-purple-500/15!" />
+    p.activeModule
+      ? <EffectGuiStage module={p.activeModule} sourceFile={p.sourceFile} />
+      : p.selectedEntry
+        ? <EffectsVizPanel effect={p.selectedEntry.effect} params={p.selectedEntry.params} className="h-full! border-purple-500/15!" />
+        : <EffectGuiStage module={null} sourceFile={p.sourceFile} />
   ));
 
   return reg;
@@ -392,6 +436,7 @@ export const MixView: React.FC = () => {
   const [activeCategory, setActiveCategory] = useState('all');
   const [viewMode, setViewMode] = useState<'list' | 'tile'>('tile');
   const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
+  const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [srcStats, setSrcStats] = useState<AudioStats | null>(null);
   const [outStats, setOutStats] = useState<AudioStats | null>(null);
   const [dragOverSource, setDragOverSource] = useState(false);
@@ -478,6 +523,18 @@ export const MixView: React.FC = () => {
   const chainEffectIds = new Set(chain.map((e) => e.effect));
   const selectedEntry = chain.find((e) => e.id === selectedChainId) ?? chain[0] ?? null;
 
+  // The instrument shown in the effect stage: an explicitly-picked Studio Module
+  // takes priority; otherwise the selected chain effect opens its mapped module.
+  const mappedModuleId = selectedEntry ? effectToModuleId[selectedEntry.effect] : undefined;
+  const activeModule: StudioModule | null =
+    (activeModuleId ? moduleById[activeModuleId] ?? null : null)
+    ?? (mappedModuleId ? moduleById[mappedModuleId] ?? null : null);
+
+  // Picking a module from the library toggles its instrument open/closed.
+  const handlePickModule = (id: string) => setActiveModuleId((cur) => (cur === id ? null : id));
+  // Selecting a chain entry hands the stage back to the effect→module mapping.
+  const selectChain = (id: string) => { setSelectedChainId(id); setActiveModuleId(null); };
+
   const registry = buildMixRegistry({
     sourceUrl, outputUrl, srcStats, outStats, sourceFile,
     inputMode, setInputMode, outputMode, setOutputMode,
@@ -494,7 +551,8 @@ export const MixView: React.FC = () => {
     activeCategory, setActiveCategory, allEffectCount: allEffects.length,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
-    chain, selectedId: selectedChainId, setSelectedId: setSelectedChainId,
+    onPickModule: handlePickModule, activeModuleId, activeModule,
+    chain, selectedId: selectedChainId, setSelectedId: selectChain,
     removeEffect, updateParams, toggleEnabled, reorder, clearChain,
     outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
     selectedEntry,

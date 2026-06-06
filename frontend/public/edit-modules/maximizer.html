@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maximizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Sans',sans-serif;color:#e2e4ea;overflow:hidden}
+
+/* ── MODULE FRAME 780x504 ── */
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:#0e1018;border:1px solid #1e2230;border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER 28px ── */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:#0a0b10;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px}
+.hdr-left{display:flex;align-items:center;gap:8px}
+.hdr-icon{width:16px;height:16px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#f59e0b,#b45309);box-shadow:0 0 6px rgba(245,158,11,.3)}
+.mod-title{font-weight:700;font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0;font-family:'IBM Plex Mono',monospace}
+.preset-nav{display:flex;align-items:center;gap:2px;font-family:'IBM Plex Mono',monospace;font-size:8px;color:#5a5e6a}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{color:#6b7080;min-width:80px;text-align:center;padding:0 4px;border:1px solid #1e2230;border-radius:3px;padding:1px 6px;background:#0a0c12}
+.hdr-right{display:flex;align-items:center;gap:3px}
+.pill{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:600;letter-spacing:.4px;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.pill:hover{border-color:#3a3e4a}
+.pill.active{background:#1a1408;border-color:#f59e0b;color:#f59e0b}
+
+/* ── BODY ── */
+.body{flex:1;display:flex;flex-direction:column;min-height:0;padding:6px 8px 4px;gap:4px}
+
+/* Top readouts row */
+.readout-bar{display:flex;align-items:center;gap:10px;flex-shrink:0;height:18px;padding:0 2px}
+.rb-group{display:flex;align-items:baseline;gap:4px}
+.rb-label{font-family:'IBM Plex Mono',monospace;font-size:6.5px;color:#3e4250;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
+.rb-val{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;color:#f59e0b}
+.rb-unit{font-family:'IBM Plex Mono',monospace;font-size:6px;color:#3e4250;font-weight:500;margin-left:1px}
+.rb-sep{flex:1}
+.rb-val.dim{color:#5a5e6a}
+
+/* GR waveform history canvas — 45% height */
+.gr-section{flex:0 0 40%;background:#090b10;border:1px solid #14171e;border-radius:5px;position:relative;overflow:hidden;min-height:0}
+.gr-section canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.gr-lbl{position:absolute;top:5px;left:7px;font-family:'IBM Plex Mono',monospace;font-size:6.5px;color:#22262e;letter-spacing:.8px;text-transform:uppercase;pointer-events:none;z-index:1;font-weight:600}
+
+/* Output meters on right of GR section */
+.gr-meters{position:absolute;top:6px;right:8px;bottom:6px;display:flex;gap:3px;z-index:2}
+.gm-ch{display:flex;flex-direction:column;align-items:center;gap:2px}
+.gm-bar{flex:1;width:10px;background:#0c0e14;border:1px solid #1a1d28;border-radius:2px;position:relative;overflow:hidden}
+.gm-fill{position:absolute;bottom:0;left:0;right:0;height:0%;border-radius:0 0 1px 1px}
+.gm-peak{position:absolute;left:1px;right:1px;height:1px;border-radius:1px;background:#ef4444;bottom:0}
+.gm-lbl{font-family:'IBM Plex Mono',monospace;font-size:5px;color:#2e3240;font-weight:600}
+.gm-readout{position:absolute;top:4px;right:36px;display:flex;flex-direction:column;gap:1px;z-index:2}
+.gm-ro{font-family:'IBM Plex Mono',monospace;font-size:6px;color:#3e4250;font-weight:600;text-align:right}
+.gm-ro .v{color:#8890a0;font-weight:700;font-size:7px}
+
+/* Reduction readout top-right */
+.reduction-readout{position:absolute;top:5px;right:50px;display:flex;flex-direction:column;align-items:flex-end;z-index:2}
+.rr-label{font-family:'IBM Plex Mono',monospace;font-size:5.5px;color:#3e4250;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
+.rr-value{font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:700;color:#f59e0b;line-height:1.1}
+
+/* Loudness stats row */
+.stats-row{display:flex;gap:4px;flex-shrink:0;height:44px}
+.stat-card{flex:1;background:#090b10;border:1px solid #14171e;border-radius:4px;padding:4px 6px;display:flex;flex-direction:column;justify-content:center}
+.sc-top{display:flex;justify-content:space-between;align-items:baseline}
+.sc-label{font-family:'IBM Plex Mono',monospace;font-size:5.5px;color:#3e4250;letter-spacing:.5px;text-transform:uppercase;font-weight:600}
+.sc-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#e2e4ea;line-height:1.2}
+.sc-unit{font-size:6px;color:#3e4250;font-weight:500;margin-left:2px}
+.sc-sub{font-family:'IBM Plex Mono',monospace;font-size:6px;color:#2e3240;font-weight:500;margin-top:1px}
+
+/* ── KNOBS ROW ── */
+.knobs-row{display:flex;align-items:flex-start;justify-content:center;gap:8px;flex-shrink:0;padding:6px 0 2px}
+.knob-unit{display:flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;user-select:none;width:78px}
+.ku-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#3e4250;letter-spacing:.6px;text-transform:uppercase;font-weight:600;margin-bottom:2px;text-align:center}
+.ku-svg{display:block}
+.ku-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#a0a4b0;line-height:1;margin-top:1px;text-align:center}
+.ku-toggle{display:flex;align-items:center;gap:3px;margin-top:1px}
+.ku-tog-btn{font-family:'IBM Plex Mono',monospace;font-size:6px;font-weight:700;padding:1px 4px;border-radius:2px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms}
+.ku-tog-btn.on{background:#1a1408;border-color:#f59e0b;color:#f59e0b}
+
+/* ── FOOTER 28px ── */
+.footer{display:flex;align-items:center;gap:6px;padding:0 8px;background:#08090e;border-top:1px solid #14171e;flex-shrink:0;height:28px}
+.footer-btn{font-family:'IBM Plex Mono',monospace;font-size:7.5px;font-weight:600;padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:background 120ms,color 120ms}
+.footer-btn:hover{background:#14171e;color:#c8cad0}
+.footer-btn.active{background:#1a1408;border-color:#f59e0b;color:#f59e0b}
+.footer-spacer{flex:1}
+.footer-status{font-family:'IBM Plex Mono',monospace;font-size:7px;color:#444a58}
+.footer-select{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:600;padding:1px 4px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;outline:none}
+.footer-select option{background:#0c0e14;color:#c8cad0}
+audio{display:none}
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="hdr-icon"></div>
+      <span class="mod-title">Maximizer</span>
+      <div class="preset-nav">
+        <button>&#9666;</button>
+        <span class="preset-name">Final Stage - Loud & Clean</span>
+        <button>&#9656;</button>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <button class="pill" id="btnAB">A / B</button>
+      <button class="pill" id="btnCopy">Copy</button>
+      <button class="pill" id="btnDelta">Delta</button>
+      <button class="pill" id="btnBypassH">&#9685;</button>
+    </div>
+  </div>
+
+  <!-- BODY -->
+  <div class="body">
+    <!-- Top readouts -->
+    <div class="readout-bar">
+      <div class="rb-group">
+        <span class="rb-label">Ceiling</span>
+        <span class="rb-val" id="ceilingReadout">-1.0</span>
+        <span class="rb-unit">dBTP</span>
+      </div>
+      <div class="rb-sep"></div>
+      <div class="rb-group">
+        <span class="rb-label">True Peak</span>
+        <span class="rb-val dim" id="tpReadout">-1.8</span>
+        <span class="rb-unit">dBTP</span>
+      </div>
+    </div>
+
+    <!-- GR Waveform History -->
+    <div class="gr-section" id="grWrap">
+      <span class="gr-lbl">GR Waveform History</span>
+      <canvas id="grCanvas"></canvas>
+      <!-- Reduction readout -->
+      <div class="reduction-readout">
+        <span class="rr-label">Reduction</span>
+        <span class="rr-value" id="reductionVal">0.0</span>
+      </div>
+      <!-- Output meters -->
+      <div class="gr-meters">
+        <div class="gm-ch">
+          <div class="gm-bar"><div class="gm-fill" id="meterL"></div><div class="gm-peak" id="peakL"></div></div>
+          <span class="gm-lbl">L</span>
+        </div>
+        <div class="gm-ch">
+          <div class="gm-bar"><div class="gm-fill" id="meterR"></div><div class="gm-peak" id="peakR"></div></div>
+          <span class="gm-lbl">R</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loudness Stats -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <span class="sc-label">Short Term</span>
+        <span class="sc-val" id="stVal">-8.1<span class="sc-unit">LUFS</span></span>
+        <span class="sc-sub">Specify</span>
+      </div>
+      <div class="stat-card">
+        <span class="sc-label">Integrated</span>
+        <span class="sc-val" id="intVal">-7.9<span class="sc-unit">LUFS</span></span>
+      </div>
+      <div class="stat-card">
+        <span class="sc-label">Loudness Range</span>
+        <span class="sc-val" id="lraVal">5.0<span class="sc-unit">LU</span></span>
+      </div>
+      <div class="stat-card">
+        <span class="sc-label">Max Momentary</span>
+        <span class="sc-val" id="momVal">-4.1<span class="sc-unit">LUFS</span></span>
+      </div>
+    </div>
+
+    <!-- Knobs Row -->
+    <div class="knobs-row" id="knobsRow">
+      <!-- Knobs generated by JS -->
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <button class="footer-btn" id="btnBypass">Bypass</button>
+    <button class="footer-btn active" id="btnMaximizer">Maximizer</button>
+    <button class="footer-btn" id="btnOversampling">Oversampling</button>
+    <select class="footer-select" id="oversampleSel">
+      <option>2x</option>
+      <option>4x</option>
+      <option>8x</option>
+    </select>
+    <div class="footer-spacer"></div>
+    <span class="footer-status" id="status">Ready</span>
+    <button class="footer-btn" id="btnLoad">Load</button>
+    <button class="footer-btn" id="btnTone">Tone</button>
+    <button class="footer-btn" id="btnProcess">Process</button>
+  </div>
+</div>
+<input type="file" id="fileInput" accept="audio/*">
+<audio id="audioEl" crossorigin="anonymous"></audio>
+
+<script>
+(function(){
+'use strict';
+
+let inputFile = null;
+
+/* ============================================================
+   KNOB DEFINITIONS
+   ============================================================ */
+const ACCENT = '#f59e0b';
+const ACCENT_DIM = 'rgba(245,158,11,0.12)';
+const KNOB_SIZE = 64;
+
+const knobDefs = [
+  { id:'gain',      label:'Gain',       min:-12, max:12,  val:1.8,  step:0.1, unit:'dB',  bipolar:true  },
+  { id:'output',    label:'Output Level',min:-12, max:0,   val:-1.0, step:0.1, unit:'dB',  bipolar:false },
+  { id:'truepeak',  label:'True Peak',   min:-3,  max:0,   val:-1.0, step:0.1, unit:'dB',  bipolar:false, toggle:true, toggled:true },
+  { id:'character', label:'Character',   min:0,   max:100, val:50,   step:1,   unit:'',    bipolar:false, valFmt:v=>['Transparent','Warm','Aggressive','Saturate'][Math.min(3,Math.floor(v/26))] },
+  { id:'stereo',    label:'Stereo',      min:0,   max:200, val:100,  step:1,   unit:'%',   bipolar:false },
+  { id:'upward',    label:'Upward',      min:0,   max:100, val:15,   step:1,   unit:'%',   bipolar:false },
+  { id:'softclip',  label:'Soft Clip',   min:0,   max:100, val:15,   step:1,   unit:'%',   bipolar:false },
+  { id:'transient', label:'Transient',   min:0,   max:100, val:20,   step:1,   unit:'%',   bipolar:false },
+  { id:'mix',       label:'Mix',         min:0,   max:100, val:100,  step:1,   unit:'%',   bipolar:false },
+];
+
+/* ============================================================
+   SVG ROTARY KNOB RENDERER
+   ============================================================ */
+function polarXY(cx, cy, r, angle) {
+  return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+}
+
+function arcPath(cx, cy, r, a1, a2) {
+  const s = polarXY(cx, cy, r, a1);
+  const e = polarXY(cx, cy, r, a2);
+  const large = Math.abs(a2 - a1) > Math.PI ? 1 : 0;
+  return `M${s.x},${s.y} A${r},${r} 0 ${large} 1 ${e.x},${e.y}`;
+}
+
+function renderKnobSVG(svgEl, def) {
+  const S = KNOB_SIZE;
+  const cx = S / 2, cy = S / 2, r = S * 0.38;
+  const startA = 0.75 * Math.PI;
+  const endA = 2.25 * Math.PI;
+  const range = endA - startA;
+  const norm = (def.val - def.min) / (def.max - def.min);
+  const valA = startA + norm * range;
+  const centerA = startA + 0.5 * range;
+  const ptr = polarXY(cx, cy, r - 4, valA);
+  const ptrOuter = polarXY(cx, cy, r + 1, valA);
+
+  let ticks = '';
+  for (let t = 0; t <= 10; t++) {
+    const a = startA + (t / 10) * range;
+    const p1 = polarXY(cx, cy, r + 3, a);
+    const p2 = polarXY(cx, cy, r + 5, a);
+    ticks += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="rgba(255,255,255,.06)" stroke-width=".7"/>`;
+  }
+
+  /* Value arc */
+  let valueArc = '';
+  if (def.bipolar) {
+    if (Math.abs(norm - 0.5) > 0.01) {
+      const from = norm > 0.5 ? centerA : valA;
+      const to = norm > 0.5 ? valA : centerA;
+      valueArc = `<path d="${arcPath(cx, cy, r, from, to)}" fill="none" stroke="${ACCENT}" stroke-width="3.5" stroke-linecap="round"/>`;
+      valueArc += `<path d="${arcPath(cx, cy, r, from, to)}" fill="none" stroke="${ACCENT}" stroke-width="9" stroke-linecap="round" opacity=".08"/>`;
+    }
+  } else {
+    if (norm > 0.01) {
+      valueArc = `<path d="${arcPath(cx, cy, r, startA, valA)}" fill="none" stroke="${ACCENT}" stroke-width="3.5" stroke-linecap="round"/>`;
+      valueArc += `<path d="${arcPath(cx, cy, r, startA, valA)}" fill="none" stroke="${ACCENT}" stroke-width="9" stroke-linecap="round" opacity=".08"/>`;
+    }
+  }
+
+  svgEl.innerHTML = `
+    <defs>
+      <radialGradient id="kbg_${def.id}" cx="40%" cy="35%" r="60%">
+        <stop offset="0%" stop-color="#2a2d38"/>
+        <stop offset="100%" stop-color="#0e1018"/>
+      </radialGradient>
+    </defs>
+    ${ticks}
+    <path d="${arcPath(cx, cy, r, startA, endA)}" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="3.5" stroke-linecap="round"/>
+    ${valueArc}
+    <circle cx="${cx}" cy="${cy}" r="${r - 8}" fill="url(#kbg_${def.id})" stroke="rgba(255,255,255,.06)" stroke-width=".7"/>
+    <line x1="${ptr.x}" y1="${ptr.y}" x2="${ptrOuter.x}" y2="${ptrOuter.y}" stroke="${ACCENT}" stroke-width="2" stroke-linecap="round"/>
+  `;
+}
+
+/* ============================================================
+   BUILD KNOBS ROW
+   ============================================================ */
+const knobsRow = document.getElementById('knobsRow');
+const knobState = {};
+
+knobDefs.forEach(def => {
+  knobState[def.id] = def.val;
+  const unit = document.createElement('div');
+  unit.className = 'knob-unit';
+  unit.dataset.knobId = def.id;
+
+  const label = document.createElement('div');
+  label.className = 'ku-label';
+  label.textContent = def.label;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', KNOB_SIZE);
+  svg.setAttribute('height', KNOB_SIZE);
+  svg.setAttribute('viewBox', `0 0 ${KNOB_SIZE} ${KNOB_SIZE}`);
+  svg.classList.add('ku-svg');
+  svg.id = 'knob_' + def.id;
+
+  const valEl = document.createElement('div');
+  valEl.className = 'ku-val';
+  valEl.id = 'kval_' + def.id;
+
+  unit.appendChild(label);
+  unit.appendChild(svg);
+
+  if (def.toggle) {
+    const togWrap = document.createElement('div');
+    togWrap.className = 'ku-toggle';
+    const togBtn = document.createElement('button');
+    togBtn.className = 'ku-tog-btn' + (def.toggled ? ' on' : '');
+    togBtn.textContent = 'ON';
+    togBtn.id = 'ktog_' + def.id;
+    togBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togBtn.classList.toggle('on');
+    });
+    togWrap.appendChild(togBtn);
+    unit.appendChild(togWrap);
+  }
+
+  unit.appendChild(valEl);
+  knobsRow.appendChild(unit);
+
+  renderKnobSVG(svg, def);
+  updateKnobValue(def);
+});
+
+function updateKnobValue(def) {
+  const el = document.getElementById('kval_' + def.id);
+  if (def.valFmt) {
+    el.textContent = def.valFmt(def.val);
+  } else if (def.unit === '%') {
+    el.textContent = Math.round(def.val) + '%';
+  } else if (def.unit === 'dB') {
+    el.textContent = (def.val > 0 ? '+' : '') + def.val.toFixed(1) + ' dB';
+  } else {
+    el.textContent = def.val.toFixed(1);
+  }
+}
+
+/* ============================================================
+   KNOB DRAG INTERACTION
+   ============================================================ */
+let dragKnob = null;
+
+knobsRow.addEventListener('pointerdown', e => {
+  const unit = e.target.closest('.knob-unit');
+  if (!unit) return;
+  const id = unit.dataset.knobId;
+  const def = knobDefs.find(d => d.id === id);
+  if (!def) return;
+  dragKnob = { def, startY: e.clientY, startVal: def.val };
+  unit.setPointerCapture(e.pointerId);
+});
+
+knobsRow.addEventListener('pointermove', e => {
+  if (!dragKnob) return;
+  const def = dragKnob.def;
+  const dy = dragKnob.startY - e.clientY;
+  const range = def.max - def.min;
+  const sensitivity = range / 150;
+  let nv = dragKnob.startVal + dy * sensitivity;
+  nv = Math.round(nv / def.step) * def.step;
+  nv = Math.max(def.min, Math.min(def.max, nv));
+  def.val = nv;
+  knobState[def.id] = nv;
+  renderKnobSVG(document.getElementById('knob_' + def.id), def);
+  updateKnobValue(def);
+  updateLimiter();
+});
+
+knobsRow.addEventListener('pointerup', () => { dragKnob = null; });
+
+/* Double-click to reset */
+knobsRow.addEventListener('dblclick', e => {
+  const unit = e.target.closest('.knob-unit');
+  if (!unit) return;
+  const id = unit.dataset.knobId;
+  const origDef = knobDefs.find(d => d.id === id);
+  if (!origDef) return;
+  const defaultVals = { gain:1.8, output:-1.0, truepeak:-1.0, character:50, stereo:100, upward:15, softclip:15, transient:20, mix:100 };
+  origDef.val = defaultVals[id] || 0;
+  knobState[id] = origDef.val;
+  renderKnobSVG(document.getElementById('knob_' + id), origDef);
+  updateKnobValue(origDef);
+  updateLimiter();
+});
+
+/* ============================================================
+   AUDIO ENGINE — DynamicsCompressorNode as brickwall limiter
+   ============================================================ */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const analyser = audioCtx.createAnalyser();
+analyser.fftSize = 4096;
+analyser.smoothingTimeConstant = 0.85;
+const freqData = new Uint8Array(analyser.frequencyBinCount);
+const timeData = new Float32Array(analyser.fftSize);
+
+const inputGain = audioCtx.createGain();
+inputGain.gain.value = 1.0;
+
+const compressor = audioCtx.createDynamicsCompressor();
+compressor.threshold.value = -1.0;
+compressor.ratio.value = 20;
+compressor.knee.value = 0;
+compressor.attack.value = 0.001;
+compressor.release.value = 0.05;
+
+const outputGain = audioCtx.createGain();
+outputGain.gain.value = 1.0;
+
+inputGain.connect(compressor);
+compressor.connect(outputGain);
+outputGain.connect(analyser);
+analyser.connect(audioCtx.destination);
+
+const audioEl = document.getElementById('audioEl');
+let sourceNode = null;
+
+function connectSource(el) {
+  if (sourceNode) { try { sourceNode.disconnect(); } catch(e){} }
+  sourceNode = audioCtx.createMediaElementSource(el);
+  sourceNode.connect(inputGain);
+}
+
+function updateLimiter() {
+  const gain = knobState.gain || 0;
+  const output = knobState.output || -1;
+  const ceiling = knobState.truepeak || -1;
+  inputGain.gain.value = Math.pow(10, gain / 20);
+  compressor.threshold.value = ceiling;
+  outputGain.gain.value = Math.pow(10, output / 20);
+}
+updateLimiter();
+
+/* ============================================================
+   GR HISTORY BUFFER
+   ============================================================ */
+const GR_LEN = 500;
+const grHistory = new Float32Array(GR_LEN);
+let grPtr = 0;
+
+/* ============================================================
+   CANVAS SETUP
+   ============================================================ */
+const grWrap = document.getElementById('grWrap');
+const grCanvas = document.getElementById('grCanvas');
+const gCtx = grCanvas.getContext('2d');
+let GW, GH, dpr;
+
+function resizeCanvas() {
+  const rect = grWrap.getBoundingClientRect();
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  GW = rect.width; GH = rect.height;
+  grCanvas.width = GW * dpr; grCanvas.height = GH * dpr;
+  grCanvas.style.width = GW + 'px'; grCanvas.style.height = GH + 'px';
+}
+
+/* ============================================================
+   SMOOTHED METERING STATE
+   ============================================================ */
+let grSmooth = 0;
+let outputLevelSmooth = -60;
+let truePeakSmooth = -60;
+let peakHoldL = 0, peakHoldR = 0, peakDecayL = 0, peakDecayR = 0;
+let meterSmoothL = 0, meterSmoothR = 0;
+let frameCount = 0;
+
+/* Loudness stats (simulated from RMS) */
+let integratedSum = 0, integratedCount = 0;
+let maxMomentary = -60;
+let shortTermBuf = [];
+const ST_FRAMES = 180; /* ~3 sec at 60fps */
+
+/* ============================================================
+   PILL TOGGLES
+   ============================================================ */
+document.querySelectorAll('.pill').forEach(btn => {
+  btn.addEventListener('click', () => btn.classList.toggle('active'));
+});
+
+/* ============================================================
+   MAIN DRAW LOOP
+   ============================================================ */
+function draw() {
+  requestAnimationFrame(draw);
+  resizeCanvas();
+  frameCount++;
+  analyser.getByteFrequencyData(freqData);
+  analyser.getFloatTimeDomainData(timeData);
+
+  /* RMS and peak from time-domain data */
+  let rms = 0, peak = 0;
+  for (let i = 0; i < timeData.length; i++) {
+    const s = Math.abs(timeData[i]);
+    rms += s * s;
+    if (s > peak) peak = s;
+  }
+  rms = Math.sqrt(rms / timeData.length);
+  const rmsDb = rms > 0 ? 20 * Math.log10(rms) : -60;
+  const peakDb = peak > 0 ? 20 * Math.log10(peak) : -60;
+
+  /* Real gain reduction from DynamicsCompressorNode */
+  const gr = compressor.reduction; /* negative value */
+  grSmooth += (gr - grSmooth) * 0.25;
+  grHistory[grPtr % GR_LEN] = grSmooth;
+  grPtr++;
+
+  /* Output level & true peak smoothing */
+  outputLevelSmooth += (rmsDb - outputLevelSmooth) * 0.15;
+  if (peakDb > truePeakSmooth) truePeakSmooth = peakDb;
+  else truePeakSmooth += (peakDb - truePeakSmooth) * 0.03;
+
+  /* Loudness stats updates */
+  shortTermBuf.push(rmsDb);
+  if (shortTermBuf.length > ST_FRAMES) shortTermBuf.shift();
+  const stAvg = shortTermBuf.reduce((a, b) => a + b, 0) / shortTermBuf.length;
+  if (rmsDb > -58) { integratedSum += rmsDb; integratedCount++; }
+  const intAvg = integratedCount > 0 ? integratedSum / integratedCount : -60;
+  if (rmsDb > maxMomentary) maxMomentary = rmsDb;
+
+  /* Update readouts */
+  document.getElementById('ceilingReadout').textContent = (knobState.truepeak || -1.0).toFixed(1);
+  document.getElementById('tpReadout').textContent = truePeakSmooth > -59 ? truePeakSmooth.toFixed(1) : '-inf';
+  document.getElementById('reductionVal').textContent = grSmooth.toFixed(1);
+
+  /* Loudness stat cards */
+  document.getElementById('stVal').innerHTML = (stAvg > -59 ? stAvg.toFixed(1) : '-inf') + '<span class="sc-unit">LUFS</span>';
+  document.getElementById('intVal').innerHTML = (intAvg > -59 ? intAvg.toFixed(1) : '-inf') + '<span class="sc-unit">LUFS</span>';
+  const lra = shortTermBuf.length > 10 ? (Math.max(...shortTermBuf) - Math.min(...shortTermBuf.filter(v => v > -55))).toFixed(1) : '0.0';
+  document.getElementById('lraVal').innerHTML = lra + '<span class="sc-unit">LU</span>';
+  document.getElementById('momVal').innerHTML = (maxMomentary > -59 ? maxMomentary.toFixed(1) : '-inf') + '<span class="sc-unit">LUFS</span>';
+
+  /* Output meters (L/R simulated stereo split) */
+  const mLDb = rmsDb + Math.sin(frameCount * 0.03) * 0.5;
+  const mRDb = rmsDb + Math.cos(frameCount * 0.03) * 0.5;
+  const mLPct = Math.max(0, Math.min(1, (mLDb + 48) / 48)) * 100;
+  const mRPct = Math.max(0, Math.min(1, (mRDb + 48) / 48)) * 100;
+  meterSmoothL += (mLPct - meterSmoothL) * 0.3;
+  meterSmoothR += (mRPct - meterSmoothR) * 0.3;
+
+  const meterGrad = 'linear-gradient(to top, #10b981, #10b981 55%, #f59e0b 78%, #ef4444 95%)';
+  const mL = document.getElementById('meterL');
+  const mR = document.getElementById('meterR');
+  mL.style.background = meterGrad; mR.style.background = meterGrad;
+  mL.style.height = meterSmoothL + '%'; mR.style.height = meterSmoothR + '%';
+
+  if (meterSmoothL > peakHoldL) { peakHoldL = meterSmoothL; peakDecayL = 0; }
+  if (meterSmoothR > peakHoldR) { peakHoldR = meterSmoothR; peakDecayR = 0; }
+  peakDecayL++; peakDecayR++;
+  if (peakDecayL > 60) peakHoldL *= 0.97;
+  if (peakDecayR > 60) peakHoldR *= 0.97;
+  document.getElementById('peakL').style.bottom = peakHoldL + '%';
+  document.getElementById('peakR').style.bottom = peakHoldR + '%';
+
+  drawGRHistory();
+}
+
+/* ============================================================
+   GR WAVEFORM HISTORY — scrolling right-to-left, orange fill
+   ============================================================ */
+function drawGRHistory() {
+  gCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gCtx.clearRect(0, 0, GW, GH);
+
+  const padTop = 20, padBot = 6;
+  const meterW = 32; /* space reserved for meters on right */
+  const drawW = GW - meterW - 4;
+  const drawH = GH - padTop - padBot;
+
+  /* Grid lines */
+  gCtx.strokeStyle = 'rgba(255,255,255,0.03)';
+  gCtx.lineWidth = 0.5;
+  for (let db = 0; db >= -20; db -= 5) {
+    const y = padTop + (Math.abs(db) / 20) * drawH;
+    gCtx.beginPath(); gCtx.moveTo(0, y); gCtx.lineTo(drawW, y); gCtx.stroke();
+    gCtx.fillStyle = 'rgba(255,255,255,0.05)';
+    gCtx.font = '600 5px "IBM Plex Mono"';
+    gCtx.textAlign = 'right';
+    gCtx.fillText(db + ' dB', drawW - 2, y - 2);
+  }
+
+  /* Ceiling line (0 dB reference) */
+  gCtx.strokeStyle = 'rgba(245,158,11,0.2)';
+  gCtx.lineWidth = 1;
+  gCtx.setLineDash([3, 4]);
+  gCtx.beginPath(); gCtx.moveTo(0, padTop); gCtx.lineTo(drawW, padTop); gCtx.stroke();
+  gCtx.setLineDash([]);
+
+  /* GR waveform — scrolling right to left, ORANGE fill from ceiling down */
+  const len = Math.min(grPtr, GR_LEN);
+  if (len === 0) return;
+
+  /* Fill area */
+  gCtx.beginPath();
+  gCtx.moveTo(drawW, padTop);
+  for (let i = 0; i < len; i++) {
+    const idx = ((grPtr - len + i) % GR_LEN + GR_LEN) % GR_LEN;
+    const grVal = grHistory[idx];
+    const x = drawW - (len - 1 - i) * (drawW / GR_LEN);
+    const grC = Math.max(Math.min(Math.abs(grVal), 20), 0);
+    gCtx.lineTo(x, padTop + (grC / 20) * drawH);
+  }
+  gCtx.lineTo(drawW, padTop);
+  gCtx.closePath();
+
+  const grad = gCtx.createLinearGradient(0, padTop, 0, padTop + drawH);
+  grad.addColorStop(0, 'rgba(245,158,11,0.35)');
+  grad.addColorStop(0.3, 'rgba(245,158,11,0.15)');
+  grad.addColorStop(0.7, 'rgba(245,120,11,0.05)');
+  grad.addColorStop(1, 'rgba(180,83,9,0.01)');
+  gCtx.fillStyle = grad;
+  gCtx.fill();
+
+  /* Stroke edge */
+  gCtx.beginPath();
+  for (let i = 0; i < len; i++) {
+    const idx = ((grPtr - len + i) % GR_LEN + GR_LEN) % GR_LEN;
+    const grVal = grHistory[idx];
+    const x = drawW - (len - 1 - i) * (drawW / GR_LEN);
+    const grC = Math.max(Math.min(Math.abs(grVal), 20), 0);
+    const y = padTop + (grC / 20) * drawH;
+    if (i === 0) gCtx.moveTo(x, y); else gCtx.lineTo(x, y);
+  }
+  gCtx.strokeStyle = 'rgba(245,158,11,0.65)';
+  gCtx.lineWidth = 1.5;
+  gCtx.stroke();
+
+  /* Current GR dot (latest sample) */
+  if (len > 0) {
+    const lastIdx = ((grPtr - 1) % GR_LEN + GR_LEN) % GR_LEN;
+    const lastGr = Math.abs(grHistory[lastIdx]);
+    const lastY = padTop + (Math.min(lastGr, 20) / 20) * drawH;
+    gCtx.beginPath(); gCtx.arc(drawW, lastY, 3, 0, Math.PI * 2);
+    gCtx.fillStyle = '#f59e0b'; gCtx.fill();
+    gCtx.beginPath(); gCtx.arc(drawW, lastY, 8, 0, Math.PI * 2);
+    gCtx.fillStyle = 'rgba(245,158,11,0.08)'; gCtx.fill();
+  }
+}
+
+/* ============================================================
+   FILE LOADING & PLAYBACK
+   ============================================================ */
+const fileInput = document.getElementById('fileInput');
+document.getElementById('btnLoad').addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  inputFile = file;
+  audioEl.src = URL.createObjectURL(file);
+  if (!sourceNode) connectSource(audioEl);
+  audioEl.play();
+  document.getElementById('status').textContent = file.name;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  /* Reset loudness stats */
+  integratedSum = 0; integratedCount = 0; maxMomentary = -60; shortTermBuf = [];
+});
+
+document.getElementById('btnTone').addEventListener('click', () => {
+  audioEl.src = '/static/testtone.wav';
+  if (!sourceNode) connectSource(audioEl);
+  audioEl.play();
+  document.getElementById('status').textContent = 'Test Tone';
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  integratedSum = 0; integratedCount = 0; maxMomentary = -60; shortTermBuf = [];
+});
+
+/* Bypass toggle */
+let bypassed = false;
+document.getElementById('btnBypass').addEventListener('click', () => {
+  bypassed = !bypassed;
+  document.getElementById('btnBypass').classList.toggle('active', bypassed);
+  if (bypassed) {
+    try { inputGain.disconnect(); inputGain.connect(analyser); } catch(e){}
+  } else {
+    try { inputGain.disconnect(); inputGain.connect(compressor); } catch(e){}
+  }
+});
+
+/* ============================================================
+   BACKEND PROCESS
+   ============================================================ */
+function getKnobValue(id) {
+  return knobState[id] !== undefined ? knobState[id] : null;
+}
+
+async function processAudio() {
+  if (!inputFile) {
+    document.getElementById('status').textContent = 'No file loaded';
+    return;
+  }
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = 'Processing...';
+
+  const params = {
+    ceiling: Math.max(-3, Math.min(0, getKnobValue('truepeak') !== null ? getKnobValue('truepeak') : (getKnobValue('output') !== null ? getKnobValue('output') : -1))),
+    targetLUFS: Math.max(-24, Math.min(-6, getKnobValue('gain') !== null ? -14 + getKnobValue('gain') : -14)),
+    targetLRA: 9,
+    attack: Math.max(1, Math.min(50, 5)),
+    release: Math.max(10, Math.min(2000, 50))
+  };
+
+  const fd = new FormData();
+  fd.append('audio', inputFile);
+  fd.append('effect', 'maximizer');
+  fd.append('params', JSON.stringify(params));
+  fd.append('output_format', 'wav');
+
+  try {
+    const r = await fetch('/api/edit/mastering/process', { method: 'POST', body: fd });
+    if (r.ok) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      audioEl.src = url;
+      audioEl.play();
+      statusEl.textContent = 'Processed';
+    } else {
+      const err = await r.text();
+      statusEl.textContent = 'Error: ' + r.status;
+      console.error('Process error:', err);
+    }
+  } catch (e) {
+    statusEl.textContent = 'Request failed';
+    console.error('Process fetch error:', e);
+  }
+}
+
+document.getElementById('btnProcess').addEventListener('click', processAudio);
+
+/* ============================================================
+   START
+   ============================================================ */
+draw();
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      inputFile = file;
+      audioEl.src = URL.createObjectURL(file);
+      if (!sourceNode) connectSource(audioEl);
+      audioEl.play();
+      document.getElementById('status').textContent = file.name || 'track.wav';
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      integratedSum = 0; integratedCount = 0; maxMomentary = -60; shortTermBuf = [];
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+
+})();
+</script>
+</body>
+</html>

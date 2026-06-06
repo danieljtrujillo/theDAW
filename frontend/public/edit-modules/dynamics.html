@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dynamics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Sans',sans-serif;color:#d0d8e8;overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:#0a0c14;border:1px solid #1e2230;border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER 28px ── */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:#080a12;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px}
+.hdr-left{display:flex;align-items:center;gap:8px}
+.hdr-icon{width:14px;height:14px;fill:#34d399;flex-shrink:0}
+.mod-title{font-weight:700;font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0;font-family:'IBM Plex Mono',monospace}
+.preset-nav{display:flex;align-items:center;gap:2px;font-family:'IBM Plex Mono',monospace;font-size:8px;color:#5a5e6a}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{color:#6b7080;min-width:60px;text-align:center}
+.hdr-right{display:flex;align-items:center;gap:3px}
+.pill{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:600;letter-spacing:.4px;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.pill.active{background:#0a1f1a;border-color:#34d399;color:#34d399}
+.pill:hover{border-color:#3a3e4a}
+
+/* ── BODY ── */
+.body{flex:1;display:flex;flex-direction:column;min-height:0;padding:6px 6px 4px;gap:4px}
+
+/* ── TRANSFER CURVE ROW (~55% body height) ── */
+.curve-row{display:flex;flex:1;min-height:0;gap:4px}
+.curve-wrap{flex:1;background:#090b10;border:1px solid #14171e;border-radius:5px;position:relative;overflow:hidden;min-height:0}
+.curve-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.curve-label{position:absolute;top:5px;left:7px;font-family:'IBM Plex Mono',monospace;font-size:6.5px;color:#22262e;letter-spacing:.8px;text-transform:uppercase;pointer-events:none;z-index:1;font-weight:600}
+
+/* GR meter bar to the right of canvas */
+.gr-col{width:36px;display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0}
+.gr-label{font-family:'IBM Plex Mono',monospace;font-size:6px;color:#3e4250;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
+.gr-bar-wrap{flex:1;width:22px;background:#090b10;border:1px solid #14171e;border-radius:3px;position:relative;overflow:hidden}
+.gr-fill{position:absolute;top:0;left:0;right:0;height:0%;transition:height 60ms linear}
+.gr-ticks{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none}
+.gr-tick{position:absolute;left:2px;right:2px;height:1px;background:rgba(255,255,255,.04)}
+.gr-val{font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:700;color:#34d399}
+
+/* ── KNOB ROW ── */
+.knob-row{display:flex;align-items:flex-start;justify-content:center;gap:12px;flex-shrink:0;padding:6px 4px}
+.knob-group{display:flex;flex-direction:column;align-items:center;gap:1px;user-select:none;cursor:ns-resize}
+.knob-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4a5268;letter-spacing:.5px;text-transform:uppercase;font-weight:600}
+.knob-svg{width:66px;height:66px;display:block}
+.knob-value{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#d0d8e8;text-align:center;min-width:48px}
+.knob-unit{font-family:'IBM Plex Mono',monospace;font-size:6px;color:#3e4250;font-weight:500}
+
+/* Mode selector dropdown look */
+.mode-select{font-family:'IBM Plex Mono',monospace;font-size:8px;font-weight:600;color:#34d399;background:#0c0e14;border:1px solid #1a2a22;border-radius:3px;padding:2px 6px;cursor:pointer;outline:none;text-transform:uppercase;letter-spacing:.4px;-webkit-appearance:none;appearance:none}
+.mode-select option{background:#0c0e14;color:#d0d8e8}
+
+/* Mix fader (vertical) */
+.mix-col{display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0;width:28px}
+.mix-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4a5268;letter-spacing:.5px;text-transform:uppercase;font-weight:600}
+.mix-track{flex:1;width:6px;background:#14171e;border-radius:3px;position:relative;cursor:ns-resize}
+.mix-thumb{position:absolute;left:50%;width:16px;height:8px;background:#34d399;border-radius:2px;transform:translateX(-50%);cursor:ns-resize;box-shadow:0 0 6px rgba(52,211,153,.3)}
+.mix-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#d0d8e8}
+
+/* ── MODE SELECTOR ROW ── */
+.mode-row{display:flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0;padding:0 8px}
+.mode-pills{display:flex;gap:2px}
+.mode-pill{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:600;letter-spacing:.4px;padding:2px 8px;border-radius:3px;border:1px solid #1a1d28;background:#0c0e14;color:#4a5268;cursor:pointer;transition:all 120ms}
+.mode-pill.active{background:#0a1f1a;border-color:#34d399;color:#34d399}
+.mode-pill:hover{border-color:#2a3a32}
+.toggle-group{display:flex;gap:2px;margin-left:12px}
+.toggle-pill{font-family:'IBM Plex Mono',monospace;font-size:6.5px;font-weight:600;letter-spacing:.3px;padding:2px 6px;border-radius:3px;border:1px solid #1a1d28;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms}
+.toggle-pill.active{background:#0d1520;border-color:#34d399;color:#34d399}
+.toggle-pill:hover{border-color:#2a3040}
+
+/* ── FOOTER 28px ── */
+.footer{display:flex;align-items:center;gap:6px;padding:0 8px;background:#080a0e;border-top:1px solid #14171e;flex-shrink:0;height:28px}
+.footer-btn{font-family:'IBM Plex Mono',monospace;font-size:7.5px;font-weight:600;padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:background 120ms,color 120ms}
+.footer-btn:hover{background:#14171e;color:#c8cad0}
+.footer-btn.active{background:#0a1f1a;border-color:#34d399;color:#34d399}
+.footer-btn.process{background:#0a1f1a;border-color:#34d399;color:#34d399}
+.footer-btn.process:hover{background:#0d2a22}
+.footer-btn.process.running{background:#2a1e0a;border-color:#f59e0b;color:#f59e0b}
+.footer-spacer{flex:1}
+.footer-status{font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:#444a58}
+.footer-tab{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:600;padding:2px 8px;border-radius:3px;border:1px solid transparent;background:none;color:#4a5268;cursor:pointer;transition:all 120ms}
+.footer-tab.active{color:#34d399;border-color:#1a2a22;background:#0a1510}
+.footer-tab:hover{color:#7ae8bf}
+audio{display:none}
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <svg class="hdr-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+      <span class="mod-title">Dynamics</span>
+      <div class="preset-nav">
+        <button id="presetPrev">&#9666;</button>
+        <span class="preset-name" id="presetName">Clean &amp; Controlled</span>
+        <button id="presetNext">&#9656;</button>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <button class="pill" id="btnA">A</button>
+      <button class="pill active" id="btnB">B</button>
+      <button class="pill" id="btnCopy">Copy</button>
+      <button class="pill" id="btnDelta">Delta</button>
+      <button class="pill" id="btnSettings">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.6 3.6 0 0112 15.6z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- BODY -->
+  <div class="body">
+    <!-- Transfer Curve + GR Meter -->
+    <div class="curve-row">
+      <div class="curve-wrap">
+        <span class="curve-label">Transfer Curve</span>
+        <canvas id="curveCanvas"></canvas>
+      </div>
+      <!-- GR Meter Bar -->
+      <div class="gr-col">
+        <span class="gr-label">GR</span>
+        <div class="gr-bar-wrap">
+          <div class="gr-fill" id="grFill" style="background:linear-gradient(to bottom,#34d399,#065f46)"></div>
+          <div class="gr-ticks">
+            <div class="gr-tick" style="top:10%"></div>
+            <div class="gr-tick" style="top:20%"></div>
+            <div class="gr-tick" style="top:30%"></div>
+            <div class="gr-tick" style="top:40%"></div>
+            <div class="gr-tick" style="top:50%"></div>
+            <div class="gr-tick" style="top:60%"></div>
+            <div class="gr-tick" style="top:70%"></div>
+            <div class="gr-tick" style="top:80%"></div>
+            <div class="gr-tick" style="top:90%"></div>
+          </div>
+        </div>
+        <span class="gr-val" id="grVal">0.0</span>
+      </div>
+    </div>
+
+    <!-- KNOB ROW -->
+    <div class="knob-row">
+      <!-- Mode selector -->
+      <div class="knob-group" style="justify-content:center">
+        <span class="knob-label">Mode</span>
+        <select class="mode-select" id="modeSelect" style="margin-top:14px;margin-bottom:14px;width:54px">
+          <option value="compressor" selected>Comp</option>
+          <option value="gate">Gate</option>
+          <option value="expander">Expand</option>
+        </select>
+        <span class="knob-unit" style="visibility:hidden">--</span>
+      </div>
+
+      <!-- Threshold -->
+      <div class="knob-group" id="knobThreshold" data-param="threshold" data-min="-60" data-max="0" data-step="0.1" data-value="-10.0">
+        <span class="knob-label">Threshold</span>
+        <svg class="knob-svg" viewBox="0 0 54 54"></svg>
+        <span class="knob-value">-10.0</span>
+        <span class="knob-unit">dB</span>
+      </div>
+
+      <!-- Ratio -->
+      <div class="knob-group" id="knobRatio" data-param="ratio" data-min="1" data-max="20" data-step="0.1" data-value="4.0">
+        <span class="knob-label">Ratio</span>
+        <svg class="knob-svg" viewBox="0 0 54 54"></svg>
+        <span class="knob-value">4.0:1</span>
+        <span class="knob-unit">&nbsp;</span>
+      </div>
+
+      <!-- Attack -->
+      <div class="knob-group" id="knobAttack" data-param="attack" data-min="1" data-max="100" data-step="0.1" data-value="10.5">
+        <span class="knob-label">Attack</span>
+        <svg class="knob-svg" viewBox="0 0 54 54"></svg>
+        <span class="knob-value">10.5</span>
+        <span class="knob-unit">ms</span>
+      </div>
+
+      <!-- Release -->
+      <div class="knob-group" id="knobRelease" data-param="release" data-min="10" data-max="1000" data-step="1" data-value="121">
+        <span class="knob-label">Release</span>
+        <svg class="knob-svg" viewBox="0 0 54 54"></svg>
+        <span class="knob-value">121</span>
+        <span class="knob-unit">ms</span>
+      </div>
+
+      <!-- Knee -->
+      <div class="knob-group" id="knobKnee" data-param="knee" data-min="0" data-max="40" data-step="0.1" data-value="6.0">
+        <span class="knob-label">Knee</span>
+        <svg class="knob-svg" viewBox="0 0 54 54"></svg>
+        <span class="knob-value">6.0</span>
+        <span class="knob-unit">dB</span>
+      </div>
+
+      <!-- Makeup -->
+      <div class="knob-group" id="knobMakeup" data-param="makeup" data-min="-12" data-max="24" data-step="0.1" data-value="0.0">
+        <span class="knob-label">Makeup</span>
+        <svg class="knob-svg" viewBox="0 0 54 54"></svg>
+        <span class="knob-value">0.0</span>
+        <span class="knob-unit">dB</span>
+      </div>
+
+      <!-- Mix vertical fader -->
+      <div class="mix-col" style="height:88px;margin-top:10px">
+        <span class="mix-label">Mix</span>
+        <div class="mix-track" id="mixTrack">
+          <div class="mix-thumb" id="mixThumb" style="bottom:calc(100% - 8px)"></div>
+        </div>
+        <span class="mix-val" id="mixVal">100%</span>
+      </div>
+    </div>
+
+    <!-- MODE SELECTOR ROW -->
+    <div class="mode-row">
+      <div class="mode-pills">
+        <button class="mode-pill active" id="pillComp" data-mode="compressor">Compressor</button>
+        <button class="mode-pill" id="pillGate" data-mode="gate">Gate</button>
+        <button class="mode-pill" id="pillExp" data-mode="expander">Expander</button>
+      </div>
+      <div class="toggle-group">
+        <button class="toggle-pill" id="togSidechain">Sidechain</button>
+        <button class="toggle-pill" id="togLookahead">Lookahead</button>
+        <button class="toggle-pill" id="togOff">Off</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <button class="footer-btn" id="btnBypass">Bypass</button>
+    <button class="footer-tab active" id="tabDynamics">Dynamics</button>
+    <button class="footer-tab" id="tabSidechain">Sidechain</button>
+    <button class="footer-tab" id="tabLookahead">Lookahead</button>
+    <div class="footer-spacer"></div>
+    <span class="footer-status" id="status">Ready</span>
+    <button class="footer-btn process" id="btnProcess">&#9654; PROCESS</button>
+  </div>
+</div>
+<audio id="audioIn" crossorigin="anonymous"></audio>
+<audio id="audioOut" crossorigin="anonymous"></audio>
+<input type="file" id="fileInput" accept="audio/*">
+
+<script>
+(function(){
+'use strict';
+
+/* ═══════════════ STATE ═══════════════ */
+const state = {
+  threshold: -10.0,
+  ratio: 4.0,
+  attack: 10.5,
+  release: 121,
+  knee: 6.0,
+  makeup: 0.0,
+  mix: 100,
+  mode: 'compressor',
+  sidechain: false,
+  lookahead: false,
+  bypass: false
+};
+
+/* ═══════════════ AUDIO ENGINE ═══════════════ */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const analyser = audioCtx.createAnalyser();
+analyser.fftSize = 4096;
+analyser.smoothingTimeConstant = 0.85;
+const timeData = new Uint8Array(analyser.fftSize);
+
+const compressor = audioCtx.createDynamicsCompressor();
+const makeupGain = audioCtx.createGain();
+const dryGain = audioCtx.createGain();
+const wetGain = audioCtx.createGain();
+const merger = audioCtx.createGain();
+
+function updateCompressor() {
+  compressor.threshold.setValueAtTime(state.threshold, audioCtx.currentTime);
+  compressor.ratio.setValueAtTime(Math.max(1, state.ratio), audioCtx.currentTime);
+  compressor.attack.setValueAtTime(state.attack / 1000, audioCtx.currentTime);
+  compressor.release.setValueAtTime(state.release / 1000, audioCtx.currentTime);
+  compressor.knee.setValueAtTime(state.knee, audioCtx.currentTime);
+  makeupGain.gain.setValueAtTime(Math.pow(10, state.makeup / 20), audioCtx.currentTime);
+  const w = state.mix / 100;
+  wetGain.gain.setValueAtTime(w, audioCtx.currentTime);
+  dryGain.gain.setValueAtTime(1 - w, audioCtx.currentTime);
+}
+updateCompressor();
+
+const audioIn = document.getElementById('audioIn');
+let sourceNode = null;
+
+function connectSource(el) {
+  if (sourceNode) { try { sourceNode.disconnect(); } catch(e){} }
+  try { compressor.disconnect(); } catch(e){}
+  try { makeupGain.disconnect(); } catch(e){}
+  try { wetGain.disconnect(); } catch(e){}
+  try { dryGain.disconnect(); } catch(e){}
+  try { merger.disconnect(); } catch(e){}
+  try { analyser.disconnect(); } catch(e){}
+
+  sourceNode = audioCtx.createMediaElementSource(el);
+  // Wet path: source -> compressor -> makeup -> wetGain -> merger
+  sourceNode.connect(compressor);
+  compressor.connect(makeupGain);
+  makeupGain.connect(wetGain);
+  wetGain.connect(merger);
+  // Dry path: source -> dryGain -> merger
+  sourceNode.connect(dryGain);
+  dryGain.connect(merger);
+  // Output
+  merger.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  updateCompressor();
+}
+
+/* ═══════════════ CANVAS ═══════════════ */
+const curveWrap = document.querySelector('.curve-wrap');
+const curveCanvas = document.getElementById('curveCanvas');
+const cCtx = curveCanvas.getContext('2d');
+let CW, CH, dpr;
+
+function resizeCanvas() {
+  const rect = curveWrap.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  CW = rect.width; CH = rect.height;
+  curveCanvas.width = CW * dpr;
+  curveCanvas.height = CH * dpr;
+  curveCanvas.style.width = CW + 'px';
+  curveCanvas.style.height = CH + 'px';
+}
+
+/* ═══════════════ TRANSFER FUNCTION ═══════════════ */
+function transferCurve(inputDb) {
+  const t = state.threshold;
+  const r = state.ratio;
+  const k = state.knee;
+  if (k <= 0) {
+    if (inputDb <= t) return inputDb;
+    return t + (inputDb - t) / r;
+  }
+  const halfK = k / 2;
+  if (inputDb < t - halfK) return inputDb;
+  if (inputDb > t + halfK) return t + (inputDb - t) / r;
+  // Soft knee quadratic
+  const x = inputDb - t + halfK;
+  return inputDb + ((1 / r - 1) * x * x) / (2 * k);
+}
+
+/* ═══════════════ DRAGGABLE NODES ═══════════════ */
+let dragging = null; // 'threshold' or 'knee'
+let operatingLevel = -40;
+let grSmooth = 0;
+
+function getCanvasCoords() {
+  const pad = { l: 36, r: 10, t: 14, b: 22 };
+  const gW = CW - pad.l - pad.r;
+  const gH = CH - pad.t - pad.b;
+  const dbMin = -96, dbMax = 0;
+  function dbToX(db) { return pad.l + (db - dbMin) / (dbMax - dbMin) * gW; }
+  function dbToY(db) { return pad.t + (1 - (db - dbMin) / (dbMax - dbMin)) * gH; }
+  function xToDb(x) { return dbMin + (x - pad.l) / gW * (dbMax - dbMin); }
+  function yToDb(y) { return dbMin + (1 - (y - pad.t) / gH) * (dbMax - dbMin); }
+  return { pad, gW, gH, dbMin, dbMax, dbToX, dbToY, xToDb, yToDb };
+}
+
+curveCanvas.addEventListener('mousedown', (e) => {
+  const rect = curveCanvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left);
+  const my = (e.clientY - rect.top);
+  const c = getCanvasCoords();
+
+  // Check threshold node
+  const tx = c.dbToX(state.threshold);
+  const ty = c.dbToY(transferCurve(state.threshold));
+  if (Math.hypot(mx - tx, my - ty) < 12) { dragging = 'threshold'; return; }
+
+  // Check knee node (at threshold - knee/2)
+  const kx = c.dbToX(state.threshold + state.knee / 2);
+  const ky = c.dbToY(transferCurve(state.threshold + state.knee / 2));
+  if (Math.hypot(mx - kx, my - ky) < 12) { dragging = 'knee'; return; }
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const rect = curveCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const c = getCanvasCoords();
+
+  if (dragging === 'threshold') {
+    let db = c.xToDb(mx);
+    db = Math.max(-60, Math.min(0, Math.round(db * 10) / 10));
+    state.threshold = db;
+    updateKnob('knobThreshold', db);
+    updateCompressor();
+  } else if (dragging === 'knee') {
+    let kx = c.xToDb(mx);
+    let kneeVal = (kx - state.threshold) * 2;
+    kneeVal = Math.max(0, Math.min(40, Math.round(kneeVal * 10) / 10));
+    state.knee = kneeVal;
+    updateKnob('knobKnee', kneeVal);
+    updateCompressor();
+  }
+});
+
+window.addEventListener('mouseup', () => { dragging = null; });
+
+/* ═══════════════ ROTARY KNOB ENGINE ═══════════════ */
+const SWEEP = 270;
+const START_ANGLE = (360 - SWEEP) / 2 + 90; // degrees from 12 o'clock
+
+function drawKnobSVG(svg, fraction) {
+  const cx = 27, cy = 27, r = 22, trackW = 3.5, arcW = 3.5;
+  const startRad = (START_ANGLE) * Math.PI / 180;
+  const endRad = (START_ANGLE + SWEEP) * Math.PI / 180;
+  const valRad = (START_ANGLE + SWEEP * fraction) * Math.PI / 180;
+
+  // Pointer angle
+  const pointerRad = valRad;
+  const pInnerR = 10, pOuterR = 20;
+
+  svg.innerHTML = `
+    <!-- Outer glow -->
+    <defs>
+      <radialGradient id="knobGrad" cx="50%" cy="45%" r="50%">
+        <stop offset="0%" stop-color="#1a1e2a"/>
+        <stop offset="100%" stop-color="#0c0e16"/>
+      </radialGradient>
+      <filter id="glow"><feGaussianBlur stdDeviation="1.5" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <!-- Track arc (background) -->
+    <path d="${arcPath(cx, cy, r, startRad, endRad)}" fill="none" stroke="#1a1e2a" stroke-width="${trackW}" stroke-linecap="round"/>
+    <!-- Value arc (green) -->
+    ${fraction > 0.003 ? `<path d="${arcPath(cx, cy, r, startRad, valRad)}" fill="none" stroke="#34d399" stroke-width="${arcW}" stroke-linecap="round" filter="url(#glow)"/>` : ''}
+    <!-- Center circle -->
+    <circle cx="${cx}" cy="${cy}" r="16" fill="url(#knobGrad)" stroke="#1a1e2a" stroke-width="1"/>
+    <!-- Pointer line -->
+    <line x1="${cx + pInnerR * Math.cos(pointerRad)}" y1="${cy + pInnerR * Math.sin(pointerRad)}"
+          x2="${cx + pOuterR * Math.cos(pointerRad)}" y2="${cy + pOuterR * Math.sin(pointerRad)}"
+          stroke="#34d399" stroke-width="2" stroke-linecap="round"/>
+    <!-- Center dot -->
+    <circle cx="${cx}" cy="${cy}" r="2" fill="#34d399" opacity="0.5"/>
+    <!-- Tick marks -->
+    ${tickMarks(cx, cy, r + 2, startRad, endRad, 11)}
+  `;
+}
+
+function arcPath(cx, cy, r, startRad, endRad) {
+  const sx = cx + r * Math.cos(startRad);
+  const sy = cy + r * Math.sin(startRad);
+  const ex = cx + r * Math.cos(endRad);
+  const ey = cy + r * Math.sin(endRad);
+  const sweep = endRad - startRad;
+  const largeArc = sweep > Math.PI ? 1 : 0;
+  return `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`;
+}
+
+function tickMarks(cx, cy, r, startRad, endRad, count) {
+  let marks = '';
+  for (let i = 0; i <= count; i++) {
+    const a = startRad + (endRad - startRad) * (i / count);
+    const inner = r + 1;
+    const outer = r + 3;
+    marks += `<line x1="${cx + inner * Math.cos(a)}" y1="${cy + inner * Math.sin(a)}" x2="${cx + outer * Math.cos(a)}" y2="${cy + outer * Math.sin(a)}" stroke="#22262e" stroke-width="0.7"/>`;
+  }
+  return marks;
+}
+
+function getKnobFraction(el) {
+  const min = parseFloat(el.dataset.min);
+  const max = parseFloat(el.dataset.max);
+  const val = parseFloat(el.dataset.value);
+  return (val - min) / (max - min);
+}
+
+function updateKnob(id, newVal) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const min = parseFloat(el.dataset.min);
+  const max = parseFloat(el.dataset.max);
+  newVal = Math.max(min, Math.min(max, newVal));
+  el.dataset.value = newVal;
+  const param = el.dataset.param;
+  state[param] = newVal;
+
+  const svg = el.querySelector('.knob-svg');
+  drawKnobSVG(svg, getKnobFraction(el));
+
+  const valEl = el.querySelector('.knob-value');
+  if (param === 'ratio') {
+    valEl.textContent = newVal.toFixed(1) + ':1';
+  } else if (param === 'attack') {
+    valEl.textContent = newVal.toFixed(1);
+  } else if (param === 'release') {
+    valEl.textContent = Math.round(newVal);
+  } else {
+    valEl.textContent = newVal.toFixed(1);
+  }
+}
+
+/* ── Knob drag interaction ── */
+let activeKnob = null;
+let knobStartY = 0;
+let knobStartVal = 0;
+
+document.querySelectorAll('.knob-group[data-param]').forEach(el => {
+  const svg = el.querySelector('.knob-svg');
+  drawKnobSVG(svg, getKnobFraction(el));
+
+  el.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    activeKnob = el;
+    knobStartY = e.clientY;
+    knobStartVal = parseFloat(el.dataset.value);
+  });
+
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const step = parseFloat(el.dataset.step);
+    const delta = e.deltaY > 0 ? -step : step;
+    const newVal = parseFloat(el.dataset.value) + delta;
+    updateKnob(el.id, newVal);
+    updateCompressor();
+  }, { passive: false });
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!activeKnob) return;
+  const min = parseFloat(activeKnob.dataset.min);
+  const max = parseFloat(activeKnob.dataset.max);
+  const range = max - min;
+  const sensitivity = range / 200; // 200px for full range
+  const dy = knobStartY - e.clientY;
+  const newVal = knobStartVal + dy * sensitivity;
+  updateKnob(activeKnob.id, newVal);
+  updateCompressor();
+});
+
+window.addEventListener('mouseup', () => { activeKnob = null; });
+
+/* ═══════════════ MIX FADER ═══════════════ */
+const mixTrack = document.getElementById('mixTrack');
+const mixThumb = document.getElementById('mixThumb');
+const mixVal = document.getElementById('mixVal');
+let mixDragging = false;
+
+function updateMixVisual() {
+  const pct = state.mix / 100;
+  const trackH = mixTrack.getBoundingClientRect().height - 8;
+  mixThumb.style.bottom = (pct * trackH) + 'px';
+  mixVal.textContent = Math.round(state.mix) + '%';
+}
+
+mixTrack.addEventListener('mousedown', (e) => {
+  mixDragging = true;
+  updateMixFromEvent(e);
+});
+window.addEventListener('mousemove', (e) => {
+  if (!mixDragging) return;
+  updateMixFromEvent(e);
+});
+window.addEventListener('mouseup', () => { mixDragging = false; });
+
+function updateMixFromEvent(e) {
+  const rect = mixTrack.getBoundingClientRect();
+  const y = e.clientY - rect.top;
+  let pct = 1 - y / rect.height;
+  pct = Math.max(0, Math.min(1, pct));
+  state.mix = Math.round(pct * 100);
+  updateMixVisual();
+  updateCompressor();
+}
+
+/* ═══════════════ MODE PILLS ═══════════════ */
+document.querySelectorAll('.mode-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mode-pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.mode = btn.dataset.mode;
+    document.getElementById('modeSelect').value = btn.dataset.mode;
+  });
+});
+
+document.getElementById('modeSelect').addEventListener('change', (e) => {
+  state.mode = e.target.value;
+  document.querySelectorAll('.mode-pill').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === state.mode);
+  });
+});
+
+/* Toggle pills */
+document.querySelectorAll('.toggle-pill').forEach(btn => {
+  btn.addEventListener('click', () => btn.classList.toggle('active'));
+});
+
+/* Header pills */
+document.querySelectorAll('.hdr-right .pill').forEach(btn => {
+  btn.addEventListener('click', () => btn.classList.toggle('active'));
+});
+
+/* Footer tabs */
+document.querySelectorAll('.footer-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.footer-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+  });
+});
+
+/* Bypass */
+document.getElementById('btnBypass').addEventListener('click', function() {
+  state.bypass = !state.bypass;
+  this.classList.toggle('active', state.bypass);
+});
+
+/* ═══════════════ PRESETS ═══════════════ */
+const presets = [
+  { name: 'Clean & Controlled', threshold: -10, ratio: 4, attack: 10.5, release: 121, knee: 6, makeup: 0 },
+  { name: 'Gentle Squeeze', threshold: -18, ratio: 2.5, attack: 20, release: 200, knee: 10, makeup: 2 },
+  { name: 'Vocal Tamer', threshold: -14, ratio: 3.5, attack: 5, release: 80, knee: 4, makeup: 3 },
+  { name: 'Bus Glue', threshold: -20, ratio: 2, attack: 30, release: 300, knee: 12, makeup: 1.5 },
+  { name: 'Brick Wall', threshold: -6, ratio: 20, attack: 0.1, release: 50, knee: 0, makeup: 5 },
+  { name: 'Drum Punch', threshold: -12, ratio: 6, attack: 1, release: 60, knee: 3, makeup: 4 },
+];
+let presetIdx = 0;
+
+function loadPreset(idx) {
+  const p = presets[idx];
+  document.getElementById('presetName').textContent = p.name;
+  ['threshold','ratio','attack','release','knee','makeup'].forEach(k => {
+    state[k] = p[k];
+    const knobId = 'knob' + k.charAt(0).toUpperCase() + k.slice(1);
+    const el = document.getElementById(knobId);
+    if (el) {
+      el.dataset.value = p[k];
+      drawKnobSVG(el.querySelector('.knob-svg'), getKnobFraction(el));
+      const valEl = el.querySelector('.knob-value');
+      if (k === 'ratio') valEl.textContent = p[k].toFixed(1) + ':1';
+      else if (k === 'release') valEl.textContent = Math.round(p[k]);
+      else valEl.textContent = p[k].toFixed(1);
+    }
+  });
+  updateCompressor();
+}
+
+document.getElementById('presetPrev').addEventListener('click', () => {
+  presetIdx = (presetIdx - 1 + presets.length) % presets.length;
+  loadPreset(presetIdx);
+});
+document.getElementById('presetNext').addEventListener('click', () => {
+  presetIdx = (presetIdx + 1) % presets.length;
+  loadPreset(presetIdx);
+});
+
+/* ═══════════════ DRAW ═══════════════ */
+function draw() {
+  requestAnimationFrame(draw);
+  resizeCanvas();
+  analyser.getByteTimeDomainData(timeData);
+
+  const realGR = compressor.reduction;
+  grSmooth += (realGR - grSmooth) * 0.2;
+
+  // RMS for operating point
+  let totalRMS = 0;
+  for (let i = 0; i < timeData.length; i++) {
+    const s = (timeData[i] - 128) / 128;
+    totalRMS += s * s;
+  }
+  totalRMS = Math.sqrt(totalRMS / timeData.length);
+  const totalDb = totalRMS > 0 ? 20 * Math.log10(totalRMS) : -96;
+  operatingLevel += (totalDb - operatingLevel) * 0.15;
+
+  // GR meter
+  const grPct = Math.min(Math.abs(grSmooth) / 30, 1) * 100;
+  document.getElementById('grFill').style.height = grPct + '%';
+  document.getElementById('grVal').textContent = grSmooth.toFixed(1);
+
+  drawTransferCurve();
+}
+
+function drawTransferCurve() {
+  cCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cCtx.clearRect(0, 0, CW, CH);
+
+  const c = getCanvasCoords();
+  const { pad, gW, gH, dbMin, dbMax, dbToX, dbToY } = c;
+
+  /* Grid lines */
+  cCtx.strokeStyle = 'rgba(255,255,255,0.03)';
+  cCtx.lineWidth = 0.5;
+  for (let db = -96; db <= 0; db += 12) {
+    const x = dbToX(db), y = dbToY(db);
+    cCtx.beginPath(); cCtx.moveTo(x, pad.t); cCtx.lineTo(x, pad.t + gH); cCtx.stroke();
+    cCtx.beginPath(); cCtx.moveTo(pad.l, y); cCtx.lineTo(pad.l + gW, y); cCtx.stroke();
+  }
+
+  /* Axis labels */
+  cCtx.fillStyle = 'rgba(255,255,255,0.12)';
+  cCtx.font = '500 6px "IBM Plex Mono"';
+  cCtx.textAlign = 'center';
+  for (let db = -96; db <= 0; db += 24) {
+    cCtx.fillText(db + '', dbToX(db), pad.t + gH + 12);
+  }
+  cCtx.textAlign = 'right';
+  for (let db = -96; db <= 0; db += 24) {
+    cCtx.fillText(db + '', pad.l - 4, dbToY(db) + 3);
+  }
+
+  /* Axis titles */
+  cCtx.fillStyle = 'rgba(255,255,255,0.06)';
+  cCtx.font = '500 6px "IBM Plex Mono"';
+  cCtx.textAlign = 'center';
+  cCtx.fillText('Input (dB)', CW / 2, CH - 2);
+  cCtx.save();
+  cCtx.translate(7, CH / 2);
+  cCtx.rotate(-Math.PI / 2);
+  cCtx.fillText('Output (dB)', 0, 0);
+  cCtx.restore();
+
+  /* Unity line (45 degrees, dashed) */
+  cCtx.setLineDash([4, 4]);
+  cCtx.strokeStyle = 'rgba(255,255,255,0.08)';
+  cCtx.lineWidth = 1;
+  cCtx.beginPath();
+  cCtx.moveTo(dbToX(dbMin), dbToY(dbMin));
+  cCtx.lineTo(dbToX(dbMax), dbToY(dbMax));
+  cCtx.stroke();
+  cCtx.setLineDash([]);
+
+  /* Threshold vertical dashed line */
+  cCtx.setLineDash([3, 4]);
+  cCtx.strokeStyle = 'rgba(52,211,153,0.2)';
+  cCtx.lineWidth = 1;
+  cCtx.beginPath();
+  cCtx.moveTo(dbToX(state.threshold), pad.t);
+  cCtx.lineTo(dbToX(state.threshold), pad.t + gH);
+  cCtx.stroke();
+  cCtx.setLineDash([]);
+
+  /* Transfer curve - GREEN, thick, smooth */
+  cCtx.beginPath();
+  for (let db = dbMin; db <= dbMax; db += 0.3) {
+    const outDb = transferCurve(db);
+    const x = dbToX(db), y = dbToY(Math.max(outDb, dbMin));
+    if (db === dbMin) cCtx.moveTo(x, y);
+    else cCtx.lineTo(x, y);
+  }
+  cCtx.strokeStyle = '#34d399';
+  cCtx.lineWidth = 2.5;
+  cCtx.shadowColor = 'rgba(52,211,153,0.3)';
+  cCtx.shadowBlur = 6;
+  cCtx.stroke();
+  cCtx.shadowBlur = 0;
+
+  /* Fill area between unity and curve (subtle green) */
+  cCtx.beginPath();
+  cCtx.moveTo(dbToX(state.threshold), dbToY(state.threshold));
+  for (let db = state.threshold; db <= dbMax; db += 0.5) {
+    const outDb = transferCurve(db);
+    cCtx.lineTo(dbToX(db), dbToY(Math.max(outDb, dbMin)));
+  }
+  cCtx.lineTo(dbToX(dbMax), dbToY(dbMax));
+  cCtx.lineTo(dbToX(state.threshold), dbToY(state.threshold));
+  cCtx.closePath();
+  cCtx.fillStyle = 'rgba(52,211,153,0.04)';
+  cCtx.fill();
+
+  /* ── Threshold node (draggable) ── */
+  const thrX = dbToX(state.threshold);
+  const thrY = dbToY(transferCurve(state.threshold));
+
+  // Outer glow
+  cCtx.beginPath(); cCtx.arc(thrX, thrY, 10, 0, Math.PI * 2);
+  cCtx.fillStyle = 'rgba(52,211,153,0.08)'; cCtx.fill();
+  // Circle
+  cCtx.beginPath(); cCtx.arc(thrX, thrY, 6, 0, Math.PI * 2);
+  cCtx.fillStyle = '#0a0c14'; cCtx.fill();
+  cCtx.strokeStyle = '#34d399'; cCtx.lineWidth = 2; cCtx.stroke();
+  // Label
+  cCtx.fillStyle = '#d0d8e8';
+  cCtx.font = '700 8px "IBM Plex Mono"';
+  cCtx.textAlign = 'center';
+  cCtx.fillText(state.threshold.toFixed(1) + ' dB', thrX, thrY - 14);
+  cCtx.fillStyle = '#4a5268';
+  cCtx.font = '600 5.5px "IBM Plex Mono"';
+  cCtx.fillText('Threshold', thrX, thrY - 24);
+
+  /* ── Knee node (draggable) ── */
+  if (state.knee > 0) {
+    const kneeDb = state.threshold + state.knee / 2;
+    const kneeX = dbToX(kneeDb);
+    const kneeY = dbToY(transferCurve(kneeDb));
+
+    cCtx.beginPath(); cCtx.arc(kneeX, kneeY, 8, 0, Math.PI * 2);
+    cCtx.fillStyle = 'rgba(52,211,153,0.06)'; cCtx.fill();
+    cCtx.beginPath(); cCtx.arc(kneeX, kneeY, 5, 0, Math.PI * 2);
+    cCtx.fillStyle = '#0a0c14'; cCtx.fill();
+    cCtx.strokeStyle = 'rgba(52,211,153,0.6)'; cCtx.lineWidth = 1.5; cCtx.stroke();
+
+    cCtx.fillStyle = '#4a5268';
+    cCtx.font = '600 5.5px "IBM Plex Mono"';
+    cCtx.textAlign = 'center';
+    cCtx.fillText('Knee', kneeX, kneeY + 18);
+  }
+
+  /* ── Operating point (pulsing white dot) ── */
+  const opDb = Math.max(Math.min(operatingLevel, 0), dbMin);
+  const opOut = transferCurve(opDb);
+  const opX = dbToX(opDb);
+  const opY = dbToY(Math.max(opOut, dbMin));
+
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+
+  // Pulsing outer glow
+  cCtx.beginPath(); cCtx.arc(opX, opY, 12, 0, Math.PI * 2);
+  cCtx.fillStyle = `rgba(255,255,255,${0.02 + pulse * 0.03})`;
+  cCtx.fill();
+
+  // White dot
+  cCtx.beginPath(); cCtx.arc(opX, opY, 4, 0, Math.PI * 2);
+  cCtx.fillStyle = `rgba(255,255,255,${0.7 + pulse * 0.3})`;
+  cCtx.fill();
+
+  // Inner accent
+  cCtx.beginPath(); cCtx.arc(opX, opY, 1.5, 0, Math.PI * 2);
+  cCtx.fillStyle = '#34d399'; cCtx.fill();
+
+  // Crosshairs from operating point
+  cCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+  cCtx.lineWidth = 0.5;
+  cCtx.setLineDash([2, 3]);
+  cCtx.beginPath(); cCtx.moveTo(opX, pad.t + gH); cCtx.lineTo(opX, opY); cCtx.stroke();
+  cCtx.beginPath(); cCtx.moveTo(pad.l, opY); cCtx.lineTo(opX, opY); cCtx.stroke();
+  cCtx.setLineDash([]);
+
+  /* ── GR readout top-right corner of canvas ── */
+  const gr = compressor.reduction;
+  cCtx.fillStyle = '#34d399';
+  cCtx.font = '700 12px "IBM Plex Mono"';
+  cCtx.textAlign = 'right';
+  cCtx.fillText(gr.toFixed(1) + ' dB', CW - pad.r - 4, pad.t + 14);
+  cCtx.fillStyle = '#3e4250';
+  cCtx.font = '600 6px "IBM Plex Mono"';
+  cCtx.fillText('Gain Reduction', CW - pad.r - 4, pad.t + 22);
+}
+
+/* ═══════════════ FILE LOADING ═══════════════ */
+const fileInput = document.getElementById('fileInput');
+document.getElementById('btnProcess').addEventListener('click', () => {
+  if (!audioIn.src || audioIn.src === window.location.href) {
+    fileInput.click();
+    return;
+  }
+  processAudio();
+});
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  audioIn.src = URL.createObjectURL(file);
+  if (!sourceNode) connectSource(audioIn);
+  audioIn.play();
+  document.getElementById('status').textContent = file.name;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+});
+
+/* ═══════════════ PROCESS ═══════════════ */
+async function processAudio() {
+  const btn = document.getElementById('btnProcess');
+  const statusEl = document.getElementById('status');
+  btn.classList.add('running');
+  btn.textContent = '... PROCESSING';
+  statusEl.textContent = 'Processing...';
+  try {
+    const resp = await fetch(audioIn.src);
+    const blob = await resp.blob();
+    const formData = new FormData();
+    formData.append('audio', blob, 'input.wav');
+    formData.append('effect', 'multiband_dynamics');
+    formData.append('params', JSON.stringify({
+      lowThresh: state.threshold, lowRatio: state.ratio,
+      midThresh: state.threshold, midRatio: state.ratio,
+      highThresh: state.threshold, highRatio: state.ratio,
+      attack: Math.max(1, Math.min(100, state.attack)),
+      release: Math.max(10, Math.min(1000, state.release)),
+    }));
+    const result = await fetch('/api/edit/mastering/process', { method: 'POST', body: formData });
+    if (!result.ok) throw new Error('Server error ' + result.status);
+    const audioBlob = await result.blob();
+    document.getElementById('audioOut').src = URL.createObjectURL(audioBlob);
+    document.getElementById('audioOut').play();
+    statusEl.textContent = 'Done';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+  }
+  btn.classList.remove('running');
+  btn.textContent = '▶ PROCESS';
+}
+
+/* ═══════════════ INIT ═══════════════ */
+updateMixVisual();
+draw();
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      audioIn.src = URL.createObjectURL(file);
+      if (!sourceNode) connectSource(audioIn);
+      audioIn.play();
+      document.getElementById('status').textContent = file.name || 'track.wav';
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+
+})();
+</script>
+</body>
+</html>
