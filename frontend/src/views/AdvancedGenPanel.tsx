@@ -18,6 +18,7 @@ import { GENERATION_PRESETS, type GenerationPreset } from '../data/generationPre
 import { enhanceStableAudioPrompt } from '../orb-kit/promptEnhancer';
 import { ChimeraStack } from '../components/chimera/ChimeraStack';
 import { SlideKnob } from '../components/audio/SlideKnob';
+import { SlideTrack } from '../components/audio/SlideTrack';
 import { SlideFader } from '../components/audio/SlideFader';
 import { SlideRow } from '../components/audio/SlideRow';
 import { RoundToggle } from '../components/audio/RoundToggle';
@@ -54,9 +55,9 @@ function FullAudioPlayer() {
         <div className="h-full bg-purple-500 rounded-full" style={{ width: `${dur ? (time / dur) * 100 : 0}%` }} />
       </div>
       <Volume2 className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-      <input type="range" min={0} max={1} step={0.01} value={vol}
-        onChange={(e) => { const v = +e.target.value; setVol(v); setMasterGain(v); }}
-        className="pro-slider w-16 shrink-0" aria-label="Master volume" />
+      <SlideTrack min={0} max={1} step={0.01} value={vol}
+        onChange={(v) => { setVol(v); setMasterGain(v); }}
+        className="w-16 shrink-0" ariaLabel="Master volume" />
     </div>
   );
 }
@@ -357,8 +358,8 @@ export const AdvancedGenPanel: React.FC<{
             </div>
             <div className="flex items-center gap-1 shrink-0" title="Init noise — denoising strength for the init audio (0 = keep init exactly, 1 = full noise / ignore init). Set this BEFORE generating.">
               <span className="text-[9px] text-zinc-400">Nz</span>
-              <input type="range" min={0} max={1} step={0.01} value={p.initNoise}
-                onChange={(e) => sf('initNoise', +e.target.value)} className="pro-slider w-14" aria-label="Init noise" />
+              <SlideTrack min={0} max={1} step={0.01} value={p.initNoise}
+                onChange={(v) => sf('initNoise', v)} className="w-14" ariaLabel="Init noise" />
               <span className="text-[9px] font-mono text-purple-300 tabular-nums w-7 text-right">{p.initNoise.toFixed(2)}</span>
             </div>
             <button onClick={() => sf('initAudioEnabled', !p.initAudioEnabled)}

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Layers, X, Music, ChevronUp, ChevronDown, GripVertical } from 'lucide-react';
 import { useGenerateParamsStore, type ChimeraClip } from '../../state/generateParamsStore';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
+import { SlideTrack } from '../audio/SlideTrack';
 import { hasAudioDragData, readAudioDragData } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
 import { logError } from '../../state/logStore';
@@ -301,15 +302,8 @@ const ChimeraRow: React.FC<ChimeraRowProps> = ({
       </span>
       <div className="flex items-center gap-1 shrink-0 w-28" title="Noise: higher = less influence on output">
         <span className="text-zinc-600">N</span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={clip.noise}
-          onChange={(e) => onNoiseChange(parseFloat(e.target.value))}
-          className="pro-slider flex-1"
-        />
+        <SlideTrack min={0} max={1} step={0.01} value={clip.noise}
+          onChange={(v) => onNoiseChange(v)} className="flex-1" ariaLabel="Noise" />
         <span className="text-zinc-500 w-6 text-right">{clip.noise.toFixed(2)}</span>
       </div>
       <button

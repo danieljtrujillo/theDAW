@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import { useLayoutPrefs } from '../../state/layoutPrefsStore';
+import { SlideTrack } from '../audio/SlideTrack';
 
 interface ModuleConfig {
   name: string;
@@ -322,28 +323,14 @@ const LayoutSettingsSection: React.FC = () => {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Gap:</span>
-          <input
-            type="range"
-            min={0}
-            max={24}
-            value={gapPx}
-            onChange={(e) => setGapPx(Number(e.target.value))}
-            className="flex-1 accent-purple-500"
-            title="Gap between panels"
-          />
+          <SlideTrack min={0} max={24} step={1} value={gapPx}
+            onChange={(v) => setGapPx(v)} className="flex-1" ariaLabel="Gap between panels" />
           <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{gapPx}px</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Snap:</span>
-          <input
-            type="range"
-            min={0}
-            max={24}
-            value={snapPx}
-            onChange={(e) => setSnapPx(Number(e.target.value))}
-            className="flex-1 accent-purple-500"
-            title="Snap step when dragging margins (0 = off; hold Ctrl while dragging for a 1px fine step)"
-          />
+          <SlideTrack min={0} max={24} step={1} value={snapPx}
+            onChange={(v) => setSnapPx(v)} className="flex-1" ariaLabel="Snap step when dragging margins" />
           <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{snapPx === 0 ? 'off' : `${snapPx}px`}</span>
         </div>
         <div className="flex items-center gap-2">

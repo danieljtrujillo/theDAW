@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Network, X, GitBranch, GitFork, Workflow, Maximize2, Minimize2, Sliders, Maximize, Copy, Crosshair, Package, GitMerge, Library as LibraryIcon, Home, Rocket } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { NodeInspector } from './NodeInspector';
+import { SlideTrack } from '../audio/SlideTrack';
 
 const ForceGraph3D = lazy(() => import('react-force-graph-3d').then((m) => ({ default: m.default })));
 const ForceGraph2D = lazy(() => import('react-force-graph-2d').then((m) => ({ default: m.default })));
@@ -1357,17 +1358,9 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
 
 
 const SliderRow: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => (
-  <label className="flex flex-col gap-0.5">
+  <label className="flex flex-col gap-1">
     <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">{label}</span>
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="pro-slider"
-    />
+    <SlideTrack min={min} max={max} step={step} value={value} onChange={onChange} className="w-full" ariaLabel={label} />
   </label>
 );
 
@@ -1376,15 +1369,7 @@ const SliderRow: React.FC<{ label: string; min: number; max: number; step: numbe
 const FooterRange: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => (
   <label className="flex items-center gap-1.5">
     <span className="text-zinc-400">{label}</span>
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="pro-slider w-24"
-    />
+    <SlideTrack min={min} max={max} step={step} value={value} onChange={onChange} className="w-24" ariaLabel={label} />
     <span className="text-zinc-300 tabular-nums w-7 text-right">{value}</span>
   </label>
 );

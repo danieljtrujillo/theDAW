@@ -6,6 +6,7 @@ import { usePlayerStore } from '../../state/playerStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useAppUiStore } from '../../state/appUiStore';
 import { callEditorPlay, isEditorPlaybackRegistered } from '../../state/editorPlaybackBridge';
+import { SlideTrack } from './SlideTrack';
 import {
   toggleVjPlayback,
   subscribeToVjPlaybackState,
@@ -332,19 +333,8 @@ export const PlayerFooter: React.FC = () => {
             <button onClick={toggleMute} className="text-zinc-500 hover:text-white transition-colors" title={isMuted ? 'Unmute' : 'Mute'}>
               {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
             </button>
-            <div className="w-20 h-1 bg-white/10 rounded-full relative">
-              <input
-                type="range"
-                value={volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
-                className="absolute inset-0 opacity-0 cursor-pointer z-10"
-                title="Volume"
-              />
-              <div
-                className={`h-full rounded-full transition-colors ${isMuted ? 'bg-zinc-700' : 'bg-purple-500'}`}
-                style={{ width: `${isMuted ? 0 : volume}%` }}
-              />
-            </div>
+            <SlideTrack min={0} max={100} step={1} value={volume}
+              onChange={(v) => setVolume(v)} className="w-20" ariaLabel="Volume" />
           </div>
 
           <div className="h-6 w-px bg-white/5" />

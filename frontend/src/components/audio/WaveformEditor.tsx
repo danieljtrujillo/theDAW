@@ -4,6 +4,7 @@ import {
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
 } from 'lucide-react';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
+import { SlideTrack } from './SlideTrack';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, type AudioClip, type SnapDivision } from '../../state/editorStore';
@@ -1301,23 +1302,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Volume2 className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
-                  <input
-                    type="range"
-                    min={0} max={1} step={0.01}
-                    value={t.volume}
-                    onChange={(e) => updateTrack(t.id, { volume: parseFloat(e.target.value) })}
-                    className="pro-slider flex-1"
-                  />
+                  <SlideTrack min={0} max={1} step={0.01} value={t.volume}
+                    onChange={(v) => updateTrack(t.id, { volume: v })} className="flex-1" ariaLabel="Track volume" />
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[7px] font-mono text-zinc-600 uppercase w-3">P</span>
-                  <input
-                    type="range"
-                    min={-1} max={1} step={0.01}
-                    value={t.pan}
-                    onChange={(e) => updateTrack(t.id, { pan: parseFloat(e.target.value) })}
-                    className="pro-slider flex-1 accent-blue-500"
-                  />
+                  <SlideTrack min={-1} max={1} step={0.01} value={t.pan}
+                    onChange={(v) => updateTrack(t.id, { pan: v })} className="flex-1" ariaLabel="Track pan" />
                   <span className="text-[7px] font-mono text-zinc-600 text-right w-5">
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
                   </span>
@@ -1694,11 +1685,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   <span className="text-[9px] font-mono text-zinc-500">Steps</span>
                   <span className="text-[9px] font-mono text-zinc-400">{inpaintSteps}</span>
                 </div>
-                <input
-                  type="range" min={4} max={20} step={1} value={inpaintSteps}
-                  onChange={(e) => setInpaintSteps(parseInt(e.target.value))}
-                  className="pro-slider"
-                />
+                <SlideTrack min={4} max={20} step={1} value={inpaintSteps}
+                  onChange={(v) => setInpaintSteps(v)} className="w-full" ariaLabel="Inpaint steps" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[9px] font-mono text-zinc-500 shrink-0">Seed</span>
