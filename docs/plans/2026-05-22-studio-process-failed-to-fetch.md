@@ -141,8 +141,7 @@ async def load_model():
     _get_or_load_generation_pipeline(DEFAULT_GENERATION_MODEL)
 ```
 
-Per the user's recorded hardware profile (RTX 3060 Laptop, 6 GB VRAM), the
-`medium` checkpoint OOMs on this machine. If startup raised, uvicorn on
+On low-VRAM GPUs, the `medium` checkpoint can OOM. If startup raised, uvicorn on
 the installed version (`uvicorn>=0.42` per `pyproject.toml`) exits with a
 non-zero code and the process is gone — every subsequent `/api/*` request
 would hit ECONNREFUSED at the proxy. This is consistent with the

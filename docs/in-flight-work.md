@@ -192,8 +192,8 @@ format drift, then review the content diffs separately.
    this user.
 4. **No `Co-Authored-By` trailer on commits.** User explicitly
    disallowed.
-5. **The user's hardware is RTX 3060 Laptop, 6 GB VRAM.** Heavy model
-   loads (medium-size DiT, Demucs CUDA on long files) can OOM. Stems
+5. **On GPUs with limited VRAM, heavy model loads can OOM** (medium-size
+   DiT, Demucs CUDA on long files). Stems
    sidecar uses its OWN venv with torch+cu128 at
    `D:/StableAudio/JoshOG/integration-package/backend/.sidecar_venv`
    — that venv requires the specific bootstrap described in

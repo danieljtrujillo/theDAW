@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vocoder — StableDAW</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#07080c;--panel:#0e1018;--surface:#141720;--border:#1e2230;
+  --accent:#e879f9;--carrier:#00e5ff;--mod:#e040fb;--merge:#ffffff;
+  --text:#e0e6f0;--dim:#5a6278;--mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif;
+}
+html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--sans);color:var(--text);overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER (28px) ── */
+.hdr{display:flex;align-items:center;padding:0 10px;background:#0a0c14;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px;gap:6px}
+.hdr-icon{width:16px;height:16px;color:var(--accent);flex-shrink:0}
+.hdr-title{font:700 10px/1 var(--mono);letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0}
+.hdr-sep{width:1px;height:14px;background:#1e2230;margin:0 2px}
+.preset-nav{display:flex;align-items:center;gap:2px;font:500 8px/1 var(--mono);color:#5a5e6a}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{color:#6b7080;min-width:40px;text-align:center}
+.hdr-spacer{flex:1}
+.hdr-pill{font:600 7px/1 var(--mono);letter-spacing:.4px;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all .12s;user-select:none}
+.hdr-pill:hover{border-color:#3a3e4a}
+.hdr-pill.on{background:rgba(232,121,249,.06);border-color:var(--accent);color:var(--accent)}
+
+/* ── DUAL SPECTROGRAM ── */
+.viz-area{flex:1;position:relative;margin:4px 6px 3px;background:#050710;border:1px solid var(--border);border-radius:8px;overflow:hidden;min-height:0}
+.viz-area canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+.viz-lbl{position:absolute;font:700 8px/1 var(--mono);letter-spacing:2px;text-transform:uppercase;pointer-events:none;z-index:3}
+.viz-lbl.top{top:6px;left:10px;color:var(--carrier);opacity:.5;text-shadow:0 0 8px rgba(0,229,255,.3)}
+.viz-lbl.bot{bottom:6px;left:10px;color:var(--mod);opacity:.5;text-shadow:0 0 8px rgba(224,64,251,.3)}
+.viz-lbl.mid{top:50%;left:50%;transform:translate(-50%,-50%);font-size:7px;color:rgba(255,255,255,.2);letter-spacing:3px}
+
+/* Carrier type pills — overlaid right side of canvas */
+.carrier-pills{position:absolute;top:8px;right:10px;display:flex;flex-direction:column;gap:3px;z-index:5}
+.carrier-pill{font:700 8px/1 var(--mono);letter-spacing:1px;padding:5px 10px;border-radius:5px;border:1px solid var(--border);background:rgba(10,12,20,.7);backdrop-filter:blur(6px);color:var(--dim);cursor:pointer;transition:.15s;text-align:center}
+.carrier-pill:hover{color:var(--text);border-color:rgba(255,255,255,.15)}
+.carrier-pill.on{color:var(--carrier);border-color:var(--carrier);background:rgba(0,229,255,.06);box-shadow:0 0 10px rgba(0,229,255,.12)}
+
+/* ── KNOB ROW ── */
+.knobs-strip{display:flex;align-items:center;justify-content:center;gap:16px;padding:6px 14px 8px;flex-shrink:0;height:128px;background:#0a0c12;border-top:1px solid var(--border)}
+
+.knob-unit{display:flex;flex-direction:column;align-items:center;gap:2px;position:relative}
+.knob-unit .ku-lbl{font:700 10px/1 var(--mono);letter-spacing:1px;text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.knob-unit svg{cursor:pointer;display:block}
+.knob-unit .ku-val{font:700 13px/1 var(--mono);color:var(--accent)}
+
+/* Big center knob */
+.knob-unit.big svg{width:72px;height:72px}
+.knob-unit.big .ku-val{font-size:15px}
+.knob-unit.big{margin:0 8px}
+
+/* Small side knobs */
+.knob-unit.sm svg{width:64px;height:64px}
+
+/* Separator dots */
+.knob-sep{width:2px;height:2px;border-radius:50%;background:var(--border);margin:0 4px;align-self:center}
+
+/* ── FOOTER (24px) ── */
+.ftr{display:flex;align-items:center;gap:0;background:#08090e;border-top:1px solid #14171e;flex-shrink:0;height:24px;padding:0 6px}
+.ftr-bypass{font:600 7px/1 var(--mono);letter-spacing:.4px;padding:2px 7px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all .12s;margin-right:6px}
+.ftr-bypass.on{background:rgba(232,121,249,.06);border-color:var(--accent);color:var(--accent)}
+.ftr-tab{font:600 7px/1 var(--mono);letter-spacing:.5px;text-transform:uppercase;padding:3px 8px;cursor:pointer;color:#3e4250;border-bottom:2px solid transparent;transition:all .12s}
+.ftr-tab:hover{color:#6b7080}
+.ftr-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.ftr-spacer{flex:1}
+.ftr-stat{font:600 7.5px/1 var(--mono);color:#444a58}
+.ftr-stat.ok{color:#22c55e}
+.ftr-stat.err{color:#ef5350}
+.ftr-btn{font:600 7px/1 var(--mono);padding:2px 7px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:all .12s;margin-left:4px}
+.ftr-btn:hover{background:#14171e;color:#c8cad0}
+.ftr-btn.proc{background:rgba(232,121,249,.06);border-color:var(--accent);color:var(--accent)}
+.ftr-btn.proc:hover{background:rgba(232,121,249,.12)}
+audio{display:none}
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <svg class="hdr-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+    <span class="hdr-title">Vocoder</span>
+    <div class="hdr-sep"></div>
+    <div class="preset-nav">
+      <button>&#9666;</button>
+      <span class="preset-name">Default</span>
+      <button>&#9656;</button>
+    </div>
+    <span class="hdr-spacer"></span>
+    <button class="hdr-pill">A/B</button>
+    <button class="hdr-pill">COPY</button>
+    <button class="hdr-pill">&#916;</button>
+    <button class="hdr-pill">&#9881;</button>
+  </div>
+
+  <!-- DUAL SPECTROGRAM -->
+  <div class="viz-area" id="vizWrap">
+    <canvas id="specCanvas"></canvas>
+    <div class="viz-lbl top">CARRIER</div>
+    <div class="viz-lbl bot">MODULATOR</div>
+    <div class="viz-lbl mid">CROSS-SYNTH</div>
+    <div class="carrier-pills">
+      <button class="carrier-pill on" data-carrier="noise">NOISE</button>
+      <button class="carrier-pill" data-carrier="synth">SYNTH</button>
+      <button class="carrier-pill" data-carrier="upload">UPLOAD</button>
+    </div>
+  </div>
+
+  <!-- KNOB ROW -->
+  <div class="knobs-strip">
+    <div class="knob-unit sm">
+      <span class="ku-lbl">Carrier Freq</span>
+      <svg viewBox="0 0 64 64" class="vknob" data-param="carrierFreq"></svg>
+      <span class="ku-val" id="vCarrierFreq">440 Hz</span>
+    </div>
+    <div class="knob-sep"></div>
+    <div class="knob-unit big">
+      <span class="ku-lbl">Spectral Smooth</span>
+      <svg viewBox="0 0 72 72" class="vknob" data-param="smooth"></svg>
+      <span class="ku-val" id="vSmooth">50%</span>
+    </div>
+    <div class="knob-sep"></div>
+    <div class="knob-unit sm">
+      <span class="ku-lbl">Width</span>
+      <svg viewBox="0 0 64 64" class="vknob" data-param="width"></svg>
+      <span class="ku-val" id="vWidth">75%</span>
+    </div>
+    <div class="knob-sep"></div>
+    <div class="knob-unit sm">
+      <span class="ku-lbl">Mix</span>
+      <svg viewBox="0 0 64 64" class="vknob" data-param="mix"></svg>
+      <span class="ku-val" id="vMix">100%</span>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="ftr">
+    <button class="ftr-bypass on" id="bypBtn">ON</button>
+    <div class="ftr-tab active">VOCODER</div>
+    <div class="ftr-tab">ANALYZER</div>
+    <div class="ftr-tab">FORMANT</div>
+    <span class="ftr-spacer"></span>
+    <span class="ftr-stat" id="status">ready</span>
+    <button class="ftr-btn" id="pickFile">LOAD</button>
+    <button class="ftr-btn" id="useTone">TONE</button>
+    <button class="ftr-btn proc" id="runBtn">&#9654;</button>
+    <audio id="ain" controls></audio>
+    <audio id="aout" controls></audio>
+  </div>
+  <input type="file" id="fileinput" accept="audio/*">
+</div>
+
+<script>
+/* ── STATE ── */
+let actx, analyser, source, inputFile, inputBuf;
+let carrierType = 'noise';
+let params = { smooth: 50, carrierFreq: 440, width: 75, mix: 100 };
+let knobNorm = { smooth: 50, carrierFreq: 5, width: 75, mix: 100 };
+const freqData = new Uint8Array(2048);
+let frame = 0;
+
+/* ── KNOB CONFIG ── */
+const KNOB_CFG = {
+  smooth:     { min:0, max:100, unit:'%', color:'#e879f9', isBig:true },
+  carrierFreq:{ min:50, max:8000, unit:' Hz', color:'#e879f9', isBig:false },
+  width:      { min:0, max:100, unit:'%', color:'#e879f9', isBig:false },
+  mix:        { min:0, max:100, unit:'%', color:'#e879f9', isBig:false },
+};
+
+/* ── SVG ROTARY KNOB RENDERER (270-degree sweep) ── */
+function renderVKnob(svg, param) {
+  const cfg = KNOB_CFG[param];
+  const isBig = cfg.isBig;
+  const size = isBig ? 72 : 64;
+  const cx = size / 2, cy = size / 2;
+  const r = isBig ? 28 : 24;
+  const val = knobNorm[param];
+  const color = cfg.color;
+
+  const sA = 135, eA = 405, range = eA - sA; // 270 degrees
+  const ang = sA + (val / 100) * range;
+  function pol(a, rad) { const d = (a - 90) * Math.PI / 180; return { x: cx + rad * Math.cos(d), y: cy + rad * Math.sin(d) }; }
+  const s = pol(sA, r), e = pol(eA, r), v = pol(ang, r);
+  const la = (ang - sA) > 180 ? 1 : 0;
+
+  /* tick marks */
+  let ticks = '';
+  const numTicks = isBig ? 14 : 10;
+  const tickR = r + 3;
+  for (let i = 0; i <= numTicks; i++) {
+    const ta = sA + (i / numTicks) * range;
+    const p1 = pol(ta, tickR), p2 = pol(ta, tickR + 2);
+    const lit = ((ta - sA) / range) <= (val / 100);
+    ticks += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="${lit ? color : 'rgba(255,255,255,.05)'}" stroke-width="${lit ? 1 : .5}" stroke-linecap="round" opacity="${lit ? .6 : .25}"/>`;
+  }
+
+  const uid = 'vk_' + param;
+  const innerR = isBig ? 16 : 13;
+  svg.innerHTML = `
+    <defs>
+      <filter id="g_${uid}"><feGaussianBlur stdDeviation="2.5" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <radialGradient id="f_${uid}" cx="50%" cy="38%" r="60%"><stop offset="0" stop-color="#1c1f2e"/><stop offset="1" stop-color="#0a0d16"/></radialGradient>
+    </defs>
+    ${ticks}
+    <path d="M${s.x},${s.y} A${r},${r} 0 1 1 ${e.x},${e.y}" fill="none" stroke="rgba(255,255,255,.04)" stroke-width="4" stroke-linecap="round"/>
+    <path d="M${s.x},${s.y} A${r},${r} 0 ${la} 1 ${v.x},${v.y}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round" filter="url(#g_${uid})"/>
+    <circle cx="${v.x}" cy="${v.y}" r="2.5" fill="${color}" filter="url(#g_${uid})"/>
+    <circle cx="${cx}" cy="${cy}" r="${innerR}" fill="url(#f_${uid})" stroke="${color}22" stroke-width="1.5"/>
+    <line x1="${cx}" y1="${cy - 2}" x2="${cx + Math.cos((ang - 90) * Math.PI / 180) * (innerR - 2)}" y2="${cy + Math.sin((ang - 90) * Math.PI / 180) * (innerR - 2)}" stroke="${color}aa" stroke-width="2" stroke-linecap="round"/>`;
+}
+
+function updateKnobDisplay(param) {
+  const cfg = KNOB_CFG[param];
+  const raw = cfg.min + (knobNorm[param] / 100) * (cfg.max - cfg.min);
+  const map = { smooth: 'vSmooth', carrierFreq: 'vCarrierFreq', width: 'vWidth', mix: 'vMix' };
+  const el = document.getElementById(map[param]);
+  if (el) {
+    if (param === 'carrierFreq') el.textContent = Math.round(raw) + cfg.unit;
+    else el.textContent = Math.round(raw) + cfg.unit;
+  }
+}
+
+/* Init all knobs */
+knobNorm.carrierFreq = ((440 - 50) / (8000 - 50)) * 100;
+document.querySelectorAll('.vknob').forEach(svg => {
+  const p = svg.dataset.param;
+  renderVKnob(svg, p);
+  updateKnobDisplay(p);
+});
+
+/* ── KNOB INTERACTION ── */
+let vkDrag = { active: false, param: '', startY: 0, startVal: 0 };
+document.querySelectorAll('.vknob').forEach(svg => {
+  svg.addEventListener('pointerdown', e => {
+    const p = svg.dataset.param;
+    vkDrag = { active: true, param: p, startY: e.clientY, startVal: knobNorm[p] };
+    svg.setPointerCapture(e.pointerId);
+  });
+  svg.addEventListener('pointermove', e => {
+    if (!vkDrag.active || svg.dataset.param !== vkDrag.param) return;
+    const dy = vkDrag.startY - e.clientY;
+    knobNorm[vkDrag.param] = Math.max(0, Math.min(100, vkDrag.startVal + dy * 0.5));
+    renderVKnob(svg, vkDrag.param);
+    updateKnobDisplay(vkDrag.param);
+    syncParams();
+    updateFilterQ();
+    updateLiveMix();
+  });
+  svg.addEventListener('pointerup', () => { vkDrag.active = false; });
+});
+
+function syncParams() {
+  params.smooth = knobNorm.smooth;
+  params.carrierFreq = 50 + (knobNorm.carrierFreq / 100) * (8000 - 50);
+  params.width = knobNorm.width;
+  params.mix = knobNorm.mix;
+}
+
+/* ── HEADER / FOOTER TOGGLES ── */
+document.getElementById('bypBtn').addEventListener('click', function() { this.classList.toggle('on'); });
+document.querySelectorAll('.hdr-pill').forEach(p => p.addEventListener('click', function() { this.classList.toggle('on'); }));
+document.querySelectorAll('.ftr-tab').forEach(t => t.addEventListener('click', function() {
+  document.querySelectorAll('.ftr-tab').forEach(x => x.classList.remove('active'));
+  this.classList.add('active');
+}));
+
+/* ── CARRIER SELECTOR ── */
+document.querySelectorAll('.carrier-pill').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.carrier-pill').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  carrierType = b.dataset.carrier;
+}));
+
+/* ── LIVE VOCODER AUDIO NODES ── */
+let liveFilterBands = [];
+let liveSplitter, liveMerger, liveBypass;
+
+function buildLiveChain() {
+  if (!actx) return;
+  liveFilterBands.forEach(n => { try { n.disconnect(); } catch(e) {} });
+  if (liveSplitter) try { liveSplitter.disconnect(); } catch(e) {}
+  if (liveMerger) try { liveMerger.disconnect(); } catch(e) {}
+
+  const freqs = [300, 1000, 3000, 8000];
+  liveSplitter = actx.createGain();
+  liveMerger = actx.createGain();
+  liveMerger.gain.value = 0.5;
+
+  const q = 0.5 + (1 - params.smooth / 100) * 14.5;
+  liveFilterBands = freqs.map(f => {
+    const bp = actx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = f;
+    bp.Q.value = q;
+    liveSplitter.connect(bp);
+    bp.connect(liveMerger);
+    return bp;
+  });
+
+  liveBypass = actx.createGain();
+  liveSplitter.connect(liveBypass);
+  updateLiveMix();
+}
+
+function updateFilterQ() {
+  const q = 0.5 + (1 - params.smooth / 100) * 14.5;
+  liveFilterBands.forEach(bp => { bp.Q.value = q; });
+}
+
+function updateLiveMix() {
+  if (!liveMerger || !liveBypass) return;
+  const wet = params.mix / 100;
+  liveMerger.gain.value = wet * 0.5;
+  liveBypass.gain.value = 1 - wet;
+}
+
+function connectLiveChain() {
+  if (!actx || !source || !liveMerger) return;
+  try { source.disconnect(); } catch(e) {}
+  source.connect(liveSplitter);
+  liveMerger.connect(analyser);
+  liveBypass.connect(analyser);
+  analyser.connect(actx.destination);
+}
+
+/* ── AUDIO ── */
+function ensureAudio() { if (actx) return; actx = new AudioContext(); analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.82; buildLiveChain(); }
+function connectBuf(buf) { if (source) try { source.stop(); } catch(e) {} source = actx.createBufferSource(); source.buffer = buf; source.loop = true; if (!liveSplitter) buildLiveChain(); connectLiveChain(); source.start(); }
+async function loadFile(file) { ensureAudio(); inputFile = file; const ab = await file.arrayBuffer(); inputBuf = await actx.decodeAudioData(ab.slice(0)); document.getElementById('ain').src = URL.createObjectURL(file); connectBuf(inputBuf); }
+document.getElementById('fileinput').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+document.getElementById('pickFile').onclick = () => document.getElementById('fileinput').click();
+document.getElementById('useTone').onclick = async () => { const r = await fetch('/static/testtone.wav'); const b = await r.blob(); loadFile(new File([b], 'testtone.wav', { type: 'audio/wav' })); };
+
+/* ── PROCESS ── */
+document.getElementById('runBtn').onclick = async () => {
+  if (!inputFile) return;
+  const st = document.getElementById('status');
+  st.className = 'ftr-stat'; st.textContent = 'processing...';
+  syncParams();
+  const fd = new FormData();
+  fd.append('effect', 'voxsynth');
+  fd.append('params', JSON.stringify({ spectralSmooth: params.smooth / 100, mix: params.mix / 100 }));
+  fd.append('output_format', 'wav');
+  fd.append('audio', inputFile);
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/edit/creative-neural/process', { method: 'POST', body: fd });
+    if (r.ok) { const blob = await r.blob(); document.getElementById('aout').src = URL.createObjectURL(blob); st.className = 'ftr-stat ok'; st.textContent = (blob.size/1024).toFixed(0) + 'KB ' + Math.round(performance.now()-t0) + 'ms'; }
+    else { st.className = 'ftr-stat err'; st.textContent = r.status + ' error'; }
+  } catch(e) { st.className = 'ftr-stat err'; st.textContent = 'ERR'; }
+};
+
+/* ── DUAL SPECTROGRAM ── */
+const canvas = document.getElementById('specCanvas');
+const vizWrap = document.getElementById('vizWrap');
+const SPEC_BINS = 128;
+let carrierCols = [];
+let modCols = [];
+
+function draw() {
+  requestAnimationFrame(draw);
+  frame++;
+  const W = vizWrap.clientWidth, H = vizWrap.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    carrierCols = []; modCols = [];
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const halfH = Math.floor(H / 2);
+  const mergeH = 6;
+
+  let energy = 0;
+  const carrierBins = new Float32Array(SPEC_BINS);
+  const modBins = new Float32Array(SPEC_BINS);
+  if (analyser) {
+    analyser.getByteFrequencyData(freqData);
+    const usable = Math.min(freqData.length, 1024);
+    for (let i = 0; i < SPEC_BINS; i++) {
+      const lo = Math.floor((i / SPEC_BINS) * usable * 0.7);
+      const hi = Math.floor(((i + 1) / SPEC_BINS) * usable * 0.7);
+      let sum = 0;
+      for (let j = lo; j < hi; j++) sum += freqData[j];
+      const avg = sum / Math.max(1, hi - lo) / 255;
+      carrierBins[i] = avg;
+      const mlo = Math.floor((i / SPEC_BINS) * usable * 0.5) + Math.floor(usable * 0.1);
+      const mhi = Math.floor(((i + 1) / SPEC_BINS) * usable * 0.5) + Math.floor(usable * 0.1);
+      let msum = 0;
+      for (let j = mlo; j < Math.min(mhi, usable); j++) msum += freqData[j];
+      modBins[i] = msum / Math.max(1, mhi - mlo) / 255;
+      energy += avg;
+    }
+    energy /= SPEC_BINS;
+  }
+
+  carrierCols.push(Array.from(carrierBins));
+  modCols.push(Array.from(modBins));
+  if (carrierCols.length > W + 2) { carrierCols.shift(); modCols.shift(); }
+
+  /* Clear */
+  ctx.fillStyle = '#050710';
+  ctx.fillRect(0, 0, W, H);
+
+  /* Carrier spectrogram (top half) */
+  const carrierH = halfH - mergeH / 2;
+  for (let col = 0; col < carrierCols.length && col < W; col++) {
+    const x = W - carrierCols.length + col;
+    if (x < 0) continue;
+    const bins = carrierCols[col];
+    for (let row = 0; row < SPEC_BINS; row++) {
+      const val = bins[row];
+      if (val < 0.02) continue;
+      const y = carrierH - (row / SPEC_BINS) * carrierH;
+      const rowH = Math.ceil(carrierH / SPEC_BINS) + 1;
+      const r = Math.floor(val * val * 100);
+      const g = Math.floor(val * 190 + (1 - val) * 10);
+      const b = Math.floor(val * 255 + (1 - val) * 15);
+      ctx.fillStyle = `rgba(${r},${g},${b},${val * 0.85 + 0.02})`;
+      ctx.fillRect(x, y, 1, rowH);
+    }
+  }
+
+  /* Modulator spectrogram (bottom half) */
+  const modTop = halfH + mergeH / 2;
+  const modH = H - modTop;
+  for (let col = 0; col < modCols.length && col < W; col++) {
+    const x = W - modCols.length + col;
+    if (x < 0) continue;
+    const bins = modCols[col];
+    for (let row = 0; row < SPEC_BINS; row++) {
+      const val = bins[row];
+      if (val < 0.02) continue;
+      const y = modTop + (row / SPEC_BINS) * modH;
+      const rowH = Math.ceil(modH / SPEC_BINS) + 1;
+      const r = Math.floor(val * 220 + (1 - val) * 10);
+      const g = Math.floor(val * 40);
+      const b = Math.floor(val * 245 + (1 - val) * 15);
+      ctx.fillStyle = `rgba(${r},${g},${b},${val * 0.85 + 0.02})`;
+      ctx.fillRect(x, y, 1, rowH);
+    }
+  }
+
+  /* Merge zone */
+  const mergeAlpha = 0.15 + energy * 0.85;
+  const mergeGlow = 5 + energy * 22;
+  const pulsePhase = Math.sin(frame * 0.055) * 0.12;
+
+  const mergeGrad = ctx.createLinearGradient(0, halfH - mergeH * 2.5, 0, halfH + mergeH * 2.5);
+  mergeGrad.addColorStop(0, `rgba(0,229,255,${energy * 0.15 + pulsePhase * 0.08})`);
+  mergeGrad.addColorStop(0.35, `rgba(180,240,255,${(mergeAlpha * 0.3 + pulsePhase) * 0.4})`);
+  mergeGrad.addColorStop(0.5, `rgba(255,255,255,${mergeAlpha * 0.5 + pulsePhase * 0.2})`);
+  mergeGrad.addColorStop(0.65, `rgba(255,180,255,${(mergeAlpha * 0.3 + pulsePhase) * 0.4})`);
+  mergeGrad.addColorStop(1, `rgba(224,64,251,${energy * 0.15 + pulsePhase * 0.08})`);
+  ctx.fillStyle = mergeGrad;
+  ctx.fillRect(0, halfH - mergeH * 2.5, W, mergeH * 5);
+
+  /* Core merge line */
+  ctx.save();
+  ctx.shadowColor = '#ffffff';
+  ctx.shadowBlur = mergeGlow;
+  ctx.fillStyle = `rgba(255,255,255,${mergeAlpha * 0.6})`;
+  ctx.fillRect(0, halfH - 1, W, 2);
+  ctx.restore();
+
+  /* Dancing spectral dots along merge */
+  if (analyser && energy > 0.04) {
+    for (let i = 0; i < 28; i++) {
+      const binIdx = Math.floor((i / 28) * SPEC_BINS);
+      const cVal = carrierCols.length > 0 ? carrierCols[carrierCols.length - 1][binIdx] : 0;
+      const mVal = modCols.length > 0 ? modCols[modCols.length - 1][binIdx] : 0;
+      const combined = (cVal + mVal) * 0.5;
+      if (combined < 0.08) continue;
+      const x = (i / 28) * W + (W / 56);
+      const jitter = Math.sin(frame * 0.1 + i * 0.7) * combined * 7;
+      ctx.beginPath();
+      ctx.arc(x, halfH + jitter, 1.2 + combined * 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${combined * 0.7})`;
+      ctx.fill();
+    }
+  }
+
+  /* Scan line */
+  const scanX = (frame * 0.6) % W;
+  ctx.fillStyle = 'rgba(255,255,255,.01)';
+  ctx.fillRect(scanX, 0, 2, H);
+}
+draw();
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      if (typeof loadFile === 'function') { loadFile(file); }
+      else {
+        const ain = document.getElementById('ain') || document.querySelector('audio');
+        if (ain) { ain.src = URL.createObjectURL(blob); }
+      }
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+</script>
+</body>
+</html>

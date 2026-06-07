@@ -33,7 +33,7 @@ gaps (beatgrid sync, loops, hotcues, key-lock, cue/headphone output, live stem
 mixing, FX, set recording) and wire our existing stems + analysis + VJ into a
 single performance surface** — every piece FOSS.
 
-**Hardware stance (read first):** the 6 GB-VRAM laptop in `user_hardware` is the
+**Hardware stance (read first):** a modest/low-VRAM machine is the
 **performance FLOOR, not the design target.** We build for capable machines as the
 norm and **optimize preemptively** so weak machines degrade gracefully — never the
 reverse. And **nothing here is deferred or called a "non-goal" without the user's
@@ -286,7 +286,7 @@ dock; one library rail). Concretely, evolve `views/DJView.tsx`:
 
 ## 7. Performance strategy, spikes, and open decisions
 
-**Hardware stance:** the **6 GB-VRAM laptop is the FLOOR, not the design target.**
+**Hardware stance:** a **modest/low-VRAM machine is the FLOOR, not the design target.**
 Most users have more headroom, so we build for capable machines as the norm — but
 we **optimize preemptively** so weak machines degrade gracefully rather than break.
 The pattern throughout: detect capability, run the full path where it fits,
@@ -397,7 +397,7 @@ search-API key. Pick the sourcing model before we build the CV module.
   **Playwright** (DJ tab mounts, controls present, no console errors, analysis
   badges populate against a running backend), then a short **manual live check**
   per phase (load two real tracks; beatmatch; loop; stem-mute vocals; cue in
-  headphones; record a 30 s set) — the user runs these on the RTX-3060 laptop.
+  headphones; record a 30 s set) — verified to run on modest hardware.
 - Commit per phase on a feature branch; push to the fork (`new_origin`).
 
 ---

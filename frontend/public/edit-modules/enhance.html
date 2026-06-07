@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enhance — StableDAW</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#07080c;--panel:#0e1018;--surface:#141720;--border:#1e2230;
+  --accent:#22d3ee;--accent-dim:rgba(34,211,238,.4);
+  --text:#e0e6f0;--dim:#5a6278;--mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif;
+}
+html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--sans);color:var(--text);overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER 28px ── */
+.hdr{display:flex;align-items:center;padding:0 10px;background:#0a0b10;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px;gap:8px}
+.hdr-icon{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--accent);display:flex;align-items:center;justify-content:center}
+.hdr-icon svg{width:8px;height:8px}
+.mod-title{font:700 10px/1 var(--mono);letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0}
+.preset-nav{display:flex;align-items:center;gap:2px;font:500 8px/1 var(--mono);color:#5a5e6a;margin-left:4px}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{color:#6b7080;min-width:60px;text-align:center}
+.hdr-spacer{flex:1}
+.hdr-right{display:flex;align-items:center;gap:3px}
+.pill{font:600 7px/1 var(--mono);letter-spacing:.4px;padding:2px 6px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.pill.active{background:#0a1e22;border-color:var(--accent);color:var(--accent)}
+.pill:hover{border-color:#3a3e4a}
+
+/* ── MODE TOGGLE ── */
+.mode-bar{display:flex;flex-shrink:0;height:38px;background:#080a10;border-bottom:1px solid var(--border)}
+.mode-pill{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;font:700 12px/1 var(--mono);letter-spacing:3px;text-transform:uppercase;cursor:pointer;background:transparent;color:var(--dim);border:none;transition:color .2s,background .2s;position:relative}
+.mode-pill:first-child{border-right:1px solid var(--border)}
+.mode-pill .mp-icon{font-size:13px;opacity:.35;transition:opacity .2s}
+.mode-pill.active{color:var(--accent);background:rgba(34,211,238,.03)}
+.mode-pill.active .mp-icon{opacity:1;filter:drop-shadow(0 0 6px var(--accent))}
+.mode-pill.active::after{content:'';position:absolute;bottom:0;left:8%;right:8%;height:2px;background:var(--accent);box-shadow:0 0 14px var(--accent),0 0 30px rgba(34,211,238,.25);border-radius:1px}
+
+/* ── SPLIT SPECTROGRAM ── */
+.spect-area{flex:1;position:relative;margin:4px 6px;background:#050710;border:1px solid var(--border);border-radius:8px;overflow:hidden;min-height:0}
+.spect-area canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+.split-handle{position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.5);cursor:col-resize;z-index:10;transition:background .15s}
+.split-handle:hover{background:#fff}
+.split-handle .handle-grip{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:22px;height:36px;border-radius:11px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(4px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+.split-handle .handle-grip span{width:10px;height:1px;background:rgba(255,255,255,.25);border-radius:1px}
+.split-lbl{position:absolute;top:8px;font:700 8px/1 var(--mono);letter-spacing:2px;text-transform:uppercase;pointer-events:none;z-index:5}
+.split-lbl.before{left:12px;color:rgba(255,255,255,.12)}
+.split-lbl.after{color:rgba(34,211,238,.5)}
+.bw-readout{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);font:800 18px/1 var(--mono);color:var(--accent);text-shadow:0 0 20px rgba(34,211,238,.35);pointer-events:none;z-index:5;letter-spacing:3px;white-space:nowrap}
+.freq-axis{position:absolute;left:4px;top:0;bottom:0;display:flex;flex-direction:column;justify-content:space-between;padding:8px 0;pointer-events:none;z-index:4}
+.freq-axis span{font:600 6px/1 var(--mono);color:rgba(255,255,255,.08)}
+
+/* ── BOTTOM CONTROLS ── */
+.ctrl-strip{display:flex;align-items:center;gap:14px;padding:6px 16px;flex-shrink:0;background:#0a0c12;border-top:1px solid var(--border);height:110px}
+
+/* SR pills */
+.sr-pills{display:flex;gap:0}
+.sr-pill{font:700 9px/1 var(--mono);letter-spacing:.5px;padding:8px 16px;cursor:pointer;border:1px solid var(--border);background:none;color:var(--dim);transition:.15s}
+.sr-pill:first-child{border-radius:5px 0 0 5px}
+.sr-pill:last-child{border-radius:0 5px 5px 0;border-left:none}
+.sr-pill.active{color:var(--accent);border-color:var(--accent);background:rgba(34,211,238,.06);box-shadow:0 0 12px rgba(34,211,238,.1)}
+
+/* Knob boxes */
+.knob-box{display:flex;flex-direction:column;align-items:center;gap:1px}
+.knob-box .kb-lbl{font:700 10px/1 var(--mono);letter-spacing:1.2px;text-transform:uppercase;color:var(--dim)}
+.knob-box svg{cursor:pointer;display:block}
+.knob-box .kb-val{font:700 13px/1 var(--mono);color:var(--accent)}
+
+/* Mix slider */
+.mix-wrap{display:flex;align-items:center;gap:8px;margin-left:auto;max-width:180px}
+.mix-wrap .mw-lbl{font:700 7px/1 var(--mono);letter-spacing:1px;text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.mix-track{position:relative;flex:1;height:6px;min-width:80px}
+.mix-track input[type=range]{width:100%;height:6px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,.04);border-radius:3px;outline:none;position:relative;z-index:2}
+.mix-track input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);border:2px solid rgba(255,255,255,.1);cursor:pointer;box-shadow:0 0 8px rgba(34,211,238,.4)}
+.mix-track .mix-fill{position:absolute;left:0;top:0;height:6px;border-radius:3px;background:linear-gradient(90deg,rgba(34,211,238,.1),var(--accent));pointer-events:none;z-index:1}
+.mix-wrap .mw-val{font:700 10px/1 var(--mono);color:var(--text);min-width:36px;text-align:right}
+
+/* ── FOOTER 28px ── */
+.ftr{display:flex;align-items:center;gap:6px;padding:0 8px;background:#08090e;border-top:1px solid #14171e;flex-shrink:0;height:28px}
+.ftr-btn{font:600 7.5px/1 var(--mono);padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:all 120ms}
+.ftr-btn:hover{background:#14171e;color:#c8cad0}
+.ftr-btn.active{background:#0a1e22;border-color:var(--accent);color:var(--accent)}
+.ftr-spacer{flex:1}
+.ftr-stat{font:500 7.5px/1 var(--mono);color:var(--dim)}
+.ftr-stat.ok{color:#22c55e}
+audio{display:none}
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-icon">
+    <svg viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M5 6l3-3 3 3"/></svg>
+  </div>
+  <span class="mod-title">Enhance</span>
+  <div class="preset-nav">
+    <button>&#9666;</button>
+    <span class="preset-name">Default</span>
+    <button>&#9656;</button>
+  </div>
+  <span class="hdr-spacer"></span>
+  <div class="hdr-right">
+    <button class="pill" id="btnA">A</button>
+    <button class="pill" id="btnB">B</button>
+    <button class="pill" id="btnCopy">Copy</button>
+    <button class="pill" id="btnDelta">Delta</button>
+    <button class="pill" id="btnBypassH">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+    </button>
+    <button class="pill" id="btnSettingsH">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- MODE TOGGLE -->
+<div class="mode-bar">
+  <button class="mode-pill active" data-m="super_res" id="mSR"><span class="mp-icon">&#9650;</span>SUPER-RES</button>
+  <button class="mode-pill" data-m="uncrush" id="mUC"><span class="mp-icon">&#9830;</span>UN-CRUSH</button>
+</div>
+
+<!-- SPLIT SPECTROGRAM -->
+<div class="spect-area" id="spectArea">
+  <canvas id="spectCanvas"></canvas>
+  <div class="split-lbl before">BEFORE</div>
+  <div class="split-lbl after" id="afterLbl">AFTER</div>
+  <div class="split-handle" id="splitHandle">
+    <div class="handle-grip"><span></span><span></span><span></span></div>
+  </div>
+  <div class="bw-readout" id="bwReadout">8kHz &rarr; 22kHz</div>
+  <div class="freq-axis">
+    <span>20k</span><span>10k</span><span>5k</span><span>2k</span><span>1k</span><span>500</span><span>100</span>
+  </div>
+</div>
+
+<!-- CONTROLS -->
+<div class="ctrl-strip" id="ctrlStrip">
+  <!-- SR pills -->
+  <div class="sr-pills" id="srPills">
+    <button class="sr-pill active" data-sr="44100">44.1k</button>
+    <button class="sr-pill" data-sr="48000">48k</button>
+  </div>
+
+  <!-- Primary knob (large, centered) -->
+  <div class="knob-box">
+    <span class="kb-lbl" id="knobLabel">GUIDANCE</span>
+    <svg viewBox="0 0 56 56" width="68" height="68" id="mainKnob"></svg>
+    <span class="kb-val" id="knobVal">4.6</span>
+  </div>
+
+  <!-- Secondary knob: Strength -->
+  <div class="knob-box" id="strengthBox" style="display:none">
+    <span class="kb-lbl">STRENGTH</span>
+    <svg viewBox="0 0 48 48" width="64" height="64" id="strengthKnob"></svg>
+    <span class="kb-val" id="strengthVal">60%</span>
+  </div>
+
+  <!-- Mix -->
+  <div class="mix-wrap">
+    <span class="mw-lbl">MIX</span>
+    <div class="mix-track">
+      <input type="range" min="0" max="100" value="100" id="mixSlider">
+      <div class="mix-fill" id="mixFill" style="width:100%"></div>
+    </div>
+    <span class="mw-val" id="mixVal">100%</span>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="ftr">
+  <button class="ftr-btn" id="btnBypass">Bypass</button>
+  <button class="ftr-btn active" id="tabEnhance">Enhance</button>
+  <button class="ftr-btn" id="tabAnalyzer">Analyzer</button>
+  <span class="ftr-spacer"></span>
+  <span class="ftr-stat" id="status">ready</span>
+  <audio id="ain" controls></audio>
+  <audio id="aout" controls></audio>
+</div>
+</div>
+<input type="file" id="fileinput" accept="audio/*">
+
+<script>
+(function(){
+'use strict';
+
+/* ── State ── */
+let actx, analyser, source, inputFile, inputBuf;
+let activeMode = 'super_res', splitPos = 0.5, splitDragging = false;
+let knobValue = 60, strengthValue = 60;
+let targetSR = 44100;
+const freqData = new Uint8Array(2048);
+let spectCols = [];
+
+/* ── Mode switching ── */
+document.querySelectorAll('.mode-pill').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.mode-pill').forEach(x => x.classList.remove('active'));
+  t.classList.add('active'); activeMode = t.dataset.m;
+  const isSR = activeMode === 'super_res';
+  document.getElementById('srPills').style.display = isSR ? 'flex' : 'none';
+  document.getElementById('knobLabel').textContent = isSR ? 'GUIDANCE' : 'STRENGTH';
+  document.getElementById('bwReadout').textContent = isSR ? '8kHz → 22kHz' : '128kbps → lossless';
+  updateKnobDisplay(); updateEnhanceLive();
+}));
+
+/* ── SR pill buttons ── */
+document.querySelectorAll('.sr-pill').forEach(p => p.addEventListener('click', () => {
+  document.querySelectorAll('.sr-pill').forEach(x => x.classList.remove('active'));
+  p.classList.add('active'); targetSR = p.dataset.sr;
+}));
+
+/* ── Header pills ── */
+document.querySelectorAll('.pill').forEach(b => b.addEventListener('click', () => b.classList.toggle('active')));
+
+/* ── Footer tab switching ── */
+['tabEnhance', 'tabAnalyzer'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(){
+    document.querySelectorAll('.ftr .ftr-btn:not(#btnBypass)').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active') });
+
+/* ── SVG Rotary Knob ── */
+const mainKnobSvg = document.getElementById('mainKnob');
+function renderKnob(svg, value, size, accent){
+  const half = size / 2;
+  const cx = half, cy = half, r = half - 7, r2 = r + 3;
+  const sA = 135, eA = 405, range = eA - sA;
+  const ang = sA + (value / 100) * range;
+  function pol(a, rad){ const d = (a - 90) * Math.PI / 180; return { x: cx + rad * Math.cos(d), y: cy + rad * Math.sin(d) } }
+  const s = pol(sA, r), e = pol(eA, r), v = pol(ang, r);
+  const la = (ang - sA) > 180 ? 1 : 0;
+
+  let ticks = '';
+  for(let i = 0; i <= 20; i++){
+    const ta = sA + (i / 20) * range;
+    const p1 = pol(ta, r + 3), p2 = pol(ta, r + 5.5);
+    const bright = ((ta - sA) / range) <= (value / 100) ? .35 : .07;
+    ticks += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="rgba(34,211,238,${bright})" stroke-width=".7" stroke-linecap="round"/>`;
+  }
+
+  const ptr = pol(ang, r - 5);
+  const uid = 'k' + Math.random().toString(36).slice(2, 6);
+
+  svg.innerHTML = `
+    <defs>
+      <filter id="glow${uid}"><feGaussianBlur stdDeviation="2.5" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <linearGradient id="face${uid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#161a28"/><stop offset="1" stop-color="#0a0d16"/></linearGradient>
+    </defs>
+    ${ticks}
+    <path d="M${s.x},${s.y} A${r},${r} 0 1 1 ${e.x},${e.y}" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M${s.x},${s.y} A${r},${r} 0 ${la} 1 ${v.x},${v.y}" fill="none" stroke="${accent}" stroke-width="3.5" stroke-linecap="round" filter="url(#glow${uid})"/>
+    <circle cx="${cx}" cy="${cy}" r="${Math.min(r * 0.45, 12)}" fill="url(#face${uid})" stroke="${accent}33" stroke-width="1"/>
+    <line x1="${cx}" y1="${cy}" x2="${ptr.x}" y2="${ptr.y}" stroke="${accent}cc" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="${v.x}" cy="${v.y}" r="3" fill="${accent}" filter="url(#glow${uid})"/>
+    <circle cx="${v.x}" cy="${v.y}" r="1.5" fill="#fff"/>`;
+}
+
+function updateKnobDisplay(){
+  if(activeMode === 'super_res'){
+    document.getElementById('knobVal').textContent = (1 + (knobValue / 100) * 6).toFixed(1);
+  } else {
+    document.getElementById('knobVal').textContent = Math.round(knobValue) + '%';
+  }
+  renderKnob(mainKnobSvg, knobValue, 56, '#22d3ee');
+}
+updateKnobDisplay();
+
+/* Knob drag */
+let knobDrag = { active: false, startY: 0, startVal: 0 };
+mainKnobSvg.addEventListener('pointerdown', e => { knobDrag = { active: true, startY: e.clientY, startVal: knobValue }; mainKnobSvg.setPointerCapture(e.pointerId) });
+mainKnobSvg.addEventListener('pointermove', e => {
+  if(!knobDrag.active) return;
+  const dy = knobDrag.startY - e.clientY;
+  knobValue = Math.max(0, Math.min(100, knobDrag.startVal + dy * 0.5));
+  updateKnobDisplay(); updateEnhanceLive();
+});
+mainKnobSvg.addEventListener('pointerup', () => { knobDrag.active = false });
+
+/* Mix slider */
+const mixSlider = document.getElementById('mixSlider');
+const mixFill = document.getElementById('mixFill');
+mixSlider.oninput = e => {
+  document.getElementById('mixVal').textContent = e.target.value + '%';
+  mixFill.style.width = e.target.value + '%';
+  updateEnhanceLive();
+};
+
+/* ── LIVE ENHANCE AUDIO NODES ── */
+let liveEnhanceShelf, liveEnhanceWS;
+
+function buildEnhanceChain(){
+  if(!actx) return;
+  liveEnhanceShelf = actx.createBiquadFilter();
+  liveEnhanceShelf.type = 'highshelf';
+  liveEnhanceShelf.frequency.value = 8000;
+  updateEnhanceLive();
+  liveEnhanceWS = actx.createWaveShaper();
+  updateEnhanceSaturation();
+  liveEnhanceShelf.connect(liveEnhanceWS);
+}
+
+function updateEnhanceLive(){
+  if(!liveEnhanceShelf) return;
+  const strength = knobValue / 100;
+  liveEnhanceShelf.gain.value = strength * 12;
+  updateEnhanceSaturation();
+}
+
+function updateEnhanceSaturation(){
+  if(!liveEnhanceWS) return;
+  const strength = knobValue / 100;
+  const amount = strength * 2;
+  if(amount <= 0.01){ liveEnhanceWS.curve = null; return }
+  const n = 44100, curve = new Float32Array(n);
+  for(let i = 0; i < n; i++){ const x = (i * 2) / n - 1; curve[i] = Math.tanh(x * (1 + amount)) }
+  liveEnhanceWS.curve = curve;
+  liveEnhanceWS.oversample = '2x';
+}
+
+function connectEnhanceChain(){
+  if(!actx || !source || !liveEnhanceShelf) return;
+  try{ source.disconnect() }catch(e){}
+  source.connect(liveEnhanceShelf);
+  liveEnhanceWS.connect(analyser);
+  analyser.connect(actx.destination);
+}
+
+/* ── Audio ── */
+function ensureAudio(){
+  if(actx) return;
+  actx = new AudioContext();
+  analyser = actx.createAnalyser();
+  analyser.fftSize = 4096;
+  analyser.smoothingTimeConstant = 0.82;
+  buildEnhanceChain();
+}
+function connectBuf(buf){
+  if(source) try{ source.stop() }catch(e){}
+  source = actx.createBufferSource();
+  source.buffer = buf;
+  source.loop = true;
+  if(!liveEnhanceShelf) buildEnhanceChain();
+  connectEnhanceChain();
+  source.start();
+}
+async function loadFile(file){
+  ensureAudio();
+  inputFile = file;
+  const ab = await file.arrayBuffer();
+  inputBuf = await actx.decodeAudioData(ab.slice(0));
+  document.getElementById('ain').src = URL.createObjectURL(file);
+  connectBuf(inputBuf);
+}
+document.getElementById('fileinput').onchange = e => { if(e.target.files[0]) loadFile(e.target.files[0]) };
+
+/* ── Split handle ── */
+const splitHandle = document.getElementById('splitHandle');
+const spectArea = document.getElementById('spectArea');
+const afterLbl = document.getElementById('afterLbl');
+
+function updateSplit(){
+  const W = spectArea.clientWidth;
+  splitHandle.style.left = (splitPos * W) + 'px';
+  afterLbl.style.left = (splitPos * W + 10) + 'px';
+}
+
+splitHandle.addEventListener('pointerdown', e => { splitDragging = true; splitHandle.setPointerCapture(e.pointerId) });
+window.addEventListener('pointermove', e => {
+  if(!splitDragging) return;
+  const r = spectArea.getBoundingClientRect();
+  splitPos = Math.max(.1, Math.min(.9, (e.clientX - r.left) / r.width));
+  updateSplit();
+});
+window.addEventListener('pointerup', () => { splitDragging = false });
+
+/* ── Process ── */
+document.getElementById('tabEnhance').onclick = async () => {
+  /* tab click — no-op for nav; actual process via footer or separate action */
+};
+
+/* Backend process */
+async function processEnhance(){
+  if(!inputFile) return;
+  const st = document.getElementById('status');
+  st.className = 'ftr-stat'; st.textContent = 'processing...';
+  let effect, params;
+  if(activeMode === 'super_res'){
+    effect = 'super_res';
+    params = { targetSR, guidance: 1 + (knobValue / 100) * 6, mix: +mixSlider.value / 100 };
+  } else {
+    effect = 'uncrush';
+    params = { strength: knobValue / 100, mix: +mixSlider.value / 100 };
+  }
+  const fd = new FormData();
+  fd.append('effect', effect);
+  fd.append('params', JSON.stringify(params));
+  fd.append('output_format', 'wav');
+  fd.append('audio', inputFile);
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/edit/enhance/process', { method: 'POST', body: fd });
+    if(r.ok){
+      const blob = await r.blob();
+      document.getElementById('aout').src = URL.createObjectURL(blob);
+      st.className = 'ftr-stat ok';
+      st.textContent = 'done ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms';
+    } else { st.textContent = r.status + ' error' }
+  } catch(e){ st.textContent = 'ERR' }
+}
+
+/* Double-click enhance tab to process, or hook into keyboard shortcut */
+document.addEventListener('keydown', e => { if(e.key === 'Enter' && e.ctrlKey) processEnhance() });
+
+/* ── Split Spectrogram Canvas ── */
+const spectCanvas = document.getElementById('spectCanvas');
+const SPEC_BINS = 180;
+
+function beforeColor(val){
+  const n = val / 255;
+  return [Math.round(8 + n * 18), Math.round(6 + n * 14), Math.round(16 + n * 32)];
+}
+function afterColor(val, above){
+  const n = val / 255;
+  if(above){
+    const boost = Math.min(1, n * 1.6);
+    return [Math.round(boost * 18), Math.round(40 + boost * 195), Math.round(60 + boost * 200)];
+  }
+  return [Math.round(6 + n * 38), Math.round(16 + n * 105), Math.round(35 + n * 155)];
+}
+
+function draw(){
+  requestAnimationFrame(draw);
+  const W = spectArea.clientWidth, H = spectArea.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if(spectCanvas.width !== W * dpr || spectCanvas.height !== H * dpr){
+    spectCanvas.width = W * dpr; spectCanvas.height = H * dpr; spectCols = [];
+  }
+  const ctx = spectCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  updateSplit();
+
+  const splitX = Math.floor(splitPos * W);
+  const cutoffY = H * 0.36;
+
+  /* Build current column from analyser */
+  let col = new Float32Array(SPEC_BINS);
+  if(analyser){
+    analyser.getByteFrequencyData(freqData);
+    const bins = freqData.length;
+    for(let i = 0; i < SPEC_BINS; i++){
+      const fRat = i / SPEC_BINS;
+      const bi = Math.floor(Math.pow(fRat, 2.2) * bins * 0.75);
+      col[i] = bi < bins ? freqData[bi] : 0;
+    }
+  }
+  spectCols.push(col);
+  if(spectCols.length > W + 2) spectCols.shift();
+
+  /* Clear */
+  ctx.fillStyle = '#050710'; ctx.fillRect(0, 0, W, H);
+
+  /* Draw stored columns as scrolling spectrogram */
+  const numCols = spectCols.length;
+  for(let c = 0; c < numCols; c++){
+    const x = W - numCols + c;
+    if(x < 0) continue;
+    const colData = spectCols[c];
+    const inBefore = x < splitX;
+    for(let i = 0; i < SPEC_BINS; i++){
+      const y = H - ((i / SPEC_BINS) * H);
+      const val = colData[i];
+      if(val < 2) continue;
+      const above = (i / SPEC_BINS) > 0.64;
+      let r, g, b;
+      if(inBefore){
+        if(above){ r = Math.round(val * .03); g = Math.round(val * .02); b = Math.round(val * .04) }
+        else { [r, g, b] = beforeColor(val) }
+      } else {
+        if(above){ const bv = Math.min(255, val + 50); [r, g, b] = afterColor(bv, true) }
+        else { const bv = Math.min(255, Math.round(val * 1.15)); [r, g, b] = afterColor(bv, false) }
+      }
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(x, y, 1, Math.ceil(H / SPEC_BINS) + 1);
+    }
+  }
+
+  /* Cutoff frequency dashed line */
+  const cutY = H * (1 - 0.64);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(34,211,238,.1)'; ctx.setLineDash([5, 5]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, cutY); ctx.lineTo(W, cutY); ctx.stroke();
+  ctx.restore();
+
+  /* Cyan glow bloom on AFTER side above cutoff */
+  if(splitX < W - 10){
+    const grd = ctx.createLinearGradient(splitX, cutY - 40, splitX, cutY + 40);
+    grd.addColorStop(0, 'rgba(34,211,238,.05)');
+    grd.addColorStop(0.5, 'rgba(34,211,238,.1)');
+    grd.addColorStop(1, 'rgba(34,211,238,.02)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(splitX, cutY - 40, W - splitX, 80);
+  }
+
+  /* Split divider */
+  ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(splitX, 0); ctx.lineTo(splitX, H); ctx.stroke();
+
+  /* No-audio placeholder */
+  if(!analyser && spectCols.length < 3){
+    ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.font = '11px "IBM Plex Mono"'; ctx.textAlign = 'center';
+    ctx.fillText('Load audio to view spectrogram', W / 2, H / 2);
+  }
+}
+draw();
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      if (typeof loadFile === 'function') { loadFile(file); }
+      else {
+        const ain = document.getElementById('ain') || document.querySelector('audio');
+        if (ain) { ain.src = URL.createObjectURL(blob); }
+      }
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Parametric EQ — StableDAW</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#07080c;--panel:#0e1018;--surface:#141720;--border:#1e2230;--accent:#4dd0e1;--node-lo:#f59e0b;--node-lomid:#ef4444;--node-mid:#8b5cf6;--node-himid:#ec4899;--node-hi:#22d3ee;--text:#e0e6f0;--dim:#5a6278;--mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif}
+html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--sans);color:var(--text);overflow:hidden}
+.module-frame{width:680px;max-width:680px;height:440px;max-height:440px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* HEADER BAR */
+.header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0}
+.header .icon{width:28px;height:28px;display:grid;place-items:center}
+.header .icon svg{width:20px;height:20px;color:var(--accent)}
+.header .title{font-size:13px;font-weight:800;letter-spacing:.5px}
+.header .preset{display:flex;align-items:center;gap:4px;margin-left:12px}
+.header .preset button{background:none;border:1px solid var(--border);color:var(--dim);width:20px;height:20px;border-radius:4px;cursor:pointer;font-size:11px;display:grid;place-items:center}
+.header .preset button:hover{color:var(--text);border-color:var(--accent)}
+.header .preset .name{font-size:11px;color:var(--dim);font-family:var(--mono);padding:2px 8px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:4px;min-width:80px;text-align:center}
+.header .toggles{margin-left:auto;display:flex;gap:4px}
+.header .tog{font-size:9px;font-weight:700;font-family:var(--mono);padding:4px 8px;border-radius:4px;cursor:pointer;border:1px solid var(--border);background:none;color:var(--dim);letter-spacing:.5px}
+.header .tog:hover{color:var(--text);border-color:var(--accent)}
+.header .tog.on{color:var(--accent);border-color:var(--accent);background:rgba(77,208,225,.08)}
+
+/* SPECTRUM + CURVE AREA */
+.viz{flex:1;position:relative;background:var(--surface);border:1px solid var(--border);margin:6px;border-radius:8px;overflow:hidden;min-height:0}
+.viz canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+
+/* BAND INFO BAR */
+.bands{display:flex;gap:1px;padding:0 6px 6px;flex-shrink:0}
+.band{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:6px 8px;cursor:pointer;transition:.15s}
+.band:hover{background:rgba(255,255,255,.03)}
+.band.active{border-color:var(--bc);box-shadow:0 0 12px color-mix(in srgb,var(--bc) 30%,transparent)}
+.band .dot{width:8px;height:8px;border-radius:50%;background:var(--bc);display:inline-block;margin-right:5px;box-shadow:0 0 6px var(--bc)}
+.band .lbl{font-size:8px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--dim);font-family:var(--mono)}
+.band .vals{display:flex;gap:8px;margin-top:4px}
+.band .val{font-size:10px;font-family:var(--mono);color:var(--text)}
+.band .val span{font-size:7px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:block}
+
+/* CONTROLS */
+.controls{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:0 6px 8px;flex-shrink:0}
+.ctrl{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center}
+.ctrl .clbl{font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--dim);font-family:var(--mono);margin-bottom:6px}
+.ctrl input[type=range]{width:100%;height:3px;-webkit-appearance:none;appearance:none;background:var(--border);border-radius:3px;outline:none}
+.ctrl input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);border:2px solid rgba(255,255,255,.1);cursor:pointer;box-shadow:0 0 8px rgba(77,208,225,.4)}
+.ctrl .cval{font-size:12px;font-weight:700;font-family:var(--mono);color:var(--text);margin-top:4px}
+
+/* FOOTER */
+.footer{display:flex;align-items:center;gap:8px;padding:4px 10px;background:var(--panel);border-top:1px solid var(--border);flex-shrink:0}
+.footer .fbtn{font-size:10px;font-weight:600;padding:5px 12px;border-radius:5px;cursor:pointer;border:1px solid var(--border);background:none;color:var(--dim);font-family:var(--sans)}
+.footer .fbtn:hover{color:var(--text);border-color:var(--accent)}
+.footer .fbtn.run{background:linear-gradient(135deg,#8b5cf6,#7c3aed);border:none;color:#fff;font-weight:700}
+.footer .spacer{flex:1}
+.footer .stat{font-size:10px;font-family:var(--mono);color:var(--dim)}
+.footer .stat.ok{color:#22c55e}
+</style>
+</head>
+<body>
+<div class="module-frame">
+
+<div class="header">
+  <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h3m0 0a3 3 0 1 0 6 0 3 3 0 0 0-6 0zm6 0h12M3 18h9m0 0a3 3 0 1 0 6 0 3 3 0 0 0-6 0zm6 0h3"/></svg></div>
+  <span class="title">Parametric EQ</span>
+  <div class="preset">
+    <button>◂</button>
+    <span class="name">Default</span>
+    <button>▸</button>
+  </div>
+  <div class="toggles">
+    <button class="tog" id="togDelta">DELTA</button>
+    <button class="tog on" id="togAnalog">ANALOG</button>
+    <button class="tog" id="togLinear">LINEAR</button>
+    <button class="tog on" id="togBypass">ON</button>
+  </div>
+</div>
+
+<div class="viz" id="vizWrap">
+  <canvas id="eqCanvas"></canvas>
+</div>
+
+<div class="bands" id="bandBar"></div>
+
+<div class="controls" id="ctrlArea">
+  <div class="ctrl"><div class="clbl">Frequency</div><input type="range" id="pFreq" min="20" max="20000" value="1000" step="1"><div class="cval" id="vFreq">1000 Hz</div></div>
+  <div class="ctrl"><div class="clbl">Gain</div><input type="range" id="pGain" min="-18" max="18" value="0" step="0.5"><div class="cval" id="vGain">0.0 dB</div></div>
+  <div class="ctrl"><div class="clbl">Q</div><input type="range" id="pQ" min="0.1" max="18" value="1.5" step="0.1"><div class="cval" id="vQ">1.5</div></div>
+  <div class="ctrl"><div class="clbl">Output Gain</div><input type="range" id="pOut" min="-12" max="12" value="0" step="0.5"><div class="cval" id="vOut">0.0 dB</div></div>
+</div>
+
+<div class="footer">
+  <button class="fbtn" id="pickFile">LOAD AUDIO</button>
+  <button class="fbtn" id="useTone">TEST TONE</button>
+  <span class="spacer"></span>
+  <audio id="ain" style="height:24px;width:120px" controls></audio>
+  <audio id="aout" style="height:24px;width:120px" controls></audio>
+  <button class="fbtn run" id="runBtn">▶ PROCESS</button>
+  <span class="stat" id="status">ready</span>
+</div>
+<input type="file" id="fileinput" accept="audio/*" style="display:none">
+</div>
+
+<script>
+const BANDS = [
+  { id: 'lo',    label: 'Low Shelf',  freq: 80,    gain: 0, q: 0.7, color: '#f59e0b', type: 'lowshelf' },
+  { id: 'lomid', label: 'Low-Mid',    freq: 300,   gain: 0, q: 1.5, color: '#ef4444', type: 'bell' },
+  { id: 'mid',   label: 'Mid',        freq: 1000,  gain: 0, q: 1.5, color: '#8b5cf6', type: 'bell' },
+  { id: 'himid', label: 'High-Mid',   freq: 3500,  gain: 0, q: 1.5, color: '#ec4899', type: 'bell' },
+  { id: 'hi',    label: 'High Shelf', freq: 10000, gain: 0, q: 0.7, color: '#22d3ee', type: 'highshelf' },
+];
+let activeBand = 2;
+let actx, analyser, source, inputFile, inputBuf;
+const freqData = new Float32Array(2048);
+let dragging = null;
+
+// -- Build band bar --
+const bandBar = document.getElementById('bandBar');
+function renderBands() {
+  bandBar.innerHTML = BANDS.map((b, i) => `
+    <div class="band ${i === activeBand ? 'active' : ''}" style="--bc:${b.color}" onclick="activeBand=${i};renderBands();syncControls()">
+      <div class="lbl"><span class="dot"></span>${b.label}</div>
+      <div class="vals">
+        <div class="val"><span>Freq</span>${b.freq >= 1000 ? (b.freq/1000).toFixed(1)+'k' : b.freq}</div>
+        <div class="val"><span>Gain</span>${b.gain > 0 ? '+' : ''}${b.gain.toFixed(1)}</div>
+        <div class="val"><span>Q</span>${b.q.toFixed(1)}</div>
+      </div>
+    </div>`).join('');
+}
+renderBands();
+
+function syncControls() {
+  const b = BANDS[activeBand];
+  document.getElementById('pFreq').value = b.freq;
+  document.getElementById('pGain').value = b.gain;
+  document.getElementById('pQ').value = b.q;
+  document.getElementById('vFreq').textContent = b.freq >= 1000 ? (b.freq/1000).toFixed(1)+' kHz' : b.freq + ' Hz';
+  document.getElementById('vGain').textContent = (b.gain > 0 ? '+' : '') + b.gain.toFixed(1) + ' dB';
+  document.getElementById('vQ').textContent = b.q.toFixed(1);
+}
+syncControls();
+
+document.getElementById('pFreq').oninput = e => { BANDS[activeBand].freq = +e.target.value; syncControls(); renderBands(); };
+document.getElementById('pGain').oninput = e => { BANDS[activeBand].gain = +e.target.value; syncControls(); renderBands(); };
+document.getElementById('pQ').oninput = e => { BANDS[activeBand].q = +e.target.value; syncControls(); renderBands(); };
+document.getElementById('pOut').oninput = e => { document.getElementById('vOut').textContent = (+e.target.value > 0 ? '+' : '') + (+e.target.value).toFixed(1) + ' dB'; };
+
+// -- Audio --
+function ensureAudio() { if (actx) return; actx = new AudioContext(); analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.85; }
+function connectBuf(buf) { if (source) try { source.stop(); } catch(e) {} source = actx.createBufferSource(); source.buffer = buf; source.loop = true; source.connect(analyser); analyser.connect(actx.destination); source.start(); }
+async function loadFile(file) { ensureAudio(); inputFile = file; const ab = await file.arrayBuffer(); inputBuf = await actx.decodeAudioData(ab.slice(0)); document.getElementById('ain').src = URL.createObjectURL(file); connectBuf(inputBuf); }
+document.getElementById('fileinput').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+document.getElementById('pickFile').onclick = () => document.getElementById('fileinput').click();
+document.getElementById('useTone').onclick = async () => { const r = await fetch('/static/testtone.wav'); const b = await r.blob(); loadFile(new File([b], 'testtone.wav', { type: 'audio/wav' })); };
+
+// -- Process --
+document.getElementById('runBtn').onclick = async () => {
+  if (!inputFile) return;
+  const st = document.getElementById('status');
+  st.className = 'stat'; st.textContent = 'processing…';
+  const b = BANDS[activeBand]; // simplified: send the active band as the 3-band EQ
+  const params = { lowFreq: BANDS[0].freq, lowGain: BANDS[0].gain, midFreq: BANDS[2].freq, midGain: BANDS[2].gain, midQ: BANDS[2].q, highFreq: BANDS[4].freq, highGain: BANDS[4].gain, outputGain: +document.getElementById('pOut').value };
+  const fd = new FormData();
+  fd.append('effect', 'parametric_eq'); fd.append('params', JSON.stringify(params));
+  fd.append('output_format', 'wav'); fd.append('audio', inputFile);
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/edit/mastering/process', { method: 'POST', body: fd });
+    if (r.ok) { const blob = await r.blob(); document.getElementById('aout').src = URL.createObjectURL(blob); st.className = 'stat ok'; st.textContent = `✓ ${(blob.size/1024).toFixed(0)}KB ${Math.round(performance.now()-t0)}ms`; }
+    else { st.className = 'stat'; st.textContent = `${r.status} error`; }
+  } catch(e) { st.textContent = 'ERR'; }
+};
+
+// -- Draggable nodes on canvas --
+const canvas = document.getElementById('eqCanvas');
+const vizWrap = document.getElementById('vizWrap');
+
+function logX(f, W) { const pl = 40; return pl + (W - pl - 16) * Math.log10(Math.max(20, f) / 20) / Math.log10(20000 / 20); }
+function invLogX(x, W) { const pl = 40; return 20 * Math.pow(10, (x - pl) / (W - pl - 16) * Math.log10(20000 / 20)); }
+function gainY(g, H) { return H / 2 - (g / 18) * (H / 2 - 24); }
+function invGainY(y, H) { return -((y - H / 2) / (H / 2 - 24)) * 18; }
+
+canvas.addEventListener('pointerdown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  const mx = (e.clientX - rect.left), my = (e.clientY - rect.top);
+  const W = vizWrap.clientWidth, H = vizWrap.clientHeight;
+  for (let i = 0; i < BANDS.length; i++) {
+    const bx = logX(BANDS[i].freq, W), by = gainY(BANDS[i].gain, H);
+    if (Math.hypot(mx - bx, my - by) < 16) { dragging = i; activeBand = i; renderBands(); syncControls(); canvas.setPointerCapture(e.pointerId); return; }
+  }
+});
+canvas.addEventListener('pointermove', e => {
+  if (dragging === null) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const W = vizWrap.clientWidth, H = vizWrap.clientHeight;
+  BANDS[dragging].freq = Math.max(20, Math.min(20000, Math.round(invLogX(mx, W))));
+  BANDS[dragging].gain = Math.max(-18, Math.min(18, Math.round(invGainY(my, H) * 2) / 2));
+  syncControls(); renderBands();
+});
+canvas.addEventListener('pointerup', () => { dragging = null; });
+
+// -- Draw loop --
+function draw() {
+  requestAnimationFrame(draw);
+  const W = vizWrap.clientWidth, H = vizWrap.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const pl = 40, pr = 16, pt = 20, pb = 24;
+  const pw = W - pl - pr, ph = H - pt - pb;
+
+  // -- GRID --
+  ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 1;
+  for (const db of [-18, -12, -6, 0, 6, 12, 18]) {
+    const y = gainY(db, H);
+    ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(pl + pw, y); ctx.stroke();
+    ctx.fillStyle = db === 0 ? 'rgba(255,255,255,.2)' : 'rgba(255,255,255,.08)';
+    ctx.font = '8px "IBM Plex Mono"'; ctx.textAlign = 'right';
+    ctx.fillText((db > 0 ? '+' : '') + db, pl - 4, y + 3);
+  }
+  for (const f of [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
+    const x = logX(f, W);
+    ctx.strokeStyle = f === 1000 ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.03)';
+    ctx.beginPath(); ctx.moveTo(x, pt); ctx.lineTo(x, H - pb); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.textAlign = 'center'; ctx.font = '7px "IBM Plex Mono"';
+    ctx.fillText(f >= 1000 ? (f / 1000) + 'k' : f + '', x, H - pb + 12);
+  }
+  // 0dB line brighter
+  ctx.strokeStyle = 'rgba(255,255,255,.1)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pl, H / 2); ctx.lineTo(pl + pw, H / 2); ctx.stroke();
+
+  // -- FFT SPECTRUM --
+  if (analyser) {
+    analyser.getFloatFrequencyData(freqData);
+    const sr = actx.sampleRate, binHz = sr / analyser.fftSize;
+    // fill
+    const grad = ctx.createLinearGradient(0, pt, 0, H - pb);
+    grad.addColorStop(0, 'rgba(77,208,225,.18)'); grad.addColorStop(.6, 'rgba(77,208,225,.04)'); grad.addColorStop(1, 'rgba(77,208,225,.01)');
+    ctx.beginPath(); ctx.moveTo(pl, H - pb);
+    for (let i = 1; i < freqData.length; i++) {
+      const f = i * binHz; if (f < 20 || f > 20000) continue;
+      const x = logX(f, W), db = Math.max(-90, freqData[i]);
+      // map -90..0 dB to bottom..top of the chart area (below the EQ curve space)
+      const y = H - pb - ((db + 90) / 90) * ph * 0.5;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(pl + pw, H - pb); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    // line
+    ctx.beginPath();
+    for (let i = 1; i < freqData.length; i++) {
+      const f = i * binHz; if (f < 20 || f > 20000) continue;
+      const x = logX(f, W), db = Math.max(-90, freqData[i]);
+      const y = H - pb - ((db + 90) / 90) * ph * 0.5;
+      i <= 1 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(77,208,225,.35)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  // -- PER-BAND RESPONSE CURVES (individual colored fills) --
+  BANDS.forEach((b, idx) => {
+    if (Math.abs(b.gain) < 0.1) return;
+    ctx.beginPath();
+    for (let px = pl; px <= pl + pw; px++) {
+      const logF = 20 * Math.pow(10, (px - pl) / pw * Math.log10(20000 / 20));
+      const octDist = Math.log2(logF / b.freq);
+      let g;
+      if (b.type === 'lowshelf') g = b.gain * (1 / (1 + Math.pow(logF / b.freq, 2)));
+      else if (b.type === 'highshelf') g = b.gain * (1 - 1 / (1 + Math.pow(logF / b.freq, 2)));
+      else g = b.gain * Math.exp(-octDist * octDist * b.q * b.q * 1.5);
+      const y = gainY(g, H);
+      px === pl ? ctx.moveTo(px, y) : ctx.lineTo(px, y);
+    }
+    ctx.lineTo(pl + pw, H / 2); ctx.lineTo(pl, H / 2); ctx.closePath();
+    ctx.fillStyle = b.color + '12'; ctx.fill();
+  });
+
+  // -- COMPOSITE EQ CURVE --
+  ctx.beginPath();
+  for (let px = pl; px <= pl + pw; px++) {
+    const logF = 20 * Math.pow(10, (px - pl) / pw * Math.log10(20000 / 20));
+    let totalGain = 0;
+    BANDS.forEach(b => {
+      const octDist = Math.log2(logF / b.freq);
+      if (b.type === 'lowshelf') totalGain += b.gain * (1 / (1 + Math.pow(logF / b.freq, 2)));
+      else if (b.type === 'highshelf') totalGain += b.gain * (1 - 1 / (1 + Math.pow(logF / b.freq, 2)));
+      else totalGain += b.gain * Math.exp(-octDist * octDist * b.q * b.q * 1.5);
+    });
+    const y = gainY(totalGain, H);
+    px === pl ? ctx.moveTo(px, y) : ctx.lineTo(px, y);
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2; ctx.stroke();
+  // fill under composite
+  ctx.lineTo(pl + pw, H / 2); ctx.lineTo(pl, H / 2); ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,.03)'; ctx.fill();
+
+  // -- BAND NODES --
+  BANDS.forEach((b, i) => {
+    const x = logX(b.freq, W), y = gainY(b.gain, H);
+    // glow
+    ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2);
+    ctx.fillStyle = b.color + '15'; ctx.fill();
+    ctx.strokeStyle = b.color + '40'; ctx.lineWidth = 1.5; ctx.stroke();
+    // solid dot
+    ctx.beginPath(); ctx.arc(x, y, i === activeBand ? 7 : 5, 0, Math.PI * 2);
+    ctx.fillStyle = b.color; ctx.fill();
+    if (i === activeBand) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.stroke();
+    }
+    // tooltip for active
+    if (i === activeBand && (Math.abs(b.gain) > 0.1 || dragging === i)) {
+      ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.beginPath(); ctx.roundRect(x - 30, y - 28, 60, 18, 4); ctx.fill();
+      ctx.fillStyle = b.color; ctx.font = 'bold 8px "IBM Plex Mono"'; ctx.textAlign = 'center';
+      ctx.fillText(`${b.freq >= 1000 ? (b.freq/1000).toFixed(1)+'k' : b.freq}Hz ${b.gain > 0 ? '+' : ''}${b.gain.toFixed(1)}dB`, x, y - 16);
+    }
+  });
+}
+draw();
+
+// -- Toggles --
+document.querySelectorAll('.tog').forEach(t => t.addEventListener('click', () => t.classList.toggle('on')));
+</script>
+</body>
+</html>

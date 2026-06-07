@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Cleanup — StableDAW</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#07080c;--panel:#0e1018;--surface:#141720;--border:#1e2230;
+  --accent:#22d3ee;--accent-dim:rgba(34,211,238,.15);--accent-glow:rgba(34,211,238,.25);
+  --dn:#22d3ee;--dc:#f59e0b;--dh:#3b82f6;
+  --text:#e0e6f0;--dim:#5a6278;--mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif;
+}
+html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--sans);color:var(--text);overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER 28px ── */
+.hdr{display:flex;align-items:center;padding:0 10px;background:#0a0b10;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px;gap:8px}
+.hdr-icon{width:14px;height:14px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent-glow);flex-shrink:0}
+.hdr-title{font:700 10px/1 var(--mono);letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0}
+.preset-nav{display:flex;align-items:center;gap:2px;margin-left:8px}
+.preset-nav button{background:none;border:none;color:#5a5e6a;font-size:9px;cursor:pointer;padding:0 2px;font-family:var(--mono)}
+.preset-nav button:hover{color:#a0a4b0}
+.preset-name{font:500 8px/1 var(--mono);color:#6b7080;min-width:100px;text-align:center}
+.hdr-spacer{flex:1}
+.hdr-pill{font:600 7px/1 var(--mono);letter-spacing:.4px;padding:2px 7px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#3e4250;cursor:pointer;transition:all 120ms;user-select:none}
+.hdr-pill:hover{border-color:#3a3e4a;color:#8890a0}
+.hdr-pill.active{background:#081a1e;border-color:var(--accent);color:var(--accent)}
+
+/* ── TOP BAR: Input/Output + Noise Profile ── */
+.top-bar{display:flex;align-items:center;padding:3px 10px;background:#090b10;border-bottom:1px solid var(--border);flex-shrink:0;height:24px;gap:6px}
+.io-pill{font:700 7px/1 var(--mono);letter-spacing:.5px;padding:2px 8px;border-radius:3px;border:1px solid var(--border);background:none;color:var(--dim);cursor:pointer;transition:.15s;user-select:none}
+.io-pill:hover{color:var(--text)}
+.io-pill.active{color:var(--accent);border-color:rgba(34,211,238,.3);background:rgba(34,211,238,.04)}
+.top-spacer{flex:1}
+.noise-profile-btn{font:700 7px/1 var(--mono);letter-spacing:.5px;padding:3px 10px;border-radius:4px;border:1px solid rgba(34,211,238,.2);background:rgba(34,211,238,.04);color:var(--accent);cursor:pointer;transition:.15s;user-select:none;display:flex;align-items:center;gap:4px}
+.noise-profile-btn:hover{background:rgba(34,211,238,.08);border-color:rgba(34,211,238,.4)}
+.np-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 4px var(--accent-glow)}
+
+/* ── WAVEFORM CANVAS (45%) ── */
+.wave-zone{height:40%;position:relative;background:#040610;border-bottom:1px solid var(--border);flex-shrink:0;overflow:hidden}
+.wave-zone canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+/* Region overlay labels */
+.region-labels{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none}
+.region-tag{position:absolute;font:700 6px/1 var(--mono);letter-spacing:.8px;text-transform:uppercase;padding:2px 5px;border-radius:2px;pointer-events:none}
+.region-tag.dn-tag{color:var(--dn);background:rgba(34,211,238,.08);top:12px;left:15%}
+.region-tag.dc-tag{color:var(--dc);background:rgba(245,158,11,.08);top:12px;left:48%}
+.region-tag.dh-tag{color:var(--dh);background:rgba(59,130,246,.08);top:12px;left:75%}
+/* Amplitude axis */
+.amp-axis{position:absolute;right:2px;top:0;bottom:0;width:18px;display:flex;flex-direction:column;justify-content:space-between;padding:8px 0;pointer-events:none}
+.amp-axis span{font:600 5px/1 var(--mono);color:rgba(255,255,255,.06);text-align:left}
+
+/* ── MODE TABS ROW ── */
+.mode-tabs{display:flex;align-items:center;padding:4px 10px;flex-shrink:0;height:30px;gap:2px;background:#090b10;border-bottom:1px solid var(--border)}
+.mode-tab{font:700 8px/1 var(--mono);letter-spacing:.8px;text-transform:uppercase;color:var(--dim);cursor:pointer;padding:4px 14px;border-radius:4px 4px 0 0;transition:.15s;user-select:none;border-bottom:2px solid transparent;position:relative}
+.mode-tab:hover{color:var(--text)}
+.mode-tab.active{color:var(--dn);border-bottom-color:var(--dn)}
+.mode-tab[data-mode="declip"].active{color:var(--dc);border-bottom-color:var(--dc)}
+.mode-tab[data-mode="dehum"].active{color:var(--dh);border-bottom-color:var(--dh)}
+
+/* ── CONTROLS AREA ── */
+.controls-area{flex:1;display:flex;min-height:0;padding:4px 6px;gap:6px}
+
+/* Knobs section */
+.knobs-section{flex:1;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:nowrap;min-height:0}
+.knob-slot{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:60px}
+.k-lbl{font:700 10px/1 var(--mono);letter-spacing:.6px;text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.knob-slot svg{width:64px;height:64px;cursor:pointer;display:block}
+.k-val{font:700 13px/1 var(--mono);color:var(--text)}
+.k-unit{font:500 7px/1 var(--mono);color:var(--dim)}
+
+/* Auto Detect toggle */
+.auto-detect{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:60px}
+.ad-label{font:700 6.5px/1 var(--mono);letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+.ad-toggle{width:48px;height:22px;border-radius:11px;border:1px solid var(--border);background:var(--surface);cursor:pointer;position:relative;transition:.2s}
+.ad-toggle::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:var(--dim);top:2px;left:2px;transition:.2s}
+.ad-toggle.on{background:rgba(34,211,238,.08);border-color:var(--accent)}
+.ad-toggle.on::after{left:28px;background:var(--accent);box-shadow:0 0 6px var(--accent-glow)}
+.ad-text{font:700 6px/1 var(--mono);letter-spacing:.4px;color:var(--dim)}
+.ad-toggle.on ~ .ad-text{color:var(--accent)}
+
+/* Sensitivity pill selector */
+.sens-group{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:60px}
+.sens-label{font:700 6.5px/1 var(--mono);letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+.sens-pill{font:700 7px/1 var(--mono);padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--dim);cursor:pointer;transition:.15s;user-select:none;text-align:center;min-width:50px}
+.sens-pill:hover{border-color:rgba(255,255,255,.12);color:var(--text)}
+
+/* RIGHT: Output fader */
+.output-col{width:50px;display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0}
+.of-label{font:700 6px/1 var(--mono);letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.of-rail{flex:1;width:10px;background:rgba(255,255,255,.02);border-radius:5px;position:relative;cursor:pointer;border:1px solid rgba(255,255,255,.035);min-height:0;overflow:hidden}
+.of-fill{position:absolute;bottom:0;left:0;right:0;border-radius:0 0 5px 5px;pointer-events:none}
+.of-cap{position:absolute;left:50%;transform:translate(-50%,-50%);width:18px;height:6px;border-radius:2px;background:linear-gradient(180deg,#d0d4e0,#a0a6b6);box-shadow:0 1px 4px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.25);pointer-events:none;z-index:2}
+.of-val{font:700 13px/1.1 var(--mono);color:var(--text)}
+.of-db{font:500 6px/1 var(--mono);color:var(--dim)}
+
+/* ── FOOTER 28px ── */
+.ftr{display:flex;align-items:center;gap:6px;padding:0 8px;background:#08090e;border-top:1px solid var(--border);flex-shrink:0;height:28px}
+.ftr-btn{font:600 7.5px/1 var(--mono);padding:2px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:.15s;user-select:none}
+.ftr-btn:hover{background:#14171e;color:#c8cad0}
+.ftr-btn.active{background:#081a1e;border-color:var(--accent);color:var(--accent)}
+.ftr-spacer{flex:1}
+.ftr-stat{font:500 7.5px/1 var(--mono);color:var(--dim)}
+.ftr-stat.ok{color:#22c55e}
+audio{display:none}input[type="file"]{display:none}
+</style>
+</head>
+<body>
+<div class="module-frame">
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-icon"></div>
+  <span class="hdr-title">Cleanup</span>
+  <div class="preset-nav">
+    <button>&#9666;</button>
+    <span class="preset-name" id="presetName">Clean & Balanced</span>
+    <button>&#9656;</button>
+  </div>
+  <span class="hdr-spacer"></span>
+  <button class="hdr-pill" id="btnA">A</button>
+  <button class="hdr-pill active" id="btnB">B</button>
+  <button class="hdr-pill" id="btnCopy">Copy</button>
+  <button class="hdr-pill" id="btnDelta">Delta</button>
+</div>
+
+<!-- TOP BAR: Input/Output + Noise Profile -->
+<div class="top-bar">
+  <button class="io-pill active" id="ioInput">Input</button>
+  <button class="io-pill" id="ioOutput">Output</button>
+  <span class="top-spacer"></span>
+  <button class="noise-profile-btn" id="noiseProfileBtn"><span class="np-dot"></span>Noise Profile</button>
+</div>
+
+<!-- WAVEFORM CANVAS (45%) -->
+<div class="wave-zone" id="waveZone">
+  <canvas id="waveCanvas"></canvas>
+  <div class="region-labels">
+    <div class="region-tag dn-tag" id="dnTag">DENOISE</div>
+    <div class="region-tag dc-tag" id="dcTag">DECLIP</div>
+    <div class="region-tag dh-tag" id="dhTag">DEHUM</div>
+  </div>
+  <div class="amp-axis"><span>0</span><span>-6</span><span>-12</span><span>-18</span><span>-24</span><span>-inf</span></div>
+</div>
+
+<!-- MODE TABS -->
+<div class="mode-tabs">
+  <div class="mode-tab active" data-mode="denoise">DENOISE</div>
+  <div class="mode-tab" data-mode="declip">DECLIP</div>
+  <div class="mode-tab" data-mode="dehum">DEHUM</div>
+</div>
+
+<!-- CONTROLS AREA -->
+<div class="controls-area">
+
+  <!-- KNOBS -->
+  <div class="knobs-section" id="knobsRow">
+    <div class="knob-slot"><div class="k-lbl">denoise %</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="0"></svg><div class="k-val" id="kv0">65%</div></div>
+    <div class="knob-slot"><div class="k-lbl">reduction dB</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="1"></svg><div class="k-val" id="kv1">-28.0 dB</div></div>
+    <div class="knob-slot"><div class="k-lbl">Hum Frequency</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="2"></svg><div class="k-val" id="kv2">60 Hz</div></div>
+    <div class="auto-detect">
+      <div class="ad-label">Auto Detect</div>
+      <div class="ad-toggle on" id="autoDetect"></div>
+      <div class="ad-text" id="adText">Detect</div>
+    </div>
+    <div class="knob-slot"><div class="k-lbl">Sensitivity</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="3"></svg><div class="k-val" id="kv3">Medium</div></div>
+    <div class="knob-slot"><div class="k-lbl">Output</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="4"></svg><div class="k-val" id="kv4">0.0 dB</div></div>
+  </div>
+
+  <!-- RIGHT: Output fader -->
+  <div class="output-col">
+    <div class="of-label">OUTPUT</div>
+    <div class="of-rail" id="outTrack">
+      <div class="of-fill" id="outFill" style="height:50%;background:linear-gradient(to top,rgba(34,211,238,.05),rgba(34,211,238,.55))"></div>
+      <div class="of-cap" id="outCap" style="bottom:50%"></div>
+    </div>
+    <div class="of-val" id="outVal">0.0 dB</div>
+    <div class="of-db">dB</div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="ftr">
+  <button class="ftr-btn" id="btnBypass">Bypass</button>
+  <button class="ftr-btn active" id="btnCleanup">Cleanup</button>
+  <button class="ftr-btn" id="btnAnalyzer">Analyzer</button>
+  <button class="ftr-btn" id="btnPrePost">Pre/Post</button>
+  <button class="ftr-btn" id="btnProcess" style="margin-left:6px;border-color:var(--accent);color:var(--accent)">PROCESS</button>
+  <span class="ftr-spacer"></span>
+  <span class="ftr-stat" id="status">ready</span>
+  <audio id="ain" controls></audio>
+  <audio id="aout" controls></audio>
+</div>
+<input type="file" id="fileinput" accept="audio/*">
+</div>
+
+<script>
+/* ───────────────────────────────────────────────── */
+/*  Cleanup — Pro-grade module                       */
+/* ───────────────────────────────────────────────── */
+
+const ACCENT = '#22d3ee';
+const DN_COLOR = '#22d3ee';
+const DC_COLOR = '#f59e0b';
+const DH_COLOR = '#3b82f6';
+
+/* ── MODE CONFIG ── */
+const MODE_CFG = {
+  denoise: { accent: DN_COLOR,
+    knobs: ['denoise %','reduction dB','Hum Frequency','Sensitivity','Output'],
+    defaults: [65, 40, 50, 50, 50],
+    formatVal: [v=>Math.round(v)+'%', v=>{const db=-(v/100*48).toFixed(1);return db.toFixed(1)+' dB'}, v=>Math.round(40+v*0.6)+' Hz', v=>{const s=['Low','Medium','High']; return s[Math.min(2,Math.floor(v/34))];}, v=>{const db=((v-50)/50*12).toFixed(1);return(db>=0?'+':'')+db+' dB';}]
+  },
+  declip: { accent: DC_COLOR,
+    knobs: ['Threshold','Ceiling','Quality','Sensitivity','Output'],
+    defaults: [70, 60, 50, 55, 50],
+    formatVal: [v=>Math.round(v)+'%', v=>{const db=-(v/100*6).toFixed(1);return db.toFixed(1)+' dB'}, v=>{const q=['Fast','Normal','High']; return q[Math.min(2,Math.floor(v/34))];}, v=>Math.round(v)+'%', v=>{const db=((v-50)/50*12).toFixed(1);return(db>=0?'+':'')+db+' dB';}]
+  },
+  dehum: { accent: DH_COLOR,
+    knobs: ['Hum Frequency','Harmonics','Q Factor','Sensitivity','Output'],
+    defaults: [50, 60, 45, 50, 50],
+    formatVal: [v=>Math.round(40+v*0.6)+' Hz', v=>Math.round(1+v/100*7)+'x', v=>(10+v*0.4).toFixed(0), v=>{const s=['Low','Medium','High']; return s[Math.min(2,Math.floor(v/34))];}, v=>{const db=((v-50)/50*12).toFixed(1);return(db>=0?'+':'')+db+' dB';}]
+  }
+};
+
+let activeMode = 'denoise';
+let knobValues = [65, 40, 50, 50, 50];
+let knobDrag = { active: false, idx: -1, startY: 0, startVal: 0 };
+let outAmt = 50;
+let sensitivity = 'Medium';
+
+/* ── STATE ── */
+let actx, analyser, source, inputFile, inputBuf;
+const freqData = new Uint8Array(2048);
+const timeData = new Float32Array(4096);
+let liveDenoiseHP, liveDenoiseNotch, liveReverbComp, liveHumNotches = [];
+
+/* ── A/B PILLS ── */
+document.getElementById('btnA').addEventListener('click', function(){ this.classList.add('active'); document.getElementById('btnB').classList.remove('active'); });
+document.getElementById('btnB').addEventListener('click', function(){ this.classList.add('active'); document.getElementById('btnA').classList.remove('active'); });
+
+/* ── INPUT/OUTPUT TOGGLES ── */
+document.getElementById('ioInput').addEventListener('click', function(){
+  this.classList.add('active'); document.getElementById('ioOutput').classList.remove('active');
+});
+document.getElementById('ioOutput').addEventListener('click', function(){
+  this.classList.add('active'); document.getElementById('ioInput').classList.remove('active');
+});
+
+/* ── AUTO DETECT TOGGLE ── */
+document.getElementById('autoDetect').addEventListener('click', function(){
+  this.classList.toggle('on');
+  document.getElementById('adText').textContent = this.classList.contains('on') ? 'Detect' : 'Off';
+});
+
+/* ── MODE TABS ── */
+document.querySelectorAll('.mode-tab').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  activeMode = tab.dataset.mode;
+  const cfg = MODE_CFG[activeMode];
+  knobValues = [...cfg.defaults];
+  document.querySelectorAll('.k-lbl').forEach((lbl, i) => { if (cfg.knobs[i]) lbl.textContent = cfg.knobs[i]; });
+  renderAllKnobs();
+  updateRegionLabels();
+  if (actx && source) updateDSP();
+}));
+
+function updateRegionLabels(){
+  const tags = { denoise: 'dnTag', declip: 'dcTag', dehum: 'dhTag' };
+  Object.values(tags).forEach(id => document.getElementById(id).style.opacity = '0.3');
+  document.getElementById(tags[activeMode]).style.opacity = '1';
+}
+
+/* ── FOOTER BUTTONS ── */
+document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active'); });
+['btnCleanup','btnAnalyzer','btnPrePost'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(){
+    document.querySelectorAll('.ftr-btn:not(#btnBypass):not(#btnProcess)').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+
+/* ── AUDIO ── */
+function ensureAudio(){
+  if (actx) return;
+  actx = new AudioContext();
+  analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.78;
+  /* Denoise chain */
+  liveDenoiseHP = actx.createBiquadFilter(); liveDenoiseHP.type = 'highpass'; liveDenoiseHP.frequency.value = 20; liveDenoiseHP.Q.value = 0.5;
+  liveDenoiseNotch = actx.createBiquadFilter(); liveDenoiseNotch.type = 'peaking'; liveDenoiseNotch.frequency.value = 800; liveDenoiseNotch.Q.value = 1; liveDenoiseNotch.gain.value = 0;
+  liveReverbComp = actx.createDynamicsCompressor(); liveReverbComp.threshold.value = -12; liveReverbComp.knee.value = 6; liveReverbComp.ratio.value = 1; liveReverbComp.attack.value = 0.003; liveReverbComp.release.value = 0.05;
+  /* Hum notch filters */
+  liveHumNotches = [];
+  for (let i = 0; i < 8; i++){
+    const n = actx.createBiquadFilter(); n.type = 'peaking'; n.frequency.value = 60 * (i + 1); n.Q.value = 30; n.gain.value = 0;
+    liveHumNotches.push(n);
+  }
+}
+
+function rebuildChain(){
+  if (!actx || !source) return;
+  try { source.disconnect(); } catch(e){}
+  source.connect(liveDenoiseHP); liveDenoiseHP.connect(liveDenoiseNotch); liveDenoiseNotch.connect(liveReverbComp);
+  let prev = liveReverbComp;
+  for (const n of liveHumNotches) { prev.connect(n); prev = n; }
+  prev.connect(analyser); analyser.connect(actx.destination);
+  updateDSP();
+}
+
+function updateDSP(){
+  if (!actx || !liveDenoiseHP) return;
+  const dn = knobValues[0] / 100;
+  const hm = activeMode === 'dehum' ? knobValues[0] / 100 : 0;
+  /* Denoise: highpass + notch */
+  liveDenoiseHP.frequency.setTargetAtTime(20 + dn * 280, actx.currentTime, 0.02);
+  liveDenoiseHP.Q.value = 0.5 + dn * 0.5;
+  liveDenoiseNotch.frequency.setTargetAtTime(800, actx.currentTime, 0.02);
+  liveDenoiseNotch.Q.value = 0.5 + dn * 4;
+  liveDenoiseNotch.gain.setTargetAtTime(-dn * 12, actx.currentTime, 0.02);
+  /* Compressor for declip */
+  const dc = activeMode === 'declip' ? knobValues[0] / 100 : 0;
+  liveReverbComp.threshold.setTargetAtTime(-12 - dc * 24, actx.currentTime, 0.02);
+  liveReverbComp.ratio.setTargetAtTime(1 + dc * 7, actx.currentTime, 0.02);
+  liveReverbComp.attack.setTargetAtTime(0.003, actx.currentTime, 0.01);
+  liveReverbComp.release.setTargetAtTime(0.05 + dc * 0.15, actx.currentTime, 0.02);
+  /* Dehum notches */
+  for (let i = 0; i < liveHumNotches.length; i++){
+    const notch = liveHumNotches[i];
+    const humFreq = 40 + knobValues[2] * 0.6;
+    notch.frequency.setTargetAtTime(humFreq * (i + 1), actx.currentTime, 0.01);
+    if (activeMode === 'dehum' && hm > 0.05 && i < Math.ceil(hm * 8)){
+      notch.Q.value = 30; notch.gain.setTargetAtTime(-hm * 30, actx.currentTime, 0.01);
+    } else {
+      notch.gain.setTargetAtTime(0, actx.currentTime, 0.01);
+    }
+  }
+}
+
+function connectBuf(buf){
+  if (source) try { source.stop(); } catch(e){}
+  source = actx.createBufferSource(); source.buffer = buf; source.loop = true;
+  rebuildChain(); source.start();
+}
+async function loadFile(file){
+  ensureAudio(); inputFile = file;
+  const ab = await file.arrayBuffer();
+  inputBuf = await actx.decodeAudioData(ab.slice(0));
+  document.getElementById('ain').src = URL.createObjectURL(file);
+  connectBuf(inputBuf);
+}
+document.getElementById('fileinput').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+
+/* ── PROCESS ── */
+document.getElementById('noiseProfileBtn').addEventListener('click', () => {
+  const st = document.getElementById('status');
+  st.className = 'ftr-stat'; st.textContent = 'learning noise...';
+  setTimeout(() => { st.className = 'ftr-stat ok'; st.textContent = 'noise profile captured'; }, 1200);
+});
+
+async function processAudio() {
+  if (!inputFile) { document.getElementById('status').textContent = 'no audio loaded'; return; }
+  const denoiseValue = knobValues[0] / 100;
+  const fd = new FormData();
+  fd.append('audio', inputFile);
+  fd.append('effect', 'neural_denoise');
+  fd.append('params', JSON.stringify({ amount: denoiseValue }));
+  const st = document.getElementById('status');
+  st.className = 'ftr-stat'; st.textContent = 'processing...';
+  try {
+    const resp = await fetch('/api/edit/restoration/process', { method: 'POST', body: fd });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    document.getElementById('aout').src = url;
+    st.className = 'ftr-stat ok'; st.textContent = 'done';
+    if (actx) {
+      const ab = await blob.arrayBuffer();
+      const decoded = await actx.decodeAudioData(ab);
+      connectBuf(decoded);
+    }
+  } catch (err) {
+    st.className = 'ftr-stat'; st.textContent = 'error: ' + err.message;
+  }
+}
+document.getElementById('btnProcess').addEventListener('click', processAudio);
+
+/* ── SVG ROTARY KNOBS (52px, 270deg sweep) ── */
+function getKnobColor(){
+  const cfg = MODE_CFG[activeMode];
+  return cfg.accent;
+}
+
+function renderKnob(idx){
+  const svg = document.querySelectorAll('.knob-svg')[idx];
+  if (!svg) return;
+  const val = knobValues[idx], color = getKnobColor();
+  const cx = 26, cy = 26, r = 19, tickR = 22;
+  const sA = 135, eA = 405, range = eA - sA;
+  const ang = sA + (val / 100) * range;
+  function pol(a, rad){ const d = (a - 90) * Math.PI / 180; return { x: cx + rad * Math.cos(d), y: cy + rad * Math.sin(d) }; }
+  const s = pol(sA, r), v = pol(ang, r);
+  const la = (ang - sA) > 180 ? 1 : 0;
+  /* tick marks */
+  let ticks = '';
+  for (let i = 0; i <= 12; i++){
+    const ta = sA + (i / 12) * range;
+    const p1 = pol(ta, tickR), p2 = pol(ta, tickR + 2);
+    const lit = ((ta - sA) / range) <= (val / 100);
+    ticks += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="${lit ? color : 'rgba(255,255,255,.06)'}" stroke-width="${lit ? 1 : .6}" stroke-linecap="round" opacity="${lit ? .8 : .3}"/>`;
+  }
+  svg.innerHTML = `
+    <defs>
+      <filter id="ckg${idx}"><feGaussianBlur stdDeviation="2.5" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <radialGradient id="ckf${idx}" cx="50%" cy="40%" r="55%"><stop offset="0" stop-color="#1c2030"/><stop offset="1" stop-color="#0c0f18"/></radialGradient>
+    </defs>
+    ${ticks}
+    <path d="M${pol(sA,r).x},${pol(sA,r).y} A${r},${r} 0 1 1 ${pol(eA,r).x},${pol(eA,r).y}" fill="none" stroke="rgba(255,255,255,.04)" stroke-width="4" stroke-linecap="round"/>
+    <path d="M${s.x},${s.y} A${r},${r} 0 ${la} 1 ${v.x},${v.y}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round" filter="url(#ckg${idx})"/>
+    <circle cx="${v.x}" cy="${v.y}" r="2.8" fill="${color}" filter="url(#ckg${idx})"/>
+    <circle cx="${cx}" cy="${cy}" r="10" fill="url(#ckf${idx})" stroke="${color}33" stroke-width="1.2"/>
+    <circle cx="${cx}" cy="${cy}" r="6.5" fill="none" stroke="${color}11" stroke-width=".8"/>
+    <line x1="${cx}" y1="${cy-1}" x2="${cx+Math.cos((ang-90)*Math.PI/180)*7}" y2="${cy+Math.sin((ang-90)*Math.PI/180)*7}" stroke="${color}cc" stroke-width="1.5" stroke-linecap="round"/>`;
+  /* Update value display */
+  const cfg = MODE_CFG[activeMode];
+  document.getElementById('kv' + idx).textContent = cfg.formatVal[idx](val);
+}
+function renderAllKnobs(){ for (let i = 0; i < 5; i++) renderKnob(i); }
+renderAllKnobs();
+
+/* Knob drag */
+document.querySelectorAll('.knob-svg').forEach(svg => {
+  svg.addEventListener('pointerdown', e => {
+    const idx = +svg.dataset.idx;
+    knobDrag = { active: true, idx, startY: e.clientY, startVal: knobValues[idx] };
+    svg.setPointerCapture(e.pointerId);
+  });
+  svg.addEventListener('pointermove', e => {
+    if (!knobDrag.active || +svg.dataset.idx !== knobDrag.idx) return;
+    const dy = knobDrag.startY - e.clientY;
+    knobValues[knobDrag.idx] = Math.max(0, Math.min(100, knobDrag.startVal + dy * 0.6));
+    renderKnob(knobDrag.idx);
+    if (actx && source) updateDSP();
+  });
+  svg.addEventListener('pointerup', () => { knobDrag.active = false; });
+});
+
+/* ── VERTICAL FADER ── */
+function setupFader(trackId, fillId, capId, valId, initial, formatFn, onChange){
+  const track = document.getElementById(trackId);
+  const fill = document.getElementById(fillId);
+  const cap = document.getElementById(capId);
+  const valEl = document.getElementById(valId);
+  let dragging = false;
+  function setPct(e){
+    const rect = track.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(100, (1 - (e.clientY - rect.top) / rect.height) * 100));
+    fill.style.height = pct + '%'; cap.style.bottom = pct + '%';
+    valEl.textContent = formatFn(pct);
+    onChange(pct);
+  }
+  track.addEventListener('pointerdown', e => { dragging = true; track.setPointerCapture(e.pointerId); setPct(e); });
+  track.addEventListener('pointermove', e => { if (dragging) setPct(e); });
+  track.addEventListener('pointerup', () => { dragging = false; });
+}
+setupFader('outTrack', 'outFill', 'outCap', 'outVal', 50, v => {
+  const db = ((v - 50) / 50 * 12).toFixed(1); return (db >= 0 ? '+' : '') + db + ' dB';
+}, v => { outAmt = v; });
+
+/* ── WAVEFORM VISUALIZATION ── */
+const waveCanvas = document.getElementById('waveCanvas');
+const waveZone = document.getElementById('waveZone');
+let frameCount = 0;
+
+/* Region overlay data (simulated active regions) */
+const regions = [
+  { start: 0.08, end: 0.38, type: 'denoise', color: DN_COLOR },
+  { start: 0.42, end: 0.62, type: 'declip',  color: DC_COLOR },
+  { start: 0.68, end: 0.92, type: 'dehum',   color: DH_COLOR }
+];
+
+function draw(){
+  requestAnimationFrame(draw);
+  frameCount++;
+  const W = waveZone.clientWidth, H = waveZone.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (waveCanvas.width !== W * dpr || waveCanvas.height !== H * dpr) { waveCanvas.width = W * dpr; waveCanvas.height = H * dpr; }
+  const ctx = waveCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  /* Background */
+  ctx.fillStyle = '#040610';
+  ctx.fillRect(0, 0, W, H);
+
+  /* Grid lines */
+  ctx.strokeStyle = 'rgba(255,255,255,.025)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 6; i++){
+    const y = (i / 5) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  /* Vertical time divisions */
+  for (let i = 0; i < 10; i++){
+    const x = (i / 9) * W;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+
+  /* Center line */
+  ctx.strokeStyle = 'rgba(255,255,255,.04)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+
+  /* Region overlays (colored tinted areas) */
+  regions.forEach(reg => {
+    const x1 = reg.start * W, x2 = reg.end * W;
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    const isActive = reg.type === activeMode;
+    const alpha = isActive ? '.08' : '.03';
+    grad.addColorStop(0, reg.color + '00');
+    grad.addColorStop(0.3, reg.color + (isActive ? '14' : '08'));
+    grad.addColorStop(0.5, reg.color + (isActive ? '18' : '0a'));
+    grad.addColorStop(0.7, reg.color + (isActive ? '14' : '08'));
+    grad.addColorStop(1, reg.color + '00');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x1, 0, x2 - x1, H);
+    /* Region border lines */
+    if (isActive) {
+      ctx.strokeStyle = reg.color + '30';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  });
+
+  if (!analyser) {
+    /* Idle: draw a static waveform shape */
+    ctx.beginPath();
+    for (let x = 0; x < W; x++){
+      const t = x / W;
+      const amp = 0.15 + Math.sin(t * 12) * 0.08 + Math.sin(t * 47) * 0.04 + Math.sin(t * 130) * 0.02;
+      const y1 = H / 2 - amp * H * 0.4;
+      const y2 = H / 2 + amp * H * 0.4;
+      ctx.moveTo(x, y1); ctx.lineTo(x, y2);
+    }
+    ctx.strokeStyle = 'rgba(34,211,238,.12)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.04)'; ctx.font = '9px "IBM Plex Mono"'; ctx.textAlign = 'center';
+    ctx.fillText('Load audio to view waveform', W / 2, H - 14);
+    return;
+  }
+
+  analyser.getFloatTimeDomainData(timeData);
+  analyser.getByteFrequencyData(freqData);
+  const energy = Array.from(freqData.slice(0, 64)).reduce((a, b) => a + b, 0) / (64 * 255);
+
+  /* Waveform fill (colored by region) */
+  for (let x = 0; x < W; x++){
+    const idx = Math.floor((x / W) * timeData.length);
+    const sample = timeData[idx] || 0;
+    const amp = Math.abs(sample);
+    const y1 = H / 2 - amp * H * 0.45;
+    const y2 = H / 2 + amp * H * 0.45;
+
+    /* Determine region color */
+    const t = x / W;
+    let barColor = 'rgba(34,211,238,.3)';
+    for (const reg of regions) {
+      if (t >= reg.start && t <= reg.end) {
+        const isActive = reg.type === activeMode;
+        barColor = reg.color + (isActive ? '60' : '25');
+        break;
+      }
+    }
+    ctx.strokeStyle = barColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, y2); ctx.stroke();
+  }
+
+  /* Bright center waveform line */
+  ctx.beginPath();
+  for (let i = 0; i < timeData.length; i++){
+    const x = (i / timeData.length) * W;
+    const y = H / 2 + timeData[i] * H * 0.38;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.2; ctx.shadowColor = ACCENT; ctx.shadowBlur = 4; ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* Noise floor indicator */
+  const nfAmt = knobValues[0] / 100;
+  const nfY = H * (0.65 + nfAmt * 0.2);
+  ctx.strokeStyle = 'rgba(34,211,238,.06)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(0, nfY); ctx.lineTo(W, nfY); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(34,211,238,.1)'; ctx.font = '5px "IBM Plex Mono"'; ctx.textAlign = 'right';
+  ctx.fillText('NOISE FLOOR', W - 6, nfY - 3);
+}
+draw();
+
+// ── Receive audio from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      if (typeof loadFile === 'function') { loadFile(file); }
+      else {
+        const ain = document.getElementById('ain') || document.querySelector('audio');
+        if (ain) { ain.src = URL.createObjectURL(blob); }
+      }
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+});
+</script>
+</body>
+</html>

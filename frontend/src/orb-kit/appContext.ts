@@ -27,7 +27,7 @@ export function formattheDAWAppContext(context: RuntimeContext): string {
     const payload = {
         assistant_is_inside_running_app: true,
         important_behavior: [
-            'The user is already talking to you from inside theDAW (by Gantasmo) frontend. Do not tell them to click UI manually when an action exists.',
+            'The user is already talking to you from inside theDAW (by GANTASMO) frontend. Do not tell them to click UI manually when an action exists.',
             'If the user asks to navigate, emit a navigate action immediately.',
             'If the user asks for settings help, use currentGenerationParams below and explain what each relevant setting does.',
             'If the user asks to improve the prompt, propose a better prompt and emit set_prompt or improve_prompt if they ask you to apply it.',

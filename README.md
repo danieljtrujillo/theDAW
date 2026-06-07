@@ -1,6 +1,6 @@
 # theDAW
 
-**by Gantasmo**
+**by GANTASMO**
 
 theDAW is an all-in-one application for music creation. You describe a sound and the generative engine renders it from your prompt or from audio you bring, and the Chimera engine blends and beat-aligns several sources into a single generation. The workspace opens into a full studio for composition, arrangement, editing, and mixing, and into a live rig for DJing and VJing with a deep MIDI mapping system for any controller you own. Audio and visual effects, real-time visualizers, and an interactive genealogy graph round out the environment. From idea to live performance, theDAW can do it all.
 
@@ -284,7 +284,7 @@ curl http://localhost:8600/api/health
 On Windows, `.\start-dev.bat` kills stale processes automatically. Manually: `taskkill /F /IM uvicorn.exe`.
 
 **Out-of-memory on Medium model**
-The Medium pipeline requires approximately 8 GB VRAM. Workarounds: use `small`, reduce `duration`, or ensure no competing CUDA processes are active. The RTX 3060 (6 GB) is limited to the Small model.
+The Medium pipeline requires approximately 8 GB VRAM. Workarounds: use `small`, reduce `duration`, or ensure no competing CUDA processes are active. The Small model runs on more modest GPUs.
 
 **Library entries slow to load or failing to save**
 The library is served by the backend from `data/library.db` and the audio files under `data/`. Confirm the backend is running on port 8600 (the list loads once it reports ready), and free disk space if writes begin to fail.

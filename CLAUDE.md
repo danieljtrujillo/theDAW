@@ -174,3 +174,19 @@ The `pyproject.toml` CUDA index mapping only covers Linux. On Windows:
 - `soundfile` package is required (torchaudio has no default backend on Windows)
 - Flash Attention requires pre-built wheels from `kingbri1/flash-attention` GitHub releases
 - See `docs/windows/setup-guide.md` for full instructions
+
+## RAG Index Maintenance
+
+The in-app assistant answers from a RAG index built over the docs listed in
+`backend/rag.py` (`DOC_PATHS`). Keep it current:
+
+- **After any major update** — a new feature, tab, subsystem, or behavior change
+  that a user could ask about — update the RAG: write/revise the relevant doc
+  AND register it in `DOC_PATHS` if it's new. Stale or missing docs degrade the
+  assistant's answers.
+- **Run a regular sanity check / maintenance pass:** confirm every `DOC_PATHS`
+  entry resolves (no missing-doc warnings on startup) and flag docs that have
+  drifted from the current UI/behavior.
+- **All doc/RAG changes, updates, and deletions are approval-based.** Research
+  autonomously (read, diff, identify drift) and propose, but wait for approval
+  before editing or deleting. Never auto-delete docs.

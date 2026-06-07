@@ -193,7 +193,7 @@ Many AI MP3s embed the prompt in ID3 TXXX frames. Extract before we even run ana
   - `key.py` — librosa-based key detection: `librosa.feature.chroma_cqt` → Krumhansl-Schmuckler profile correlation → 24 keys (major/minor). ~50 lines, no extra deps (librosa is already in pyproject).
   - `pitch.py` — `librosa.pyin` for monophonic content; mean / std / contour histogram bins. Cheap.
   - `bars.py` — derives bar count from detected beats + time signature assumption (default 4/4). Bars = `len(beats) / 4`. Approximate, fine for first pass.
-  - `genre.py` — optional, controlled by `settings.analysis.include_genre`. Uses `transformers` (already in pyproject) with a small audio-genre HF model (e.g., `mtg-jamendo-genre`). Lazy-loaded, cached. **VRAM-aware: skips on RTX 3060 6GB unless GPU is fully idle.**
+  - `genre.py` — optional, controlled by `settings.analysis.include_genre`. Uses `transformers` (already in pyproject) with a small audio-genre HF model (e.g., `mtg-jamendo-genre`). Lazy-loaded, cached. **VRAM-aware: skips on low-VRAM GPUs unless the GPU is fully idle.**
 - All write results into the `analysis` table AND back into `metadata.json` (for portability).
 
 ### 4.2 Trigger points
@@ -230,7 +230,7 @@ Many AI MP3s embed the prompt in ID3 TXXX frames. Extract before we even run ana
 - Same as analysis: `settings.stems.auto_on_import` / `auto_on_generate`. Gated on idle.
 - Right-click → "Separate stems…" (manual trigger, opens stem-count picker 2/4/6/12).
 
-### 5.4 VRAM/CPU safety on user's RTX 3060 6GB
+### 5.4 VRAM/CPU safety on low-VRAM GPUs
 - Stems sidecar accepts `?device=cpu` — when GPU is busy generating, send that flag.
 - `IdleManager.gpu_pressure()` returns `high` → stems queue waits.
 - Per-CLAUDE.md user-hardware memory: medium model OOMs; we never want stems competing with a generate job.

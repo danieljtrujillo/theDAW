@@ -19,13 +19,14 @@ RAG_INDEX_DIR = PROJECT_ROOT / "backend" / "rag_index"
 
 DOC_PATHS = [
     PROJECT_ROOT / "CLAUDE.md",
+    PROJECT_ROOT / "SHOWCASE.md",
     PROJECT_ROOT / "docs" / "USER_GUIDE.md",
+    PROJECT_ROOT / "docs" / "DESIGN_PRINCIPLES.md",
     PROJECT_ROOT / "docs" / "guides" / "prompting.md",
     PROJECT_ROOT / "docs" / "guides" / "ui-controls-guide.md",
     PROJECT_ROOT / "docs" / "guides" / "model-overview.md",
+    PROJECT_ROOT / "docs" / "guides" / "dj-and-genealogy.md",
     PROJECT_ROOT / "docs" / "UI" / "hover-text-guide.md",
-    PROJECT_ROOT / "docs" / "UI" / "ui-controls-guide.md",
-    PROJECT_ROOT / "docs" / "UI" / "model-overview.md",
     PROJECT_ROOT / "docs" / "workflows" / "lora.md",
     PROJECT_ROOT / "docs" / "workflows" / "inference.md",
     PROJECT_ROOT / "docs" / "workflows" / "autoencoder.md",

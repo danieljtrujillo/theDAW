@@ -27,8 +27,8 @@ import { useAppUiStore } from '../../state/appUiStore';
  */
 const WaveformEditor = lazy(() => import('../audio/WaveformEditor').then((m) => ({ default: m.WaveformEditor })));
 const AdvancedView = lazy(() => import('../../views/AdvancedView').then((m) => ({ default: m.AdvancedView })));
-const MixPanel = lazy(() => import('../../views/MixPanel').then((m) => ({ default: m.MixPanel })));
-const TrainingView = lazy(() => import('../../views/TrainingView').then((m) => ({ default: m.TrainingView })));
+const MixView = lazy(() => import('../../views/MixView').then((m) => ({ default: m.MixView })));
+const TrainView = lazy(() => import('../../views/TrainView').then((m) => ({ default: m.TrainView })));
 const LineageView = lazy(() => import('../library/LineageModal').then((m) => ({ default: m.LineageView })));
 const VJView = lazy(() => import('../../views/VJView').then((m) => ({ default: m.VJView })));
 const DJView = lazy(() => import('../../views/DJView').then((m) => ({ default: m.DJView })));
@@ -67,8 +67,8 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       <div className="flex-1 min-h-0 hardware-card flex flex-col mx-2 pt-1">
         <div className="flex-1 min-h-0 relative">
           {centerTab === 'train' && (
-            <div className="absolute inset-0 overflow-y-auto">
-              <Suspense fallback={<TabFallback />}><TrainingView /></Suspense>
+            <div className="absolute inset-0 overflow-hidden">
+              <Suspense fallback={<TabFallback />}><TrainView /></Suspense>
             </div>
           )}
           {centerTab === 'make' && (
@@ -80,13 +80,13 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <Suspense fallback={<TabFallback />}><WaveformEditor onSwitchTab={onSwitchTab} /></Suspense>
           )}
           {centerTab === 'mix' && (
-            // PROCESS → MIX. The unified, single-screen MIX workspace
-            // (MixPanel): source waveform on top, the real effect-chain
-            // workflow (library + chain + Quick Master) in the middle,
-            // output + effects-viz on the bottom. Edge-to-edge with no
-            // page scroll — MixPanel owns the viewport like the MAKE tab.
+            // PROCESS → MIX. The MIX workspace on the Control-Surface editor
+            // (MixView): 2 input/output viz rows up top (toggle waveform / live
+            // scope, A/B overlay), the effect-chain workflow (rail + library +
+            // chain) in the middle, and the effectStage below. Drag-arrangeable
+            // in Design Mode like the DJ console.
             <div className="absolute inset-0 overflow-hidden">
-              <Suspense fallback={<TabFallback />}><MixPanel /></Suspense>
+              <Suspense fallback={<TabFallback />}><MixView /></Suspense>
             </div>
           )}
           {centerTab === 'learn' && (

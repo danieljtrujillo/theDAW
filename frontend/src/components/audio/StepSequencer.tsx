@@ -4,6 +4,7 @@ import {
   Trash2, Sparkles, Plus, Activity,
   Download, Send, Music,
 } from 'lucide-react';
+import { SlideTrack } from './SlideTrack';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
@@ -673,15 +674,9 @@ export const StepSequencer: React.FC = () => {
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-[7px] font-mono text-zinc-600 uppercase w-3">Vol</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={track.gain}
-                  onChange={(e) => setTracks(tracks.map((t) => t.id === track.id ? { ...t, gain: parseFloat(e.target.value) } : t))}
-                  className="pro-slider flex-1"
-                />
+                <SlideTrack min={0} max={1} step={0.01} value={track.gain}
+                  onChange={(v) => setTracks(tracks.map((t) => t.id === track.id ? { ...t, gain: v } : t))}
+                  className="flex-1" ariaLabel="Voice volume" />
               </div>
             </div>
 
