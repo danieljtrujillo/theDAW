@@ -188,6 +188,14 @@ export const AdvancedGenPanel: React.FC<{
   const sf = p.setField;
   const patch = p.patch;
 
+  // Probe the Magenta RT2 sidecar once on mount; gates the Magenta model option.
+  useEffect(() => {
+    fetch('/api/magenta/probe')
+      .then((r) => r.json())
+      .then((d) => useGenerateParamsStore.getState().setField('magentaAvailable', d?.available === true))
+      .catch(() => useGenerateParamsStore.getState().setField('magentaAvailable', false));
+  }, []);
+
   const lastAudioUrl = useGenerateStore((s) => s.lastAudioUrl);
   const libraryEntries = useLibraryStore((s) => s.entries);
   const addTrack = useEditorStore((s) => s.addTrack);
@@ -451,13 +459,14 @@ export const AdvancedGenPanel: React.FC<{
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-zinc-300 w-16 shrink-0">Model</span>
                 <select className="compact-input flex-1" value={p.model} onChange={(e) => {
-                  const m = e.target.value; const isRf = m.endsWith('-rf');
-                  patch({ model: m, steps: isRf ? 50 : 8, cfg: isRf ? 7.0 : 1.0 });
+                  const m = e.target.value; const isRf = m.endsWith('-rf'); const isMagenta = m.startsWith('magenta-');
+                  patch({ model: m, steps: isMagenta ? 1 : isRf ? 50 : 8, cfg: isMagenta ? 1.0 : isRf ? 7.0 : 1.0 });
                 }} style={{ colorScheme: 'dark' }}>
                   <option value="small">Small (ARC)</option>
                   <option value="medium">Medium (ARC)</option>
                   <option value="small-rf">Small-RF</option>
                   <option value="medium-rf">Medium-RF</option>
+                  {p.magentaAvailable && <option value="magenta-small">Magenta RT2 (text→music)</option>}
                 </select>
               </div>
               <SlideRow label="Length (s)" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} tipKey="duration" />
