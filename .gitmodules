@@ -1,0 +1,3 @@
+[submodule "sidecars/magenta-rt2-nvidia"]
+	path = sidecars/magenta-rt2-nvidia
+	url = https://github.com/gantasmo/magenta-rt2-nvidia

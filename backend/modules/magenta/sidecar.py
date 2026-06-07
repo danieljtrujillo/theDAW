@@ -16,6 +16,7 @@ generation knobs, not user note lists. Override the URL with
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -47,24 +48,43 @@ async def generate(
     top_k: int = 40,
     cfg_musiccoca: float = 3.0,
     cfg_notes: float = 1.0,
+    cfg_drums: float = 1.0,
+    drums: int = -1,
+    chunk_frames: int = 25,
+    notes: list[dict] | str | None = None,
+    audio_bytes: bytes | None = None,
+    audio_mime: str = "audio/wav",
 ) -> tuple[bytes, dict]:
-    """Generate audio from a text prompt. Returns ``(wav_bytes, meta_headers)``.
+    """Generate audio. Returns ``(wav_bytes, meta_headers)``.
 
-    The studio server renders synchronously and replies with WAV bytes plus
-    ``X-RTF`` / ``X-Audio-Seconds`` / ``X-Generate-Seconds`` / ``X-Sample-Rate``
-    headers.
+    Conditioning (all optional, combinable per the model):
+      - ``prompt``: text style (used when no ``audio_bytes`` style is given).
+      - ``notes``: piano-roll events ``[{pitch, start, end}, ...]`` (or a JSON
+        string) -> MIDI-conditioned accompaniment.
+      - ``audio_bytes``: a clip whose style is embedded (clone / style-transfer).
+
+    Sent as multipart to the extended sidecar (sidecars/magenta/server.py), which
+    renders synchronously and replies with WAV bytes + ``X-RTF`` / ``X-Audio-Seconds``
+    / ``X-Generate-Seconds`` / ``X-Sample-Rate`` / ``X-Conditioning`` headers.
     """
-    payload = {
-        "prompt": prompt or "warm analog pads",
-        "duration": float(duration),
-        "temperature": float(temperature),
-        "top_k": int(top_k),
-        "cfg_musiccoca": float(cfg_musiccoca),
-        "cfg_notes": float(cfg_notes),
+    data: dict[str, str] = {
+        "prompt": prompt or "",
+        "duration": str(float(duration)),
+        "temperature": str(float(temperature)),
+        "top_k": str(int(top_k)),
+        "cfg_musiccoca": str(float(cfg_musiccoca)),
+        "cfg_notes": str(float(cfg_notes)),
+        "cfg_drums": str(float(cfg_drums)),
+        "drums": str(int(drums)),
+        "chunk_frames": str(int(chunk_frames)),
     }
+    if notes:
+        data["notes"] = notes if isinstance(notes, str) else json.dumps(notes)
+    files = {"audio": ("style.wav", audio_bytes, audio_mime)} if audio_bytes else None
+
     # Generation can take a while for long durations; allow a long read timeout.
     async with httpx.AsyncClient(timeout=httpx.Timeout(30, read=600)) as client:
-        r = await client.post(f"{SIDECAR_URL}/generate", json=payload)
+        r = await client.post(f"{SIDECAR_URL}/generate", data=data, files=files)
         r.raise_for_status()
         meta = {
             k: r.headers.get(k)
@@ -73,7 +93,7 @@ async def generate(
                 "X-Audio-Seconds",
                 "X-Generate-Seconds",
                 "X-Sample-Rate",
-                "X-Filename",
+                "X-Conditioning",
             )
             if r.headers.get(k)
         }

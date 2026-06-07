@@ -19,7 +19,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Form, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from . import sidecar
 
@@ -50,17 +50,31 @@ async def generate(
     top_k: int = Form(40),
     cfg_musiccoca: float = Form(3.0),
     cfg_notes: float = Form(1.0),
+    cfg_drums: float = Form(1.0),
+    drums: int = Form(-1),
+    chunk_frames: int = Form(25),
+    notes: str = Form(""),
     model_size: str = Form("small"),
+    audio_file: UploadFile | None = File(None),
 ):
     h = await sidecar.health()
     if not h.get("available"):
         raise HTTPException(503, f"Magenta sidecar not available at {h.get('url')}")
 
+    # Read the optional style clip now (the UploadFile is tied to this request).
+    audio_bytes = None
+    audio_mime = "audio/wav"
+    if audio_file is not None and audio_file.filename:
+        audio_bytes = await audio_file.read()
+        audio_mime = audio_file.content_type or "audio/wav"
+
     job_id = uuid.uuid4().hex[:8]
+    cond = "audio" if audio_bytes else ("notes" if notes.strip() else "text")
     MAGENTA_JOBS[job_id] = {
         "id": job_id,
         "kind": "magenta-generate",
         "model_name": f"magenta-{model_size}",
+        "conditioning": cond,
         "status": "queued",
         "progress": {"step": 0, "steps": 1},
         "created_at": time.time(),
@@ -69,14 +83,39 @@ async def generate(
     }
     asyncio.create_task(
         _run_generate(
-            job_id, prompt, duration, temperature, top_k, cfg_musiccoca, cfg_notes
+            job_id,
+            prompt=prompt,
+            duration=duration,
+            temperature=temperature,
+            top_k=top_k,
+            cfg_musiccoca=cfg_musiccoca,
+            cfg_notes=cfg_notes,
+            cfg_drums=cfg_drums,
+            drums=drums,
+            chunk_frames=chunk_frames,
+            notes=notes or None,
+            audio_bytes=audio_bytes,
+            audio_mime=audio_mime,
         )
     )
     return {"ok": True, "job": {"id": job_id}}
 
 
 async def _run_generate(
-    job_id, prompt, duration, temperature, top_k, cfg_musiccoca, cfg_notes
+    job_id,
+    *,
+    prompt,
+    duration,
+    temperature,
+    top_k,
+    cfg_musiccoca,
+    cfg_notes,
+    cfg_drums,
+    drums,
+    chunk_frames,
+    notes,
+    audio_bytes,
+    audio_mime,
 ):
     job = MAGENTA_JOBS[job_id]
     job["status"] = "running"
@@ -88,6 +127,12 @@ async def _run_generate(
             top_k=top_k,
             cfg_musiccoca=cfg_musiccoca,
             cfg_notes=cfg_notes,
+            cfg_drums=cfg_drums,
+            drums=drums,
+            chunk_frames=chunk_frames,
+            notes=notes,
+            audio_bytes=audio_bytes,
+            audio_mime=audio_mime,
         )
         job["status"] = "completed"
         job["progress"] = {"step": 1, "steps": 1}
