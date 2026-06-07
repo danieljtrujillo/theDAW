@@ -1,0 +1,7 @@
+# theDAW Magenta RT2 sidecar — extra deps for server.py (run inside WSL2).
+# magenta-rt + jax[cuda] are installed separately (see ../magenta-rt2-nvidia and README).
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+numpy>=1.26
+soundfile>=0.12
