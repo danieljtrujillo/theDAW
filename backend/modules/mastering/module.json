@@ -1,0 +1,10 @@
+{
+  "name": "mastering",
+  "label": "Mastering & Tonal",
+  "enabled": true,
+  "icon": "SlidersHorizontal",
+  "sidebar": false,
+  "api_prefix": "/api/edit/mastering",
+  "backend": true,
+  "description": "EQ, dynamics, imaging, loudness — the Ozone-class mastering suite"
+}

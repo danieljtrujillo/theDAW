@@ -1,0 +1,10 @@
+{
+  "name": "analyzer",
+  "label": "AI Analyzer",
+  "enabled": true,
+  "icon": "Brain",
+  "sidebar": false,
+  "api_prefix": "/api/edit/analyzer",
+  "backend": true,
+  "description": "AI-assisted audio analysis, issue detection, and automatic effect stack builder"
+}

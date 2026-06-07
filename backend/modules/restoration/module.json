@@ -1,0 +1,10 @@
+{
+  "name": "restoration",
+  "label": "Restoration & Cleanup",
+  "enabled": true,
+  "icon": "Sparkles",
+  "sidebar": false,
+  "api_prefix": "/api/edit/restoration",
+  "backend": true,
+  "description": "Denoise, dereverb, de-click/hum/ess, vocal isolation, spectral repair"
+}
