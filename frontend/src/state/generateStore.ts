@@ -122,6 +122,16 @@ const wait = (ms: number): Promise<void> =>
     window.setTimeout(resolve, ms);
   });
 
+/** Build the form for the Magenta RT2 sidecar (/api/magenta/generate): text prompt
+ *  -> audio. The model takes a prompt + duration + sampling knobs (no SA3 fields). */
+export const buildMagentaFormData = (params: GenerateParams, prompt: string): FormData => {
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('duration', String(params.duration));
+  formData.append('model_size', params.model.replace('magenta-', '') || 'small');
+  return formData;
+};
+
 export const buildGenerateJobFormData = (params: GenerateParams, prompt: string): FormData => {
   const formData = new FormData();
   formData.append('model_name', params.model);
@@ -318,11 +328,17 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       }
     }
 
-    const formData = buildGenerateJobFormData(effectiveParams, prompt);
+    // Magenta RT2 routes to its own sidecar-backed module; SA3 uses the main job API.
+    const isMagenta = effectiveParams.model.startsWith('magenta-');
+    const genEndpoint = isMagenta ? '/api/magenta/generate' : '/api/generate-jobs';
+    const jobsBase = isMagenta ? '/api/magenta/jobs' : '/api/jobs';
+    const formData = isMagenta
+      ? buildMagentaFormData(effectiveParams, prompt)
+      : buildGenerateJobFormData(effectiveParams, prompt);
 
     try {
-      logInfo('generate', `[${elapsed()}] POST /api/generate-jobs — model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed}`);
-      const response = await fetch('/api/generate-jobs', {
+      logInfo('generate', `[${elapsed()}] POST ${genEndpoint} — model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed}`);
+      const response = await fetch(genEndpoint, {
         method: 'POST',
         body: formData,
       });
@@ -361,7 +377,7 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
           return;
         }
 
-        const jobResponse = await fetch(`/api/jobs/${jobId}`);
+        const jobResponse = await fetch(`${jobsBase}/${jobId}`);
         let jobPayload: unknown = null;
         try {
           jobPayload = await jobResponse.json();

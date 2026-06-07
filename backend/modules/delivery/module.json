@@ -1,0 +1,10 @@
+{
+  "name": "delivery",
+  "label": "Delivery / Export",
+  "enabled": true,
+  "icon": "Package",
+  "sidebar": false,
+  "api_prefix": "/api/edit/delivery",
+  "backend": true,
+  "description": "Codec matrix, Smart Export to platform spec, dither, SRC, tagging, batch"
+}

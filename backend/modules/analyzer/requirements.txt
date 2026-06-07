@@ -1,0 +1,101 @@
+# Analyzer module — AI-Assisted Audio Analysis & Effect Stack Builder
+#
+# These are ADDITIONAL dependencies beyond the base edit_tools_backend requirements.
+# The base already provides: numpy, scipy, soundfile, pyloudnorm, httpx, fastapi, ffmpeg (PATH)
+#
+# Install: pip install -r modules/analyzer/requirements.txt
+
+# ── Already in venv (no action needed) ──────────────────────────────────
+# numpy>=1.26              # All low-level DSP, band energies, crest factor, clipping detection
+# scipy>=1.11              # Bandpass filters, FFT peak detection, zero-crossing, signal processing
+# soundfile>=0.12          # Audio I/O (WAV/FLAC read)
+# pyloudnorm>=0.1.1        # ITU-R BS.1770-4 LUFS measurement (MIT)
+# httpx>=0.27              # Async HTTP for LLM assistant calls
+# librosa>=0.10            # Core feature extraction (already installed, confirmed 0.11.0)
+
+# ── Required: descriptor extraction ─────────────────────────────────────
+
+# librosa covers: spectral centroid, rolloff, bandwidth, flatness, flux,
+# MFCCs, chroma, onset detection, beat tracking, pyin (F0), HPSS,
+# structural segmentation, zero-crossing rate, tempo estimation.
+# ALREADY INSTALLED — librosa 0.11.0 confirmed in venv.
+# License: ISC (permissive, free for any use)
+
+# aubio — fast onset/pitch/beat detection, C-based, lower latency than librosa
+# Optional but recommended for real-time-adjacent analysis
+aubio>=0.4.9
+# License: GPL-3.0 — use as optional subprocess, not linked into core
+# pip install aubio
+
+# ── Optional: enhanced mid-level descriptors ────────────────────────────
+
+# madmom — beat/downbeat/chord/key detection, state-of-the-art neural models
+# Significantly better beat tracking than librosa for complex material
+# madmom>=0.16.1
+# License: BSD-2-Clause (permissive)
+# NOTE: madmom requires Python <=3.11 and has numpy version constraints.
+# Test compatibility before enabling. Install separately:
+#   pip install madmom
+
+# essentia — comprehensive MIR toolkit (spectral, rhythm, tonal, high-level)
+# Provides production-grade key detection, mood/genre classifiers, rhythm analysis
+# essentia>=2.1b6
+# License: AGPL-3.0 — use as optional subprocess/sidecar, NOT linked into core
+# Install separately (binary wheels available):
+#   pip install essentia
+
+# ── Optional: high-level / semantic descriptors ─────────────────────────
+
+# PANNs (Pretrained Audio Neural Networks) for audio tagging/classification
+# Used for: source type (speech/music/noise), instrument priors, genre/mood
+# panns-inference>=0.1.1
+# License: MIT
+# Requires torch (already in sidecar venv)
+# Install in GPU sidecar venv:
+#   pip install panns-inference
+
+# openl3 — audio/image embeddings for similarity and transfer risk
+# openl3>=0.4.1
+# License: MIT
+# Requires tf/torch
+# Install in GPU sidecar venv:
+#   pip install openl3
+
+# ── Optional: enhanced artifact detection ───────────────────────────────
+
+# crepe — monophonic pitch tracking (neural, more accurate than pyin for vocals)
+# crepe>=0.0.16
+# License: MIT
+# Install in GPU sidecar venv:
+#   pip install crepe
+
+# ── LLM integration (no new deps) ──────────────────────────────────────
+# Uses the existing /api/assistant/chat endpoint in StableDAW backend.
+# Gemini / Claude / GPT / Grok already key-pooled in assistant_routes.py.
+# The recommender.py calls this via httpx, passing the descriptor bundle
+# as structured JSON. No raw audio is sent to any LLM.
+
+# ── FFmpeg (no pip, must be on PATH) ────────────────────────────────────
+# Used for: ebur128 (LUFS/LRA/true-peak), loudnorm (two-pass normalization),
+# astats (comprehensive audio statistics), showspectrumpic (batch spectrograms)
+# Already required by the base edit_tools_backend.
+
+# ── Summary of what's needed ───────────────────────────────────────────
+#
+# REQUIRED (v1, zero downloads beyond pip):
+#   - numpy, scipy, soundfile, librosa, pyloudnorm — ALL ALREADY INSTALLED
+#   - FFmpeg on PATH — ALREADY INSTALLED
+#   - httpx — ALREADY INSTALLED
+#   Total new pip installs for v1: ZERO
+#
+# RECOMMENDED (v1.1, one pip install):
+#   - aubio — fast onset/pitch/beat, pip install aubio
+#
+# OPTIONAL (v2, GPU sidecar):
+#   - madmom — better beat/chord/key
+#   - essentia — comprehensive MIR (AGPL, subprocess only)
+#   - panns-inference — audio tagging/classification (GPU)
+#   - openl3 — embeddings for similarity (GPU)
+#   - crepe — neural pitch tracking (GPU)
+#
+# ZERO new deps needed for v1. Everything runs on what's already installed.

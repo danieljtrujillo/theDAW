@@ -1,0 +1,10 @@
+{
+  "name": "creative_fx",
+  "label": "Creative FX + Macros",
+  "enabled": true,
+  "icon": "Drama",
+  "sidebar": false,
+  "api_prefix": "/api/edit/creative-fx",
+  "backend": true,
+  "description": "Character-FX macros (Ghost Voice, Alien, Tape, Radio, Tunnel), glitch, reverb, audio→MIDI"
+}

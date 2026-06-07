@@ -1,0 +1,10 @@
+{
+  "name": "magenta",
+  "label": "Magenta RT2",
+  "enabled": true,
+  "icon": "Music",
+  "sidebar": false,
+  "api_prefix": "/api/magenta",
+  "backend": true,
+  "description": "AI music generation via the Magenta RealTime 2 (mrt2) WSL2/CUDA sidecar"
+}

@@ -30,6 +30,11 @@ dependencies = [
     "httpx>=0.28.1",
     "psutil>=5.9.0",
     "librosa>=0.10.0",
+    # edit-tool-stack (backend/modules/{mastering,restoration,enhance,creative_*,delivery,analyzer}):
+    # scipy = linear-phase FIR design + dynamic-EQ DSP; pyloudnorm = pure-Python LUFS
+    # cross-check used by the analyzer + metering (loudness itself comes from FFmpeg loudnorm).
+    "scipy>=1.11",
+    "pyloudnorm>=0.1.1",
     "onnxruntime<1.24",
     # Windows-only: pre-built CUDA 12.8 wheel for Python 3.10. Pinned here so
     # `uv sync` never removes it. The wheel URL lives in [tool.uv.sources].

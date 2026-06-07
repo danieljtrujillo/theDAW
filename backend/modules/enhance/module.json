@@ -1,0 +1,10 @@
+{
+  "name": "enhance",
+  "label": "Enhance / Super-Res",
+  "enabled": true,
+  "icon": "AudioWaveform",
+  "sidebar": false,
+  "api_prefix": "/api/edit/enhance",
+  "backend": true,
+  "description": "Audio super-resolution, codec un-crush, studio enhance, neural codec, SRC"
+}

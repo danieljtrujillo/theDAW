@@ -111,6 +111,8 @@ export interface GenerateParamsState {
   loras: LoraSlot[];
 
   chimera: ChimeraState;
+  /** True when the Magenta RT2 sidecar probe succeeds (transient; re-probed each session). */
+  magentaAvailable: boolean;
 }
 
 interface ParamsStore extends GenerateParamsState {
@@ -192,6 +194,8 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
     weaveMaxPolyphony: 3,
     lastMeta: null,
   },
+
+  magentaAvailable: false,
 
   setField: (key, value) => set({ [key]: value } as Partial<GenerateParamsState>),
   patch: (partial) => set(partial),

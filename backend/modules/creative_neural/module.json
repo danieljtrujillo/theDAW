@@ -1,0 +1,10 @@
+{
+  "name": "creative_neural",
+  "label": "Creative Neural",
+  "enabled": true,
+  "icon": "Wand2",
+  "sidebar": false,
+  "api_prefix": "/api/edit/creative-neural",
+  "backend": true,
+  "description": "SpectraMorph, TimbreForge, PromptFX, TokenSynth, GrainLab, morphing, vocoder"
+}
