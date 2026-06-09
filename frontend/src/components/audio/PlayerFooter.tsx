@@ -327,7 +327,7 @@ export const PlayerFooter: React.FC = () => {
       </div>
 
       {/* 3. Utilities */}
-      <div className="flex items-center justify-end gap-6 w-[320px] shrink-0">
+      <div className="flex items-center justify-end gap-6 w-80 shrink-0">
         <div className="flex items-center gap-5">
           <div className="flex items-center gap-3">
             <button onClick={toggleMute} className="text-zinc-500 hover:text-white transition-colors" title={isMuted ? 'Unmute' : 'Mute'}>

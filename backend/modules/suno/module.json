@@ -1,0 +1,10 @@
+{
+  "name": "suno",
+  "label": "Suno",
+  "enabled": true,
+  "icon": "Cloud",
+  "sidebar": false,
+  "api_prefix": "/api/suno",
+  "backend": true,
+  "description": "Suno public API proxy (Berklee hackathon) — simple/custom/cover/mashup generation, polling, usage. Completed tracks register as first-class library entries with cover/mashup lineage. API key stays server-side."
+}

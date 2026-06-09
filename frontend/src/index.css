@@ -24,6 +24,16 @@
 }
 
 @layer components {
+  /* CHANGED: hide scrollbars while keeping scroll — used by the new Catalogue
+     and Suno panels (ported components reference `.no-scrollbar`). */
+  .no-scrollbar {
+    scrollbar-width: none;          /* Firefox */
+    -ms-overflow-style: none;       /* old Edge/IE */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;                  /* Chromium/WebKit */
+  }
+
   /* Fluid zoom for high-density - adjusts based on viewport height/width.
      --layout-zoom mirrors the zoom factor so `calc(... / var(--layout-zoom))`
      can pre-compensate for the rendering scale (e.g. so a child sized to fill
@@ -93,3 +103,37 @@
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 8px;
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * App-wide TEXT-ONLY resizer (Settings → Edit Layout Settings → Text size).
+ * Multiplies every font-size utility by --text-scale (default 1 = no change).
+ * font-size ONLY — padding, widths, icons, gaps are untouched, so the layout
+ * does not balloon. Rules are UNLAYERED + !important so they win over Tailwind
+ * utilities, including the important `!` variants (e.g. `text-[9px]!`).
+ * Set from App.tsx via document.documentElement.style --text-scale.
+ * ─────────────────────────────────────────────────────────────────────────── */
+:root { --text-scale: 1; }
+
+/* Custom text classes bake their size in via @apply, so scale them too. Listed
+ * BEFORE the text-[Npx] rules so an explicit `text-[Npx]` still wins when an
+ * element uses both (e.g. `mono-label text-[10px]!`). */
+.compact-input { font-size: calc(11px * var(--text-scale, 1)) !important; }
+.mono-label    { font-size: calc(9px  * var(--text-scale, 1)) !important; }
+.mono-tag      { font-size: calc(8px  * var(--text-scale, 1)) !important; }
+.btn-primary   { font-size: calc(11px * var(--text-scale, 1)) !important; }
+.btn-ghost     { font-size: calc(10px * var(--text-scale, 1)) !important; }
+
+.text-\[6px\],  .text-\[6px\]\!  { font-size: calc(6px  * var(--text-scale, 1)) !important; }
+.text-\[7px\],  .text-\[7px\]\!  { font-size: calc(7px  * var(--text-scale, 1)) !important; }
+.text-\[8px\],  .text-\[8px\]\!  { font-size: calc(8px  * var(--text-scale, 1)) !important; }
+.text-\[9px\],  .text-\[9px\]\!  { font-size: calc(9px  * var(--text-scale, 1)) !important; }
+.text-\[10px\], .text-\[10px\]\! { font-size: calc(10px * var(--text-scale, 1)) !important; }
+.text-\[11px\], .text-\[11px\]\! { font-size: calc(11px * var(--text-scale, 1)) !important; }
+.text-\[12px\], .text-\[12px\]\! { font-size: calc(12px * var(--text-scale, 1)) !important; }
+.text-\[13px\], .text-\[13px\]\! { font-size: calc(13px * var(--text-scale, 1)) !important; }
+.text-\[15px\], .text-\[15px\]\! { font-size: calc(15px * var(--text-scale, 1)) !important; }
+.text-\[18px\], .text-\[18px\]\! { font-size: calc(18px * var(--text-scale, 1)) !important; }
+
+.text-xs,   .text-xs\!   { font-size: calc(0.75rem  * var(--text-scale, 1)) !important; }
+.text-sm,   .text-sm\!   { font-size: calc(0.875rem * var(--text-scale, 1)) !important; }
+.text-base, .text-base\! { font-size: calc(1rem     * var(--text-scale, 1)) !important; }

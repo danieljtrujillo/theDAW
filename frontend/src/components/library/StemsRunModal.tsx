@@ -79,7 +79,7 @@ export const StemsRunModal: React.FC<Props> = ({ open, entryLabel, onCancel, onC
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-[420px] shadow-2xl flex flex-col">
+      <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-105 shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
           <div className="flex items-center gap-2">
             <Scissors className="w-3.5 h-3.5 text-purple-400" />

@@ -14,6 +14,7 @@ import { logInfo, logWarn } from './state/logStore';
 import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
+import { useLayoutPrefs } from './state/layoutPrefsStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
@@ -78,6 +79,17 @@ export default function App() {
   useEffect(() => {
     logInfo('system', 'theDAW UI initialized');
   }, []);
+
+  // App-wide TEXT size: publish the persisted scale as the `--text-scale` CSS
+  // variable. index.css multiplies every font-size utility by it (font-size
+  // ONLY — layout, padding, icons, gaps are untouched). 1.0 = native (no
+  // change). Clamped in the store so it can't reach an unusable extreme.
+  const uiScale = useLayoutPrefs((s) => s.uiScale);
+  useEffect(() => {
+    // CHANGED: text-only — drop any legacy page-zoom and drive the font var.
+    document.documentElement.style.removeProperty('zoom');
+    document.documentElement.style.setProperty('--text-scale', String(uiScale));
+  }, [uiScale]);
 
   // ── Global Web MIDI listener ───────────────────────────────────
   // Any connected MIDI controller's note-on messages trigger the

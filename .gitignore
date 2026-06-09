@@ -8,6 +8,10 @@ data/generations/
 data/settings.json
 data/library.db
 data/library.db-*
+# Suno cloud-gen key/jobs + local session change logs (never committed)
+data/suno_api_key.json
+data/suno_jobs.json
+CHANGES-LOGS/
 backend/rag_index/
 archive/
 *.png
@@ -214,3 +218,20 @@ docs/*.pdf
 # Generated exports (VJ renders, transcodes, PNG-sequence zips, etc.) — NEVER
 # commit exports of any kind. The VJ exporter writes here by default.
 /exports/
+
+# Session changelogs — local dev notes, not version-controlled
+/docs/changes/
+
+# Loose capture stills & scratch media at repo root (mirror the *.png policy so
+# ad-hoc .jpeg screenshots like shot01_*.jpeg never get committed). Anchored to
+# root so frontend image assets are unaffected.
+/*.jpeg
+/*.jpg
+/.tmp-shots/
+
+# VS Code workspace files are per-user / machine-specific — never commit.
+*.code-workspace
+
+# Showcase assets are local-only (demo video, screenshots, scripts, raw media).
+# Kept on disk but not shipped in everyone's clone.
+/showcase/

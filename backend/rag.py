@@ -23,6 +23,7 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "USER_GUIDE.md",
     PROJECT_ROOT / "docs" / "DESIGN_PRINCIPLES.md",
     PROJECT_ROOT / "docs" / "guides" / "prompting.md",
+    PROJECT_ROOT / "docs" / "guides" / "SUNO_EXTERNAL_API.md",
     PROJECT_ROOT / "docs" / "guides" / "ui-controls-guide.md",
     PROJECT_ROOT / "docs" / "guides" / "model-overview.md",
     PROJECT_ROOT / "docs" / "guides" / "dj-and-genealogy.md",

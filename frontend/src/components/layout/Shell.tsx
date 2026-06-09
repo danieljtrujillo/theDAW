@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, GripVertical } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
+
+const CatalogueView = lazy(() => import('../../catalog/CatalogueView').then((m) => ({ default: m.CatalogueView })));
 import { CenterTabBar } from './CenterTabBar';
 import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel } from './BottomMultiTabPanel';
@@ -21,6 +23,8 @@ export const Shell: React.FC = () => {
   const setIsRightPanelOpen = useAppUiStore((state) => state.setRightPanelOpen);
   const rightPanelWidth = useAppUiStore((state) => state.rightPanelWidth);
   const setRightPanelWidth = useAppUiStore((state) => state.setRightPanelWidth);
+  const isLibraryExpanded = useAppUiStore((state) => state.isLibraryExpanded);
+  const setLibraryExpanded = useAppUiStore((state) => state.setLibraryExpanded);
   const docsOpen = useAppUiStore((state) => state.docsOpen);
   const setDocsOpen = useAppUiStore((state) => state.setDocsOpen);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -85,13 +89,17 @@ export const Shell: React.FC = () => {
     };
     const openDocsHandler = () => setDocsOpen(true);
     const closeDocsHandler = () => setDocsOpen(false);
+    // CHANGED: let the Suno panel's "Open Settings" prompt open the modal.
+    const openSettingsHandler = () => setSettingsOpen(true);
     window.addEventListener('stabledaw:navigate', handler);
     window.addEventListener('stabledaw:open-docs', openDocsHandler);
     window.addEventListener('stabledaw:close-docs', closeDocsHandler);
+    window.addEventListener('stabledaw:open-settings', openSettingsHandler);
     return () => {
       window.removeEventListener('stabledaw:navigate', handler);
       window.removeEventListener('stabledaw:open-docs', openDocsHandler);
       window.removeEventListener('stabledaw:close-docs', closeDocsHandler);
+      window.removeEventListener('stabledaw:open-settings', openSettingsHandler);
     };
   }, [setActiveView, setDocsOpen]);
 
@@ -167,37 +175,43 @@ export const Shell: React.FC = () => {
       </header>
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-      {/* Main Canvas (DAW Center Panel) — no left panel; the user
-          removed it per layout invariant. */}
-      <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
-        <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
-      </main>
+      {/* Main Canvas — hidden when library is expanded to full view. */}
+      {!isLibraryExpanded && (
+        <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
+          <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
+        </main>
+      )}
 
-      {/* Library rail — ONLY mounts when isRightPanelOpen. The
-          ProcessingLog is NOT inside this rail (it's the global
-          bottom strip below) — user explicitly flagged that the log
-          must stay anchored regardless of library state. */}
+      {/* Library rail — compact side panel or expanded full-width catalogue. */}
       {isRightPanelOpen && (
         <aside
-          className="h-full min-h-0 shrink-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative"
-          style={{
+          className={`h-full min-h-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative ${isLibraryExpanded ? 'flex-1' : 'shrink-0'}`}
+          style={isLibraryExpanded ? undefined : {
             width: rightPanelWidth,
             transition: isResizingRail ? 'none' : 'width 220ms cubic-bezier(.2,.7,.2,1)',
           }}
         >
-          {/* Resize handle at the left edge of the rail. */}
-          <div
-            className="absolute top-0 bottom-0 -left-1 w-2 cursor-col-resize z-30 group"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setIsResizingRail(true);
-            }}
-          >
-            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/10 group-hover:bg-purple-500/50 rounded-full transition-colors" />
-          </div>
+          {/* Resize handle — only in compact mode. */}
+          {!isLibraryExpanded && (
+            <div
+              className="absolute top-0 bottom-0 -left-1 w-2 cursor-col-resize z-30 group"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsResizingRail(true);
+              }}
+            >
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/10 group-hover:bg-purple-500/50 rounded-full transition-colors" />
+            </div>
+          )}
 
           <div className="flex-1 overflow-hidden relative min-h-0">
-            <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} />
+            {isLibraryExpanded ? (
+              <Suspense fallback={<div className="flex items-center justify-center h-full"><span className="text-[10px] font-mono uppercase tracking-widest text-zinc-600 animate-pulse">loading…</span></div>}>
+                <CatalogueView onCollapse={() => setLibraryExpanded(false)} />
+              </Suspense>
+            ) : (
+              <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} onExpand={() => setLibraryExpanded(true)} />
+            )}
           </div>
         </aside>
       )}

@@ -148,7 +148,6 @@ async def detect_by_name(device_name: str = Form(...)) -> dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(502, f"failed to fetch image: {e}")
-        raise HTTPException(413, "fetched image too large")
 
     _gate("controllervision-detect", True)
     try:

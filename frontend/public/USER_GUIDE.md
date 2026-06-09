@@ -33,6 +33,13 @@ This guide documents theDAW end to end, from generating a piece out of a prompt 
 23. [Troubleshooting](#23-troubleshooting)
 24. [Development Workflows](#24-development-workflows)
 25. [Feature Coverage and Screenshot Evidence](#25-feature-coverage-and-screenshot-evidence)
+26. [Cloud Generation: Suno](#26-cloud-generation-suno)
+27. [Magenta RealTime 2 (Generate Tab)](#27-magenta-realtime-2)
+28. [Edit Tool Stack](#28-edit-tool-stack)
+29. [Catalogue: Cross-provider Library Browser](#29-catalogue)
+30. [YouTube Import](#30-youtube-import)
+31. [Controller Vision](#31-controller-vision)
+32. [Admin, Module, and Assistant-Key APIs](#32-admin-module-and-assistant-key-apis)
 
 ---
 
@@ -42,7 +49,7 @@ This guide documents theDAW end to end, from generating a piece out of a prompt 
 |---|---|---|
 | **ML pipeline** | `stable_audio_3/` | Upstream Stability AI code: DiT, SAME autoencoder, all samplers, LoRA parametrization, distribution-shift schedules, T5Gemma conditioner. |
 | **FastAPI backend** | `backend/server.py` | HTTP wrapper around the pipeline. Async job queue for generation; synchronous endpoints for studio effects and model introspection. Port 8600. |
-| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` (name, API prefix, enabled flag) and `router.py` (FastAPI APIRouter). The loader (`backend/modules/loader.py`) discovers and mounts every enabled module at startup; a failed module is logged and skipped without stopping the server. Ten modules ship in the repo: analysis, chimera, controllervision, effects (mounted at `/api/studio`), library, midi, settings, stems, vj, and ytimport. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` (name, API prefix, enabled flag) and `router.py` (FastAPI APIRouter). The loader (`backend/modules/loader.py`) discovers and mounts every enabled module at startup; a failed module is logged and skipped without stopping the server. The modules that ship in the repo are: `analysis`, `analyzer` (`/api/edit/analyzer`), `chimera`, `controllervision`, `creative_fx` (`/api/edit/creative-fx`), `creative_neural` (`/api/edit/creative-neural`), `delivery` (`/api/edit/delivery`), `effects` (mounted at `/api/studio`), `enhance` (`/api/edit/enhance`), `library`, `magenta`, `mastering` (`/api/edit/mastering`), `midi`, `restoration` (`/api/edit/restoration`), `settings`, `stems`, `suno`, `vj`, and `ytimport`. The six `/api/edit/*` families form the **Edit Tool Stack** (§28); `suno` (§26) and `magenta` (§27) add cloud and real-time generation. |
 | **React app** | `frontend/` | Tailwind 4 + React 19 + Zustand 5 + Vite 6. Multi-tab DAW interface. Proxies `/api/*` to the backend. Port 5173 in development. |
 
 ---
@@ -498,14 +505,22 @@ A toolbar row toggles which signals feed the visuals. At least one input stays a
 - **Mic**: the VJ engine captures microphone input directly and requests browser permission on first use.
 - **Audio**: an audio bridge reads theDAW master analyser every animation frame, derives bass, mid, high, and volume buckets, and posts them to the engine at around 30 fps. The chip shows the live bridge frame rate.
 - **MIDI**: controller events from the global MIDI bus are forwarded into the engine.
-- **Camera**: a toggle switches the visual source between the live webcam and the clip or memory buffer. The button reflects the real source through a state echo and shows any camera error.
+- **Camera**: a toggle switches the visual source between a live camera feed and the clip or memory buffer. The button reflects the real source through a state echo and shows any camera error. The visualizer runs in a same-origin iframe granted `allow="camera; microphone; midi"`, so it pulls from any camera the browser can open through `getUserMedia`, including a built-in or USB webcam, a capture card, or a virtual camera. The same toggle drives the remote-device sources described below, since each one presents as a browser media stream.
+
+#### Camera sources: webcams, phones on Wi-Fi, and Quest 3
+
+The camera input extends past a webcam on the host machine. Any device that opens theDAW in a browser and grants camera permission serves as the source.
+
+- **Phone or tablet cameras on the same Wi-Fi.** The phone opens theDAW at the LAN URL (see §10.2 Mobile, or the Mobile Access panel in the shell header) and grants the camera prompt, and the phone's camera then streams into the visuals. The Vite dev server binds `0.0.0.0` and the backend auto-detects the LAN IP, so the only requirement is a network that permits device-to-device connections.
+- **Quest 3 headsets and off-network devices.** A device away from the LAN, such as a Quest 3, a phone on cellular, or a remote camera, joins through a public tunnel. A Cloudflare Tunnel or other public URL goes into the **External URL override** in the Mobile Access panel, and the headset or phone opens that URL in its browser and feeds its camera the same way. The browser exposes the Quest 3's passthrough and visible-light cameras like any other camera.
+- **Capture inputs.** Anything that presents to the operating system as a camera, including HDMI capture cards, DSLRs in webcam mode, OBS virtual camera, and NDI-to-webcam bridges, appears in the browser's device list and selects as the source.
 
 A master MIDI gate turns Web MIDI on or off for the whole app. When off, the app never requests Web MIDI access, so no browser permission prompt appears.
 
 ### 10.2 Pop-out and Mobile
 
 - **Pop out** opens the visuals in a separate window. Drag it onto a second monitor for live performance while theDAW keeps running on the main display. **Pop back in** returns it to the tab. Closing the window manually snaps back automatically.
-- **Mobile**: when the machine has a LAN address, the Mobile button shows a copyable URL and a QR code so a phone or tablet on the same Wi-Fi can open the visual output.
+- **Mobile**: when the machine has a LAN address, the Mobile button shows a copyable URL and a QR code so a phone or tablet on the same Wi-Fi can open the visual output. The shell's **Mobile Access** panel additionally offers an **External URL override** that accepts a Cloudflare Tunnel or other public URL, which reaches the visuals and feeds a camera from a device on another network such as a Quest 3 headset. See §10.1 for the camera-source details.
 
 ### 10.3 Bridges
 
@@ -576,6 +591,18 @@ LEARN has three views, selected from the header:
 ### 12.2 3D Graph Controls
 
 The 3D graph has an Appearance panel with coordinated visual presets (for example particle cloud and galaxy), each swapping a bundle of node, edge, and force settings. A fullscreen toggle expands the graph to the full viewport, and a footer legend maps edge colors to relationship kinds (generated, imported, stem, MIDI, Chimera). The graph data comes from `GET /api/library/_graph/all`, and a single-entry tree comes from `GET /api/library/{entry_id}/lineage`.
+
+### 12.3 How the visualizations are rendered
+
+LEARN renders the genealogy data through three views, each built on its own rendering stack.
+
+- **Track** view renders a per-track ancestry and descendant tree in custom React and SVG.
+- **Genealogy** view renders the full library-wide DAG through a hand-built layered (Sugiyama-style) algorithm and draws it as one large SVG with no external graph dependency.
+- **3D graph** renders a force-directed graph through `react-force-graph-3d` and `react-force-graph-2d`, where each node is a custom **three.js** object (a glowing sphere with a label) over a generated starfield backdrop, with its own camera flight and animation loops.
+
+Every transformation in theDAW writes a lineage edge, so a remix, an inpaint, a stem split, a Chimera blend, and a Suno cover or mashup each show their parentage automatically (see §13.1).
+
+theDAW carries several other rich visualizations, each documented in its own section: the four-mode **spectrogram viewer** (Mel, STFT, Chromagram, CQT, in §6.3 and §16) rendered server-side from `POST /api/spectrogram`; the real-time **spectral analyzer** with oscilloscope, spectrum, and radial modes and RMS and peak metering (§16.1); **wavesurfer.js** waveforms across the Library, DJ decks, and editor; a **three.js and GLSL cymatics** visualizer; and the DJ tab's canvas jog wheels and beatgrid overlays (§9).
 
 ![LEARN lineage 3D graph](screenshots/06-learn-tab-3d-graph__lineage-graph.png)
 
@@ -1587,6 +1614,153 @@ When adding or changing a feature:
 3. Update `docs/USER_GUIDE.md` first.
 4. Run the coverage script and the screenshot runner.
 5. Sync `docs/USER_GUIDE.md` to `frontend/public/USER_GUIDE.md` before validating the Docs modal.
+
+---
+
+## 26. Cloud Generation: Suno
+
+The `suno` module (`/api/suno`) adds cloud song generation through Suno's public API, surfaced as the **Aurora Cloud Console** (`SunoGenPanel`) inside the Generate workspace. The backend runs a server-side proxy that stores the API key in `data/suno_api_key.json` (gitignored) and keeps it off the browser. A full standalone API reference lives in [docs/guides/SUNO_EXTERNAL_API.md](guides/SUNO_EXTERNAL_API.md).
+
+### 26.1 Modes
+
+| Mode | What it does |
+|---|---|
+| **Simple** | One natural-language description → the model writes both lyrics and style. |
+| **Custom** | Supplied `lyrics` and `style`; optional `instrumental` for no vocals. |
+| **Cover** | Re-generate an existing clip with new style/lyrics/voice. |
+| **Mashup** | Blend two clips into a new track. |
+
+Simple, Custom, and Cover accept one of three preset `voice_id` UUIDs, which cover the voices currently available to partners. Mashup runs without a voice.
+
+### 26.2 Flow and library integration
+
+Generation is asynchronous. A submission starts a Suno job, the backend polls it, and on completion the track is registered as a first-class Library entry tagged `sunoid:<clip_id>`, with its audio proxied through the backend CDN route. Cover and mashup results additionally write parent-to-child lineage edges, so they appear in the LEARN graph (§12) and the Catalogue lineage view (§29). Jobs persist to `data/suno_jobs.json` and resume polling across reloads.
+
+### 26.3 Endpoints
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/suno/status` | Whether a key is configured. |
+| `POST /api/suno/key` · `GET /api/suno/voices` | Store the API key (atomic write); list the three preset voices. |
+| `POST /api/suno/simple` · `/custom` · `/cover` · `/mashup` | Start a generation in each mode. |
+| `GET /api/suno/poll/{id}` · `GET /api/suno/jobs` | Poll one job; list tracked jobs. |
+| `GET /api/suno/usage` | Account usage and plan limits. |
+| `GET /api/suno/audio/...` | CDN audio proxy (SSRF host-allowlisted). |
+
+Two offline helpers under `scripts/` bulk-import an existing SunoHarvester cache: `build_api_compatible_cache.py` reshapes the cache into an API-compatible JSON, and `ingest_suno_cache.py` registers those as CDN-backed Library entries (no audio download). These are manual, one-off utilities.
+
+---
+
+## 27. Magenta RealTime 2
+
+The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. The model option appears only when the sidecar is reachable: the MAKE/Generate panel probes `GET /api/magenta/probe` and shows **"Magenta RT2 (text→music)"** when available.
+
+### 27.1 The sidecar and conditioning
+
+MRT2 runs as a sidecar (default `http://localhost:8777`, override with `STABLEDAW_MAGENTA_URL`) that loads `MagentaRT2Jax` once on the GPU. theDAW ships an **extended** sidecar (`sidecars/magenta/server.py`) that supersedes the upstream text-only studio server and exposes all three conditioning modes over one `POST /generate`:
+
+- **Text**: a natural-language prompt, used by default.
+- **Notes**: a MIDI note list (`[{pitch:0-127, start, end}]`) encoded to the model's 128-pitch state windows.
+- **Audio-style**: a reference clip embedded through the model's style encoder, which overrides the prompt.
+
+The response's `X-Conditioning` header reports which modes were used, and the output is 48 kHz stereo WAV. The React UI currently surfaces text-to-music and a programmatic audio-clone path used by the instrument generator, and the notes and audio-style surfaces are available through the backend and sidecar API.
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/magenta/probe` | Sidecar health + whether the model is loaded. |
+| `POST /api/magenta/generate` | Generate from text, notes, and/or an audio-style clip. |
+| `GET /api/magenta/jobs/{id}` | Poll a generation job. |
+
+### 27.2 First non-Mac port of Magenta RealTime 2
+
+theDAW ships the first non-Mac port of Magenta RealTime 2, vendored as the `sidecars/magenta-rt2-nvidia` submodule. A build-system guard in upstream MRT2's CMake locks the C++ inference engine to macOS through the line `if(NOT APPLE) FATAL_ERROR "magenta-rt-v2's C++ build is macOS-only"`. The port's `port/patch_cmake.py` removes that guard, with an anchor check that aborts if upstream drifts, and flips the related switches. The port works because the inference core uses only the portable MLX C++ API, MLX now provides a native CUDA backend (`-DMLX_BUILD_CUDA=ON`), and the single piece of Apple-specific code is an autorelease-pool shim already gated behind `#if defined(__APPLE__)`.
+
+The result runs on Windows through WSL2 with NVIDIA, on native Linux with NVIDIA, and on RunPod cloud GPUs, which extends MRT2 to platforms beyond its macOS origin. The shipped runtime uses the JAX and CUDA backend (`magenta-rt` 2.x) loading `mrt2_small`. The submodule also includes a streaming WebSocket jam server and a RunPod-serverless path for the larger `mrt2_base`. `sidecars/magenta-rt2-nvidia/port/README.md` has the build details.
+
+---
+
+## 28. Edit Tool Stack
+
+Beyond the 24-effect MIX chain (§8), theDAW mounts the **Edit Tool Stack**, six backend module families under `/api/edit/*`. Each family provides a focused set of audio processors built on FFmpeg, NumPy, and librosa DSP. The browser GUIs come from `frontend/public/edit-modules/` and iframe into the MIX effect stage.
+
+| Family | Prefix | Focus |
+|---|---|---|
+| **Mastering** | `/api/edit/mastering` | Loudness, EQ, multiband, limiting, stereo, master chain. |
+| **Restoration** | `/api/edit/restoration` | Denoise, declick, hum removal, HPSS stem/vocal isolation. |
+| **Enhance** | `/api/edit/enhance` | Super-resolution, de-crush, studio polish, codec cleanup. |
+| **Delivery** | `/api/edit/delivery` | Format export, true-peak-aware smart export, normalization. |
+| **Creative FX** | `/api/edit/creative-fx` | Macro effect graphs (character, motion, texture). |
+| **Creative Neural** | `/api/edit/creative-neural` | Pitch/vocoder/granular morphs (DSP implementations). |
+
+Each family exposes the same shape via the shared module base:
+
+| Method · Path | Purpose |
+|---|---|
+| `GET {prefix}/tools` · `GET {prefix}/tools/{id}` | List the family's tools / one tool's parameter manifest. |
+| `POST {prefix}/process` | Apply a selected tool to an uploaded clip; returns processed audio. |
+
+A seventh module, **AI Analyzer** (`/api/edit/analyzer`), is an experimental decision-card engine that recommends an effect stack for a clip (`/analyze`, `/recommend`, `/build-stack`). The backend implements it, and the UI wiring is pending.
+
+> Note: some engine labels (for example RAVE and Mel-Roformer) name the target model for a processor that currently runs a high-quality DSP implementation. The audio processing is functional today, and the named neural model represents the planned upgrade.
+
+---
+
+## 29. Catalogue
+
+The **Catalogue** view (`CatalogueView`, lazy-loaded in the shell) is a cross-provider gallery over the Library. It presents grid and list layouts, a filter bar, an inspector with on-demand spectrograms, a lineage panel, and **provider badges** that classify each entry (Suno, Magenta, import, and forward-compatible slots for other providers) from its `model` and `source` fields. Its context menu runs Suno cover and mashup directly from a Library entry (§26). It reads the same backend Library API (§13) and the per-entry lineage route `GET /api/library/{id}/lineage`.
+
+---
+
+## 30. YouTube Import
+
+The `ytimport` module (`/api/ytimport`) imports audio from a URL into the Library.
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/ytimport` | Module capabilities / availability (e.g. whether the downloader backend is present). |
+| `POST /api/ytimport/fetch` | Fetch and import audio from a supplied URL; the result lands as a Library entry with `source` metadata, so it carries lineage like any other asset. |
+
+Imported tracks are first-class Library entries: they can be sent to the editor, used as Chimera sources or init audio, stem-separated, and they appear in the LEARN graph as imported nodes.
+
+---
+
+## 31. Controller Vision
+
+The `controllervision` module (`/api/controllervision`) maps a hardware MIDI controller from an image of it, complementing the profile library and learn-by-capture flows. It provides three capabilities.
+
+- **Detect** (`POST /detect`, `/detect-by-name`) runs OpenCV control detection that finds knobs, faders, and pads in an image of a controller.
+- **Identify** (`POST /identify`) runs a vision-LLM pass that names the device and infers its layout from a photo.
+- **Phone pairing** (`POST /session`, `GET /session/{sid}`, `POST /session/{sid}/upload`, `GET /m/{sid}`) runs a LAN pairing flow. theDAW shows a QR code and URL, the phone opens a self-served capture page (`/m/{sid}`), the page photographs the controller, and it uploads the photo back for detection, which keeps the controller in hand during the capture.
+
+---
+
+## 32. Admin, Module, and Assistant-Key APIs
+
+Operational endpoints used by the Settings modal and shell.
+
+**Admin** (`backend/admin_routes.py`)
+
+| Method · Path | Purpose |
+|---|---|
+| `POST /api/admin/restart` | Restart the backend process (Settings → Restart). |
+| `GET /api/admin/restart-status` | Poll readiness after a restart. |
+| `POST /api/admin/shutdown` | Shut the backend down. |
+
+**Module loader** (`backend/server.py`)
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/modules` · `GET /api/modules/all` | List mounted modules / all discovered modules with enabled state. |
+| `PATCH /api/modules/{name}/enabled` | Enable or disable a module (takes effect after a restart). |
+
+**Assistant key pool** (`backend/assistant_routes.py`). The assistant holds several API keys per provider for load distribution and failover.
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/assistant/keys` · `GET /api/assistant/keys/{provider}` | Key status per provider (hashed for display). |
+| `POST /api/assistant/keys/{provider}/ingest` | Add one or more keys to a provider's pool. |
+| `DELETE /api/assistant/keys/{provider}/{hash}` · `DELETE /api/assistant/keys/{provider}` | Remove one key / clear a provider's pool. |
+| `GET /api/assistant/keys/{provider}/raw` | Return raw keys for local-trust convenience, where the backend operates as a trusted-local service. |
 
 ---
 

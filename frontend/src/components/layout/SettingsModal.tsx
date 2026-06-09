@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
-import { useLayoutPrefs } from '../../state/layoutPrefsStore';
+import { useLayoutPrefs, UI_SCALE_MIN, UI_SCALE_MAX } from '../../state/layoutPrefsStore';
 import { SlideTrack } from '../audio/SlideTrack';
+// CHANGED: Suno cloud-generation API key section (surfaced in Settings).
+import { SunoKeySettings } from '../../suno/SunoKeySettings';
 
 interface ModuleConfig {
   name: string;
@@ -94,6 +96,9 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
+
+          {/* CHANGED: Suno cloud-generation API key entry (the intuitive place to set it). */}
+          <SunoKeySettings />
 
           <LayoutSettingsSection />
 
@@ -296,6 +301,9 @@ const LayoutSettingsSection: React.FC = () => {
   const setSnapPx = useLayoutPrefs((s) => s.setSnapPx);
   const setShowGuides = useLayoutPrefs((s) => s.setShowGuides);
   const setMatchSizes = useLayoutPrefs((s) => s.setMatchSizes);
+  const uiScale = useLayoutPrefs((s) => s.uiScale);
+  const setUiScale = useLayoutPrefs((s) => s.setUiScale);
+  const scalePct = Math.round(uiScale * 100);
   return (
     <>
       <div className="flex items-center gap-1.5 mb-2">
@@ -304,6 +312,28 @@ const LayoutSettingsSection: React.FC = () => {
         <span className="text-[8px] font-mono text-zinc-600 ml-auto">applies to every workspace</span>
       </div>
       <div className="border border-white/5 rounded px-3 py-2.5 bg-white/3 mb-4 flex flex-col gap-3">
+        {/* App-wide text/UI size — a clamped page-zoom so nothing gets too big or small. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Text size:</span>
+          <SlideTrack
+            min={Math.round(UI_SCALE_MIN * 100)}
+            max={Math.round(UI_SCALE_MAX * 100)}
+            step={5}
+            value={scalePct}
+            onChange={(v) => setUiScale(v / 100)}
+            className="flex-1"
+            ariaLabel="App-wide text and UI size"
+          />
+          <span className="text-[8px] font-mono text-zinc-400 w-9 text-right tabular-nums">{scalePct}%</span>
+          <button
+            onClick={() => setUiScale(1)}
+            disabled={scalePct === 100}
+            className="text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 disabled:opacity-40 disabled:cursor-default transition-colors"
+            title="Reset text size to 100%"
+          >
+            Reset
+          </button>
+        </div>
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Fill:</span>
           <div className="flex items-center gap-1">

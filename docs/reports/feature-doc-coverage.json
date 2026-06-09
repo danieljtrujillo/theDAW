@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-07T18:14:12.801Z",
-  "repoRevision": "461a36a53b67",
+  "generatedAt": "2026-06-09T10:59:50.669Z",
+  "repoRevision": "151d4c5d8e10",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -470,7 +470,8 @@
       "featureId": "create-advanced-generation-templates-prompts-spectrograms",
       "docAnchors": [
         "#6-1-primary-synthesis-prompt",
-        "#6-3-advanced-generation-panel"
+        "#6-3-advanced-generation-panel",
+        "#12-3-how-the-visualizations-are-rendered"
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."
@@ -483,10 +484,12 @@
         "#6-3-1-chimera-fusion-stack",
         "#6-4-init-signal-conditioning",
         "#12-2-3d-graph-controls",
+        "#12-3-how-the-visualizations-are-rendered",
         "#13-1-automatic-entry-creation",
         "#13-5-bundle-downloads-and-lineage",
         "#19-14-chimera",
-        "#25-3-current-feature-to-screenshot-map"
+        "#25-3-current-feature-to-screenshot-map",
+        "#30-youtube-import"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -566,7 +569,8 @@
         "#19-12-module-loader",
         "#api-unreachable-banner-in-the-header",
         "#backend-job-persistence",
-        "#25-3-current-feature-to-screenshot-map"
+        "#25-3-current-feature-to-screenshot-map",
+        "#32-admin-module-and-assistant-key-apis"
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
@@ -578,13 +582,15 @@
         "#6-5-inpainting-regen-region",
         "#6-8-run-generation",
         "#7-4-inpainting-from-the-editor",
+        "#10-2-pop-out-and-mobile",
         "#14-2-voice-synthesis",
         "#16-5-media",
         "#controls",
         "#19-4-generation-async-thedaw-ui",
         "#19-12-module-loader",
         "#19-13-disk-backed-library",
-        "#19-14-chimera"
+        "#19-14-chimera",
+        "#26-1-modes"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -640,7 +646,8 @@
         "#1-repository-anatomy",
         "#19-12-module-loader",
         "#adding-a-backend-module",
-        "#zustand-store-architecture"
+        "#zustand-store-architecture",
+        "#32-admin-module-and-assistant-key-apis"
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."

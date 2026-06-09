@@ -21,11 +21,12 @@ import mimetypes
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from .bundle import build_bundle_bytes
-from .store import LibraryStore, default_library_root
+from .store import LibraryStore, _read_metadata, default_library_root
 
 log = logging.getLogger(__name__)
 
@@ -60,16 +61,48 @@ def get_entry(entry_id: str) -> dict[str, Any]:
 
 
 @router.get("/audio/{entry_id}")
-def stream_audio(entry_id: str) -> FileResponse:
-    audio_path = get_store().get_audio_path(entry_id)
-    if audio_path is None or not audio_path.is_file():
-        raise HTTPException(404, f"Audio for entry {entry_id!r} not found")
-    mime, _ = mimetypes.guess_type(str(audio_path))
-    return FileResponse(
-        path=str(audio_path),
-        media_type=mime or "audio/wav",
-        filename=audio_path.name,
-    )
+async def stream_audio(entry_id: str) -> Response:
+    # CHANGED: support CDN-backed entries — if no local file exists but
+    # metadata has a cdn_audio_url, proxy the audio from Suno CDN on demand.
+    store = get_store()
+    audio_path = store.get_audio_path(entry_id)
+    if audio_path is not None and audio_path.is_file():
+        mime, _ = mimetypes.guess_type(str(audio_path))
+        return FileResponse(
+            path=str(audio_path),
+            media_type=mime or "audio/wav",
+            filename=audio_path.name,
+        )
+    # No local file — check for a CDN URL in metadata.
+    # CHANGED: on first CDN fetch, persist the MP3 locally so subsequent
+    # plays/sends are instant (no re-download). The entry becomes a
+    # normal local file after this one-time lazy download.
+    entry_dir = store._dir_for(entry_id)  # noqa: SLF001
+    if entry_dir is not None:
+        meta = _read_metadata(entry_dir)
+        cdn_url = (meta or {}).get("cdn_audio_url")
+        if cdn_url:
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    resp = await client.get(cdn_url)
+                    resp.raise_for_status()
+                audio_bytes = resp.content
+                # Cache to disk so future requests skip CDN.
+                local_name = meta.get("audio_filename") or f"{entry_id}.mp3"
+                local_path = entry_dir / local_name
+                try:
+                    local_path.write_bytes(audio_bytes)
+                    log.info("library: cached CDN audio to %s", local_path)
+                except OSError as write_err:
+                    log.warning("library: failed to cache CDN audio: %s", write_err)
+                return Response(
+                    content=audio_bytes,
+                    media_type="audio/mpeg",
+                    headers={"X-Audio-Source": "cdn-proxy"},
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("library: CDN proxy failed for %s: %s", entry_id, exc)
+    raise HTTPException(404, f"Audio for entry {entry_id!r} not found")
 
 
 @router.get("/stems/{stem_id}/audio")
