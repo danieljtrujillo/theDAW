@@ -1,17 +1,17 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-09T10:59:50.669Z · Git revision: `151d4c5d8e10` · Repomix tracked: **no**
+> Generated: 2026-06-09T11:15:43.839Z · Git revision: `979903487f52` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
 | Metric | Value |
 |---|---:|
-| Documentation coverage | **94%** |
-| Features inventoried | **18** |
-| Documented features | **17** |
+| Documentation coverage | **100%** |
+| Features inventoried | **24** |
+| Documented features | **24** |
 | Missing docs | **0** |
-| Partial docs | **1** |
+| Partial docs | **0** |
 | Full screenshot scenes | **9** |
 | Cropped screenshot assets | **10** |
 
@@ -28,7 +28,7 @@
 | `create-advanced-generation-templates-prompts-spectrograms` | Advanced generation controls with templates, saved prompts, prompt enhancer, output settings, and spectrogram viewer | create | implemented | **documented** | #6-1-primary-synthesis-prompt<br>#6-3-advanced-generation-panel<br>#12-3-how-the-visualizations-are-rendered | Matched 4/4 guide terms. |
 | `create-chimera-fusion-stack` | Chimera multi-clip fusion stack with BPM alignment, base clip, noise weights, and weave scheduling | chimera | implemented | **documented** | #1-repository-anatomy<br>#purpose<br>#6-3-1-chimera-fusion-stack<br>#6-4-init-signal-conditioning<br>#12-2-3d-graph-controls<br>#12-3-how-the-visualizations-are-rendered<br>#13-1-automatic-entry-creation<br>#13-5-bundle-downloads-and-lineage<br>#19-14-chimera<br>#25-3-current-feature-to-screenshot-map<br>#30-youtube-import | Matched 5/5 guide terms. |
 | `create-mic-recorder-send-targets` | Browser microphone recorder that can send recordings to editor, init, inpaint, or library | create | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#6-4-1-microphone-recorder<br>#10-1-inputs<br>#10-4-export<br>#13-1-automatic-entry-creation | Matched 5/5 guide terms. |
-| `edit-advanced-effects-chain-analyzer` | Advanced effects chain with categorized FFmpeg processors, column resizing, waveform previews, and source/output stats | edit | implemented | **partial** | #8-3-effect-catalog-and-chain | Only matched 1/5 guide terms: Effect Catalog |
+| `edit-advanced-effects-chain-analyzer` | Advanced effects chain with categorized FFmpeg processors, column resizing, waveform previews, and source/output stats | edit | implemented | **documented** | #8-1-layout<br>#8-2-quick-master<br>#8-3-effect-catalog-and-chain<br>#8-4-source-output-and-routing<br>#19-7-studio-processing<br>#adding-a-new-ffmpeg-effect | Matched 5/5 guide terms. |
 | `library-backend-local-storage` | Disk-backed backend library provider with range-streamed audio and mutable metadata | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#purpose<br>#13-1-automatic-entry-creation<br>#19-13-disk-backed-library<br>#19-15-stems<br>#library-storage-fills-the-disk<br>#zustand-store-architecture | Matched 4/5 guide terms. |
 | `library-bundle-download-lineage-export` | Library bundle downloads and lineage graph exports including metadata, stems, MIDI, and relations | library | implemented | **documented** | #12-2-3d-graph-controls<br>#13-4-per-entry-controls<br>#13-5-bundle-downloads-and-lineage<br>#19-13-disk-backed-library | Matched 2/4 guide terms. |
 | `library-stems-sidecar` | Stem separation sidecar with install/start/stop/status/progress/abort and persisted stem rows | library | implemented | **documented** | #13-4-per-entry-controls<br>#13-6-stem-separation<br>#19-15-stems | Matched 3/4 guide terms. |
@@ -40,6 +40,12 @@
 | `media-bucket-routing` | Media Bucket send targets for editor, library, init audio, and Chimera stack | daw | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#8-4-source-output-and-routing<br>#13-4-per-entry-controls<br>#16-5-media | Matched 3/4 guide terms. |
 | `vj-sidecar-tab-mobile-share` | VJ tab and mobile share link for iframe/tunnel-backed performance access | vj | experimental | **documented** | #table-of-contents<br>#5-ui-shell<br>#10-vj-tab<br>#purpose<br>#10-3-bridges<br>#10-4-export<br>#19-17-vj | Matched 3/4 guide terms. |
 | `backend-module-loader-settings` | Backend module loader with module manifests and runtime enable/disable settings | backend-module | implemented | **documented** | #1-repository-anatomy<br>#19-12-module-loader<br>#adding-a-backend-module<br>#zustand-store-architecture<br>#32-admin-module-and-assistant-key-apis | Matched 4/4 guide terms. |
+| `suno-cloud-generation` | Suno cloud generation (Aurora Cloud Console) with simple/custom/cover/mashup, server-side key, and library lineage | create | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#6-3-1-chimera-fusion-stack<br>#12-3-how-the-visualizations-are-rendered<br>#19-14-chimera<br>#26-cloud-generation-suno<br>#26-1-modes<br>#26-2-flow-and-library-integration<br>#26-3-endpoints<br>#29-catalogue | Matched 5/5 guide terms. |
+| `magenta-rt2-generate` | Magenta RealTime 2 generation (text/notes/audio-style) via the WSL2 NVIDIA sidecar, the first non-Mac MRT2 port | create | experimental | **documented** | #table-of-contents<br>#27-magenta-realtime-2<br>#27-1-the-sidecar-and-conditioning<br>#27-2-first-non-mac-port-of-magenta-realtime-2 | Matched 5/5 guide terms. |
+| `edit-tool-stack-modules` | Edit Tool Stack: six /api/edit/* processor families (mastering, restoration, enhance, delivery, creative-fx, creative-neural) plus AI analyzer | edit | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#28-edit-tool-stack | Matched 5/5 guide terms. |
+| `catalogue-cross-provider-browser` | Catalogue cross-provider library gallery with provider badges, inspector spectrograms, and lineage | library | implemented | **documented** | #table-of-contents<br>#26-2-flow-and-library-integration<br>#29-catalogue | Matched 5/5 guide terms. |
+| `controller-vision-detect-identify` | Controller Vision: detect/identify a MIDI controller from a photo (OpenCV + vision-LLM) with LAN phone pairing | daw | implemented | **documented** | #table-of-contents<br>#31-controller-vision | Matched 5/5 guide terms. |
+| `ytimport-youtube-import` | YouTube import: fetch audio from a URL into the Library as a first-class, lineage-tracked entry | library | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#30-youtube-import | Matched 4/4 guide terms. |
 
 ## Screenshot Mapping
 
@@ -67,4 +73,5 @@
 
 ## Required Documentation Follow-up
 
-Patch `docs/USER_GUIDE.md` for every feature marked missing or partial. One screenshot may intentionally cover multiple feature IDs; use the screenshot mapping above rather than duplicating captures.
+> [!TIP]
+> Coverage is currently clean. Keep it that way by updating `scripts/screenshots/specs.ts`, `docs/USER_GUIDE.md`, and screenshot mappings in the same change whenever a feature changes.
