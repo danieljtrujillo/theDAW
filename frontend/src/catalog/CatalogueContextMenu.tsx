@@ -1,0 +1,136 @@
+import React, { useEffect } from 'react';
+import {
+  Play, Scissors, Layers, Wand2, PenLine, Download, Trash2, Star, Shuffle, Cloud,
+} from 'lucide-react';
+import type { LibraryEntry } from '../state/libraryEntry';
+import { useLibraryStore } from '../state/libraryStore';
+import {
+  sendAudioToEditor,
+  sendAudioToInit,
+  sendAudioToInpaint,
+  type SendableAudio,
+} from '../lib/sendToTargets';
+import { sunoActions } from '../suno/sunoActions';
+import { HoverTip } from '../components/ui/Tooltip';
+import { playCatalogueEntry } from './CatalogueList';
+
+export interface CatalogueContextMenuState {
+  x: number;
+  y: number;
+  entry: LibraryEntry;
+}
+
+interface Props {
+  menu: CatalogueContextMenuState;
+  onClose: () => void;
+}
+
+const Item: React.FC<{
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  /** CHANGED: optional HoverTip copy explaining the action (Advanced pattern). */
+  tip?: string;
+}> = ({ icon: Icon, label, onClick, danger, tip }) => {
+  const btn = (
+    <button
+      className={`w-full text-left px-3 py-1.5 flex items-center gap-1.5 hover:bg-purple-500/15 ${danger ? 'text-red-300 hover:bg-red-500/15!' : 'text-zinc-200'}`}
+      onClick={onClick}
+    >
+      <Icon className="w-3 h-3" /> {label}
+    </button>
+  );
+  // HoverTip's root is an inline-flex <span>; force it (and its button child) to
+  // span the full menu width so the tooltip doesn't shrink the row.
+  return tip
+    ? <div className="w-full [&>span]:w-full">{<HoverTip text={tip}>{btn}</HoverTip>}</div>
+    : btn;
+};
+
+/**
+ * CatalogueContextMenu — right-click row actions, all bound to the existing
+ * library store + the shared `sendToTargets` helpers. Suno cover/mashup items
+ * are gated to Suno-origin entries (`model === 'suno'`).
+ */
+export const CatalogueContextMenu: React.FC<Props> = ({ menu, onClose }) => {
+  const { entry } = menu;
+  const removeEntry = useLibraryStore((s) => s.removeEntry);
+  const toggleFavorite = useLibraryStore((s) => s.toggleFavorite);
+  const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
+  const fetchAudioBlob = useLibraryStore((s) => s.fetchAudioBlob);
+
+  // Dismiss on outside click / Esc / blur.
+  useEffect(() => {
+    const close = () => onClose();
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, { capture: true });
+    window.addEventListener('blur', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, { capture: true } as EventListenerOptions);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  // A SendableAudio that lazily fetches this entry's bytes via the library store.
+  const sendable: SendableAudio = {
+    label: entry.title,
+    mimeType: entry.mimeType || 'audio/wav',
+    fetcher: () => fetchAudioBlob(entry),
+  };
+
+  const run = (fn: () => void | Promise<unknown>) => () => { void fn(); onClose(); };
+
+  const download = () => {
+    const a = document.createElement('a');
+    a.href = getAudioUrl(entry);
+    a.download = entry.audioFilename || entry.title;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const del = () => {
+    if (window.confirm(`Delete "${entry.title}"? This cannot be undone.`)) {
+      void removeEntry(entry.id);
+    }
+  };
+
+  return (
+    <div
+      className="fixed z-200 min-w-52 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono"
+      style={{ left: menu.x, top: menu.y }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="px-3 py-1.5 text-[8px] uppercase tracking-widest text-zinc-600 border-b border-white/5 mb-0.5 truncate">
+        {entry.title}
+      </div>
+
+      <Item icon={Play} label="Play" tip="Play this track through the global player." onClick={run(() => playCatalogueEntry(entry))} />
+      <Item icon={Scissors} label="Send to Editor (append)" tip="Append this audio to the tail of the first editor track." onClick={run(() => sendAudioToEditor(sendable, 'editor-first-track'))} />
+      <Item icon={Layers} label="Send to Editor (new track)" tip="Add this audio as a brand-new track in the editor." onClick={run(() => sendAudioToEditor(sendable, 'editor-new-track'))} />
+      <Item icon={Wand2} label="Send to Init audio" tip="Load this audio into the generator's Init (audio-to-audio) slot." onClick={run(() => sendAudioToInit(sendable))} />
+      <Item icon={PenLine} label="Send to Inpaint" tip="Load this audio into the generator's Inpaint slot to regenerate a region." onClick={run(() => sendAudioToInpaint(sendable))} />
+
+      {/* Suno-only: a Suno clip can seed a Suno cover/mashup. */}
+      {sunoActions.canUseAsSunoSource(entry) && (
+        <>
+          <div className="border-t border-white/5 my-0.5" />
+          <Item icon={Cloud} label="Suno: Cover" tip="Use this Suno clip as the source for a Suno cover. (Suno tracks only.)" onClick={run(() => sunoActions.sendToCover(entry))} />
+          <Item icon={Shuffle} label="Suno: Mashup" tip="Use this Suno clip as the base for a Suno mashup. (Suno tracks only.)" onClick={run(() => sunoActions.sendToMashup(entry))} />
+        </>
+      )}
+
+      <div className="border-t border-white/5 my-0.5" />
+      <Item icon={Star} label={entry.favorite ? 'Unfavorite' : 'Favorite'} tip={entry.favorite ? 'Remove from favorites.' : 'Mark as a favorite (star).'} onClick={run(() => toggleFavorite(entry.id))} />
+      <Item icon={Download} label="Download" tip="Download the original audio file to your computer." onClick={run(download)} />
+      <div className="border-t border-white/5 my-0.5" />
+      <Item icon={Trash2} label="Delete" tip="Permanently delete this entry from the library. Cannot be undone." onClick={run(del)} danger />
+    </div>
+  );
+};

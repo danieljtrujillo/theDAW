@@ -133,4 +133,6 @@ exclude = [
     "stable_audio_3/interface",
     "stable_audio_3/data",
     "stable_audio_3/training",
+    # Vendored git submodule (third-party MRT2 port); not linted by the parent project.
+    "sidecars/magenta-rt2-nvidia",
 ]

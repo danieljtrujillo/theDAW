@@ -1,16 +1,19 @@
 """Client for the Magenta RealTime 2 (mrt2) sidecar.
 
-The live sidecar is the "MRT2 Studio" HTTP server that runs in WSL2 on the NVIDIA
-GPU (``port/oneclick/studio/studio_server.py`` in the MRT2 bundle). It loads
-``MagentaRT2Jax`` once and exposes a tiny synchronous HTTP API:
+The live sidecar is theDAW's extended MRT2 server (``sidecars/magenta/server.py``)
+running in WSL2 on the NVIDIA GPU. It supersedes the bundle's text-only
+``studio_server.py``: it loads ``MagentaRT2Jax`` once and exposes a small HTTP API:
 
     GET  /health    -> {"ready": bool, "status": str, "model": str, "device": str}
-    POST /generate  -> JSON {prompt, duration, temperature, top_k,
-                             cfg_musiccoca, cfg_notes}  ->  audio/wav bytes
+    POST /generate  -> multipart {prompt, duration, temperature, top_k,
+                                  cfg_musiccoca, cfg_notes, notes?, audio?}
+                       -> audio/wav bytes (48 kHz stereo)
 
-This is a TEXT-PROMPT -> AUDIO model (style-conditioned real-time continuation).
-It does NOT take MIDI notes or an input audio file — ``drums``/``cfg_notes`` are
-generation knobs, not user note lists. Override the URL with
+Conditioning is combinable per the model: a **text** prompt (default), a list of
+**MIDI notes** (``notes`` = ``[{pitch:0-127,start,end}]``, encoded to the model's
+128-pitch state windows), and/or an **audio-style** reference clip (``audio``,
+embedded via the model's style encoder; overrides the prompt). The response
+``X-Conditioning`` header reports which mode(s) were used. Override the URL with
 ``STABLEDAW_MAGENTA_URL`` (default ``http://localhost:8777``).
 """
 

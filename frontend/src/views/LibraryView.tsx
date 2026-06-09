@@ -4,7 +4,7 @@ import {
   Music, Star, Tag, Filter, ArrowUpDown,
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
-  CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown,
+  CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { LineageModal } from '../components/library/LineageModal';
@@ -63,7 +63,7 @@ const downloadEntry = (entry: LibraryEntry, url: string) => {
   document.body.removeChild(a);
 };
 
-export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
+export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpand?: () => void }> = ({ onSwitchTab, onExpand }) => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [subTab, setSubTab] = useState<'tracks' | 'stems' | 'midi'>('tracks');
   const [lineageOpen, setLineageOpen] = useState<string | null>(null);
@@ -705,10 +705,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({
           <button onClick={() => setViewMode('grid')} className={`p-1 rounded ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-zinc-600'}`} title="Grid view">
             <LayoutGrid className="w-3 h-3" />
           </button>
-          {/* Collapse handle removed — the ONLY library toggle now
-              lives at the right edge of the CenterTabBar (the
-              PanelRightOpen/Close icon). User flagged that the
-              in-panel chevron was a duplicate. */}
+          {onExpand && (
+            <button onClick={onExpand} className="p-1 rounded text-zinc-500 hover:text-teal-300" title="Expand to full library">
+              <Maximize2 className="w-3 h-3" />
+            </button>
+          )}
         </div>
       }>
         {/* Mic-in recorder. Hidden by default; toggled from the LIBRARY

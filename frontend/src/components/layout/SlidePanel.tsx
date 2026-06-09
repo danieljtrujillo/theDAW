@@ -253,6 +253,7 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
   const assignMedia = (id: string) => {
     const item = bucket.find((b) => b.id === id);
     if (!item) return;
+    if (stack.media?.url) URL.revokeObjectURL(stack.media.url);
     const media: StackMedia = {
       kind: kindOfMime(item.mimeType),
       url: URL.createObjectURL(item.blob),
@@ -261,7 +262,10 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
     };
     updateStack(stack.id, { media });
   };
-  const clearMedia = () => updateStack(stack.id, { media: null });
+  const clearMedia = () => {
+    if (stack.media?.url) URL.revokeObjectURL(stack.media.url);
+    updateStack(stack.id, { media: null });
+  };
 
   const addTarget = () => {
     const firstKey = visualControls[0]?.key ?? '';

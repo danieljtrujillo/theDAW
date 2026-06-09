@@ -162,32 +162,73 @@ def _record_from_metadata(
     api_prefix: str,
 ) -> Optional[LibraryRecord]:
     """Build a LibraryRecord from a metadata.json payload. Returns None if
-    the directory has no resolvable audio file."""
+    the directory has no resolvable audio file AND no CDN URL fallback."""
+    # ── Suno API-compatible format normalization ─────────────────────
+    # If metadata came from a Suno External API cache (has "inferred" dict),
+    # flatten inferred fields to top-level so downstream field reads work.
+    # No-op on normal StableDAW metadata (no "inferred" key exists).
+    # Shallow-copy to avoid mutating the caller's dict (preserves DB fidelity).
+    inferred = meta.get("inferred")
+    if isinstance(inferred, dict):
+        meta = dict(meta)
+        for k, v in inferred.items():
+            if meta.get(k) is None:
+                meta[k] = v
+
+        # Pull nested Suno API metadata.metadata fields up to top-level.
+        # Only runs when "inferred" was present (Suno format marker).
+        api_meta = meta.get("metadata")
+        if isinstance(api_meta, dict):
+            if api_meta.get("lyrics") and not meta.get("lyrics"):
+                meta["lyrics"] = api_meta["lyrics"]
+            if api_meta.get("style") and not meta.get("style"):
+                meta["style"] = api_meta["style"]
+            if api_meta.get("description") and not meta.get("prompt"):
+                meta["prompt"] = api_meta["description"]
+
     entry_id = entry_dir.name
     audio_file = _resolve_audio_file(entry_dir, meta)
-    if audio_file is None:
+
+    # CHANGED: allow CDN-only entries (no local audio file) when a
+    # cdn_audio_url is present in metadata — used by Suno cache import.
+    if audio_file is None and not meta.get("cdn_audio_url"):
         return None
 
-    try:
-        size = audio_file.stat().st_size
-    except OSError:
-        size = 0
+    size = 0
+    audio_fname = ""
+    if audio_file is not None:
+        try:
+            size = audio_file.stat().st_size
+        except OSError:
+            size = 0
+        audio_fname = audio_file.name
+    else:
+        audio_fname = meta.get("audio_filename") or f"{entry_id}.mp3"
 
     timestamp = meta.get("timestamp")
     if not timestamp:
-        # Fall back to saved_at unix seconds → ISO.
-        saved_at = meta.get("saved_at")
-        if isinstance(saved_at, (int, float)):
-            timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(saved_at)) + "Z"
+        # Fall back to created_at ISO string (Suno cache format).
+        created_at_str = meta.get("created_at")
+        if isinstance(created_at_str, str) and created_at_str:
+            timestamp = created_at_str
         else:
-            try:
+            # Fall back to saved_at unix seconds → ISO.
+            saved_at = meta.get("saved_at")
+            if isinstance(saved_at, (int, float)):
                 timestamp = (
-                    time.strftime(
-                        "%Y-%m-%dT%H:%M:%S", time.gmtime(audio_file.stat().st_mtime)
-                    )
-                    + "Z"
+                    time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(saved_at)) + "Z"
                 )
-            except OSError:
+            elif audio_file is not None:
+                try:
+                    timestamp = (
+                        time.strftime(
+                            "%Y-%m-%dT%H:%M:%S", time.gmtime(audio_file.stat().st_mtime)
+                        )
+                        + "Z"
+                    )
+                except OSError:
+                    timestamp = ""
+            else:
                 timestamp = ""
 
     # Older metadata used `model_name` and `cfg_scale`; the new convention is
@@ -200,7 +241,7 @@ def _record_from_metadata(
 
     return LibraryRecord(
         id=entry_id,
-        title=str(meta.get("title") or meta.get("filename") or audio_file.name),
+        title=str(meta.get("title") or meta.get("filename") or audio_fname),
         prompt=str(meta.get("prompt") or ""),
         negative_prompt=str(meta.get("negative_prompt") or ""),
         model=str(model),
@@ -209,8 +250,8 @@ def _record_from_metadata(
         cfg=float(cfg_val or 0.0),
         seed=int(meta.get("seed") or 0),
         audio_url=_audio_url_for(api_prefix, entry_id),
-        audio_filename=audio_file.name,
-        mime_type=str(meta.get("mime_type") or "audio/wav"),
+        audio_filename=audio_fname,
+        mime_type=str(meta.get("mime_type") or "audio/mpeg"),
         file_size_bytes=size,
         timestamp=timestamp,
         favorite=bool(meta.get("favorite", False)),

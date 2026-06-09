@@ -467,6 +467,7 @@ export const AdvancedGenPanel: React.FC<{
                   <option value="small-rf">Small-RF</option>
                   <option value="medium-rf">Medium-RF</option>
                   {p.magentaAvailable && <option value="magenta-small">Magenta RT2 (text→music)</option>}
+                  <option value="suno">Suno (Cloud)</option>
                 </select>
               </div>
               <SlideRow label="Length (s)" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} tipKey="duration" />

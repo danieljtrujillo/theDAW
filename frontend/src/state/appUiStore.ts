@@ -37,12 +37,14 @@ interface AppUiState {
   centerTab: CenterTab;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
+  isLibraryExpanded: boolean;
   rightPanelWidth: number;
   docsOpen: boolean;
   setActiveView: (view: unknown) => void;
   setCenterTab: (tab: unknown) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
+  setLibraryExpanded: (expanded: boolean) => void;
   setRightPanelWidth: (width: number) => void;
   setDocsOpen: (open: boolean) => void;
 }
@@ -66,6 +68,7 @@ export const useAppUiStore = create<AppUiState>()(
       // CenterTabBar) for future use as a context palette.
       isLeftPanelOpen: false,
       isRightPanelOpen: false,
+      isLibraryExpanded: false,
       rightPanelWidth: RIGHT_PANEL_DEFAULT_WIDTH,
       docsOpen: false,
       setActiveView: (view) => {
@@ -94,7 +97,8 @@ export const useAppUiStore = create<AppUiState>()(
         set({ centerTab: normalized });
       },
       setLeftPanelOpen: (open) => set({ isLeftPanelOpen: open }),
-      setRightPanelOpen: (open) => set({ isRightPanelOpen: open }),
+      setRightPanelOpen: (open) => set({ isRightPanelOpen: open, ...(open ? {} : { isLibraryExpanded: false }) }),
+      setLibraryExpanded: (expanded) => set({ isLibraryExpanded: expanded, ...(expanded ? { isRightPanelOpen: true } : {}) }),
       setRightPanelWidth: (width) => set({ rightPanelWidth: clampRightPanelWidth(width) }),
       setDocsOpen: (open) => set({ docsOpen: open }),
     }),
@@ -104,6 +108,7 @@ export const useAppUiStore = create<AppUiState>()(
         centerTab: s.centerTab,
         isLeftPanelOpen: s.isLeftPanelOpen,
         isRightPanelOpen: s.isRightPanelOpen,
+        isLibraryExpanded: s.isLibraryExpanded,
         rightPanelWidth: s.rightPanelWidth,
       }),
     },
