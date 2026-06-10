@@ -78,29 +78,29 @@ function buildTrainRegistry(p: TrainRegArgs): WidgetRegistry {
     <Section title="TARGET ARCHITECTURE" icon={Layers} defaultOpen={true} rightNode={<span className="mono-tag bg-blue-600/20! border-blue-500/30! text-blue-300!">L4-ACCEL</span>}>
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
-          <label className="mono-label">New Lora Identity</label>
-          <input type="text" className="compact-input w-full" value={p.params.moduleName} onChange={(e) => p.setParams({ ...p.params, moduleName: e.target.value })} />
+          <label htmlFor="train-module-name" className="mono-label">New Lora Identity</label>
+          <input id="train-module-name" name="train-module-name" type="text" className="compact-input w-full" value={p.params.moduleName} onChange={(e) => p.setParams({ ...p.params, moduleName: e.target.value })} />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div className="flex flex-col gap-1">
-            <label className="mono-label">Target Module</label>
-            <select className="compact-input w-full uppercase font-mono" value={p.params.targetModule} onChange={(e) => p.setParams({ ...p.params, targetModule: e.target.value })}>
+            <label htmlFor="train-target-module" className="mono-label">Target Module</label>
+            <select id="train-target-module" name="train-target-module" className="compact-input w-full uppercase font-mono" value={p.params.targetModule} onChange={(e) => p.setParams({ ...p.params, targetModule: e.target.value })}>
               <option value="attn_kv">ATTN_KV</option>
               <option value="mlp">MLP_LAYERS</option>
               <option value="to_q">TO_Q_PROJ</option>
             </select>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="mono-label">Epochs</label>
-            <input type="number" className="compact-input w-full" value={p.params.epochs} onChange={(e) => p.setParams({ ...p.params, epochs: parseInt(e.target.value) || 0 })} />
+            <label htmlFor="train-epochs" className="mono-label">Epochs</label>
+            <input id="train-epochs" name="train-epochs" type="number" className="compact-input w-full" value={p.params.epochs} onChange={(e) => p.setParams({ ...p.params, epochs: parseInt(e.target.value) || 0 })} />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="mono-label">Rank</label>
-            <input type="number" className="compact-input w-full" value={p.params.rank} onChange={(e) => p.setParams({ ...p.params, rank: parseInt(e.target.value) || 0 })} />
+            <label htmlFor="train-rank" className="mono-label">Rank</label>
+            <input id="train-rank" name="train-rank" type="number" className="compact-input w-full" value={p.params.rank} onChange={(e) => p.setParams({ ...p.params, rank: parseInt(e.target.value) || 0 })} />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="mono-label">Alpha</label>
-            <input type="number" className="compact-input w-full" value={p.params.alpha} onChange={(e) => p.setParams({ ...p.params, alpha: parseInt(e.target.value) || 0 })} />
+            <label htmlFor="train-alpha" className="mono-label">Alpha</label>
+            <input id="train-alpha" name="train-alpha" type="number" className="compact-input w-full" value={p.params.alpha} onChange={(e) => p.setParams({ ...p.params, alpha: parseInt(e.target.value) || 0 })} />
           </div>
         </div>
       </div>
@@ -113,7 +113,7 @@ function buildTrainRegistry(p: TrainRegArgs): WidgetRegistry {
         <UploadCloud className="w-5 h-5 text-zinc-600" />
         <span className="text-[9px] text-zinc-500 font-mono tracking-widest uppercase">Load Dataset (.zip / folder)</span>
       </div>
-      <input type="text" className="compact-input w-full mt-2" placeholder="Dataset path on local machine (required by /api/jobs/train-lora)" value={p.params.datasetPath} onChange={(e) => p.setParams({ ...p.params, datasetPath: e.target.value })} />
+      <input type="text" name="train-dataset-path" className="compact-input w-full mt-2" placeholder="Dataset path on local machine (required by /api/jobs/train-lora)" value={p.params.datasetPath} onChange={(e) => p.setParams({ ...p.params, datasetPath: e.target.value })} />
       <div className="mt-2 space-y-1">
         <div className="flex items-center justify-between p-1.5 bg-white/5 rounded"><span className="text-zinc-400">techno_kicks_2024</span><span className="text-[8px] font-mono text-zinc-600">128 samples</span></div>
         <div className="flex items-center justify-between p-1.5 bg-white/5 rounded opacity-50"><span className="text-zinc-400">ambient_pads_raw</span><span className="text-[8px] font-mono text-zinc-600">Waiting...</span></div>
@@ -217,7 +217,7 @@ export const TrainView: React.FC = () => {
     <div className="relative h-full w-full overflow-hidden text-zinc-200">
       <ControlSurface surfaceId="train" registry={registry} defaultLayout={defaultTrainLayout} className="p-1.5" />
       <input
-        ref={aeFileRef} type="file" accept="audio/*" className="hidden"
+        ref={aeFileRef} type="file" name="train-ae-encode-file" accept="audio/*" className="hidden"
         onChange={(event) => { const file = event.target.files?.[0]; if (file) void encodeAudioToLatents({ modelName: 'same-l', audioFile: file }); }}
         title="Encode audio file"
       />

@@ -113,6 +113,20 @@ export interface GenerateParamsState {
   chimera: ChimeraState;
   /** True when the Magenta RT2 sidecar probe succeeds (transient; re-probed each session). */
   magentaAvailable: boolean;
+
+  // Magenta RT2 (text→music) sampling params — used when `model` starts with
+  // "magenta-". These replace the SA3 sampler/schedule controls in the MAKE UI;
+  // the central Chimera stack is shared across both engines.
+  magTemperature: number;
+  magTopK: number;
+  magCfgMusiccoca: number;
+  magCfgNotes: number;
+  magCfgDrums: number;
+  magDrums: number; // -1 auto · 0 off · 1 on
+  magChunkFrames: number;
+  magSeed: number; // -1 = fresh/random each run
+  magExtend: boolean; // continue the current piece (morph without a cut)
+  magNotes: number[]; // selected MIDI pitches that steer the melody
 }
 
 interface ParamsStore extends GenerateParamsState {
@@ -196,6 +210,17 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
   },
 
   magentaAvailable: false,
+
+  magTemperature: 1.3,
+  magTopK: 40,
+  magCfgMusiccoca: 3.0,
+  magCfgNotes: 1.0,
+  magCfgDrums: 1.0,
+  magDrums: -1,
+  magChunkFrames: 25,
+  magSeed: -1,
+  magExtend: false,
+  magNotes: [],
 
   setField: (key, value) => set({ [key]: value } as Partial<GenerateParamsState>),
   patch: (partial) => set(partial),

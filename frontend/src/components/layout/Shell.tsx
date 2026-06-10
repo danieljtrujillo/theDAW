@@ -1,5 +1,5 @@
-import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, GripVertical } from 'lucide-react';
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 
@@ -251,10 +251,12 @@ export const Shell: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Share URL</label>
+                <label htmlFor="shell-share-url" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Share URL</label>
                 <div className="flex gap-2">
                   <input
+                    id="shell-share-url"
                     type="text"
+                    name="shell-share-url"
                     value={shareUrl}
                     readOnly
                     className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 outline-none"
@@ -273,9 +275,11 @@ export const Shell: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-[9px] font-black uppercase tracking-widest text-zinc-400">External URL override</label>
+                <label htmlFor="shell-share-url-override" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">External URL override</label>
                 <input
+                  id="shell-share-url-override"
                   type="url"
+                  name="shell-share-url-override"
                   value={shareUrlOverride}
                   onChange={(e) => updateShareUrlOverride(e.target.value)}
                   placeholder="Paste Cloudflare tunnel URL, e.g. https://name.trycloudflare.com"
@@ -323,8 +327,9 @@ export const Shell: React.FC = () => {
 const STRIP_HEIGHT = 36;
 const DOCK_MIN_HEIGHT = 60;
 const DOCK_MAX_FRACTION = 0.85;
-const LOG_HEADER_FRACTION = '40%';
-const CREATE_FRACTION = '60%';
+// CREATE / PROCESS / TRAIN action button — a FIXED width so it never grows when
+// the LOG is drag-resized (the LOG header takes all the slack instead).
+const ACTION_WIDTH = 180;
 const LOG_MIN_WIDTH = 220;
 const LOG_MAX_WIDTH = 720;
 
@@ -333,41 +338,41 @@ const ShellBottomDock: React.FC = () => {
   const setMultiHeight = useBottomPanelStore((s) => s.setMultiHeight);
   const logWidth = useBottomPanelStore((s) => s.logWidth);
   const setLogWidth = useBottomPanelStore((s) => s.setLogWidth);
-  const setRightPanelWidth = useAppUiStore((s) => s.setRightPanelWidth);
   const isBottomOpen = useBottomPanelStore((s) => s.isOpen);
   const setBottomOpen = useBottomPanelStore((s) => s.setOpen);
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
   const setLogOpen = useBottomPanelStore((s) => s.setLogOpen);
   const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
 
-  const showBodyRow = isBottomOpen || isLogOpen;
-  // ONE shared dock-body height — the LOG can never grow taller than the dock
-  // and push into the center work area. Maximized fills the work area.
+  // Dock-body height — shared by the multi-tab panel (in-flow) and the floating
+  // LOG overlay. Maximized fills the work area.
   const bodyHeight = multiMaximized ? 'calc(100vh - 7rem)' : `${multiHeight}px`;
-  // The LOG column has its OWN width (logWidth); the strip + body both use it so
-  // they stay column-aligned with each other (decoupled from the right Library
-  // rail). Dragging the LOG handle also nudges the rail above — one-way: the
-  // rail's own handle never changes logWidth.
-  const stripGridStyle = { gridTemplateColumns: `minmax(0, 1fr) ${logWidth}px` };
-  const bodyGridStyle = {
-    gridTemplateColumns: `minmax(0, 1fr) ${isLogOpen ? `${logWidth}px` : '0px'}`,
-  };
-  const setLogWidthCoupled = (w: number) => {
-    setLogWidth(w);
-    setRightPanelWidth(w);
-  };
+  // The LOG strip section auto-fits its content (the telemetry readouts + the
+  // fixed action button). Mirror its measured width into logWidth so the LOG
+  // body directly below it stays column-aligned (opens to the same left edge).
+  const logSectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = logSectionRef.current;
+    if (!el) return;
+    const sync = () => {
+      const w = Math.round(el.getBoundingClientRect().width);
+      if (w > 0) setLogWidth(w);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [setLogWidth]);
 
   return (
-    <div className="shrink-0 flex flex-col z-30 pointer-events-none">
-      {/* Body row — one shared height; multi (flex) + LOG (logWidth) side-by-side. */}
-      {showBodyRow && (
+    <div className="relative shrink-0 flex flex-col z-30 pointer-events-none">
+      {/* Multi-tab body — in-flow; the global bottom panel legitimately lifts the
+          work area. The LOG no longer shares this row (it floats, below). */}
+      {isBottomOpen && (
         <div
-          className="relative shrink-0 grid items-stretch pointer-events-auto"
-          style={{ ...bodyGridStyle, height: bodyHeight }}
+          className="relative shrink-0 bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)] pointer-events-auto"
+          style={{ height: bodyHeight }}
         >
-          {/* One vertical resize handle for the whole dock body (top edge).
-              z-40 (inside the handle) keeps it above the cells regardless of
-              DOM order. Hidden while maximized. */}
           {!multiMaximized && (
             <ColumnResizeHandle
               currentHeight={multiHeight}
@@ -375,63 +380,64 @@ const ShellBottomDock: React.FC = () => {
               title="Drag to resize the bottom dock"
             />
           )}
-
-          {/* Multi body — flexible column, fills the shared height. Transparent
-              when collapsed so only the LOG block shows. */}
-          <div
-            className={`min-w-0 relative overflow-hidden ${isBottomOpen ? 'bg-[#0a080f] shadow-[0_-1px_0_rgba(168,85,247,0.08)]' : ''} ${isLogOpen && isBottomOpen && !multiMaximized ? 'border-r border-purple-500/15' : ''}`}
-          >
-            {isBottomOpen && (
-              <>
-                <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
-                <BottomMultiTabPanel />
-              </>
-            )}
-          </div>
-
-          {/* LOG body — independent width, fills the shared height. */}
-          {isLogOpen && (
-            <div className="min-w-0 relative bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
-              <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
-              {/* Horizontal handle between the multi panel and the LOG. */}
-              <WidthResizeHandle
-                currentWidth={logWidth}
-                onSet={setLogWidthCoupled}
-                title="Drag to resize the log width"
-              />
-              <LogBody />
-            </div>
-          )}
+          <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
+          <BottomMultiTabPanel />
         </div>
       )}
 
-      {/* Single horizontal strip — always visible. */}
-      <div className="shrink-0 grid items-stretch pointer-events-auto" style={{ ...stripGridStyle, height: STRIP_HEIGHT }}>
+      {/* LOG body — FLOATING overlay: anchored just above the strip, right-aligned,
+          only logWidth wide. It autofits under the right panel and floats over the
+          bottom-right of the work area instead of pushing the whole UI up. */}
+      {isLogOpen && (
+        <div
+          className="absolute right-0 z-40 pointer-events-auto bg-[#0a080f] overflow-hidden border-l border-purple-500/15 shadow-[-2px_-2px_12px_rgba(0,0,0,0.5)]"
+          style={{ bottom: STRIP_HEIGHT, width: logWidth, height: bodyHeight }}
+        >
+          {!multiMaximized && (
+            <ColumnResizeHandle
+              currentHeight={multiHeight}
+              onSet={setMultiHeight}
+              title="Drag to resize the log height"
+            />
+          )}
+          <div className="absolute inset-x-0 top-0 h-px bg-purple-500/20 pointer-events-none" />
+          <LogBody />
+        </div>
+      )}
 
-        {/* Multi-tab toggle — left, flex-1 */}
+      {/* Single horizontal strip — always visible. `relative` anchors the
+          viewport-centred expand chevron. */}
+      <div className="relative shrink-0 flex items-stretch pointer-events-auto" style={{ height: STRIP_HEIGHT }}>
+
+        {/* Multi-tab toggle — flex-1 clickable area (the chevron is centred
+            separately, below, so it lines up with PLAY / DJ / the mirror line). */}
         <button
           type="button"
           onClick={() => setBottomOpen(!isBottomOpen)}
-          className="min-w-0 bg-[#0a080f] flex items-center justify-center gap-2 group hover:bg-purple-500/8 transition-colors border-t border-r border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+          className="min-w-0 flex-1 bg-[#0a080f] hover:bg-purple-500/8 transition-colors border-t border-r border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
           title={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
           aria-label={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
-        >
-          {isBottomOpen
-            ? <ChevronDown className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
-            : <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors" />
-          }
-        </button>
+        />
 
-        {/* LOG strip section — right, width = rightPanelWidth.
-            Internally: 40% LOG header (chevron-LEFT + label + count)
-            | 60% CREATE action button. */}
-        <div className="min-w-0 bg-[#0a080f] flex items-stretch border-t border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
-          {/* LOG header — 40%. Chevron on the LEFT per user spec. */}
+        {/* Expand chevron — centred on the viewport so it lines up with the PLAY
+            button, the DJ tab, and the layout-editor mirror line. pointer-events
+            pass through to the toggle button behind it. */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+          {isBottomOpen
+            ? <ChevronDown className="w-3.5 h-3.5 text-purple-300" />
+            : <ChevronUp className="w-3.5 h-3.5 text-purple-300" />
+          }
+        </div>
+
+        {/* LOG strip section — CONTENT width: auto-fits the CPU/GPU/TEMP/VRAM/RAM
+            readouts (its measured width drives logWidth). The action button is a
+            FIXED width and never grows with the LOG. */}
+        <div ref={logSectionRef} className="shrink-0 bg-[#0a080f] flex items-stretch border-t border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
+          {/* LOG header — natural width so every readout shows in full. */}
           <button
             type="button"
             onClick={() => setLogOpen(!isLogOpen)}
-            className="flex items-center gap-1.5 px-2 group hover:bg-purple-500/8 transition-colors border-r border-purple-500/15 min-w-0"
-            style={{ width: LOG_HEADER_FRACTION }}
+            className="flex items-center gap-1.5 px-2 group hover:bg-purple-500/8 transition-colors border-r border-purple-500/15 shrink-0"
             title={isLogOpen ? 'Collapse log' : 'Expand log'}
             aria-label={isLogOpen ? 'Collapse log' : 'Expand log'}
           >
@@ -440,14 +446,11 @@ const ShellBottomDock: React.FC = () => {
               : <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
             }
             <span className="text-[10px] font-black uppercase tracking-widest text-purple-200 shrink-0">LOG</span>
-            {/* Live CPU · GPU · TEMP · VRAM · RAM. Truncates when the LOG column
-                is narrow — widen it with the horizontal handle to see them all. */}
-            <span className="flex-1 min-w-0 overflow-hidden">
-              <LogStripCompactInfo />
-            </span>
+            {/* Live CPU · GPU · TEMP · VRAM · RAM — shown in full (the section sizes to fit). */}
+            <span className="shrink-0"><LogStripCompactInfo /></span>
           </button>
-          {/* CREATE — 60%. */}
-          <div className="flex items-stretch" style={{ width: CREATE_FRACTION }}>
+          {/* Action button (CREATE / PROCESS / TRAIN) — fixed width. */}
+          <div className="flex items-stretch shrink-0" style={{ width: ACTION_WIDTH }}>
             <LogActionButton />
           </div>
         </div>
@@ -507,60 +510,6 @@ const ColumnResizeHandle: React.FC<ColumnResizeHandleProps> = ({ currentHeight, 
       >
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 group-hover:bg-purple-500/40 transition-colors" />
         <GripHorizontal className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-      </div>
-    </>
-  );
-};
-
-/**
- * Horizontal resize handle between the multi panel and the LOG. Lives at the
- * LEFT edge of the LOG cell; dragging left widens the LOG, right narrows it.
- * Same `dragging` full-window overlay trick as the vertical handle so the VJ
- * iframe can't swallow the drag. Width grows as the pointer moves left, so the
- * new width = (current right edge) - clientX, derived from the start geometry.
- */
-interface WidthResizeHandleProps {
-  currentWidth: number;
-  onSet: (w: number) => void;
-  title: string;
-}
-const WidthResizeHandle: React.FC<WidthResizeHandleProps> = ({ currentWidth, onSet, title }) => {
-  const [dragging, setDragging] = useState(false);
-  const startX = React.useRef(0);
-  const startW = React.useRef(currentWidth);
-  useEffect(() => {
-    if (!dragging) return;
-    const onMove = (e: MouseEvent) => {
-      const dx = startX.current - e.clientX; // drag left = positive = wider
-      const clamped = Math.max(LOG_MIN_WIDTH, Math.min(LOG_MAX_WIDTH, startW.current + dx));
-      onSet(clamped);
-    };
-    const onUp = () => setDragging(false);
-    document.body.style.cursor = 'col-resize';
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      document.body.style.cursor = 'default';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [dragging, onSet]);
-
-  return (
-    <>
-      {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
-      <div
-        className="absolute inset-y-0 left-0 w-1.5 -ml-0.5 cursor-col-resize flex items-center justify-center group z-40"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          startX.current = e.clientX;
-          startW.current = currentWidth;
-          setDragging(true);
-        }}
-        title={title}
-      >
-        <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 group-hover:bg-purple-500/40 transition-colors" />
-        <GripVertical className="w-3.5 h-3.5 text-zinc-700 group-hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
     </>
   );

@@ -676,6 +676,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       <input
         ref={midiFileInputRef}
         type="file"
+        name="library-import-midi"
         accept=".mid,.midi,audio/midi"
         multiple
         className="hidden"

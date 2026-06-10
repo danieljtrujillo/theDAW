@@ -55,6 +55,7 @@ const PanelHeader: React.FC<{
       {editing ? (
         <input
           autoFocus
+          name="surface-panel-rename"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => {

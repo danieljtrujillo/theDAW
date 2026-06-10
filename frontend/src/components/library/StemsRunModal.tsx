@@ -162,6 +162,7 @@ export const StemsRunModal: React.FC<Props> = ({ open, entryLabel, onCancel, onC
           <label className="flex items-center gap-2 text-[9px] font-mono uppercase tracking-widest text-zinc-400 cursor-pointer mt-1">
             <input
               type="checkbox"
+              name="stems-persist-default"
               className="accent-purple-500"
               checked={persist}
               onChange={(e) => setPersist(e.target.checked)}

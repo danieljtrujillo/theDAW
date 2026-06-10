@@ -20,69 +20,75 @@ FONT="showcase/.font.ttf"
 # A "song being made in theDAW" arc, built around Et Tu Machina: hook -> make -> arrange ->
 # mix -> perform -> visualize -> lineage -> ecosystem. Order is the narrative; durations flex.
 SCENES=(
-  # hook + lineage
-  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|0.5|one machine, every instrument"
-  "01a_learn-2d-hero|1.9|full|608:1080:656:0|19.0|every track remembers its lineage"
-  # make the song
-  "08_make|1.4|full|608:1080:656:0||generate from a prompt"
-  "23_chimera|1.6|full|608:1080:656:0||fuse clips into a chimera"
-  "25_init-audio|1.4|full|608:1080:656:0||seed it with your own audio"
-  "21_inpaint|1.4|full|608:1080:656:0||repaint any section"
-  "45_saved-prompts|1.2|full|608:1080:656:0||save every prompt"
-  "05_sequencer|1.3|full|608:1080:656:0||a step sequencer"
-  "58_spectrogram|1.9|full|608:1080:656:0||mel · stft · chroma · cqt"
+  # hook
+  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|0.5|Real-time cymatics visualizer"
+  # genealogy — the 3D graph flies into the piano roll that opens make
+  "01a_learn-2d-hero|1.9|full|608:1080:656:0|19.0|Interactive lineage graph"
+  "65_3d-piano|3.5|full|608:1080:656:0|1.5|3D genealogy graph"
+  # make — opens at the piano roll the 3D graph flew into
+  "65_3d-piano|3.5|full|608:1080:656:0|5.0|Built-in piano roll"
+  "08_make|1.4|full|608:1080:656:0||Generate audio from a text prompt"
+  "23_chimera|1.6|full|608:1080:656:0||Blend multiple clips with Chimera"
+  "25_init-audio|1.4|full|608:1080:656:0||Audio-to-audio generation"
+  "21_inpaint|1.4|full|608:1080:656:0||Regenerate any section with inpainting"
+  "45_saved-prompts|1.2|full|608:1080:656:0||Save and reuse prompts"
+  "05_sequencer|1.3|full|608:1080:656:0||Built-in step sequencer"
+  "58_spectrogram|1.9|full|608:1080:656:0||Mel, STFT, chroma, and CQT spectrograms"
   # arrange + edit
-  "03_edit-stems|1.9|full|608:1080:656:0||arrange the stems on a timeline"
-  "22_cut-edit|1.5|full|608:1080:656:0||cut and chop the clips"
-  "41_delete-clip|1.3|full|608:1080:656:0||edit like a daw"
-  "31_edit-mix|1.4|full|608:1080:656:0||mix the tracks live"
-  "40_inpaint-region|1.4|full|608:1080:656:0||paintbrush inpainting"
-  "59_commit-edit|1.5|full|608:1080:656:0||commit to a 44.1khz master"
+  "03_edit-stems|1.9|full|608:1080:656:0||Arrange stems on a timeline"
+  "22_cut-edit|1.5|full|608:1080:656:0||Cut, split, and chop clips"
+  "41_delete-clip|1.3|full|608:1080:656:0||Full multitrack editing"
+  "31_edit-mix|1.4|full|608:1080:656:0||Live per-track mixing"
+  "40_inpaint-region|1.4|full|608:1080:656:0||Paintbrush region inpainting"
+  "59_commit-edit|1.5|full|608:1080:656:0||Render a 44.1 kHz master"
   # mix
-  "07_mix-effects|1.4|full|608:1080:1312:0||a studio effects rack"
-  "57_mix-all-effects|2.0|full|608:1080:400:0||every effect, on the track"
-  "66_module-gui|1.7|full|608:1080:1312:0||14 pro-grade instruments"
-  "32_mix-chain|1.4|full|608:1080:400:0||stack a mastering chain"
-  "27_lora|1.3|full|608:1080:1312:0||load loras"
-  "39_design-mode|1.6|full|608:1080:656:0||rearrange the interface"
+  "07_mix-effects|1.4|full|608:1080:1312:0||Studio effects rack"
+  "57_mix-all-effects|2.0|full|608:1080:400:0||Stack effects on any clip"
+  "66_module-gui|1.7|full|608:1080:1312:0||14 pro studio instruments"
+  "32_mix-chain|1.4|full|608:1080:400:0||Build a mastering chain"
+  "27_lora|1.3|full|608:1080:1312:0||Load custom LoRA models"
+  "39_design-mode|1.6|full|608:1080:656:0||Rearrange the entire interface"
   # perform (dj)
-  "02_dj-console|1.5|full|540:960:690:90||a two-deck dj console"
-  "54_dj-perform|2.0|full|540:960:690:90||hotcues, loops, and fx"
-  "55_dj-automix|1.5|full|540:960:690:90||automix, hands-free"
-  "56_dj-stems|1.4|full|540:960:690:90||live stems on the deck"
-  "33_dj-sampler|1.4|full|608:1080:300:0||sampler + staging deck"
+  "02_dj-console|1.5|full|540:960:690:90||Two-deck DJ console"
+  "54_dj-perform|2.0|full|540:960:690:90||Hot cues, loops, and FX"
+  "55_dj-automix|1.5|full|540:960:690:90||Hands-free automix"
+  "56_dj-stems|1.4|full|540:960:690:90||Live stem control per deck"
+  "33_dj-sampler|1.4|full|608:1080:300:0||Sampler and staging deck"
   # visualize
-  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|6.8|cymatic platform"
-  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|12.5|liquid-chrome cymatics"
-  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|18.5|ferrofluid valley"
-  "12_slide-surface|1.5|full|608:1080:500:0||performance sliders"
-  "19_vj-visualizer|3.5|full|608:1080:750:0||drive live visuals"
-  "70_vj-mobile|1.6|full|608:1080:1312:0||mirror to a phone over wi-fi"
-  "04_visualize|1.2|full|608:1080:656:0||live spectrum"
-  "15_analyzer-scope|1.2|full|608:1080:656:0||oscilloscope"
-  "16_analyzer-radial|1.3|full|540:960:830:120||radial analyzer"
-  # lineage + library + ecosystem
-  "65_3d-piano|6.5|full|608:1080:656:0|1.5|fly the lineage into the keys"
-  "48_galaxy-preset|1.3|full|608:1080:656:0||constellation view"
-  "14_catalogue|1.5|full|608:1080:300:0||your whole library"
-  "13_details|1.3|full|608:1080:300:0||full metadata on everything"
-  "24_focus|1.4|full|608:1080:656:0||focus on one control"
-  "17_controller|1.4|full|608:1080:656:0||map any midi controller"
-  "69_controller-vision|1.7|full|608:1080:656:0||identify a controller from a photo"
-  "20_train|1.7|full|608:1080:656:0||train it on your own sound"
-  "63_magenta-studio-live|1.8|full|608:1080:656:0||magenta rt2, on the local gpu"
-  "62_magenta-card|2.0|full|600:1080:540:0||the first non-mac magenta rt2 port"
-  "10_suno-cloud|1.4|full|608:1080:560:0||or render in the cloud"
-  "44_url-import|1.3|full|608:1080:120:0||pull audio from a link"
-  "18_media-bucket|1.2|full|608:1080:120:0||drop in any file"
-  "11_assistant-orb|1.6|full|608:1080:0:0||an assistant that runs the app"
-  "37_docs|1.5|full|608:1080:656:0||documented from the inside"
-  "38_settings|1.6|full|608:1080:656:0||modular, all of it"
-  "36_log|1.2|full|608:1080:1312:0||watch every job run"
+  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|6.8|Cymatic platform mode"
+  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|12.5|Liquid-chrome mode"
+  "50_cymatics|5.0|1680:945:120:70|608:1080:656:0|18.5|Ferrofluid valley mode"
+  "12_slide-surface|1.5|full|608:1080:500:0||Performance slider surface"
+  "19_vj-visualizer|3.5|full|608:1080:750:0||Live VJ visual engine"
+  "70_vj-mobile|1.6|full|608:1080:1312:0||Mirror visuals to a phone"
+  "04_visualize|1.2|full|608:1080:656:0||Live spectrum analyzer"
+  "15_analyzer-scope|1.2|full|608:1080:656:0||Oscilloscope"
+  "16_analyzer-radial|1.3|full|540:960:830:120||Radial analyzer"
+  # ecosystem
+  "14_catalogue|1.5|full|608:1080:300:0||Your entire audio library"
+  "13_details|1.3|full|608:1080:300:0||Full metadata on every track"
+  "24_focus|1.4|full|608:1080:656:0||Focus mode for any control"
+  "17_controller|1.4|full|608:1080:656:0||Map any MIDI controller"
+  "69_controller-vision|1.7|full|608:1080:656:0||Identify a controller from a photo"
+  "20_train|1.7|full|608:1080:656:0||Train LoRAs on your own sound"
+  "63_magenta-studio-live|1.8|full|608:1080:656:0||Magenta RT2 on a local GPU"
+  "62_magenta-card|2.0|full|600:1080:540:0||The first non-Mac Magenta RT2 port"
+  "10_suno-cloud|1.4|full|608:1080:560:0||Cloud generation via Suno"
+  "44_url-import|1.3|full|608:1080:120:0||Import your own audio from a URL"
+  "18_media-bucket|1.2|full|608:1080:120:0||Drop in any media file"
+  "11_assistant-orb|2.6|full|608:1080:0:0||Analyze and automate through the Orb Assistant (dozens of local or API models)"
+  "37_docs|1.5|full|608:1080:656:0||Built-in interactive docs"
+  "38_settings|1.6|full|608:1080:656:0||Modular feature toggles"
 )
 
+# Output is upscaled 2x to 4K (3840x2160 / 2160x3840) via lanczos from the crisp
+# supersampled-1080 source clips: highest quality, no native-4K reflow, no artifacts.
+# Subtitle geometry (size, bottom offset, border, line spacing) is scaled 2x to match
+# the larger canvas so text stays sharp and proportioned exactly as at 1080. WRAP is a
+# character count, so it is resolution-independent and stays the same.
 # Subtitles: bigger + raised off the bottom. Vertical sits higher (above the lower-third).
-if [ "$ORI" = "v" ]; then W=1080; H=1920; SUBY="h-470"; SUBSZ=58; else W=1920; H=1080; SUBY="h-128"; SUBSZ=46; fi
+if [ "$ORI" = "v" ]; then W=2160; H=3840; SUBY="h-1000"; SUBSZ=104; WRAP=24; else W=3840; H=2160; SUBY="h-320"; SUBSZ=88; WRAP=48; fi
+BORDERW=32; LSP=12
 
 TMP="showcase/.roughtmp_${ORI}"
 rm -rf "$TMP"; mkdir -p "$TMP"
@@ -107,8 +113,8 @@ for row in "${SCENES[@]}"; do
   clip_dur="$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 "$f")"
   if [ -z "$start" ]; then start="$(python -c "print(max(0.0, ${clip_dur} - ${dur} - 0.3))")"; fi
 
-  subfile="$TMP/sub_$(printf '%02d' "$i").txt"; printf '%s' "$sub" > "$subfile"
-  draw="drawtext=fontfile=${FONT}:textfile=${subfile}:x=(w-text_w)/2:y=${SUBY}:fontsize=${SUBSZ}:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=16:line_spacing=6"
+  subfile="$TMP/sub_$(printf '%02d' "$i").txt"; printf '%s' "$sub" | fold -s -w "$WRAP" | sed 's/[[:space:]]*$//' > "$subfile"
+  draw="drawtext=fontfile=${FONT}:textfile=${subfile}:x=(w-text_w)/2:y=${SUBY}:fontsize=${SUBSZ}:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=${BORDERW}:line_spacing=${LSP}"
   cseg="$(printf 'cseg_%02d.mp4' "$i")"; sseg="$(printf 'sseg_%02d.mp4' "$i")"
   # ONE high-quality encode each (clean + subtitled) — no second re-encode pass.
   ffmpeg -y -loglevel error -ss "$start" -t "$dur" -i "$f" -an -vf "${geom},fps=30,format=yuv420p" -c:v libx264 -preset slow -crf 16 -pix_fmt yuv420p "$TMP/$cseg"

@@ -120,6 +120,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600 pointer-events-none" />
           <input
             type="text"
+            name="catalog-search"
             className="compact-input w-full pl-7 pr-7"
             placeholder="SEARCH CATALOGUE..."
             value={queryDraft}
@@ -170,6 +171,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
         </div>
         <HoverTip text={TARGET_TIP}>
           <select
+            name="catalog-search-target"
             className="compact-input text-[9px]! py-0.5! bg-black/40"
             value={search.searchTarget}
             onChange={(e) => patchSearch({ searchTarget: e.target.value as CatalogueSearchTarget })}
@@ -194,6 +196,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
 
         <HoverTip text={SORT_TIP}>
           <select
+            name="catalog-sort-by"
             className="compact-input text-[9px]! py-0.5! bg-black/40"
             value={search.sortBy}
             onChange={(e) => patchSearch({ sortBy: e.target.value as CatalogueSortBy })}
@@ -206,6 +209,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
 
         <HoverTip text={PROVIDER_TIP}>
           <select
+            name="catalog-filter-provider"
             className="compact-input text-[9px]! py-0.5! bg-black/40"
             value={search.providerFilter ?? ''}
             onChange={(e) => patchSearch({ providerFilter: e.target.value || null })}
@@ -219,6 +223,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
 
         <HoverTip text={SOURCE_TIP}>
           <select
+            name="catalog-filter-source"
             className="compact-input text-[9px]! py-0.5! bg-black/40"
             value={search.sourceFilter}
             onChange={(e) => patchSearch({ sourceFilter: e.target.value as CatalogueSourceFilter })}
@@ -231,6 +236,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
 
         <HoverTip text={RATING_TIP}>
           <select
+            name="catalog-filter-rating"
             className="compact-input text-[9px]! py-0.5! bg-black/40"
             value={search.ratingFilter}
             onChange={(e) => patchSearch({ ratingFilter: e.target.value as CatalogueRatingFilter })}
@@ -244,6 +250,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
         {models.length > 0 && (
           <HoverTip text={MODEL_TIP}>
             <select
+              name="catalog-filter-model"
               className="compact-input text-[9px]! py-0.5! bg-black/40"
               value={search.modelFilter ?? ''}
               onChange={(e) => patchSearch({ modelFilter: e.target.value || null })}

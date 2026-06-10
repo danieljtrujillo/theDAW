@@ -90,7 +90,7 @@ const MODEL_OPTIONS = [
 /** Slim "key required" notice. The actual key INPUT lives in Settings → Suno API
  *  (SunoKeySettings); this just points the user there and opens it. */
 const KeyNotice: React.FC = () => (
-  <div className="flex items-center gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2">
+  <div className="flex items-center gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/6 px-3 py-2">
     <span className="grid place-items-center w-6 h-6 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 shrink-0">
       <KeyRound className="w-3.5 h-3.5" />
     </span>
@@ -199,11 +199,11 @@ export const SunoGenPanel: React.FC = () => {
     <div className="absolute inset-0 flex flex-col text-zinc-200 overflow-hidden">
       {/* ── Atmosphere: aurora gradient mesh + faint grain (signals "cloud") ── */}
       <div aria-hidden className="absolute inset-0 pointer-events-none">
-        <div className="absolute -top-1/3 -left-1/4 w-[60%] h-[80%] rounded-full bg-purple-600/12 blur-[90px]" />
+        <div className="absolute -top-1/3 -left-1/4 w-3/5 h-4/5 rounded-full bg-purple-600/12 blur-[90px]" />
         <div className="absolute top-1/4 right-0 w-[45%] h-[70%] rounded-full bg-fuchsia-600/8 blur-[90px]" />
-        <div className="absolute bottom-0 left-1/3 w-[40%] h-[50%] rounded-full bg-teal-500/8 blur-[90px]" />
+        <div className="absolute bottom-0 left-1/3 w-2/5 h-1/2 rounded-full bg-teal-500/8 blur-[90px]" />
         <div
-          className="absolute inset-0 opacity-[0.04] mix-blend-soft-light"
+          className="absolute inset-0 opacity-4 mix-blend-soft-light"
           style={{
             backgroundImage:
               "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
@@ -236,6 +236,7 @@ export const SunoGenPanel: React.FC = () => {
           <HoverTip text="Switch the active model. Pick a Stable Audio model to return to the local generator; keep Suno (Cloud) for cloud generation.">
             <div className="relative">
               <select
+                name="suno-model"
                 className="appearance-none rounded-full border border-purple-400/30 bg-purple-500/10 hover:bg-purple-500/15 pl-3 pr-7 py-1 text-[10px] font-bold uppercase tracking-wider text-purple-100 outline-none transition-colors cursor-pointer"
                 value={model}
                 onChange={(e) => patchParams({ model: e.target.value })}
@@ -308,7 +309,7 @@ export const SunoGenPanel: React.FC = () => {
 
             {/* Compose card */}
             <motion.div {...fade(0.1)} className="rounded-lg border border-white/8 bg-[#0b0910]/60 overflow-hidden">
-              <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-white/5 bg-white/[0.02]">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-white/5 bg-white/2">
                 <Sparkles className="w-3 h-3 text-purple-400" />
                 <span className="mono-label text-[9px]!">Compose</span>
               </div>
@@ -326,7 +327,7 @@ export const SunoGenPanel: React.FC = () => {
                   className="group relative w-full py-2.5 rounded-lg overflow-hidden font-black uppercase tracking-[0.2em] text-[11px] text-white
                     bg-linear-to-r from-purple-600 via-fuchsia-600 to-purple-600 bg-size-[200%_100%] hover:bg-position-[100%_0]
                     shadow-[0_6px_22px_-10px_rgba(168,85,247,0.9)] transition-[background-position,transform,box-shadow] duration-500
-                    active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2"
+                    active:scale-99 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2"
                 >
                   <span className="absolute inset-0 -translate-x-full group-hover:translate-x-full transition-transform duration-700 ease-out bg-linear-to-r from-transparent via-white/20 to-transparent skew-x-12 pointer-events-none" />
                   {submitting ? (

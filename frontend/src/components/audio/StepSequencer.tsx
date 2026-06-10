@@ -557,6 +557,7 @@ export const StepSequencer: React.FC = () => {
               <span className="text-[7px] font-mono text-zinc-600 uppercase leading-none">Tempo (BPM)</span>
               <input
                 type="number"
+                name="step-seq-bpm"
                 value={bpm}
                 min={40}
                 max={240}
@@ -598,6 +599,7 @@ export const StepSequencer: React.FC = () => {
             <Music className="w-2.5 h-2.5 text-zinc-500" />
             <input
               type="number"
+              name="step-seq-export-bars"
               min={1}
               max={16}
               value={exportBars}
@@ -659,6 +661,7 @@ export const StepSequencer: React.FC = () => {
               <div className="flex justify-between items-center mb-1 gap-1">
                 <input
                   type="text"
+                  name={`step-seq-track-name-${track.id}`}
                   value={track.name}
                   onChange={(e) => setTrackName(track.id, e.target.value)}
                   className="bg-transparent border-none outline-none text-[9px] font-black uppercase truncate hover:bg-white/5 px-1 -mx-1 rounded transition-colors flex-1 min-w-0"

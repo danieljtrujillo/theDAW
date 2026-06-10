@@ -64,6 +64,7 @@ const StyleInput: React.FC<{ optional?: boolean }> = ({ optional }) => {
       />
       <div className="relative">
         <input
+          name="suno-style"
           className="compact-input w-full pr-7"
           placeholder="dreampop, reverb-heavy guitars, melancholic"
           value={style}
@@ -149,6 +150,7 @@ const LyricsInput: React.FC<{ optional?: boolean; hint?: string; placeholder?: s
       </div>
       <textarea
         ref={ref}
+        name="suno-lyrics"
         className="compact-input w-full min-h-32 resize-y font-mono text-[11px] leading-relaxed"
         placeholder={
           placeholder ??
@@ -178,7 +180,7 @@ const VoicePicker: React.FC = () => {
           type="button"
           onClick={() => patch({ voiceId: id })}
           className={`w-full flex flex-col items-center justify-center gap-1 px-1 py-2 rounded-lg border transition-all
-            ${active ? 'bg-purple-600/20 border-purple-500/50 text-purple-200' : 'bg-white/[0.02] border-white/5 text-zinc-500 hover:text-zinc-300 hover:border-white/15'}`}
+            ${active ? 'bg-purple-600/20 border-purple-500/50 text-purple-200' : 'bg-white/2 border-white/5 text-zinc-500 hover:text-zinc-300 hover:border-white/15'}`}
         >
           {icon}
           <span className="text-[8px] font-black uppercase tracking-wider">{name}</span>
@@ -232,6 +234,7 @@ export const SunoModeFields: React.FC = () => {
         <div>
           <Label text="Title" optional tip="A name for your track. Leave blank and Suno will name it for you." />
           <input
+            name="suno-title"
             className="compact-input w-full"
             placeholder="My awesome track"
             value={title}
@@ -248,6 +251,7 @@ export const SunoModeFields: React.FC = () => {
             tip="Plain-language brief for the whole song — Suno turns this into both the lyrics and the musical style."
           />
           <textarea
+            name="suno-description"
             className="compact-input w-full min-h-24 resize-y"
             placeholder="upbeat synthwave track about driving through Tokyo at night"
             value={description}
@@ -262,6 +266,7 @@ export const SunoModeFields: React.FC = () => {
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
+              name="suno-instrumental"
               checked={instrumental}
               onChange={(e) => patch({ instrumental: e.target.checked })}
               className="accent-purple-500"
@@ -286,6 +291,7 @@ export const SunoModeFields: React.FC = () => {
               tip="The Suno clip to re-style. Must be a track you own — paste its id or use a library track’s Cover button to prefill."
             />
             <input
+              name="suno-cover-source-id"
               className="compact-input w-full font-mono text-[11px]"
               placeholder="6e2b0f3a-…"
               value={sourceId}
@@ -306,6 +312,7 @@ export const SunoModeFields: React.FC = () => {
               tip="The base clip of the mashup — one of your own Suno tracks. Paste its id."
             />
             <input
+              name="suno-mashup-source-id"
               className="compact-input w-full font-mono text-[11px]"
               placeholder="6e2b0f3a-…"
               value={sourceId}
@@ -319,6 +326,7 @@ export const SunoModeFields: React.FC = () => {
               tip="The second clip blended into the base — another Suno track you own. Paste its id."
             />
             <input
+              name="suno-mashup-second-id"
               className="compact-input w-full font-mono text-[11px]"
               placeholder="9a9e1da2-…"
               value={additionalAudioId}

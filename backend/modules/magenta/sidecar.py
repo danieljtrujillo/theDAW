@@ -55,6 +55,9 @@ async def generate(
     drums: int = -1,
     chunk_frames: int = 25,
     notes: list[dict] | str | None = None,
+    seed: int = 0,
+    extend: bool = False,
+    styles: list[dict] | str | None = None,
     audio_bytes: bytes | None = None,
     audio_mime: str = "audio/wav",
 ) -> tuple[bytes, dict]:
@@ -80,9 +83,13 @@ async def generate(
         "cfg_drums": str(float(cfg_drums)),
         "drums": str(int(drums)),
         "chunk_frames": str(int(chunk_frames)),
+        "seed": str(int(seed)),
+        "extend": "true" if extend else "false",
     }
     if notes:
         data["notes"] = notes if isinstance(notes, str) else json.dumps(notes)
+    if styles:
+        data["styles"] = styles if isinstance(styles, str) else json.dumps(styles)
     files = {"audio": ("style.wav", audio_bytes, audio_mime)} if audio_bytes else None
 
     # Generation can take a while for long durations; allow a long read timeout.
@@ -94,8 +101,10 @@ async def generate(
             for k in (
                 "X-RTF",
                 "X-Audio-Seconds",
+                "X-Segment-Seconds",
                 "X-Generate-Seconds",
                 "X-Sample-Rate",
+                "X-Extend",
                 "X-Conditioning",
             )
             if r.headers.get(k)

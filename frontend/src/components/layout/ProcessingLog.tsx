@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Trash2, Download, X, Zap, Cast } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
-import { useGenerateStore } from '../../state/generateStore';
+import { buildGenerateParamsFromState, useGenerateStore } from '../../state/generateStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { useStudioStore } from '../../state/studioStore';
 import { useTrainingStore } from '../../state/trainingStore';
@@ -285,26 +285,11 @@ export const LogActionButton: React.FC = () => {
     if (tab === 'create' || tab === 'library' || tab === 'advanced') {
       if (tab !== 'create') setActiveView('create');
       if (isGenerating) { cancelPolling(); return; }
+      // Build the full param set (includes Magenta style/notes/seed/extend and
+      // initAudioEnabled) via the shared selector so CREATE and the assistant
+      // stay in sync instead of drifting from a hand-maintained field list.
       const p = useGenerateParamsStore.getState();
-      void submitGeneration({
-        prompt: p.prompt, negativePrompt: p.negativePrompt, model: p.model,
-        duration: p.duration, steps: p.steps, cfg: p.cfg, seed: p.seed, batch: p.batch,
-        initNoise: p.initNoise, initType: p.initType, initAudioFile: p.initAudioFile,
-        inpaintAudioFile: p.inpaintAudioFile, inpaintEnabled: p.inpaintEnabled,
-        maskStart: p.maskStart, maskEnd: p.maskEnd,
-        samplerType: p.samplerType, sigmaMax: p.sigmaMax, durationPaddingSec: p.durationPaddingSec,
-        apgScale: p.apgScale, cfgRescale: p.cfgRescale, cfgNormThreshold: p.cfgNormThreshold,
-        cfgIntervalMin: p.cfgIntervalMin, cfgIntervalMax: p.cfgIntervalMax,
-        shiftMode: p.shiftMode, logsnrAnchorLength: p.logsnrAnchorLength,
-        logsnrAnchorLogsnr: p.logsnrAnchorLogsnr, logsnrRate: p.logsnrRate, logsnrEnd: p.logsnrEnd,
-        fluxMinLen: p.fluxMinLen, fluxMaxLen: p.fluxMaxLen, fluxAlphaMin: p.fluxAlphaMin,
-        fluxAlphaMax: p.fluxAlphaMax, fullBaseShift: p.fullBaseShift, fullMaxShift: p.fullMaxShift,
-        fullMinLen: p.fullMinLen, fullMaxLen: p.fullMaxLen,
-        inversionSteps: p.inversionSteps, inversionGamma: p.inversionGamma,
-        inversionUnconditional: p.inversionUnconditional,
-        fileFormat: p.fileFormat, fileNaming: p.fileNaming, cutToDuration: p.cutToDuration,
-        loras: p.loras,
-      });
+      void submitGeneration(buildGenerateParamsFromState(p));
     } else if (tab === 'edit') {
       void useStudioStore.getState().triggerPendingProcess();
     } else if (tab === 'train') {

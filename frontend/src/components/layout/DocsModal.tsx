@@ -50,9 +50,16 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
     // Parse markdown → HTML and extract h1/h2/h3 for TOC.
     const renderer = new marked.Renderer();
     const collected: Heading[] = [];
+    // De-duplicate heading slugs: the guide concatenates many docs that share
+    // headings (e.g. "Purpose"), so a raw slug would collide — breaking the TOC
+    // React keys AND the scroll-to anchors. Suffix repeats with -2, -3, …
+    const slugCounts = new Map<string, number>();
     renderer.heading = ({ tokens, depth }: { tokens: Array<{ raw?: string; text?: string }>; depth: number }) => {
       const text = tokens.map((t) => t.text ?? t.raw ?? '').join('');
-      const id = slugify(text);
+      let id = slugify(text);
+      const n = (slugCounts.get(id) ?? 0) + 1;
+      slugCounts.set(id, n);
+      if (n > 1) id = `${id}-${n}`;
       if (depth <= 3) collected.push({ id, text, level: depth });
       return `<h${depth} id="${id}" class="docs-h docs-h-${depth}">${text}</h${depth}>`;
     };
@@ -181,6 +188,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
                 <input
                   type="text"
+                  name="docs-toc-search"
                   className="compact-input w-full pl-7"
                   placeholder="FILTER TOC..."
                   value={search}

@@ -4,6 +4,7 @@ import {
   Scissors, Mic2, Search, ChevronDown,
   LayoutList, AudioWaveform, Volume2, Sliders,
   Wand2, Loader2, BookOpen, Layers, Sparkles, Download,
+  Music2, Dice5, Repeat,
 } from 'lucide-react';
 import { useGenerateParamsStore, type GenerateParamsState } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
@@ -155,7 +156,7 @@ function TemplatesPanel() {
       </div>
       <div className="flex items-center gap-1 mb-1.5">
         <Search className="w-3 h-3 text-zinc-600 shrink-0" />
-        <input className="compact-input flex-1 text-[9px]" placeholder="Search templates..." value={searchQuery}
+        <input name="gen-template-search" className="compact-input flex-1 text-[9px]" placeholder="Search templates..." value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)} />
       </div>
       <div className="overflow-y-auto min-h-0 flex-1">
@@ -179,6 +180,65 @@ function TemplatesPanel() {
   );
 }
 
+/* ── Magenta Notes picker — tap piano keys to steer the melody ─────────── */
+/* The lit pitches are sent to the MRT2 sidecar as full-duration note events;
+   none lit = the model chooses the melody freely. */
+function MagentaNotes() {
+  const notes = useGenerateParamsStore((s) => s.magNotes);
+  const setField = useGenerateParamsStore((s) => s.setField);
+  const LOW = 48, HIGH = 72; // C3 … C5 (two octaves)
+  const isBlack = (pitch: number) => [1, 3, 6, 8, 10].includes(((pitch % 12) + 12) % 12);
+  const toggle = (pitch: number) => {
+    const set = new Set(notes);
+    if (set.has(pitch)) set.delete(pitch); else set.add(pitch);
+    setField('magNotes', [...set].sort((a, b) => a - b));
+  };
+  const whites: number[] = [];
+  for (let p = LOW; p <= HIGH; p += 1) if (!isBlack(p)) whites.push(p);
+  const NAMES = ['C', '', 'D', '', 'E', 'F', '', 'G', '', 'A', '', 'B'];
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center gap-1.5 mb-1 shrink-0">
+        <Music2 className="w-3 h-3 text-purple-400 shrink-0" />
+        <span className={`text-[9px] font-black uppercase tracking-widest text-purple-300/70`}>NOTES</span>
+        <span className="text-[9px] text-purple-200 truncate flex-1 min-w-0">
+          {notes.length ? `${notes.length} pitch${notes.length > 1 ? 'es' : ''} steering the melody` : 'tap keys — or leave blank for free melody'}
+        </span>
+        {notes.length > 0 && (
+          <button className="btn-ghost cursor-pointer text-[9px] shrink-0" onClick={() => setField('magNotes', [])}>CLEAR</button>
+        )}
+      </div>
+      <div className="relative flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40 flex select-none">
+        {whites.map((p) => {
+          const on = notes.includes(p);
+          return (
+            <button key={p} onClick={() => toggle(p)} title={`${NAMES[((p % 12) + 12) % 12]}${Math.floor(p / 12) - 1}`}
+              className={`relative flex-1 min-w-0 border-r border-black/40 last:border-r-0 cursor-pointer transition-colors flex items-end justify-center pb-0.5 ${on ? 'bg-purple-500' : 'bg-zinc-200 hover:bg-purple-200'}`}>
+              {((p % 12) + 12) % 12 === 0 && <span className={`text-[7px] font-mono ${on ? 'text-white' : 'text-zinc-500'}`}>C{Math.floor(p / 12) - 1}</span>}
+            </button>
+          );
+        })}
+        <div className="absolute inset-0 flex pointer-events-none">
+          {whites.map((p) => {
+            const bp = p + 1;
+            const hasBlack = isBlack(bp) && bp <= HIGH;
+            const on = notes.includes(bp);
+            return (
+              <div key={p} className="flex-1 relative">
+                {hasBlack && (
+                  <button onClick={() => toggle(bp)}
+                    className={`pointer-events-auto absolute top-0 z-10 rounded-b border border-black/60 cursor-pointer transition-colors ${on ? 'bg-purple-400' : 'bg-zinc-900 hover:bg-purple-700'}`}
+                    style={{ right: '-30%', width: '60%', height: '62%' }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 export const AdvancedGenPanel: React.FC<{
@@ -187,6 +247,9 @@ export const AdvancedGenPanel: React.FC<{
   const p = useGenerateParamsStore();
   const sf = p.setField;
   const patch = p.patch;
+  // Magenta RT2 swaps the SA3 sampler/schedule controls for its own sampling
+  // params; the central Chimera stack stays shared across both engines.
+  const isMagenta = p.model.startsWith('magenta-');
 
   // Probe the Magenta RT2 sidecar once on mount; gates the Magenta model option.
   useEffect(() => {
@@ -356,20 +419,26 @@ export const AdvancedGenPanel: React.FC<{
           onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ initAudioFile: f, initAudioEnabled: true }); }}>
           <div className="flex items-center gap-1.5 mb-1 shrink-0">
             <Mic2 className="w-3 h-3 text-purple-400 shrink-0" />
-            <span className={`${subTitle} flex items-center gap-1`}>INIT <InfoTip {...RICH_TOOLTIPS.initAudio} /></span>
-            <span className="text-[9px] text-purple-200 truncate flex-1 min-w-0">{p.initAudioFile ? p.initAudioFile.name : 'drop audio / load'}</span>
-            <div className="flex items-center gap-1 shrink-0">
-              <span className="text-[9px] text-zinc-400">Type</span>
-              <select className="compact-input h-5 py-0 text-[9px] w-20" value={p.initType} onChange={(e) => sf('initType', e.target.value)} style={{ colorScheme: 'dark' }}>
-                <option value="Audio">Audio</option><option value="RF-Inversion">RF-Inv</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-1 shrink-0" title="Init noise — denoising strength for the init audio (0 = keep init exactly, 1 = full noise / ignore init). Set this BEFORE generating.">
-              <span className="text-[9px] text-zinc-400">Nz</span>
-              <SlideTrack min={0} max={1} step={0.01} value={p.initNoise}
-                onChange={(v) => sf('initNoise', v)} className="w-14" ariaLabel="Init noise" />
-              <span className="text-[9px] font-mono text-purple-300 tabular-nums w-7 text-right">{p.initNoise.toFixed(2)}</span>
-            </div>
+            {isMagenta
+              ? <span className={`${subTitle} flex items-center gap-1`} title="Audio style — drop a clip and the model clones its vibe (overrides the text prompt).">STYLE</span>
+              : <span className={`${subTitle} flex items-center gap-1`}>INIT <InfoTip {...RICH_TOOLTIPS.initAudio} /></span>}
+            <span className="text-[9px] text-purple-200 truncate flex-1 min-w-0">{p.initAudioFile ? p.initAudioFile.name : (isMagenta ? 'drop a clip to clone its vibe' : 'drop audio / load')}</span>
+            {!isMagenta && (
+              <>
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-[9px] text-zinc-400">Type</span>
+                  <select name="gen-init-type" className="compact-input h-5 py-0 text-[9px] w-20" value={p.initType} onChange={(e) => sf('initType', e.target.value)} style={{ colorScheme: 'dark' }}>
+                    <option value="Audio">Audio</option><option value="RF-Inversion">RF-Inv</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1 shrink-0" title="Init noise — denoising strength for the init audio (0 = keep init exactly, 1 = full noise / ignore init). Set this BEFORE generating.">
+                  <span className="text-[9px] text-zinc-400">Nz</span>
+                  <SlideTrack min={0} max={1} step={0.01} value={p.initNoise}
+                    onChange={(v) => sf('initNoise', v)} className="w-14" ariaLabel="Init noise" />
+                  <span className="text-[9px] font-mono text-purple-300 tabular-nums w-7 text-right">{p.initNoise.toFixed(2)}</span>
+                </div>
+              </>
+            )}
             <button onClick={() => sf('initAudioEnabled', !p.initAudioEnabled)}
               className={`mono-tag cursor-pointer shrink-0 ${p.initAudioEnabled ? 'bg-purple-600/30 text-purple-200 border-purple-500/50' : ''}`}>
               {p.initAudioEnabled ? 'ON' : 'OFF'}
@@ -379,7 +448,7 @@ export const AdvancedGenPanel: React.FC<{
             ) : (
               <button className="btn-ghost cursor-pointer text-[9px] shrink-0" onClick={() => initRef.current?.click()}>LOAD</button>
             )}
-            <input ref={initRef} type="file" accept="audio/*" multiple className="hidden"
+            <input ref={initRef} name="gen-init-audio-file" type="file" accept="audio/*" multiple className="hidden"
               onChange={async (e) => {
                 const files = Array.from(e.target.files ?? []);
                 e.target.value = '';
@@ -398,7 +467,8 @@ export const AdvancedGenPanel: React.FC<{
         {/* INPAINT */}
         <div className={`${accentBox} flex flex-col px-2 py-1.5 min-w-0`}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-          onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ inpaintAudioFile: f, inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); }}>
+          onDrop={async (e) => { e.preventDefault(); if (isMagenta) return; const f = await fileFromDrop(e); if (f) patch({ inpaintAudioFile: f, inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); }}>
+          {isMagenta ? <MagentaNotes /> : (<>
           <div className="flex items-center gap-1.5 mb-1 shrink-0">
             <Scissors className="w-3 h-3 text-purple-400 shrink-0" />
             <span className={`${subTitle} flex items-center gap-1`}>INPAINT <InfoTip {...RICH_TOOLTIPS.inpainting} /></span>
@@ -413,13 +483,14 @@ export const AdvancedGenPanel: React.FC<{
             ) : (
               <button className="btn-ghost cursor-pointer text-[9px] shrink-0" onClick={() => inpaintRef.current?.click()}>LOAD</button>
             )}
-            <input ref={inpaintRef} type="file" accept="audio/*" className="hidden"
+            <input ref={inpaintRef} name="gen-inpaint-audio-file" type="file" accept="audio/*" className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) patch({ inpaintAudioFile: e.target.files[0], inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); e.target.value = ''; }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
             {inpaintAudioUrl ? <WaveformPreview audioUrl={inpaintAudioUrl} height={88} enableRegions regionStart={p.maskStart} regionEnd={p.maskEnd} onRegionChange={(s, e) => patch({ maskStart: s, maskEnd: e })} />
               : <div className="h-full flex items-center justify-center"><span className="text-[9px] text-zinc-600">No inpaint audio</span></div>}
           </div>
+          </>)}
         </div>
       </div>
 
@@ -458,7 +529,7 @@ export const AdvancedGenPanel: React.FC<{
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-zinc-300 w-16 shrink-0">Model</span>
-                <select className="compact-input flex-1" value={p.model} onChange={(e) => {
+                <select name="gen-model" className="compact-input flex-1" value={p.model} onChange={(e) => {
                   const m = e.target.value; const isRf = m.endsWith('-rf'); const isMagenta = m.startsWith('magenta-');
                   patch({ model: m, steps: isMagenta ? 1 : isRf ? 50 : 8, cfg: isMagenta ? 1.0 : isRf ? 7.0 : 1.0 });
                 }} style={{ colorScheme: 'dark' }}>
@@ -471,16 +542,29 @@ export const AdvancedGenPanel: React.FC<{
                 </select>
               </div>
               <SlideRow label="Length (s)" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} tipKey="duration" />
-              <SlideRow label="Steps" value={p.steps} onChange={(v) => sf('steps', v)} min={1} max={500} step={1} tipKey="steps" />
-              <SlideRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
-              <SlideRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
-                onRandomize={() => sf('seed', Math.floor(Math.random() * 2147483647))} />
-              {/* Batch — value field aligned (flush right) with the SlideRows above */}
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-zinc-300 w-16 shrink-0 whitespace-nowrap">Batch</span>
-                <div className="flex-1 min-w-0" />
-                <input type="number" className="compact-input w-11 text-center tabular-nums shrink-0" min={1} max={16} step={1} value={p.batch} onChange={(e) => sf('batch', +e.target.value || 1)} />
-              </div>
+              {isMagenta ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-zinc-300 w-16 shrink-0 whitespace-nowrap">Drums</span>
+                  <select name="gen-mag-drums" className="compact-input flex-1" value={p.magDrums} onChange={(e) => sf('magDrums', +e.target.value)} style={{ colorScheme: 'dark' }}>
+                    <option value={-1}>Auto</option>
+                    <option value={0}>Off</option>
+                    <option value={1}>On</option>
+                  </select>
+                </div>
+              ) : (
+                <>
+                  <SlideRow label="Steps" value={p.steps} onChange={(v) => sf('steps', v)} min={1} max={500} step={1} tipKey="steps" />
+                  <SlideRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
+                  <SlideRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
+                    onRandomize={() => sf('seed', Math.floor(Math.random() * 2147483647))} />
+                  {/* Batch — value field aligned (flush right) with the SlideRows above */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-zinc-300 w-16 shrink-0 whitespace-nowrap">Batch</span>
+                    <div className="flex-1 min-w-0" />
+                    <input name="gen-batch" type="number" className="compact-input w-11 text-center tabular-nums shrink-0" min={1} max={16} step={1} value={p.batch} onChange={(e) => sf('batch', +e.target.value || 1)} />
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -522,7 +606,25 @@ export const AdvancedGenPanel: React.FC<{
               {/* SAMPLER(+TEMP) | chimera STACK (~prompt width) | SCHEDULE(+FX) */}
               <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) 600px minmax(0,1fr)' }}>
 
-                {/* SAMPLER column — TEMP knobs ride above the faders */}
+                {/* SAMPLER column (SA3) ↔ GUIDANCE column (Magenta) — knobs ride above the faders */}
+                {isMagenta ? (
+                  <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
+                    <span className={subTitle}>SAMPLING</span>
+                    <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
+                      <SlideKnob label="Temp" value={p.magTemperature} onChange={(v) => sf('magTemperature', v)} min={0} max={2} step={0.05} size={32} />
+                      <SlideKnob label="Top-K" value={p.magTopK} onChange={(v) => sf('magTopK', Math.round(v))} min={0} max={250} step={1} size={32} />
+                      <SlideKnob label="Chunk" value={p.magChunkFrames} onChange={(v) => sf('magChunkFrames', Math.round(v))} min={1} max={50} step={1} size={32} />
+                    </div>
+                    <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                      <span className={`${subTitle} shrink-0`}>CFG SCALES</span>
+                    </div>
+                    <div className="flex-1 min-h-0 grid grid-cols-3 gap-0.5 mb-3">
+                      <SlideFader label="Style" value={p.magCfgMusiccoca} onChange={(v) => sf('magCfgMusiccoca', v)} min={0} max={10} step={0.1} />
+                      <SlideFader label="Notes" value={p.magCfgNotes} onChange={(v) => sf('magCfgNotes', v)} min={0} max={10} step={0.1} />
+                      <SlideFader label="Drums" value={p.magCfgDrums} onChange={(v) => sf('magCfgDrums', v)} min={0} max={10} step={0.1} />
+                    </div>
+                  </div>
+                ) : (
                 <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
                   <span className={subTitle}>TEMP</span>
                   <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
@@ -532,7 +634,7 @@ export const AdvancedGenPanel: React.FC<{
                   </div>
                   <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
                     <span className={`${subTitle} shrink-0`}>SAMPLER</span>
-                    <select className="compact-input flex-1 h-6 py-0 text-[9px]" value={p.samplerType} onChange={(e) => sf('samplerType', e.target.value)} style={{ colorScheme: 'dark' }}>
+                    <select name="gen-sampler" className="compact-input flex-1 h-6 py-0 text-[9px]" value={p.samplerType} onChange={(e) => sf('samplerType', e.target.value)} style={{ colorScheme: 'dark' }}>
                       <option value="pingpong">pingpong</option><option value="euler">euler</option>
                       <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
                     </select>
@@ -544,13 +646,35 @@ export const AdvancedGenPanel: React.FC<{
                     <SlideFader label="Rescale" value={p.cfgRescale} onChange={(v) => sf('cfgRescale', v)} min={0} max={1} tipKey="cfgRescale" />
                   </div>
                 </div>
+                )}
 
                 {/* CENTER — chimera stack, full height */}
                 <div className="rounded-lg bg-black/20 border border-purple-500/15 p-2 min-h-0 overflow-y-auto" data-chimera-anchor="init-audio">
                   <ChimeraStack />
                 </div>
 
-                {/* SCHEDULE column — FX thin rows ride above the faders */}
+                {/* SCHEDULE column (SA3) ↔ OUTPUT column (Magenta) — toggles ride above */}
+                {isMagenta ? (
+                  <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
+                    <span className={subTitle}>OUTPUT</span>
+                    <div className="flex items-start justify-around gap-1 shrink-0">
+                      <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
+                      <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
+                      <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
+                    </div>
+                    <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                      <span className={`${subTitle} shrink-0`}>SOURCE</span>
+                      <span className="text-[9px] font-mono text-purple-300 flex-1 text-right truncate">
+                        {p.initAudioEnabled && p.initAudioFile ? 'Style clone (Init)' : 'Text prompt'}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-1 px-1 mb-3">
+                      <Sparkles className="w-4 h-4 text-purple-400/80" />
+                      <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/90">Magenta RT2</span>
+                      <span className="text-[9px] text-zinc-500 leading-tight">48 kHz stereo · streaming · local GPU</span>
+                    </div>
+                  </div>
+                ) : (
                 <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
                   <span className={subTitle}>FX</span>
                   <div className="flex items-start justify-around gap-1 shrink-0">
@@ -574,6 +698,7 @@ export const AdvancedGenPanel: React.FC<{
                     {shiftFaders()}
                   </div>
                 </div>
+                )}
               </div>
             </div>
           )}
@@ -662,7 +787,7 @@ export const AdvancedGenPanel: React.FC<{
                           inp.click();
                         }}>Choose file…</button>
                       )}
-                      <input type="number" className="compact-input w-10 text-center text-[9px]" value={lora.weight} step={0.05} min={0} max={2}
+                      <input name={`gen-lora-weight-${i}`} type="number" className="compact-input w-10 text-center text-[9px]" value={lora.weight} step={0.05} min={0} max={2}
                         onChange={(e) => { const u = p.loras.map((l, idx) => idx === i ? { ...l, weight: +e.target.value } : l); sf('loras', u); }} />
                       <button className="text-zinc-500 hover:text-red-400 cursor-pointer" onClick={() => sf('loras', p.loras.filter((_, idx) => idx !== i))}><X className="w-3 h-3" /></button>
                     </div>
@@ -674,7 +799,7 @@ export const AdvancedGenPanel: React.FC<{
             {/* NAME — name your outputs (below LoRA) */}
             <div className="hardware-card flex flex-col shrink-0 gap-1">
               <span className={`${sectionTitle} flex items-center gap-1`}>NAME</span>
-              <input className="compact-input w-full" placeholder="name your output…" maxLength={80}
+              <input name="gen-output-name" className="compact-input w-full" placeholder="name your output…" maxLength={80}
                 value={p.outputName} onChange={(e) => sf('outputName', e.target.value)} />
             </div>
 
@@ -683,14 +808,14 @@ export const AdvancedGenPanel: React.FC<{
               <span className={`${sectionTitle} mb-1.5`}>OUTPUT</span>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-[10px] text-zinc-300 flex items-center gap-1">Format <InfoTip {...RICH_TOOLTIPS.outputFormat} /></label>
-                  <select className="compact-input w-full mt-0.5" value={p.fileFormat} onChange={(e) => sf('fileFormat', e.target.value)} style={{ colorScheme: 'dark' }}>
+                  <label htmlFor="gen-output-format" className="text-[10px] text-zinc-300 flex items-center gap-1">Format <InfoTip {...RICH_TOOLTIPS.outputFormat} /></label>
+                  <select id="gen-output-format" name="gen-output-format" className="compact-input w-full mt-0.5" value={p.fileFormat} onChange={(e) => sf('fileFormat', e.target.value)} style={{ colorScheme: 'dark' }}>
                     <option value="wav">WAV</option><option value="flac">FLAC</option><option value="ogg">OGG</option>
                   </select>
                 </div>
                 <div>
-                  <label className="text-[10px] text-zinc-300 flex items-center gap-1">Naming <InfoTip {...RICH_TOOLTIPS.fileNaming} /></label>
-                  <select className="compact-input w-full mt-0.5" value={p.fileNaming} onChange={(e) => sf('fileNaming', e.target.value)} style={{ colorScheme: 'dark' }}>
+                  <label htmlFor="gen-file-naming" className="text-[10px] text-zinc-300 flex items-center gap-1">Naming <InfoTip {...RICH_TOOLTIPS.fileNaming} /></label>
+                  <select id="gen-file-naming" name="gen-file-naming" className="compact-input w-full mt-0.5" value={p.fileNaming} onChange={(e) => sf('fileNaming', e.target.value)} style={{ colorScheme: 'dark' }}>
                     <option value="verbose">Verbose</option><option value="prompt">Prompt</option><option value="seed">Seed</option>
                   </select>
                 </div>
@@ -726,7 +851,7 @@ export const AdvancedGenPanel: React.FC<{
         {/* PROMPT */}
         <div className="hardware-card flex flex-col gap-1.5 min-h-0">
           <div className="flex items-center justify-between shrink-0">
-            <span className={`${sectionTitle} flex items-center gap-1`}>PROMPT <InfoTip {...RICH_TOOLTIPS.prompt} /></span>
+            <span className={`${sectionTitle} flex items-center gap-1`}>{isMagenta ? 'STYLE PROMPT' : <>PROMPT <InfoTip {...RICH_TOOLTIPS.prompt} /></>}</span>
             <div className="flex items-center gap-1">
               <SavedPromptsDropdown type="positive" value={p.prompt} onChange={(v) => sf('prompt', v)} />
               <button
@@ -744,13 +869,30 @@ export const AdvancedGenPanel: React.FC<{
             </div>
           </div>
           <div className="relative flex-1 min-h-0">
-            <textarea className="compact-input w-full resize-none h-full"
-              placeholder="120 BPM house loop, deep sub bass, crispy hi-hats, minimal percussion…"
+            <textarea name="gen-prompt" className="compact-input w-full resize-none h-full"
+              placeholder={isMagenta ? 'describe the vibe — instruments, mood, genre, era…' : '120 BPM house loop, deep sub bass, crispy hi-hats, minimal percussion…'}
               value={p.prompt} onChange={(e) => sf('prompt', e.target.value)} maxLength={1000} />
             <span className="absolute bottom-1 right-2 text-[9px] text-zinc-500">{p.prompt.length}/1000</span>
           </div>
+          {isMagenta ? (
+            <div className="shrink-0 flex items-center gap-2">
+              <span className="text-[10px] text-zinc-400 shrink-0">Seed</span>
+              <input name="gen-mag-seed" type="number" className="compact-input w-24 text-center tabular-nums" min={-1} max={2147483647} step={1}
+                value={p.magSeed} onChange={(e) => sf('magSeed', Math.floor(+e.target.value))}
+                title="Seed — same seed + same prompt reads the style identically. -1 = fresh each run." />
+              <button className="btn-ghost cursor-pointer p-1 text-zinc-500 hover:text-purple-300" title="Lock a random seed"
+                onClick={() => sf('magSeed', Math.floor(Math.random() * 2147483647))}><Dice5 className="w-3.5 h-3.5" /></button>
+              <button className="btn-ghost cursor-pointer text-[10px]" title="Fresh each run" onClick={() => sf('magSeed', -1)}>{p.magSeed < 0 ? 'random' : 'clear'}</button>
+              <div className="flex-1" />
+              <button onClick={() => sf('magExtend', !p.magExtend)}
+                title="Extend — continue the current track seamlessly. Change the prompt to morph it without a cut."
+                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${p.magExtend ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
+                <Repeat className="w-3 h-3" /> Extend
+              </button>
+            </div>
+          ) : (
           <div className="relative shrink-0">
-            <textarea className="compact-input w-full resize-none h-9"
+            <textarea name="gen-negative-prompt" className="compact-input w-full resize-none h-9"
               placeholder="negative: vocals, distortion, harshness…"
               value={p.negativePrompt} onChange={(e) => sf('negativePrompt', e.target.value)} maxLength={500} />
             <div className="absolute top-1 right-2 flex items-center gap-1">
@@ -769,6 +911,7 @@ export const AdvancedGenPanel: React.FC<{
               </button>
             </div>
           </div>
+          )}
         </div>
 
         {/* VIZ RIGHT — flipped + icons on the left so it mirrors the left panel */}

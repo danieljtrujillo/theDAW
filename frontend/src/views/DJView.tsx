@@ -1008,14 +1008,14 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         {isSet ? <ListMusic className="w-3.5 h-3.5 text-purple-400 shrink-0" /> : <LibraryIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />}
         {editing && set ? (
-          <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditing(false); }} onBlur={commitRename} className="bg-black/50 border border-purple-400/50 rounded px-1.5 py-0.5 text-[10px] text-zinc-100 focus:outline-none w-36" />
+          <input autoFocus name="dj-set-rename" value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditing(false); }} onBlur={commitRename} className="bg-black/50 border border-purple-400/50 rounded px-1.5 py-0.5 text-[10px] text-zinc-100 focus:outline-none w-36" />
         ) : (
           <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 truncate max-w-40" title={sourceLabel}>{sourceLabel}</span>
         )}
         <span className="text-[8px] font-mono text-zinc-600">{rows.length} {isSet ? 'tracks' : 'files'}</span>
-        <div className="flex items-center gap-1 ml-auto bg-black/40 border border-white/10 rounded px-1.5 w-36 max-w-[40%]">
+        <div className="flex items-center gap-1 ml-auto bg-black/40 border border-white/10 rounded px-1.5 w-36 max-w-2/5">
           <Search className="w-3 h-3 text-zinc-600 shrink-0" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="search…" className="flex-1 min-w-0 bg-transparent text-[10px] font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600" />
+          <input name="dj-source-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="search…" className="flex-1 min-w-0 bg-transparent text-[10px] font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600" />
         </div>
         {isSet && set && (
           <div className="flex items-center gap-0.5 shrink-0">
@@ -1136,7 +1136,7 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
           <div className="px-2 py-1 flex flex-col gap-1">
             <div className="flex items-center gap-1 bg-black/40 border border-white/10 rounded px-1.5">
               <Link2 className="w-3 h-3 text-zinc-600 shrink-0" />
-              <input value={dlUrl} onChange={(e) => setDlUrl(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void runImport(); }}
+              <input name="dj-import-url" value={dlUrl} onChange={(e) => setDlUrl(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void runImport(); }}
                 placeholder="paste URL…" disabled={dlBusy} aria-label="Online import URL"
                 className="flex-1 min-w-0 bg-transparent text-[9px] font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600 disabled:opacity-50" />
               <button onClick={() => void runImport()} disabled={dlBusy || !dlUrl.trim()} className="shrink-0 text-purple-300 hover:text-purple-100 disabled:opacity-30" title="Download into library">
@@ -1567,7 +1567,7 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
       {p.cueSupported ? (
         <div className="flex items-center gap-1 w-full" title="Headphone (cue) output device">
           <Headphones className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
-          <select value={p.cueDev} onChange={(e) => { p.setCueDev(e.target.value); void djEngine.setCueSinkId(e.target.value); }} className="flex-1 min-w-0 bg-[#0e0c18] border border-white/10 text-zinc-300 text-[8px] font-mono px-1 py-0.5 rounded focus:outline-none" style={{ colorScheme: 'dark' }} title="Cue output device">
+          <select name="dj-cue-device" value={p.cueDev} onChange={(e) => { p.setCueDev(e.target.value); void djEngine.setCueSinkId(e.target.value); }} className="flex-1 min-w-0 bg-[#0e0c18] border border-white/10 text-zinc-300 text-[8px] font-mono px-1 py-0.5 rounded focus:outline-none" style={{ colorScheme: 'dark' }} title="Cue output device">
             <option value="">Default out</option>
             {p.cueDevices.map((dv) => <option key={dv.id} value={dv.id}>{dv.label}</option>)}
           </select>

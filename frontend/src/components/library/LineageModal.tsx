@@ -1390,6 +1390,7 @@ const SelectRow: React.FC<{ label: string; value: string; options: Array<{ value
   <label className="flex flex-col gap-0.5">
     <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">{label}</span>
     <select
+      name={`lineage-select-${label.toLowerCase().replace(/\s+/g, '-')}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className="compact-input bg-black/40 text-[10px]"

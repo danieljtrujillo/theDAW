@@ -1411,7 +1411,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 >
                   {/* Header bar */}
                   <div className="absolute top-0 left-0 right-0 px-1 h-3.5 bg-black/50 backdrop-blur-sm border-b border-white/10 flex justify-between items-center text-[8px] font-mono uppercase tracking-tighter">
-                    <span className="flex items-center gap-1 min-w-0 max-w-[60%]">
+                    <span className="flex items-center gap-1 min-w-0 max-w-3/5">
                       {clip.sourceKind === 'piano-roll' && (
                         <Piano className="w-2.5 h-2.5 text-emerald-300 shrink-0" />
                       )}
@@ -1673,6 +1673,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {inpaintPanel.kind === 'params' && (
             <>
               <textarea
+                name="inpaint-prompt"
                 placeholder="Describe what to generate in this region…"
                 value={inpaintPrompt}
                 onChange={(e) => setInpaintPrompt(e.target.value)}
@@ -1691,7 +1692,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <div className="flex items-center gap-2">
                 <span className="text-[9px] font-mono text-zinc-500 shrink-0">Seed</span>
                 <input
-                  type="number" value={inpaintSeed}
+                  type="number" name="inpaint-seed" value={inpaintSeed}
                   onChange={(e) => setInpaintSeed(parseInt(e.target.value) || -1)}
                   className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-[9px] font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
                   placeholder="-1 (random)"
