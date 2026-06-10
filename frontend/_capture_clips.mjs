@@ -130,6 +130,11 @@ const VW = +(process.env.CAPW || 1920), VH = +(process.env.CAPH || 1080);
 const DSF = +(process.env.DSF || 1);
 const HEADLESS = process.env.HEADLESS === '1';
 const SIZE = { width: VW, height: VH };
+// Recording size can be decoupled from the viewport (CAPRECW/CAPRECH) so the
+// 1920-logical layout the crops + mouse coords assume can be recorded at true
+// 4K via DSF=2 (viewport 1920x1080, deviceScaleFactor 2, record 3840x2160).
+const RW = +(process.env.CAPRECW || VW), RH = +(process.env.CAPRECH || VH);
+const REC = { width: RW, height: RH };
 const CX = Math.round(VW / 2), CY = Math.round(VH / 2), KX = VW / 1920, KY = VH / 1080;
 
 // Per-scene store driving. Heavy one-time builds (hero/stems/decks/studio/bucket)
@@ -847,7 +852,7 @@ const launchArgs = ['--autoplay-policy=no-user-gesture-required'];
 if (HEADLESS) launchArgs.push('--use-angle=gl', '--ignore-gpu-blocklist', '--enable-gpu', '--enable-webgl', '--enable-accelerated-2d-canvas');
 else launchArgs.push('--start-maximized');
 const browser = await chromium.launch({ headless: HEADLESS, args: launchArgs });
-const ctx = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, recordVideo: { dir: OUT, size: SIZE } });
+const ctx = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, recordVideo: { dir: OUT, size: REC } });
 const page = await ctx.newPage();
 const tRec = Date.now();       // recording starts at context/page creation → this is video t=0.
                                // (Anchoring AFTER the splash wait shifts every slice earlier by
@@ -904,7 +909,7 @@ for (const m of marks) {
   const out = path.join(OUT, `${m.id}_h.mp4`);
   try {
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', ss, '-t', dur, '-i', sessionWebm,
-      '-an', '-vf', `scale=${VW}:${VH},fps=30,format=yuv420p`, '-c:v', 'libx264', '-preset', 'medium', '-crf', '14', out]);
+      '-an', '-vf', `scale=${RW}:${RH},fps=30,format=yuv420p`, '-c:v', 'libx264', '-preset', 'medium', '-crf', '14', out]);
     console.log(`  sliced ${m.id}_h.mp4  (${dur}s @ ${ss}s)`);
   } catch (e) { console.log(`  slice FAIL ${m.id}`, e.message); }
 }

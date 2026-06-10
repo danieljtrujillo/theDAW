@@ -851,6 +851,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                     {editingKeyProvider === p.id && (
                                         <div className="mt-1.5 space-y-1">
                                             <textarea
+                                                name={`assistant-key-input-${p.id}`}
                                                 value={keyInput}
                                                 onChange={e => setKeyInput(e.target.value)}
                                                 placeholder="Paste keys (one per line, or comma/semicolon separated)..."
@@ -1131,6 +1132,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                 <input
                     ref={fileInputRef}
                     type="file"
+                    name="assistant-attach-files"
                     multiple
                     className="hidden"
                     accept="audio/*,image/*,video/*,.txt,.md,.json,.py,.ts,.tsx,.js,.jsx,.css,.html,.log,.yaml,.yml,.toml"
@@ -1165,6 +1167,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                     <input
                         ref={inputRef}
                         type="text"
+                        name="assistant-chat-input"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         placeholder={isProcessing ? 'Type to interrupt...' : 'Ask anything...'}

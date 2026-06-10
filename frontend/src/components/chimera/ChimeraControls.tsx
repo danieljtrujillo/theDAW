@@ -53,6 +53,7 @@ export const ChimeraControls: React.FC = () => {
         <span className="text-zinc-400 uppercase tracking-widest">BPM</span>
         <input
           type="number"
+          name="chimera-target-bpm"
           min={40}
           max={240}
           step={0.1}
@@ -80,6 +81,7 @@ export const ChimeraControls: React.FC = () => {
         <Layers className="w-2.5 h-2.5 text-purple-400" />
         <span className="text-zinc-400 uppercase tracking-widest">Align</span>
         <select
+          name="chimera-align-mode"
           value={alignMode}
           onChange={(e) => setChimeraField('alignMode', e.target.value as ChimeraAlignMode)}
           className="compact-input"
@@ -98,6 +100,7 @@ export const ChimeraControls: React.FC = () => {
             <span className="text-zinc-400 uppercase tracking-widest" title="Bars per chunk">Chunk</span>
             <input
               type="number"
+              name="chimera-weave-bars"
               min={0}
               max={32}
               step={1}
@@ -114,6 +117,7 @@ export const ChimeraControls: React.FC = () => {
             <span className="text-zinc-400 uppercase tracking-widest" title="Minimum total length in bars">Total</span>
             <input
               type="number"
+              name="chimera-weave-total-bars"
               min={0}
               max={256}
               step={4}
@@ -135,6 +139,7 @@ export const ChimeraControls: React.FC = () => {
             </span>
             <input
               type="number"
+              name="chimera-weave-max-polyphony"
               min={1}
               max={8}
               step={1}

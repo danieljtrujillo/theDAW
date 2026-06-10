@@ -213,7 +213,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
               A vision model identifies your controller (brand + model) and counts its controls — far more accurate than raw shape detection. If enabled, this uploads the photo to your configured AI provider (via your Assistant keys).
             </p>
             <div className="flex gap-2">
-              <input ref={aiFileRef} type="file" accept="image/*" className="hidden"
+              <input ref={aiFileRef} type="file" name="controller-vision-ai-photo" accept="image/*" className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) void onAiIdentify(f); }} />
               <button
                 onClick={() => aiFileRef.current?.click()}
@@ -239,6 +239,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
               <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">By name (Wikimedia)</div>
               <div className="flex gap-1.5">
                 <input
+                  name="controller-vision-name-search"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') void onSearch(); }}
@@ -255,7 +256,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
             </div>
             <div className="space-y-1.5">
               <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">Raw CV (no AI)</div>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden"
+              <input ref={fileRef} type="file" name="controller-vision-cv-photo" accept="image/*" className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) void onUpload(f); }} />
               <button
                 onClick={() => fileRef.current?.click()}
@@ -344,7 +345,7 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
                   <label key={k} className="flex flex-col gap-1">
                     <span className="text-[8px] font-mono uppercase" style={{ color: KIND_COLOR[k] }}>{k}s</span>
                     <input
-                      type="number" min={0} value={counts[k]}
+                      type="number" name={`controller-vision-count-${k}`} min={0} value={counts[k]}
                       onChange={(e) => setCounts((c) => ({ ...c, [k]: Math.max(0, parseInt(e.target.value || '0', 10)) }))}
                       className="bg-black/40 border border-white/12 rounded px-2 py-1 text-[11px] font-mono text-zinc-100 outline-none focus:border-indigo-500/50"
                     />

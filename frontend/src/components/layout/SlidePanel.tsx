@@ -289,17 +289,21 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
         <button onClick={onClose} aria-label="Close"><X className="w-3 h-3" /></button>
       </div>
 
-      <label className="sl-se-label">Name</label>
+      <label htmlFor="slide-stack-name" className="sl-se-label">Name</label>
       <input
+        id="slide-stack-name"
+        name="slide-stack-name"
         className="sl-se-input"
         value={stack.name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Stack name"
       />
 
-      <label className="sl-se-label">Media</label>
+      <label htmlFor="slide-stack-media" className="sl-se-label">Media</label>
       <div className="sl-se-row">
         <select
+          id="slide-stack-media"
+          name="slide-stack-media"
           className="sl-se-input"
           value={stack.media?.entryId ?? ''}
           onChange={(e) => (e.target.value ? assignMedia(e.target.value) : clearMedia())}
@@ -324,6 +328,7 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
       {stack.targets.map((t, i) => (
         <div className="sl-se-target" key={i}>
           <select
+            name={`slide-target-key-${i}`}
             className="sl-se-input sl-se-key"
             value={t.key}
             onChange={(e) => updateTarget(i, { key: e.target.value })}
@@ -335,6 +340,7 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
             ))}
           </select>
           <input
+            name={`slide-target-from-pct-${i}`}
             className="sl-se-num"
             type="number" min={0} max={100}
             value={t.fromPct ?? 0}
@@ -342,6 +348,7 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
             title="Range start % at slider 0"
           />
           <input
+            name={`slide-target-to-pct-${i}`}
             className="sl-se-num"
             type="number" min={0} max={100}
             value={t.toPct ?? 100}
@@ -623,7 +630,7 @@ export const SlidePanel: React.FC = () => {
 
   // Auto-detect the controller profile from connected MIDI device names.
   // Scored match (specific device name beats a family token). Only runs while
-  // autoDetect is on; the manual <select> sets autoDetect off so a user choice
+  // autoDetect is on; the manual profile dropdown sets autoDetect off so a user choice
   // sticks. Re-runs on hot-plug (midiInputs changes).
   const detected = useMemo(() => detectProfileFromNames(midiInputs), [midiInputs]);
   useEffect(() => {
@@ -660,7 +667,7 @@ export const SlidePanel: React.FC = () => {
   const navCooldownRef = useRef(0);
 
   // ←/→ keyboard page nav (always on, wraps). Ignored while typing in a field
-  // or when a <select> is focused; widgets are up/down-only so there's no conflict.
+  // or when a dropdown is focused; widgets are up/down-only so there's no conflict.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;

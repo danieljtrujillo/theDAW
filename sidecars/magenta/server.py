@@ -33,6 +33,8 @@ override with STABLEDAW_MAGENTA_URL.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
 import os
@@ -68,17 +70,25 @@ class Engine:
         self.sample_rate = 48000
         self.lock = threading.Lock()
         self._embed_cache: dict[str, object] = {}
+        # Current evolving piece for extend/morph: {state, emb, key, samples, sr}.
+        self._gen: dict | None = None
 
     def load(self) -> None:
         try:
             self.status = "importing jax + magenta_rt"
             import jax
 
-            from magenta_rt import MagentaRT2System
+            # magenta-rt 2.x exposes the JAX system as ``MagentaRT2Jax`` (the
+            # pre-2.0 name ``MagentaRT2System`` is no longer re-exported at the
+            # top level). Use the current name, falling back defensively.
+            try:
+                from magenta_rt import MagentaRT2Jax as MagentaRT2
+            except ImportError:  # older/renamed API
+                from magenta_rt.jax.system import MagentaRT2System as MagentaRT2
 
             self.device = str(jax.devices()[0])
             self.status = f"loading {MODEL} + compiling (one-time)"
-            self.mrt = MagentaRT2System(size=MODEL)
+            self.mrt = MagentaRT2(size=MODEL)
             self.sample_rate = int(getattr(self.mrt, "_sample_rate", 48000))
             # Warm up so the first real request is fast.
             emb = self.mrt.embed_style("warm up", use_mapper=True)
@@ -91,22 +101,56 @@ class Engine:
             self.status = "error: " + self.error
             traceback.print_exc()
 
-    def embed_text(self, prompt: str):
-        emb = self._embed_cache.get(prompt)
+    @staticmethod
+    def _style_key(sources: list[dict], seed: int) -> str:
+        basis = [
+            (
+                s.get("type", "text"),
+                (s.get("text") or "").strip(),
+                (s.get("audio_b64") or "")[:48],
+                round(float(s.get("weight", 1.0)), 4),
+            )
+            for s in sources
+        ]
+        return hashlib.sha1((repr(basis) + f"|seed={seed}").encode()).hexdigest()
+
+    def _embed_one(self, src: dict, seed: int):
+        """Embed one style source: a text prompt OR an uploaded audio clip."""
+        if src.get("type") == "audio" and src.get("audio_b64"):
+            from magenta_rt import audio as mrt_audio
+
+            raw = base64.b64decode(src["audio_b64"])
+            samples, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
+            wf = mrt_audio.Waveform(samples, sample_rate=int(sr))
+            return self.mrt.embed_style(wf, use_mapper=True, seed=int(seed))
+        text = (src.get("text") or "warm analog pads").strip()
+        return self.mrt.embed_style(text, use_mapper=True, seed=int(seed))
+
+    def build_style(self, prompt: str, styles: list[dict] | None, seed: int):
+        """One style embedding from a prompt, or a weighted blend of text/audio
+        sources (overrides prompt). Returns (embedding, cache_key)."""
+        sources = (
+            list(styles)
+            if styles
+            else [{"type": "text", "text": prompt, "weight": 1.0}]
+        )
+        key = self._style_key(sources, seed)
+        emb = self._embed_cache.get(key)
         if emb is None:
-            emb = self.mrt.embed_style(prompt, use_mapper=True)
+            embs, weights = [], []
+            for s in sources:
+                embs.append(np.asarray(self._embed_one(s, seed), dtype=np.float32))
+                weights.append(max(0.0, float(s.get("weight", 1.0))))
+            w = np.asarray(weights, dtype=np.float32)
+            if w.sum() <= 0:
+                w = np.ones_like(w)
+            emb = np.average(np.stack(embs, axis=0), axis=0, weights=w).astype(
+                np.float32
+            )
             if len(self._embed_cache) > 32:
                 self._embed_cache.clear()
-            self._embed_cache[prompt] = emb
-        return emb
-
-    def embed_audio(self, wav_bytes: bytes):
-        """Embed a style from an uploaded audio clip (clone / style-transfer)."""
-        from magenta_rt import audio as mrt_audio
-
-        samples, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
-        waveform = mrt_audio.Waveform(samples, sample_rate=int(sr))
-        return self.mrt.embed_style(waveform, use_mapper=True)
+            self._embed_cache[key] = emb
+        return emb, key
 
 
 ENGINE = Engine()
@@ -157,6 +201,13 @@ async def health():
     }
 
 
+@app.post("/reset")
+async def reset():
+    """Drop the evolving-piece state so the next generate starts a fresh track."""
+    ENGINE._gen = None
+    return {"ok": True}
+
+
 @app.post("/generate")
 async def generate(
     prompt: str = Form(""),
@@ -169,6 +220,9 @@ async def generate(
     drums: int = Form(-1),
     chunk_frames: int = Form(FPS),
     notes: str = Form(""),
+    seed: int = Form(0),
+    extend: bool = Form(False),
+    styles: str = Form(""),
     audio: UploadFile | None = None,
 ):
     if not ENGINE.ready:
@@ -180,17 +234,32 @@ async def generate(
         timeline: list[dict] = json.loads(notes) if notes.strip() else []
     except json.JSONDecodeError:
         return JSONResponse({"error": "notes must be JSON"}, status_code=400)
+    try:
+        style_list: list[dict] = json.loads(styles) if styles.strip() else []
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "styles must be JSON"}, status_code=400)
 
     audio_bytes = await audio.read() if audio is not None else None
+    # A single uploaded clip with no explicit blend list IS the audio style source.
+    if audio_bytes and not style_list:
+        style_list = [
+            {
+                "type": "audio",
+                "audio_b64": base64.b64encode(audio_bytes).decode(),
+                "weight": 1.0,
+            }
+        ]
+    has_audio_style = any(s.get("type") == "audio" for s in style_list)
 
     def _run():
         with ENGINE.lock:
             t0 = time.time()
-            emb = (
-                ENGINE.embed_audio(audio_bytes)
-                if audio_bytes
-                else ENGINE.embed_text(prompt or "warm analog pads")
+            prev = ENGINE._gen if extend else None
+            emb, key = ENGINE.build_style(
+                prompt or "warm analog pads", style_list, int(seed or 0)
             )
+            if prev is not None and prev.get("key") == key:
+                emb = prev["emb"]  # same vibe across an extend — keep the embedding
             total = max(1, int(round(float(duration) * FPS)))
             chunk = max(1, int(chunk_frames))
             common = dict(
@@ -203,10 +272,11 @@ async def generate(
                 drums=[int(drums)],
             )
 
+            # extend=True continues the current piece via the model's streaming
+            # state, so changing the prompt/style/notes morphs it without a cut.
+            state = prev["state"] if prev is not None else None
+            parts = []
             if not timeline:
-                # No MIDI: one continuous stream (state kept across chunks for continuity).
-                state = None
-                parts = []
                 done = 0
                 while done < total:
                     n = min(chunk, total - done)
@@ -215,8 +285,6 @@ async def generate(
                     done += n
             else:
                 # MIDI-conditioned accompaniment: per-chunk note states, threaded state.
-                state = None
-                parts = []
                 for start_f in range(0, total, chunk):
                     n = min(chunk, total - start_f)
                     ns = _notes_state_for_window(timeline, start_f, FPS)
@@ -225,29 +293,41 @@ async def generate(
                     )
                     parts.append(np.asarray(wav.samples, dtype=np.float32))
 
-            samples = np.concatenate(parts, axis=0)
+            seg = np.concatenate(parts, axis=0)
+            sr = ENGINE.sample_rate
+            if prev is not None and prev.get("samples") is not None:
+                full = np.concatenate([prev["samples"], seg], axis=0)
+            else:
+                full = seg
+            ENGINE._gen = {
+                "state": state,
+                "emb": emb,
+                "key": key,
+                "samples": full,
+                "sr": sr,
+            }
             compute = time.time() - t0
-        sr = ENGINE.sample_rate
         buf = io.BytesIO()
-        sf.write(buf, samples, sr, format="WAV", subtype="PCM_16")
-        return buf.getvalue(), compute, samples.shape[0] / sr, sr
+        sf.write(buf, full, sr, format="WAV", subtype="PCM_16")
+        return buf.getvalue(), compute, full.shape[0] / sr, seg.shape[0] / sr, sr
 
     try:
         import anyio
 
-        wav_bytes, compute, audio_s, sr = await anyio.to_thread.run_sync(_run)
-        rtf = (audio_s / compute) if compute > 0 else 0.0
+        wav_bytes, compute, audio_s, seg_s, sr = await anyio.to_thread.run_sync(_run)
+        rtf = (seg_s / compute) if compute > 0 else 0.0
+        cond = "audio" if has_audio_style else ("notes" if timeline else "text")
         return Response(
             content=wav_bytes,
             media_type="audio/wav",
             headers={
                 "X-Generate-Seconds": f"{compute:.2f}",
                 "X-Audio-Seconds": f"{audio_s:.2f}",
+                "X-Segment-Seconds": f"{seg_s:.2f}",
                 "X-RTF": f"{rtf:.2f}",
                 "X-Sample-Rate": str(sr),
-                "X-Conditioning": "audio"
-                if audio_bytes
-                else ("notes" if timeline else "text"),
+                "X-Extend": "1" if extend else "0",
+                "X-Conditioning": cond,
             },
         )
     except Exception as e:  # noqa: BLE001 — return the real error to the client

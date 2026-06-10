@@ -192,6 +192,7 @@ export const ChimeraStack: React.FC = () => {
       >
         <input
           ref={fileInputRef}
+          name="chimera-audio-file"
           type="file"
           accept="audio/*"
           multiple

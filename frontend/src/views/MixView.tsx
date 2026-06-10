@@ -349,7 +349,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         <span className={sectionTitle}>Chain {p.chain.length > 0 && <span className="text-zinc-600">({p.chain.length})</span>}</span>
         <div className="ml-auto flex items-center gap-1.5">
           <span className="text-[9px] font-mono text-zinc-500 shrink-0">FORMAT</span>
-          <select className="compact-input text-[10px] w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
+          <select name="mix-output-format" className="compact-input text-[10px] w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
             <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option><option value="ogg">OGG</option>
           </select>
           <button onClick={() => p.setShowHistory(!p.showHistory)} title="Process history" className={`btn-ghost p-1 shrink-0 ${p.showHistory ? 'text-purple-300' : 'text-zinc-500 hover:text-zinc-300'}`}><History className="w-3.5 h-3.5" /></button>
@@ -561,7 +561,7 @@ export const MixView: React.FC = () => {
   return (
     <div className="relative h-full w-full overflow-hidden text-zinc-200">
       <ControlSurface surfaceId="mix" registry={registry} defaultLayout={defaultMixLayout} className="p-1.5" />
-      <input ref={fileInputRef} type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} title="Upload audio file" />
+      <input ref={fileInputRef} name="mix-audio-file" type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} title="Upload audio file" />
     </div>
   );
 };

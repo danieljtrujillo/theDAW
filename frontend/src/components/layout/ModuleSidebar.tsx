@@ -50,9 +50,10 @@ export const ModuleSidebar: React.FC = () => {
         
         <div className="relative group">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600 group-focus-within:text-purple-500 transition-colors" />
-          <input 
-            type="text" 
-            placeholder="Search plugins..." 
+          <input
+            type="text"
+            name="module-search"
+            placeholder="Search plugins..."
             className="w-full bg-black/40 border border-white/5 rounded px-7 py-1.5 text-[10px] font-mono text-white outline-none focus:border-purple-500/50 transition-all placeholder:text-zinc-800"
             value={search}
             onChange={(e) => setSearch(e.target.value)}

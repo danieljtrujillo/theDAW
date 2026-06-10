@@ -238,7 +238,7 @@ export function ProviderModelSelector({
                   <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
                     {isSelected && <Check className="w-3 h-3 text-primary" />}
                   </div>
-                  <div className={`flex-1 min-w-0 ${isSelected ? '' : 'ml-[18px]'}`}>
+                  <div className={`flex-1 min-w-0 ${isSelected ? '' : 'ml-4.5'}`}>
                     <div className={`text-[11px] font-mono truncate ${isSelected ? 'text-primary' : 'text-white/80'}`}>
                       {displayName}
                     </div>

@@ -239,9 +239,11 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">VJ Recording</span>
           </div>
           <div className="mb-3">
-            <label className="block text-[9px] font-mono uppercase tracking-wider text-zinc-400 mb-1">Export root folder</label>
+            <label htmlFor="settings-vj-export-root" className="block text-[9px] font-mono uppercase tracking-wider text-zinc-400 mb-1">Export root folder</label>
             <input
+              id="settings-vj-export-root"
               type="text"
+              name="settings-vj-export-root"
               value={vjExportRoot}
               onChange={(e) => setVjExportRoot(e.target.value)}
               onBlur={() => {

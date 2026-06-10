@@ -71,6 +71,7 @@ const FrameStyleMenu: React.FC<{ node: ContainerNode; store: SurfaceStoreApi; on
         Glow {node.frameGlow ? 'on' : 'off'}
       </button>
       <input
+        name="surface-container-frame-title"
         value={node.frameTitle ?? ''}
         onChange={(e) => set({ frameTitle: e.target.value })}
         placeholder="Label (optional)"

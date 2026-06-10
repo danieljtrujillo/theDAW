@@ -141,7 +141,7 @@ export const AdvancedVisualizer: React.FC = () => {
     <div className="hardware-card h-full flex flex-col bg-black/40 relative overflow-hidden group">
       {/* Background Grid */}
       <div
-        className="absolute inset-0 opacity-[0.07] pointer-events-none"
+        className="absolute inset-0 opacity-7 pointer-events-none"
         style={{
           backgroundImage: `linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)`,
           backgroundSize: '20px 20px',

@@ -58,6 +58,18 @@ export interface GenerateParams {
   cutToDuration?: boolean;
 
   loras?: Array<{ file: File | null; weight: number }>;
+
+  // Magenta RT2 (text→music) sampling params.
+  magTemperature?: number;
+  magTopK?: number;
+  magCfgMusiccoca?: number;
+  magCfgNotes?: number;
+  magCfgDrums?: number;
+  magDrums?: number;
+  magChunkFrames?: number;
+  magSeed?: number;
+  magExtend?: boolean;
+  magNotes?: number[];
 }
 
 type JobStatus = 'idle' | 'submitting' | 'queued' | 'running' | 'completed' | 'failed';
@@ -123,12 +135,32 @@ const wait = (ms: number): Promise<void> =>
   });
 
 /** Build the form for the Magenta RT2 sidecar (/api/magenta/generate): text prompt
- *  -> audio. The model takes a prompt + duration + sampling knobs (no SA3 fields). */
+ *  -> audio. The model takes a prompt + duration + its own sampling knobs (no SA3
+ *  fields). An enabled Init clip is forwarded as the audio-style ("clone") source,
+ *  which the sidecar embeds in place of the text style. */
 export const buildMagentaFormData = (params: GenerateParams, prompt: string): FormData => {
   const formData = new FormData();
   formData.append('prompt', prompt);
   formData.append('duration', String(params.duration));
   formData.append('model_size', params.model.replace('magenta-', '') || 'small');
+  if (params.magTemperature !== undefined) formData.append('temperature', String(params.magTemperature));
+  if (params.magTopK !== undefined) formData.append('top_k', String(Math.round(params.magTopK)));
+  if (params.magCfgMusiccoca !== undefined) formData.append('cfg_musiccoca', String(params.magCfgMusiccoca));
+  if (params.magCfgNotes !== undefined) formData.append('cfg_notes', String(params.magCfgNotes));
+  if (params.magCfgDrums !== undefined) formData.append('cfg_drums', String(params.magCfgDrums));
+  if (params.magDrums !== undefined) formData.append('drums', String(Math.round(params.magDrums)));
+  if (params.magChunkFrames !== undefined) formData.append('chunk_frames', String(Math.round(params.magChunkFrames)));
+  // Seed: -1 means "fresh each run" → omit so the sidecar randomises.
+  if (params.magSeed !== undefined && params.magSeed >= 0) formData.append('seed', String(Math.round(params.magSeed)));
+  if (params.magExtend) formData.append('extend', 'true');
+  // Notes → full-duration melody events the sidecar encodes into 128-pitch states.
+  if (params.magNotes && params.magNotes.length) {
+    const events = params.magNotes.map((pitch) => ({ pitch, start: 0, end: params.duration }));
+    formData.append('notes', JSON.stringify(events));
+  }
+  if ((params.initAudioEnabled ?? false) && params.initAudioFile) {
+    formData.append('audio_file', params.initAudioFile);
+  }
   return formData;
 };
 
@@ -245,6 +277,16 @@ export const buildGenerateParamsFromState = (params: GenerateParamsState): Gener
   outputName: params.outputName,
   cutToDuration: params.cutToDuration,
   loras: params.loras.map((lora) => ({ file: lora.file, weight: lora.weight })),
+  magTemperature: params.magTemperature,
+  magTopK: params.magTopK,
+  magCfgMusiccoca: params.magCfgMusiccoca,
+  magCfgNotes: params.magCfgNotes,
+  magCfgDrums: params.magCfgDrums,
+  magDrums: params.magDrums,
+  magChunkFrames: params.magChunkFrames,
+  magSeed: params.magSeed,
+  magExtend: params.magExtend,
+  magNotes: params.magNotes,
 });
 
 export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({

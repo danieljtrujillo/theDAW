@@ -206,6 +206,7 @@ export const MediaBucketView: React.FC = () => {
             <input
               ref={fileInputRef}
               type="file"
+              name="media-bucket-add-files"
               multiple
               accept="audio/*,.mid,.midi,image/*,video/*"
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -232,6 +233,7 @@ export const MediaBucketView: React.FC = () => {
         <Link2 className="w-3 h-3 text-purple-300 shrink-0" />
         <input
           type="text"
+          name="media-bucket-import-url"
           value={importUrl}
           onChange={(e) => setImportUrl(e.target.value)}
           onKeyDown={(e) => {

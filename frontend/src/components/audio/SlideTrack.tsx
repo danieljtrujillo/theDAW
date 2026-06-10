@@ -6,7 +6,7 @@ const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 /* ── SlideTrack: the bare SLIDE glass-capsule slider ─────────────────────────
    The SLIDE look (capsule track + glowing colour-tracking fill + white knob)
    extracted from SlideRow as a label-less, drop-in replacement for a raw
-   `<input type="range" class="pro-slider">`. Each call site keeps its own label
+   `input[type=range].pro-slider`. Each call site keeps its own label
    and value readout; only the slider itself becomes SLIDE. Width/height come from
    `className` (e.g. "w-full", "flex-1", "w-16"); pass `tint` to pin the colour
    instead of having it track the value. */

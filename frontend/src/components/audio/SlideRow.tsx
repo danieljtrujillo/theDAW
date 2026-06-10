@@ -66,7 +66,9 @@ export function SlideRow({ label, value, onChange, min, max, step = 1, tipKey, o
         <div className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white"
           style={{ left: `${t * 100}%`, transform: 'translate(-50%,-50%)', boxShadow: `0 0 8px ${rgba(base, 0.9)}`, transition: drag ? 'none' : 'left 0.08s ease' }} />
       </div>
-      <input type="number" className="compact-input w-11 text-center tabular-nums shrink-0"
+      <input
+        name={`slide-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`}
+        type="number" className="compact-input w-11 text-center tabular-nums shrink-0"
         style={{ color: rgb(base), fontWeight: 700 }}
         min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value || 0)} />
     </div>

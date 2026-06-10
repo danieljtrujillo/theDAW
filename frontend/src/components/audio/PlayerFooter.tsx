@@ -192,8 +192,10 @@ export const PlayerFooter: React.FC = () => {
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-20 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center justify-between gap-8 group">
       {/* 1. G-Search + track info. The orb assistant overlaps the very
-          bottom-left corner, so pad section 1 left to clear its hit area. */}
-      <div className="flex items-center gap-3 w-75 shrink-0 pl-20">
+          bottom-left corner, so pad section 1 left to clear its hit area.
+          Width matches section 3 (w-80) so the flex-1 transport — and the PLAY
+          button at its centre — lands on the true viewport centre. */}
+      <div className="flex items-center gap-3 w-80 shrink-0 pl-20">
         {/* G-Search — global library search, available on every tab. */}
         <div className="flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5 shrink-0">
           <Search className="w-3 h-3 text-zinc-600" />

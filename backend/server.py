@@ -81,6 +81,9 @@ _WINDOWS_RESERVED_FILENAMES = {
 }
 _generation_pipelines: dict[str, Any] = {}
 _active_model_name = DEFAULT_GENERATION_MODEL
+# True while the SA3 model(s) are parked in CPU RAM (VRAM freed for a co-resident
+# GPU workload such as the Magenta RT2 sidecar). Swapped back by /api/model/onload.
+_sa3_offloaded = False
 _generation_job_lock = asyncio.Lock()
 
 # Spectrogram cache: {job_id: {mel, stft, chromagram, cqt}}
@@ -771,6 +774,101 @@ async def model_info():
             if torch.cuda.is_available()
             else 0
         ),
+    }
+
+
+def _vram_used_gb() -> float:
+    return (
+        round(torch.cuda.memory_allocated() / 1024**3, 2)
+        if torch.cuda.is_available()
+        else 0.0
+    )
+
+
+def _move_pipelines(device: str) -> int:
+    """Move every loaded generation pipeline's weights to ``device`` (blocking).
+
+    Run off the event loop. Moving a fp16 model GPU<->CPU is a pure tensor
+    transfer (no dtype change, bit-identical weights), so an offload/onload
+    round-trip restores the exact loaded state with no disk read.
+    """
+    moved = 0
+    for pl in _generation_pipelines.values():
+        try:
+            pl.model.to(device)
+            pl.device = torch.device(device)
+            moved += 1
+        except Exception:
+            logger.exception("model.move: failed moving a pipeline to %s", device)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        if device != "cpu":
+            torch.cuda.synchronize()
+    return moved
+
+
+@app.post("/api/model/offload")
+async def offload_model():
+    """Park the SA3 model(s) in CPU RAM, freeing VRAM, without stopping the server.
+
+    Non-destructive: the fully-loaded model stays in system RAM so a co-resident
+    GPU workload (the Magenta RT2 sidecar) can use the card, and POST
+    /api/model/onload swaps it straight back to the GPU in seconds with no disk
+    reload. The backend process, API, and all non-DiT features stay up.
+    """
+    global _sa3_offloaded
+    before = _vram_used_gb()
+    loop = asyncio.get_event_loop()
+    n = await loop.run_in_executor(None, _move_pipelines, "cpu")
+    _sa3_offloaded = True
+    after = _vram_used_gb()
+    logger.info(
+        "model.offload: parked %d pipeline(s) in CPU RAM, torch VRAM %.2f -> %.2f GB",
+        n,
+        before,
+        after,
+    )
+    return {
+        "offloaded": n,
+        "location": "cpu",
+        "vram_used_gb_before": before,
+        "vram_used_gb_after": after,
+    }
+
+
+@app.post("/api/model/onload")
+async def onload_model():
+    """Swap the SA3 model(s) back from CPU RAM to VRAM (reverse of /offload)."""
+    global _sa3_offloaded
+    target = "cuda" if torch.cuda.is_available() else "cpu"
+    before = _vram_used_gb()
+    loop = asyncio.get_event_loop()
+    n = await loop.run_in_executor(None, _move_pipelines, target)
+    _sa3_offloaded = False
+    after = _vram_used_gb()
+    logger.info(
+        "model.onload: restored %d pipeline(s) to %s, torch VRAM %.2f -> %.2f GB",
+        n,
+        target,
+        before,
+        after,
+    )
+    return {
+        "onloaded": n,
+        "location": target,
+        "vram_used_gb_before": before,
+        "vram_used_gb_after": after,
+    }
+
+
+@app.get("/api/model/offload-status")
+async def offload_status():
+    """Report whether the SA3 model is currently parked in CPU RAM."""
+    return {
+        "offloaded": _sa3_offloaded,
+        "active_model": _active_model_name,
+        "loaded_models": sorted(_generation_pipelines),
+        "vram_used_gb": _vram_used_gb(),
     }
 
 

@@ -249,7 +249,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
         {entry.prompt && (
           <div className="flex flex-col gap-1">
             <span className="mono-label text-[9px]!">PROMPT</span>
-            <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 break-words">
+            <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word">
               {entry.prompt}
             </p>
           </div>
@@ -257,7 +257,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
         {entry.negativePrompt && (
           <div className="flex flex-col gap-1">
             <span className="mono-label text-[9px]! text-red-400/70!">NEGATIVE</span>
-            <p className="text-[9px] font-mono text-zinc-500 leading-relaxed bg-black/30 rounded p-2 break-words">
+            <p className="text-[9px] font-mono text-zinc-500 leading-relaxed bg-black/30 rounded p-2 wrap-break-word">
               {entry.negativePrompt}
             </p>
           </div>
@@ -274,7 +274,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
             {lyrics && (
               <div className="flex flex-col gap-0.5">
                 <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Lyrics</span>
-                <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 break-words whitespace-pre-wrap max-h-40 overflow-y-auto no-scrollbar">
+                <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word whitespace-pre-wrap max-h-40 overflow-y-auto no-scrollbar">
                   {lyrics}
                 </p>
               </div>
@@ -347,7 +347,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
                   </button>
                 ))}
               </div>
-              <div className="aspect-[10/3] bg-black/40 rounded flex items-center justify-center overflow-hidden">
+              <div className="aspect-10/3 bg-black/40 rounded flex items-center justify-center overflow-hidden">
                 {activeSpec
                   ? <img src={`data:image/png;base64,${activeSpec}`} alt={`${specTab} spectrogram`} className="w-full h-full object-cover" />
                   : <span className="text-[8px] font-mono text-zinc-700">No {specTab.toUpperCase()} image</span>}
@@ -379,6 +379,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
             ))}
           </div>
           <input
+            name="catalog-add-tag"
             className="compact-input w-full"
             placeholder="ADD TAG + ENTER"
             value={tagDraft}
@@ -391,6 +392,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
         <div className="flex flex-col gap-1">
           <span className="mono-label text-[9px]!">NOTES</span>
           <textarea
+            name="catalog-notes"
             className="compact-input w-full min-h-16 resize-y"
             placeholder="Notes…"
             value={notesDraft}

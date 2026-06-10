@@ -463,6 +463,7 @@ export const PianoRoll: React.FC = () => {
             <span className="text-[7px] font-mono text-zinc-600 uppercase">BPM</span>
             <input
               type="number"
+              name="piano-roll-bpm"
               min={40}
               max={240}
               value={bpm}
@@ -474,6 +475,7 @@ export const PianoRoll: React.FC = () => {
             <span className="text-[7px] font-mono text-zinc-600 uppercase">Steps</span>
             <input
               type="number"
+              name="piano-roll-total-steps"
               min={16}
               max={256}
               step={16}
@@ -497,6 +499,7 @@ export const PianoRoll: React.FC = () => {
           <label className="relative">
             <input
               type="file"
+              name="piano-roll-import-midi"
               accept=".mid,.midi,audio/midi"
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               onChange={(e) => {

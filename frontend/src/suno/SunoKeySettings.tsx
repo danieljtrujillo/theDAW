@@ -103,6 +103,7 @@ export const SunoKeySettings: React.FC = () => {
           <div className="relative flex-1">
             <input
               type={show ? 'text' : 'password'}
+              name="suno-api-key"
               className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 pr-7 text-[10px] font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
               placeholder={configured ? 'Paste a new key to replace…' : 'sk_live_…'}
               value={val}

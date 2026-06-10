@@ -54,6 +54,9 @@ async def generate(
     drums: int = Form(-1),
     chunk_frames: int = Form(25),
     notes: str = Form(""),
+    seed: int = Form(0),
+    extend: bool = Form(False),
+    styles: str = Form(""),
     model_size: str = Form("small"),
     audio_file: UploadFile | None = File(None),
 ):
@@ -75,6 +78,7 @@ async def generate(
         "kind": "magenta-generate",
         "model_name": f"magenta-{model_size}",
         "conditioning": cond,
+        "extend": bool(extend),
         "status": "queued",
         "progress": {"step": 0, "steps": 1},
         "created_at": time.time(),
@@ -94,6 +98,9 @@ async def generate(
             drums=drums,
             chunk_frames=chunk_frames,
             notes=notes or None,
+            seed=seed,
+            extend=extend,
+            styles=styles or None,
             audio_bytes=audio_bytes,
             audio_mime=audio_mime,
         )
@@ -114,6 +121,9 @@ async def _run_generate(
     drums,
     chunk_frames,
     notes,
+    seed,
+    extend,
+    styles,
     audio_bytes,
     audio_mime,
 ):
@@ -131,6 +141,9 @@ async def _run_generate(
             drums=drums,
             chunk_frames=chunk_frames,
             notes=notes,
+            seed=seed,
+            extend=extend,
+            styles=styles,
             audio_bytes=audio_bytes,
             audio_mime=audio_mime,
         )

@@ -264,6 +264,7 @@ export const OrbChatPanel: React.FC<OrbChatPanelProps> = ({
                                         {editingKey === p.id ? (
                                             <div style={{ flex: 1, display: 'flex', gap: 4 }}>
                                                 <input
+                                                    name={`orb-chat-key-input-${p.id}`}
                                                     type={showKeyText ? 'text' : 'password'} value={keyInput}
                                                     onChange={e => setKeyInput(e.target.value)}
                                                     placeholder="Paste API key..."
@@ -419,6 +420,7 @@ export const OrbChatPanel: React.FC<OrbChatPanelProps> = ({
                         <input
                             ref={fileInputRef}
                             type="file"
+                            name="orb-chat-attach-files"
                             multiple
                             accept="*/*"
                             onChange={handleFileChange}
@@ -439,7 +441,7 @@ export const OrbChatPanel: React.FC<OrbChatPanelProps> = ({
                         </button>
                         <input
                             ref={inputRef}
-                            type="text" value={input} onChange={e => setInput(e.target.value)}
+                            type="text" name="orb-chat-input" value={input} onChange={e => setInput(e.target.value)}
                             placeholder={chat.isProcessing ? 'Type to interrupt...' : 'Ask anything...'}
                             style={{
                                 flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',

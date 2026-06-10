@@ -163,6 +163,7 @@ export const AddControlModal: React.FC<{ panelId: string; onClose: () => void }>
         {/* label + actions */}
         <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-t border-white/10">
           <input
+            name="add-control-label"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             placeholder="Label"
