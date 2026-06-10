@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-09T19:17:47.183Z",
-  "repoRevision": "a3180aaf7bdb",
+  "generatedAt": "2026-06-10T06:43:05.119Z",
+  "repoRevision": "ca41cd51f701",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -663,6 +663,7 @@
     {
       "featureId": "edit-advanced-effects-chain-analyzer",
       "docAnchors": [
+        "#purpose",
         "#8-1-layout",
         "#8-2-quick-master",
         "#8-3-effect-catalog-and-chain",
@@ -703,7 +704,8 @@
       "docAnchors": [
         "#13-4-per-entry-controls",
         "#13-6-stem-separation",
-        "#19-15-stems"
+        "#19-15-stems",
+        "#credits"
       ],
       "coverage": "documented",
       "notes": "Matched 3/4 guide terms."
@@ -823,7 +825,8 @@
         "#26-1-modes",
         "#26-2-flow-and-library-integration",
         "#26-3-endpoints",
-        "#29-catalogue"
+        "#29-catalogue",
+        "#credits"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
