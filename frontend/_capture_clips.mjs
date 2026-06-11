@@ -121,6 +121,9 @@ const SCENES = [
   //    CRISPR DNA splice sequence through a REAL generation run (analyze → chop → weave → fuse).
   //    72 runs a real GPU job, so it sits last among app scenes; only nav scenes follow it. ──
   { id: '73_magenta-conditioning', tab: 'make', play: false, magentaCond: true, hold: 10 },
+  // The REAL sidecar on film: an actual in-app Magenta generation against the live
+  // extended engine (requires the engine running — pick Magenta in the dropdown first).
+  { id: '74_magenta-live-generate', tab: 'make', play: false, magentaCond: true, magentaLive: true, hold: 60, holdUntilComplete: 180 },
   { id: '72_crispr-dna', tab: 'make', play: false, chimeraBuild: true, crisprRun: true, hold: 150, holdUntilComplete: 330 },
   // ── nav-scenes (file://) — Magenta RT2 NVIDIA port. MUST stay last (they navigate away). ──
   { id: '63_magenta-studio-live', nav: 'http://localhost:8778', hold: 7 },
@@ -806,24 +809,30 @@ async function flyAround3d(page, seconds) {
 async function holdAction(page, scene) {
   const secs = scene.hold;
   const t0 = Date.now();
-  // CRISPR DNA: wait for analyze-on-add badges, press CREATE exactly like the footer
-  // button, then film the ENTIRE run (analyze → chop → weave → fuse) until COMPLETE.
-  if (scene.crisprRun) {
-    const tA = Date.now();
-    while (Date.now() - tA < 30000) {
-      const ready = await page.evaluate(async () => {
-        const gp = (await import('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
-        const cs = gp.getState().chimera.clips;
-        return cs.length > 0 && cs.every((c) => c.detectedBpm != null || (c.beats && c.beats.length));
-      }).catch(() => false);
-      if (ready) break;
-      await sleep(1000);
+  // CRISPR DNA / live Magenta: press CREATE exactly like the footer button, then
+  // film the run until a terminal label (COMPLETE/FAILED) or the cap.
+  if (scene.crisprRun || scene.magentaLive) {
+    if (scene.crisprRun) {
+      const tA = Date.now();
+      while (Date.now() - tA < 30000) {
+        const ready = await page.evaluate(async () => {
+          const gp = (await import('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
+          const cs = gp.getState().chimera.clips;
+          return cs.length > 0 && cs.every((c) => c.detectedBpm != null || (c.beats && c.beats.length));
+        }).catch(() => false);
+        if (ready) break;
+        await sleep(1000);
+      }
     }
-    await page.evaluate(async () => {
+    await page.evaluate(async (live) => {
       const gs = await import('/src/state/generateStore.ts');
       const gp = (await import('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
+      if (live) {
+        gp.getState().setField('prompt', 'neon synthwave arps over a driving beat, wide analog pads');
+        gp.getState().setField('duration', 12);
+      }
       void gs.useGenerateStore.getState().submitGeneration(gs.buildGenerateParamsFromState(gp.getState()));
-    }).catch(() => {});
+    }, !!scene.magentaLive).catch(() => {});
     const cap = (scene.holdUntilComplete || 300) * 1000;
     let label = '';
     while (Date.now() - t0 < cap) {

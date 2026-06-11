@@ -172,6 +172,39 @@ def _park_or_evict_other_generation_pipelines(keep: str) -> None:
         torch.cuda.empty_cache()
 
 
+def _ensure_gpu_clear_of_magenta() -> None:
+    """Stop any resident MRT2 engine before an SA3 load/wake (blocking).
+
+    The dropdown swap covers the UI flow; this covers every other path that
+    reaches an SA3 generation (assistant actions, API callers, capture
+    harnesses driving the store directly). A resident engine holds GPU memory
+    AND several GB of host commit through the WSL2 VM, and stacking the SA3
+    checkpoint load on top is exactly the combination that exhausts the
+    Windows commit limit (os error 1455 -> access-violation crash).
+    """
+    try:
+        import socket
+
+        from backend.modules.magenta import sidecar as magenta_sidecar
+
+        listening = magenta_sidecar.engine_process_alive()
+        if not listening:
+            # Engines started outside this process (the .vbs launcher, a
+            # manual run): probe the two known ports cheaply.
+            for port in (8777, 8778):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                        listening = True
+                        break
+                except OSError:
+                    continue
+        if listening:
+            logger.info("model.swap: stopping resident MRT2 engine before SA3 load")
+            magenta_sidecar.stop_engine()
+    except Exception:
+        logger.debug("model.swap: magenta engine pre-clear failed", exc_info=True)
+
+
 def _get_or_load_generation_pipeline(model_name: str):
     """Load and cache the selected DiT generation pipeline."""
     global pipeline, sample_rate, _active_model_name, _sa3_offloaded
@@ -1106,7 +1139,9 @@ async def generate(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
-    # lazy: load (or wake) the active model on first use
+    # lazy: load (or wake) the active model on first use; clear any resident
+    # MRT2 engine first so SA3 never stacks on top of it (commit-limit crash)
+    await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
     generation_pipeline = _get_or_load_generation_pipeline(_active_model_name)
 
     # Build dist_shift object
@@ -1474,6 +1509,10 @@ async def generate_jobs(
     get_idle_manager().bump_activity(tag="generate")
 
     normalized_model_name = _normalize_generation_model(model_name)
+    # Clear any resident MRT2 engine before the SA3 load/wake — the reverse
+    # swap must hold no matter who drives the model field (UI, assistant,
+    # API callers, capture harnesses).
+    await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
     generation_pipeline = _get_or_load_generation_pipeline(normalized_model_name)
 
     init_audio_tuple = None
