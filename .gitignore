@@ -17,6 +17,7 @@ archive/
 *.png
 !docs/UI/**/*.png
 !docs/guides/**/*.png
+!docs/readme/**/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

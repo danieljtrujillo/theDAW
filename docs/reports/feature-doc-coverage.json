@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-11T14:56:31.394Z",
-  "repoRevision": "efb37cd0bf0b",
+  "generatedAt": "2026-06-11T20:17:08.038Z",
+  "repoRevision": "981f955815c3",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -656,7 +656,8 @@
         "#6-4-1-microphone-recorder",
         "#10-1-inputs",
         "#10-4-export",
-        "#13-1-automatic-entry-creation"
+        "#13-1-automatic-entry-creation",
+        "#25-5-promo-video-capture"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -684,7 +685,8 @@
         "#19-13-disk-backed-library",
         "#19-15-stems",
         "#library-storage-fills-the-disk",
-        "#zustand-store-architecture"
+        "#zustand-store-architecture",
+        "#33-1-notation-artifacts"
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
@@ -717,7 +719,8 @@
         "#6-4-1-microphone-recorder",
         "#13-4-per-entry-controls",
         "#13-7-midi-conversion",
-        "#19-16-midi"
+        "#19-16-midi",
+        "#33-notation-score-tabs-and-arrangements"
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."
@@ -838,7 +841,8 @@
         "#table-of-contents",
         "#27-magenta-realtime-2",
         "#27-1-the-sidecar-and-conditioning",
-        "#27-2-first-non-mac-port-of-magenta-realtime-2"
+        "#27-2-first-non-mac-port-of-magenta-realtime-2",
+        "#33-6-prompt-inference"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
