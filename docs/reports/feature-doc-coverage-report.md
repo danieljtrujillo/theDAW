@@ -1,7 +1,7 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-10T16:16:00.191Z · Git revision: `6317fdb87584` · Repomix tracked: **no**
+> Generated: 2026-06-11T05:38:49.329Z · Git revision: `dad3256ce515` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
@@ -26,7 +26,7 @@
 | `docs-modal-download-print-rag` | In-app docs modal with raw Markdown download, print/PDF, anchors, and RAG source copy | assistant | implemented | **documented** | #5-ui-shell<br>#19-11-assistant<br>#25-4-documentation-maintenance-rule | Matched 2/4 guide terms. |
 | `assistant-orb-providers-keys-attachments` | AI Assistant orb with provider/model selection, key pools, attachments, voice input, and streaming chat | assistant | implemented | **documented** | #5-ui-shell<br>#19-11-assistant | Matched 4/5 guide terms. |
 | `create-advanced-generation-templates-prompts-spectrograms` | Advanced generation controls with templates, saved prompts, prompt enhancer, output settings, and spectrogram viewer | create | implemented | **documented** | #6-1-primary-synthesis-prompt<br>#6-3-advanced-generation-panel<br>#12-3-how-the-visualizations-are-rendered | Matched 4/4 guide terms. |
-| `create-chimera-fusion-stack` | Chimera multi-clip fusion stack with BPM alignment, base clip, noise weights, and weave scheduling | chimera | implemented | **documented** | #1-repository-anatomy<br>#purpose<br>#6-3-1-chimera-fusion-stack<br>#6-4-init-signal-conditioning<br>#12-2-3d-graph-controls<br>#12-3-how-the-visualizations-are-rendered<br>#13-1-automatic-entry-creation<br>#13-5-bundle-downloads-and-lineage<br>#19-14-chimera<br>#25-3-current-feature-to-screenshot-map<br>#30-youtube-import | Matched 5/5 guide terms. |
+| `create-chimera-fusion-stack` | Chimera multi-clip fusion stack with BPM alignment, base clip, noise weights, and weave scheduling | chimera | implemented | **documented** | #1-repository-anatomy<br>#purpose<br>#6-3-1-chimera-fusion-stack<br>#6-4-init-signal-conditioning<br>#12-2-3d-graph-controls<br>#12-3-how-the-visualizations-are-rendered<br>#13-1-automatic-entry-creation<br>#13-5-bundle-downloads-and-lineage<br>#19-14-chimera<br>#25-3-current-feature-to-screenshot-map<br>#27-1-the-sidecar-and-conditioning<br>#30-youtube-import | Matched 5/5 guide terms. |
 | `create-mic-recorder-send-targets` | Browser microphone recorder that can send recordings to editor, init, inpaint, or library | create | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#6-4-1-microphone-recorder<br>#10-1-inputs<br>#10-4-export<br>#13-1-automatic-entry-creation | Matched 5/5 guide terms. |
 | `edit-advanced-effects-chain-analyzer` | Advanced effects chain with categorized FFmpeg processors, column resizing, waveform previews, and source/output stats | edit | implemented | **documented** | #purpose<br>#8-1-layout<br>#8-2-quick-master<br>#8-3-effect-catalog-and-chain<br>#8-4-source-output-and-routing<br>#19-7-studio-processing<br>#adding-a-new-ffmpeg-effect | Matched 5/5 guide terms. |
 | `library-backend-local-storage` | Disk-backed backend library provider with range-streamed audio and mutable metadata | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#purpose<br>#13-1-automatic-entry-creation<br>#19-13-disk-backed-library<br>#19-15-stems<br>#library-storage-fills-the-disk<br>#zustand-store-architecture | Matched 4/5 guide terms. |

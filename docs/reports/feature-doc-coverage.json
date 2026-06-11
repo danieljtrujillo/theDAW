@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-10T16:16:00.191Z",
-  "repoRevision": "6317fdb87584",
+  "generatedAt": "2026-06-11T05:38:49.329Z",
+  "repoRevision": "dad3256ce515",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -643,6 +643,7 @@
         "#13-5-bundle-downloads-and-lineage",
         "#19-14-chimera",
         "#25-3-current-feature-to-screenshot-map",
+        "#27-1-the-sidecar-and-conditioning",
         "#30-youtube-import"
       ],
       "coverage": "documented",

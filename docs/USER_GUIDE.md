@@ -235,10 +235,12 @@ Chimera fuses two or more audio clips into a single init signal before generatio
 | **Target BPM** | `auto` uses the selected base clip BPM, the median detected BPM, or a 120 BPM fallback. A numeric value forces a target. |
 | **Base clip** | Optional reference clip. When set, its BPM and duration can drive the fusion target. |
 | **Noise / influence** | Per-clip slider mapped to the backend `weights`; higher noise means less influence on the fused output. |
-| **Align mode** | `start` aligns clips from time zero. `downbeat` trims to detected first beats. `weave` (the interweave mode) schedules chunks of each clip into an arrangement arc, interleaving them bar by bar with controlled polyphony. |
+| **Align mode** | `start` aligns clips from time zero. `downbeat` trims to detected first beats. `weave`, labeled **CRISPR** in the UI, schedules chunks of each clip into an arrangement arc, interleaving them bar by bar with controlled polyphony. |
 | **Weave controls** | Chunk bars, total bars, and max polyphony shape the generated arrangement when `align_mode=weave`. |
+| **Analyze on add** | Every clip dropped into the stack is analyzed immediately (`POST /api/chimera/analyze`). The detected BPM and key appear as badges on the clip row, and the beat positions feed the weave scheduler and the splice scene. |
+| **CRISPR splice scene** | A live WebGL DNA scene above the stack renders one strand per clip with rungs on the detected beats. During a generation the strands are analyzed, chopped, woven, and fused into the output strand in step with the run. |
 
-Rendering posts to `POST /api/chimera/mashup`, normalizes inputs to 44.1 kHz stereo, detects tempo and beats, time-stretches the clips, and returns a WAV file plus metadata (`target_bpm_used`, per-clip stretch ratios, warnings). The fused result becomes the Init Audio for the next generation.
+Rendering posts to `POST /api/chimera/mashup`, normalizes inputs to 44.1 kHz stereo, detects tempo and beats, time-stretches the clips, and returns a WAV file plus metadata (`target_bpm_used`, per-clip stretch ratios, warnings). The mashup request carries a `known_analysis` field so clips already analyzed on add skip server-side re-detection, and a background pre-render warms the fusion cache once the stack settles so CREATE starts from the finished mix. The fused result becomes the Init Audio for the next generation.
 
 ![Chimera multi-select cohort and stack flow](screenshots/09-chimera-cohort-multi-select__chimera-multi-select.png)
 
@@ -1242,10 +1244,13 @@ Audio responses use `FileResponse` and support browser range requests. Imports a
 ```http
 GET  /api/chimera/probe
 POST /api/chimera/probe/refresh
+POST /api/chimera/analyze
 POST /api/chimera/mashup
 ```
 
-`POST /api/chimera/mashup` accepts multiple uploaded files plus `target_bpm`, optional `base_index`, JSON `weights`, `align_mode` (`start`, `downbeat`, `weave`), `out_sr`, and weave-specific bar and polyphony controls. The response contains base64 WAV audio plus `sample_rate`, `duration_sec`, `target_bpm_used`, `target_bpm_source`, `align_mode_used`, per-clip metadata, and warnings.
+`POST /api/chimera/analyze` accepts one uploaded clip and returns its detected BPM, beat positions, and key. The MAKE stack calls it for every clip on add, shows the result as row badges, and forwards it to the mashup so the server skips re-detection.
+
+`POST /api/chimera/mashup` accepts multiple uploaded files plus `target_bpm`, optional `base_index`, JSON `weights`, `align_mode` (`start`, `downbeat`, `weave`), `out_sr`, weave-specific bar and polyphony controls, and an optional `known_analysis` JSON list carrying per-clip BPM and beats from analyze-on-add. The response contains base64 WAV audio plus `sample_rate`, `duration_sec`, `target_bpm_used`, `target_bpm_source`, `align_mode_used`, per-clip metadata, and warnings.
 
 ### 19.15 Stems
 
@@ -1661,7 +1666,7 @@ Two offline helpers under `scripts/` bulk-import an existing SunoHarvester cache
 
 ## 27. Magenta RealTime 2
 
-The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. The model option appears only when the sidecar is reachable: the MAKE/Generate panel probes `GET /api/magenta/probe` and shows **"Magenta RT2 (text→music)"** when available.
+The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. **"Magenta RT2 (text→music)"** is always present in the Model dropdown, and selecting it runs the GPU swap automatically: the Stable Audio model parks in CPU RAM (`POST /api/model/offload`), any other MRT2 engine is stopped, and the extended sidecar starts inside WSL2. A status pill beside the dropdown tracks the engine (amber **LOADING** during the one-time model load and compile, green **READY**, red **ERROR**). Selecting any Stable Audio model reverses the swap: the engine stops and the Stable Audio model returns to the GPU. No terminal is involved at any point.
 
 ![Magenta RealTime 2 text→music panel in the Generate workspace, the first non-Mac MRT2 port](screenshots/make-magenta-rt2.png)
 
@@ -1673,13 +1678,19 @@ MRT2 runs as a sidecar (default `http://localhost:8777`, override with `STABLEDA
 - **Notes**: a MIDI note list (`[{pitch:0-127, start, end}]`) encoded to the model's 128-pitch state windows.
 - **Audio-style**: a reference clip embedded through the model's style encoder, which overrides the prompt.
 
-The response's `X-Conditioning` header reports which modes were used, and the output is 48 kHz stereo WAV. The React UI currently surfaces text-to-music and a programmatic audio-clone path used by the instrument generator, and the notes and audio-style surfaces are available through the backend and sidecar API.
+The response's `X-Conditioning` header reports which modes were used, and the output is 48 kHz stereo WAV. The MAKE panel surfaces the full conditioning set when a Magenta model is selected: the prompt box for text, selected MIDI pitches for note steering, the Init Audio clip as the audio-style source, plus temperature, top-k, the MusicCoCa/notes/drums CFG scales, the drums switch, chunk frames, seed, and the extend toggle that continues the current piece without a cut.
+
+The sidecar's `/health` carries an identity field (`app: "mrt2-extended"`), and the backend probe verifies it, so the bundled JSON-protocol Studio server can never be mistaken for the extended engine.
 
 | Method · Path | Purpose |
 |---|---|
 | `GET /api/magenta/probe` | Sidecar health + whether the model is loaded. |
 | `POST /api/magenta/generate` | Generate from text, notes, and/or an audio-style clip. |
 | `GET /api/magenta/jobs/{id}` | Poll a generation job. |
+| `POST /api/magenta/engine/start` | The automatic swap: parks the SA3 model in CPU RAM, stops any other MRT2 engine, spawns the extended sidecar in WSL2. Refuses with 409 while a generation runs. |
+| `POST /api/magenta/engine/stop` | Stops every MRT2 engine and restores the SA3 model to the GPU. |
+| `GET /api/magenta/engine/status` | Engine health, protocol identity, and spawned-process state. |
+| `POST /api/model/offload` · `POST /api/model/onload` · `GET /api/model/offload-status` | The SA3 side of the swap: park the loaded model(s) in CPU RAM, restore them to VRAM, and report the parked state. The engine endpoints call these automatically. |
 
 ### 27.2 First non-Mac port of Magenta RealTime 2
 

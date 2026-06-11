@@ -235,3 +235,15 @@ docs/*.pdf
 # Showcase assets are local-only (demo video, screenshots, scripts, raw media).
 # Kept on disk but not shipped in everyone's clone.
 /showcase/
+
+# Root-level scratch artifacts (debug dumps, one-off harnesses, reference
+# prototypes, personal media) stay local. Anchored to root so real assets
+# elsewhere are unaffected.
+/_*.json
+/_*.py
+/*.mp3
+/dna-polyphonic-splice*.html
+
+# Local audit artifacts: vulnerability details stay off the remote.
+/CODEBASE_AUDIT_*.md
+/audit-reports/
