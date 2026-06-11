@@ -69,6 +69,7 @@ export const PlayerFooter: React.FC = () => {
   const setMasterGain = usePlayerStore((s) => s.setMasterGain);
   const load = usePlayerStore((s) => s.load);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
+  const libraryEntries = useLibraryStore((s) => s.entries);
 
   // Last-generation metadata (used when nothing's been explicitly loaded yet).
   const lastFilename = useGenerateStore((s) => s.lastFilename);
@@ -189,13 +190,32 @@ export const PlayerFooter: React.FC = () => {
     document.body.removeChild(a);
   };
 
+  // "Up next" — no formal play queue yet, so derive the next track from the
+  // library in newest-first order (wraps at the end). Clicking it loads it.
+  const nextEntry = React.useMemo(() => {
+    if (libraryEntries.length === 0) return null;
+    const sorted = [...libraryEntries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    if (!currentEntryId) return sorted[0] ?? null;
+    const idx = sorted.findIndex((e) => e.id === currentEntryId);
+    if (idx < 0) return sorted[0] ?? null;
+    return sorted[(idx + 1) % sorted.length] ?? null;
+  }, [libraryEntries, currentEntryId]);
+
+  const loadNext = () => {
+    if (!nextEntry) return;
+    void (async () => {
+      const blob = await useLibraryStore.getState().fetchAudioBlob(nextEntry);
+      await load(blob, { label: nextEntry.title, entryId: nextEntry.id });
+    })();
+  };
+
   return (
-    <footer className="fixed bottom-0 left-0 right-0 h-20 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center justify-between gap-8 group">
-      {/* 1. G-Search + track info. The orb assistant overlaps the very
-          bottom-left corner, so pad section 1 left to clear its hit area.
-          Width matches section 3 (w-80) so the flex-1 transport — and the PLAY
-          button at its centre — lands on the true viewport centre. */}
-      <div className="flex items-center gap-3 w-80 shrink-0 pl-20">
+    <footer className="fixed bottom-0 left-0 right-0 h-20 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center gap-6 group">
+      {/* 1. G-Search + Now Playing. flex-1 (mirrors section 3) so the now-playing
+          readout fills the space between G-Search and the centred transport, and
+          the PLAY button still lands on the true viewport centre. The orb
+          assistant overlaps the bottom-left corner, so pad left to clear it. */}
+      <div className="flex items-center gap-3 flex-1 min-w-0 pl-20">
         {/* G-Search — global library search, available on every tab. */}
         <div className="flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5 shrink-0">
           <Search className="w-3 h-3 text-zinc-600" />
@@ -220,7 +240,7 @@ export const PlayerFooter: React.FC = () => {
             }}
           />
         </div>
-        <div className="flex flex-col min-w-0">
+        <div className="flex flex-col min-w-0 flex-1">
           <h4 className="text-[13px] font-bold text-zinc-100 truncate tracking-tight">
             {displayLabel ?? 'No output loaded'}
           </h4>
@@ -243,8 +263,9 @@ export const PlayerFooter: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Main Transport Control */}
-      <div className="flex-1 flex flex-col items-center gap-1.5 max-w-2xl min-w-0">
+      {/* 2. Main Transport Control — fixed-width + centred between the two
+          flex-1 side sections so the PLAY button stays on the viewport centre. */}
+      <div className="shrink-0 w-136 max-w-2xl min-w-0 flex flex-col items-center gap-1.5">
         <div className="flex items-center gap-8">
           <button
             onClick={toggleLoop}
@@ -328,9 +349,35 @@ export const PlayerFooter: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. Utilities */}
-      <div className="flex items-center justify-end gap-6 w-80 shrink-0">
-        <div className="flex items-center gap-5">
+      {/* 3. Up Next (mirrors Now Playing) + Utilities. flex-1 (mirrors section 1)
+          so the up-next readout fills the space between the transport and the
+          utilities, right-aligned. The pr-20 mirrors section 1's pl-20 (orb
+          clearance) so the two flex-1 sides stay equal and the transport — and
+          its PLAY button — lands on the true viewport centre (aligned with the
+          bottom-panel expand chevron). */}
+      <div className="flex items-center gap-3 flex-1 min-w-0 justify-end pr-20">
+        {/* Up Next — mirror of the Now Playing block, right-aligned. Click loads
+            the next track (no formal queue yet, so it's the next library entry). */}
+        <button
+          type="button"
+          onClick={loadNext}
+          disabled={!nextEntry}
+          title={nextEntry ? `Play next: ${nextEntry.title}` : 'Nothing queued'}
+          className="group/next flex flex-col min-w-0 flex-1 items-end text-right disabled:cursor-default"
+        >
+          <h4 className="text-[13px] font-bold text-zinc-300 group-hover/next:text-white transition-colors truncate tracking-tight w-full">
+            {nextEntry?.title ?? 'Nothing queued'}
+          </h4>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-zinc-500 font-mono">
+              {nextEntry ? formatDuration(nextEntry.duration) : '--:--'}
+            </span>
+            <span className="text-[9px] text-emerald-400 font-mono uppercase tracking-widest border border-emerald-500/20 px-1 rounded bg-emerald-500/5">
+              Up Next
+            </span>
+          </div>
+        </button>
+        <div className="flex items-center gap-5 shrink-0">
           <div className="flex items-center gap-3">
             <button onClick={toggleMute} className="text-zinc-500 hover:text-white transition-colors" title={isMuted ? 'Unmute' : 'Mute'}>
               {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
