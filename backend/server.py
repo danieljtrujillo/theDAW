@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import threading
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -34,7 +35,6 @@ import matplotlib
 matplotlib.use("Agg")
 
 from matplotlib.figure import Figure
-from PIL import Image
 from backend.admin_routes import router as admin_router
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
@@ -44,7 +44,6 @@ from stable_audio_3.inference.distribution_shift import (
     FluxDistributionShift,
     LogSNRShift,
 )
-from stable_audio_3.interface.aeiou import audio_spectrogram_image
 from stable_audio_3.model_configs import arc_models, rf_models
 from stable_audio_3.models.lora import remove_lora
 
@@ -85,6 +84,11 @@ _active_model_name = DEFAULT_GENERATION_MODEL
 # GPU workload such as the Magenta RT2 sidecar). Swapped back by /api/model/onload.
 _sa3_offloaded = False
 _generation_job_lock = asyncio.Lock()
+# Serializes EVERY model device transition (load / park / wake / offload / onload)
+# across the event loop and executor threads, so one transition can never move
+# weights out from under another. Reentrant because the wake path parks the
+# previous resident inside the same transition.
+_model_move_lock = threading.RLock()
 
 # Spectrogram cache: {job_id: {mel, stft, chromagram, cqt}}
 _spec_cache: OrderedDict[str, dict[str, str]] = OrderedDict()
@@ -112,33 +116,108 @@ def _normalize_generation_model(model_name: str | None) -> str:
     return DEFAULT_GENERATION_MODEL
 
 
+# Parking a ~4 GB fp16 pipeline into RAM needs real headroom; below this much
+# free physical RAM we evict instead so the OS and other subsystems never starve.
+_PARK_MIN_FREE_RAM_GB = 10.0
+
+
+def _park_or_evict_other_generation_pipelines(keep: str) -> None:
+    """Single GPU resident model; others go ON ICE in CPU RAM for fast swaps.
+
+    When the user switches models, the previous pipeline is moved to CPU RAM
+    (bit-identical, swaps back in seconds — no disk reload) when free RAM
+    allows; otherwise it is evicted entirely.
+    """
+    global pipeline
+    others = [k for k in list(_generation_pipelines) if k != keep]
+    if not others:
+        return
+    free_gb = None
+    try:
+        import psutil
+
+        free_gb = psutil.virtual_memory().available / 1024**3
+    except Exception:
+        free_gb = None
+
+    for k in others:
+        pl = _generation_pipelines[k]
+        already_parked = str(getattr(pl, "device", "")) == "cpu"
+        if already_parked:
+            continue
+        if free_gb is not None and free_gb >= _PARK_MIN_FREE_RAM_GB:
+            try:
+                pl.model.to("cpu")
+                pl.device = torch.device("cpu")
+                logger.info(
+                    "model.park: %r on ice in CPU RAM (free %.1f GB)", k, free_gb
+                )
+                continue
+            except Exception as e:
+                logger.warning("model.park: %r failed (%s) — evicting", k, e)
+        _generation_pipelines.pop(k, None)
+        if pipeline is pl:
+            pipeline = None
+        del pl
+        logger.info(
+            "model.evict: unloaded %r (free RAM %s)",
+            k,
+            f"{free_gb:.1f} GB" if free_gb is not None else "unknown",
+        )
+
+    import gc
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _get_or_load_generation_pipeline(model_name: str):
     """Load and cache the selected DiT generation pipeline."""
-    global pipeline, sample_rate, _active_model_name
+    global pipeline, sample_rate, _active_model_name, _sa3_offloaded
 
     normalized = _normalize_generation_model(model_name)
-    if normalized not in _generation_pipelines:
-        from stable_audio_3.model import StableAudioModel
+    with _model_move_lock:
+        if normalized not in _generation_pipelines:
+            from stable_audio_3.model import StableAudioModel
 
-        logger.info("model.load: starting from_pretrained for %r", normalized)
-        t0 = time.perf_counter()
-        _generation_pipelines[normalized] = StableAudioModel.from_pretrained(normalized)
-        dt = time.perf_counter() - t0
-        logger.info(
-            "model.load: %r ready in %.2fs (cuda=%s)",
-            normalized,
-            dt,
-            torch.cuda.is_available(),
-        )
-        if torch.cuda.is_available():
-            mem_gb = torch.cuda.memory_allocated() / 1024**3
-            logger.info("model.load: %r VRAM allocated %.2f GB", normalized, mem_gb)
+            _park_or_evict_other_generation_pipelines(normalized)
+            logger.info("model.load: starting from_pretrained for %r", normalized)
+            t0 = time.perf_counter()
+            _generation_pipelines[normalized] = StableAudioModel.from_pretrained(
+                normalized
+            )
+            dt = time.perf_counter() - t0
+            logger.info(
+                "model.load: %r ready in %.2fs (cuda=%s)",
+                normalized,
+                dt,
+                torch.cuda.is_available(),
+            )
+            if torch.cuda.is_available():
+                mem_gb = torch.cuda.memory_allocated() / 1024**3
+                logger.info("model.load: %r VRAM allocated %.2f GB", normalized, mem_gb)
 
-    selected = _generation_pipelines[normalized]
-    pipeline = selected
-    sample_rate = selected.model_config["sample_rate"]
-    _active_model_name = normalized
-    return selected
+        selected = _generation_pipelines[normalized]
+        # wake a parked (on-ice) pipeline back onto the GPU, parking the previous
+        # resident first so only one big model holds VRAM at a time
+        if torch.cuda.is_available() and str(getattr(selected, "device", "")) == "cpu":
+            _park_or_evict_other_generation_pipelines(normalized)
+            t0 = time.perf_counter()
+            selected.model.to("cuda")
+            selected.device = torch.device("cuda")
+            logger.info(
+                "model.wake: %r CPU→CUDA in %.2fs", normalized, time.perf_counter() - t0
+            )
+        if _sa3_offloaded and str(getattr(selected, "device", "")) != "cpu":
+            # The model is resident again, so the parked-for-sidecar state no longer
+            # holds; keep /api/model/offload-status truthful.
+            _sa3_offloaded = False
+            logger.info("model.wake: cleared sa3-offloaded flag (VRAM reclaimed)")
+        pipeline = selected
+        sample_rate = selected.model_config["sample_rate"]
+        _active_model_name = normalized
+        return selected
 
 
 def _coerce_form_bool(value) -> bool:
@@ -349,14 +428,6 @@ def _clear_generation_loras(generation_pipeline) -> None:
     generation_pipeline.model.lora_names = []
 
 
-def _image_to_base64(img: Image.Image) -> str:
-    """Convert PIL Image to base64 PNG string."""
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
-
-
 def _fig_to_base64(fig: Figure) -> str:
     """Convert matplotlib Figure to base64 PNG string."""
     buf = io.BytesIO()
@@ -459,18 +530,33 @@ async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
             logger.warning(f"Failed to delete temp audio file {fname}: {e}")
 
 
-def _generate_mel(waveform: torch.Tensor, sr: int) -> str:
-    """Generate MEL spectrogram. Returns base64 PNG or empty string on error."""
+def _generate_mel(waveform: np.ndarray, sr: int) -> str:
+    """Generate MEL spectrogram. Returns base64 PNG or empty string on error.
+
+    Rendered with librosa + specshow like the other three types. The previous
+    aeiou/torchaudio path double-applied dB conversion (AmplitudeToDB inside
+    audio_spectrogram_image, then power_to_db again before imshow), clamping
+    every pixel below vmin and producing a solid blank image.
+    """
     try:
-        mel_img = audio_spectrogram_image(
-            waveform,
-            power=2.0,
-            sample_rate=sr,
-            db=True,
-            db_range=[35, 120],
-            justimage=True,
+        import librosa
+        import librosa.display
+
+        mono = waveform[0] if waveform.ndim > 1 else waveform
+        S = librosa.feature.melspectrogram(
+            y=mono, sr=sr, n_fft=2048, hop_length=512, n_mels=128
         )
-        return _image_to_base64(mel_img)
+        S_db = librosa.power_to_db(S, ref=np.max)
+
+        fig = Figure(figsize=(10, 3))
+        ax = fig.add_subplot(111)
+        librosa.display.specshow(
+            S_db, sr=sr, x_axis="time", y_axis="mel", ax=ax, cmap="viridis"
+        )
+        ax.set_axis_off()
+        fig.tight_layout(pad=0)
+
+        return _fig_to_base64(fig)
     except Exception as e:
         logger.warning(f"MEL spectrogram failed: {e}")
         return ""
@@ -554,16 +640,14 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
     """
     result = {"mel": "", "stft": "", "chromagram": "", "cqt": ""}
 
-    # MEL - use existing aeiou function
-    result["mel"] = _generate_mel(waveform, sr)
-
-    # For STFT, Chromagram, CQT - convert to numpy for librosa
+    # All four types render from the same mean-downmixed mono numpy array.
     try:
         if waveform.ndim > 1:
             y = waveform.mean(dim=0).cpu().numpy()
         else:
             y = waveform.cpu().numpy()
 
+        result["mel"] = _generate_mel(y, sr)
         result["stft"] = _generate_stft(y, sr)
         result["chromagram"] = _generate_chromagram(y, sr)
         result["cqt"] = _generate_cqt(y, sr)
@@ -610,25 +694,15 @@ async def load_model():
     except Exception as e:
         logger.warning("startup: system-stat probe failed: %s", e)
 
-    # Run blocking model load off the event loop so /api/health can respond
-    # immediately while the model is still loading in the background.
-    try:
-        await loop.run_in_executor(
-            None, _get_or_load_generation_pipeline, DEFAULT_GENERATION_MODEL
-        )
-        logger.info(
-            "startup: default model %r ready, total startup time %.2fs",
-            DEFAULT_GENERATION_MODEL,
-            time.perf_counter() - startup_t0,
-        )
-    except Exception as e:
-        logger.warning(
-            "Default generation model %r failed to load at startup: %s — "
-            "server is running; /api/health and /api/studio/* still work; "
-            "generation endpoints return 503 until a model is manually loaded.",
-            DEFAULT_GENERATION_MODEL,
-            e,
-        )
+    # Models load ON DEMAND (first generation / explicit selection), never at
+    # startup: the server must come up independently of any checkpoint, and
+    # switching models evicts the previous one (single-resident-model policy).
+    logger.info(
+        "startup: server ready in %.2fs — generation models load on demand "
+        "(default %r loads on first use)",
+        time.perf_counter() - startup_t0,
+        DEFAULT_GENERATION_MODEL,
+    )
 
     import logging as _logging
 
@@ -754,16 +828,19 @@ async def health():
 
 @app.get("/api/model-info")
 async def model_info():
-    if not pipeline:
-        return JSONResponse({"error": "Model not loaded"}, status_code=503)
+    # Lazy loading: the server runs model-free until first use, so this
+    # endpoint reports metadata instead of erroring when nothing is loaded.
     return {
+        "model_loaded": pipeline is not None,
         "active_model": _active_model_name,
         "available_models": sorted(GENERATION_MODELS),
         "loaded_models": sorted(_generation_pipelines),
         "sample_rate": sample_rate,
-        "diffusion_objective": pipeline.model.diffusion_objective,
+        "diffusion_objective": (
+            pipeline.model.diffusion_objective if pipeline else None
+        ),
         "has_cuda": torch.cuda.is_available(),
-        "device": str(pipeline.device),
+        "device": str(pipeline.device) if pipeline else None,
         "vram_used_gb": (
             round(torch.cuda.memory_allocated() / 1024**3, 2)
             if torch.cuda.is_available()
@@ -793,17 +870,18 @@ def _move_pipelines(device: str) -> int:
     round-trip restores the exact loaded state with no disk read.
     """
     moved = 0
-    for pl in _generation_pipelines.values():
-        try:
-            pl.model.to(device)
-            pl.device = torch.device(device)
-            moved += 1
-        except Exception:
-            logger.exception("model.move: failed moving a pipeline to %s", device)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        if device != "cpu":
-            torch.cuda.synchronize()
+    with _model_move_lock:
+        for pl in list(_generation_pipelines.values()):
+            try:
+                pl.model.to(device)
+                pl.device = torch.device(device)
+                moved += 1
+            except Exception:
+                logger.exception("model.move: failed moving a pipeline to %s", device)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if device != "cpu":
+                torch.cuda.synchronize()
     return moved
 
 
@@ -817,6 +895,12 @@ async def offload_model():
     reload. The backend process, API, and all non-DiT features stay up.
     """
     global _sa3_offloaded
+    if _generation_job_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A generation is in progress; the model swap will be possible "
+            "once it finishes.",
+        )
     before = _vram_used_gb()
     loop = asyncio.get_event_loop()
     n = await loop.run_in_executor(None, _move_pipelines, "cpu")
@@ -840,6 +924,12 @@ async def offload_model():
 async def onload_model():
     """Swap the SA3 model(s) back from CPU RAM to VRAM (reverse of /offload)."""
     global _sa3_offloaded
+    if _generation_job_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A generation is in progress; the model swap will be possible "
+            "once it finishes.",
+        )
     target = "cuda" if torch.cuda.is_available() else "cpu"
     before = _vram_used_gb()
     loop = asyncio.get_event_loop()
@@ -1016,10 +1106,8 @@ async def generate(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
-    if not pipeline:
-        return JSONResponse({"error": "Model not loaded"}, status_code=503)
-
-    generation_pipeline = pipeline
+    # lazy: load (or wake) the active model on first use
+    generation_pipeline = _get_or_load_generation_pipeline(_active_model_name)
 
     # Build dist_shift object
     dist_shift = None
@@ -1376,8 +1464,8 @@ async def generate_jobs(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
-    if not pipeline:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    # Models load lazily — the loader below brings the requested model up
+    # (waking a parked one or loading from disk) on first use.
 
     # Hold the idle gate open until the generation task completes so
     # background workers don't compete for the GPU.

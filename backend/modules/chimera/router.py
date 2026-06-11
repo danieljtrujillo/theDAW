@@ -42,6 +42,62 @@ def chimera_probe_refresh():
     return probe(force=True)
 
 
+@router.post("/analyze")
+async def chimera_analyze(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Analyze ONE uploaded clip: BPM + per-beat times + musical key.
+
+    Powers the Chimera stack's analyze-on-add (BPM/key badges and the CRISPR
+    DNA beat rungs) for clips that have no library entry. Reuses
+    detect_tempo_and_beats (the single source of truth for BPM in this
+    codebase) and the library analysis key detector.
+    """
+    with tempfile.TemporaryDirectory(prefix="chimera_an_") as tmpdir:
+        tmp = Path(tmpdir)
+        suffix = Path(file.filename or "").suffix or ".bin"
+        raw_path = tmp / f"raw{suffix}"
+        with open(raw_path, "wb") as f:
+            while chunk := await file.read(1 << 20):
+                f.write(chunk)
+
+        # Normalize to wav when ffmpeg is around (lets aubio open it on
+        # Windows); otherwise run the detector on the raw file and rely on
+        # its librosa fallback for compressed formats.
+        detect_path = raw_path
+        if probe()["ffmpeg"]:
+            norm_path = tmp / "norm.wav"
+            try:
+                normalize_to_target(
+                    raw_path, norm_path, target_sr=44100, target_channels=2
+                )
+                detect_path = norm_path
+            except RuntimeError:
+                detect_path = raw_path
+
+        try:
+            det = detect_tempo_and_beats(detect_path)
+        except Exception as e:
+            raise HTTPException(400, f"could not analyze {file.filename!r}: {e}") from e
+
+        key_info: dict[str, Any] = {"key": None, "scale": None, "confidence": None}
+        try:
+            from backend.modules.analysis.key import detect_key
+
+            key_info = detect_key(detect_path)
+        except Exception as e:
+            log.warning("chimera analyze: key detection failed: %s", e)
+
+        return {
+            "bpm": det["bpm"],
+            "beats": det["beats"],
+            "duration_sec": det["duration_sec"],
+            "confidence": det["confidence"],
+            "samplerate": det["samplerate"],
+            "key": key_info.get("key"),
+            "scale": key_info.get("scale"),
+            "key_confidence": key_info.get("confidence"),
+        }
+
+
 def _parse_target_bpm(raw: str) -> Optional[float]:
     if raw is None:
         return None
@@ -55,6 +111,36 @@ def _parse_target_bpm(raw: str) -> Optional[float]:
     if v <= 0:
         return None
     return v
+
+
+def _parse_known_analysis(raw: str, n: int) -> list[Optional[dict[str, Any]]]:
+    """Client-supplied per-clip analysis (from analyze-on-add).
+
+    A JSON array aligned with the uploaded files; entries are
+    {bpm, beats[], duration_sec} or null. Valid entries let the mashup skip
+    re-running detect_tempo_and_beats on that clip.
+    """
+    if not raw:
+        return [None] * n
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"known_analysis must be JSON: {e}")
+    if not isinstance(parsed, list) or len(parsed) != n:
+        raise HTTPException(400, f"known_analysis must be a list of length {n}")
+    out: list[Optional[dict[str, Any]]] = []
+    for entry in parsed:
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("bpm"), (int, float))
+            and entry["bpm"] > 0
+            and isinstance(entry.get("beats"), list)
+            and entry["beats"]
+        ):
+            out.append(entry)
+        else:
+            out.append(None)
+    return out
 
 
 def _parse_weights(raw: str, n: int) -> list[float]:
@@ -109,6 +195,7 @@ async def chimera_mashup(
     weave_bars: int = Form(0),
     weave_total_bars: int = Form(0),
     weave_max_polyphony: int = Form(0),
+    known_analysis: str = Form(""),
 ) -> dict[str, Any]:
     tools = probe()
     if not tools["aubio"] or not tools["ffmpeg"]:
@@ -128,6 +215,7 @@ async def chimera_mashup(
 
     user_target = _parse_target_bpm(target_bpm)
     weight_list = _parse_weights(weights, len(files))
+    known_list = _parse_known_analysis(known_analysis, len(files))
 
     warnings: list[str] = []
 
@@ -153,7 +241,25 @@ async def chimera_mashup(
                 ) from e
             norm_paths.append(norm_path)
 
-        detections = [detect_tempo_and_beats(p) for p in norm_paths]
+        # Use client-supplied analysis (from analyze-on-add) when present and
+        # only run the detector on clips without it — duration always comes
+        # from the normalized file on disk, never the client.
+        detections = []
+        for i, p in enumerate(norm_paths):
+            ka = known_list[i]
+            if ka is not None:
+                info = sf.info(str(p))
+                detections.append(
+                    {
+                        "bpm": float(ka["bpm"]),
+                        "beats": [float(b) for b in ka["beats"]],
+                        "confidence": 1.0,
+                        "samplerate": int(info.samplerate),
+                        "duration_sec": float(info.frames) / float(info.samplerate),
+                    }
+                )
+            else:
+                detections.append(detect_tempo_and_beats(p))
         detected_bpms: list[Optional[float]] = [d["bpm"] for d in detections]
 
         target_bpm_used, target_bpm_source = _resolve_target_bpm(

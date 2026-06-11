@@ -22,6 +22,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+import sys
+import threading
+from pathlib import Path
 
 import httpx
 
@@ -29,18 +33,148 @@ log = logging.getLogger(__name__)
 
 SIDECAR_URL = os.getenv("STABLEDAW_MAGENTA_URL", "http://localhost:8777").rstrip("/")
 
+# The identity the EXTENDED sidecar reports in /health. The bundled Studio server
+# answers ``ready: true`` too but speaks an incompatible JSON protocol and reports
+# ``app: "mrt2-studio"`` — the probe must never mistake it for ours.
+EXPECTED_APP = "mrt2-extended"
+
 
 async def health() -> dict:
-    """Probe the sidecar. Always returns a dict with an ``available`` flag."""
+    """Probe the sidecar. Always returns a dict with an ``available`` flag.
+
+    ``available`` is True only when the responder is ready AND speaks the
+    extended protocol (identity field absent = an older extended build, accepted;
+    ``mrt2-studio`` = the bundled JSON-protocol Studio server, rejected).
+    """
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.get(f"{SIDECAR_URL}/health")
             r.raise_for_status()
             data = r.json()
-            return {**data, "available": bool(data.get("ready")), "url": SIDECAR_URL}
+            app_id = data.get("app")
+            protocol_ok = app_id in (None, EXPECTED_APP)
+            return {
+                **data,
+                "reachable": True,
+                "protocol_ok": protocol_ok,
+                "available": bool(data.get("ready")) and protocol_ok,
+                "url": SIDECAR_URL,
+            }
     except Exception as e:
         log.debug("Magenta sidecar not reachable at %s: %s", SIDECAR_URL, e)
-        return {"available": False, "url": SIDECAR_URL}
+        return {
+            "available": False,
+            "reachable": False,
+            "protocol_ok": False,
+            "url": SIDECAR_URL,
+        }
+
+
+# ── engine lifecycle (the WSL2 process behind SIDECAR_URL) ──────────────────
+#
+# The extended sidecar runs inside WSL2 (JAX needs the Linux CUDA stack). The
+# spawn mirrors the bundled MRT2-Studio.vbs launcher: same distro detection
+# (``.wsl_distro`` written by Setup, fallback Ubuntu), same venv, no console
+# window. ``stop_engine`` also kills the bundled Studio server so two engines
+# never contend for the GPU.
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENGINE_SCRIPT = _REPO_ROOT / "sidecars" / "magenta" / "server.py"
+_DISTRO_FILE = _REPO_ROOT / "sidecars" / "magenta-rt2-nvidia" / "app" / ".wsl_distro"
+_ENGINE_MODEL = os.getenv("STABLEDAW_MAGENTA_MODEL", "mrt2_small")
+_WSL_PYTHON = os.getenv("STABLEDAW_MAGENTA_WSL_PY", "~/mrt2/.venv/bin/python")
+# pkill pattern matching BOTH magenta engines (extended + bundled Studio).
+_ENGINE_PKILL_PATTERN = "sidecars/magenta/server.py|studio_server.py"
+
+_engine_lock = threading.Lock()
+_engine_proc: subprocess.Popen | None = None
+
+
+def _wsl_distro() -> str:
+    try:
+        name = _DISTRO_FILE.read_text(encoding="utf-8").strip()
+        if name:
+            return name
+    except OSError:
+        pass
+    return "Ubuntu"
+
+
+def _wsl_path(p: Path) -> str:
+    """Convert a Windows path to its WSL mount path (D:\\x\\y -> /mnt/d/x/y)."""
+    s = str(p.resolve())
+    if len(s) > 1 and s[1] == ":":
+        return "/mnt/" + s[0].lower() + s[2:].replace("\\", "/")
+    return s.replace("\\", "/")
+
+
+def engine_process_alive() -> bool:
+    return _engine_proc is not None and _engine_proc.poll() is None
+
+
+def start_engine() -> dict:
+    """Spawn the extended sidecar in WSL2 (blocking call, returns immediately
+    after the spawn; readiness is observed via ``health()``)."""
+    global _engine_proc
+    with _engine_lock:
+        if engine_process_alive():
+            return {"spawned": False, "reason": "engine process already alive"}
+        if not _ENGINE_SCRIPT.is_file():
+            raise RuntimeError(f"engine script not found: {_ENGINE_SCRIPT}")
+        distro = _wsl_distro()
+        port = SIDECAR_URL.rsplit(":", 1)[-1] or "8777"
+        bash_cmd = (
+            f"MRT2_PORT={port} MRT2_MODEL={_ENGINE_MODEL} "
+            f"exec {_WSL_PYTHON} '{_wsl_path(_ENGINE_SCRIPT)}'"
+        )
+        cmd = ["wsl.exe", "-d", distro, "--", "bash", "-lc", bash_cmd]
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        log.info("magenta.engine: spawning %s", " ".join(cmd))
+        _engine_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            shell=False,
+        )
+        return {"spawned": True, "distro": distro, "model": _ENGINE_MODEL, "port": port}
+
+
+def stop_engine() -> dict:
+    """Stop every magenta engine: our tracked child plus any engine started
+    outside the app (the .vbs launcher, a manual run), via pkill inside WSL."""
+    global _engine_proc
+    with _engine_lock:
+        terminated = False
+        if engine_process_alive():
+            try:
+                _engine_proc.terminate()
+                _engine_proc.wait(timeout=5.0)
+                terminated = True
+            except subprocess.TimeoutExpired:
+                _engine_proc.kill()
+                terminated = True
+        _engine_proc = None
+        pkilled = False
+        try:
+            rc = subprocess.run(
+                [
+                    "wsl.exe",
+                    "-d",
+                    _wsl_distro(),
+                    "--",
+                    "bash",
+                    "-lc",
+                    f"pkill -f '{_ENGINE_PKILL_PATTERN}' || true",
+                ],
+                timeout=20,
+                capture_output=True,
+                shell=False,
+            ).returncode
+            pkilled = rc == 0
+        except Exception as e:
+            log.warning("magenta.engine: WSL pkill failed: %s", e)
+        return {"terminated": terminated, "pkilled": pkilled}
 
 
 async def generate(

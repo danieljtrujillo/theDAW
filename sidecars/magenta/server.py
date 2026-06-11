@@ -192,6 +192,10 @@ def _notes_state_for_window(
 @app.get("/health")
 async def health():
     return {
+        # Identity field: theDAW's backend probe uses this to tell the extended
+        # sidecar apart from the bundled Studio server (which also answers
+        # ready:true on these ports but speaks an incompatible JSON protocol).
+        "app": "mrt2-extended",
         "ready": ENGINE.ready,
         "status": ENGINE.status,
         "error": ENGINE.error,

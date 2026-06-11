@@ -20,17 +20,20 @@ export interface AudioDragItem {
   blob: Blob;
   mimeType: string;
   label: string;
+  /** Library entry id when the drag originated from a library row. */
+  entryId?: string;
 }
 
 export type AudioDragInput =
-  | { blob: Blob; mimeType: string; label: string }
-  | { fetcher: () => Promise<Blob>; mimeType: string; label: string };
+  | { blob: Blob; mimeType: string; label: string; entryId?: string }
+  | { fetcher: () => Promise<Blob>; mimeType: string; label: string; entryId?: string };
 
 interface RegistryEntry {
   blob?: Blob;
   fetcher?: () => Promise<Blob>;
   mimeType: string;
   label: string;
+  entryId?: string;
   expiresAt: number;
 }
 
@@ -65,6 +68,7 @@ export const setAudioDragData = (
       fetcher: 'fetcher' in item ? item.fetcher : undefined,
       mimeType: item.mimeType,
       label: item.label,
+      entryId: item.entryId,
       expiresAt: Date.now() + REGISTRY_TTL_MS,
     });
     return { id, mimeType: item.mimeType, label: item.label };
@@ -108,7 +112,7 @@ export const readAudioDragData = async (
       }
     }
     if (blob) {
-      items.push({ blob, mimeType: entry.mimeType, label: entry.label });
+      items.push({ blob, mimeType: entry.mimeType, label: entry.label, entryId: entry.entryId });
     }
     _registry.delete(ref.id);
   }

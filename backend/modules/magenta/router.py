@@ -34,6 +34,57 @@ async def probe():
     return await sidecar.health()
 
 
+# ── engine lifecycle: the Model dropdown's GPU swap, no terminal anywhere ────
+#
+# /engine/start parks the SA3 model in CPU RAM (frees VRAM), stops any OTHER
+# magenta engine (including the bundled JSON-protocol Studio server), and spawns
+# the extended sidecar in WSL2. /engine/stop kills every magenta engine and
+# swaps SA3 back onto the GPU. Both refuse with 409 while a generation runs.
+
+
+@router.post("/engine/start")
+async def engine_start():
+    h = await sidecar.health()
+    if h.get("reachable") and h.get("protocol_ok"):
+        # The extended engine is already up (ready or still loading) — keep it.
+        return {"ok": True, "already_running": True, **h}
+
+    # Park SA3 first so the engine's JAX runtime finds a free GPU. The import is
+    # deferred to request time: the server module is fully initialized by then.
+    from backend import server as srv
+
+    parked = await srv.offload_model()
+
+    # Stop every other magenta engine first (idempotent): a bundled Studio on a
+    # DIFFERENT port still holds GPU memory even though the 8777 probe missed it.
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, sidecar.stop_engine)
+    spawn = await loop.run_in_executor(None, sidecar.start_engine)
+    return {"ok": True, "already_running": False, "parked": parked, **spawn}
+
+
+@router.post("/engine/stop")
+async def engine_stop():
+    loop = asyncio.get_event_loop()
+    stopped = await loop.run_in_executor(None, sidecar.stop_engine)
+
+    from backend import server as srv
+
+    try:
+        restored = await srv.onload_model()
+    except HTTPException as e:
+        # A running generation blocks the eager onload; the lazy wake path
+        # restores the model at the next CREATE anyway.
+        restored = {"skipped": e.detail}
+    return {"ok": True, **stopped, "sa3": restored}
+
+
+@router.get("/engine/status")
+async def engine_status():
+    h = await sidecar.health()
+    return {**h, "process_alive": sidecar.engine_process_alive()}
+
+
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str):
     job = MAGENTA_JOBS.get(job_id)

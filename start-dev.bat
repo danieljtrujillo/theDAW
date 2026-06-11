@@ -32,9 +32,12 @@ start "SA3 Backend" cmd /k "cd /d %~dp0 && .venv\Scripts\activate && python -m b
 :: Give backend a moment to bind
 timeout /t 3 /nobreak >nul
 
-:: Start the frontend dev server (port 5173)
-echo [2/3] Starting frontend dev server on port 5173...
-start "SA3 Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+:: Start the frontend dev server (port 5173).
+:: ENABLE_HMR=true turns Vite file-watching ON (the repo default is OFF so
+:: agent edits don't nuke app state) — without it, code changes on disk are
+:: silently never served until a manual Vite restart.
+echo [2/3] Starting frontend dev server on port 5173 (HMR on)...
+start "SA3 Frontend" cmd /k "cd /d %~dp0frontend && set ENABLE_HMR=true&& npm run dev"
 
 :: Give Vite a moment to bind
 timeout /t 3 /nobreak >nul

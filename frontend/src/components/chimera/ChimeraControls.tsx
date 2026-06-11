@@ -5,7 +5,7 @@ import { useGenerateParamsStore, type ChimeraAlignMode } from '../../state/gener
 const ALIGN_LABELS: Record<ChimeraAlignMode, string> = {
   start: 'Start',
   downbeat: 'Downbeat',
-  weave: 'Phrase Weave',
+  weave: 'CRISPR',
 };
 
 export const ChimeraControls: React.FC = () => {

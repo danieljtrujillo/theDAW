@@ -855,6 +855,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
                   fetcher: () => fetchBlob(en),
                   mimeType: en.mimeType,
                   label: en.title,
+                  entryId: en.id,
                 })));
               }}
               onClick={(e) => handleSelectEntry(entry, e)}
