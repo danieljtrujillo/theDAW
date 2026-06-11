@@ -354,6 +354,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
   const showBottomTab = useBottomPanelStore((s) => s.showTab);
 
+  const openScoreForEntry = (entryId: string) => {
+    setSelectedEntry(entryId);
+    showBottomTab('score');
+  };
+
   useEffect(() => {
     setSelectedEntryIds((prev) => prev.filter((id) => entries.some((entry) => entry.id === id)));
   }, [entries]);
@@ -1042,6 +1047,13 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             hint: 'basic-pitch',
             disabled: isRunning('midi'),
             onSelect: () => { void runJobForEntry(ctxEntryId, 'midi'); },
+          },
+          {
+            type: 'item',
+            label: 'Open Score / Notation',
+            icon: <FileMusic className="w-3 h-3" />,
+            hint: 'MusicXML',
+            onSelect: () => openScoreForEntry(ctxEntryId),
           },
           { type: 'separator' },
           {

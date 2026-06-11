@@ -48,6 +48,9 @@ dependencies = [
     "basic-pitch>=0.4.0",
     "pretty_midi>=0.2.11",
     "mido>=1.3.3",
+    # notation module — symbolic music conversion / analysis backbone.
+    "music21>=9.7.1,<10.3.0",
+    "partitura>=1.9.0",
     # controllervision module — classical CV (Hough/contours) to infer a MIDI
     # controller's layout from a product photo. Headless (no GUI libs). The
     # module guards its import, so the backend still boots if this is absent.

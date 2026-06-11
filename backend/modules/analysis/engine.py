@@ -43,6 +43,7 @@ def analyze_audio(
     include_key: bool = True,
     include_pitch: bool = True,
     include_genre: bool = False,
+    include_prompt: bool = True,
 ) -> dict[str, Any]:
     """Pure analysis call — runs the configured steps, returns a flat
     dict. Idempotent; doesn't touch any persistence."""
@@ -93,6 +94,17 @@ def analyze_audio(
         out["genre"] = None
         out["genre_confidence"] = None
 
+    if include_prompt:
+        # Deterministic semantic tags + a Stable Audio-style prompt from the
+        # numbers above. Cheap and pure; ML genre/mood enrichers (when added)
+        # fold in via the ``genre`` field and embedded tags at persist time.
+        from .prompt import generate_prompt
+
+        generated = generate_prompt(out)
+        out["prompt_guess"] = generated["prompt_guess"]
+        out["prompt_confidence"] = generated["prompt_confidence"]
+        out["semantic_tags"] = generated["semantic_tags"]
+
     return out
 
 
@@ -121,6 +133,9 @@ def persist_analysis(
         "bars_estimated": payload.get("bars_estimated"),
         "genre": payload.get("genre"),
         "genre_confidence": payload.get("genre_confidence"),
+        "prompt_guess": payload.get("prompt_guess"),
+        "prompt_confidence": payload.get("prompt_confidence"),
+        "semantic_tags": payload.get("semantic_tags") or [],
         "embedded_tags": embedded_tags or {},
         "ffprobe": payload.get("ffprobe") or {},
         "version": payload.get("version") or ANALYSIS_VERSION,
@@ -200,6 +215,21 @@ def analyze_and_persist(
                     embedded = m["embedded_tags"]
             except (OSError, json.JSONDecodeError):
                 pass
+
+        # Fold any embedded tags into a richer prompt than the analysis-only
+        # baseline computed in analyze_audio.
+        if embedded:
+            from .prompt import generate_prompt
+
+            entry_row = db.get_entry(entry_id) or {}
+            regenerated = generate_prompt(
+                payload,
+                embedded_tags=embedded,
+                title=str(entry_row.get("title") or ""),
+            )
+            payload["prompt_guess"] = regenerated["prompt_guess"]
+            payload["prompt_confidence"] = regenerated["prompt_confidence"]
+            payload["semantic_tags"] = regenerated["semantic_tags"]
 
         persist_analysis(
             db,
