@@ -1,7 +1,7 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-11T22:37:08.464Z · Git revision: `7ebcc5532418` · Repomix tracked: **no**
+> Generated: 2026-06-11T22:46:28.537Z · Git revision: `0e2290902505` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
@@ -45,7 +45,7 @@
 | `edit-tool-stack-modules` | Edit Tool Stack: six /api/edit/* processor families (mastering, restoration, enhance, delivery, creative-fx, creative-neural) plus AI analyzer | edit | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#28-edit-tool-stack | Matched 5/5 guide terms. |
 | `catalogue-cross-provider-browser` | Catalogue cross-provider library gallery with provider badges, inspector spectrograms, and lineage | library | implemented | **documented** | #table-of-contents<br>#26-2-flow-and-library-integration<br>#29-catalogue | Matched 5/5 guide terms. |
 | `controller-vision-detect-identify` | Controller Vision: detect/identify a MIDI controller from a photo (OpenCV + vision-LLM) with LAN phone pairing | daw | implemented | **documented** | #table-of-contents<br>#31-controller-vision | Matched 5/5 guide terms. |
-| `ytimport-youtube-import` | YouTube import: fetch audio from a URL into the Library as a first-class, lineage-tracked entry | library | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#30-youtube-import | Matched 4/4 guide terms. |
+| `ytimport-youtube-import` | YouTube import: fetch audio from a URL into the Library as a first-class, lineage-tracked entry | library | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#prerequisites<br>#30-youtube-import | Matched 4/4 guide terms. |
 
 ## Screenshot Mapping
 

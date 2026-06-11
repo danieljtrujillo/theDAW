@@ -142,3 +142,17 @@ git clone https://YOUR_USERNAME:YOUR_HF_TOKEN@huggingface.co/stabilityai/stable-
 ```
 
 If this errors, reinstall flash-attn (see above).
+
+## `start-dev.bat` fails immediately, or "X is not recognized"
+
+**Cause:** A required tool isn't on PATH. The launcher preflights uv/node/npm and
+bootstraps the venv + `node_modules`, but it can't run if those tools are missing.
+
+**Fix by what's reported missing:**
+
+- **`uv`** — install from <https://docs.astral.sh/uv/getting-started/installation/>, then reopen the terminal.
+- **`node` / `npm`** — install Node.js **v20.19+ or v22.12+** from <https://nodejs.org/> (npm ships with it). An older Node also makes Vite 7 crash with an opaque error; check `node -v`.
+- **`ffmpeg`** — `winget install Gyan.FFmpeg`, or a build from <https://www.gyan.dev/ffmpeg/builds/> with its `bin\` on PATH. The launcher only warns about this one; the servers start, but every audio effect, export, and library ingest fails until FFmpeg is present.
+- **`lt` (localtunnel)** — optional. The launcher skips the public tunnel when it's absent; run `npm i -g localtunnel` if you want the shareable link.
+
+After installing a tool, open a NEW terminal so PATH refreshes, then re-run `start-dev.bat`.

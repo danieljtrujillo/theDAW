@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-11T22:37:08.464Z",
-  "repoRevision": "7ebcc5532418",
+  "generatedAt": "2026-06-11T22:46:28.537Z",
+  "repoRevision": "0e2290902505",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -881,6 +881,7 @@
       "docAnchors": [
         "#table-of-contents",
         "#1-repository-anatomy",
+        "#prerequisites",
         "#30-youtube-import"
       ],
       "coverage": "documented",

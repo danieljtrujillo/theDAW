@@ -11,17 +11,33 @@ Stable Audio 3 Medium running on Windows with CUDA.
 
 | Tool | Why |
 |------|-----|
-| Python 3.10 | Required by project (`requires-python = ">=3.10"`) |
-| [uv](https://github.com/astral-sh/uv) | Package manager used by the project |
-| Git | Cloning repos |
+| Python 3.10 | Required by project. On Windows the Flash Attention + cu128 torch wheels are pinned to 3.10 — Python 3.11+ silently falls back to a source build / CPU torch (static-glitch output). |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Package manager used by the project (creates the venv, installs torch/CUDA) |
+| [Node.js](https://nodejs.org/) v20.19+ / v22.12+ | Frontend dev server + VJ sidecar (Vite 7 floor). Includes npm. |
+| [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH | All audio I/O: effects, exports, library ingest, MIDI conversion, YouTube import |
+| Git | Cloning repos (use `--recurse-submodules` so the Magenta sidecar source is present) |
 | [git-xet](https://hf.co/docs/hub/git-xet) | Required for cloning HF model repos with large files |
 | NVIDIA GPU + Driver 550+ | CUDA support for Medium model |
 | Hugging Face account | Private repo access (collaborator required) |
+
+> **`winget` not found?** The install commands below use `winget` (Windows Package
+> Manager). It ships with the App Installer on Windows 11 but can be absent on older,
+> LTSC, or Server builds. If `winget` is "not recognized," install **App Installer**
+> from the Microsoft Store (or download each tool from its linked site above).
 
 ### Install git-xet
 ```powershell
 winget install git-xet
 ```
+
+### Install FFmpeg
+```powershell
+winget install Gyan.FFmpeg
+```
+Or download a build from <https://www.gyan.dev/ffmpeg/builds/>, unzip it, and add its `bin\` folder to PATH. Verify with `ffmpeg -version`. Without FFmpeg the servers still start, but every effect, export, and library ingest fails.
+
+### Install Node.js
+Install **v20.19+ or v22.12+** from <https://nodejs.org/> (the LTS installer includes npm and adds both to PATH). Verify with `node -v`. An older Node makes Vite 7 crash with an opaque error.
 
 ### Install HF CLI
 ```powershell

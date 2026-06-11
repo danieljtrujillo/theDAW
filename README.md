@@ -35,13 +35,25 @@ theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which r
 
 ---
 
+## Prerequisites
+
+Install these and put each on your PATH first:
+
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — the Python environment and package manager (creates the venv, installs torch/CUDA).
+- **[Node.js](https://nodejs.org/) v20.19+ or v22.12+** (includes npm) — the frontend dev server and the VJ sidecar. Vite 7 requires this floor.
+- **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH** — every audio path uses it: effects, exports, library ingest, MIDI conversion, YouTube import.
+- **[Git](https://git-scm.com/)** — clone with `--recurse-submodules` so the Magenta sidecar's vendored source is present.
+- **NVIDIA driver 550+** for the Medium model and Magenta. The Small model runs on CPU.
+
+`start-dev.bat` verifies uv/node/npm, warns if FFmpeg is missing, and bootstraps the venv + `node_modules` on first run, so a fresh clone with the tools above is one command away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
+
 ## Quick Start
 
 ```powershell
 .\start-dev.bat
 ```
 
-The launcher kills stale processes on ports 5173 and 8600, starts the backend, waits for it to bind, then starts Vite and opens `http://localhost:5173`.
+The launcher checks prerequisites, bootstraps dependencies when the tree is fresh (`uv sync --group dev`, `npm install`), kills stale processes on ports 5173/8600/5187, starts the backend and Vite, starts a public tunnel only if localtunnel is installed, and opens `http://localhost:5173`.
 
 Manual launch:
 
