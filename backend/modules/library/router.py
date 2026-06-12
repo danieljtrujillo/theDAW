@@ -24,6 +24,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 
 from .bundle import build_bundle_bytes
 from .store import LibraryStore, _read_metadata, default_library_root
@@ -178,6 +179,41 @@ def register_play(entry_id: str) -> dict[str, Any]:
         store._sync_record_to_db(record, _read_metadata(entry_dir) or {})  # noqa: SLF001
         new_count = store.db.increment_play_count(entry_id) or 1
     return {"id": entry_id, "play_count": new_count}
+
+
+class SuggestRequest(BaseModel):
+    target_duration_sec: float = 1800.0
+    bpm_min: Optional[float] = None
+    bpm_max: Optional[float] = None
+    harmonic: bool = True
+    flow: str = "steady"
+    genre: Optional[str] = None
+    query: Optional[str] = None
+    seed_id: Optional[str] = None
+    max_tracks: int = 60
+
+
+@router.post("/suggest-playlist")
+def suggest_playlist_endpoint(req: SuggestRequest = Body(...)) -> dict[str, Any]:
+    """Build an analysis-driven playlist (harmonic + bpm-flow sequencing) that
+    fits the requested time budget. Needs the DB, where analysis lives."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    from .suggester import suggest_playlist
+
+    return suggest_playlist(
+        store.db,
+        target_duration_sec=req.target_duration_sec,
+        bpm_min=req.bpm_min,
+        bpm_max=req.bpm_max,
+        harmonic=req.harmonic,
+        flow=req.flow,
+        genre=req.genre,
+        query=req.query,
+        seed_id=req.seed_id,
+        max_tracks=req.max_tracks,
+    )
 
 
 @router.delete("/entries/{entry_id}")
