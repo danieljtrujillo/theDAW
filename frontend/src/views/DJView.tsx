@@ -37,6 +37,7 @@ import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
+import { useDjAutomix } from '../state/djAutomixStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
@@ -558,6 +559,16 @@ export const DJView: React.FC = () => {
       }
     });
   }, []);
+
+  // A send-to-DJ (suggester, etc.) populates the active set + switches here, then
+  // trips a one-shot start flag: consume it and flip automix on so the set below
+  // begins beatmatch-crossfading without a manual Automix press.
+  const pendingAutomixStart = useDjAutomix((s) => s.pendingStart);
+  useEffect(() => {
+    if (!pendingAutomixStart) return;
+    useDjAutomix.getState().consumeStart();
+    setAutomixOn(true);
+  }, [pendingAutomixStart]);
 
   // Automix (D7): auto-sequence the active set across the 2 decks — beatmatch
   // the next track and crossfade at each tail, then advance. Pure orchestration
