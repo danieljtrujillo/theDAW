@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-12T01:05:59.027Z",
-  "repoRevision": "ebd77289935f",
+  "generatedAt": "2026-06-12T01:42:22.031Z",
+  "repoRevision": "b6c4eb0f1905",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -861,6 +861,7 @@
       "featureId": "catalogue-cross-provider-browser",
       "docAnchors": [
         "#table-of-contents",
+        "#5-ui-shell",
         "#26-2-flow-and-library-integration",
         "#29-catalogue"
       ],

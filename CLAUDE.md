@@ -173,11 +173,13 @@ This project uses **Tailwind CSS v4**. The following v3 forms are forbidden and 
 
 ## Windows-Specific Setup
 
-The `pyproject.toml` CUDA index mapping only covers Linux. On Windows:
-- PyTorch must be manually installed with `--index-url https://download.pytorch.org/whl/cu128`
-- `soundfile` package is required (torchaudio has no default backend on Windows)
-- Flash Attention requires pre-built wheels from `kingbri1/flash-attention` GitHub releases
-- See `docs/windows/setup-guide.md` for full instructions
+`pyproject.toml` maps the CUDA wheels per-platform under `[tool.uv.sources]`
+(Linux x86_64 → cu126, Windows → cu128), so `uv sync` on Windows installs the
+right stack automatically:
+- torch + torchaudio come from the cu128 index (no manual `--index-url` step)
+- `soundfile` is a base dependency (torchaudio's Windows backend), installed by `uv sync`
+- Flash Attention installs from the pinned `kingbri1` cu128/cp310 wheel, gated to `sys_platform == 'win32' and python_version < '3.11'` (so the venv must be Python 3.10; `.python-version` pins it)
+- `theDAW.bat` / `Setup-theDAW.bat` install the prerequisite tools; `docs/windows/setup-guide.md` has the full walkthrough and fallbacks
 
 ## RAG Index Maintenance
 

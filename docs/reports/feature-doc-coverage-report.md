@@ -1,7 +1,7 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-12T01:05:59.027Z · Git revision: `ebd77289935f` · Repomix tracked: **no**
+> Generated: 2026-06-12T01:42:22.031Z · Git revision: `b6c4eb0f1905` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
@@ -43,7 +43,7 @@
 | `suno-cloud-generation` | Suno cloud generation (Aurora Cloud Console) with simple/custom/cover/mashup, server-side key, and library lineage | create | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#6-3-1-chimera-fusion-stack<br>#12-3-how-the-visualizations-are-rendered<br>#19-14-chimera<br>#26-cloud-generation-suno<br>#26-1-modes<br>#26-2-flow-and-library-integration<br>#26-3-endpoints<br>#29-catalogue<br>#credits | Matched 5/5 guide terms. |
 | `magenta-rt2-generate` | Magenta RealTime 2 generation (text/notes/audio-style) via the WSL2 NVIDIA sidecar, the first non-Mac MRT2 port | create | experimental | **documented** | #table-of-contents<br>#27-magenta-realtime-2<br>#27-1-the-sidecar-and-conditioning<br>#27-2-first-non-mac-port-of-magenta-realtime-2<br>#33-6-prompt-inference | Matched 5/5 guide terms. |
 | `edit-tool-stack-modules` | Edit Tool Stack: six /api/edit/* processor families (mastering, restoration, enhance, delivery, creative-fx, creative-neural) plus AI analyzer | edit | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#28-edit-tool-stack | Matched 5/5 guide terms. |
-| `catalogue-cross-provider-browser` | Catalogue cross-provider library gallery with provider badges, inspector spectrograms, and lineage | library | implemented | **documented** | #table-of-contents<br>#26-2-flow-and-library-integration<br>#29-catalogue | Matched 5/5 guide terms. |
+| `catalogue-cross-provider-browser` | Catalogue cross-provider library gallery with provider badges, inspector spectrograms, and lineage | library | implemented | **documented** | #table-of-contents<br>#5-ui-shell<br>#26-2-flow-and-library-integration<br>#29-catalogue | Matched 5/5 guide terms. |
 | `controller-vision-detect-identify` | Controller Vision: detect/identify a MIDI controller from a photo (OpenCV + vision-LLM) with LAN phone pairing | daw | implemented | **documented** | #table-of-contents<br>#31-controller-vision | Matched 5/5 guide terms. |
 | `ytimport-youtube-import` | YouTube import: fetch audio from a URL into the Library as a first-class, lineage-tracked entry | library | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#prerequisites<br>#30-youtube-import | Matched 4/4 guide terms. |
 

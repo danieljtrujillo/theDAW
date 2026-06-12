@@ -162,23 +162,23 @@ cd frontend && npm run dev
 
 ## 5. UI Shell
 
-The application window is divided into three persistent regions:
+The application window has five regions:
 
-- **Left panel** (resizable): brand, tab controls content, run CTA, processing log.
-- **Center workspace**: the center tab bar at the top, the active workspace below it, and a collapsible bottom multi-tab panel in the global footer.
-- **Player footer**: a fixed transport bar across the bottom of the app.
+- **Full-width header** (top): the theDAW logo, a global search input, and action buttons (Docs, mobile access QR/link, Settings, user avatar, AI Assistant orb).
+- **Center workspace**: the center tab bar at the top and the active workspace below it, including that tab's own controls and run action.
+- **Library rail** (right, collapsible): browse and route library material without leaving the active workspace.
+- **Global bottom dock**: the bottom multi-tab panel and the processing log, side by side.
+- **Player footer** (bottom): a fixed transport bar.
 
-**Full-width header:** a fixed bar spanning the entire window width. It contains the left-panel collapse/reveal toggle (chevron), the theDAW logo dot, a global search input, and action buttons (Docs, mobile access QR/link, Settings, User avatar, AI Assistant orb).
-
-**Left panel resize:** drag the vertical handle on the panel's right edge. Range: 300 px to 500 px.
-
-**Left panel collapse:** click the chevron in the header. The workspace expands to full width. Click again to restore.
+**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
 **Center tab switching:** the active workspace is controlled by the center tab bar in the locked order **MAKE / EDIT / MIX / DJ / VJ / TRAIN / LEARN** (`CENTER_TABS`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly.
 
 **DJ and VJ persistence:** the DJ and VJ tabs host live performance state (a multi-deck mixer and an embedded WebGL VJ iframe). Once first visited, they stay mounted and only toggle CSS visibility on tab switch, so deck state and the warm VJ pipeline survive a switch. A backgrounded VJ tab is told to park its render loop, so it costs close to 0% GPU while hidden.
 
-**Right-side library rail:** the Library is a collapsible right-side panel. Use the library button at the right edge of the center tab bar to expand or collapse it; the rail width persists between 280 px and 640 px. This lets MAKE, MIX, LEARN, VJ, and editor workflows stay visible while selecting or routing library material.
+**Right-side library rail:** the Library is a collapsible panel on the right edge. A compact, vertically-centered pull handle on the right edge of the work area (present in every workspace) toggles it open or closed, and a drag handle on the rail's inner edge resizes it; the width persists between 280 px and 640 px. Expanded fully, the rail becomes the full-width Catalogue. This lets MAKE, MIX, LEARN, VJ, and editor workflows stay visible while browsing or routing library material.
+
+**Global bottom dock:** pinned across the bottom of the app are two independent columns, the bottom multi-tab panel on the left (Visualize / Piano / Sequence / Details / Media / SLIDE / Score) and the processing log on the right, aligned under the library rail. Each column has its own height, collapse toggle, and resize handle, so expanding or resizing one does not move the other, and the dock stays put regardless of the library panel's state.
 
 **Docs modal:** click the Docs button in the header to open this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. The assistant RAG index is built from the same guide, so doc updates improve in-app help and assistant context together.
 
@@ -298,7 +298,7 @@ Appears below the accordion after a job is submitted or completed.
 
 ### 6.8 Run Generation
 
-A sticky bar fixed at the bottom of the left panel submits the generation job to `POST /api/generate-jobs`. While a job is active, the button changes to a red **ABORT** button showing an estimated percentage. Clicking Abort cancels the polling loop; the backend job keeps running, but its result is discarded by the UI.
+A sticky bar fixed at the bottom of the MAKE workspace submits the generation job to `POST /api/generate-jobs`. While a job is active, the button changes to a red **ABORT** button showing an estimated percentage. Clicking Abort cancels the polling loop; the backend job keeps running, but its result is discarded by the UI.
 
 ---
 
