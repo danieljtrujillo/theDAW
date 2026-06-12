@@ -24,12 +24,32 @@ from typing import Any, Optional
 _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 _FLAT_TO_SHARP = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
 _MAJOR_NUM = {
-    "C": 8, "C#": 3, "D": 10, "D#": 5, "E": 12, "F": 7,
-    "F#": 2, "G": 9, "G#": 4, "A": 11, "A#": 6, "B": 1,
+    "C": 8,
+    "C#": 3,
+    "D": 10,
+    "D#": 5,
+    "E": 12,
+    "F": 7,
+    "F#": 2,
+    "G": 9,
+    "G#": 4,
+    "A": 11,
+    "A#": 6,
+    "B": 1,
 }
 _MINOR_NUM = {
-    "A": 8, "A#": 3, "B": 10, "C": 5, "C#": 12, "D": 7,
-    "D#": 2, "E": 9, "F": 4, "F#": 11, "G": 6, "G#": 1,
+    "A": 8,
+    "A#": 3,
+    "B": 10,
+    "C": 5,
+    "C#": 12,
+    "D": 7,
+    "D#": 2,
+    "E": 9,
+    "F": 4,
+    "F#": 11,
+    "G": 6,
+    "G#": 1,
 }
 
 
@@ -68,7 +88,12 @@ def to_camelot(note: Optional[str], scale: Optional[str]) -> Optional[dict[str, 
         f"{down}{letter}",
         f"{number}{other}",
     ]
-    return {"code": f"{number}{letter}", "number": number, "letter": letter, "compatible": compatible}
+    return {
+        "code": f"{number}{letter}",
+        "number": number,
+        "letter": letter,
+        "compatible": compatible,
+    }
 
 
 def _harmonic_score(a: Optional[dict], b: Optional[dict]) -> float:
@@ -185,12 +210,20 @@ def suggest_playlist(
             cdur = float(cand.get("duration_sec") or 0.0)
             if total + cdur > budget + tolerance:
                 continue
-            h = _harmonic_score(current["_camelot"], cand["_camelot"]) if harmonic else 0.0
+            h = (
+                _harmonic_score(current["_camelot"], cand["_camelot"])
+                if harmonic
+                else 0.0
+            )
             cbpm = cand.get("bpm")
             bpm_pen = abs((cbpm if cbpm else target_bpm) - target_bpm)
             bpm_score = max(0.0, 1.0 - bpm_pen / 12.0)
             pop = min(1.0, (cand.get("play_count") or 0) / 5.0) * 0.3
-            jux = 0.2 if (cand.get("genre") and cand.get("genre") != current.get("genre")) else 0.0
+            jux = (
+                0.2
+                if (cand.get("genre") and cand.get("genre") != current.get("genre"))
+                else 0.0
+            )
             score = h * 1.5 + bpm_score + pop + jux
             if score > best_score:
                 best_score = score
@@ -210,7 +243,9 @@ def suggest_playlist(
             if hs >= 3:
                 bits.append("same key")
             elif hs >= 2:
-                bits.append(f"harmonic {prev['_camelot']['code']}->{t['_camelot']['code']}")
+                bits.append(
+                    f"harmonic {prev['_camelot']['code']}->{t['_camelot']['code']}"
+                )
         if t.get("bpm"):
             bits.append(f"{round(float(t['bpm']))} bpm")
         tracks.append(

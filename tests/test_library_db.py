@@ -70,7 +70,12 @@ def test_suggest_playlist(tmp_path: Path):
     from backend.modules.library.suggester import suggest_playlist
 
     db = LibraryDB(tmp_path / "library.db")
-    specs = [(120, "C", "major"), (122, "G", "major"), (124, "D", "major"), (118, "A", "minor")]
+    specs = [
+        (120, "C", "major"),
+        (122, "G", "major"),
+        (124, "D", "major"),
+        (118, "A", "minor"),
+    ]
     for i, (bpm, key, scale) in enumerate(specs):
         eid = f"e{i}"
         db.upsert_entry(_make_entry_payload(eid, title=f"t{i}", duration=120))
