@@ -1,18 +1,14 @@
-# theDAW User Guide
-
-_by GANTASMO_
+<div class="guide-cover">
+  <div style="line-height:1; letter-spacing:-0.03em;"><span style="font-size:63px; font-weight:600; color:#a020f0; text-shadow:0 0 24px rgba(160,32,240,0.6);">the</span><span style="font-size:93px; font-weight:900; color:#ffffff; text-shadow:0 0 44px rgba(160,32,240,0.85), 0 0 16px rgba(160,32,240,0.6);">DAW</span></div>
+  <div style="font-size:17px; letter-spacing:0.12em; opacity:0.74; font-weight:500; margin-top:1px;">ONE DAW TO RULE THEM ALL</div>
+  <div style="font-size:22px; font-weight:800; letter-spacing:0.1em; color:#a855f7; text-shadow:0 0 19px rgba(168,85,247,0.45); margin-top:3px;">by GANTASMO</div>
+</div>
 
 theDAW packs most of a music career into one program. It writes original audio from a text prompt, arranges it on a multitrack timeline, masters it through a deep effects chain, splits it into stems, performs it across two beatmatched DJ decks, runs a reactive visual show, transcribes it to sheet music and tablature, and files everything in a searchable library that records how each piece descended from the last. It trains custom models on a collection and answers questions about any of it from a built-in assistant. A separate DAW, audio generator, stem separator, DJ rig, VJ engine, notation editor, sample manager, and model trainer collapse into a single window.
 
-![The 3D lineage galaxy in the LEARN workspace](screenshots/learn-galaxy.png "full")
-
 Generation runs on Stable Audio 3, the open generative audio model from Stability AI. A prompt becomes finished stereo, and the same model menu reaches Magenta RealTime 2 for streaming text-to-music and Suno for cloud renders. Chimera fusion folds several clips into one tempo-aligned track, while init signals, inpainting, and LoRA adapters steer a render toward a target.
 
-![The two-deck DJ performance console](screenshots/dj.png "full")
-
 A track then moves through EDIT for waveform surgery and region inpainting, and MIX for the Edit Tool Stack and Quick Master macros. The DJ workspace runs two decks with beatmatch sync, key-lock, live stems, an FX rack, hot cues, and hands-free automix, and the VJ workspace drives WebGL visuals from the audio, a microphone, MIDI, or a phone on the same network.
-
-![Mastering and effects in the MIX workspace](screenshots/mix.png "full")
 
 Nothing is discarded. The Library keeps every piece on disk with its analysis, stems, and MIDI, and LEARN draws the lineage between pieces as a navigable 3D genealogy. A symbolic-music pipeline turns a track into sheet music, tablature, and multi-instrument arrangements, and reads a finished score back into a prompt. TRAIN fits LoRA adapters and runs autoencoder round-trips, an assistant answers from this guide, and a paste-a-URL importer pulls audio from YouTube, SoundCloud, and Bandcamp.
 
@@ -619,6 +615,8 @@ Long-running training jobs are tracked through `GET /api/jobs/{id}`, polled at 1
 
 The LEARN tab (`LineageView`) visualizes the genealogy of every asset in the Library. The backend tracks parent and child relationships across generated, imported, stem, MIDI, and Chimera-derived assets, and LEARN renders that data as interactive graphs. This is the data-visualization view onto how a piece came to be, from its source clips through every transformation.
 
+![The 3D lineage galaxy, with the camera flown into the cluster](screenshots/learn-galaxy.png "full")
+
 ### 12.1 Views
 
 LEARN has three views, selected from the header:
@@ -643,7 +641,7 @@ Every transformation in theDAW writes a lineage edge, so a remix, an inpaint, a 
 
 theDAW carries several other rich visualizations, each documented in its own section: the four-mode **spectrogram viewer** (Mel, STFT, Chromagram, CQT, in §6.3 and §16) rendered server-side from `POST /api/spectrogram`; the real-time **spectral analyzer** with oscilloscope, spectrum, and radial modes and RMS and peak metering (§16.1); **wavesurfer.js** waveforms across the Library, DJ decks, and editor; a **three.js and GLSL cymatics** visualizer; and the DJ tab's canvas jog wheels and beatgrid overlays (§9).
 
-![LEARN lineage 3D graph](screenshots/06-learn-tab-3d-graph__lineage-graph.png)
+![The cymatics and ferrofluid-orb visualizer](screenshots/ferro-orb.png)
 
 ---
 

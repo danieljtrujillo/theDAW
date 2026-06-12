@@ -37,6 +37,10 @@ const STEM_BASE = '68006988e370427d9108e5c5d724a9f5';
 const STEMS = ['drums', 'bass', 'vocals', 'other'].map((n) => ({
   name: n, url: `/api/library/stems/${STEM_BASE}__${n}/audio`,
 }));
+// Notation scenes use a track that already has MIDI + notation artifacts (tab,
+// arrangement) and analysis, so the Score panel renders a real tab + sheet and
+// the Details panel can infer a prompt. Verified to render cleanly.
+const NOTATION = { notationId: '03591710a6474479a9720780f40885a3' };
 // Et Tu Machina's MIDI, windowed to a clean 64-step piano-roll pattern (see _make_pianoroll.py).
 let ETU_PIANO = { bpm: 120, totalSteps: 64, notes: [] };
 try { ETU_PIANO = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'showcase', '_etu_pianoroll.json'), 'utf8')); } catch (e) {}
@@ -99,6 +103,10 @@ const SCENES = [
   { id: '18_media-bucket',   tab: 'make',  play: false, bottomTab: 'bucket',     maximizePanel: true, fillBucket: true, hold: 6 },
   { id: '44_url-import',     tab: 'make',  play: false, bottomTab: 'bucket',     maximizePanel: true, fillBucket: true, urlImport: true, hold: 6 },
   { id: '13_details',        tab: 'make',  play: false, bottomTab: 'details',    maximizePanel: true, detailsTrack: true, hold: 6 },
+  // ── NOTATION: Score panel (tablature + sheet music) + prompt inference ──
+  { id: '76_score-tabs',     tab: 'make',  play: false, bottomTab: 'score',      maximizePanel: true, notation: true, notationTabs: true,  hold: 9 },
+  { id: '75_score-arrange',  tab: 'make',  play: false, bottomTab: 'score',      maximizePanel: true, notation: true, notationArrange: true, hold: 8 },
+  { id: '77_prompt-infer',   tab: 'make',  play: false, bottomTab: 'details',    maximizePanel: true, notation: true, notationPrompt: true, hold: 7 },
   // ── overlays / cloud / library actions / global chrome ──
   { id: '11_assistant-orb',  tab: 'make',  play: false, openOrb: true, hold: 6 },
   { id: '14_catalogue',      tab: 'make',  play: false, catalogue: true, scrollList: true, hold: 7 },
@@ -418,7 +426,7 @@ async function applyScene(spec) {
     ss.getState().setView(spec.slideView || 'row');
   } catch (e) {}
 
-  try { lib.getState().setSelectedEntry((spec.detailsTrack || spec.libContext) ? spec.heroId : null); } catch (e) {}
+  try { lib.getState().setSelectedEntry(spec.notation ? spec.notationId : ((spec.detailsTrack || spec.libContext) ? spec.heroId : null)); } catch (e) {}
 
   if (spec.tab) appUi.getState().setCenterTab(spec.tab);
   await new Promise((r) => setTimeout(r, 250));
@@ -627,6 +635,25 @@ async function sceneActions(page, scene) {
       await clickByText(page, /\bMEM\b/i); await sleep(800);
     } catch (e) { err = (err || '') + ' vj:' + e.message; }
     await sleep(1000);
+  }
+  // Notation: Score panel renders a real guitar tab (alphaTab) or sheet music (OSMD)
+  // from the selected track's notation artifacts; Details infers a Stable Audio prompt.
+  // Generate live (MAKE TABS / MAKE SHEET explicitly select + render the new artifact,
+  // which is more reliable than racing the artifact list's auto-select).
+  const waitEnabled = (re) => page.waitForFunction((src) => { const rx = new RegExp(src, 'i'); const b = [...document.querySelectorAll('button')].find((x) => rx.test(x.textContent || '')); return !!b && !b.disabled; }, re.source, { timeout: 14000 }).catch(() => {});
+  if (scene.notationTabs) {
+    await waitEnabled(/make tabs/i);
+    await clickByText(page, /make tabs/i);
+    await sleep(12000);  // fretboard arrange + alphaTab import + Bravura font + layout
+  }
+  if (scene.notationArrange) {
+    await waitEnabled(/^\s*arrange\s*$/i);
+    await clickByText(page, /^\s*arrange\s*$/i);
+    await sleep(9000);  // music21 piano-reduction + OpenSheetMusicDisplay render
+  }
+  if (scene.notationPrompt) {
+    await waitEnabled(/^\s*infer\s*$/i);
+    await clickByText(page, /^\s*infer\s*$/i); await sleep(3200);
   }
   return err;
 }
@@ -909,7 +936,7 @@ async function holdAction(page, scene) {
 
 const launchArgs = ['--autoplay-policy=no-user-gesture-required'];
 if (HEADLESS) launchArgs.push('--use-angle=gl', '--ignore-gpu-blocklist', '--enable-gpu', '--enable-webgl', '--enable-accelerated-2d-canvas');
-else launchArgs.push('--start-maximized');
+else launchArgs.push('--start-fullscreen', '--start-maximized');
 const browser = await chromium.launch({ headless: HEADLESS, args: launchArgs });
 const ctx = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, recordVideo: { dir: OUT, size: REC } });
 const page = await ctx.newPage();
@@ -939,7 +966,7 @@ for (const scene of scenes) {
       const end = (Date.now() - tRec) / 1000;
       marks.push({ id: scene.id, start, end });
     } else {
-      info = await page.evaluate(applyScene, { ...HERO, deckB: DECK_B, stems: STEMS, etuPiano: ETU_PIANO, ...scene });
+      info = await page.evaluate(applyScene, { ...HERO, ...NOTATION, deckB: DECK_B, stems: STEMS, etuPiano: ETU_PIANO, ...scene });
       await sleep(1200);                       // let the tab transition + view settle
       err = await sceneActions(page, scene);
       await sleep(500);

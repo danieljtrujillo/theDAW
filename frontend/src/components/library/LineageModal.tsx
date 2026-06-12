@@ -291,6 +291,9 @@ function computeLineage(
  *  rest is heavily dimmed (no per-generation falloff). */
 const lineageOpacity = (onPath: boolean): number => (onPath ? 1 : 0.12);
 
+const LINEAGE_HOVER_INTENT_MS = 1000;
+const LINEAGE_FADE_MS = 3000;
+
 const EDGE_COLOR_BY_KIND: Record<string, string> = {
   chimera_source_of: '#a78bfa',
   init_for: '#34d399',
@@ -625,6 +628,39 @@ const Column: React.FC<{ title: string; nodes: GraphNode[]; accent: string; high
 const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearance }> = ({ payload, appearance }) => {
   // Hover lights up a node's full lineage (uniform brightness both ways).
   const [hovered, setHovered] = useState<string | null>(null);
+  // Hover is smoothed: moving the cursor straight from one node to the next
+  // keeps the highlight (a short clear-timer absorbs the gap, so it never blinks
+  // back to the un-highlighted state), and a wheel-zoom freezes hover entirely
+  // so the highlight doesn't thrash as nodes slide under a stationary cursor.
+  const hoverClearRef = useRef<number | null>(null);
+  const hoverIntentRef = useRef<number | null>(null);
+  const zoomingRef = useRef(false);
+  const zoomEndRef = useRef<number | null>(null);
+  const clearHoverIntent = useCallback(() => {
+    if (hoverIntentRef.current != null) {
+      window.clearTimeout(hoverIntentRef.current);
+      hoverIntentRef.current = null;
+    }
+  }, []);
+  const enterNode = useCallback((id: string) => {
+    if (zoomingRef.current) return;
+    clearHoverIntent();
+    if (hoverClearRef.current != null) { window.clearTimeout(hoverClearRef.current); hoverClearRef.current = null; }
+    hoverIntentRef.current = window.setTimeout(() => {
+      setHovered(id);
+      hoverIntentRef.current = null;
+    }, LINEAGE_HOVER_INTENT_MS);
+  }, [clearHoverIntent]);
+  const leaveNode = useCallback(() => {
+    if (zoomingRef.current) return;
+    clearHoverIntent();
+    if (hoverClearRef.current != null) { window.clearTimeout(hoverClearRef.current); hoverClearRef.current = null; }
+    setHovered(null);
+  }, [clearHoverIntent]);
+  useEffect(() => () => {
+    clearHoverIntent();
+    if (hoverClearRef.current != null) window.clearTimeout(hoverClearRef.current);
+  }, [clearHoverIntent]);
   // Click opens the detail/analytics inspector for that node.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // -- Filter to the connected subgraph --------------------------------
@@ -932,6 +968,11 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
     if (!el) return;
     const onNativeWheel = (e: WheelEvent) => {
       e.preventDefault();
+      // Freeze hover for the duration of the zoom gesture so the lineage
+      // highlight stays put instead of thrashing as nodes slide under the cursor.
+      zoomingRef.current = true;
+      if (zoomEndRef.current != null) window.clearTimeout(zoomEndRef.current);
+      zoomEndRef.current = window.setTimeout(() => { zoomingRef.current = false; }, 200);
       const rect = el.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
@@ -1048,14 +1089,14 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const onPath = lineage.has(edge.from_id) && lineage.has(edge.to_id);
             const eOp = !hovered ? 1 : onPath ? 1 : 0.06;
             return (
-              <g key={i} opacity={eOp} style={{ transition: 'opacity 220ms ease' }}>
+              <g key={i} opacity={eOp} style={{ transition: `opacity ${LINEAGE_FADE_MS}ms cubic-bezier(0.4, 0, 0.2, 1)` }}>
                 <path
                   d={d}
                   stroke={color}
                   strokeWidth={hovered && onPath ? 2.5 : 1.5}
                   fill="none"
                   opacity={0.7}
-                  style={{ transition: 'stroke-width 160ms ease' }}
+                  style={{ transition: 'stroke-width 320ms ease' }}
                 />
                 <polygon
                   points={`${x2 - 7},${y2 - 4} ${x2 - 7},${y2 + 4} ${x2},${y2}`}
@@ -1080,9 +1121,9 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                 key={n.id}
                 transform={`translate(${p.x}, ${p.y})`}
                 opacity={nOp}
-                style={{ cursor: 'pointer', transition: 'opacity 220ms ease' }}
-                onMouseEnter={() => setHovered(n.id)}
-                onMouseLeave={() => setHovered(null)}
+                style={{ cursor: 'pointer', transition: `opacity ${LINEAGE_FADE_MS}ms cubic-bezier(0.4, 0, 0.2, 1)` }}
+                onMouseEnter={() => enterNode(n.id)}
+                onMouseLeave={leaveNode}
                 onClick={(e) => {
                   e.stopPropagation();
                   // Suppress the click that ends a pan-drag.
@@ -1098,7 +1139,7 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   fill="#0c0a14"
                   stroke={sourceColor}
                   strokeWidth={isHovered || isSelected ? 3 : 1.5}
-                  style={{ transition: 'stroke-width 160ms ease' }}
+                  style={{ transition: 'stroke-width 320ms ease' }}
                 />
                 <rect
                   width={NODE_W}
@@ -1357,22 +1398,30 @@ const AppearancePanel: React.FC<AppearancePanelProps> = ({ value, onChange, onCl
 };
 
 
-const SliderRow: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => (
-  <label className="flex flex-col gap-1">
-    <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">{label}</span>
-    <SlideTrack min={min} max={max} step={step} value={value} onChange={onChange} className="w-full" ariaLabel={label} />
-  </label>
-);
+const labelIdFrom = (prefix: string, label: string): string => `${prefix}-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+
+const SliderRow: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => {
+  const labelId = labelIdFrom('lineage-slider-label', label);
+  return (
+    <div className="flex flex-col gap-1">
+      <span id={labelId} className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">{label}</span>
+      <SlideTrack min={min} max={max} step={step} value={value} onChange={onChange} className="w-full" ariaLabelledBy={labelId} />
+    </div>
+  );
+};
 
 
 /** Compact inline range for the footer bar: "Label [====O==] 220". */
-const FooterRange: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => (
-  <label className="flex items-center gap-1.5">
-    <span className="text-zinc-400">{label}</span>
-    <SlideTrack min={min} max={max} step={step} value={value} onChange={onChange} className="w-24" ariaLabel={label} />
-    <span className="text-zinc-300 tabular-nums w-7 text-right">{value}</span>
-  </label>
-);
+const FooterRange: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> = ({ label, min, max, step, value, onChange }) => {
+  const labelId = labelIdFrom('lineage-footer-range-label', label);
+  return (
+    <div className="flex items-center gap-1.5">
+      <span id={labelId} className="text-zinc-400">{label}</span>
+      <SlideTrack min={min} max={max} step={step} value={value} onChange={onChange} className="w-24" ariaLabelledBy={labelId} />
+      <span className="text-zinc-300 tabular-nums w-7 text-right">{value}</span>
+    </div>
+  );
+};
 
 
 const ToggleRow: React.FC<{ label: string; on: boolean; onChange: (on: boolean) => void }> = ({ label, on, onChange }) => (
@@ -1507,9 +1556,26 @@ const Graph3DView: React.FC<{
   // so changing hover doesn't restart the force layout — only the
   // link callbacks and the mesh-dim effect run.
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const handleNodeHover = (node: { id?: string } | null) => {
-    setHoveredId(node?.id ?? null);
-  };
+  const forceHoverIntentRef = useRef<number | null>(null);
+  const clearForceHoverIntent = useCallback(() => {
+    if (forceHoverIntentRef.current != null) {
+      window.clearTimeout(forceHoverIntentRef.current);
+      forceHoverIntentRef.current = null;
+    }
+  }, []);
+  const handleNodeHover = useCallback((node: { id?: string } | null) => {
+    clearForceHoverIntent();
+    const nextId = node?.id ?? null;
+    if (!nextId) {
+      setHoveredId(null);
+      return;
+    }
+    forceHoverIntentRef.current = window.setTimeout(() => {
+      setHoveredId(nextId);
+      forceHoverIntentRef.current = null;
+    }, LINEAGE_HOVER_INTENT_MS);
+  }, [clearForceHoverIntent]);
+  useEffect(() => () => clearForceHoverIntent(), [clearForceHoverIntent]);
 
   // Click-to-select drives the node-details slide-out panel on the
   // right edge of the graph container. null = no selection (panel
@@ -1600,7 +1666,7 @@ const Graph3DView: React.FC<{
         const cur = m.material.opacity ?? base;
         const diff = target - cur;
         if (Math.abs(diff) < 0.004) { m.material.opacity = target; return; }
-        m.material.opacity = cur + diff * 0.18;
+        m.material.opacity = cur + diff * 0.028;
         animating = true;
       });
       raf = animating ? requestAnimationFrame(apply) : 0;

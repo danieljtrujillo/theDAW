@@ -50,6 +50,25 @@ Concrete rules:
   changed, the FIRST suspect is a version mismatch — investigate
   before you "fix" the drift.
 
+### 3. Form controls MUST have real labels and valid ARIA
+Every form/control change must include an accessibility check before it is
+considered done.
+
+Concrete rules:
+- Native fields (`input`, `select`, `textarea`) must have stable `id` and
+  `name` values, plus either `<label htmlFor="that-id">` or a valid wrapping
+  `<label>`.
+- Custom controls (`div role="slider"`, button-based selects/dropdowns,
+  canvas/WebGL pickers, etc.) must **not** be wrapped in `<label>` because
+  browsers do not associate that label with non-native controls.
+- Custom controls must use `aria-label` or `aria-labelledby`; button dropdowns
+  must also expose state/relationship where applicable (`aria-expanded`,
+  `aria-haspopup`, `aria-controls`, `role="listbox"` / `role="option"`).
+- When touching form UI, sweep nearby code for `<label` and custom controls so
+  existing invalid patterns are fixed, not copied.
+- Never silence, suppress, or ignore accessibility warnings; fix the DOM
+  relationship that caused the warning.
+
 See the `## Ruff Configuration` section below for more detail.
 
 ## Project Overview

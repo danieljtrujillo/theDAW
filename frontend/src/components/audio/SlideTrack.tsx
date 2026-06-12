@@ -11,7 +11,7 @@ const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
    `className` (e.g. "w-full", "flex-1", "w-16"); pass `tint` to pin the colour
    instead of having it track the value. */
 export function SlideTrack({
-  value, onChange, min, max, step = 1, className, tint, ariaLabel,
+  value, onChange, min, max, step = 1, className, tint, ariaLabel, ariaLabelledBy, id,
 }: {
   value: number;
   onChange: (v: number) => void;
@@ -21,6 +21,8 @@ export function SlideTrack({
   className?: string;
   tint?: number;
   ariaLabel?: string;
+  ariaLabelledBy?: string;
+  id?: string;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
@@ -65,9 +67,11 @@ export function SlideTrack({
 
   return (
     <div
+      id={id}
       ref={trackRef}
       role="slider"
-      aria-label={ariaLabel}
+      aria-label={ariaLabelledBy ? undefined : ariaLabel}
+      aria-labelledby={ariaLabelledBy}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={value}
