@@ -11,7 +11,11 @@ from stable_audio_3.inference.audio_utils import (
 )
 from stable_audio_3.inference.sampling import sample_diffusion
 from stable_audio_3.loading_utils import load_autoencoder, load_diffusion_cond
-from stable_audio_3.model_configs import ae_models, all_models
+from stable_audio_3.model_configs import (
+    ae_models,
+    all_models,
+    resolve_local_checkpoint,
+)
 from stable_audio_3.models.lora import (
     load_and_apply_loras,
     set_lora_strength as _set_lora_strength,
@@ -48,13 +52,18 @@ class StableAudioModel:
                 )
             model_half = False
 
-        if model_name_or_path not in all_models:
-            raise ValueError(
-                f"Unknown model '{model_name_or_path}'. Valid models: {list(all_models)}"
-            )
-
-        model_cfg = all_models[model_name_or_path]
-        local_config, local_ckpt = model_cfg.resolve()
+        if model_name_or_path in all_models:
+            model_cfg = all_models[model_name_or_path]
+            local_config, local_ckpt = model_cfg.resolve()
+        else:
+            resolved = resolve_local_checkpoint(model_name_or_path)
+            if resolved is None:
+                raise ValueError(
+                    f"Unknown model '{model_name_or_path}'. Valid models: "
+                    f"{list(all_models)}, or a local folder/file containing a "
+                    f"model config JSON + a .safetensors checkpoint."
+                )
+            local_config, local_ckpt = resolved
         with open(local_config) as f:
             model_config = json.load(f)
 

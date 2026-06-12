@@ -1,0 +1,10 @@
+{
+  "name": "storage",
+  "label": "Models & Storage",
+  "enabled": true,
+  "icon": "HardDrive",
+  "sidebar": false,
+  "api_prefix": "/api/storage",
+  "backend": true,
+  "description": "Browse every model location on this machine (HF cache, local checkpoint folders, sidecar assets) with sizes and open-in-Explorer, register local checkpoints for the Model dropdown, and pin generation to local-only (no downloads)."
+}

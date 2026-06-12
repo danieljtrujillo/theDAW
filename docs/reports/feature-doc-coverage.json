@@ -735,6 +735,7 @@
         "#19-8-jobs-list",
         "#19-11-assistant",
         "#19-12-module-loader",
+        "#21-1-models-storage-local-checkpoints-and-the-no-download-guarantee",
         "#api-unreachable-banner-in-the-header",
         "#backend-job-persistence",
         "#25-3-current-feature-to-screenshot-map",

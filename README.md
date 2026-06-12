@@ -6,6 +6,8 @@ theDAW is an all-in-one application for music creation. The generative engine re
 
 theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. Magenta lives in the same Model dropdown as the local Stable Audio engines, and selecting it swaps the GPU automatically: Stable Audio parks in system RAM, the engine starts in WSL2, and a status pill tracks it to READY. Picking a Stable Audio model reverses the swap. The [Generate](#generate-cloud-and-real-time) section describes it. Live coding and Unity integration are in development.
 
+Models stay under the user's control. Nothing downloads at startup; a model loads at the first CREATE that needs it, resolving local folders first, then the Hugging Face cache, and only then a one-time download. **Settings → Models & Storage** registers any checkpoint already on disk (it then appears in the Model dropdown), pins generation to local-only so nothing ever downloads, and maps every model location on the machine, with sizes and one-click open-in-Explorer, from the HF cache to the Magenta WSL venv.
+
 <p align="center">
   <a href="showcase/clips-recorded/_showcase_h.mp4">
     <img src="docs/readme/showcase-poster.png" alt="Watch the theDAW feature-tour video" width="900">

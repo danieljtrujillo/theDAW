@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid, HardDrive } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
+import {
+  addCheckpoint, fetchCheckpoints, fetchHfCache, fetchLocations, formatBytes,
+  openLocation, removeCheckpoint, setLocalOnly,
+  type CatalogModel, type HfRepo, type RegisteredCheckpoint, type StorageLocation,
+} from '../../lib/storageClient';
 import { useLayoutPrefs, UI_SCALE_MIN, UI_SCALE_MAX } from '../../state/layoutPrefsStore';
 import { SlideTrack } from '../audio/SlideTrack';
 // CHANGED: Suno cloud-generation API key section (surfaced in Settings).
@@ -260,6 +265,8 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             </p>
           </div>
 
+          <StorageSettingsSection />
+
           {/* Section: Modules */}
           <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
             <Package className="w-3 h-3 text-purple-400" />
@@ -288,6 +295,230 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
         </div>
       </div>
     </div>
+  );
+};
+
+/* ── Models & Storage (local checkpoints, model locations, HF cache) ──────── */
+const StorageSettingsSection: React.FC = () => {
+  const [registered, setRegistered] = useState<RegisteredCheckpoint[]>([]);
+  const [catalog, setCatalog] = useState<CatalogModel[]>([]);
+  const [localOnly, setLocalOnlyState] = useState(false);
+  const [locations, setLocations] = useState<StorageLocation[]>([]);
+  const [hfRepos, setHfRepos] = useState<HfRepo[]>([]);
+  const [hfTotal, setHfTotal] = useState(0);
+  const [hfOpen, setHfOpen] = useState(false);
+  const [addPath, setAddPath] = useState('');
+  const [addName, setAddName] = useState('');
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [sizesLoading, setSizesLoading] = useState(false);
+
+  const reload = React.useCallback(() => {
+    fetchCheckpoints()
+      .then((d) => { setRegistered(d.registered); setCatalog(d.catalog); setLocalOnlyState(d.local_only); })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    reload();
+    setSizesLoading(true);
+    fetchLocations().then(setLocations).catch(() => setLocations([])).finally(() => setSizesLoading(false));
+    fetchHfCache().then((d) => { setHfRepos(d.repos); setHfTotal(d.total_bytes); }).catch(() => setHfRepos([]));
+  }, [reload]);
+
+  const onAdd = async () => {
+    const path = addPath.trim();
+    if (!path) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      await addCheckpoint(path, addName.trim() || undefined);
+      setAddPath('');
+      setAddName('');
+      reload();
+    } catch (e) {
+      setAddError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const sourceChip = (source: CatalogModel['source']) =>
+    source === 'local' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
+      : source === 'cached' ? 'border-sky-500/40 text-sky-300 bg-sky-500/10'
+      : 'border-zinc-600/40 text-zinc-400 bg-white/3';
+
+  return (
+    <>
+      {/* Section: Models & Storage */}
+      <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
+        <HardDrive className="w-3 h-3 text-purple-400" />
+        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Models &amp; Storage</span>
+        <span className="text-[8px] font-mono text-zinc-600 ml-auto">nothing downloads at startup</span>
+      </div>
+      <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">
+        Models load on demand at the first CREATE. Resolution order: local folders, the Hugging Face cache, then a one-time download. Register any checkpoint below and it appears in the MAKE Model dropdown.
+      </p>
+
+      {/* Local-only switch */}
+      <button
+        onClick={() => { void setLocalOnly(!localOnly).then(setLocalOnlyState).catch(() => undefined); }}
+        aria-pressed={localOnly}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-2 rounded border border-white/10 bg-white/3 hover:bg-white/5 transition-colors text-left"
+      >
+        {localOnly
+          ? <ToggleRight className="w-4 h-4 text-emerald-400 shrink-0" />
+          : <ToggleLeft className="w-4 h-4 text-zinc-600 shrink-0" />}
+        <span className="text-[10px] text-zinc-200 font-bold">Local only (never download)</span>
+        <span className="text-[8px] text-zinc-500 ml-auto">missing models fail loudly instead of downloading</span>
+      </button>
+
+      {/* Catalog availability */}
+      <div className="flex items-center gap-1 flex-wrap mb-2">
+        {catalog.map((m) => (
+          <span
+            key={m.name}
+            className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border ${sourceChip(m.source)}`}
+            title={`${m.repo_id} — ${m.source === 'download' ? 'will download on first use' : `resolved ${m.source}`}`}
+          >
+            {m.name}: {m.source}
+          </span>
+        ))}
+      </div>
+
+      {/* Registered local checkpoints */}
+      <div className="flex flex-col gap-1 mb-2">
+        {registered.map((ck) => (
+          <div key={ck.id} className={`flex items-center gap-2 px-2.5 py-1.5 rounded border ${ck.resolves ? 'border-white/10 bg-white/3' : 'border-red-500/30 bg-red-500/5'}`}>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] font-bold text-zinc-200 truncate">{ck.name}</div>
+              <div className="text-[8px] font-mono text-zinc-500 truncate" title={ck.path}>{ck.path}</div>
+            </div>
+            {!ck.resolves && <span className="text-[8px] font-mono text-red-300 shrink-0">missing</span>}
+            <button
+              onClick={() => { void openLocation(ck.path).catch(() => undefined); }}
+              className="text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+              aria-label={`Open ${ck.name} in Explorer`}
+            >
+              Open
+            </button>
+            <button
+              onClick={() => { void removeCheckpoint(ck.id).then(reload).catch(() => undefined); }}
+              className="text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors shrink-0"
+              aria-label={`Remove ${ck.name} from the model list (files stay on disk)`}
+              title="Removes the dropdown entry only — the files stay on disk."
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Add a checkpoint */}
+      <div className="flex flex-col gap-1 mb-2">
+        <label htmlFor="settings-ckpt-path" className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">Add a checkpoint you already have</label>
+        <input
+          id="settings-ckpt-path"
+          name="settings-ckpt-path"
+          type="text"
+          value={addPath}
+          onChange={(e) => setAddPath(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void onAdd(); }}
+          spellCheck={false}
+          placeholder="D:\models\my-finetune  (folder, or the .safetensors file)"
+          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 focus:outline-none"
+        />
+        <div className="flex gap-1.5">
+          <label htmlFor="settings-ckpt-name" className="sr-only">Display name for the checkpoint (optional)</label>
+          <input
+            id="settings-ckpt-name"
+            name="settings-ckpt-name"
+            type="text"
+            value={addName}
+            onChange={(e) => setAddName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void onAdd(); }}
+            spellCheck={false}
+            placeholder="Display name (optional)"
+            className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 focus:outline-none"
+          />
+          <button
+            onClick={() => void onAdd()}
+            disabled={adding || !addPath.trim()}
+            className="text-[9px] font-black uppercase tracking-widest px-3 rounded border border-purple-500/40 text-purple-200 bg-purple-500/15 hover:bg-purple-500/25 transition-colors disabled:opacity-40"
+          >
+            {adding ? 'Checking…' : 'Add'}
+          </button>
+        </div>
+        {addError && <p className="text-[8px] text-red-300">{addError}</p>}
+        <p className="text-[8px] text-zinc-600">
+          The folder needs a model config JSON next to one .safetensors file. Entries land under LOCAL CHECKPOINTS in the MAKE Model dropdown.
+        </p>
+      </div>
+
+      {/* Locations */}
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">Where everything lives</span>
+        {sizesLoading && <RefreshCw className="w-2.5 h-2.5 animate-spin text-zinc-600" />}
+        <button
+          onClick={() => {
+            setSizesLoading(true);
+            fetchLocations(true).then(setLocations).catch(() => undefined).finally(() => setSizesLoading(false));
+          }}
+          className="text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border border-white/10 text-zinc-500 hover:text-white hover:bg-white/5 transition-colors ml-auto"
+        >
+          Refresh sizes
+        </button>
+      </div>
+      <div className="flex flex-col gap-1 mb-2">
+        {locations.map((loc) => (
+          <div key={loc.key} className="flex items-center gap-2 px-2.5 py-1 rounded border border-white/5 bg-white/3">
+            <div className="min-w-0 flex-1">
+              <div className="text-[9px] text-zinc-300 truncate">{loc.label}</div>
+              <div className="text-[8px] font-mono text-zinc-600 truncate" title={loc.path ?? undefined}>{loc.path ?? 'not found'}</div>
+            </div>
+            <span className="text-[9px] font-mono text-zinc-400 tabular-nums shrink-0">{loc.exists ? formatBytes(loc.bytes) : '—'}</span>
+            {loc.exists && loc.path && (
+              <button
+                onClick={() => { void openLocation(loc.path as string).catch(() => undefined); }}
+                className="text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+                aria-label={`Open ${loc.label} in Explorer`}
+              >
+                Open
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* HF cache breakdown */}
+      <button
+        onClick={() => setHfOpen((v) => !v)}
+        aria-expanded={hfOpen}
+        className="w-full flex items-center gap-1.5 mb-1 text-left"
+      >
+        <ChevronRight className={`w-3 h-3 text-zinc-500 transition-transform ${hfOpen ? 'rotate-90' : ''}`} />
+        <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">Hugging Face cache breakdown</span>
+        <span className="text-[9px] font-mono text-zinc-500 tabular-nums ml-auto">{formatBytes(hfTotal)}</span>
+      </button>
+      {hfOpen && (
+        <div className="flex flex-col gap-0.5 mb-3">
+          {hfRepos.map((r) => (
+            <div key={r.repo_id} className="flex items-center gap-2 px-2.5 py-1 rounded border border-white/5">
+              <span className="text-[9px] font-mono text-zinc-300 truncate flex-1" title={r.path}>{r.repo_id}</span>
+              <span className="text-[9px] font-mono text-zinc-500 tabular-nums shrink-0">{formatBytes(r.bytes)}</span>
+              <button
+                onClick={() => { void openLocation(r.path).catch(() => undefined); }}
+                className="text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+                aria-label={`Open ${r.repo_id} in Explorer`}
+              >
+                Open
+              </button>
+            </div>
+          ))}
+          {hfRepos.length === 0 && <p className="text-[8px] text-zinc-600 px-2.5">The cache is empty.</p>}
+        </div>
+      )}
+    </>
   );
 };
 

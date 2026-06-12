@@ -108,11 +108,30 @@ class LoraFormSlot:
     weight: float
 
 
+def _registered_local_models() -> list[str]:
+    """Ids of user-registered local checkpoints that currently resolve."""
+    try:
+        from backend.modules.storage.store import get_registry
+
+        return sorted(
+            e["id"] for e in get_registry().list_checkpoints() if e.get("resolves")
+        )
+    except Exception:
+        return []
+
+
 def _normalize_generation_model(model_name: str | None) -> str:
     """Return a supported DiT generation model, falling back away from AE-only names."""
     normalized = (model_name or "").strip().lower()
     if normalized in GENERATION_MODELS:
         return normalized
+    if normalized.startswith("local:"):
+        # User-registered local checkpoint (Models & Storage). Honor it only
+        # while the registry entry still resolves to real files.
+        from backend.modules.storage.store import get_registry
+
+        if get_registry().get_path(normalized):
+            return normalized
     return DEFAULT_GENERATION_MODEL
 
 
@@ -214,11 +233,26 @@ def _get_or_load_generation_pipeline(model_name: str):
         if normalized not in _generation_pipelines:
             from stable_audio_3.model import StableAudioModel
 
+            load_target = normalized
+            if normalized.startswith("local:"):
+                from backend.modules.storage.store import get_registry
+
+                load_target = get_registry().get_path(normalized)
+                if not load_target:
+                    raise HTTPException(
+                        404,
+                        f"Local checkpoint {normalized!r} is no longer registered. "
+                        "Re-add it under Settings → Models & Storage.",
+                    )
             _park_or_evict_other_generation_pipelines(normalized)
-            logger.info("model.load: starting from_pretrained for %r", normalized)
+            logger.info(
+                "model.load: starting from_pretrained for %r (%s)",
+                normalized,
+                load_target,
+            )
             t0 = time.perf_counter()
             _generation_pipelines[normalized] = StableAudioModel.from_pretrained(
-                normalized
+                load_target
             )
             dt = time.perf_counter() - t0
             logger.info(
@@ -866,7 +900,7 @@ async def model_info():
     return {
         "model_loaded": pipeline is not None,
         "active_model": _active_model_name,
-        "available_models": sorted(GENERATION_MODELS),
+        "available_models": sorted(GENERATION_MODELS) + _registered_local_models(),
         "loaded_models": sorted(_generation_pipelines),
         "sample_rate": sample_rate,
         "diffusion_objective": (
