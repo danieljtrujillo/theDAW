@@ -38,6 +38,8 @@ interface ServerRecord {
   notes: string;
   source: string;
   chimera_sources?: string[];
+  play_count?: number;
+  last_played_at?: number | null;
 }
 
 const toEntry = (r: ServerRecord): LibraryEntry => ({
@@ -63,6 +65,8 @@ const toEntry = (r: ServerRecord): LibraryEntry => ({
     ? r.source
     : 'generate') as LibraryEntry['source'],
   chimeraSources: r.chimera_sources ?? [],
+  playCount: r.play_count ?? 0,
+  lastPlayedAt: r.last_played_at ?? null,
 });
 
 const patchToServerKeys = (patch: LibraryEntryPatch): Record<string, unknown> => {

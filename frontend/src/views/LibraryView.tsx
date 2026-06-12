@@ -761,6 +761,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'title' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('title')}>
               <Filter className="w-2 h-2" /> TITLE
             </button>
+            <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'plays' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('plays')}>
+              <Play className="w-2 h-2" /> PLAYS
+            </button>
           </div>
         </div>
 

@@ -19,6 +19,9 @@ let _analyser: AnalyserNode | null = null;
 let _audioEl: HTMLAudioElement | null = null;
 let _mediaSrc: MediaElementAudioSourceNode | null = null;
 let _objectUrl: string | null = null;
+// Set by load() to a real library entry id; the first 'play' event after a
+// load counts one play for it (then clears, so resume/seek do not re-count).
+let _pendingPlayCountId: string | null = null;
 
 type EngineHandles = {
   ctx: AudioContext;
@@ -71,6 +74,13 @@ export const ensureEngine = (): EngineHandles => {
   });
   audioEl.addEventListener('play', () => {
     usePlayerStore.setState({ isPlaying: true });
+    if (_pendingPlayCountId) {
+      const id = _pendingPlayCountId;
+      _pendingPlayCountId = null;
+      void import('./libraryStore')
+        .then(({ useLibraryStore }) => useLibraryStore.getState().registerPlay(id))
+        .catch(() => { /* play-count is best-effort */ });
+    }
   });
   audioEl.addEventListener('pause', () => {
     usePlayerStore.setState({ isPlaying: false });
@@ -189,6 +199,9 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
       hasTrack: true,
       currentTime: 0,
     });
+    // Arm the play counter for real library tracks (skip the live editor session).
+    _pendingPlayCountId =
+      meta.entryId && meta.entryId !== 'editor-timeline' ? meta.entryId : null;
     try {
       // Wait for metadata so duration is known.
       await new Promise<void>((resolve, reject) => {
