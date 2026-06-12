@@ -2,7 +2,15 @@
 
 _by GANTASMO_
 
-This guide documents theDAW end to end, from generating a piece out of a prompt through arranging it, mixing it, performing it live, and exporting the finished master. The in-app **Docs** button renders this guide as an interactive modal with Markdown download, print, and PDF export.
+theDAW is a complete digital audio workstation built on Stable Audio 3, the state-of-the-art open audio model from Stability AI. The model turns a text prompt into high-fidelity 44.1 kHz stereo audio, and theDAW surrounds that core with a full production environment. A React front end and a FastAPI backend run together from one launcher, so the whole studio starts with a single double-click.
+
+Audio generation happens in the MAKE workspace. A prompt becomes finished audio through Stable Audio 3, and the same model menu also reaches Magenta RealTime 2 for streaming text-to-music and Suno for cloud generation. Chimera fusion can blend several clips into one downbeat-aligned piece, while init signals, inpainting, and LoRA adapters give finer control over the result. When the model selection moves between Stable Audio and the Magenta sidecar, the GPU swap runs on its own.
+
+Editing and mastering come next. The EDIT workspace opens a piece in a waveform editor that supports region inpainting. Effects and loudness work happens in MIX, which hosts the Edit Tool Stack alongside Quick Master macros. For live use, the DJ workspace provides a two-deck engine with beatmatch sync, key-lock, live stems, an FX rack, hot cues, and hands-free automix. WebGL visuals in the VJ workspace respond to the audio and accept MIDI, microphone, and mobile input.
+
+Everything generated is kept. The Library stores each piece on disk together with its analysis, stems, and MIDI, and LEARN renders the relationships between pieces as a navigable 3D genealogy. A symbolic-music pipeline produces sheet music, tablature, and multi-instrument arrangements, and it can read a score back into a usable text prompt. LoRA training and autoencoder round-trips have a home in the TRAIN workspace. An in-app assistant answers questions from this guide, and a paste-a-URL importer pulls audio from YouTube, SoundCloud, and Bandcamp.
+
+The in-app **Docs** button renders this guide as an interactive modal with a filterable table of contents, raw Markdown download, and print-to-PDF. Each workspace and the backend are documented in full below.
 
 ---
 
@@ -212,7 +220,7 @@ Six controls arranged in a 3-column grid:
 
 | Control | Type | Notes |
 |---|---|---|
-| **Model** | Dropdown | `small`, `medium`, `small-rf`, `medium-rf`. Selecting an `-rf` variant automatically sets Steps to 50 and CFG to 7.0. |
+| **Model** | Dropdown | `small`, `medium`, `small-rf`, `medium-rf`, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). An `-rf` variant raises Steps to 50 and CFG to 7.0. Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel. |
 | **Duration (s)** | Integer | Total output length in seconds. Small model: max 120 s. Medium and Large: max 380 s. |
 | **Batch** | Integer | Number of simultaneous variations. Each variation produces a distinct library entry with its own seed. |
 | **Steps** | Integer | Sampler denoising steps. ARC default: 8. RF default: 50. |
@@ -1403,6 +1411,8 @@ Full parameter reference: `stable_audio_3/model.py:StableAudioModel.generate`.
 | `same-l` | Autoencoder | 1.7 B | n/a | GPU | n/a |
 
 ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled version and reuse the cached full checkpoint when both are available. The Small model runs on modest GPUs; the Medium model needs around 8 GB of VRAM.
+
+The MAKE Model dropdown also lists two engines beyond these checkpoints. `magenta-small` reaches the Magenta RealTime 2 sidecar for streaming text-to-music (§27). Suno cloud generation sits under `suno` (§26). Both options share the dropdown with the local Stable Audio models, so one session can move across them without leaving MAKE.
 
 ---
 

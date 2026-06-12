@@ -74,6 +74,15 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
       const isAnchor = href.startsWith('#');
       return `<a href="${href}" ${title ? `title="${title}"` : ''} class="docs-link${isExternal ? ' docs-link-external' : ''}" ${isExternal ? 'target="_blank" rel="noreferrer noopener"' : ''} data-anchor="${isAnchor ? '1' : '0'}">${text}</a>`;
     };
+    renderer.image = ({ href, title, text }: { href: string; title?: string | null; text?: string }) => {
+      // Guide images are written repo-relative (e.g. "screenshots/x.png") so
+      // they render on GitHub from docs/. The in-app modal serves the guide
+      // from the site root, so a relative path resolves to root-absolute and
+      // loads from /screenshots/… regardless of the current route.
+      let src = href || '';
+      if (src && !/^(https?:|data:|\/)/.test(src)) src = '/' + src.replace(/^\.?\//, '');
+      return `<img src="${src}" alt="${text || ''}"${title ? ` title="${title}"` : ''} loading="lazy" />`;
+    };
     const parsed = marked.parse(markdown, { renderer, gfm: true, breaks: false }) as string;
     setHtml(parsed);
     setHeadings(collected);
