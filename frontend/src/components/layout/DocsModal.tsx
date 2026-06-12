@@ -53,7 +53,7 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       .guide th { background: #eee; color: #000; font-weight: 700; }
       .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; page-break-inside: avoid; }
       .guide-cover { text-align: center; min-height: 8.4in; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
-      @page { margin: 0.75in; size: letter; }
+      @page { margin: 0.85in 0.72in; size: letter; }
     `,
   },
   studio: {
@@ -86,11 +86,11 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       .guide td { padding: 4pt 8pt 4pt 0; border-bottom: 0.5pt solid #ece9f3; vertical-align: top; color: #2c2a38; }
       .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; border-radius: 3pt; page-break-inside: avoid; }
       .guide-cover { text-align: center; min-height: 8.4in; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
-      @page { margin: 0.7in; size: letter; }
+      @page { margin: 0.82in 0.68in; size: letter; }
     `,
   },
   carbon: {
-    label: 'Carbon', hint: 'dark', swatch: '#a855f7',
+    label: 'Carbon', hint: 'dark', swatch: '#2f3036',
     css: `
       * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       html {
@@ -108,9 +108,8 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
          page. No hard border box, so flowing content can never look like it spills
          past an edge. */
       .page-frame { position: fixed; inset: 0; box-shadow: inset 0 0 130pt rgba(8,4,16,0.9), inset 0 0 26pt rgba(192,38,211,0.14); pointer-events: none; }
-      /* Carbon supplies its own margins (page padding) so a full-bleed dark page
-         needs the print dialog's Margins set to None; otherwise default margins add
-         white edges around the dark sheet. */
+      /* Carbon keeps asymmetric print margins in CSS: taller top/bottom breathing
+         room with tighter sides, so the dark sheet still feels full-bleed. */
       .guide { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #cabfe2; font-size: 10pt; line-height: 1.55; max-width: 6.7in; margin: 0 auto; padding: 0; }
       .guide h1, .guide h2, .guide h3, .guide h4 { color: #f4ecff; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; page-break-after: avoid; page-break-inside: avoid; }
       .guide h1 { font-size: 20pt; margin: 0 0 12pt; padding-bottom: 6pt; border-bottom: 1pt solid #c026d3; color: #fff; text-shadow: 0 0 16px rgba(217,70,239,0.5); letter-spacing: -0.02em; }
@@ -134,7 +133,7 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       .guide td { padding: 4pt 8pt 4pt 0; border-bottom: 0.5pt solid #21142f; vertical-align: top; color: #cabfe2; }
       .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; border-radius: 3pt; page-break-inside: avoid; }
       .guide-cover { text-align: center; min-height: 8.4in; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
-      @page { margin: 0.5in 0; size: letter; }
+      @page { margin: 0.88in 0.54in; size: letter; }
     `,
   },
 };
