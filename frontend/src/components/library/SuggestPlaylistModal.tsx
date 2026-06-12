@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, Sparkles, Play, ListPlus, RefreshCw, Music } from 'lucide-react';
 import { startQueue } from '../../state/playlistQueue';
-import { useDjSideList } from '../../state/djSideListStore';
+import { sendToDjAutomix } from '../../state/djAutomixStore';
 import { logInfo } from '../../state/logStore';
 
 interface SuggestTrack {
@@ -55,8 +55,6 @@ export const SuggestPlaylistModal: React.FC<Props> = ({ open, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const addToSideList = useDjSideList((s) => s.add);
-
   const run = async () => {
     setLoading(true);
     setError(null);
@@ -91,8 +89,9 @@ export const SuggestPlaylistModal: React.FC<Props> = ({ open, onClose }) => {
 
   const sendToDj = () => {
     if (!result?.tracks.length) return;
-    result.tracks.forEach((t) => addToSideList({ entryId: t.id, label: t.title }));
-    logInfo('library', `Sent ${result.tracks.length} tracks to the DJ side list`);
+    const n = sendToDjAutomix(result.tracks.map((t) => ({ entryId: t.id, label: t.title })));
+    logInfo('library', `Sent ${n} tracks to the DJ — automixing the set`);
+    onClose();
   };
 
   if (!open) return null;
@@ -173,7 +172,7 @@ export const SuggestPlaylistModal: React.FC<Props> = ({ open, onClose }) => {
             <button type="button" onClick={playAll} className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 text-[11px] font-black uppercase tracking-widest">
               <Play className="w-3 h-3 fill-current" /> Play All
             </button>
-            <button type="button" onClick={sendToDj} className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-cyan-500/40 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 text-[11px] font-black uppercase tracking-widest">
+            <button type="button" onClick={sendToDj} title="Load these as the active automix set and start beatmatch-crossfading in the DJ tab" className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-cyan-500/40 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 text-[11px] font-black uppercase tracking-widest">
               <ListPlus className="w-3 h-3" /> Send to DJ
             </button>
             <button type="button" onClick={run} disabled={loading} className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-white/10 hover:bg-white/10 text-zinc-300 text-[11px] font-bold uppercase tracking-widest ml-auto disabled:opacity-50">

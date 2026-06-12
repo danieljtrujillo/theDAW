@@ -16,6 +16,123 @@ interface Heading {
 const slugify = (s: string): string =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
+// Three print styles for Save-as-PDF. Each is rendered into a clean iframe and
+// printed from there, so the entire guide exports (every section, code block,
+// table, image). Paper is a classic serif document, Studio is the modern
+// hairline-and-accent house style, Carbon is a dark blue-accented theme.
+// Carbon needs the print dialog's "Background graphics" option enabled.
+type PrintTheme = { label: string; hint: string; swatch: string; css: string };
+
+const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
+  paper: {
+    label: 'Paper', hint: 'classic', swatch: '#ffffff',
+    css: `
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #fff; }
+      .page-frame { display: none; }
+      .guide, .guide * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .guide { font-family: Georgia, 'Times New Roman', serif; color: #1a1a1a; font-size: 11pt; line-height: 1.55; max-width: 6.9in; margin: 0 auto; }
+      .guide h1, .guide h2, .guide h3, .guide h4 { font-family: Georgia, 'Times New Roman', serif; color: #000; line-height: 1.25; page-break-after: avoid; page-break-inside: avoid; }
+      .guide h1 { font-size: 22pt; font-weight: 700; margin: 0 0 12pt; padding-bottom: 6pt; border-bottom: 1.5pt solid #333; }
+      .guide h2 { font-size: 15pt; font-weight: 700; margin: 16pt 0 5pt; }
+      .guide h3 { font-size: 12pt; font-weight: 700; margin: 11pt 0 3pt; color: #333; }
+      .guide p { margin: 6pt 0; }
+      .guide ul, .guide ol { margin: 6pt 0 6pt 22pt; padding: 0; }
+      .guide li { margin: 3pt 0; }
+      .guide a { color: #11457e; text-decoration: underline; }
+      .guide strong { color: #000; font-weight: 700; }
+      .guide em { font-style: italic; }
+      .guide hr { border: none; border-top: 1pt solid #ccc; margin: 12pt 0; }
+      .guide blockquote { margin: 8pt 0; padding: 4pt 12pt; border-left: 3pt solid #999; background: #f6f6f6; color: #333; page-break-inside: avoid; }
+      .guide blockquote p { margin: 2pt 0; }
+      .guide pre { background: #f4f4f4; border: 1pt solid #ddd; border-radius: 2pt; padding: 7pt 9pt; margin: 6pt 0; font-size: 8.5pt; line-height: 1.45; font-family: Consolas, 'Liberation Mono', Menlo, monospace; color: #222; white-space: pre-wrap; word-break: break-word; page-break-inside: avoid; }
+      .guide code { font-family: Consolas, 'Liberation Mono', Menlo, monospace; font-size: 9pt; background: #f0f0f0; color: #a02060; padding: 1pt 3pt; border-radius: 2pt; word-break: break-word; }
+      .guide pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+      .guide table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 9pt; page-break-inside: avoid; }
+      .guide th, .guide td { border: 1pt solid #bbb; padding: 4pt 7pt; text-align: left; vertical-align: top; }
+      .guide th { background: #eee; color: #000; font-weight: 700; }
+      .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; page-break-inside: avoid; }
+      @page { margin: 0.75in; size: letter; }
+    `,
+  },
+  studio: {
+    label: 'Studio', hint: 'modern', swatch: '#7c3aed',
+    css: `
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #fff; }
+      .page-frame { display: none; }
+      .guide, .guide * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .guide { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #20222b; font-size: 10pt; line-height: 1.55; max-width: 7.1in; margin: 0 auto; }
+      .guide h1, .guide h2, .guide h3, .guide h4 { color: #0e0f15; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; page-break-after: avoid; page-break-inside: avoid; }
+      .guide h1 { font-size: 20pt; margin: 0 0 12pt; padding-bottom: 6pt; border-bottom: 1pt solid #6d28d9; letter-spacing: -0.02em; }
+      .guide h2 { font-size: 13.5pt; margin: 18pt 0 4pt; padding-bottom: 3pt; border-bottom: 0.5pt solid #e7e4ef; }
+      .guide h3 { font-size: 9.5pt; margin: 12pt 0 3pt; color: #6d28d9; text-transform: uppercase; letter-spacing: 0.08em; }
+      .guide p { margin: 5pt 0; }
+      .guide ul, .guide ol { margin: 5pt 0 5pt 18pt; padding: 0; }
+      .guide li { margin: 2.5pt 0; }
+      .guide li::marker { color: #9b8bc4; }
+      .guide a { color: #6d28d9; text-decoration: none; border-bottom: 0.5pt solid #cbb8f0; }
+      .guide strong { color: #0e0f15; font-weight: 650; }
+      .guide em { color: #3c3a45; }
+      .guide hr { border: none; border-top: 0.5pt solid #e7e4ef; margin: 14pt 0; }
+      .guide blockquote { margin: 7pt 0; padding: 1pt 0 1pt 12pt; border-left: 2pt solid #6d28d9; color: #44414f; font-style: italic; page-break-inside: avoid; }
+      .guide blockquote p { margin: 2pt 0; }
+      .guide pre { background: #f7f6fb; border: 0.5pt solid #e7e4ef; border-radius: 3pt; padding: 7pt 9pt; margin: 6pt 0; font-size: 8pt; line-height: 1.45; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; color: #2c2a38; white-space: pre-wrap; word-break: break-word; page-break-inside: avoid; }
+      .guide code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 8.5pt; background: #f1eefa; color: #5b21b6; padding: 0.5pt 3pt; border-radius: 2pt; word-break: break-word; }
+      .guide pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+      .guide table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 8.5pt; page-break-inside: avoid; }
+      .guide th { text-align: left; font-weight: 700; color: #0e0f15; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.05em; padding: 4pt 8pt 4pt 0; border-bottom: 1pt solid #2c2a38; }
+      .guide td { padding: 4pt 8pt 4pt 0; border-bottom: 0.5pt solid #ece9f3; vertical-align: top; color: #2c2a38; }
+      .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; border-radius: 3pt; page-break-inside: avoid; }
+      @page { margin: 0.7in; size: letter; }
+    `,
+  },
+  carbon: {
+    label: 'Carbon', hint: 'dark', swatch: '#a855f7',
+    css: `
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html {
+        background-color: #0c0617;
+        background-image:
+          repeating-linear-gradient(135deg, rgba(217,70,239,0.05) 0, rgba(217,70,239,0.05) 1px, transparent 1px, transparent 18px),
+          radial-gradient(130% 95% at 50% -12%, #2c1450 0%, #170a2e 46%, #0a0513 100%);
+      }
+      body { margin: 0; padding: 0; background: transparent; }
+      /* Soft edge vignette + faint neon glow, fixed so it repeats on every printed
+         page. No hard border box, so flowing content can never look like it spills
+         past an edge. */
+      .page-frame { position: fixed; inset: 0; box-shadow: inset 0 0 130pt rgba(8,4,16,0.9), inset 0 0 26pt rgba(192,38,211,0.14); pointer-events: none; }
+      /* Carbon supplies its own margins (page padding) so a full-bleed dark page
+         needs the print dialog's Margins set to None; otherwise default margins add
+         white edges around the dark sheet. */
+      .guide { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #cabfe2; font-size: 10pt; line-height: 1.55; max-width: 6.7in; margin: 0 auto; padding: 0.55in 0 0.65in; }
+      .guide h1, .guide h2, .guide h3, .guide h4 { color: #f4ecff; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; page-break-after: avoid; page-break-inside: avoid; }
+      .guide h1 { font-size: 20pt; margin: 0 0 12pt; padding-bottom: 6pt; border-bottom: 1pt solid #c026d3; color: #fff; text-shadow: 0 0 16px rgba(217,70,239,0.5); letter-spacing: -0.02em; }
+      .guide h2 { font-size: 13.5pt; margin: 18pt 0 4pt; padding-bottom: 3pt; border-bottom: 0.5pt solid #2a1740; color: #d8b4fe; }
+      .guide h3 { font-size: 9.5pt; margin: 12pt 0 3pt; color: #c084fc; text-transform: uppercase; letter-spacing: 0.08em; }
+      .guide p { margin: 5pt 0; }
+      .guide ul, .guide ol { margin: 5pt 0 5pt 18pt; padding: 0; }
+      .guide li { margin: 2.5pt 0; }
+      .guide li::marker { color: #c026d3; }
+      .guide a { color: #d8b4fe; text-decoration: none; border-bottom: 0.5pt solid #6b3aa0; }
+      .guide strong { color: #fff; font-weight: 650; }
+      .guide em { color: #bba7dc; }
+      .guide hr { border: none; border-top: 0.5pt solid #2a1740; margin: 14pt 0; }
+      .guide blockquote { margin: 7pt 0; padding: 3pt 0 3pt 12pt; border-left: 2pt solid #c026d3; background: #170c28; color: #c7b6e4; font-style: italic; page-break-inside: avoid; }
+      .guide blockquote p { margin: 2pt 0; }
+      .guide pre { background: #150b27; border: 0.5pt solid #2a1740; border-radius: 3pt; padding: 7pt 9pt; margin: 6pt 0; font-size: 8pt; line-height: 1.45; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; color: #ddccf5; white-space: pre-wrap; word-break: break-word; page-break-inside: avoid; }
+      .guide code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 8.5pt; background: #231140; color: #e9d5ff; padding: 0.5pt 3pt; border-radius: 2pt; word-break: break-word; }
+      .guide pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+      .guide table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 8.5pt; page-break-inside: avoid; }
+      .guide th { text-align: left; font-weight: 700; color: #d8b4fe; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.05em; padding: 4pt 8pt 4pt 0; border-bottom: 1pt solid #c026d3; }
+      .guide td { padding: 4pt 8pt 4pt 0; border-bottom: 0.5pt solid #21142f; vertical-align: top; color: #cabfe2; }
+      .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; border-radius: 3pt; page-break-inside: avoid; }
+      @page { margin: 0; size: letter; }
+    `,
+  },
+};
+type ThemeKey = keyof typeof PRINT_THEMES;
+
 export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
   const [markdown, setMarkdown] = useState<string>('');
   const [html, setHtml] = useState<string>('');
@@ -23,6 +140,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [pdfMenuOpen, setPdfMenuOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -81,7 +199,16 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
       // loads from /screenshots/… regardless of the current route.
       let src = href || '';
       if (src && !/^(https?:|data:|\/)/.test(src)) src = '/' + src.replace(/^\.?\//, '');
-      return `<img src="${src}" alt="${text || ''}"${title ? ` title="${title}"` : ''} loading="lazy" />`;
+      // The title doubles as an optional size hint: "full" spans the column, a
+      // bare number is that many px of max-width, anything else stays a normal
+      // title. Supporting screenshots default to a moderate width so they do not
+      // each eat a whole page.
+      let maxW = '500px';
+      let titleAttr = '';
+      if (title === 'full') maxW = '100%';
+      else if (title && /^\d+$/.test(title)) maxW = `${title}px`;
+      else if (title) titleAttr = ` title="${title}"`;
+      return `<img src="${src}" alt="${text || ''}"${titleAttr} style="max-width:${maxW}" loading="lazy" />`;
     };
     const parsed = marked.parse(markdown, { renderer, gfm: true, breaks: false }) as string;
     setHtml(parsed);
@@ -117,9 +244,56 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const handlePrint = () => {
-    // Print CSS in the component scopes the print output to just the docs content.
-    window.print();
+  const handlePrint = (themeKey: ThemeKey) => {
+    if (!html) return;
+    // Render the whole guide into an offscreen same-origin iframe with the chosen
+    // theme CSS and print THAT. Printing the live modal dropped code blocks and
+    // left ghost pages from the hidden app shell. The iframe is given a real size
+    // and kept onscreen-but-offset (not display:none or 0x0) and the guide's lazy
+    // image loading is stripped, so every screenshot actually loads before print.
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.cssText = 'position:fixed;left:-10000px;top:0;width:820px;height:1160px;border:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(iframe);
+    const cleanup = () => { try { document.body.removeChild(iframe); } catch { /* already gone */ } };
+    const doc = iframe.contentDocument;
+    const win = iframe.contentWindow;
+    if (!doc || !win) { cleanup(); return; }
+    // Eager-load every image in the print copy (lazy images never enter an
+    // offscreen iframe's viewport, so they would otherwise print blank).
+    const printHtml = html.replace(/\sloading="lazy"/g, '');
+    doc.open();
+    doc.write(
+      '<!doctype html><html><head><meta charset="utf-8">' +
+        `<base href="${window.location.origin}/">` +
+        '<title>theDAW User Guide</title><style>' + PRINT_THEMES[themeKey].css + '</style></head>' +
+        '<body><div class="page-frame"></div><div class="guide">' + printHtml + '</div></body></html>',
+    );
+    doc.close();
+    let fired = false;
+    const fire = () => {
+      if (fired) return;
+      fired = true;
+      win.focus();
+      win.print();
+      window.setTimeout(cleanup, 1000);
+    };
+    // Print once images have loaded so none come out blank; fall back after 5s.
+    const imgs = Array.from(doc.images);
+    let pending = imgs.length;
+    if (pending === 0) {
+      window.setTimeout(fire, 60);
+    } else {
+      const tick = () => { pending -= 1; if (pending <= 0) fire(); };
+      imgs.forEach((img) => {
+        if (img.complete) tick();
+        else {
+          img.addEventListener('load', tick, { once: true });
+          img.addEventListener('error', tick, { once: true });
+        }
+      });
+      window.setTimeout(fire, 5000);
+    }
   };
 
   const handleDownloadMd = () => {
@@ -170,14 +344,36 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
             >
               <Download className="w-3 h-3" /> MD
             </button>
-            <button
-              type="button"
-              onClick={handlePrint}
-              className="docs-btn flex items-center gap-1.5 px-2 py-1 rounded border border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/25 text-purple-200 text-[10px] font-bold uppercase tracking-widest transition-colors"
-              title="Print → Save as PDF (use the browser's print dialog)"
-            >
-              <Printer className="w-3 h-3" /> Save as PDF
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setPdfMenuOpen((v) => !v)}
+                className="docs-btn flex items-center gap-1.5 px-2 py-1 rounded border border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/25 text-purple-200 text-[10px] font-bold uppercase tracking-widest transition-colors"
+                title="Save the entire User Guide as a PDF in a chosen style"
+              >
+                <Printer className="w-3 h-3" /> Save as PDF
+              </button>
+              {pdfMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setPdfMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-20 w-44 rounded-md border border-white/10 bg-[#120e1c] shadow-[0_8px_30px_rgba(0,0,0,0.5)] overflow-hidden py-1">
+                    <div className="px-3 py-1 text-[8px] font-mono uppercase tracking-widest text-zinc-600">PDF style</div>
+                    {(Object.keys(PRINT_THEMES) as ThemeKey[]).map((k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => { setPdfMenuOpen(false); handlePrint(k); }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:bg-purple-500/15 hover:text-white transition-colors"
+                      >
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/25" style={{ background: PRINT_THEMES[k].swatch }} />
+                        <span className="font-bold uppercase tracking-widest">{PRINT_THEMES[k].label}</span>
+                        <span className="ml-auto text-[9px] text-zinc-600 lowercase tracking-normal">{PRINT_THEMES[k].hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <button
               type="button"
               onClick={onClose}
@@ -191,7 +387,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
 
         {/* Body: sidebar TOC + scrollable content */}
         <div className="flex-1 min-h-0 flex">
-          <aside className="docs-modal-toc w-65 shrink-0 border-r border-white/10 bg-black/40 flex flex-col">
+          <aside className="docs-modal-toc w-65 shrink-0 border-r border-white/10 bg-black/40 flex flex-col min-h-0">
             <div className="px-3 pt-3 pb-2 shrink-0">
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
@@ -214,7 +410,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
                     key={h.id}
                     type="button"
                     onClick={() => scrollToHeading(h.id)}
-                    className={`block w-full text-left py-1 px-2 rounded hover:bg-white/5 transition-colors ${
+                    className={`block w-full text-left py-1 px-2 rounded hover:bg-white/5 transition-colors wrap-break-word ${
                       h.level === 1 ? 'text-zinc-100 font-bold' :
                       h.level === 2 ? 'text-zinc-300 pl-3' :
                       'text-zinc-500 pl-5 text-[10px]'
@@ -372,12 +568,10 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
         }
         .docs-content img {
           display: block;
-          width: 100%;
           max-width: 100%;
           height: auto;
-          margin: 0.7rem 0;
+          margin: 0.7rem auto;
           border-radius: 6px;
-          border: 1px solid rgba(139,92,246,0.22);
           background: rgba(10, 8, 15, 0.45);
           object-fit: contain;
         }
@@ -404,91 +598,6 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
         .docs-content em { color: #c4b5fd; }
         .docs-content strong { color: #f5f3ff; font-weight: 700; }
         .docs-content .docs-content > p:first-child { margin-top: 0; }
-
-        @media print {
-          /* Force white background on everything — overrides Chrome's "background graphics" behaviour. */
-          html, body { background: white !important; background-image: none !important; }
-          /* Hide everything except the docs content. */
-          body * { visibility: hidden !important; }
-          .docs-modal-root, .docs-modal-root * { visibility: visible !important; }
-          .docs-modal-root {
-            position: static !important;
-            background: white !important;
-            background-image: none !important;
-            backdrop-filter: none !important;
-            display: block !important;
-            height: auto !important;
-            overflow: visible !important;
-          }
-          .docs-modal-window {
-            position: static !important;
-            width: 100% !important;
-            height: auto !important;
-            min-height: 0 !important;
-            max-height: none !important;
-            max-width: 100% !important;
-            background: white !important;
-            background-image: none !important;
-            border: none !important;
-            box-shadow: none !important;
-            border-radius: 0 !important;
-            display: block !important;
-          }
-          .docs-modal-window > div { display: block !important; }
-          .docs-modal-header, .docs-modal-toc { display: none !important; }
-          .docs-modal-window main {
-            background: white !important;
-            background-image: none !important;
-            overflow: visible !important;
-            height: auto !important;
-            max-height: none !important;
-          }
-          .docs-content {
-            max-width: 100% !important;
-            padding: 0 !important;
-            color: black !important;
-            background: white !important;
-            overflow: visible !important;
-            height: auto !important;
-            max-height: none !important;
-            font-size: 11pt !important;
-            line-height: 1.45 !important;
-          }
-          .docs-html {
-            display: block !important;
-            overflow: visible !important;
-            height: auto !important;
-            max-height: none !important;
-          }
-          .docs-content * { color: black !important; background-color: transparent !important; }
-          .docs-content .docs-h-1 { border-bottom-color: #7c3aed !important; }
-          .docs-content blockquote { background: #f3f0ff !important; border-left-color: #7c3aed !important; }
-          .docs-content blockquote * { color: #4c1d95 !important; background-color: #f3f0ff !important; }
-          /* Do not print large code/ascii blocks unless explicitly requested. */
-          .docs-content .docs-code { display: none !important; }
-          .docs-content .docs-inline-code { background: #ede9fe !important; color: #4c1d95 !important; }
-          .docs-content th { background: #ede9fe !important; color: #4c1d95 !important; }
-          .docs-content tr:nth-child(2n) td { background: #faf5ff !important; }
-          .docs-content td { border-color: #e0d9f7 !important; }
-          .docs-content a { color: #6d28d9 !important; }
-          .docs-content img {
-            max-width: 100% !important;
-            height: auto !important;
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-            border: 1px solid #e0d9f7 !important;
-            margin: 10pt 0 !important;
-          }
-          .docs-content h1,
-          .docs-content h2,
-          .docs-content h3,
-          .docs-content table,
-          .docs-content blockquote {
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-          }
-          @page { margin: 0.7in; size: letter; }
-        }
       `}</style>
     </div>
   );
