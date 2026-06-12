@@ -23,6 +23,22 @@ if [[ ! -f "$src" ]]; then
   exit 1
 fi
 
+# 0. Auto-format Python with the project's pinned ruff, then re-stage anything
+# it changed, so a forgotten `ruff format` never reaches CI. Runs at the repo
+# root (never a subset — see CLAUDE.md HARD RULE) and via `uv run`, so it is the
+# venv's pinned ruff, bit-identical to the lint workflow's RUFF_VERSION.
+# Non-fatal: a failure here warns and continues rather than blocking the commit.
+if command -v uv >/dev/null 2>&1; then
+  log "Formatting Python (ruff, repo root)"
+  if uv run ruff format . >/dev/null 2>&1; then
+    git add -u -- '*.py' 2>/dev/null || true
+  else
+    warn "ruff format failed (dev group synced? 'uv sync --group dev'). Continuing."
+  fi
+else
+  warn "uv not found — skipping ruff format. CI will still gate it."
+fi
+
 # 1. Generate feature/docs coverage before syncing the in-app copy.
 log "Generating feature coverage report"
 ( cd frontend && npm exec -- tsx ../scripts/screenshots/featureCoverage.ts ) || \

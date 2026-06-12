@@ -25,6 +25,10 @@ let _pendingPlayCountId: string | null = null;
 // Set by the playlist queue; fired when a (non-looping) track ends so the queue
 // can auto-advance. Null for ordinary single-track playback.
 let _onEnded: (() => void) | null = null;
+// The editor timeline reuses this sentinel as its entry id so the footer and
+// playhead treat it like a normally-loaded track. Transport delegation to the
+// live mixer is gated on this being the active track (see activeLive).
+const EDITOR_ENTRY_ID = 'editor-timeline';
 
 type EngineHandles = {
   ctx: AudioContext;
@@ -128,6 +132,16 @@ let _live: LiveTransport | null = null;
 export const setLiveTransport = (t: LiveTransport | null): void => {
   _live = t;
 };
+
+/** The live editor transport is the ACTIVE audio source only while the editor
+ *  timeline is the loaded track. After a real library track loads, _live can
+ *  linger because the editor stays mounted, yet the <audio> element is what is
+ *  audible. Returning null in that case routes transport to the element instead
+ *  of the idle mixer. Without this, a footer pause hit the idle mixer (whose
+ *  pause() early-returns), left isPlaying stuck true, and the button stayed on
+ *  Pause while audio kept playing. */
+const activeLive = (): LiveTransport | null =>
+  _live && usePlayerStore.getState().currentEntryId === EDITOR_ENTRY_ID ? _live : null;
 
 /** Register a callback fired when a non-looping track ends (the playlist queue
  *  uses this to advance). Pass null to clear. */
@@ -241,7 +255,8 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
     if (ctx.state === 'suspended') {
       void ctx.resume().catch(() => { /* swallowed; will retry */ });
     }
-    if (_live) { _live.play(); return; } // live editor timeline
+    const live = activeLive();
+    if (live) { live.play(); return; } // live editor timeline
     if (!audioEl.src) return;
     void audioEl.play().catch((err) => {
       logError('player', `Play rejected: ${err instanceof Error ? err.message : String(err)}`);
@@ -249,14 +264,16 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   pause: () => {
-    if (_live) { _live.pause(); return; }
+    const live = activeLive();
+    if (live) { live.pause(); return; }
     const { audioEl } = ensureEngine();
     audioEl.pause();
   },
 
   toggle: () => {
-    if (_live) {
-      if (get().isPlaying) _live.pause();
+    const live = activeLive();
+    if (live) {
+      if (get().isPlaying) live.pause();
       else get().play();
       return;
     }
@@ -267,7 +284,8 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   stop: () => {
-    if (_live) { _live.stop(); return; }
+    const live = activeLive();
+    if (live) { live.stop(); return; }
     const { audioEl } = ensureEngine();
     audioEl.pause();
     audioEl.currentTime = 0;
@@ -276,7 +294,8 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
 
   seek: (sec) => {
     if (!Number.isFinite(sec)) return;
-    if (_live) { _live.seek(sec); return; }
+    const live = activeLive();
+    if (live) { live.seek(sec); return; }
     const { audioEl } = ensureEngine();
     audioEl.currentTime = Math.max(0, Math.min(audioEl.duration || 0, sec));
     set({ currentTime: audioEl.currentTime });
@@ -284,7 +303,8 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
 
   seekByFraction: (frac) => {
     const clamped = Math.max(0, Math.min(1, frac));
-    if (_live) { _live.seek(clamped * (get().duration || 0)); return; }
+    const live = activeLive();
+    if (live) { live.seek(clamped * (get().duration || 0)); return; }
     const { audioEl } = ensureEngine();
     const dur = audioEl.duration || 0;
     if (!dur) return;
