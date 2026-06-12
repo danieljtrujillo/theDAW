@@ -18,7 +18,7 @@ Two dataset modes (exactly one required):
       000000000001.npy
       000000000001.json
 
-Saves .safetensors LoRA checkpoints compatible with the inference model and run_gradio.py.
+Saves .safetensors LoRA checkpoints loadable via the inference pipeline's `load_lora()`.
 
 Usage:
   uv run python scripts/train_lora.py --model medium-base --data_dir ./my_data --save_dir ./lora_out

@@ -11,8 +11,9 @@ Common issues and fixes specific to running Stable Audio 3 on Windows.
 RuntimeError: Couldn't find appropriate backend to handle uri output.wav and format None.
 ```
 
-**Cause:** torchaudio has no audio I/O backend installed. On Linux, sox is
-typically available. On Windows, nothing ships by default.
+**Cause:** torchaudio has no audio I/O backend installed. `soundfile` is now a
+base dependency, so `uv sync` installs it automatically; this only appears if a
+custom or partial environment dropped it.
 
 **Fix:**
 ```powershell
@@ -31,8 +32,9 @@ False
 '2.7.1+cpu'
 ```
 
-**Cause:** The project's `pyproject.toml` only configures the PyTorch CUDA
-index for Linux (`sys_platform == 'linux'`).
+**Cause:** `uv sync` resolved CPU torch instead of the CUDA build. On Windows,
+`pyproject.toml` maps torch to the cu128 index automatically, so this usually
+means a custom index, an offline cache, or a non-Windows resolution interfered.
 
 **Fix:**
 ```powershell
@@ -143,7 +145,7 @@ git clone https://YOUR_USERNAME:YOUR_HF_TOKEN@huggingface.co/stabilityai/stable-
 
 If this errors, reinstall flash-attn (see above).
 
-## `start-dev.bat` fails immediately, or "X is not recognized"
+## `theDAW.bat` fails immediately, or "X is not recognized"
 
 **Cause:** A required tool isn't on PATH. The launcher preflights uv/node/npm and
 bootstraps the venv + `node_modules`, but it can't run if those tools are missing.
@@ -155,4 +157,4 @@ bootstraps the venv + `node_modules`, but it can't run if those tools are missin
 - **`ffmpeg`** — `winget install Gyan.FFmpeg`, or a build from <https://www.gyan.dev/ffmpeg/builds/> with its `bin\` on PATH. The launcher only warns about this one; the servers start, but every audio effect, export, and library ingest fails until FFmpeg is present.
 - **`lt` (localtunnel)** — optional. The launcher skips the public tunnel when it's absent; run `npm i -g localtunnel` if you want the shareable link.
 
-After installing a tool, open a NEW terminal so PATH refreshes, then re-run `start-dev.bat`.
+After installing a tool, open a NEW terminal so PATH refreshes, then re-run `theDAW.bat`.

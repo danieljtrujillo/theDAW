@@ -106,17 +106,13 @@ Per plan:
    / copy id / download / "Send to MAKE" / "Send to MIX" / "Send to
    LEARN" / "Show in Library" / "Open Lineage".
 
-### Future — reduce terminal window proliferation on `start-dev.bat`
-Currently spawns 3 cmd windows (SA3 Backend, SA3 Frontend, SA3 Tunnel).
-User said the SA3 Backend window is helpful (log visibility) but
-having three is too many. Options:
-
-- Windows Terminal `wt.exe` with three panes in one window
-- Make frontend + tunnel `start /B` (background, no window) and keep
-  only backend visible
-- A small TUI dashboard that tails all three logs
-
-Pick when context allows.
+### Done — one console for the whole stack
+`start-dev.bat` was renamed to `theDAW.bat` and now launches
+`backend._devstack`, which runs backend + frontend + tunnel in a
+single window, streaming all three as prefixed `[backend]` /
+`[frontend]` / `[tunnel]` log lines. The backend still runs under the
+rc=88 supervisor contract, so the in-app Restart button works. This
+replaced the previous three-cmd-window launch.
 
 ### Step 2 polish (low priority)
 - Cluster tint computes centroids ONCE after a 2.8s settle delay; if
@@ -199,7 +195,7 @@ format drift, then review the content diffs separately.
    — that venv requires the specific bootstrap described in
    `feedback_never_downgrade_models` and
    `project_stems_sidecar_venv_setup` memories.
-6. **Test the restart button via `start-dev.bat`, not `python -m
+6. **Test the restart button via `theDAW.bat`, not `python -m
    backend.run`.** Direct launch lacks the supervisor and the endpoint
    refuses with a 412 explaining why.
 7. **The user lives across C: and D: drives.** The integration-

@@ -85,7 +85,7 @@ All in-browser audio (library playback, waveform editor preview, step sequencer,
 
 ### Prerequisites
 
-Put these on your PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path — effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 550+** for the Medium model / Magenta (the Small model runs on CPU). On Windows, `start-dev.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
+Put these on your PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path — effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 550+** for the Medium model / Magenta (the Small model runs on CPU). On Windows, `theDAW.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
 
 ### Base Python environment
 
@@ -134,17 +134,17 @@ npm install
 ### One-shot launcher (Windows)
 
 ```powershell
-.\start-dev.bat
+.\theDAW.bat
 ```
 
 Sequence:
-1. Kills any stale process on ports 5173 and 8600.
-2. Starts the FastAPI backend (`uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload`) in a new terminal window.
-3. Waits 3 seconds for the backend to bind.
-4. Starts the Vite dev server in a second terminal window.
-5. Opens `http://localhost:5173` in the default browser.
+1. Verifies uv, node, and npm are on PATH and warns if FFmpeg is missing.
+2. Bootstraps the venv (`uv sync --group dev`) and `node_modules` (`npm install`) on first run.
+3. Kills any stale process on ports 5173, 8600, and 5187.
+4. Launches `backend._devstack`, which runs the backend, the Vite frontend, and the optional localtunnel together in this one console, streaming all three as prefixed `[backend]` / `[frontend]` / `[tunnel]` log lines.
+5. Opens `http://localhost:5173` once Vite reports ready.
 
-The `--reload` flag on the backend triggers an automatic restart when `backend/server.py` is modified.
+The backend runs under the rc=88 supervisor contract, so the in-app Settings → Restart Server button respawns it inside the same console. Ctrl-C in the window stops the whole stack.
 
 ### Manual launch
 
@@ -1455,7 +1455,7 @@ The backend is not responding on port 8600. Test directly:
 ```bash
 curl http://localhost:8600/api/health
 ```
-If the request fails, restart the backend. On Windows, `.\start-dev.bat` kills stale processes automatically. Manually: `taskkill /F /IM uvicorn.exe`.
+If the request fails, restart the backend. On Windows, `.\theDAW.bat` kills stale processes automatically. Manually: `taskkill /F /IM uvicorn.exe`.
 
 ### COMMIT EDIT hangs indefinitely
 

@@ -744,7 +744,7 @@ export const VJView: React.FC = () => {
               <RefreshCw className="w-3 h-3" /> Retry
             </button>
             <span className="text-[8px] font-mono text-zinc-600 max-w-xl text-center leading-relaxed">
-              Check the SA3 Backend window for the spawn error. Most
+              Check the theDAW console for the spawn error. Most
               common causes: Node not on PATH, the VJ project path is
               wrong (override with theDAW_VJ_PROJECT), or port 5187
               is already in use (override with theDAW_VJ_PORT).

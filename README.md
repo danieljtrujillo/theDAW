@@ -31,7 +31,7 @@ theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which r
 | **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | Async HTTP wrapper. It runs a generation job queue, FFmpeg audio processing, and model introspection on port 8600. |
 | **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `chimera`, `controllervision`, `effects` (at `/api/studio`), `library`, `midi`, `notation`, `settings`, `stems`, `vj`, and `ytimport`, plus cloud and real-time generation (`suno`, `magenta`) and the six-family Edit Tool Stack under `/api/edit/*` (mastering, restoration, enhance, delivery, creative-fx, creative-neural). |
-| **theDAW interface** | `frontend/` | React 19, Vite 6, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, the analyzer, and the live tools. It proxies `/api/*` to the backend on port 5173 in development. |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, the analyzer, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend on 8600. |
 
 ---
 
@@ -45,15 +45,15 @@ Install these and put each on your PATH first:
 - **[Git](https://git-scm.com/)** — clone with `--recurse-submodules` so the Magenta sidecar's vendored source is present.
 - **NVIDIA driver 550+** for the Medium model and Magenta. The Small model runs on CPU.
 
-`start-dev.bat` verifies uv/node/npm, warns if FFmpeg is missing, and bootstraps the venv + `node_modules` on first run, so a fresh clone with the tools above is one command away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
+`theDAW.bat` verifies uv/node/npm, warns if FFmpeg is missing, and bootstraps the venv + `node_modules` on first run, so a fresh clone with the tools above is one command away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
 
 ## Quick Start
 
 ```powershell
-.\start-dev.bat
+.\theDAW.bat
 ```
 
-The launcher checks prerequisites, bootstraps dependencies when the tree is fresh (`uv sync --group dev`, `npm install`), kills stale processes on ports 5173/8600/5187, starts the backend and Vite, starts a public tunnel only if localtunnel is installed, and opens `http://localhost:5173`.
+The launcher checks prerequisites, bootstraps dependencies when the tree is fresh (`uv sync --group dev`, `npm install`), kills stale processes on ports 5173/8600/5187, then runs the backend, Vite, and the optional tunnel together in one console (streamed as prefixed `[backend]` / `[frontend]` / `[tunnel]` logs) and opens `http://localhost:5173`. The in-app Restart button still works because the backend runs under a supervisor.
 
 Manual launch:
 
@@ -234,7 +234,7 @@ theDAW generates its own documentation and promo material from the live app. `sc
 
 **Static glitch output on the Medium model.** Flash Attention is not installed correctly. Verify it with `uv run python -c "from flash_attn import flash_attn_func; import flash_attn; print(flash_attn.__version__)"` and reinstall a wheel matching the Python, torch, and CUDA combination from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
 
-**"API UNREACHABLE" banner.** The backend is not listening on port 8600. Test it with `curl http://localhost:8600/api/health`. On Windows, `.\start-dev.bat` clears stale processes automatically.
+**"API UNREACHABLE" banner.** The backend is not listening on port 8600. Test it with `curl http://localhost:8600/api/health`. On Windows, `.\theDAW.bat` clears stale processes automatically.
 
 **Out-of-memory on the Medium model.** The Medium pipeline requires approximately 8 GB VRAM. The `small` model, a shorter `duration`, or freeing competing CUDA processes resolves it.
 

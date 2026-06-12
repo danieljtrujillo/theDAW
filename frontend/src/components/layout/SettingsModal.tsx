@@ -502,7 +502,7 @@ const RestartServerButton: React.FC = () => {
         // verbatim so the user knows how to enable restart.
         const body = await r.json().catch(() => ({ detail: '' }));
         setStatus('error');
-        setDetail(body.detail || 'Supervisor not detected. Launch via start-dev.bat to enable restart.');
+        setDetail(body.detail || 'Supervisor not detected. Launch via theDAW.bat to enable restart.');
         setTimeout(() => {
           setStatus('idle');
           setDetail('');
@@ -589,10 +589,10 @@ const RestartServerButton: React.FC = () => {
   );
 };
 
-/** Cleanly stops the SA3 backend (rc=0). The supervisor sees a non-
- *  restart exit code and terminates the loop, so the whole "SA3
- *  Backend" console closes — the user has to relaunch via start-dev
- *  to bring SA3 back up. Confirms before sending the shutdown signal
+/** Cleanly stops the theDAW backend (rc=0). The supervisor sees a non-
+ *  restart exit code and terminates the loop, so the whole theDAW
+ *  console closes and the user has to relaunch via theDAW.bat to
+ *  bring it back up. Confirms before sending the shutdown signal
  *  because this can't be reversed from the browser side once fired. */
 const ShutdownServerButton: React.FC = () => {
   const [pending, setPending] = useState(false);
@@ -601,7 +601,7 @@ const ShutdownServerButton: React.FC = () => {
   const handle = async () => {
     if (pending || done) return;
     const ok = window.confirm(
-      'Shut down the SA3 backend?\n\nThe browser will lose its connection. Relaunch via start-dev.bat to bring it back.',
+      'Shut down the theDAW backend?\n\nThe browser will lose its connection. Relaunch via theDAW.bat to bring it back.',
     );
     if (!ok) return;
     setPending(true);

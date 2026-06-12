@@ -1,9 +1,27 @@
-# Stable Audio 3 — Windows Setup Guide
+# theDAW — Windows Setup Guide
 
-> Tested on Windows 11 Pro, RTX 4090, Python 3.10, May 2026
+> Targets Windows 11 with an NVIDIA GPU and Python 3.10. theDAW is a React +
+> FastAPI application; this guide covers the Windows-specific pieces the README
+> links to here.
 
-The official README assumes Linux. This documents every gotcha we hit getting
-Stable Audio 3 Medium running on Windows with CUDA.
+theDAW runs two local servers: a FastAPI backend on port 8600 and a Vite
+frontend on port 5173. On Windows, `uv sync` installs the CUDA build of PyTorch
+and the prebuilt Flash Attention wheel automatically, and `theDAW.bat`
+bootstraps everything and launches the whole stack in one console. Most users
+never run a manual install command.
+
+---
+
+## TL;DR
+
+```powershell
+.\theDAW.bat
+```
+
+On a fresh clone with the prerequisites below on PATH, `theDAW.bat` verifies the
+tools, runs `uv sync --group dev` and `npm install` on first launch, then starts
+the backend, the frontend, and the optional tunnel in a single window and opens
+<http://localhost:5173>. Everything after this section is detail and fallbacks.
 
 ---
 
@@ -11,156 +29,66 @@ Stable Audio 3 Medium running on Windows with CUDA.
 
 | Tool | Why |
 |------|-----|
-| Python 3.10 | Required by project. On Windows the Flash Attention + cu128 torch wheels are pinned to 3.10 — Python 3.11+ silently falls back to a source build / CPU torch (static-glitch output). |
-| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Package manager used by the project (creates the venv, installs torch/CUDA) |
-| [Node.js](https://nodejs.org/) v20.19+ / v22.12+ | Frontend dev server + VJ sidecar (Vite 7 floor). Includes npm. |
-| [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH | All audio I/O: effects, exports, library ingest, MIDI conversion, YouTube import |
-| Git | Cloning repos (use `--recurse-submodules` so the Magenta sidecar source is present) |
-| [git-xet](https://hf.co/docs/hub/git-xet) | Required for cloning HF model repos with large files |
-| NVIDIA GPU + Driver 550+ | CUDA support for Medium model |
-| Hugging Face account | Private repo access (collaborator required) |
+| Python 3.10 | The Windows Flash Attention + cu128 torch wheels are built for cp310. Python 3.11+ skips the Flash Attention wheel and the Medium GPU path degrades. `uv` can install 3.10 for you (`uv python install 3.10`). |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Creates the venv and installs torch/CUDA + Flash Attention. |
+| [Node.js](https://nodejs.org/) v20.19+ / v22.12+ | Frontend dev server + VJ sidecar (the Vite 7 floor). Includes npm. |
+| [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH | All audio I/O: effects, exports, library ingest, MIDI conversion, YouTube/SoundCloud import. |
+| Git | Cloning the repo (use `--recurse-submodules` so the Magenta sidecar source is present). |
+| NVIDIA GPU + Driver 550+ | CUDA support for the Medium model and the Magenta sidecar. The Small model runs on CPU. |
+| Hugging Face account | Only if a model repo you load requires authentication. |
 
-> **`winget` not found?** The install commands below use `winget` (Windows Package
-> Manager). It ships with the App Installer on Windows 11 but can be absent on older,
-> LTSC, or Server builds. If `winget` is "not recognized," install **App Installer**
-> from the Microsoft Store (or download each tool from its linked site above).
+> **`winget` not found?** Some commands below use `winget` (Windows Package
+> Manager). It ships with the App Installer on Windows 11 but can be absent on
+> older, LTSC, or Server builds. If `winget` is "not recognized," install **App
+> Installer** from the Microsoft Store, or download each tool from its linked
+> site above.
 
-### Install git-xet
+### Install the tools
+
 ```powershell
-winget install git-xet
+winget install astral-sh.uv          # uv
+winget install OpenJS.NodeJS.LTS     # Node + npm
+winget install Gyan.FFmpeg           # FFmpeg
+winget install Git.Git               # Git
 ```
 
-### Install FFmpeg
-```powershell
-winget install Gyan.FFmpeg
-```
-Or download a build from <https://www.gyan.dev/ffmpeg/builds/>, unzip it, and add its `bin\` folder to PATH. Verify with `ffmpeg -version`. Without FFmpeg the servers still start, but every effect, export, and library ingest fails.
+Verify each is on PATH: `uv --version`, `node -v`, `ffmpeg -version`, `git --version`.
+For FFmpeg you can also unzip a [gyan.dev](https://www.gyan.dev/ffmpeg/builds/)
+build and add its `bin\` folder to PATH.
 
-### Install Node.js
-Install **v20.19+ or v22.12+** from <https://nodejs.org/> (the LTS installer includes npm and adds both to PATH). Verify with `node -v`. An older Node makes Vite 7 crash with an opaque error.
+If you load a gated Hugging Face model repo, log in once:
 
-### Install HF CLI
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://hf.co/cli/install.ps1 | iex"
-```
-
-### Login to Hugging Face
-```powershell
 hf auth login
-# OR verify existing token:
-# Token is stored at: %USERPROFILE%\.cache\huggingface\token
 ```
 
 ---
 
-## Step 1: Clone the repo and sync dependencies
+## What `uv sync` installs automatically on Windows
 
-```powershell
-git clone https://github.com/Stability-AI/stable-audio-3.git
-cd stable-audio-3
-uv sync --group dev
-```
+`pyproject.toml` pins CUDA 12.8 wheels for torch and torchaudio and the prebuilt
+Flash Attention wheel under `[tool.uv.sources]`, gated to Windows and Python
+3.10. A plain `uv sync --group dev` on Windows therefore pulls:
 
----
+- **torch 2.7.1+cu128** and **torchaudio 2.7.1+cu128** (from the cu128 index)
+- **flash-attn 2.8.3** (the [kingbri1](https://github.com/kingbri1/flash-attention/releases) prebuilt cp310 wheel)
+- **soundfile** (a base dependency; torchaudio's audio backend on Windows)
 
-## Step 2: Fix PyTorch — install CUDA version
+There is no manual torch reinstall, no manual wheel download, and no separate
+`soundfile` install. Those were required on the old upstream layout and are now
+handled by `pyproject.toml`.
 
-**Problem:** `uv sync` installs CPU-only PyTorch on Windows because
-`pyproject.toml` only maps the CUDA index for Linux.
-
-**Fix:** Reinstall torch + torchaudio with CUDA 12.8:
-
-```powershell
-uv pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128 --reinstall
-```
-
-> **Why cu128 and not cu126?** Pre-built flash-attn Windows wheels only exist
-> for cu128. Using cu126 means you'd have to build flash-attn from source on
-> Windows, which requires Visual Studio Build Tools + CUDA toolkit and is painful.
-
-**Verify:**
-```powershell
-.\.venv\Scripts\python.exe -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())"
-# Expected: torch 2.7.1+cu128 | CUDA: True
-```
+> **Why Python 3.10?** The Flash Attention wheel is built for cp310, and
+> `pyproject.toml` only requests flash-attn on `python_version < '3.11'`. On
+> Python 3.11+ that wheel is skipped, so use Python 3.10 for the supported
+> Windows GPU path.
 
 ---
 
-## Step 3: Install soundfile (torchaudio backend)
-
-**Problem:** torchaudio ships with zero audio backends on Windows. Without one,
-generation completes but crashes on `torchaudio.save()` with:
-```
-RuntimeError: Couldn't find appropriate backend to handle uri ... and format None.
-```
-
-**Fix:**
-```powershell
-uv pip install soundfile
-```
-
-**Verify:**
-```powershell
-.\.venv\Scripts\python.exe -c "import torchaudio; print(torchaudio.list_audio_backends())"
-# Expected: ['soundfile']
-```
-
----
-
-## Step 4: Install Flash Attention (Medium model only)
-
-**Problem:** No official flash-attn wheels for Windows. Building from source
-requires MSVC + CUDA toolkit setup.
-
-**Solution:** Use pre-built wheels from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
-
-Match your Python version (cp310 = Python 3.10, cp311 = 3.11, etc.):
+## Verify the install
 
 ```powershell
-# Python 3.10 + CUDA 12.8 + torch 2.7
-uv pip install https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
-```
-
-**Verify:**
-```powershell
-.\.venv\Scripts\python.exe -c "import flash_attn; from flash_attn import flash_attn_func; print('Version:', flash_attn.__version__, '| flash_attn_func:', flash_attn_func)"
-```
-
-> **Small model users:** Flash Attention is optional. The Small model falls
-> back to standard attention automatically.
-
----
-
-## Step 5: Download the model
-
-```powershell
-hf download stabilityai/stable-audio-3-medium
-```
-
-Or via Python:
-```powershell
-.\.venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; print(snapshot_download('stabilityai/stable-audio-3-medium'))"
-```
-
-The model is ~17 GB and downloads to `%USERPROFILE%\.cache\huggingface\hub\`.
-
----
-
-## Step 6: Run
-
-```powershell
-uv run python run_gradio.py --model medium
-```
-
-Opens a Gradio UI with a shareable link. The Medium model uses ~18 GB VRAM on
-an RTX 4090.
-
----
-
-## Quick verification checklist
-
-```powershell
-# Run all checks at once:
 .\.venv\Scripts\python.exe -c "
 import torch
 print('torch', torch.__version__, '| CUDA:', torch.cuda.is_available())
@@ -168,35 +96,45 @@ import torchaudio
 print('torchaudio backends:', torchaudio.list_audio_backends())
 import flash_attn
 print('flash_attn', flash_attn.__version__)
-import stable_audio_3
-print('stable_audio_3: OK')
 "
 ```
 
 Expected output:
+
 ```
 torch 2.7.1+cu128 | CUDA: True
 torchaudio backends: ['soundfile']
 flash_attn 2.8.3
-stable_audio_3: OK
 ```
 
 ---
 
-## Known issues
+## Models
 
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| `torch+cpu` installed by `uv sync` | pyproject.toml CUDA index only mapped for Linux | Reinstall with `--index-url .../cu128` |
-| `torchaudio.save()` crashes with backend error | No audio backend on Windows | `uv pip install soundfile` |
-| Flash Attention won't install | No official Windows wheels | Use kingbri1 pre-built wheels |
-| `hf download` hangs with lock errors | Multiple download processes fighting | Kill all python processes, delete `.cache/huggingface/hub/.locks/...`, retry |
-| Gradio CSS preload warning in browser | Gradio CDN issue, cosmetic | Ignore |
-| Generation uses ~18 GB VRAM | Model + autoencoder + text encoder + activations | Normal for Medium on fp16 |
+theDAW downloads model weights from Hugging Face the first time a model is
+loaded and caches them under `%USERPROFILE%\.cache\huggingface\hub\`. For normal
+use there is no separate download step: pick a model in the UI and the backend
+fetches it on demand, then parks it in RAM between uses.
+
+To pre-fetch a model (optional):
+
+```powershell
+hf download stabilityai/stable-audio-3-medium
+```
+
+If the repo requires authentication, run `hf auth login` first. The Medium model
+is roughly 17 GB.
 
 ---
 
-## VRAM breakdown (Medium model, fp16)
+## Hardware notes
+
+- The **Small** model runs on CPU or any CUDA GPU.
+- The **Medium** model is the GPU-heavy path. theDAW casts it to fp16, loads it
+  on demand, and parks it in RAM when idle, so memory use scales with what you
+  actually run. The full Medium stack is roughly 18 GB of VRAM at peak.
+
+Rough VRAM breakdown for the Medium model (fp16):
 
 | Component | Approx Size |
 |-----------|-------------|
@@ -205,6 +143,57 @@ stable_audio_3: OK
 | T5Gemma text encoder | ~1.5 GB |
 | Activations / KV cache | ~5-8 GB |
 | CUDA context + overhead | ~2-3 GB |
-| **Total** | **~18 GB** |
 
-Minimum GPU: RTX 4090 (24 GB) or equivalent.
+On a GPU below that, run the Small model, or use the Magenta sidecar and the
+backend's GPU offload to share VRAM.
+
+---
+
+## Fallbacks
+
+These are only needed if the automatic install above did not apply (for example
+a non-3.10 Python, a different CUDA version, or `uv sync` resolving CPU torch).
+
+### `uv sync` installed CPU-only torch
+
+```powershell
+uv pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128 --reinstall
+```
+
+### A different Python or CUDA version
+
+Flash Attention has no official Windows wheels, so match a prebuilt one to your
+Python version from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases):
+
+| Python | Wheel |
+|--------|-------|
+| 3.10 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl` |
+| 3.11 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp311-cp311-win_amd64.whl` |
+| 3.12 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl` |
+| 3.13 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp313-cp313-win_amd64.whl` |
+
+```powershell
+uv pip install https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
+```
+
+The wheel's CUDA version must match your torch build (these are cu128, so pair
+them with `torch==2.7.1+cu128`).
+
+### Other Windows issues
+
+Backend won't start, FFmpeg missing, HF download hangs on lock files, static or
+glitchy Medium output: see [troubleshooting.md](troubleshooting.md).
+
+---
+
+## Legacy Gradio UI (optional)
+
+The original Gradio interface still ships as `run_gradio.py`, but gradio was
+removed from the default dependencies in a CVE sweep, so `uv sync` does not
+install it and theDAW itself does not use it. To run the legacy UI, reinstall
+its dependencies first:
+
+```powershell
+uv pip install gradio accelerate
+uv run python run_gradio.py --model medium
+```
