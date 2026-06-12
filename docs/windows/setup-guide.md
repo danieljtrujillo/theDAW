@@ -187,17 +187,3 @@ them with `torch==2.7.1+cu128`).
 
 Backend won't start, FFmpeg missing, HF download hangs on lock files, static or
 glitchy Medium output: see [troubleshooting.md](troubleshooting.md).
-
----
-
-## Legacy Gradio UI (optional)
-
-The original Gradio interface still ships as `run_gradio.py`, but gradio was
-removed from the default dependencies in a CVE sweep, so `uv sync` does not
-install it and theDAW itself does not use it. To run the legacy UI, reinstall
-its dependencies first:
-
-```powershell
-uv pip install gradio accelerate
-uv run python run_gradio.py --model medium
-```
