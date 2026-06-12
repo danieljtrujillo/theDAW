@@ -20,7 +20,7 @@ export interface LibraryState {
   loading: boolean;
   searchQuery: string;
   onlyFavorites: boolean;
-  sortBy: 'newest' | 'oldest' | 'duration' | 'title';
+  sortBy: 'newest' | 'oldest' | 'duration' | 'title' | 'plays';
   playingId: string | null;
   selectedEntryId: string | null;
 
@@ -42,6 +42,8 @@ export interface LibraryState {
   setSortBy: (s: LibraryState['sortBy']) => void;
   setPlayingId: (id: string | null) => void;
   setSelectedEntry: (id: string | null) => void;
+  /** Count a play for an entry: optimistic local bump + persist server-side. */
+  registerPlay: (id: string) => void;
   getAudioUrl: (entry: LibraryEntry) => string;
   fetchAudioBlob: (entry: LibraryEntry) => Promise<Blob>;
   getFiltered: () => LibraryEntry[];
@@ -176,6 +178,23 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
   setPlayingId: (id) => set({ playingId: id }),
   setSelectedEntry: (id) => set({ selectedEntryId: id }),
 
+  registerPlay: (id) => {
+    // Optimistic local bump so the sort + readout update immediately.
+    set((s) => ({
+      entries: s.entries.map((e) =>
+        e.id === id
+          ? { ...e, playCount: (e.playCount ?? 0) + 1, lastPlayedAt: Date.now() / 1000 }
+          : e,
+      ),
+    }));
+    // Persist (fire-and-forget); the count survives restarts on the backend.
+    void fetch(`/api/library/entries/${encodeURIComponent(id)}/play`, {
+      method: 'POST',
+    }).catch((e) =>
+      logError('library', `play-count update failed for ${id.slice(0, 8)}: ${e}`),
+    );
+  },
+
   getAudioUrl: (entry) => getStorageProvider().getAudioUrl(entry),
 
   fetchAudioBlob: (entry) => getStorageProvider().fetchAudioBlob(entry),
@@ -236,6 +255,7 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
     else if (sortBy === 'oldest') filtered.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     else if (sortBy === 'duration') filtered.sort((a, b) => b.duration - a.duration);
     else if (sortBy === 'title') filtered.sort((a, b) => a.title.localeCompare(b.title));
+    else if (sortBy === 'plays') filtered.sort((a, b) => (b.playCount ?? 0) - (a.playCount ?? 0));
     return filtered;
   },
 }));

@@ -36,7 +36,7 @@ from typing import Any, Iterator, Optional
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 # Each tuple is (schema_version_after_running, statements list).
@@ -224,6 +224,14 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE analysis ADD COLUMN prompt_guess TEXT",
             "ALTER TABLE analysis ADD COLUMN prompt_confidence REAL",
             "ALTER TABLE analysis ADD COLUMN semantic_tags_json TEXT NOT NULL DEFAULT '[]'",
+        ],
+    ),
+    (
+        4,
+        [
+            "ALTER TABLE entries ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE entries ADD COLUMN last_played_at REAL",
+            "CREATE INDEX IF NOT EXISTS idx_entries_play_count ON entries(play_count DESC)",
         ],
     ),
 ]
@@ -494,6 +502,24 @@ class LibraryDB:
             row = cur.execute("SELECT COUNT(*) AS c FROM entries").fetchone()
             cur.close()
             return int(row["c"]) if row else 0
+
+    def increment_play_count(self, entry_id: str) -> Optional[int]:
+        """Bump play_count and stamp last_played_at for one entry. Returns the
+        new play_count, or None when the entry does not exist. Independent of
+        upsert_entry, which never touches play_count, so metadata edits and
+        re-analysis leave the count intact."""
+        now = _now()
+        with self._txn() as cur:
+            cur.execute(
+                "UPDATE entries SET play_count = play_count + 1, last_played_at = ? WHERE id = ?",
+                (now, entry_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = cur.execute(
+                "SELECT play_count FROM entries WHERE id = ?", (entry_id,)
+            ).fetchone()
+            return int(row["play_count"]) if row else None
 
     # ---- Relations ----------------------------------------------------------
 

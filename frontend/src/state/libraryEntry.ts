@@ -30,6 +30,10 @@ export interface LibraryEntry {
   notes: string;
   source: 'generate' | 'studio' | 'import';
   chimeraSources?: string[];
+  /** Persistent play counter, incremented when the track starts in the player. */
+  playCount?: number;
+  /** Unix seconds of the last play, or null when never played. */
+  lastPlayedAt?: number | null;
 }
 
 /** Subset of fields a client is allowed to PATCH. Must match the

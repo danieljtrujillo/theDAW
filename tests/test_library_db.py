@@ -40,8 +40,30 @@ def _make_entry_payload(entry_id: str, **overrides) -> dict:
 
 def test_schema_migrates_on_first_open(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
-    assert db.schema_version() == 3
+    assert db.schema_version() == 4
     assert db.count_entries() == 0
+
+
+def test_increment_play_count(tmp_path: Path):
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry(_make_entry_payload("e1"))
+    assert db.get_entry("e1")["play_count"] == 0
+    assert db.increment_play_count("e1") == 1
+    assert db.increment_play_count("e1") == 2
+    row = db.get_entry("e1")
+    assert row["play_count"] == 2
+    assert row["last_played_at"] is not None
+    assert db.increment_play_count("missing") is None
+
+
+def test_upsert_preserves_play_count(tmp_path: Path):
+    # play_count survives metadata edits / re-index — upsert never resets it.
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry(_make_entry_payload("e1"))
+    db.increment_play_count("e1")
+    db.increment_play_count("e1")
+    db.upsert_entry(_make_entry_payload("e1", favorite=True))
+    assert db.get_entry("e1")["play_count"] == 2
 
 
 def test_upsert_entry_round_trip(tmp_path: Path):

@@ -45,19 +45,39 @@ def get_store() -> LibraryStore:
 router = APIRouter()
 
 
+def _attach_play_counts(store: LibraryStore, entries: list[dict[str, Any]]) -> None:
+    """Merge the persistent play_count / last_played_at from the DB into entry
+    dicts. The DB column is the source for these; entries with no DB row read 0.
+    The frontend sorts on play_count, so it ships with every entry payload."""
+    if store.db is None:
+        for e in entries:
+            e.setdefault("play_count", 0)
+            e.setdefault("last_played_at", None)
+        return
+    rows = {row["id"]: row for row in store.db.list_entries()}
+    for e in entries:
+        row = rows.get(e["id"]) or {}
+        e["play_count"] = int(row.get("play_count") or 0)
+        e["last_played_at"] = row.get("last_played_at")
+
+
 @router.get("/entries")
 def list_entries() -> dict[str, Any]:
     store = get_store()
     entries = [r.to_dict() for r in store.list_entries()]
+    _attach_play_counts(store, entries)
     return {"entries": entries, "count": len(entries), "root": str(store.root)}
 
 
 @router.get("/entries/{entry_id}")
 def get_entry(entry_id: str) -> dict[str, Any]:
-    record = get_store().get_entry(entry_id)
+    store = get_store()
+    record = store.get_entry(entry_id)
     if record is None:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
-    return record.to_dict()
+    data = record.to_dict()
+    _attach_play_counts(store, [data])
+    return data
 
 
 @router.get("/audio/{entry_id}")
@@ -138,6 +158,26 @@ def update_entry(entry_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, 
     if record is None:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
     return record.to_dict()
+
+
+@router.post("/entries/{entry_id}/play")
+def register_play(entry_id: str) -> dict[str, Any]:
+    """Increment the persistent play counter. The player calls this when a
+    track starts. Survives restarts (SQLite), and metadata edits / re-analysis
+    leave it intact (upsert_entry never writes play_count)."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    new_count = store.db.increment_play_count(entry_id)
+    if new_count is None:
+        # On disk but missing a DB row (added out-of-band): sync, then retry.
+        record = store.get_entry(entry_id)
+        if record is None:
+            raise HTTPException(404, f"Entry {entry_id!r} not found")
+        entry_dir = store._dir_for(entry_id)  # noqa: SLF001
+        store._sync_record_to_db(record, _read_metadata(entry_dir) or {})  # noqa: SLF001
+        new_count = store.db.increment_play_count(entry_id) or 1
+    return {"id": entry_id, "play_count": new_count}
 
 
 @router.delete("/entries/{entry_id}")
