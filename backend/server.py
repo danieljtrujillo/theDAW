@@ -1046,9 +1046,11 @@ async def preload_model(model: str = Form(...)):
     if normalized != (model or "").strip().lower():
         raise HTTPException(404, f"Unknown generation model {model!r}.")
     from backend.core.idle import get_idle_manager
+    from stable_audio_3.model_configs import resolution_events, resolution_seq
 
     get_idle_manager().bump_activity(tag="model-load")
     loop = asyncio.get_event_loop()
+    since = resolution_seq()
     t0 = time.perf_counter()
     await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
     await loop.run_in_executor(None, _get_or_load_generation_pipeline, normalized)
@@ -1058,6 +1060,9 @@ async def preload_model(model: str = Form(...)):
         "seconds": round(time.perf_counter() - t0, 2),
         "device": str(pipeline.device) if pipeline else None,
         "vram_used_gb": _vram_used_gb(),
+        # Exactly where every file came from (local folder / HF cache /
+        # downloaded). Empty when the pipeline was already loaded or parked.
+        "resolution": resolution_events(since),
     }
 
 

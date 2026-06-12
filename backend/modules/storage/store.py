@@ -94,7 +94,7 @@ class CheckpointRegistry:
         with self._lock:
             entries = deepcopy(self._cache["checkpoints"])
         for entry in entries:
-            resolved = resolve_local_checkpoint(entry["path"])
+            resolved = resolve_local_checkpoint(entry["path"], quiet=True)
             entry["resolves"] = resolved is not None
             if resolved:
                 entry["config_path"], entry["ckpt_path"] = resolved
@@ -110,7 +110,7 @@ class CheckpointRegistry:
     def add_checkpoint(self, path: str, name: str | None = None) -> dict[str, Any]:
         """Validate and register a checkpoint folder/file. Raises ValueError
         when the path doesn't resolve to a config + checkpoint pair."""
-        resolved = resolve_local_checkpoint(path)
+        resolved = resolve_local_checkpoint(path, quiet=True)
         if resolved is None:
             raise ValueError(
                 "No usable checkpoint found there. Point at a folder holding a "

@@ -28,7 +28,7 @@ import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import { swapEngineForModel } from '../lib/magentaEngineClient';
 import { fetchCheckpoints, type RegisteredCheckpoint } from '../lib/storageClient';
-import { logError, logInfo } from '../state/logStore';
+import { logError, logInfo, logWarn } from '../state/logStore';
 import '../components/layout/track-controls.css';
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
@@ -286,6 +286,18 @@ export const AdvancedGenPanel: React.FC<{
   const preloadModel = useCallback(async (model: string) => {
     setModelLoadState('loading');
     try {
+      // Pre-flight: announce where this model will come from BEFORE loading,
+      // and call out loudly when a download is about to happen.
+      if (!model.startsWith('local:')) {
+        const cat = await fetchCheckpoints().then((d) => d.catalog.find((c) => c.name === model)).catch(() => null);
+        if (cat?.source === 'download') {
+          logWarn('model', `${model}: not in any local folder or the HF cache — this load DOWNLOADS it from huggingface.co/${cat.repo_id} (one-time)`);
+        } else if (cat) {
+          logInfo('model', `${model}: resolves ${cat.source === 'local' ? 'from a local folder' : 'from the HF cache'} — no download`);
+        }
+      } else {
+        logInfo('model', `${model}: registered local checkpoint — no download`);
+      }
       const form = new FormData();
       form.append('model', model);
       const r = await fetch('/api/model/load', { method: 'POST', body: form });
@@ -294,6 +306,16 @@ export const AdvancedGenPanel: React.FC<{
         throw new Error(typeof detail === 'string' ? detail : `HTTP ${r.status}`);
       }
       const d = await r.json();
+      // Echo the backend's resolution trail: the exact file paths used and
+      // whether anything was downloaded.
+      for (const ev of d.resolution ?? []) {
+        const line = `${ev.label} ← ${ev.source}${ev.path ? `  ${ev.path}` : ''}${ev.detail ? `  (${ev.detail})` : ''}`;
+        if (String(ev.source).startsWith('download')) logWarn('model', line);
+        else logInfo('model', line);
+      }
+      if (!(d.resolution ?? []).length) {
+        logInfo('model', `${d.model}: already in memory — no files re-read, nothing downloaded`);
+      }
       setActiveModel(d.model);
       setModelLoadState('idle');
       logInfo('model', `${d.model} loaded in ${d.seconds}s (${d.device ?? '?'}; ${d.vram_used_gb ?? '?'} GB VRAM)`);

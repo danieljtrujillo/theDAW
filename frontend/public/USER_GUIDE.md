@@ -1472,7 +1472,11 @@ Nothing downloads at startup. The backend boots without touching a checkpoint, a
 | `GET /api/storage/hf-cache` | Per-repo breakdown of the Hugging Face cache. |
 | `GET/POST /api/storage/checkpoints` · `DELETE /api/storage/checkpoints/{id}` | List, register, and unregister local checkpoints. |
 | `GET/PUT /api/storage/local-only` | Read or set the no-download switch. |
+| `GET /api/storage/resolution-log` | Every resolution decision this session: which file came from which local folder, the HF cache, or a download. |
 | `POST /api/storage/open` | Open a known location in Explorer. |
+| `POST /api/model/load` | Pre-load a model (the MAKE LOAD button); the response carries the full resolution trail. |
+
+Every load also narrates itself. The backend console prints one `model resolve:` line per file with the exact path it used, and a WARNING before anything downloads (including the T5Gemma text encoder's one-time fetch). The MAKE LOAD button echoes the same trail into the in-app LOG: where each file resolved from, a loud line when a download is about to happen, and a block notice when local-only mode stops one.
 
 ---
 

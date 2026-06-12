@@ -219,6 +219,16 @@ def storage_locations(refresh: bool = False) -> dict:
     return {"locations": items}
 
 
+@router.get("/resolution-log")
+def storage_resolution_log(since: int = 0) -> dict:
+    """Every recorded model/checkpoint resolution decision this session:
+    exactly which file came from which local folder, the HF cache, or a
+    download, including download-needed blocks in local-only mode."""
+    from stable_audio_3.model_configs import resolution_events
+
+    return {"events": resolution_events(since)}
+
+
 @router.get("/hf-cache")
 def storage_hf_cache() -> dict:
     cache_dir = _hf_cache_dir()
