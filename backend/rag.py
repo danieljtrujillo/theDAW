@@ -19,7 +19,7 @@ RAG_INDEX_DIR = PROJECT_ROOT / "backend" / "rag_index"
 
 DOC_PATHS = [
     PROJECT_ROOT / "CLAUDE.md",
-    PROJECT_ROOT / "SHOWCASE.md",
+    PROJECT_ROOT / "docs" / "SHOWCASE.md",
     PROJECT_ROOT / "docs" / "USER_GUIDE.md",
     PROJECT_ROOT / "docs" / "DESIGN_PRINCIPLES.md",
     PROJECT_ROOT / "docs" / "guides" / "prompting.md",

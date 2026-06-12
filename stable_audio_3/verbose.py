@@ -1,7 +1,7 @@
 """Shared verbose flag for user-facing prints.
 
-Defaults off. Toggle via `set_verbose(True)` (e.g. from run_gradio.py --verbose)
-or by setting the environment variable `SAT_VERBOSE=1`.
+Defaults off. Toggle via `set_verbose(True)` or by setting the environment
+variable `SAT_VERBOSE=1`.
 
 Warnings and errors should continue to use plain `print()` — `vprint()` is only
 for informational/progress messages that are noisy at default verbosity.
