@@ -18,10 +18,13 @@ never run a manual install command.
 .\theDAW.bat
 ```
 
-On a fresh clone with the prerequisites below on PATH, `theDAW.bat` verifies the
-tools, runs `uv sync --group dev` and `npm install` on first launch, then starts
-the backend, the frontend, and the optional tunnel in a single window and opens
-<http://localhost:5173>. Everything after this section is detail and fallbacks.
+On a fresh clone, `theDAW.bat` verifies the prerequisites below. If required
+tools are missing, it invokes `install/setup.ps1`, which performs a read-only
+hardware/tool check and asks for consent before installing anything. Once the
+tools are present, the launcher runs `uv sync --group dev` and `npm install` on
+first launch, then starts the backend, the frontend, and the optional tunnel in a
+single window and opens <http://localhost:5173>. Everything after this section is
+detail and fallbacks.
 
 ---
 
@@ -45,9 +48,11 @@ the backend, the frontend, and the optional tunnel in a single window and opens
 
 ### Install the tools
 
-The easiest path is to let theDAW do it: double-click **`theDAW.bat`**, which
-detects your hardware and installs uv / Node / FFmpeg / Git for you after a
-single confirmation. The commands below are the manual fallback.
+The easiest path is to let theDAW do it: double-click **`theDAW.bat`**. When a
+tool is missing, it runs **`install/setup.ps1`**, which detects your hardware,
+lists the missing uv / Node / FFmpeg / Git pieces, and asks for confirmation
+before downloading or installing anything. The commands below are the manual
+fallback.
 
 ```powershell
 winget install astral-sh.uv          # uv
