@@ -30,7 +30,7 @@ It checks the machine, installs anything missing after one quick confirmation, a
 
 ## Prerequisites
 
-`theDAW.bat` installs everything in this list automatically, and `Setup-theDAW.bat` runs the same installer on its own. The list is here for reference and for manual or non-Windows setups.
+`theDAW.bat` installs everything in this list automatically the first time a tool is missing. The list is here for reference and for manual or non-Windows setups.
 
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** is the Python environment and package manager that creates the venv and installs torch and CUDA.
 - **[Node.js](https://nodejs.org/) v20.19+ or v22.12+** (with npm) powers the frontend dev server and the VJ sidecar, and Vite 7 sets the version floor.

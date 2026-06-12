@@ -17,11 +17,13 @@ cd /d "%~dp0"
 :: dev stack at the end.
 echo Checking prerequisites...
 set "MISSING="
-where uv   >nul 2>&1 || set "MISSING=%MISSING% uv"
-where node >nul 2>&1 || set "MISSING=%MISSING% node"
-where npm  >nul 2>&1 || set "MISSING=%MISSING% npm"
+where uv     >nul 2>&1 || set "MISSING=%MISSING% uv"
+where node   >nul 2>&1 || set "MISSING=%MISSING% node"
+where npm    >nul 2>&1 || set "MISSING=%MISSING% npm"
+where ffmpeg >nul 2>&1 || set "MISSING=%MISSING% ffmpeg"
+where git    >nul 2>&1 || set "MISSING=%MISSING% git"
 if defined MISSING (
-    echo   Missing required tools:%MISSING%
+    echo   Missing tools:%MISSING%
     echo   Running the one-time setup helper ^(detects hardware + installs prerequisites with your consent^)...
     echo.
     powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\setup.ps1"
@@ -32,8 +34,8 @@ if defined MISSING (
 where uv   >nul 2>&1 || goto :needtools
 where node >nul 2>&1 || goto :needtools
 where npm  >nul 2>&1 || goto :needtools
-where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed. Run Setup-theDAW.bat to add it.
-echo   [OK] required tools present.
+where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
+echo   [OK] prerequisites checked.
 echo.
 
 :: -- Bootstrap dependencies if this is a fresh / incomplete tree --------
@@ -99,7 +101,7 @@ exit /b 0
 :needtools
 echo.
 echo   theDAW needs uv + Node to run, and they are not installed yet.
-echo   Double-click Setup-theDAW.bat to install the prerequisites, then run theDAW.bat.
+echo   Double-click theDAW.bat again to retry the installer, or install uv + Node by hand.
 echo.
 pause
 exit /b 1

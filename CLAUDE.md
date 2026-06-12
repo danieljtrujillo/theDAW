@@ -179,7 +179,7 @@ right stack automatically:
 - torch + torchaudio come from the cu128 index (no manual `--index-url` step)
 - `soundfile` is a base dependency (torchaudio's Windows backend), installed by `uv sync`
 - Flash Attention installs from the pinned `kingbri1` cu128/cp310 wheel, gated to `sys_platform == 'win32' and python_version < '3.11'` (so the venv must be Python 3.10; `.python-version` pins it)
-- `theDAW.bat` / `Setup-theDAW.bat` install the prerequisite tools; `docs/windows/setup-guide.md` has the full walkthrough and fallbacks
+- `theDAW.bat` installs the prerequisite tools on first run; `docs/windows/setup-guide.md` has the full walkthrough and fallbacks
 
 ## RAG Index Maintenance
 
