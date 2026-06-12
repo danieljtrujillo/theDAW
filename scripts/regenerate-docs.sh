@@ -33,6 +33,16 @@ log "Syncing $src → $dest"
 mkdir -p "$(dirname "$dest")"
 cp "$src" "$dest"
 
+# 2b. Mirror the guide screenshots into public/ so the in-app Docs modal can
+# load them (served at /screenshots/...). docs/screenshots is the tracked
+# source; frontend/public/screenshots is a derived copy (gitignored).
+if [[ -d docs/screenshots ]]; then
+  mkdir -p frontend/public/screenshots
+  cp -f docs/screenshots/*.png frontend/public/screenshots/ 2>/dev/null || true
+  rm -f frontend/public/screenshots/*-FAILED.png 2>/dev/null || true
+  log "Synced guide screenshots → frontend/public/screenshots"
+fi
+
 # 3. Frontend build (catches markdown that breaks the modal's renderer).
 log "Building frontend"
 ( cd frontend && npx --no vite build >/dev/null 2>&1 ) || {

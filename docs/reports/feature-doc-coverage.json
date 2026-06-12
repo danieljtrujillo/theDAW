@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-12T01:42:22.031Z",
-  "repoRevision": "b6c4eb0f1905",
+  "generatedAt": "2026-06-12T02:21:47.033Z",
+  "repoRevision": "94216033cc15",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -822,9 +822,11 @@
       "docAnchors": [
         "#table-of-contents",
         "#1-repository-anatomy",
+        "#6-2-generation-parameters",
         "#6-3-1-chimera-fusion-stack",
         "#12-3-how-the-visualizations-are-rendered",
         "#19-14-chimera",
+        "#21-models",
         "#26-cloud-generation-suno",
         "#26-1-modes",
         "#26-2-flow-and-library-integration",
@@ -839,6 +841,8 @@
       "featureId": "magenta-rt2-generate",
       "docAnchors": [
         "#table-of-contents",
+        "#6-2-generation-parameters",
+        "#21-models",
         "#27-magenta-realtime-2",
         "#27-1-the-sidecar-and-conditioning",
         "#27-2-first-non-mac-port-of-magenta-realtime-2",
