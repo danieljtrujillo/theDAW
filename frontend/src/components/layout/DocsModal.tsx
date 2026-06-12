@@ -52,6 +52,7 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       .guide th, .guide td { border: 1pt solid #bbb; padding: 4pt 7pt; text-align: left; vertical-align: top; }
       .guide th { background: #eee; color: #000; font-weight: 700; }
       .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; page-break-inside: avoid; }
+      .guide-cover { text-align: center; min-height: 8.4in; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
       @page { margin: 0.75in; size: letter; }
     `,
   },
@@ -84,6 +85,7 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       .guide th { text-align: left; font-weight: 700; color: #0e0f15; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.05em; padding: 4pt 8pt 4pt 0; border-bottom: 1pt solid #2c2a38; }
       .guide td { padding: 4pt 8pt 4pt 0; border-bottom: 0.5pt solid #ece9f3; vertical-align: top; color: #2c2a38; }
       .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; border-radius: 3pt; page-break-inside: avoid; }
+      .guide-cover { text-align: center; min-height: 8.4in; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
       @page { margin: 0.7in; size: letter; }
     `,
   },
@@ -92,10 +94,14 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
     css: `
       * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       html {
-        background-color: #0c0617;
+        background-color: #050208;
         background-image:
-          repeating-linear-gradient(135deg, rgba(217,70,239,0.05) 0, rgba(217,70,239,0.05) 1px, transparent 1px, transparent 18px),
-          radial-gradient(130% 95% at 50% -12%, #2c1450 0%, #170a2e 46%, #0a0513 100%);
+          radial-gradient(58% 40% at 50% -3%, rgba(150,55,230,0.13) 0%, transparent 60%),
+          linear-gradient(rgba(6,3,12,0.46) 0%, rgba(6,3,12,0.62) 100%),
+          url('/screenshots/carbon-ferro.png');
+        background-size: 100% 100%, 100% 100%, cover;
+        background-position: center, center, center;
+        background-repeat: no-repeat;
       }
       body { margin: 0; padding: 0; background: transparent; }
       /* Soft edge vignette + faint neon glow, fixed so it repeats on every printed
@@ -105,7 +111,7 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       /* Carbon supplies its own margins (page padding) so a full-bleed dark page
          needs the print dialog's Margins set to None; otherwise default margins add
          white edges around the dark sheet. */
-      .guide { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #cabfe2; font-size: 10pt; line-height: 1.55; max-width: 6.7in; margin: 0 auto; padding: 0.55in 0 0.65in; }
+      .guide { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #cabfe2; font-size: 10pt; line-height: 1.55; max-width: 6.7in; margin: 0 auto; padding: 0; }
       .guide h1, .guide h2, .guide h3, .guide h4 { color: #f4ecff; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; page-break-after: avoid; page-break-inside: avoid; }
       .guide h1 { font-size: 20pt; margin: 0 0 12pt; padding-bottom: 6pt; border-bottom: 1pt solid #c026d3; color: #fff; text-shadow: 0 0 16px rgba(217,70,239,0.5); letter-spacing: -0.02em; }
       .guide h2 { font-size: 13.5pt; margin: 18pt 0 4pt; padding-bottom: 3pt; border-bottom: 0.5pt solid #2a1740; color: #d8b4fe; }
@@ -127,7 +133,8 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
       .guide th { text-align: left; font-weight: 700; color: #d8b4fe; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.05em; padding: 4pt 8pt 4pt 0; border-bottom: 1pt solid #c026d3; }
       .guide td { padding: 4pt 8pt 4pt 0; border-bottom: 0.5pt solid #21142f; vertical-align: top; color: #cabfe2; }
       .guide img { display: block; max-width: 100%; height: auto; margin: 9pt auto; border-radius: 3pt; page-break-inside: avoid; }
-      @page { margin: 0; size: letter; }
+      .guide-cover { text-align: center; min-height: 8.4in; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
+      @page { margin: 0.5in 0; size: letter; }
     `,
   },
 };
@@ -598,6 +605,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
         .docs-content em { color: #c4b5fd; }
         .docs-content strong { color: #f5f3ff; font-weight: 700; }
         .docs-content .docs-content > p:first-child { margin-top: 0; }
+        .docs-content .guide-cover { text-align: center; margin: 0.5rem 0 1.6rem; }
       `}</style>
     </div>
   );

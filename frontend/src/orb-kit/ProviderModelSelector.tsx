@@ -134,6 +134,12 @@ export function ProviderModelSelector({
 
   const providerRef = useRef<HTMLDivElement>(null)
   const modelRef = useRef<HTMLDivElement>(null)
+  const providerLabelId = 'assistant-provider-selector-label'
+  const providerButtonId = 'assistant-provider-selector-button'
+  const providerListId = 'assistant-provider-selector-list'
+  const modelLabelId = 'assistant-model-selector-label'
+  const modelButtonId = 'assistant-model-selector-button'
+  const modelListId = 'assistant-model-selector-list'
 
   useDropdownDismiss(providerRef, providerOpen, () => setProviderOpen(false))
   useDropdownDismiss(modelRef, modelOpen, () => setModelOpen(false))
@@ -167,10 +173,15 @@ export function ProviderModelSelector({
     <div className="space-y-1.5">
       {/* Provider selector */}
       <div ref={providerRef} className="relative">
-        <label className="text-[10px] text-muted block mb-0.5">Provider</label>
+        <span id={providerLabelId} className="text-[10px] text-muted block mb-0.5">Provider</span>
         <button
+          id={providerButtonId}
           type="button"
           onClick={() => { setProviderOpen(v => !v); setModelOpen(false) }}
+          aria-labelledby={`${providerLabelId} ${providerButtonId}`}
+          aria-haspopup="listbox"
+          aria-expanded={providerOpen}
+          aria-controls={providerOpen ? providerListId : undefined}
           className="w-full flex items-center justify-between gap-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-[11px] text-white hover:border-white/20 focus:outline-none focus:border-primary/50 transition-colors"
         >
           <span className="truncate">{activeProvider?.label ?? 'Select provider'}</span>
@@ -178,11 +189,13 @@ export function ProviderModelSelector({
         </button>
 
         {providerOpen && (
-          <div className="absolute z-50 left-0 right-0 mt-1 max-h-48 overflow-y-auto rounded border border-white/10 backdrop-blur-xl bg-black/80 shadow-xl custom-scrollbar">
+          <div id={providerListId} role="listbox" aria-labelledby={providerLabelId} className="absolute z-50 left-0 right-0 mt-1 max-h-48 overflow-y-auto rounded border border-white/10 backdrop-blur-xl bg-black/80 shadow-xl custom-scrollbar">
             {providers.map(p => (
               <button
                 key={p.id}
                 type="button"
+                role="option"
+                aria-selected={p.id === selectedProvider}
                 onClick={() => handleProviderSelect(p.id)}
                 className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-left transition-colors ${
                   p.id === selectedProvider
@@ -200,11 +213,16 @@ export function ProviderModelSelector({
 
       {/* Model selector */}
       <div ref={modelRef} className="relative">
-        <label className="text-[10px] text-muted block mb-0.5">Model</label>
+        <span id={modelLabelId} className="text-[10px] text-muted block mb-0.5">Model</span>
         <button
+          id={modelButtonId}
           type="button"
           onClick={() => { setModelOpen(v => !v); setProviderOpen(false) }}
           disabled={loading}
+          aria-labelledby={`${modelLabelId} ${modelButtonId}`}
+          aria-haspopup="listbox"
+          aria-expanded={modelOpen}
+          aria-controls={modelOpen ? modelListId : undefined}
           className="w-full flex items-center justify-between gap-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-[11px] font-mono text-primary hover:border-white/20 focus:outline-none focus:border-primary/50 transition-colors disabled:opacity-50"
         >
           <span className="truncate">{loading ? 'Loading...' : selectedModelDisplay}</span>
@@ -216,7 +234,7 @@ export function ProviderModelSelector({
         </button>
 
         {modelOpen && !loading && (
-          <div className="absolute z-50 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded border border-white/10 backdrop-blur-xl bg-black/80 shadow-xl custom-scrollbar">
+          <div id={modelListId} role="listbox" aria-labelledby={modelLabelId} className="absolute z-50 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded border border-white/10 backdrop-blur-xl bg-black/80 shadow-xl custom-scrollbar">
             {[...new Map((activeProvider?.models ?? []).map(m => [m.id, m])).values()].map(model => {
               const isClaudeCode = selectedProvider === 'claude' && claudeCodeModels
               const displayName = isClaudeCode
@@ -228,6 +246,8 @@ export function ProviderModelSelector({
                 <button
                   key={model.id}
                   type="button"
+                  role="option"
+                  aria-selected={isSelected}
                   onClick={() => handleModelSelect(model.id)}
                   className={`w-full flex items-start gap-2 px-2.5 py-1.5 text-left transition-colors ${
                     isSelected
