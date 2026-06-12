@@ -1029,6 +1029,43 @@ async def offload_status():
     }
 
 
+@app.post("/api/model/load")
+async def preload_model(model: str = Form(...)):
+    """Pre-load a generation model so the first CREATE starts instantly.
+
+    Same path the generate endpoints use: clears any resident MRT2 engine,
+    then loads (or wakes) the requested pipeline. The request stays open for
+    the duration of the load — minutes on a cold first load of medium.
+    """
+    if _generation_job_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A generation is running; the model can't be swapped right now.",
+        )
+    normalized = _normalize_generation_model(model)
+    if normalized != (model or "").strip().lower():
+        raise HTTPException(404, f"Unknown generation model {model!r}.")
+    from backend.core.idle import get_idle_manager
+    from stable_audio_3.model_configs import resolution_events, resolution_seq
+
+    get_idle_manager().bump_activity(tag="model-load")
+    loop = asyncio.get_event_loop()
+    since = resolution_seq()
+    t0 = time.perf_counter()
+    await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
+    await loop.run_in_executor(None, _get_or_load_generation_pipeline, normalized)
+    return {
+        "loaded": True,
+        "model": normalized,
+        "seconds": round(time.perf_counter() - t0, 2),
+        "device": str(pipeline.device) if pipeline else None,
+        "vram_used_gb": _vram_used_gb(),
+        # Exactly where every file came from (local folder / HF cache /
+        # downloaded). Empty when the pipeline was already loaded or parked.
+        "resolution": resolution_events(since),
+    }
+
+
 @app.post("/api/spectrogram")
 async def generate_spectrogram(
     audio_base64: Optional[str] = Form(None),

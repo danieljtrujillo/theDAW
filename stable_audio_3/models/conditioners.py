@@ -208,16 +208,45 @@ class T5GemmaConditioner(Conditioner):
             try:
                 from huggingface_hub import try_to_load_from_cache
 
+                from stable_audio_3.model_configs import note_resolution
+
                 candidates = [load_from]
                 if load_from == "stabilityai/t5gemma-b-b-ul2":
                     candidates.append("google/t5gemma-b-b-ul2")
 
+                requested_repo = load_from
                 for candidate_repo in candidates:
                     cached_config = try_to_load_from_cache(candidate_repo, "config.json")
                     if isinstance(cached_config, str):
                         load_from = str(Path(cached_config).parent)
                         hf_kwargs = {}
+                        note_resolution(
+                            f"T5Gemma text encoder ({candidate_repo})",
+                            "hf-cache",
+                            path=load_from,
+                            repo_id=candidate_repo,
+                        )
                         break
+                else:
+                    note_resolution(
+                        f"T5Gemma text encoder ({requested_repo})",
+                        "download-start",
+                        repo_id=requested_repo,
+                        detail=(
+                            "not in the HF cache -> transformers downloads it now "
+                            f"(~2 GB, one-time) from https://huggingface.co/{requested_repo}"
+                        ),
+                        level=logging.WARNING,
+                    )
+            except Exception:
+                pass
+        elif isinstance(load_from, str):
+            try:
+                from stable_audio_3.model_configs import note_resolution
+
+                note_resolution(
+                    "T5Gemma text encoder", "local-folder", path=load_from
+                )
             except Exception:
                 pass
 

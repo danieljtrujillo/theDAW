@@ -28,6 +28,7 @@ import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import { swapEngineForModel } from '../lib/magentaEngineClient';
 import { fetchCheckpoints, type RegisteredCheckpoint } from '../lib/storageClient';
+import { logError, logInfo, logWarn } from '../state/logStore';
 import '../components/layout/track-controls.css';
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
@@ -269,6 +270,59 @@ export const AdvancedGenPanel: React.FC<{
     fetchCheckpoints()
       .then((d) => setLocalModels(d.registered.filter((e) => e.resolves)))
       .catch(() => setLocalModels([]));
+  }, []);
+
+  // Pre-load (LOAD button): fire the checkpoint onto the GPU before CREATE.
+  // activeModel mirrors the backend's resident pipeline so the button reads
+  // LOADED when the selection is already up.
+  const [activeModel, setActiveModel] = useState<string | null>(null);
+  const [modelLoadState, setModelLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
+  useEffect(() => {
+    fetch('/api/model-info')
+      .then((r) => r.json())
+      .then((d) => setActiveModel(d?.model_loaded ? d.active_model : null))
+      .catch(() => undefined);
+  }, []);
+  const preloadModel = useCallback(async (model: string) => {
+    setModelLoadState('loading');
+    try {
+      // Pre-flight: announce where this model will come from BEFORE loading,
+      // and call out loudly when a download is about to happen.
+      if (!model.startsWith('local:')) {
+        const cat = await fetchCheckpoints().then((d) => d.catalog.find((c) => c.name === model)).catch(() => null);
+        if (cat?.source === 'download') {
+          logWarn('model', `${model}: not in any local folder or the HF cache — this load DOWNLOADS it from huggingface.co/${cat.repo_id} (one-time)`);
+        } else if (cat) {
+          logInfo('model', `${model}: resolves ${cat.source === 'local' ? 'from a local folder' : 'from the HF cache'} — no download`);
+        }
+      } else {
+        logInfo('model', `${model}: registered local checkpoint — no download`);
+      }
+      const form = new FormData();
+      form.append('model', model);
+      const r = await fetch('/api/model/load', { method: 'POST', body: form });
+      if (!r.ok) {
+        const detail = await r.json().then((j) => j?.detail).catch(() => null);
+        throw new Error(typeof detail === 'string' ? detail : `HTTP ${r.status}`);
+      }
+      const d = await r.json();
+      // Echo the backend's resolution trail: the exact file paths used and
+      // whether anything was downloaded.
+      for (const ev of d.resolution ?? []) {
+        const line = `${ev.label} ← ${ev.source}${ev.path ? `  ${ev.path}` : ''}${ev.detail ? `  (${ev.detail})` : ''}`;
+        if (String(ev.source).startsWith('download')) logWarn('model', line);
+        else logInfo('model', line);
+      }
+      if (!(d.resolution ?? []).length) {
+        logInfo('model', `${d.model}: already in memory — no files re-read, nothing downloaded`);
+      }
+      setActiveModel(d.model);
+      setModelLoadState('idle');
+      logInfo('model', `${d.model} loaded in ${d.seconds}s (${d.device ?? '?'}; ${d.vram_used_gb ?? '?'} GB VRAM)`);
+    } catch (e) {
+      setModelLoadState('error');
+      logError('model', `Model load failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }, []);
 
   const lastAudioUrl = useGenerateStore((s) => s.lastAudioUrl);
@@ -553,6 +607,7 @@ export const AdvancedGenPanel: React.FC<{
                   const isRf = m.endsWith('-rf')
                     || /-rf\b|-rf[.-_]/i.test(localEntry?.ckpt_path ?? localEntry?.name ?? '');
                   patch({ model: m, steps: isMag ? 1 : isRf ? 50 : 8, cfg: isMag ? 1.0 : isRf ? 7.0 : 1.0 });
+                  setModelLoadState('idle');
                   // GPU auto-swap: magenta selected → park SA3 + start the WSL2
                   // engine; SA3 selected → stop the engine + restore SA3.
                   void swapEngineForModel(prev, m);
@@ -571,6 +626,27 @@ export const AdvancedGenPanel: React.FC<{
                     </optgroup>
                   )}
                 </select>
+                {!isMagenta && p.model !== 'suno' && (() => {
+                  const loaded = activeModel === p.model && modelLoadState !== 'loading';
+                  const label = modelLoadState === 'loading' ? 'LOADING'
+                    : loaded ? 'LOADED'
+                    : modelLoadState === 'error' ? 'RETRY' : 'LOAD';
+                  const cls = modelLoadState === 'loading' ? 'border-amber-500/40 text-amber-300 bg-amber-500/10 animate-pulse'
+                    : loaded ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
+                    : modelLoadState === 'error' ? 'border-red-500/40 text-red-300 bg-red-500/10 hover:bg-red-500/20'
+                    : 'border-purple-500/40 text-purple-200 bg-purple-500/10 hover:bg-purple-500/20';
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => { if (!loaded && modelLoadState !== 'loading') void preloadModel(p.model); }}
+                      disabled={loaded || modelLoadState === 'loading'}
+                      className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 transition-colors disabled:cursor-default ${cls}`}
+                      title="Pre-load this model onto the GPU now so the first CREATE starts instantly. A cold first load of Medium takes a few minutes; reloads from RAM take seconds."
+                    >
+                      {label}
+                    </button>
+                  );
+                })()}
                 {(p.model.startsWith('magenta-') || p.magentaEngine !== 'off') && (() => {
                   const st = p.magentaEngine === 'starting' ? 'starting'
                     : p.magentaEngine === 'setup' ? 'setup'
