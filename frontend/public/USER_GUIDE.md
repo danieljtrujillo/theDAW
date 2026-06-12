@@ -1450,6 +1450,30 @@ ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weight
 
 The MAKE Model dropdown also lists two engines beyond these checkpoints. `magenta-small` reaches the Magenta RealTime 2 sidecar for streaming text-to-music (§27). Suno cloud generation sits under `suno` (§26). Both options share the dropdown with the local Stable Audio models, so one session can move across them without leaving MAKE.
 
+### 21.1 Models & Storage: local checkpoints and the no-download guarantee
+
+Nothing downloads at startup. The backend boots without touching a checkpoint, and a model loads only at the first CREATE that needs it. Resolution runs local-first on every load:
+
+1. **Local model folders** — any directory listed in `local_models.txt` at the repo root or in the `SA3_LOCAL_MODELS_DIR` environment variable, plus a `models/` folder in the repo if present. Each folder holds subfolders named after the HF repo (for example `stable-audio-3-medium/`).
+2. **The Hugging Face cache** — anything a previous session already downloaded.
+3. **A one-time download** from the model's HF repo, only when neither local source has the files.
+
+**Settings → Models & Storage** puts all of this on screen:
+
+- **Local only (never download)** pins resolution to steps 1 and 2. A missing model then fails with a clear message instead of downloading. The switch persists across restarts (it drives `SA3_LOCAL_ONLY`).
+- **Catalog chips** show where each built-in model would come from right now: `local`, `cached`, or `download`.
+- **Add a checkpoint you already have** registers any checkpoint on disk: point it at a folder containing a model config JSON plus one `.safetensors` file, or at the `.safetensors` file itself with its config alongside. Registered checkpoints appear under **LOCAL CHECKPOINTS** in the MAKE Model dropdown and generate exactly like catalog models. Removing an entry only removes the dropdown entry; files are never touched.
+- **Where everything lives** lists every model location with its size and an **Open** button that reveals it in Explorer: the HF cache, each local model folder, the generated-audio library, the assistant's RAG index, the Torch hub cache, and the Magenta WSL assets and engine venv (via `\\wsl.localhost\…`).
+- **Hugging Face cache breakdown** expands to a per-repo size table, each row openable in Explorer.
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/storage/locations` | Every model/data location with size and file count (`?refresh=1` recomputes). |
+| `GET /api/storage/hf-cache` | Per-repo breakdown of the Hugging Face cache. |
+| `GET/POST /api/storage/checkpoints` · `DELETE /api/storage/checkpoints/{id}` | List, register, and unregister local checkpoints. |
+| `GET/PUT /api/storage/local-only` | Read or set the no-download switch. |
+| `POST /api/storage/open` | Open a known location in Explorer. |
+
 ---
 
 ## 22. LoRA Adapter Types
@@ -1731,7 +1755,7 @@ Two offline helpers under `scripts/` bulk-import an existing SunoHarvester cache
 
 ## 27. Magenta RealTime 2
 
-The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. **"Magenta RT2 (text→music)"** is always present in the Model dropdown, and selecting it runs the GPU swap automatically: the Stable Audio model parks in CPU RAM (`POST /api/model/offload`), any other MRT2 engine is stopped, and the extended sidecar starts inside WSL2. A status pill beside the dropdown tracks the engine (amber **LOADING** during the one-time model load and compile, green **READY**, red **ERROR**). Selecting any Stable Audio model reverses the swap: the engine stops and the Stable Audio model returns to the GPU. No terminal is involved at any point.
+The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. **"Magenta RT2 (text→music)"** is always present in the Model dropdown, and selecting it runs the GPU swap automatically: the Stable Audio model parks in CPU RAM (`POST /api/model/offload`), any other MRT2 engine is stopped, and the extended sidecar starts inside WSL2. A status pill beside the dropdown tracks the engine (amber **LOADING** during the one-time model load and compile, green **READY**, red **ERROR**). On a machine where the WSL engine was never installed, the swap stops before touching the GPU and the pill shows amber **SETUP** instead; its tooltip points at `Setup-MRT2.bat`, the one-time consent-based installer. Selecting any Stable Audio model reverses the swap: the engine stops and the Stable Audio model returns to the GPU. No terminal is involved at any point.
 
 ![Magenta RealTime 2 text→music panel in the Generate workspace, the first non-Mac MRT2 port](screenshots/make-magenta-rt2.png)
 
@@ -1752,7 +1776,7 @@ The sidecar's `/health` carries an identity field (`app: "mrt2-extended"`), and 
 | `GET /api/magenta/probe` | Sidecar health + whether the model is loaded. |
 | `POST /api/magenta/generate` | Generate from text, notes, and/or an audio-style clip. |
 | `GET /api/magenta/jobs/{id}` | Poll a generation job. |
-| `POST /api/magenta/engine/start` | The automatic swap: parks the SA3 model in CPU RAM, stops any other MRT2 engine, spawns the extended sidecar in WSL2. Refuses with 409 while a generation runs. |
+| `POST /api/magenta/engine/start` | The automatic swap: parks the SA3 model in CPU RAM, stops any other MRT2 engine, spawns the extended sidecar in WSL2. Refuses with 409 while a generation runs, and with 412 (`setup_required`) when the WSL venv or model checkpoint is missing. |
 | `POST /api/magenta/engine/stop` | Stops every MRT2 engine and restores the SA3 model to the GPU. |
 | `GET /api/magenta/engine/status` | Engine health, protocol identity, and spawned-process state. |
 | `POST /api/model/offload` · `POST /api/model/onload` · `GET /api/model/offload-status` | The SA3 side of the swap: park the loaded model(s) in CPU RAM, restore them to VRAM, and report the parked state. The engine endpoints call these automatically. |

@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 from dataclasses import dataclass
@@ -58,6 +59,53 @@ def _local_override(repo_id: str, filename: str) -> str | None:
             if candidate.is_file():
                 logger.info("Using local model file: %s", candidate)
                 return str(candidate)
+    return None
+
+
+def _is_model_config_json(path: Path) -> bool:
+    """Cheap sanity check that a JSON file is a model config, not metadata."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return isinstance(data, dict) and "model_type" in data
+    except (OSError, ValueError):
+        return False
+
+
+def resolve_local_checkpoint(path_str: str) -> tuple[str, str] | None:
+    """Resolve a user-supplied checkpoint (folder or .safetensors file) to (config, ckpt).
+
+    Accepts either a folder holding a model config JSON plus a .safetensors
+    checkpoint, or a direct path to the .safetensors file with the config
+    alongside it. Returns None when the layout is missing or ambiguous
+    (several checkpoints in one folder and none named model.safetensors).
+    """
+    p = Path(str(path_str)).expanduser()
+    if p.is_file() and p.suffix == ".safetensors":
+        ckpt = p
+        folder = p.parent
+    elif p.is_dir():
+        folder = p
+        preferred = folder / "model.safetensors"
+        if preferred.is_file():
+            ckpt = preferred
+        else:
+            candidates = sorted(folder.glob("*.safetensors"))
+            if len(candidates) != 1:
+                return None
+            ckpt = candidates[0]
+    else:
+        return None
+
+    config_candidates = [
+        ckpt.with_suffix(".json"),
+        folder / "model_config.json",
+        *sorted(folder.glob("*.json")),
+    ]
+    for candidate in config_candidates:
+        if candidate.is_file() and _is_model_config_json(candidate):
+            logger.info("Using local checkpoint: %s (config %s)", ckpt, candidate)
+            return str(candidate), str(ckpt)
     return None
 
 

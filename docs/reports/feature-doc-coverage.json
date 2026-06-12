@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-12T19:17:38.369Z",
-  "repoRevision": "915b82a8cb57",
+  "generatedAt": "2026-06-12T20:41:30.671Z",
+  "repoRevision": "89a17371d796",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -735,6 +735,7 @@
         "#19-8-jobs-list",
         "#19-11-assistant",
         "#19-12-module-loader",
+        "#21-1-models-storage-local-checkpoints-and-the-no-download-guarantee",
         "#api-unreachable-banner-in-the-header",
         "#backend-job-persistence",
         "#25-3-current-feature-to-screenshot-map",

@@ -6,6 +6,7 @@ codegraph/
 data/api_key_pools.json
 data/generations/
 data/settings.json
+data/local_checkpoints.json
 data/library.db
 data/library.db-*
 # Suno cloud-gen key/jobs + local session change logs (never committed)

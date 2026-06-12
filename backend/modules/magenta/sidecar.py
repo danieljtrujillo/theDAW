@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -110,6 +111,56 @@ def _wsl_path(p: Path) -> str:
 
 def engine_process_alive() -> bool:
     return _engine_proc is not None and _engine_proc.poll() is None
+
+
+_setup_cache: dict = {"t": 0.0, "state": None}
+_SETUP_CACHE_SECONDS = 30.0
+
+
+def setup_state(refresh: bool = False) -> dict:
+    """Is the WSL side actually installed? Probes the venv python and the
+    model checkpoints so the UI can say 'setup required' instead of a bare
+    error when Setup-MRT2 never ran. Cached for 30 s (the wsl spawn is
+    ~a second); pass ``refresh=True`` after a setup run."""
+    now = time.monotonic()
+    if (
+        not refresh
+        and _setup_cache["state"] is not None
+        and now - _setup_cache["t"] < _SETUP_CACHE_SECONDS
+    ):
+        return _setup_cache["state"]
+
+    state = {"wsl": False, "venv": False, "checkpoint": False, "ready": False}
+    try:
+        py = _WSL_PYTHON.replace("'", "")
+        result = subprocess.run(
+            [
+                "wsl.exe",
+                "-d",
+                _wsl_distro(),
+                "--",
+                "bash",
+                "-lc",
+                f"echo WSL_OK; test -x {py} && echo VENV_OK; "
+                "ls ~/Documents/Magenta/magenta-rt-v2/checkpoints/*.safetensors "
+                ">/dev/null 2>&1 && echo CKPT_OK",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            shell=False,
+        )
+        out = result.stdout
+        state["wsl"] = "WSL_OK" in out
+        state["venv"] = "VENV_OK" in out
+        state["checkpoint"] = "CKPT_OK" in out
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.debug("magenta.engine: setup probe failed: %s", e)
+    state["ready"] = state["venv"] and state["checkpoint"]
+    _setup_cache["t"] = now
+    _setup_cache["state"] = state
+    return state
 
 
 def start_engine() -> dict:

@@ -146,8 +146,9 @@ export interface GenerateParamsState {
   magExtend: boolean; // continue the current piece (morph without a cut)
   magNotes: number[]; // selected MIDI pitches that steer the melody
   /** Lifecycle of the WSL2 engine behind the Magenta option — drives the
-   *  dropdown pill. The swap runs automatically on Model-dropdown change. */
-  magentaEngine: 'off' | 'starting' | 'ready' | 'error';
+   *  dropdown pill. The swap runs automatically on Model-dropdown change.
+   *  'setup' means the WSL side was never installed (run Setup-MRT2 once). */
+  magentaEngine: 'off' | 'starting' | 'ready' | 'error' | 'setup';
 }
 
 interface ParamsStore extends GenerateParamsState {

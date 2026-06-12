@@ -27,6 +27,7 @@ import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import { swapEngineForModel } from '../lib/magentaEngineClient';
+import { fetchCheckpoints, type RegisteredCheckpoint } from '../lib/storageClient';
 import '../components/layout/track-controls.css';
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
@@ -259,6 +260,15 @@ export const AdvancedGenPanel: React.FC<{
       .then((r) => r.json())
       .then((d) => useGenerateParamsStore.getState().setField('magentaAvailable', d?.available === true))
       .catch(() => useGenerateParamsStore.getState().setField('magentaAvailable', false));
+  }, []);
+
+  // User-registered local checkpoints (Settings → Models & Storage) appear as
+  // a LOCAL group in the Model dropdown and generate via their `local:` ids.
+  const [localModels, setLocalModels] = useState<RegisteredCheckpoint[]>([]);
+  useEffect(() => {
+    fetchCheckpoints()
+      .then((d) => setLocalModels(d.registered.filter((e) => e.resolves)))
+      .catch(() => setLocalModels([]));
   }, []);
 
   const lastAudioUrl = useGenerateStore((s) => s.lastAudioUrl);
@@ -536,7 +546,12 @@ export const AdvancedGenPanel: React.FC<{
                 <label htmlFor="gen-model" className="text-[11px] text-zinc-300 w-16 shrink-0">Model</label>
                 <select id="gen-model" name="gen-model" className="compact-input flex-1" value={p.model} onChange={(e) => {
                   const m = e.target.value; const prev = p.model;
-                  const isRf = m.endsWith('-rf'); const isMag = m.startsWith('magenta-');
+                  const isMag = m.startsWith('magenta-');
+                  // A registered local checkpoint follows its filename's ARC/RF
+                  // convention for sampler defaults; unknown names assume ARC.
+                  const localEntry = m.startsWith('local:') ? localModels.find((l) => l.id === m) : null;
+                  const isRf = m.endsWith('-rf')
+                    || /-rf\b|-rf[.-_]/i.test(localEntry?.ckpt_path ?? localEntry?.name ?? '');
                   patch({ model: m, steps: isMag ? 1 : isRf ? 50 : 8, cfg: isMag ? 1.0 : isRf ? 7.0 : 1.0 });
                   // GPU auto-swap: magenta selected → park SA3 + start the WSL2
                   // engine; SA3 selected → stop the engine + restore SA3.
@@ -548,20 +563,32 @@ export const AdvancedGenPanel: React.FC<{
                   <option value="medium-rf">Medium-RF</option>
                   <option value="magenta-small">Magenta RT2 (text→music)</option>
                   <option value="suno">Suno (Cloud)</option>
+                  {localModels.length > 0 && (
+                    <optgroup label="Local checkpoints">
+                      {localModels.map((l) => (
+                        <option key={l.id} value={l.id}>{l.name} (local)</option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
                 {(p.model.startsWith('magenta-') || p.magentaEngine !== 'off') && (() => {
                   const st = p.magentaEngine === 'starting' ? 'starting'
+                    : p.magentaEngine === 'setup' ? 'setup'
                     : p.magentaEngine === 'error' ? 'error'
                     : (p.magentaEngine === 'ready' || p.magentaAvailable) ? 'ready' : 'off';
                   const cls = st === 'starting' ? 'border-amber-500/40 text-amber-300 bg-amber-500/10 animate-pulse'
+                    : st === 'setup' ? 'border-amber-500/40 text-amber-300 bg-amber-500/10'
                     : st === 'error' ? 'border-red-500/40 text-red-300 bg-red-500/10'
                     : st === 'ready' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
                     : 'border-zinc-600/40 text-zinc-400 bg-white/3';
-                  const label = st === 'starting' ? 'LOADING' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
+                  const label = st === 'starting' ? 'LOADING' : st === 'setup' ? 'SETUP' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
+                  const title = st === 'setup'
+                    ? 'The Magenta RT2 engine is not installed yet. Double-click Setup-MRT2.bat (in sidecars/magenta-rt2-nvidia) once — it checks the PC, asks consent, and installs everything. Then pick Magenta here again.'
+                    : 'Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio.';
                   return (
                     <span
                       className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 ${cls}`}
-                      title="Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio."
+                      title={title}
                     >
                       {label}
                     </span>

@@ -1,7 +1,7 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-12T19:17:38.369Z · Git revision: `915b82a8cb57` · Repomix tracked: **no**
+> Generated: 2026-06-12T20:41:30.671Z · Git revision: `89a17371d796` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
@@ -33,7 +33,7 @@
 | `library-bundle-download-lineage-export` | Library bundle downloads and lineage graph exports including metadata, stems, MIDI, and relations | library | implemented | **documented** | #12-2-3d-graph-controls<br>#13-4-per-entry-controls<br>#13-5-bundle-downloads-and-lineage<br>#19-13-disk-backed-library | Matched 2/4 guide terms. |
 | `library-stems-sidecar` | Stem separation sidecar with install/start/stop/status/progress/abort and persisted stem rows | library | implemented | **documented** | #13-4-per-entry-controls<br>#13-6-stem-separation<br>#19-15-stems<br>#credits | Matched 3/4 guide terms. |
 | `library-midi-conversion` | Audio-to-MIDI conversion with installable engines, persisted MIDI rows, and editor send targets | library | implemented | **documented** | #6-4-1-microphone-recorder<br>#13-4-per-entry-controls<br>#13-7-midi-conversion<br>#19-16-midi<br>#33-notation-score-tabs-and-arrangements | Matched 4/4 guide terms. |
-| `settings-feature-toggles-modules-admin` | Settings modal for feature toggles, module enablement, restart, and shutdown controls | settings | implemented | **documented** | #one-shot-launcher-windows<br>#13-4-per-entry-controls<br>#19-8-jobs-list<br>#19-11-assistant<br>#19-12-module-loader<br>#api-unreachable-banner-in-the-header<br>#backend-job-persistence<br>#25-3-current-feature-to-screenshot-map<br>#32-admin-module-and-assistant-key-apis | Matched 4/5 guide terms. |
+| `settings-feature-toggles-modules-admin` | Settings modal for feature toggles, module enablement, restart, and shutdown controls | settings | implemented | **documented** | #one-shot-launcher-windows<br>#13-4-per-entry-controls<br>#19-8-jobs-list<br>#19-11-assistant<br>#19-12-module-loader<br>#21-1-models-storage-local-checkpoints-and-the-no-download-guarantee<br>#api-unreachable-banner-in-the-header<br>#backend-job-persistence<br>#25-3-current-feature-to-screenshot-map<br>#32-admin-module-and-assistant-key-apis | Matched 4/5 guide terms. |
 | `waveform-editor-inpaint-review` | Waveform editor paintbrush inpainting workflow with crop-aware mask submission and accept/discard review | daw | implemented | **documented** | #frontend-dependencies<br>#6-5-inpainting-regen-region<br>#6-8-run-generation<br>#7-4-inpainting-from-the-editor<br>#10-2-pop-out-and-mobile<br>#14-2-voice-synthesis<br>#16-5-media<br>#controls<br>#19-4-generation-async-thedaw-ui<br>#19-12-module-loader<br>#19-13-disk-backed-library<br>#19-14-chimera<br>#26-1-modes | Matched 5/5 guide terms. |
 | `sequencer-midi-export-render` | Step sequencer Standard MIDI export plus single-track/multi-track render-to-editor flows | daw | implemented | **documented** | #13-7-midi-conversion<br>#14-5-midi-export<br>#15-5-midi-import-and-export | Matched 2/4 guide terms. |
 | `piano-roll-linked-clip-editing` | Piano roll MIDI import/export, render-to-editor, and linked clip re-editing | daw | implemented | **documented** | #15-5-midi-import-and-export<br>#15-7-edit-in-piano-roll<br>#16-6-slide | Matched 4/4 guide terms. |

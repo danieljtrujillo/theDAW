@@ -49,6 +49,24 @@ async def engine_start():
         # The extended engine is already up (ready or still loading) — keep it.
         return {"ok": True, "already_running": True, **h}
 
+    # Refuse with a precise diagnosis when the WSL side was never set up —
+    # spawning would just die on a missing venv and read as a vague ERROR.
+    loop_probe = asyncio.get_event_loop()
+    setup = await loop_probe.run_in_executor(None, sidecar.setup_state)
+    if not setup.get("ready"):
+        raise HTTPException(
+            412,
+            {
+                "setup_required": True,
+                **setup,
+                "message": (
+                    "The Magenta RT2 engine is not installed yet. Run "
+                    "Setup-MRT2.bat (sidecars/magenta-rt2-nvidia) once — it "
+                    "checks the PC, asks consent, and installs everything."
+                ),
+            },
+        )
+
     # Park SA3 first so the engine's JAX runtime finds a free GPU. The import is
     # deferred to request time: the server module is fully initialized by then.
     from backend import server as srv
@@ -82,7 +100,14 @@ async def engine_stop():
 @router.get("/engine/status")
 async def engine_status():
     h = await sidecar.health()
-    return {**h, "process_alive": sidecar.engine_process_alive()}
+    out = {**h, "process_alive": sidecar.engine_process_alive()}
+    if not (h.get("reachable") and h.get("protocol_ok")):
+        setup = await asyncio.get_event_loop().run_in_executor(
+            None, sidecar.setup_state
+        )
+        out["setup_required"] = not setup.get("ready")
+        out["setup"] = setup
+    return out
 
 
 @router.get("/jobs/{job_id}")

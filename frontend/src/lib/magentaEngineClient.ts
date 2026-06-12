@@ -16,7 +16,7 @@ let _swapToken = 0;
 
 const setField = <K extends 'magentaEngine' | 'magentaAvailable'>(
   key: K,
-  value: K extends 'magentaEngine' ? 'off' | 'starting' | 'ready' | 'error' : boolean,
+  value: K extends 'magentaEngine' ? 'off' | 'starting' | 'ready' | 'error' | 'setup' : boolean,
 ): void => {
   useGenerateParamsStore.getState().setField(key, value as never);
 };
@@ -33,7 +33,15 @@ export async function swapEngineForModel(prevModel: string, nextModel: string): 
       const r = await fetch('/api/magenta/engine/start', { method: 'POST' });
       if (!r.ok) {
         const detail = await r.json().then((j) => j?.detail).catch(() => null);
-        throw new Error(detail || `engine start → HTTP ${r.status}`);
+        if (r.status === 412 && detail?.setup_required) {
+          // The WSL side was never installed — a guided state, not an error.
+          if (_swapToken === token) setField('magentaEngine', 'setup');
+          logError('magenta', detail.message || 'Magenta engine setup required: run Setup-MRT2.bat once.');
+          return;
+        }
+        throw new Error(
+          (typeof detail === 'string' ? detail : detail?.message) || `engine start → HTTP ${r.status}`,
+        );
       }
       logInfo('magenta', 'Engine starting: SA3 parked, WSL2 sidecar spawning');
       const deadline = Date.now() + READY_DEADLINE_MS;
