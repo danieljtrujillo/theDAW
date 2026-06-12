@@ -45,7 +45,7 @@ Install these and put each on your PATH first:
 - **[Git](https://git-scm.com/)** — clone with `--recurse-submodules` so the Magenta sidecar's vendored source is present.
 - **NVIDIA driver 550+** for the Medium model and Magenta. The Small model runs on CPU.
 
-`theDAW.bat` verifies uv/node/npm, warns if FFmpeg is missing, and bootstraps the venv + `node_modules` on first run, so a fresh clone with the tools above is one command away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
+On Windows, `theDAW.bat` checks for uv/node/npm and, if a required tool is missing, runs a one-time setup helper that detects your hardware and installs uv / Node / FFmpeg / Git for you after a single confirmation (or double-click `Setup-theDAW.bat` to run it directly). It then bootstraps the venv + `node_modules` and launches, so a fresh clone is genuinely one double-click away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
 
 ## Quick Start
 

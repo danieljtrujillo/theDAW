@@ -21,18 +21,19 @@ where uv   >nul 2>&1 || set "MISSING=%MISSING% uv"
 where node >nul 2>&1 || set "MISSING=%MISSING% node"
 where npm  >nul 2>&1 || set "MISSING=%MISSING% npm"
 if defined MISSING (
+    echo   Missing required tools:%MISSING%
+    echo   Running the one-time setup helper ^(detects hardware + installs prerequisites with your consent^)...
     echo.
-    echo   [X] Missing required tools:%MISSING%
-    echo.
-    echo   Install these, put each on your PATH, then re-run theDAW.bat:
-    echo     uv     -^> https://docs.astral.sh/uv/getting-started/installation/
-    echo     node   -^> https://nodejs.org/   ^(v20.19+ or v22.12+, includes npm^)
-    echo.
-    pause
-    exit /b 1
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\setup.ps1"
+    if errorlevel 10 goto :rerun
+    if errorlevel 2 goto :needtools
 )
-where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest WILL fail. Get a build at https://www.gyan.dev/ffmpeg/builds/ and add its bin\ to PATH.
-echo   [OK] uv, node, npm found.
+:: Re-verify the hard-required tools before bootstrapping.
+where uv   >nul 2>&1 || goto :needtools
+where node >nul 2>&1 || goto :needtools
+where npm  >nul 2>&1 || goto :needtools
+where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed. Run Setup-theDAW.bat to add it.
+echo   [OK] required tools present.
 echo.
 
 :: -- Bootstrap dependencies if this is a fresh / incomplete tree --------
@@ -86,3 +87,19 @@ python -m backend._devstack
 echo.
 echo theDAW stopped. Press any key to close this window...
 pause >nul
+exit /b 0
+
+:rerun
+echo.
+echo   Setup installed new tools. Close this window and double-click theDAW.bat again to launch.
+echo.
+pause
+exit /b 0
+
+:needtools
+echo.
+echo   theDAW needs uv + Node to run, and they are not installed yet.
+echo   Double-click Setup-theDAW.bat to install the prerequisites, then run theDAW.bat.
+echo.
+pause
+exit /b 1
