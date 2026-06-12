@@ -147,14 +147,19 @@ If this errors, reinstall flash-attn (see above).
 
 ## `theDAW.bat` fails immediately, or "X is not recognized"
 
-**Cause:** A required tool isn't on PATH. The launcher preflights uv/node/npm and
-bootstraps the venv + `node_modules`, but it can't run if those tools are missing.
+**Cause:** A required tool is not on PATH, or the consent-based setup helper was
+declined/failed. The launcher preflights uv/node/npm/FFmpeg/Git and, when a tool
+is missing, runs `install/setup.ps1` to detect hardware and ask before installing
+anything. If setup installed a tool, the parent Command Prompt still needs a
+fresh run so PATH refreshes.
 
-**Fix by what's reported missing:**
+**Fix:** first re-run `theDAW.bat`. If the setup helper opens, approve the listed
+installs or use the manual fallback for the reported tool:
 
 - **`uv`** — install from <https://docs.astral.sh/uv/getting-started/installation/>, then reopen the terminal.
 - **`node` / `npm`** — install Node.js **v20.19+ or v22.12+** from <https://nodejs.org/> (npm ships with it). An older Node also makes Vite 7 crash with an opaque error; check `node -v`.
 - **`ffmpeg`** — `winget install Gyan.FFmpeg`, or a build from <https://www.gyan.dev/ffmpeg/builds/> with its `bin\` on PATH. The launcher only warns about this one; the servers start, but every audio effect, export, and library ingest fails until FFmpeg is present.
 - **`lt` (localtunnel)** — optional. The launcher skips the public tunnel when it's absent; run `npm i -g localtunnel` if you want the shareable link.
 
-After installing a tool, open a NEW terminal so PATH refreshes, then re-run `theDAW.bat`.
+After installing a tool, close the current launcher window (or open a NEW
+terminal) so PATH refreshes, then re-run `theDAW.bat`.
