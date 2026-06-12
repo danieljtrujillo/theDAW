@@ -2,15 +2,21 @@
 
 _by GANTASMO_
 
-theDAW is a complete digital audio workstation built on Stable Audio 3, the state-of-the-art open audio model from Stability AI. The model turns a text prompt into high-fidelity 44.1 kHz stereo audio, and theDAW surrounds that core with a full production environment. A React front end and a FastAPI backend run together from one launcher, so the whole studio starts with a single double-click.
+theDAW packs most of a music career into one program. It writes original audio from a text prompt, arranges it on a multitrack timeline, masters it through a deep effects chain, splits it into stems, performs it across two beatmatched DJ decks, runs a reactive visual show, transcribes it to sheet music and tablature, and files everything in a searchable library that records how each piece descended from the last. It trains custom models on a collection and answers questions about any of it from a built-in assistant. A separate DAW, audio generator, stem separator, DJ rig, VJ engine, notation editor, sample manager, and model trainer collapse into a single window.
 
-Audio generation happens in the MAKE workspace. A prompt becomes finished audio through Stable Audio 3, and the same model menu also reaches Magenta RealTime 2 for streaming text-to-music and Suno for cloud generation. Chimera fusion can blend several clips into one downbeat-aligned piece, while init signals, inpainting, and LoRA adapters give finer control over the result. When the model selection moves between Stable Audio and the Magenta sidecar, the GPU swap runs on its own.
+![The 3D lineage galaxy in the LEARN workspace](screenshots/learn-galaxy.png "full")
 
-Editing and mastering come next. The EDIT workspace opens a piece in a waveform editor that supports region inpainting. Effects and loudness work happens in MIX, which hosts the Edit Tool Stack alongside Quick Master macros. For live use, the DJ workspace provides a two-deck engine with beatmatch sync, key-lock, live stems, an FX rack, hot cues, and hands-free automix. WebGL visuals in the VJ workspace respond to the audio and accept MIDI, microphone, and mobile input.
+Generation runs on Stable Audio 3, the open generative audio model from Stability AI. A prompt becomes finished stereo, and the same model menu reaches Magenta RealTime 2 for streaming text-to-music and Suno for cloud renders. Chimera fusion folds several clips into one tempo-aligned track, while init signals, inpainting, and LoRA adapters steer a render toward a target.
 
-Everything generated is kept. The Library stores each piece on disk together with its analysis, stems, and MIDI, and LEARN renders the relationships between pieces as a navigable 3D genealogy. A symbolic-music pipeline produces sheet music, tablature, and multi-instrument arrangements, and it can read a score back into a usable text prompt. LoRA training and autoencoder round-trips have a home in the TRAIN workspace. An in-app assistant answers questions from this guide, and a paste-a-URL importer pulls audio from YouTube, SoundCloud, and Bandcamp.
+![The two-deck DJ performance console](screenshots/dj.png "full")
 
-The in-app **Docs** button renders this guide as an interactive modal with a filterable table of contents, raw Markdown download, and print-to-PDF. Each workspace and the backend are documented in full below.
+A track then moves through EDIT for waveform surgery and region inpainting, and MIX for the Edit Tool Stack and Quick Master macros. The DJ workspace runs two decks with beatmatch sync, key-lock, live stems, an FX rack, hot cues, and hands-free automix, and the VJ workspace drives WebGL visuals from the audio, a microphone, MIDI, or a phone on the same network.
+
+![Mastering and effects in the MIX workspace](screenshots/mix.png "full")
+
+Nothing is discarded. The Library keeps every piece on disk with its analysis, stems, and MIDI, and LEARN draws the lineage between pieces as a navigable 3D genealogy. A symbolic-music pipeline turns a track into sheet music, tablature, and multi-instrument arrangements, and reads a finished score back into a prompt. TRAIN fits LoRA adapters and runs autoencoder round-trips, an assistant answers from this guide, and a paste-a-URL importer pulls audio from YouTube, SoundCloud, and Bandcamp.
+
+The **Docs** button in the top bar opens this guide as a modal with a filterable table of contents, a Markdown download, and a print-to-PDF in three styles. Every workspace and the full backend API follow below.
 
 ---
 
@@ -310,6 +316,8 @@ A sticky bar fixed at the bottom of the MAKE workspace submits the generation jo
 
 ---
 
+![MAKE generation controls and parameters](screenshots/make-controls.png)
+
 ## 7. EDIT Tab
 
 ### Purpose
@@ -395,6 +403,8 @@ During the render, the COMMIT EDIT button shows an animated spinner and is disab
 
 ---
 
+![The EDIT multitrack waveform editor](screenshots/edit.png)
+
 ## 8. MIX Tab
 
 ### Purpose
@@ -465,6 +475,8 @@ The last processing invocations are retained in the store. Any history item can 
 
 ---
 
+![The MIX effects and mastering workspace](screenshots/mix-overview.png)
+
 ## 9. DJ Tab
 
 ### Purpose
@@ -501,7 +513,7 @@ DJ MIDI-learn binds a hardware controller to deck, mixer, and hotcue actions. It
 
 ### 9.7 Automix, Sampler, and Side List
 
-- **Automix** sequences a setlist hands-free, beatmatching each transition.
+- **Automix** sequences a setlist hands-free, beatmatching each transition. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9).
 - **Sampler bank**: drag a clip onto a pad to load a one-shot, then trigger pads during a set.
 - **Side List**: a play-next staging lane above the browser. Stage upcoming tracks, reorder them, and pull them onto a deck when ready.
 
@@ -514,6 +526,8 @@ The browser loads tracks onto a deck by drag or click. The source tree exposes r
 A floating **Edit Layout** control turns on Design Mode. In Design Mode, panels and the mixer control groups can be dragged to reorder and dragged at their borders to resize, snapped to a grid. The layout persists across sessions, a Reset restores the default, and a Copy action exports the layout as JSON to bake in as the new default.
 
 ---
+
+![The DJ center mixer, EQ, and crossfader](screenshots/dj-center-mixer.png)
 
 ## 10. VJ Tab
 
@@ -597,6 +611,8 @@ Long-running training jobs are tracked through `GET /api/jobs/{id}`, polled at 1
 
 ---
 
+![The TRAIN workspace for LoRA adapters](screenshots/train.png)
+
 ## 12. LEARN Tab
 
 ### Purpose
@@ -630,6 +646,8 @@ theDAW carries several other rich visualizations, each documented in its own sec
 ![LEARN lineage 3D graph](screenshots/06-learn-tab-3d-graph__lineage-graph.png)
 
 ---
+
+![The 2D lineage family tree in LEARN](screenshots/learn-2d.png)
 
 ## 13. Library
 
@@ -675,13 +693,14 @@ Toggle between a dense **List** view (one row per entry) and a **Grid** view (ti
 
 - **Search** filters across title, prompt, model, tags, and notes at the same time.
 - **FAVS** toggle restricts the view to favorited entries.
-- **Sort** by Newest (timestamp descending), Duration (longest first), or Title (alphabetical).
+- **Sort** by Newest (timestamp descending), Duration (longest first), Title (alphabetical), or Plays (most-played first).
 
 ### 13.4 Per-entry Controls
 
 | Control | Description |
 |---|---|
 | **Play / Pause** | Loads and plays the entry through `playerStore`. Pausing one entry while another is active stops playback globally. |
+| **Play count** | A badge on each played entry shows how many times it has played. The first play after a load increments a per-entry tally persisted in the library database (`POST /api/library/entries/{id}/play`), so the count survives restarts and metadata edits. |
 | **Favorite star** | Toggles the favorite flag; persisted to the backend immediately. |
 | **Download** | Triggers a browser file download of the audio. |
 | **Delete** | Removes the entry from the backend store and the in-memory store. |
@@ -733,7 +752,18 @@ Important endpoints:
 
 A stats footer shows the total entry count, the favorites count, cumulative storage size, and cumulative playback duration.
 
-### 13.9 Empty State
+### 13.9 Suggest a Playlist
+
+The **SUGGEST** button opens a playlist builder that sequences analyzed tracks into a continuous set. The criteria are a target length, an optional BPM range, a flow shape (Steady, Build up, Wind down, or Wave), a harmonic toggle, and an optional genre or text filter. The backend engine (`POST /api/library/suggest-playlist`) reads each track's analysis and orders the set by harmonic key on the Camelot wheel, the chosen BPM flow, and small nudges toward popular and stylistically varied picks, filling the time budget. Each result row shows its BPM, Camelot code, and the reason it was chosen.
+
+Two actions run the result:
+
+- **Play All** loads the sequence into the footer player and auto-advances track to track, restoring the loop preference when it finishes.
+- **Send to DJ** loads the order as the active automix set, switches to the DJ tab, and starts the beatmatch-crossfade automix (see §9.7).
+
+Suggestions are strongest when the library is analyzed. Unanalyzed tracks still fill the budget but cannot be harmonically sequenced; the analyzer and the analyze-on-add toggle cover this over time.
+
+### 13.10 Empty State
 
 Shown until the first generation. It contains a **Go generate something** button that switches the active workspace to MAKE.
 
@@ -795,6 +825,8 @@ These exports use the same PPQ timing constants as live playback (`PPQ = 480`, o
 
 ---
 
+![The 16-step sequencer with five synthesized voices](screenshots/sequencer.png)
+
 ## 15. Piano Roll
 
 ### Purpose
@@ -839,6 +871,8 @@ Clips in the waveform editor whose `sourceKind` is `'piano-roll'` display an **E
 
 ---
 
+![The piano roll with MIDI import and export](screenshots/piano.png)
+
 ## 16. Bottom Panel Tabs
 
 The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Six tabs are available.
@@ -866,6 +900,8 @@ Live visualization of the shared Web Audio engine's output, reading from the eng
 Text in the overlay uses `textShadow` for legibility against any visualization behind it.
 
 **Canvas scaling:** the canvas is sized to its container in physical pixels (device pixel ratio capped at 2×) through a `ResizeObserver`. The `style` dimensions are set in CSS pixels, so the canvas stays crisp on high-DPI displays.
+
+![The real-time spectral analyzer](screenshots/visualizer.png)
 
 ### 16.2 Piano
 
@@ -912,6 +948,8 @@ A session-scoped file holding area for arbitrary audio files. Contents are clear
 ### 16.6 SLIDE
 
 The SLIDE tab is the glass-capsule control surface that mirrors the VJ engine's control manifest as faders. Moving a SLIDE fader updates the matching control in the VJ, and moving a control inside the VJ updates SLIDE. A content toggle switches which control set is shown, a detach button pops SLIDE out into its own window for a second monitor, and the shared maximize toggle expands it to fill the panel.
+
+![The SLIDE glass control surface](screenshots/slide.png)
 
 ### 16.7 Score
 
@@ -1729,6 +1767,8 @@ The result runs on Windows through WSL2 with NVIDIA, on native Linux with NVIDIA
 
 ---
 
+![The Magenta RealTime 2 conditioning panel](screenshots/magenta.png)
+
 ## 28. Edit Tool Stack
 
 Beyond the 24-effect MIX chain (§8), theDAW mounts the **Edit Tool Stack**, six backend module families under `/api/edit/*`. Each family provides a focused set of audio processors built on FFmpeg, NumPy, and librosa DSP. The browser GUIs come from `frontend/public/edit-modules/` and iframe into the MIX effect stage.
@@ -1760,6 +1800,8 @@ A seventh module, **AI Analyzer** (`/api/edit/analyzer`), is an experimental dec
 The **Catalogue** view (`CatalogueView`, lazy-loaded in the shell) is a cross-provider gallery over the Library. It presents grid and list layouts, a filter bar, an inspector with on-demand spectrograms, a lineage panel, and **provider badges** that classify each entry (Suno, Magenta, import, and forward-compatible slots for other providers) from its `model` and `source` fields. Its context menu runs Suno cover and mashup directly from a Library entry (§26). It reads the same backend Library API (§13) and the per-entry lineage route `GET /api/library/{id}/lineage`.
 
 ---
+
+![The cross-provider Catalogue browser](screenshots/catalogue.png)
 
 ## 30. YouTube Import
 
@@ -1819,6 +1861,8 @@ Operational endpoints used by the Settings modal and shell.
 theDAW turns audio into symbolic music and back: audio → MIDI → sheet music, guitar and bass tabs, and playable arrangements, plus an inferred Stable Audio prompt for any track. The symbolic side lives in the **Score** tab of the bottom panel (§16.7) and the **Details** panel (§16.4), backed by the `notation` module (`/api/notation`) and the `analysis` module. The standalone guide is [guides/notation-and-score.md](guides/notation-and-score.md).
 
 A track needs a MIDI first. Convert one from the Library (right-click → Convert to MIDI, §13.7); once a MIDI artifact exists, the Score buttons activate.
+
+![Guitar tablature rendered from a track's MIDI in the Score panel](screenshots/score.png)
 
 ### 33.1 Notation artifacts
 

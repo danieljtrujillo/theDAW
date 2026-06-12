@@ -109,7 +109,7 @@ async def stream_audio(entry_id: str) -> Response:
                     resp.raise_for_status()
                 audio_bytes = resp.content
                 # Cache to disk so future requests skip CDN.
-                local_name = meta.get("audio_filename") or f"{entry_id}.mp3"
+                local_name = (meta or {}).get("audio_filename") or f"{entry_id}.mp3"
                 local_path = entry_dir / local_name
                 try:
                     local_path.write_bytes(audio_bytes)
@@ -176,7 +176,8 @@ def register_play(entry_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(404, f"Entry {entry_id!r} not found")
         entry_dir = store._dir_for(entry_id)  # noqa: SLF001
-        store._sync_record_to_db(record, _read_metadata(entry_dir) or {})  # noqa: SLF001
+        meta = _read_metadata(entry_dir) if entry_dir is not None else None
+        store._sync_record_to_db(record, meta or {})  # noqa: SLF001
         new_count = store.db.increment_play_count(entry_id) or 1
     return {"id": entry_id, "play_count": new_count}
 

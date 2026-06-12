@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-12T05:28:45.204Z",
-  "repoRevision": "9dec05fd4f52",
+  "generatedAt": "2026-06-12T07:34:50.513Z",
+  "repoRevision": "722eef519072",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -615,7 +615,8 @@
       "featureId": "assistant-orb-providers-keys-attachments",
       "docAnchors": [
         "#5-ui-shell",
-        "#19-11-assistant"
+        "#19-11-assistant",
+        "#29-catalogue"
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
@@ -682,6 +683,7 @@
         "#6-4-1-microphone-recorder",
         "#purpose",
         "#13-1-automatic-entry-creation",
+        "#13-4-per-entry-controls",
         "#19-13-disk-backed-library",
         "#19-15-stems",
         "#library-storage-fills-the-disk",
@@ -729,6 +731,7 @@
       "featureId": "settings-feature-toggles-modules-admin",
       "docAnchors": [
         "#one-shot-launcher-windows",
+        "#13-4-per-entry-controls",
         "#19-8-jobs-list",
         "#19-11-assistant",
         "#19-12-module-loader",
