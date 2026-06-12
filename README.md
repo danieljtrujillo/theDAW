@@ -6,10 +6,6 @@ theDAW is an all-in-one application for music creation. The generative engine re
 
 theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. Magenta lives in the same Model dropdown as the local Stable Audio engines, and selecting it swaps the GPU automatically: Stable Audio parks in system RAM, the engine starts in WSL2, and a status pill tracks it to READY. Picking a Stable Audio model reverses the swap. The [Generate](#generate-cloud-and-real-time) section describes it. Live coding and Unity integration are in development.
 
-> **Source of truth:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md) documents every feature, control, and endpoint. The in-app **Docs** button renders it as an interactive modal with PDF export.
-
-[User Guide](docs/USER_GUIDE.md) · [Windows Setup](docs/windows/setup-guide.md) · [Prompting](docs/guides/prompting.md)
-
 <p align="center">
   <a href="showcase/clips-recorded/_showcase_h.mp4">
     <img src="docs/readme/showcase-poster.png" alt="Watch the theDAW feature-tour video" width="900">
@@ -24,28 +20,29 @@ theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which r
 
 ---
 
-## Repository Structure
+## ⚡ Start Here
 
-| Component | Location | Description |
-|---|---|---|
-| **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
-| **FastAPI backend** | `backend/server.py` | Async HTTP wrapper. It runs a generation job queue, FFmpeg audio processing, and model introspection on port 8600. |
-| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `chimera`, `controllervision`, `effects` (at `/api/studio`), `library`, `midi`, `notation`, `settings`, `stems`, `vj`, and `ytimport`, plus cloud and real-time generation (`suno`, `magenta`) and the six-family Edit Tool Stack under `/api/edit/*` (mastering, restoration, enhance, delivery, creative-fx, creative-neural). |
-| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, the analyzer, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend on 8600. |
+**Double-click `theDAW.bat`. That is the entire setup.**
 
----
+It checks the machine, installs anything missing after one quick confirmation, and opens theDAW in the browser. The Stable Audio model downloads on its own the first time a track is generated, so a first run needs nothing else from this page.
+
+> The full [User Guide](docs/USER_GUIDE.md) is a deep power-user reference. It runs long, and parts can fall behind the current app, so it is an easy place to get lost. Skip it for now and come back once the basics feel familiar.
 
 ## Prerequisites
 
-Install these and put each on your PATH first:
+`theDAW.bat` installs everything in this list automatically, and `Setup-theDAW.bat` runs the same installer on its own. The list is here for reference and for manual or non-Windows setups.
 
-- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — the Python environment and package manager (creates the venv, installs torch/CUDA).
-- **[Node.js](https://nodejs.org/) v20.19+ or v22.12+** (includes npm) — the frontend dev server and the VJ sidecar. Vite 7 requires this floor.
-- **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH** — every audio path uses it: effects, exports, library ingest, MIDI conversion, YouTube import.
-- **[Git](https://git-scm.com/)** — clone with `--recurse-submodules` so the Magenta sidecar's vendored source is present.
-- **NVIDIA driver 550+** for the Medium model and Magenta. The Small model runs on CPU.
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** is the Python environment and package manager that creates the venv and installs torch and CUDA.
+- **[Node.js](https://nodejs.org/) v20.19+ or v22.12+** (with npm) powers the frontend dev server and the VJ sidecar, and Vite 7 sets the version floor.
+- **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** on PATH handles every audio path, including effects, exports, library ingest, MIDI conversion, and import.
+- **[Git](https://git-scm.com/)** clones the repo, and `--recurse-submodules` brings in the Magenta sidecar source.
+- An **NVIDIA driver 550+** runs the Medium model and Magenta. The Small model runs on CPU.
 
-On Windows, `theDAW.bat` checks for uv/node/npm and, if a required tool is missing, runs a one-time setup helper that detects your hardware and installs uv / Node / FFmpeg / Git for you after a single confirmation (or double-click `Setup-theDAW.bat` to run it directly). It then bootstraps the venv + `node_modules` and launches, so a fresh clone is genuinely one double-click away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
+### Reference docs (for later)
+
+Once the basics feel comfortable, these go deeper. [User Guide](docs/USER_GUIDE.md) · [Windows Setup](docs/windows/setup-guide.md) · [Prompting](docs/guides/prompting.md)
+
+The User Guide is the source of truth for every feature, control, and endpoint, and the in-app **Docs** button renders it with PDF export. It stays detailed and can lag the app, so it works best as a reference rather than a first stop.
 
 ## Quick Start
 
@@ -63,6 +60,17 @@ cd frontend && npm run dev                                              # fronte
 ```
 
 Dependencies install with `uv sync` and `cd frontend && npm install`. On Windows, `uv sync` installs CUDA 12.8 torch and torchaudio plus the pre-built Flash Attention wheel automatically. On Linux, install the matching CUDA wheel index manually, for example `uv pip install torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126`. [§3 of the User Guide](docs/USER_GUIDE.md#3-installation) has full installation details.
+
+---
+
+## Repository Structure
+
+| Component | Location | Description |
+|---|---|---|
+| **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
+| **FastAPI backend** | `backend/server.py` | Async HTTP wrapper. It runs a generation job queue, FFmpeg audio processing, and model introspection on port 8600. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `analyzer`, `chimera`, `controllervision`, `effects` (at `/api/studio`), `library`, `midi`, `notation`, `settings`, `stems`, `vj`, and `ytimport`, plus cloud and real-time generation (`suno`, `magenta`) and the six-family Edit Tool Stack under `/api/edit/*` (mastering, restoration, enhance, delivery, creative-fx, creative-neural). |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, the analyzer, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend on 8600. |
 
 ---
 

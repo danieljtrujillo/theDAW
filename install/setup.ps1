@@ -75,6 +75,28 @@ function Install-Winget($id, $label){
   return $false
 }
 
+function Bootstrap-Winget(){
+  # Best-effort install of the Windows App Installer (which provides winget)
+  # when it is absent, so Node / FFmpeg / Git can be fetched. Downloads the
+  # VCLibs dependency and the App Installer bundle, then registers them.
+  Info "Installing the Windows App Installer (winget)..."
+  try {
+    $tmp = Join-Path $env:TEMP 'thedaw-winget'
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    $vc = Join-Path $tmp 'VCLibs.Desktop.appx'
+    Invoke-WebRequest 'https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx' -OutFile $vc -UseBasicParsing
+    Add-AppxPackage -Path $vc -ErrorAction SilentlyContinue
+    $bundle = Join-Path $tmp 'AppInstaller.msixbundle'
+    Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $bundle -UseBasicParsing
+    Add-AppxPackage -Path $bundle
+    Refresh-Path
+    return [bool](Get-Command winget -ErrorAction SilentlyContinue)
+  } catch {
+    WARN ('Could not install winget automatically: ' + $_.Exception.Message)
+    return $false
+  }
+}
+
 Clear-Host
 Write-Host ""
 Write-Host "  theDAW - SETUP" -ForegroundColor Magenta
@@ -153,7 +175,7 @@ foreach($t in $todo){
   Write-Host ("    - {0}  ({1}, {2})" -f $t.Label, $t.Size, $tag) -ForegroundColor White
 }
 Write-Host ""
-Info "uv comes from astral.sh; Node, FFmpeg, and Git come through winget. Nothing leaves your PC."
+Info "uv comes from astral.sh; Node, FFmpeg, and Git come through winget (installed first if absent). Nothing leaves your PC."
 if(-not (Ask "Download and install the items above?")){
   WARN "No problem - nothing was changed."
   $reqMissing = ($todo | Where-Object { $_.Required } | Measure-Object).Count -gt 0
@@ -165,6 +187,14 @@ if(-not (Ask "Download and install the items above?")){
 # =========================================================================== #
 Head "Installing"
 $installedAny = $false
+
+# Node / FFmpeg / Git come through winget. If winget is missing, install it first.
+$needsWinget = ($todo | Where-Object { $_.Name -ne 'uv' } | Measure-Object).Count -gt 0
+if($needsWinget -and -not $wingetOk){
+  if(Bootstrap-Winget){ $wingetOk = $true; OK 'winget installed.' }
+  else { WARN 'winget could not be installed; Node/FFmpeg/Git will need a manual download.' }
+}
+
 foreach($t in $todo){
   $done = $false
   if($t.Name -eq 'uv'){ $done = Install-Uv } else { $done = Install-Winget $t.Action $t.Label }
