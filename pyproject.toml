@@ -63,9 +63,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# gradio removed (CVE sweep 2026-06-03): only the legacy run_gradio.py UI used
-# it; the React + FastAPI app does not. Reinstall ad-hoc if you ever run the
-# legacy Gradio interface.
+# accelerate is an optional Hugging Face acceleration extra. The legacy gradio
+# UI (run_gradio.py + interface/diffusion_cond.py) was removed in a CVE sweep;
+# the React + FastAPI app does not use gradio.
 ui = [
   "accelerate>=1.13.0",
 ]
