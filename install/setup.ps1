@@ -1,8 +1,8 @@
 <#
   theDAW - Setup & Doctor
 
-  Double-click Setup-theDAW.bat (which runs this), or let theDAW.bat call it
-  automatically the first time a required tool is missing.
+  theDAW.bat calls this automatically the first time a tool is missing. It can
+  also be run directly: powershell -ExecutionPolicy Bypass -File install\setup.ps1
 
   It checks your system first (read-only), shows EXACTLY what needs to be
   installed and how big it is, asks once, then installs the missing pieces

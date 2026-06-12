@@ -45,10 +45,9 @@ the backend, the frontend, and the optional tunnel in a single window and opens
 
 ### Install the tools
 
-The easiest path is to let theDAW do it: double-click **`Setup-theDAW.bat`** (or
-just run `theDAW.bat`), which detects your hardware and installs uv / Node /
-FFmpeg / Git for you after a single confirmation. The commands below are the
-manual fallback.
+The easiest path is to let theDAW do it: double-click **`theDAW.bat`**, which
+detects your hardware and installs uv / Node / FFmpeg / Git for you after a
+single confirmation. The commands below are the manual fallback.
 
 ```powershell
 winget install astral-sh.uv          # uv
