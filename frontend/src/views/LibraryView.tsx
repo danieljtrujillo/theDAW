@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
-  Music, Star, Tag, Filter, ArrowUpDown,
+  Music, Star, Tag, Filter, ArrowUpDown, Sparkles,
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { LineageModal } from '../components/library/LineageModal';
+import { SuggestPlaylistModal } from '../components/library/SuggestPlaylistModal';
 import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
 import { MicRecorder } from '../components/audio/MicRecorder';
 import { Section } from '../components/ui/Section';
@@ -67,6 +68,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [subTab, setSubTab] = useState<'tracks' | 'stems' | 'midi'>('tracks');
   const [lineageOpen, setLineageOpen] = useState<string | null>(null);
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   // Per-entry right-click menu now uses the shared ContextMenu
@@ -764,6 +766,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             <button className={`mono-tag flex items-center gap-1 whitespace-nowrap ${sortBy === 'plays' ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-400!'}`} onClick={() => setSortBy('plays')}>
               <Play className="w-2 h-2" /> PLAYS
             </button>
+            <button className="mono-tag flex items-center gap-1 whitespace-nowrap bg-purple-600/30! text-purple-200! border border-purple-500/40" onClick={() => setSuggestOpen(true)} title="Suggest a playlist from your library">
+              <Sparkles className="w-2 h-2" /> SUGGEST
+            </button>
           </div>
         </div>
 
@@ -1102,6 +1107,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         rootEntryId={lineageOpen === '__library__' ? null : lineageOpen}
         onClose={() => setLineageOpen(null)}
       />
+
+      <SuggestPlaylistModal open={suggestOpen} onClose={() => setSuggestOpen(false)} />
 
       {/* Maintenance actions (Clear Non-Favorites / Clear All) moved
           into the icon toolbar's OPTIONS submenu per user request
