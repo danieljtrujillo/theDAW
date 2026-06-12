@@ -66,6 +66,44 @@ def test_upsert_preserves_play_count(tmp_path: Path):
     assert db.get_entry("e1")["play_count"] == 2
 
 
+def test_suggest_playlist(tmp_path: Path):
+    from backend.modules.library.suggester import suggest_playlist
+
+    db = LibraryDB(tmp_path / "library.db")
+    specs = [
+        (120, "C", "major"),
+        (122, "G", "major"),
+        (124, "D", "major"),
+        (118, "A", "minor"),
+    ]
+    for i, (bpm, key, scale) in enumerate(specs):
+        eid = f"e{i}"
+        db.upsert_entry(_make_entry_payload(eid, title=f"t{i}", duration=120))
+        db.upsert_analysis(eid, {"bpm": bpm, "key": key, "scale": scale})
+
+    res = suggest_playlist(db, target_duration_sec=360, harmonic=True, flow="steady")
+    assert 2 <= res["track_count"] <= 4
+    assert res["total_duration_sec"] <= 360 * 1.13
+    ids = [t["id"] for t in res["tracks"]]
+    assert len(ids) == len(set(ids))
+    assert all(t["camelot"] for t in res["tracks"])
+
+
+def test_suggest_playlist_respects_bpm_filter(tmp_path: Path):
+    from backend.modules.library.suggester import suggest_playlist
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry(_make_entry_payload("slow", duration=120))
+    db.upsert_analysis("slow", {"bpm": 90, "key": "C", "scale": "major"})
+    db.upsert_entry(_make_entry_payload("fast", duration=120))
+    db.upsert_analysis("fast", {"bpm": 140, "key": "C", "scale": "major"})
+
+    res = suggest_playlist(db, target_duration_sec=300, bpm_min=130, bpm_max=150)
+    ids = [t["id"] for t in res["tracks"]]
+    assert "slow" not in ids
+    assert "fast" in ids
+
+
 def test_upsert_entry_round_trip(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry(_make_entry_payload("e1"))

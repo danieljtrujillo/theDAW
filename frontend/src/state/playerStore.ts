@@ -22,6 +22,9 @@ let _objectUrl: string | null = null;
 // Set by load() to a real library entry id; the first 'play' event after a
 // load counts one play for it (then clears, so resume/seek do not re-count).
 let _pendingPlayCountId: string | null = null;
+// Set by the playlist queue; fired when a (non-looping) track ends so the queue
+// can auto-advance. Null for ordinary single-track playback.
+let _onEnded: (() => void) | null = null;
 
 type EngineHandles = {
   ctx: AudioContext;
@@ -86,7 +89,10 @@ export const ensureEngine = (): EngineHandles => {
     usePlayerStore.setState({ isPlaying: false });
   });
   audioEl.addEventListener('ended', () => {
-    if (!audioEl.loop) usePlayerStore.setState({ isPlaying: false, currentTime: 0 });
+    if (!audioEl.loop) {
+      usePlayerStore.setState({ isPlaying: false, currentTime: 0 });
+      _onEnded?.();
+    }
   });
   audioEl.addEventListener('error', () => {
     logError('player', `Audio element error: ${audioEl.error?.message ?? 'unknown'}`);
@@ -121,6 +127,12 @@ export interface LiveTransport {
 let _live: LiveTransport | null = null;
 export const setLiveTransport = (t: LiveTransport | null): void => {
   _live = t;
+};
+
+/** Register a callback fired when a non-looping track ends (the playlist queue
+ *  uses this to advance). Pass null to clear. */
+export const setQueueOnEnded = (cb: (() => void) | null): void => {
+  _onEnded = cb;
 };
 
 // Auto-warm-up: the first time the user interacts with the page in

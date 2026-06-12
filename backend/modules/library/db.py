@@ -476,6 +476,25 @@ class LibraryDB:
             cur.close()
             return [dict(r) for r in rows]
 
+    def list_entries_with_analysis(self) -> list[dict[str, Any]]:
+        """Each entry joined with its analysis row (bpm / key / scale / genre /
+        loudness). Analysis columns are NULL for entries not yet analyzed. The
+        playlist suggester sequences on bpm + harmonic key from this."""
+        sql = """
+            SELECT
+                e.id, e.title, e.prompt, e.model, e.duration_sec, e.source,
+                e.favorite, e.play_count, e.last_played_at,
+                a.bpm, a.key, a.scale, a.genre, a.loudness_lufs, a.bars_estimated
+            FROM entries e
+            LEFT JOIN analysis a ON a.entry_id = e.id
+            ORDER BY e.created_at DESC
+        """
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(sql).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
     def delete_entry(self, entry_id: str) -> bool:
         with self._txn() as cur:
             cur.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
