@@ -9,8 +9,10 @@ user re-points it.
 ``local_only`` mirrors the ``SA3_LOCAL_ONLY`` environment switch that
 ``stable_audio_3.model_configs`` reads on every resolve: when on, model
 resolution never touches the network and fails loudly instead of downloading.
-The flag is applied to ``os.environ`` at import time so a backend restart
-keeps the user's choice.
+Fresh installs default this safety switch ON so beginners do not trigger a
+surprise multi-GB model download; an explicit persisted user choice still wins.
+The flag is applied to ``os.environ`` at import time so a backend restart keeps
+the user's choice.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 REGISTRY_PATH = PROJECT_ROOT / "data" / "local_checkpoints.json"
 
-_DEFAULT: dict[str, Any] = {"local_only": False, "checkpoints": []}
+_DEFAULT: dict[str, Any] = {"local_only": True, "checkpoints": []}
 
 
 class CheckpointRegistry:
@@ -55,7 +57,8 @@ class CheckpointRegistry:
         if not isinstance(raw, dict):
             return deepcopy(_DEFAULT)
         merged = deepcopy(_DEFAULT)
-        merged["local_only"] = bool(raw.get("local_only", False))
+        if "local_only" in raw:
+            merged["local_only"] = bool(raw.get("local_only"))
         entries = raw.get("checkpoints")
         if isinstance(entries, list):
             merged["checkpoints"] = [

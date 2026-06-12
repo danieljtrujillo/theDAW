@@ -8,6 +8,7 @@ import {
 } from '../../lib/storageClient';
 import { useLayoutPrefs, UI_SCALE_MIN, UI_SCALE_MAX } from '../../state/layoutPrefsStore';
 import { SlideTrack } from '../audio/SlideTrack';
+import { PathInput } from '../ui/PathInput';
 // CHANGED: Suno cloud-generation API key section (surfaced in Settings).
 import { SunoKeySettings } from '../../suno/SunoKeySettings';
 
@@ -26,6 +27,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
   const [modules, setModules] = useState<ModuleConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [changedModules, setChangedModules] = useState<Set<string>>(() => new Set());
   const [toggling, setToggling] = useState<string | null>(null);
   const featureSettings = useFeatureToggleStore((s) => s.settings);
   const refreshFeatures = useFeatureToggleStore((s) => s.refresh);
@@ -43,6 +45,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
     if (!open) return;
     setLoading(true);
     setDirty(false);
+    setChangedModules(new Set());
     void refreshFeatures();
     fetch('/api/modules/all')
       .then((r) => r.json() as Promise<ModuleConfig[]>)
@@ -62,10 +65,16 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
       if (res.ok) {
         setModules((prev) => prev.map((m) => (m._dir === dirName ? { ...m, enabled } : m)));
         setDirty(true);
+        setChangedModules((prev) => new Set(prev).add(dirName));
       }
     } finally {
       setToggling(null);
     }
+  };
+
+  const commitVjExportRoot = () => {
+    const v = vjExportRoot.trim() || 'exports/vj';
+    if (v !== (featureSettings.vj?.export_root ?? 'exports/vj')) void patchFeatures({ vj: { export_root: v } });
   };
 
   if (!open) return null;
@@ -102,13 +111,36 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
 
-          {/* CHANGED: Suno cloud-generation API key entry (the intuitive place to set it). */}
-          <SunoKeySettings />
-
+          <StorageSettingsSection />
           <LayoutSettingsSection />
 
+          {/* Section: Modules */}
+          <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
+            <Package className="w-3 h-3 text-purple-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Backend Modules</span>
+            <span className="text-[8px] font-mono text-zinc-600 ml-auto">restart required for changes</span>
+          </div>
+
+          {dirty && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded mb-3">
+              <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+              <span className="text-[9px] font-mono text-amber-300">Restart the backend server for module changes to take effect.</span>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-zinc-600">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span className="text-[9px] font-mono">Loading modules...</span>
+            </div>
+          ) : modules.length === 0 ? (
+            <div className="text-center py-10 text-[9px] text-zinc-600 font-mono">No modules found in backend/modules/</div>
+          ) : (
+            <ModuleTree modules={modules} toggling={toggling} changedModules={changedModules} onToggle={(dir, en) => void toggleModule(dir, en)} />
+          )}
+
           {/* Section: Background features (auto-analysis / stems / midi) */}
-          <div className="flex items-center gap-1.5 mb-2">
+          <div className="flex items-center gap-1.5 mb-2 pt-4 border-t border-white/5 mt-4">
             <Activity className="w-3 h-3 text-purple-400" />
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Background features</span>
             <span className="text-[8px] font-mono text-zinc-600 ml-auto">runs during idle</span>
@@ -244,53 +276,19 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">VJ Recording</span>
           </div>
           <div className="mb-3">
-            <label htmlFor="settings-vj-export-root" className="block text-[9px] font-mono uppercase tracking-wider text-zinc-400 mb-1">Export root folder</label>
-            <input
+            <PathInput
               id="settings-vj-export-root"
-              type="text"
               name="settings-vj-export-root"
+              label="Export root folder"
               value={vjExportRoot}
-              onChange={(e) => setVjExportRoot(e.target.value)}
-              onBlur={() => {
-                const v = vjExportRoot.trim() || 'exports/vj';
-                if (v !== featureSettings.vj.export_root) void patchFeatures({ vj: { export_root: v } });
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              spellCheck={false}
+              onChange={setVjExportRoot}
+              kind="folder"
+              onBlur={commitVjExportRoot}
+              onEnter={commitVjExportRoot}
               placeholder="exports/vj"
-              className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 focus:outline-none"
+              description="Where VJ recordings are saved. A relative path sits inside the project; Browse fills an absolute folder such as D:\Renders. Each take adds the VJ record-bar subfolder, then ffmpeg transcodes to the chosen codec."
             />
-            <p className="text-[8px] text-zinc-600 mt-1">
-              Where VJ recordings are saved. A relative path sits inside the project; an absolute path (e.g. D:\Renders) is used as-is. Each take adds the subfolder named in the VJ record bar, then ffmpeg transcodes to the chosen codec.
-            </p>
           </div>
-
-          <StorageSettingsSection />
-
-          {/* Section: Modules */}
-          <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
-            <Package className="w-3 h-3 text-purple-400" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Backend Modules</span>
-            <span className="text-[8px] font-mono text-zinc-600 ml-auto">restart required for changes</span>
-          </div>
-
-          {dirty && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded mb-3">
-              <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-              <span className="text-[9px] font-mono text-amber-300">Restart the backend server for module changes to take effect.</span>
-            </div>
-          )}
-
-          {loading ? (
-            <div className="flex items-center justify-center gap-2 py-10 text-zinc-600">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              <span className="text-[9px] font-mono">Loading modules...</span>
-            </div>
-          ) : modules.length === 0 ? (
-            <div className="text-center py-10 text-[9px] text-zinc-600 font-mono">No modules found in backend/modules/</div>
-          ) : (
-            <ModuleTree modules={modules} toggling={toggling} onToggle={(dir, en) => void toggleModule(dir, en)} />
-          )}
 
         </div>
       </div>
@@ -353,11 +351,11 @@ const StorageSettingsSection: React.FC = () => {
       {/* Section: Models & Storage */}
       <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
         <HardDrive className="w-3 h-3 text-purple-400" />
-        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Models &amp; Storage</span>
-        <span className="text-[8px] font-mono text-zinc-600 ml-auto">nothing downloads at startup</span>
+        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Models</span>
+        <span className="text-[8px] font-mono text-zinc-600 ml-auto">safe local-first setup</span>
       </div>
       <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">
-        Models load on demand at the first CREATE. Resolution order: local folders, the Hugging Face cache, then a one-time download. Register any checkpoint below and it appears in the MAKE Model dropdown.
+        Models load on demand at the first CREATE. Safe default: theDAW will not download model weights until you explicitly allow it. Register checkpoints you already have, connect cloud APIs, or later turn off local-only for a one-time Stable Audio download.
       </p>
 
       {/* Local-only switch */}
@@ -370,8 +368,11 @@ const StorageSettingsSection: React.FC = () => {
           ? <ToggleRight className="w-4 h-4 text-emerald-400 shrink-0" />
           : <ToggleLeft className="w-4 h-4 text-zinc-600 shrink-0" />}
         <span className="text-[10px] text-zinc-200 font-bold">Local only (never download)</span>
-        <span className="text-[8px] text-zinc-500 ml-auto">missing models fail loudly instead of downloading</span>
+        <span className="text-[8px] text-zinc-500 ml-auto">safe default · missing models warn instead of downloading</span>
       </button>
+
+      {/* CHANGED: Suno cloud-generation API key entry now lives inside Models. */}
+      <SunoKeySettings />
 
       {/* Catalog availability */}
       <div className="flex items-center gap-1 flex-wrap mb-2">
@@ -416,17 +417,16 @@ const StorageSettingsSection: React.FC = () => {
 
       {/* Add a checkpoint */}
       <div className="flex flex-col gap-1 mb-2">
-        <label htmlFor="settings-ckpt-path" className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">Add a checkpoint you already have</label>
-        <input
+        <PathInput
           id="settings-ckpt-path"
           name="settings-ckpt-path"
-          type="text"
+          label="Add a checkpoint you already have"
           value={addPath}
-          onChange={(e) => setAddPath(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') void onAdd(); }}
-          spellCheck={false}
+          onChange={setAddPath}
+          kind="folder"
+          onEnter={() => void onAdd()}
           placeholder="D:\models\my-finetune  (folder, or the .safetensors file)"
-          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 focus:outline-none"
+          description="Use Browse to pick the checkpoint folder, or paste a folder/.safetensors path. The folder needs a model config JSON next to one .safetensors file. Get config JSON from the matching Hugging Face model repo or from the training/export artifact that produced the checkpoint. Entries appear in the model picker in MAKE."
         />
         <div className="flex gap-1.5">
           <label htmlFor="settings-ckpt-name" className="sr-only">Display name for the checkpoint (optional)</label>
@@ -450,14 +450,11 @@ const StorageSettingsSection: React.FC = () => {
           </button>
         </div>
         {addError && <p className="text-[8px] text-red-300">{addError}</p>}
-        <p className="text-[8px] text-zinc-600">
-          The folder needs a model config JSON next to one .safetensors file. Entries land under LOCAL CHECKPOINTS in the MAKE Model dropdown.
-        </p>
       </div>
 
       {/* Locations */}
       <div className="flex items-center gap-1.5 mb-1">
-        <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">Where everything lives</span>
+        <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">Locations</span>
         {sizesLoading && <RefreshCw className="w-2.5 h-2.5 animate-spin text-zinc-600" />}
         <button
           onClick={() => {
@@ -628,7 +625,7 @@ const LayoutSettingsSection: React.FC = () => {
   );
 };
 
-/* ── Modules grouped into a collapsible tree ──────────────────────────────── */
+/* ── Modules as compact grouped tiles ─────────────────────────────────────── */
 const MODULE_GROUPS: Record<string, string> = {
   chimera: 'Generation',
   analysis: 'Audio', effects: 'Audio', stems: 'Audio', midi: 'Audio',
@@ -638,7 +635,12 @@ const MODULE_GROUPS: Record<string, string> = {
 };
 const GROUP_ORDER = ['Generation', 'Audio', 'Library', 'Performance', 'System', 'Other'];
 
-const ModuleTree: React.FC<{ modules: ModuleConfig[]; toggling: string | null; onToggle: (dir: string, enabled: boolean) => void }> = ({ modules, toggling, onToggle }) => {
+const ModuleTree: React.FC<{
+  modules: ModuleConfig[];
+  toggling: string | null;
+  changedModules: Set<string>;
+  onToggle: (dir: string, enabled: boolean) => void;
+}> = ({ modules, toggling, changedModules, onToggle }) => {
   const groups: Record<string, ModuleConfig[]> = {};
   for (const m of Array.isArray(modules) ? modules : []) {
     const g = MODULE_GROUPS[m.name] ?? 'Other';
@@ -646,64 +648,77 @@ const ModuleTree: React.FC<{ modules: ModuleConfig[]; toggling: string | null; o
   }
   const names = GROUP_ORDER.filter((g) => groups[g]?.length);
   return (
-    <div className="flex flex-col gap-1.5">
-      {names.map((g) => (
-        <ModuleGroup key={g} name={g} mods={groups[g]} toggling={toggling} onToggle={onToggle} />
-      ))}
-    </div>
-  );
-};
-
-const ModuleGroup: React.FC<{ name: string; mods: ModuleConfig[]; toggling: string | null; onToggle: (dir: string, enabled: boolean) => void }> = ({ name, mods, toggling, onToggle }) => {
-  const [open, setOpen] = useState(false);
-  const onCount = mods.filter((m) => m.enabled).length;
-  return (
-    <div className="border border-white/5 rounded bg-white/3">
-      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-2 px-3 py-2">
-        <ChevronRight className={`w-3 h-3 text-purple-400 transition-transform ${open ? 'rotate-90' : ''}`} />
-        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-200">{name}</span>
-        <span className="text-[8px] font-mono text-zinc-600 ml-auto">{onCount}/{mods.length} on</span>
-      </button>
-      {open && (
-        <div className="flex flex-col gap-1.5 px-2 pb-2">
+    <div className="flex flex-col gap-2 mb-4">
+      {names.map((name) => {
+        const mods = groups[name];
+        const onCount = mods.filter((m) => m.enabled).length;
+        return (
+          <section key={name} className="rounded border border-white/5 bg-white/3 p-2">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[8px] font-black uppercase tracking-widest text-purple-300">{name}</span>
+              <span className="text-[8px] font-mono text-zinc-600 ml-auto">{onCount}/{mods.length} enabled</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
           {mods.map((mod) => (
-            <ModuleRow key={mod._dir || mod.name} mod={mod} toggling={toggling} onToggle={onToggle} />
+                <ModuleTile
+                  key={mod._dir || mod.name}
+                  mod={mod}
+                  toggling={toggling}
+                  changed={changedModules.has(mod._dir || mod.name)}
+                  onToggle={onToggle}
+                />
           ))}
-        </div>
-      )}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 };
 
-const ModuleRow: React.FC<{ mod: ModuleConfig; toggling: string | null; onToggle: (dir: string, enabled: boolean) => void }> = ({ mod, toggling, onToggle }) => {
+const ModuleTile: React.FC<{
+  mod: ModuleConfig;
+  toggling: string | null;
+  changed: boolean;
+  onToggle: (dir: string, enabled: boolean) => void;
+}> = ({ mod, toggling, changed, onToggle }) => {
   const key = mod._dir || mod.name;
   const isToggling = toggling === key;
   return (
-    <div className={`flex items-center gap-3 px-3 py-2.5 border rounded transition-colors ${mod.enabled ? 'bg-white/3 border-white/8' : 'bg-black/20 border-white/5 opacity-60'}`}>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="text-[10px] font-bold text-zinc-100 truncate">{mod.label || mod.name}</span>
-          {mod.version && <span className="text-[8px] font-mono text-zinc-600 shrink-0">v{mod.version}</span>}
-          {mod._loaded && <span className="text-[7px] font-mono text-green-400 bg-green-500/10 border border-green-500/20 px-1 py-0.5 rounded shrink-0">RUNNING</span>}
+    <article className={`min-w-0 rounded border p-2 transition-colors ${mod.enabled ? 'bg-black/25 border-white/10' : 'bg-black/15 border-white/5 opacity-65'}`}>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 mb-1 min-w-0">
+            <span className="text-[10px] font-bold text-zinc-100 truncate">{mod.label || mod.name}</span>
+            {mod.version && <span className="text-[7px] font-mono text-zinc-600 shrink-0">v{mod.version}</span>}
+          </div>
+          <div className="flex items-center gap-1 flex-wrap mb-1">
+            <span className={`text-[7px] font-mono uppercase tracking-widest px-1 py-0.5 rounded border ${mod.enabled ? 'text-purple-200 bg-purple-500/10 border-purple-500/25' : 'text-zinc-500 bg-white/3 border-white/10'}`}>
+              {mod.enabled ? 'Enabled' : 'Off'}
+            </span>
+            {mod._loaded && <span className="text-[7px] font-mono uppercase tracking-widest text-green-300 bg-green-500/10 border border-green-500/20 px-1 py-0.5 rounded">Running</span>}
+            {changed && <span className="text-[7px] font-mono uppercase tracking-widest text-amber-300 bg-amber-500/10 border border-amber-500/20 px-1 py-0.5 rounded">Restart</span>}
+          </div>
         </div>
-        {mod.description && <p className="text-[9px] text-zinc-500 truncate">{mod.description}</p>}
-        {mod.api_prefix && <span className="text-[8px] font-mono text-zinc-700">{mod.api_prefix}</span>}
+        <button
+          onClick={() => onToggle(key, !mod.enabled)}
+          disabled={isToggling}
+          className="shrink-0 transition-opacity disabled:opacity-50"
+          title={mod.enabled ? 'Disable module' : 'Enable module'}
+          aria-label={`${mod.enabled ? 'Disable' : 'Enable'} ${mod.label || mod.name}`}
+        >
+          {isToggling ? (
+            <RefreshCw className="w-4 h-4 text-zinc-500 animate-spin" />
+          ) : mod.enabled ? (
+            <ToggleRight className="w-6 h-6 text-purple-400" />
+          ) : (
+            <ToggleLeft className="w-6 h-6 text-zinc-600" />
+          )}
+        </button>
       </div>
-      <button
-        onClick={() => onToggle(key, !mod.enabled)}
-        disabled={isToggling}
-        className="shrink-0 transition-opacity disabled:opacity-50"
-        title={mod.enabled ? 'Disable module' : 'Enable module'}
-      >
-        {isToggling ? (
-          <RefreshCw className="w-4 h-4 text-zinc-500 animate-spin" />
-        ) : mod.enabled ? (
-          <ToggleRight className="w-6 h-6 text-purple-400" />
-        ) : (
-          <ToggleLeft className="w-6 h-6 text-zinc-600" />
-        )}
-      </button>
-    </div>
+      {mod.description && <p className="text-[8px] text-zinc-500 leading-snug line-clamp-2 min-h-8" title={mod.description}>{mod.description}</p>}
+      {mod.api_prefix && <div className="text-[8px] font-mono text-zinc-700 truncate mt-1" title={mod.api_prefix}>{mod.api_prefix}</div>}
+    </article>
   );
 };
 

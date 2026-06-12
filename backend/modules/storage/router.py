@@ -8,6 +8,8 @@
     GET    /local-only           is no-download mode on?
     PUT    /local-only           toggle no-download mode {enabled}
     POST   /open                 open a known location in the OS file explorer
+    POST   /pick-folder          open a native folder picker on the local machine
+    POST   /pick-file            open a native file picker on the local machine
 
 Sizes come from a recursive walk cached for 60 seconds per path (pass
 ``refresh=1`` to force). The WSL-side Magenta locations are probed through
@@ -47,6 +49,7 @@ _size_lock = threading.Lock()
 
 _WSL_TIMEOUT = 10
 _wsl_cache: dict[str, tuple[float, dict]] = {}
+_PICKER_TIMEOUT_SECONDS = 300
 
 
 def _dir_stats(path: Path) -> dict:
@@ -324,6 +327,11 @@ class OpenBody(BaseModel):
     path: str
 
 
+class PickerResult(BaseModel):
+    path: str | None = None
+    cancelled: bool = False
+
+
 def _allowed_open_roots() -> list[str]:
     roots = [str(p) for _, _, p in _windows_locations()]
     roots += [e["path"] for e in get_registry().list_checkpoints()]
@@ -352,3 +360,83 @@ def storage_open(body: OpenBody) -> dict:
     except OSError as e:
         raise HTTPException(404, f"Could not open {target!r}: {e}") from e
     return {"opened": target}
+
+
+def _run_windows_picker(script: str) -> PickerResult:
+    """Run a small STA PowerShell picker and return the selected local path.
+
+    The frontend cannot read absolute folder paths from a normal browser file
+    input. Because theDAW runs as a trusted local app, Settings asks the backend
+    to show the native Windows dialog. Scripts are static constants so no user
+    text is interpolated into PowerShell.
+    """
+    if sys.platform != "win32":
+        raise HTTPException(501, "Native path picker is implemented for Windows only.")
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-STA",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_PICKER_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise HTTPException(408, "Path picker timed out.") from e
+    except OSError as e:
+        raise HTTPException(500, f"Could not open path picker: {e}") from e
+
+    if result.returncode == 3:
+        return PickerResult(cancelled=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "path picker failed").strip()
+        raise HTTPException(500, detail[:500])
+    picked = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if not picked:
+        return PickerResult(cancelled=True)
+    return PickerResult(path=picked, cancelled=False)
+
+
+@router.post("/pick-folder")
+def storage_pick_folder() -> dict:
+    script = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select a folder for theDAW'
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+} else {
+  exit 3
+}
+"""
+    return _run_windows_picker(script).model_dump()
+
+
+@router.post("/pick-file")
+def storage_pick_file() -> dict:
+    script = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Select a file for theDAW'
+$dialog.Filter = 'Model/config files (*.safetensors;*.json)|*.safetensors;*.json|All files (*.*)|*.*'
+$dialog.Multiselect = $false
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.FileName
+} else {
+  exit 3
+}
+"""
+    return _run_windows_picker(script).model_dump()

@@ -39,6 +39,11 @@ export interface HfRepo {
   last_accessed: number | null;
 }
 
+export interface PathPickerResult {
+  path: string | null;
+  cancelled: boolean;
+}
+
 async function json<T>(r: Response): Promise<T> {
   if (!r.ok) {
     const detail = await r.json().then((j) => j?.detail).catch(() => null);
@@ -97,6 +102,14 @@ export async function openLocation(path: string): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   }));
+}
+
+export async function pickFolder(): Promise<PathPickerResult> {
+  return json(await fetch('/api/storage/pick-folder', { method: 'POST' }));
+}
+
+export async function pickFile(): Promise<PathPickerResult> {
+  return json(await fetch('/api/storage/pick-file', { method: 'POST' }));
 }
 
 export function formatBytes(bytes: number | null | undefined): string {
