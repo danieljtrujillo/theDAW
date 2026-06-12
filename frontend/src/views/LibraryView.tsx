@@ -906,6 +906,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[8px] font-mono text-purple-400/80 uppercase tracking-wider">{entry.model}</span>
                   <div className="flex items-center gap-3 shrink-0">
+                    {(entry.playCount ?? 0) > 0 && (
+                      <span className="text-[8px] font-mono text-purple-300/70 flex items-center gap-0.5" title={`Played ${entry.playCount}x`}>
+                        <Play className="w-2 h-2 fill-current" />{entry.playCount}
+                      </span>
+                    )}
                     <span className="text-[8px] font-mono text-zinc-600">{formatDuration(entry.duration)}</span>
                     <span className="text-[8px] font-mono text-zinc-700">{formatDate(entry.timestamp)}</span>
                     <span className="text-[8px] font-mono text-zinc-700">{formatSize(entry.fileSizeBytes)}</span>
