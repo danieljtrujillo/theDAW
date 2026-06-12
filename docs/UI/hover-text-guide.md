@@ -1,6 +1,6 @@
 # UI Hover Text Guide — Stable Audio 3
 
-Every tooltip, hover-over, and info blurb for the generation interface. Each entry is written to be instantly understandable by someone who has never used this tool before. Copy-paste ready for Gradio `info=` fields or React tooltip components.
+Every tooltip, hover-over, and info blurb for the generation interface. Each entry is written to be instantly understandable by someone who has never used this tool before. Copy-paste ready for the React tooltip components in the generation UI.
 
 ---
 

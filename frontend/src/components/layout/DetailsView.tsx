@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors, Activity } from 'lucide-react';
+import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors, Activity, Wand2, Loader2 } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
-import { logError } from '../../state/logStore';
+import { useGenerateParamsStore } from '../../state/generateParamsStore';
+import { logError, logInfo } from '../../state/logStore';
 
 interface AnalysisRow {
   bpm: number | null;
@@ -20,6 +21,12 @@ interface AnalysisRow {
   embedded_tags_json: string | null;
   ffprobe_json: string | null;
   analyzed_at: number | null;
+}
+
+interface InferredPrompt {
+  prompt_guess: string;
+  prompt_confidence: number;
+  semantic_tags: string[];
 }
 
 const fmtDuration = (sec: number): string => {
@@ -71,15 +78,19 @@ export const DetailsView: React.FC = () => {
 
   const [analysis, setAnalysis] = useState<AnalysisRow | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [inferred, setInferred] = useState<InferredPrompt | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
 
   useEffect(() => {
     if (!selectedId) {
       setAnalysis(null);
+      setInferred(null);
       return;
     }
     let cancelled = false;
     setAnalysisLoading(true);
     setAnalysis(null);
+    setInferred(null);
     void fetch(`/api/analysis/${selectedId}`)
       .then(async (r) => {
         if (cancelled) return;
@@ -148,6 +159,28 @@ export const DetailsView: React.FC = () => {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const inferPrompt = async () => {
+    if (!selectedId) return;
+    setPromptLoading(true);
+    try {
+      const res = await fetch(`/api/analysis/${encodeURIComponent(selectedId)}/prompt`);
+      if (!res.ok) throw new Error(`prompt inference HTTP ${res.status}`);
+      const payload = (await res.json()) as InferredPrompt;
+      setInferred(payload);
+    } catch (e) {
+      logError('details', `Prompt inference failed: ${e instanceof Error ? e.message : String(e)}`);
+      setInferred(null);
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const usePromptInMake = () => {
+    if (!inferred?.prompt_guess) return;
+    useGenerateParamsStore.getState().setField('prompt', inferred.prompt_guess);
+    logInfo('details', 'Inferred prompt copied into the MAKE prompt field.');
   };
 
   if (!selectedId || !entry) {
@@ -262,6 +295,56 @@ export const DetailsView: React.FC = () => {
               {safeFfprobeSummary(analysis.ffprobe_json)}
             </pre>
           </details>
+        )}
+      </div>
+
+      {/* Prompt inference: a Stable Audio-style prompt + semantic tags derived
+          from the analysis above (deterministic; folds in embedded genre/mood). */}
+      <div className="mt-3 p-2 rounded border border-sky-500/25 bg-sky-500/4">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-[8px] font-mono text-sky-300/80 uppercase tracking-widest flex items-center gap-1.5">
+            <Wand2 className="w-3 h-3" /> PROMPT INFERENCE
+          </p>
+          <button
+            onClick={() => void inferPrompt()}
+            disabled={!selectedId || promptLoading || !analysis}
+            className="btn-ghost text-[8px] py-0.5 flex items-center gap-1 disabled:opacity-40"
+            title={!analysis ? 'Analyze the track first' : 'Infer a prompt from this track’s analysis'}
+          >
+            {promptLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3 text-sky-300" />}
+            INFER
+          </button>
+        </div>
+        {inferred ? (
+          <>
+            <p className="text-[11px] text-zinc-200 leading-relaxed">
+              {inferred.prompt_guess || <em className="text-zinc-600">No prompt could be inferred.</em>}
+            </p>
+            <div className="flex items-center justify-between gap-2 mt-1.5">
+              <span className="text-[8px] font-mono text-zinc-500">confidence {inferred.prompt_confidence.toFixed(2)}</span>
+              <button
+                onClick={usePromptInMake}
+                disabled={!inferred.prompt_guess}
+                className="btn-ghost text-[8px] py-0.5 flex items-center gap-1 disabled:opacity-40"
+                title="Copy this prompt into the MAKE prompt field"
+              >
+                <Send className="w-3 h-3 text-sky-300" /> USE AS PROMPT
+              </button>
+            </div>
+            {inferred.semantic_tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {inferred.semantic_tags.map((t) => (
+                  <span key={t} className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-zinc-300">{t}</span>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="text-[9px] font-mono text-zinc-600">
+            {analysis
+              ? 'Click INFER to generate a prompt and tags from this track’s analysis.'
+              : 'Analyze the track first, then infer a prompt.'}
+          </p>
         )}
       </div>
 

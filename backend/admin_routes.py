@@ -2,13 +2,13 @@
 
 POST /api/admin/restart — schedules a clean re-exec of the backend.
 Returns 202 immediately, then exits with sentinel code 88 so the
-backend._supervisor parent process respawns a fresh inner inside the
-same console window. The frontend polls /api/health until it comes
-back.
+supervisor parent process (backend._devstack, or backend._supervisor)
+respawns a fresh inner inside the same console. The frontend polls
+/api/health until it comes back.
 
 POST /api/admin/shutdown — schedules a CLEAN exit with rc=0. The
 supervisor sees a non-restart exit code and terminates rather than
-respawning, so the whole SA3 backend console closes. Used by the
+respawning, so the whole theDAW console closes. Used by the
 SETTINGS modal's Shutdown button.
 """
 
@@ -53,8 +53,8 @@ def restart_status() -> dict:
 def restart() -> dict:
     """Schedule a backend restart and return 202.
 
-    The supervisor parent (backend._supervisor) sees the sentinel exit
-    code and re-launches backend.run inside the same console. The
+    The supervisor parent (theDAW.bat's dev stack) sees the sentinel
+    exit code and re-launches backend.run inside the same console. The
     frontend should poll /api/health until it responds again.
 
     Refuses with 412 if the supervisor isn't in the process tree —
@@ -66,9 +66,9 @@ def restart() -> dict:
             status_code=412,
             detail=(
                 "Restart unavailable: backend not running under the "
-                "supervisor. Launch via start-dev.bat (which invokes "
-                "`python -m backend._supervisor`) instead of "
-                "`python -m backend.run`, then try again."
+                "supervisor. Launch via theDAW.bat (which runs it under "
+                "backend._devstack) instead of `python -m backend.run`, "
+                "then try again."
             ),
         )
     # 600ms gives uvicorn time to flush the response and the client
@@ -88,10 +88,10 @@ def restart() -> dict:
 def shutdown() -> dict:
     """Schedule a clean backend shutdown (rc=0).
 
-    The supervisor (backend._supervisor) only respawns on
-    RESTART_EXIT_CODE (88); any other exit code ends the loop and the
-    supervisor process exits normally. So rc=0 cleanly stops the whole
-    SA3 backend console — the user has to relaunch via start-dev.bat.
+    The supervisor only respawns on RESTART_EXIT_CODE (88); any other
+    exit code ends the loop and the supervisor process exits normally.
+    So rc=0 cleanly stops the whole theDAW console and the user has to
+    relaunch via theDAW.bat.
     """
     t = threading.Thread(target=_delayed_exit, args=(0.6, 0), daemon=True)
     t.start()

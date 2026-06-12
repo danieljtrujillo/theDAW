@@ -1,0 +1,10 @@
+{
+  "name": "notation",
+  "label": "Notation",
+  "enabled": true,
+  "icon": "FileMusic",
+  "sidebar": false,
+  "api_prefix": "/api/notation",
+  "backend": true,
+  "description": "Unified symbolic music artifact layer: MIDI, MusicXML, score exports, tabs, and future OMR/arrangement workflows."
+}

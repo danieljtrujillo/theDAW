@@ -1,5 +1,5 @@
 # Stable Audio 3 Inference Methods
-An overview of the different inference modes. The python interface is shown, but these controls are the same as for the gradio interface
+An overview of the different inference modes. The Python interface is shown below; the same parameters are exposed in theDAW's MAKE tab.
 
 > New to diffusion/RF models? See [Model Overview](../guides/how-inference-works.md)
 > for a conceptual overview before diving in.

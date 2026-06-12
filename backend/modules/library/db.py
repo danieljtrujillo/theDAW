@@ -36,7 +36,7 @@ from typing import Any, Iterator, Optional
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 # Each tuple is (schema_version_after_running, statements list).
@@ -188,6 +188,42 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
                 value TEXT NOT NULL
             )
             """,
+        ],
+    ),
+    (
+        2,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS notation_artifacts (
+                id TEXT PRIMARY KEY,
+                entry_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source_ref TEXT,
+                path TEXT NOT NULL,
+                engine TEXT NOT NULL DEFAULT '',
+                engine_version TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_notation_artifacts_entry_id
+                ON notation_artifacts(entry_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_notation_artifacts_kind
+                ON notation_artifacts(kind)
+            """,
+        ],
+    ),
+    (
+        3,
+        [
+            "ALTER TABLE analysis ADD COLUMN prompt_guess TEXT",
+            "ALTER TABLE analysis ADD COLUMN prompt_confidence REAL",
+            "ALTER TABLE analysis ADD COLUMN semantic_tags_json TEXT NOT NULL DEFAULT '[]'",
         ],
     ),
 ]
@@ -529,6 +565,9 @@ class LibraryDB:
             "bars_estimated": payload.get("bars_estimated"),
             "genre": payload.get("genre"),
             "genre_confidence": payload.get("genre_confidence"),
+            "prompt_guess": payload.get("prompt_guess"),
+            "prompt_confidence": payload.get("prompt_confidence"),
+            "semantic_tags_json": json.dumps(payload.get("semantic_tags") or []),
             "embedded_tags_json": json.dumps(payload.get("embedded_tags") or {}),
             "ffprobe_json": json.dumps(payload.get("ffprobe") or {}),
             "analyzed_at": _now(),
@@ -541,11 +580,13 @@ class LibraryDB:
                     entry_id, bpm, beats_json, key, key_confidence, scale,
                     pitch_mean_hz, pitch_std_hz, loudness_lufs, rms_db,
                     bars_estimated, genre, genre_confidence,
+                    prompt_guess, prompt_confidence, semantic_tags_json,
                     embedded_tags_json, ffprobe_json, analyzed_at, version
                 ) VALUES (
                     :entry_id, :bpm, :beats_json, :key, :key_confidence, :scale,
                     :pitch_mean_hz, :pitch_std_hz, :loudness_lufs, :rms_db,
                     :bars_estimated, :genre, :genre_confidence,
+                    :prompt_guess, :prompt_confidence, :semantic_tags_json,
                     :embedded_tags_json, :ffprobe_json, :analyzed_at, :version
                 )
                 ON CONFLICT(entry_id) DO UPDATE SET
@@ -561,6 +602,9 @@ class LibraryDB:
                     bars_estimated = excluded.bars_estimated,
                     genre = excluded.genre,
                     genre_confidence = excluded.genre_confidence,
+                    prompt_guess = excluded.prompt_guess,
+                    prompt_confidence = excluded.prompt_confidence,
+                    semantic_tags_json = excluded.semantic_tags_json,
                     embedded_tags_json = excluded.embedded_tags_json,
                     ffprobe_json = excluded.ffprobe_json,
                     analyzed_at = excluded.analyzed_at,
@@ -661,6 +705,69 @@ class LibraryDB:
             ).fetchall()
             cur.close()
             return [dict(r) for r in rows]
+
+    def add_notation_artifact(
+        self,
+        *,
+        artifact_id: str,
+        entry_id: str,
+        kind: str,
+        path: str,
+        source_ref: Optional[str] = None,
+        engine: str = "",
+        engine_version: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        with self._txn() as cur:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO notation_artifacts
+                    (id, entry_id, kind, source_ref, path, engine,
+                     engine_version, metadata_json, created_at, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    artifact_id,
+                    entry_id,
+                    kind,
+                    source_ref,
+                    path,
+                    engine,
+                    engine_version,
+                    json.dumps(metadata or {}),
+                    _now(),
+                ),
+            )
+
+    def list_notation_artifacts(
+        self,
+        entry_id: str,
+        *,
+        kind: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["entry_id = ?"]
+        params: list[Any] = [entry_id]
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = " AND ".join(clauses)
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                f"SELECT * FROM notation_artifacts WHERE {where} ORDER BY created_at",
+                params,
+            ).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
+    def get_notation_artifact(self, artifact_id: str) -> Optional[dict[str, Any]]:
+        with self._writelock:
+            cur = self._conn.cursor()
+            row = cur.execute(
+                "SELECT * FROM notation_artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+            cur.close()
+            return dict(row) if row else None
 
     # ---- Schema info --------------------------------------------------------
 

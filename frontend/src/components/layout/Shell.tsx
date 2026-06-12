@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal } from 'lucide-react';
+import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 
@@ -133,26 +133,32 @@ export const Shell: React.FC = () => {
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
           Docs / Mobile / Settings icons (right). G-Search moved to the footer. */}
       <header className="h-11 border-b border-white/5 flex items-center gap-3 px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
-        <div className="flex items-center gap-2 relative z-10 select-none shrink-0">
+        <a
+          href="https://github.com/gantasmo/theDAW"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 relative z-10 select-none shrink-0 group/brand cursor-pointer"
+          title="theDAW by GANTASMO — opens github.com/gantasmo/theDAW"
+        >
           <BrandLogo />
           <div className="flex flex-col leading-none">
-            <span className="text-[13px] font-black tracking-[0.18em] text-zinc-100">theDAW</span>
-            <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500">by GANTASMO</span>
+            <span className="text-[13px] font-black tracking-[0.18em] text-zinc-100 group-hover/brand:text-white transition-colors">theDAW</span>
+            <span className="text-[8px] font-mono uppercase tracking-[0.3em] text-zinc-500 group-hover/brand:text-purple-300 transition-colors">by GANTASMO</span>
           </div>
-        </div>
+        </a>
 
         {/* Workspace tabs — embedded so they share this row instead of a
             separate strip below. */}
         <CenterTabBar
           activeTab={centerTab}
           onTabChange={setCenterTab}
-          isRightPanelOpen={isRightPanelOpen}
-          onToggleRightPanel={() => setIsRightPanelOpen(!isRightPanelOpen)}
           embedded
         />
 
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Icon-only — the hover tooltip (title) names each one. */}
+          {/* Icon-only — the hover tooltip (title) names each one. The library
+              toggle is the right-edge pull handle (below), not a cluster icon.
+              All three carry the colored accent glow. */}
           <TopBarButton
             onClick={() => setDocsOpen(true)}
             icon={<BookOpen className="w-3.5 h-3.5" />}
@@ -169,12 +175,12 @@ export const Shell: React.FC = () => {
             onClick={() => setSettingsOpen(true)}
             icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}
             title="Settings"
-            accent="neutral"
+            accent="rose"
           />
         </div>
       </header>
 
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden relative">
       {/* Main Canvas — hidden when library is expanded to full view. */}
       {!isLibraryExpanded && (
         <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
@@ -215,6 +221,20 @@ export const Shell: React.FC = () => {
           </div>
         </aside>
       )}
+
+      {/* Library pull handle — compact, vertically-centered tab on the right
+          edge of the work area, global across every workspace. Click toggles
+          the library panel; resize stays on the panel's inner edge. */}
+      <button
+        type="button"
+        onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
+        title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
+        aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
+        className="absolute right-0 top-1/2 -translate-y-1/2 z-40 group flex flex-col items-center justify-center gap-1 h-14 w-4 rounded-l-md border border-r-0 border-purple-500/15 bg-[#0a080f]/70 text-zinc-600 hover:w-5 hover:text-purple-200 hover:border-purple-500/40 hover:bg-purple-500/10 hover:shadow-[0_0_10px_rgba(168,85,247,0.25)] transition-all"
+      >
+        <Library className="w-3 h-3" />
+        {isRightPanelOpen ? <ChevronRight className="w-3 h-3 opacity-60 group-hover:opacity-90" /> : <ChevronLeft className="w-3 h-3 opacity-60 group-hover:opacity-90" />}
+      </button>
       </div>
 
       {/* Global bottom dock — BottomMultiTabPanel (left, flex-1) and
@@ -539,7 +559,7 @@ const BrandLogo: React.FC = () => (
  * the filled treatment for toggle-style buttons (Library). Icon-only
  * buttons (no label) get tighter padding.
  */
-type TopBarAccent = 'purple' | 'emerald' | 'rose' | 'neutral';
+type TopBarAccent = 'purple' | 'emerald' | 'sky' | 'rose' | 'neutral';
 
 interface TopBarButtonProps {
   onClick: () => void;
@@ -557,19 +577,24 @@ interface TopBarButtonProps {
 
 const ACCENT_CLS: Record<TopBarAccent, { idle: string; idleText: string; active: string }> = {
   purple: {
-    idle: 'border-purple-500/20 hover:bg-purple-500/15',
+    idle: 'border-purple-500/30 hover:bg-purple-500/15 shadow-[0_0_10px_rgba(168,85,247,0.3)]',
     idleText: 'text-purple-300 group-hover:text-purple-200',
-    active: 'border-purple-500/40 bg-purple-500/15 text-purple-200',
+    active: 'border-purple-500/50 bg-purple-500/15 text-purple-200 shadow-[0_0_12px_rgba(168,85,247,0.45)]',
   },
   emerald: {
-    idle: 'border-emerald-500/20 hover:bg-emerald-500/15',
+    idle: 'border-emerald-500/30 hover:bg-emerald-500/15 shadow-[0_0_10px_rgba(16,185,129,0.3)]',
     idleText: 'text-emerald-300 group-hover:text-emerald-200',
-    active: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200',
+    active: 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200 shadow-[0_0_12px_rgba(16,185,129,0.45)]',
+  },
+  sky: {
+    idle: 'border-sky-500/30 hover:bg-sky-500/15 shadow-[0_0_10px_rgba(14,165,233,0.3)]',
+    idleText: 'text-sky-300 group-hover:text-sky-200',
+    active: 'border-sky-500/50 bg-sky-500/15 text-sky-200 shadow-[0_0_12px_rgba(14,165,233,0.45)]',
   },
   rose: {
-    idle: 'border-rose-500/20 hover:bg-rose-500/15',
+    idle: 'border-rose-500/30 hover:bg-rose-500/15 shadow-[0_0_10px_rgba(244,63,94,0.3)]',
     idleText: 'text-rose-300 group-hover:text-rose-200',
-    active: 'border-rose-500/40 bg-rose-500/15 text-rose-200',
+    active: 'border-rose-500/50 bg-rose-500/15 text-rose-200 shadow-[0_0_12px_rgba(244,63,94,0.45)]',
   },
   neutral: {
     idle: 'border-white/5 hover:bg-white/5',

@@ -27,6 +27,7 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "ui-controls-guide.md",
     PROJECT_ROOT / "docs" / "guides" / "model-overview.md",
     PROJECT_ROOT / "docs" / "guides" / "dj-and-genealogy.md",
+    PROJECT_ROOT / "docs" / "guides" / "notation-and-score.md",
     PROJECT_ROOT / "docs" / "UI" / "hover-text-guide.md",
     PROJECT_ROOT / "docs" / "workflows" / "lora.md",
     PROJECT_ROOT / "docs" / "workflows" / "inference.md",

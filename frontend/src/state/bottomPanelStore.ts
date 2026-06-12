@@ -16,6 +16,7 @@ import { persist } from 'zustand/middleware';
 export type BottomPanelTab =
   | 'spectral'
   | 'details'
+  | 'score'
   | 'piano-roll'
   | 'step-seq'
   | 'bucket'

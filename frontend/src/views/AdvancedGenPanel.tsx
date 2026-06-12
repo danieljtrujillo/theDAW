@@ -18,6 +18,7 @@ import { RICH_TOOLTIPS } from '../components/ui/tooltips';
 import { GENERATION_PRESETS, type GenerationPreset } from '../data/generationPresets';
 import { enhanceStableAudioPrompt } from '../orb-kit/promptEnhancer';
 import { ChimeraStack } from '../components/chimera/ChimeraStack';
+import { ChimeraDnaScene } from '../components/chimera/ChimeraDnaScene';
 import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideTrack } from '../components/audio/SlideTrack';
 import { SlideFader } from '../components/audio/SlideFader';
@@ -25,6 +26,7 @@ import { SlideRow } from '../components/audio/SlideRow';
 import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
+import { swapEngineForModel } from '../lib/magentaEngineClient';
 import '../components/layout/track-controls.css';
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
@@ -288,7 +290,9 @@ export const AdvancedGenPanel: React.FC<{
     prevAudioRef.current = lastAudioUrl;
   }, [lastAudioUrl]);
 
-  const [cmpLayers, setCmpLayers] = useState<Set<string>>(() => new Set(['output']));
+  const [cmpLayers, setCmpLayers] = useState<Set<string>>(
+    () => new Set(['output', 'init', 'mel', 'stft', 'chromagram', 'cqt']),
+  );
   const [cmpOverlay, setCmpOverlay] = useState(false);
   const toggleLayer = (k: string) => setCmpLayers((prev) => {
     const next = new Set(prev);
@@ -494,11 +498,12 @@ export const AdvancedGenPanel: React.FC<{
         </div>
       </div>
 
-      {/* ═══ UPPER: left rail | chimera area | output rail ═══ */}
-      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '190px minmax(0,1fr) 190px' }}>
+      {/* ═══ UPPER: rails span BOTH rows (no blank space below them); the
+          chimera card sits in row 1, the viz/prompt row in row 2 ═══ */}
+      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 180px' }}>
 
         {/* ── LEFT RAIL: Presets · Controls · Templates (GENERATE lives in footer CREATE) ── */}
-        <div className="flex flex-col gap-1.5 min-h-0">
+        <div className="flex flex-col gap-1.5 min-h-0 row-span-2">
           {/* Presets — moved here, above Controls */}
           <div className="relative shrink-0">
             <button onClick={() => setPresetsOpen(!presetsOpen)}
@@ -528,18 +533,40 @@ export const AdvancedGenPanel: React.FC<{
             <span className={`${sectionTitle} mb-1.5`}>CONTROLS</span>
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
-                <span className="text-[11px] text-zinc-300 w-16 shrink-0">Model</span>
-                <select name="gen-model" className="compact-input flex-1" value={p.model} onChange={(e) => {
-                  const m = e.target.value; const isRf = m.endsWith('-rf'); const isMagenta = m.startsWith('magenta-');
-                  patch({ model: m, steps: isMagenta ? 1 : isRf ? 50 : 8, cfg: isMagenta ? 1.0 : isRf ? 7.0 : 1.0 });
+                <label htmlFor="gen-model" className="text-[11px] text-zinc-300 w-16 shrink-0">Model</label>
+                <select id="gen-model" name="gen-model" className="compact-input flex-1" value={p.model} onChange={(e) => {
+                  const m = e.target.value; const prev = p.model;
+                  const isRf = m.endsWith('-rf'); const isMag = m.startsWith('magenta-');
+                  patch({ model: m, steps: isMag ? 1 : isRf ? 50 : 8, cfg: isMag ? 1.0 : isRf ? 7.0 : 1.0 });
+                  // GPU auto-swap: magenta selected → park SA3 + start the WSL2
+                  // engine; SA3 selected → stop the engine + restore SA3.
+                  void swapEngineForModel(prev, m);
                 }} style={{ colorScheme: 'dark' }}>
                   <option value="small">Small (ARC)</option>
                   <option value="medium">Medium (ARC)</option>
                   <option value="small-rf">Small-RF</option>
                   <option value="medium-rf">Medium-RF</option>
-                  {p.magentaAvailable && <option value="magenta-small">Magenta RT2 (text→music)</option>}
+                  <option value="magenta-small">Magenta RT2 (text→music)</option>
                   <option value="suno">Suno (Cloud)</option>
                 </select>
+                {(p.model.startsWith('magenta-') || p.magentaEngine !== 'off') && (() => {
+                  const st = p.magentaEngine === 'starting' ? 'starting'
+                    : p.magentaEngine === 'error' ? 'error'
+                    : (p.magentaEngine === 'ready' || p.magentaAvailable) ? 'ready' : 'off';
+                  const cls = st === 'starting' ? 'border-amber-500/40 text-amber-300 bg-amber-500/10 animate-pulse'
+                    : st === 'error' ? 'border-red-500/40 text-red-300 bg-red-500/10'
+                    : st === 'ready' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
+                    : 'border-zinc-600/40 text-zinc-400 bg-white/3';
+                  const label = st === 'starting' ? 'LOADING' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
+                  return (
+                    <span
+                      className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 ${cls}`}
+                      title="Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio."
+                    >
+                      {label}
+                    </span>
+                  );
+                })()}
               </div>
               <SlideRow label="Length (s)" value={p.duration} onChange={(v) => sf('duration', v)} min={0.5} max={512} step={0.5} tipKey="duration" />
               {isMagenta ? (
@@ -570,142 +597,86 @@ export const AdvancedGenPanel: React.FC<{
 
           {/* Templates — fills the rail's lower region */}
           <div className="flex-1 min-h-0"><TemplatesPanel /></div>
+
+          {/* SAMPLING (Magenta) ↔ TEMP/SAMPLER (SA3) — moved from the chimera card */}
+          {isMagenta ? (
+            <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+              <span className={subTitle}>SAMPLING</span>
+              <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
+                <SlideKnob label="Temp" value={p.magTemperature} onChange={(v) => sf('magTemperature', v)} min={0} max={2} step={0.05} size={32} />
+                <SlideKnob label="Top-K" value={p.magTopK} onChange={(v) => sf('magTopK', Math.round(v))} min={0} max={250} step={1} size={32} />
+                <SlideKnob label="Chunk" value={p.magChunkFrames} onChange={(v) => sf('magChunkFrames', Math.round(v))} min={1} max={50} step={1} size={32} />
+              </div>
+              <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                <span className={`${subTitle} shrink-0`}>CFG SCALES</span>
+              </div>
+              <div className="flex-1 min-h-0 grid grid-cols-3 gap-0.5 mb-3">
+                <SlideFader label="Style" value={p.magCfgMusiccoca} onChange={(v) => sf('magCfgMusiccoca', v)} min={0} max={10} step={0.1} />
+                <SlideFader label="Notes" value={p.magCfgNotes} onChange={(v) => sf('magCfgNotes', v)} min={0} max={10} step={0.1} />
+                <SlideFader label="Drums" value={p.magCfgDrums} onChange={(v) => sf('magCfgDrums', v)} min={0} max={10} step={0.1} />
+              </div>
+            </div>
+          ) : (
+            <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+              <span className={subTitle}>TEMP</span>
+              <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
+                <SlideKnob label="Init nz" value={p.initNoise} onChange={(v) => sf('initNoise', v)} min={0} max={1} tipKey="initNoise" size={32} />
+                <SlideKnob label="CFG min" value={p.cfgIntervalMin} onChange={(v) => sf('cfgIntervalMin', v)} min={0} max={1} tipKey="cfgIntervalMin" size={32} />
+                <SlideKnob label="CFG max" value={p.cfgIntervalMax} onChange={(v) => sf('cfgIntervalMax', v)} min={0} max={1} tipKey="cfgIntervalMax" size={32} />
+              </div>
+              <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                <span className={`${subTitle} shrink-0`}>SAMPLER</span>
+                <select name="gen-sampler" className="compact-input flex-1 h-6 py-0 text-[9px]" value={p.samplerType} onChange={(e) => sf('samplerType', e.target.value)} style={{ colorScheme: 'dark' }}>
+                  <option value="pingpong">pingpong</option><option value="euler">euler</option>
+                  <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
+                </select>
+              </div>
+              <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
+                <SlideFader label="Sigma" value={p.sigmaMax} onChange={(v) => sf('sigmaMax', v)} min={0} max={1} tipKey="sigmaMax" />
+                <SlideFader label="DurPad" value={p.durationPaddingSec} onChange={(v) => sf('durationPaddingSec', v)} min={0} max={30} step={0.1} tipKey="durationPadding" />
+                <SlideFader label="APG" value={p.apgScale} onChange={(v) => sf('apgScale', v)} min={0} max={1} tipKey="apg" />
+                <SlideFader label="Rescale" value={p.cfgRescale} onChange={(v) => sf('cfgRescale', v)} min={0} max={1} tipKey="cfgRescale" />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── CHIMERA AREA ── */}
-        <div className="hardware-card flex flex-col min-h-0 gap-1.5">
-          {/* tabs — centered + wider */}
-          <div className="relative flex items-center justify-center gap-2 shrink-0">
-            <button onClick={() => setHeroTab('chimera')} className={tabBtn(heroTab === 'chimera')}>
+        <div className="hardware-card flex flex-col min-h-0 gap-1.5 relative overflow-hidden">
+          {/* ONE CRISPR scene behind the whole card: lanes + fused output */}
+          <div className="absolute inset-0 z-0 pointer-events-none"><ChimeraDnaScene /></div>
+          {/* tab-head panel — the fused CRISPR output forms here on weave */}
+          <div data-crispr-output className="relative z-10 shrink-0 h-28 rounded-lg overflow-hidden border border-purple-500/20 flex items-start justify-center gap-2 pt-1.5">
+            <span className="pointer-events-none absolute left-2 top-1 z-10 text-[8px] font-black uppercase tracking-[0.3em] text-purple-200/40">
+              CRISPR
+            </span>
+            <button onClick={() => setHeroTab('chimera')} className={`relative z-10 ${tabBtn(heroTab === 'chimera')}`}>
               <Layers className="w-3 h-3" /> Chimera
             </button>
             <button onClick={() => lastAudioUrl && setHeroTab('compare')} disabled={!lastAudioUrl}
-              className={`${tabBtn(heroTab === 'compare')} disabled:opacity-30 disabled:cursor-not-allowed`}>
+              className={`relative z-10 ${tabBtn(heroTab === 'compare')} disabled:opacity-30 disabled:cursor-not-allowed`}>
               <AudioWaveform className="w-3 h-3" /> Compare
             </button>
             {heroTab === 'compare' && (
               <button onClick={() => setCmpOverlay((v) => !v)}
-                className={`absolute right-0 px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-colors ${cmpOverlay ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
+                className={`absolute right-0 top-1.5 z-10 px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-colors ${cmpOverlay ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
                 {cmpOverlay ? 'Overlay' : 'Stacked'}
               </button>
             )}
           </div>
 
-          {/* CHIMERA tab */}
+          {/* CHIMERA tab — full-width stack (side controls live in the outer rails) */}
           {heroTab === 'chimera' && (
-            <div className="flex-1 min-h-0 flex flex-col gap-1.5">
-              {/* Renderweave / latent visual strip */}
-              <div className="shrink-0 h-12 rounded-lg border border-purple-500/20 overflow-hidden relative bg-linear-to-r from-purple-900/30 via-fuchsia-900/15 to-cyan-900/25 flex items-center justify-center">
-                <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_30%_50%,rgba(168,85,247,0.5),transparent_60%),radial-gradient(circle_at_75%_50%,rgba(34,211,238,0.4),transparent_55%)]" />
-                <div className="relative flex items-center gap-2 text-purple-200/80">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Renderweave · Latent</span>
-                </div>
-              </div>
-
-              {/* SAMPLER(+TEMP) | chimera STACK (~prompt width) | SCHEDULE(+FX) */}
-              <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) 600px minmax(0,1fr)' }}>
-
-                {/* SAMPLER column (SA3) ↔ GUIDANCE column (Magenta) — knobs ride above the faders */}
-                {isMagenta ? (
-                  <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
-                    <span className={subTitle}>SAMPLING</span>
-                    <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
-                      <SlideKnob label="Temp" value={p.magTemperature} onChange={(v) => sf('magTemperature', v)} min={0} max={2} step={0.05} size={32} />
-                      <SlideKnob label="Top-K" value={p.magTopK} onChange={(v) => sf('magTopK', Math.round(v))} min={0} max={250} step={1} size={32} />
-                      <SlideKnob label="Chunk" value={p.magChunkFrames} onChange={(v) => sf('magChunkFrames', Math.round(v))} min={1} max={50} step={1} size={32} />
-                    </div>
-                    <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
-                      <span className={`${subTitle} shrink-0`}>CFG SCALES</span>
-                    </div>
-                    <div className="flex-1 min-h-0 grid grid-cols-3 gap-0.5 mb-3">
-                      <SlideFader label="Style" value={p.magCfgMusiccoca} onChange={(v) => sf('magCfgMusiccoca', v)} min={0} max={10} step={0.1} />
-                      <SlideFader label="Notes" value={p.magCfgNotes} onChange={(v) => sf('magCfgNotes', v)} min={0} max={10} step={0.1} />
-                      <SlideFader label="Drums" value={p.magCfgDrums} onChange={(v) => sf('magCfgDrums', v)} min={0} max={10} step={0.1} />
-                    </div>
-                  </div>
-                ) : (
-                <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
-                  <span className={subTitle}>TEMP</span>
-                  <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
-                    <SlideKnob label="Init nz" value={p.initNoise} onChange={(v) => sf('initNoise', v)} min={0} max={1} tipKey="initNoise" size={32} />
-                    <SlideKnob label="CFG min" value={p.cfgIntervalMin} onChange={(v) => sf('cfgIntervalMin', v)} min={0} max={1} tipKey="cfgIntervalMin" size={32} />
-                    <SlideKnob label="CFG max" value={p.cfgIntervalMax} onChange={(v) => sf('cfgIntervalMax', v)} min={0} max={1} tipKey="cfgIntervalMax" size={32} />
-                  </div>
-                  <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
-                    <span className={`${subTitle} shrink-0`}>SAMPLER</span>
-                    <select name="gen-sampler" className="compact-input flex-1 h-6 py-0 text-[9px]" value={p.samplerType} onChange={(e) => sf('samplerType', e.target.value)} style={{ colorScheme: 'dark' }}>
-                      <option value="pingpong">pingpong</option><option value="euler">euler</option>
-                      <option value="rk4">rk4</option><option value="dpmpp">dpmpp</option>
-                    </select>
-                  </div>
-                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
-                    <SlideFader label="Sigma" value={p.sigmaMax} onChange={(v) => sf('sigmaMax', v)} min={0} max={1} tipKey="sigmaMax" />
-                    <SlideFader label="DurPad" value={p.durationPaddingSec} onChange={(v) => sf('durationPaddingSec', v)} min={0} max={30} step={0.1} tipKey="durationPadding" />
-                    <SlideFader label="APG" value={p.apgScale} onChange={(v) => sf('apgScale', v)} min={0} max={1} tipKey="apg" />
-                    <SlideFader label="Rescale" value={p.cfgRescale} onChange={(v) => sf('cfgRescale', v)} min={0} max={1} tipKey="cfgRescale" />
-                  </div>
-                </div>
-                )}
-
-                {/* CENTER — chimera stack, full height */}
-                <div className="rounded-lg bg-black/20 border border-purple-500/15 p-2 min-h-0 overflow-y-auto" data-chimera-anchor="init-audio">
-                  <ChimeraStack />
-                </div>
-
-                {/* SCHEDULE column (SA3) ↔ OUTPUT column (Magenta) — toggles ride above */}
-                {isMagenta ? (
-                  <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
-                    <span className={subTitle}>OUTPUT</span>
-                    <div className="flex items-start justify-around gap-1 shrink-0">
-                      <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
-                      <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
-                      <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
-                    </div>
-                    <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
-                      <span className={`${subTitle} shrink-0`}>SOURCE</span>
-                      <span className="text-[9px] font-mono text-purple-300 flex-1 text-right truncate">
-                        {p.initAudioEnabled && p.initAudioFile ? 'Style clone (Init)' : 'Text prompt'}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-1 px-1 mb-3">
-                      <Sparkles className="w-4 h-4 text-purple-400/80" />
-                      <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/90">Magenta RT2</span>
-                      <span className="text-[9px] text-zinc-500 leading-tight">48 kHz stereo · streaming · local GPU</span>
-                    </div>
-                  </div>
-                ) : (
-                <div className={`${colBox} p-2 flex flex-col gap-1 min-h-0`}>
-                  <span className={subTitle}>FX</span>
-                  <div className="flex items-start justify-around gap-1 shrink-0">
-                    <SlideKnob label="Norm thr" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} tipKey="cfgNormThreshold" size={46} centerReadout />
-                    <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
-                    <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
-                    <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
-                  </div>
-                  <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
-                    <span className={`${subTitle} shrink-0`}>SHIFT</span>
-                    <div className="grid grid-cols-4 gap-0.5 flex-1">
-                      {SHIFT_MODES.map((m) => (
-                        <button key={m} onClick={() => sf('shiftMode', m)}
-                          className={`px-0.5 py-0.5 rounded text-[7px] font-bold uppercase tracking-wide transition-colors ${p.shiftMode === m ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
-                          {m}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
-                    {shiftFaders()}
-                  </div>
-                </div>
-                )}
+            <div className="relative z-10 flex-1 min-h-0 flex flex-col gap-1.5">
+              <div className="flex-1 px-1 min-h-0 overflow-y-auto" data-chimera-anchor="init-audio">
+                <ChimeraStack />
               </div>
             </div>
           )}
 
           {/* COMPARE tab — fills the whole area */}
           {heroTab === 'compare' && (
-            <div className="flex-1 min-h-0 flex flex-col gap-1.5">
+            <div className="relative z-10 flex-1 min-h-0 flex flex-col gap-1.5">
               <div className="flex items-center gap-1 flex-wrap shrink-0">
                 {([
                   { k: 'output', label: 'Output WF', on: !!lastAudioUrl },
@@ -725,21 +696,21 @@ export const AdvancedGenPanel: React.FC<{
               {lastAudioUrl && <div className="shrink-0"><FullAudioPlayer /></div>}
               <div className={`flex-1 min-h-0 ${cmpOverlay ? 'relative' : 'flex flex-col gap-1.5 overflow-y-auto'}`}>
                 {cmpLayers.has('output') && lastAudioUrl && (
-                  <div className={cmpOverlay ? 'absolute inset-0' : 'h-28 shrink-0'}>
+                  <div className={cmpOverlay ? 'absolute inset-0' : 'h-22 shrink-0'}>
                     <div className="h-full rounded overflow-hidden border border-white/5 bg-black/40">
-                      <FooterScrubWave src={lastAudioUrl} height={cmpOverlay ? 220 : 108} />
+                      <FooterScrubWave src={lastAudioUrl} height={cmpOverlay ? 220 : 84} />
                     </div>
                   </div>
                 )}
                 {cmpLayers.has('init') && initAudioUrl && (
-                  <div className={cmpOverlay ? 'absolute inset-0 opacity-50 mix-blend-screen pointer-events-none' : 'h-28 shrink-0'}>
+                  <div className={cmpOverlay ? 'absolute inset-0 opacity-50 mix-blend-screen pointer-events-none' : 'h-22 shrink-0'}>
                     <div className="h-full rounded overflow-hidden border border-cyan-500/20 bg-black/20">
-                      <WaveformPreview audioUrl={initAudioUrl} height={cmpOverlay ? 220 : 108} />
+                      <WaveformPreview audioUrl={initAudioUrl} height={cmpOverlay ? 220 : 84} />
                     </div>
                   </div>
                 )}
                 {(['mel', 'stft', 'chromagram', 'cqt'] as const).filter((t) => cmpLayers.has(t)).map((t, i) => (
-                  <div key={t} className={cmpOverlay ? `absolute inset-0 ${i > 0 || cmpLayers.has('output') || cmpLayers.has('init') ? 'opacity-60 mix-blend-screen' : ''} pointer-events-none` : 'flex-1 min-h-28'}>
+                  <div key={t} className={cmpOverlay ? `absolute inset-0 ${i > 0 || cmpLayers.has('output') || cmpLayers.has('init') ? 'opacity-60 mix-blend-screen' : ''} pointer-events-none` : 'flex-1 min-h-22'}>
                     <div className="h-full rounded overflow-hidden border border-white/5 bg-black/60 flex items-center justify-center">
                       {spectrograms && spectrograms[t] ? (
                         <img src={`data:image/png;base64,${spectrograms[t]}`} alt={`${t} spectrogram`} className="w-full h-full object-fill" />
@@ -758,7 +729,7 @@ export const AdvancedGenPanel: React.FC<{
         </div>
 
         {/* ── OUTPUT RAIL: LoRA · Output · Quick Actions ── */}
-        <div className="flex flex-col gap-1.5 min-h-0 overflow-y-auto">
+        <div className="flex flex-col gap-1.5 min-h-0 overflow-y-auto row-span-2">
             {/* LoRA — PRESETS-style dropdown; expands to show added LoRAs */}
             <div className="relative shrink-0">
               <button onClick={() => setLorasOpen(!lorasOpen)}
@@ -840,16 +811,66 @@ export const AdvancedGenPanel: React.FC<{
                 ))}
               </div>
             </div>
+
+            {/* OUTPUT (Magenta) ↔ FX/SHIFT (SA3) — moved from the chimera card;
+                stretches to the rail bottom so there is no blank space below */}
+            {isMagenta ? (
+              <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+                <span className={subTitle}>OUTPUT</span>
+                <div className="flex items-start justify-around gap-1 shrink-0">
+                  <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
+                  <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
+                  <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
+                </div>
+                <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                  <span className={`${subTitle} shrink-0`}>SOURCE</span>
+                  <span className="text-[9px] font-mono text-purple-300 flex-1 text-right truncate">
+                    {p.initAudioEnabled && p.initAudioFile ? 'Style clone (Init)' : 'Text prompt'}
+                  </span>
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-1 px-1 mb-3">
+                  <Sparkles className="w-4 h-4 text-purple-400/80" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-purple-300/90">Magenta RT2</span>
+                  <span className="text-[9px] text-zinc-500 leading-tight">48 kHz stereo · streaming · local GPU</span>
+                </div>
+              </div>
+            ) : (
+              <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+                <span className={subTitle}>FX</span>
+                <div className="flex items-start justify-around gap-1 shrink-0">
+                  <SlideKnob label="Norm thr" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} tipKey="cfgNormThreshold" size={46} centerReadout />
+                  <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
+                  <RoundToggle label="Play" icon={Play} on={p.autoplay} onChange={(v) => sf('autoplay', v)} />
+                  <RoundToggle label="DL" icon={Download} on={p.autoDownload} onChange={(v) => sf('autoDownload', v)} />
+                </div>
+                <div className="border-t border-white/8 mt-0.5 pt-1 flex items-center gap-1.5 shrink-0">
+                  <span className={`${subTitle} shrink-0`}>SHIFT</span>
+                  <div className="grid grid-cols-4 gap-0.5 flex-1">
+                    {SHIFT_MODES.map((m) => (
+                      <button key={m} onClick={() => sf('shiftMode', m)}
+                        className={`px-0.5 py-0.5 rounded text-[7px] font-bold uppercase tracking-wide transition-colors ${p.shiftMode === m ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-zinc-300 border border-white/10'}`}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 grid grid-cols-4 gap-0.5 mb-3">
+                  {shiftFaders()}
+                </div>
+              </div>
+            )}
         </div>
-      </div>
 
-      {/* ═══ BOTTOM: edge-to-edge visualizers flanking the prompt ═══ */}
-      <div className="shrink-0 grid gap-1.5" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,560px) minmax(0,1fr)', height: 196 }}>
-        {/* VIZ LEFT */}
-        <VisualizerPanel initialMode="orb" audioNode={masterAudio} className="border border-purple-500/15" />
+      {/* ═══ BOTTOM: viz · prompt · viz — the grid's row-2 centre cell, between
+          the full-height rails, visualizers flush against the prompt card ═══ */}
+      <div className="flex min-h-0 col-start-2 row-start-2">
+        {/* VIZ LEFT — square, touching the prompt's left edge */}
+        <div className="h-full aspect-square shrink-0">
+          <VisualizerPanel initialMode="orb" audioNode={masterAudio} className="border border-purple-500/15 h-full w-full" />
+        </div>
 
-        {/* PROMPT */}
-        <div className="hardware-card flex flex-col gap-1.5 min-h-0">
+        {/* PROMPT — fills between the two square visualizers */}
+        <div className="hardware-card flex flex-col gap-1.5 min-h-0 flex-1 min-w-0">
           <div className="flex items-center justify-between shrink-0">
             <span className={`${sectionTitle} flex items-center gap-1`}>{isMagenta ? 'STYLE PROMPT' : <>PROMPT <InfoTip {...RICH_TOOLTIPS.prompt} /></>}</span>
             <div className="flex items-center gap-1">
@@ -914,8 +935,11 @@ export const AdvancedGenPanel: React.FC<{
           )}
         </div>
 
-        {/* VIZ RIGHT — flipped + icons on the left so it mirrors the left panel */}
-        <VisualizerPanel initialMode="orb" flipX iconsSide="left" audioNode={masterAudio} className="border border-purple-500/15" />
+        {/* VIZ RIGHT — square, touching the prompt's right edge, mirrored */}
+        <div className="h-full aspect-square shrink-0">
+          <VisualizerPanel initialMode="orb" flipX iconsSide="left" audioNode={masterAudio} className="border border-purple-500/15 h-full w-full" />
+        </div>
+      </div>
       </div>
     </div>
   );

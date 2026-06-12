@@ -8,7 +8,7 @@
  *
  * Prereqs:
  *   1. SA3 backend is up on http://localhost:8600
- *   2. SA3 frontend is up on http://localhost:5173 (start-dev.bat
+ *   2. SA3 frontend is up on http://localhost:5173 (theDAW.bat
  *      does both via the supervisor)
  *   3. A library entry titled "Chungus 9003" exists (or override via
  *      `SA3_SHOWCASE_TRACK=...` env var to pick something else)
@@ -326,7 +326,7 @@ async function main(): Promise<void> {
   }
 
   // Wait for the backend health endpoint before launching the browser
-  // — saves a wasted run if start-dev.bat is still spinning up.
+  // — saves a wasted run if theDAW.bat is still spinning up.
   log('waiting for backend health…');
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {

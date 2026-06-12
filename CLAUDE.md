@@ -62,8 +62,12 @@ Stable Audio 3 is a text-conditioned audio generation system. It generates audio
 # Install dependencies
 uv sync --group dev
 
-# Run Gradio UI
-uv run python run_gradio.py --model medium
+# Launch the app (Windows: bootstraps deps on first run, then runs backend + frontend in ONE console)
+.\theDAW.bat
+
+# Or launch the two dev servers manually (any OS)
+uv run uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload   # backend  -> :8600
+cd frontend && npm run dev                                             # frontend -> :5173
 
 # Run tests (requires model weights downloaded)
 uv run pytest

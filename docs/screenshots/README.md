@@ -14,7 +14,7 @@ and generated manifests are written as `manifest.json` and
 
 ## How to regenerate
 
-1. Launch SA3 via `start-dev.bat` (backend + frontend + tunnel + VJ
+1. Launch theDAW via `theDAW.bat` (backend + frontend + tunnel + VJ
    sidecar all up). Wait until http://localhost:5173 responds.
 2. From the repo root:
 

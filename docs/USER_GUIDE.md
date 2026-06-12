@@ -40,6 +40,7 @@ This guide documents theDAW end to end, from generating a piece out of a prompt 
 30. [YouTube Import](#30-youtube-import)
 31. [Controller Vision](#31-controller-vision)
 32. [Admin, Module, and Assistant-Key APIs](#32-admin-module-and-assistant-key-apis)
+33. [Notation, Score, Tabs, and Arrangements](#33-notation-score-tabs-and-arrangements)
 
 ---
 
@@ -81,6 +82,10 @@ All in-browser audio (library playback, waveform editor preview, step sequencer,
 ---
 
 ## 3. Installation
+
+### Prerequisites
+
+Put these on your PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path — effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 550+** for the Medium model / Magenta (the Small model runs on CPU). On Windows, `theDAW.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
 
 ### Base Python environment
 
@@ -129,17 +134,17 @@ npm install
 ### One-shot launcher (Windows)
 
 ```powershell
-.\start-dev.bat
+.\theDAW.bat
 ```
 
 Sequence:
-1. Kills any stale process on ports 5173 and 8600.
-2. Starts the FastAPI backend (`uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload`) in a new terminal window.
-3. Waits 3 seconds for the backend to bind.
-4. Starts the Vite dev server in a second terminal window.
-5. Opens `http://localhost:5173` in the default browser.
+1. Verifies uv, node, and npm are on PATH and warns if FFmpeg is missing.
+2. Bootstraps the venv (`uv sync --group dev`) and `node_modules` (`npm install`) on first run.
+3. Kills any stale process on ports 5173, 8600, and 5187.
+4. Launches `backend._devstack`, which runs the backend, the Vite frontend, and the optional localtunnel together in this one console, streaming all three as prefixed `[backend]` / `[frontend]` / `[tunnel]` log lines.
+5. Opens `http://localhost:5173` once Vite reports ready.
 
-The `--reload` flag on the backend triggers an automatic restart when `backend/server.py` is modified.
+The backend runs under the rc=88 supervisor contract, so the in-app Settings → Restart Server button respawns it inside the same console. Ctrl-C in the window stops the whole stack.
 
 ### Manual launch
 
@@ -235,10 +240,12 @@ Chimera fuses two or more audio clips into a single init signal before generatio
 | **Target BPM** | `auto` uses the selected base clip BPM, the median detected BPM, or a 120 BPM fallback. A numeric value forces a target. |
 | **Base clip** | Optional reference clip. When set, its BPM and duration can drive the fusion target. |
 | **Noise / influence** | Per-clip slider mapped to the backend `weights`; higher noise means less influence on the fused output. |
-| **Align mode** | `start` aligns clips from time zero. `downbeat` trims to detected first beats. `weave` (the interweave mode) schedules chunks of each clip into an arrangement arc, interleaving them bar by bar with controlled polyphony. |
+| **Align mode** | `start` aligns clips from time zero. `downbeat` trims to detected first beats. `weave`, labeled **CRISPR** in the UI, schedules chunks of each clip into an arrangement arc, interleaving them bar by bar with controlled polyphony. |
 | **Weave controls** | Chunk bars, total bars, and max polyphony shape the generated arrangement when `align_mode=weave`. |
+| **Analyze on add** | Every clip dropped into the stack is analyzed immediately (`POST /api/chimera/analyze`). The detected BPM and key appear as badges on the clip row, and the beat positions feed the weave scheduler and the splice scene. |
+| **CRISPR splice scene** | A live WebGL DNA scene above the stack renders one strand per clip with rungs on the detected beats. During a generation the strands are analyzed, chopped, woven, and fused into the output strand in step with the run. |
 
-Rendering posts to `POST /api/chimera/mashup`, normalizes inputs to 44.1 kHz stereo, detects tempo and beats, time-stretches the clips, and returns a WAV file plus metadata (`target_bpm_used`, per-clip stretch ratios, warnings). The fused result becomes the Init Audio for the next generation.
+Rendering posts to `POST /api/chimera/mashup`, normalizes inputs to 44.1 kHz stereo, detects tempo and beats, time-stretches the clips, and returns a WAV file plus metadata (`target_bpm_used`, per-clip stretch ratios, warnings). The mashup request carries a `known_analysis` field so clips already analyzed on add skip server-side re-detection, and a background pre-render warms the fusion cache once the stack settles so CREATE starts from the finished mix. The fused result becomes the Init Audio for the next generation.
 
 ![Chimera multi-select cohort and stack flow](screenshots/09-chimera-cohort-multi-select__chimera-multi-select.png)
 
@@ -881,6 +888,8 @@ Displays full metadata for the currently selected library entry.
 - **Send to editor** decodes waveform peaks and appends the entry to the waveform editor as a new clip.
 - **Download** triggers a browser file download of the audio.
 
+**Prompt inference:** When the entry has been analyzed (§13.8), the **PROMPT INFERENCE** box derives a Stable Audio prompt and semantic tags from the analysis, and **USE AS PROMPT** copies the text into the MAKE prompt field. See §33.6.
+
 ### 16.5 Media
 
 A session-scoped file holding area for arbitrary audio files. Contents are cleared on page reload.
@@ -895,6 +904,10 @@ A session-scoped file holding area for arbitrary audio files. Contents are clear
 ### 16.6 SLIDE
 
 The SLIDE tab is the glass-capsule control surface that mirrors the VJ engine's control manifest as faders. Moving a SLIDE fader updates the matching control in the VJ, and moving a control inside the VJ updates SLIDE. A content toggle switches which control set is shown, a detach button pops SLIDE out into its own window for a second monitor, and the shared maximize toggle expands it to fill the panel.
+
+### 16.7 Score
+
+The Score tab renders a track's symbolic music — sheet music, guitar and bass tabs, and arrangements — from its MIDI artifacts, and exports to MusicXML, ABC, PDF, and SVG. It is documented in full in §33.
 
 ---
 
@@ -1242,10 +1255,13 @@ Audio responses use `FileResponse` and support browser range requests. Imports a
 ```http
 GET  /api/chimera/probe
 POST /api/chimera/probe/refresh
+POST /api/chimera/analyze
 POST /api/chimera/mashup
 ```
 
-`POST /api/chimera/mashup` accepts multiple uploaded files plus `target_bpm`, optional `base_index`, JSON `weights`, `align_mode` (`start`, `downbeat`, `weave`), `out_sr`, and weave-specific bar and polyphony controls. The response contains base64 WAV audio plus `sample_rate`, `duration_sec`, `target_bpm_used`, `target_bpm_source`, `align_mode_used`, per-clip metadata, and warnings.
+`POST /api/chimera/analyze` accepts one uploaded clip and returns its detected BPM, beat positions, and key. The MAKE stack calls it for every clip on add, shows the result as row badges, and forwards it to the mashup so the server skips re-detection.
+
+`POST /api/chimera/mashup` accepts multiple uploaded files plus `target_bpm`, optional `base_index`, JSON `weights`, `align_mode` (`start`, `downbeat`, `weave`), `out_sr`, weave-specific bar and polyphony controls, and an optional `known_analysis` JSON list carrying per-clip BPM and beats from analyze-on-add. The response contains base64 WAV audio plus `sample_rate`, `duration_sec`, `target_bpm_used`, `target_bpm_source`, `align_mode_used`, per-clip metadata, and warnings.
 
 ### 19.15 Stems
 
@@ -1278,6 +1294,10 @@ MIDI conversion runs on full entries and, when available, separated stems. The s
 ### 19.17 VJ
 
 The VJ module powers the VJ center tab and its embedded iframe. The frontend fetches the engine URL from `GET /api/vj/url`, which also returns a `mobile_url` for LAN access when the machine has a non-loopback address. The backend spawns the visual engine's dev server lazily; the port and project path can be overridden through the `theDAW_VJ_PORT` and `theDAW_VJ_PROJECT` environment variables. Use the Settings modal module list and the VJ tab loading state to confirm availability.
+
+### 19.18 Notation and Prompt Inference
+
+The `notation` module exposes `/api/notation/*` for symbolic music (MIDI to MusicXML, tabs, arrangements, and exports), and the `analysis` module exposes `GET /api/analysis/{entry_id}/prompt` for inferred prompts. Both are documented with the feature in §33.7.
 
 ---
 
@@ -1435,7 +1455,7 @@ The backend is not responding on port 8600. Test directly:
 ```bash
 curl http://localhost:8600/api/health
 ```
-If the request fails, restart the backend. On Windows, `.\start-dev.bat` kills stale processes automatically. Manually: `taskkill /F /IM uvicorn.exe`.
+If the request fails, restart the backend. On Windows, `.\theDAW.bat` kills stale processes automatically. Manually: `taskkill /F /IM uvicorn.exe`.
 
 ### COMMIT EDIT hangs indefinitely
 
@@ -1561,7 +1581,7 @@ The current async job store (the `JOBS` dict in `backend/server.py`) is in-memor
 
 ## 25. Feature Coverage and Screenshot Evidence
 
-theDAW documentation has a repeatable audit loop connecting implemented features to guide coverage and visual proof.
+theDAW documentation has a repeatable audit loop connecting implemented features to guide coverage and visual proof. The same repository also records its own promo video from the live app and harvests the README feature stills from it (§25.5), so the guide, the screenshots, and the feature-tour video all derive from one capture of the running app.
 
 > [!TIP]
 > Treat this section as the docs control room: feature descriptors define what exists, screenshot specs prove it visually, and the coverage report confirms the guide explains it.
@@ -1623,6 +1643,10 @@ When adding or changing a feature:
 4. Run the coverage script and the screenshot runner.
 5. Sync `docs/USER_GUIDE.md` to `frontend/public/USER_GUIDE.md` before validating the Docs modal.
 
+### 25.5 Promo video capture
+
+theDAW records its own feature-tour video from the live app. `frontend/_capture_clips.mjs` is a Playwright harness that boots the app once, loads a hero track (imported, stem-separated, and MIDI-converted ahead of time), and drives the Zustand stores tab by tab through every scene while recording one continuous video, then slices it into per-scene clips under `showcase/clips-recorded/`. `showcase/build_roughcut.sh` stitches the clips into the 16:9 and 9:16 feature-tour videos (`_showcase_h.mp4` and `_showcase_v.mp4`), upscaling the supersampled-1080 source to 4K. The per-scene frames also supply the README feature stills. Capture a subset with `ONLY=<scene-ids> node _capture_clips.mjs` from `frontend/`, and raise the supersample with `DSF=2`.
+
 ---
 
 ## 26. Cloud Generation: Suno
@@ -1661,7 +1685,7 @@ Two offline helpers under `scripts/` bulk-import an existing SunoHarvester cache
 
 ## 27. Magenta RealTime 2
 
-The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. The model option appears only when the sidecar is reachable: the MAKE/Generate panel probes `GET /api/magenta/probe` and shows **"Magenta RT2 (text→music)"** when available.
+The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. **"Magenta RT2 (text→music)"** is always present in the Model dropdown, and selecting it runs the GPU swap automatically: the Stable Audio model parks in CPU RAM (`POST /api/model/offload`), any other MRT2 engine is stopped, and the extended sidecar starts inside WSL2. A status pill beside the dropdown tracks the engine (amber **LOADING** during the one-time model load and compile, green **READY**, red **ERROR**). Selecting any Stable Audio model reverses the swap: the engine stops and the Stable Audio model returns to the GPU. No terminal is involved at any point.
 
 ![Magenta RealTime 2 text→music panel in the Generate workspace, the first non-Mac MRT2 port](screenshots/make-magenta-rt2.png)
 
@@ -1673,13 +1697,19 @@ MRT2 runs as a sidecar (default `http://localhost:8777`, override with `STABLEDA
 - **Notes**: a MIDI note list (`[{pitch:0-127, start, end}]`) encoded to the model's 128-pitch state windows.
 - **Audio-style**: a reference clip embedded through the model's style encoder, which overrides the prompt.
 
-The response's `X-Conditioning` header reports which modes were used, and the output is 48 kHz stereo WAV. The React UI currently surfaces text-to-music and a programmatic audio-clone path used by the instrument generator, and the notes and audio-style surfaces are available through the backend and sidecar API.
+The response's `X-Conditioning` header reports which modes were used, and the output is 48 kHz stereo WAV. The MAKE panel surfaces the full conditioning set when a Magenta model is selected: the prompt box for text, selected MIDI pitches for note steering, the Init Audio clip as the audio-style source, plus temperature, top-k, the MusicCoCa/notes/drums CFG scales, the drums switch, chunk frames, seed, and the extend toggle that continues the current piece without a cut.
+
+The sidecar's `/health` carries an identity field (`app: "mrt2-extended"`), and the backend probe verifies it, so the bundled JSON-protocol Studio server can never be mistaken for the extended engine.
 
 | Method · Path | Purpose |
 |---|---|
 | `GET /api/magenta/probe` | Sidecar health + whether the model is loaded. |
 | `POST /api/magenta/generate` | Generate from text, notes, and/or an audio-style clip. |
 | `GET /api/magenta/jobs/{id}` | Poll a generation job. |
+| `POST /api/magenta/engine/start` | The automatic swap: parks the SA3 model in CPU RAM, stops any other MRT2 engine, spawns the extended sidecar in WSL2. Refuses with 409 while a generation runs. |
+| `POST /api/magenta/engine/stop` | Stops every MRT2 engine and restores the SA3 model to the GPU. |
+| `GET /api/magenta/engine/status` | Engine health, protocol identity, and spawned-process state. |
+| `POST /api/model/offload` · `POST /api/model/onload` · `GET /api/model/offload-status` | The SA3 side of the swap: park the loaded model(s) in CPU RAM, restore them to VRAM, and report the parked state. The engine endpoints call these automatically. |
 
 ### 27.2 First non-Mac port of Magenta RealTime 2
 
@@ -1774,13 +1804,67 @@ Operational endpoints used by the Settings modal and shell.
 
 ---
 
+## 33. Notation, Score, Tabs, and Arrangements
+
+theDAW turns audio into symbolic music and back: audio → MIDI → sheet music, guitar and bass tabs, and playable arrangements, plus an inferred Stable Audio prompt for any track. The symbolic side lives in the **Score** tab of the bottom panel (§16.7) and the **Details** panel (§16.4), backed by the `notation` module (`/api/notation`) and the `analysis` module. The standalone guide is [guides/notation-and-score.md](guides/notation-and-score.md).
+
+A track needs a MIDI first. Convert one from the Library (right-click → Convert to MIDI, §13.7); once a MIDI artifact exists, the Score buttons activate.
+
+### 33.1 Notation artifacts
+
+Every symbolic file a track produces is a notation artifact with a kind: `midi`, `musicxml`, `abc`, `alphatex` (tabs), `pdf`, or `svg`. The Score panel's left rail lists them; selecting one previews it (MusicXML as sheet music through OpenSheetMusicDisplay, alphaTex as tablature through alphaTab), and DOWNLOAD saves it. Artifacts are stored under `data/generations/<entry_id>/notation/` and tracked in the library database with lineage back to their source MIDI or score.
+
+### 33.2 Sheet music (MAKE SHEET)
+
+MAKE SHEET converts the first MIDI artifact to MusicXML with music21, quantizing rhythm, splitting parts, and inferring a time signature. MusicXML is the canonical interchange format and also feeds tabs, arrangements, and exports.
+
+### 33.3 Tabs
+
+The Tabs section turns a MIDI into tablature. Choose the instrument (Guitar or Bass), a tuning (standard, drop D, 7-string, 4- or 5-string bass), a capo fret, and a difficulty (Easy / Medium / Hard, which caps fret height and reach), then press MAKE TABS. Because the same pitch can be played at several string and fret positions, a dynamic-programming pass chooses positions that minimize hand travel, prefer open strings and low frets, and keep simultaneous notes on distinct strings. The output is alphaTex, rendered as interactive tablature by alphaTab. Notes outside the instrument's range are reported as unplayable rather than forced.
+
+### 33.4 Arrangements
+
+The Arrange section produces a playable MusicXML arrangement from a track's MIDIs. The styles are:
+
+- **lead-sheet** — the melody (skyline) with chord symbols above it.
+- **piano-reduction** — a two-staff grand staff split at middle C.
+- **simplified** — a single-staff quantized melody.
+- **band-score** — one staff per separated stem, combined into a full score.
+
+Arrangements render in the same in-browser sheet-music viewer as MAKE SHEET and are saved as MusicXML artifacts.
+
+### 33.5 Exporting scores (ABC, PDF, SVG)
+
+With a MusicXML score selected, the toolbar exports it to other formats. ABC (a compact lead-sheet text format) is always available through music21. PDF and SVG are engraved by the MuseScore command-line tool and appear only when MuseScore is installed and detected; set the `MUSESCORE_BIN` environment variable if MuseScore is not on PATH. Exports register as new notation artifacts.
+
+### 33.6 Prompt inference
+
+The Details panel infers a Stable Audio-style prompt from a track's analysis (§13.8). After a track is analyzed, the **PROMPT INFERENCE** box's **INFER** button generates a one-line prompt plus semantic tags, for example "Approximately 118 BPM, in F minor, upbeat, danceable, moody, balanced, deep, full track, stereo." A confidence score reflects how much analysis data was available, and **USE AS PROMPT** copies the text into the MAKE prompt field. The prompt is deterministic: it is derived from tempo, key and scale, energy (loudness and RMS), timbre (pitch), length, and channel count, and folds in any embedded genre and mood tags. Genre, mood, and instrument detection through dedicated models (Essentia/MERT/CLAP) is an optional future enricher; the deterministic prompt always works without it.
+
+### 33.7 Endpoints
+
+```http
+GET  /api/notation
+GET  /api/notation/{entry_id}/artifacts
+POST /api/notation/{entry_id}/from-midi/{midi_id}
+POST /api/notation/{entry_id}/export
+POST /api/notation/{entry_id}/tabs
+POST /api/notation/{entry_id}/arrange
+GET  /api/notation/file/{artifact_id}
+GET  /api/analysis/{entry_id}/prompt
+```
+
+`GET /api/notation` reports capabilities (music21 and MuseScore availability, supported formats, tab tunings, arrangement styles). `from-midi` converts a MIDI to MusicXML; `export` takes `{source_artifact_id, format}` with format musicxml/abc/pdf/svg; `tabs` takes `{source_artifact_id | midi_id, instrument, tuning_name, capo, difficulty}` and returns alphaTex; `arrange` takes `{style, source_artifact_id | source_artifact_ids | midi_id}` and returns MusicXML. `GET /api/analysis/{entry_id}/prompt` returns `{prompt_guess, prompt_confidence, semantic_tags}` regenerated from the stored analysis.
+
+---
+
 ## Credits
 
 theDAW was built by **[GANTASMO](https://github.com/gantasmo)** as part of the [Music Hackspace](https://musichackspace.org) Music Technology Hackathon at [Berklee College of Music](https://www.berklee.edu).
 
 Special thanks to [Music Hackspace](https://musichackspace.org), [Berklee College of Music](https://www.berklee.edu), and to Zack, CJ, Jordi, Zach, and Matt from [Stability AI](https://stability.ai) for their continued help and support.
 
-**Built with:** [Stability AI](https://stability.ai) Stable Audio 3 and [stable-audio-tools](https://github.com/Stability-AI/stable-audio-tools) (the core diffusion model and pipeline); [Magenta](https://github.com/magenta) RealTime by [Google DeepMind](https://deepmind.google), running through theDAW's own [NVIDIA/CUDA port](../sidecars/magenta-rt2-nvidia/) (the first and only non-Mac port so far); [Suno](https://suno.com) (cloud generation); [T5Gemma](https://huggingface.co/google/t5gemma-b-b-ul2) by Google (text conditioning); [Demucs](https://github.com/facebookresearch/demucs) by Meta AI (stem separation); [basic-pitch](https://github.com/spotify/basic-pitch) by Spotify (audio-to-MIDI); [MLX](https://github.com/ml-explore/mlx) by Apple (the Magenta port's inference core, extended with a CUDA backend); and [PyTorch](https://pytorch.org), [FFmpeg](https://ffmpeg.org), [three.js](https://threejs.org), [react-force-graph](https://github.com/vasturiano/react-force-graph), [WaveSurfer.js](https://wavesurfer.xyz), [React](https://react.dev), [Vite](https://vitejs.dev), and [Tailwind CSS](https://tailwindcss.com), alongside the wider open-source community.
+**Built with:** [Stability AI](https://stability.ai) Stable Audio 3 and [stable-audio-tools](https://github.com/Stability-AI/stable-audio-tools) (the core diffusion model and pipeline); [Magenta](https://github.com/magenta) RealTime by [Google DeepMind](https://deepmind.google), running through theDAW's own [NVIDIA/CUDA port](../sidecars/magenta-rt2-nvidia/) (the first and only non-Mac port so far); [Suno](https://suno.com) (cloud generation); [T5Gemma](https://huggingface.co/google/t5gemma-b-b-ul2) by Google (text conditioning); [Demucs](https://github.com/facebookresearch/demucs) by Meta AI (stem separation); [basic-pitch](https://github.com/spotify/basic-pitch) by Spotify (audio-to-MIDI); [music21](https://github.com/cuthbertLab/music21) by MIT (MusicXML, ABC, tabs, arrangements), with [alphaTab](https://www.alphatab.net) and [OpenSheetMusicDisplay](https://opensheetmusicdisplay.org) for browser tab and score rendering and [MuseScore](https://musescore.org) for PDF and SVG engraving; [MLX](https://github.com/ml-explore/mlx) by Apple (the Magenta port's inference core, extended with a CUDA backend); and [PyTorch](https://pytorch.org), [FFmpeg](https://ffmpeg.org), [three.js](https://threejs.org), [react-force-graph](https://github.com/vasturiano/react-force-graph), [WaveSurfer.js](https://wavesurfer.xyz), [React](https://react.dev), [Vite](https://vitejs.dev), and [Tailwind CSS](https://tailwindcss.com), alongside the wider open-source community.
 
 ---
 

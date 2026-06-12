@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 
 from backend.modules.analysis.bars import estimate_bars
-from backend.modules.analysis.engine import analyze_and_persist, persist_analysis
+from backend.modules.analysis.engine import (
+    ANALYSIS_VERSION,
+    analyze_and_persist,
+    persist_analysis,
+)
 from backend.modules.analysis.ffprobe import has_ffprobe, probe_file
 from backend.modules.analysis.key import _correlate, _MAJOR_PROFILE
 
@@ -124,7 +128,7 @@ def test_engine_writes_to_db_and_metadata(tmp_path: Path):
     )
 
     # Engine produced a payload with expected keys.
-    assert payload.get("version") == 1
+    assert payload.get("version") == ANALYSIS_VERSION
     assert "analyzed_at" in payload
     # Pitch detection finds ~440 Hz on a sine tone (within tolerance).
     pitch = payload.get("pitch_mean_hz")
@@ -134,7 +138,7 @@ def test_engine_writes_to_db_and_metadata(tmp_path: Path):
     # DB row exists.
     db_analysis = store.db.get_analysis("alpha")
     assert db_analysis is not None
-    assert db_analysis["version"] == 1
+    assert db_analysis["version"] == ANALYSIS_VERSION
 
     # Entry status updated.
     row = store.db.get_entry("alpha")

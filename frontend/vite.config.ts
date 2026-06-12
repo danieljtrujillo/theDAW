@@ -1,3 +1,4 @@
+import {alphaTab} from '@coderline/alphatab-vite';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -6,7 +7,19 @@ import {defineConfig, loadEnv} from 'vite';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
-    plugins: [react(), tailwindcss()],
+    // alphaTab() copies the Bravura font + worker/worklet assets and wires
+    // their URLs through Vite, so the Score-tab tab viewer needs no manual
+    // font configuration. It returns an array of plugins; Vite flattens it.
+    plugins: [react(), tailwindcss(), alphaTab()],
+    optimizeDeps: {
+      // alphaTab resolves its Bravura font and workers via import.meta.url
+      // relative to its own dist/. Vite's dep pre-bundling rewrites that to
+      // .vite/deps/, where the font does not exist (it 404s to index.html and
+      // alphaTab reports "Font Loading Failed"), and the alphaTab() source
+      // transform can't reach a pre-bundled copy. Excluding it keeps the
+      // font/worker URLs correct in dev.
+      exclude: ['@coderline/alphatab'],
+    },
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },

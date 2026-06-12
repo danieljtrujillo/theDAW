@@ -15,9 +15,25 @@ export interface ChimeraClip {
   isBase: boolean;
   detectedBpm?: number | null;
   stretchRatio?: number;
+  /** Library entry id when the clip came from the library (enables cached analysis). */
+  entryId?: string;
+  /** Immediate per-clip analysis (BPM badge, key badge, CRISPR beat rungs). */
+  keyNote?: string | null;
+  keyScale?: string | null;
+  beats?: number[] | null;
+  durationSec?: number | null;
 }
 
 export type ChimeraAlignMode = 'start' | 'downbeat' | 'weave';
+
+export interface ChimeraChunkPlacement {
+  output_start_sec: number;
+  output_end_sec: number;
+  window_start_sec: number;
+  window_end_sec: number;
+  chunk_idx?: number;
+  rms?: number;
+}
 
 export interface ChimeraPerClipMeta {
   index: number;
@@ -29,6 +45,8 @@ export interface ChimeraPerClipMeta {
   window_start_sec: number;
   window_end_sec: number;
   weight_used: number;
+  /** CRISPR weave: the actual chunks pulled from this clip and where they land. */
+  placements?: ChimeraChunkPlacement[];
   note: string | null;
 }
 
@@ -127,6 +145,9 @@ export interface GenerateParamsState {
   magSeed: number; // -1 = fresh/random each run
   magExtend: boolean; // continue the current piece (morph without a cut)
   magNotes: number[]; // selected MIDI pitches that steer the melody
+  /** Lifecycle of the WSL2 engine behind the Magenta option — drives the
+   *  dropdown pill. The swap runs automatically on Model-dropdown change. */
+  magentaEngine: 'off' | 'starting' | 'ready' | 'error';
 }
 
 interface ParamsStore extends GenerateParamsState {
@@ -221,6 +242,7 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
   magSeed: -1,
   magExtend: false,
   magNotes: [],
+  magentaEngine: 'off',
 
   setField: (key, value) => set({ [key]: value } as Partial<GenerateParamsState>),
   patch: (partial) => set(partial),
@@ -239,6 +261,7 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
           label: clip.label,
           noise: clip.noise ?? 0.5,
           isBase: false,
+          entryId: clip.entryId,
         },
       ],
     },

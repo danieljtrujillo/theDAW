@@ -190,16 +190,21 @@ When LoRA training is run:
 
 ## Loading LoRA Checkpoints
 
-Use the `--lora-ckpt-path` argument when running the Gradio interface. You can load one or multiple LoRAs:
+Load one or more LoRA checkpoints onto a pipeline with `load_lora()`:
 
-```bash
+```python
+from stable_audio_3.pipeline import StableAudioPipeline
+
+pipe = StableAudioPipeline.from_pretrained("medium")
+
 # Single LoRA
-uv run python run_gradio.py --model medium-base --lora-ckpt-path lora.safetensors
+pipe.load_lora(["lora.safetensors"])
 
-# Multiple LoRAs
-uv run python run_gradio.py --model medium-base \
-    --lora-ckpt-path style_a.safetensors style_b.safetensors
+# Multiple LoRAs (stacked additively)
+pipe.load_lora(["style_a.safetensors", "style_b.safetensors"])
 ```
+
+The MAKE tab exposes the same per-LoRA controls interactively (see [User Guide §6.6](../USER_GUIDE.md#66-lora--adaptive-layers)).
 
 The loading process (`load_and_apply_loras`):
 1. The base model is created and loaded normally
@@ -212,9 +217,9 @@ When multiple LoRAs are loaded, they are stacked using PyTorch's native `nn.util
 
 Multiple LoRAs can use different adapter types (e.g., one standard LoRA and one DoRA), different ranks, and different layer filters. They are all applied simultaneously during inference.
 
-## Gradio UI Controls
+## LoRA Inference Controls
 
-When LoRA checkpoints are loaded, the Gradio interface shows per-LoRA controls. Each LoRA gets its own collapsible accordion with independent settings:
+When LoRA checkpoints are loaded, theDAW shows per-LoRA controls. Each LoRA gets its own collapsible panel with independent settings:
 
 ### LoRA DiT Strength
 Controls the strength of the LoRA effect on the diffusion model backbone. Default is 1.0 (full effect). Setting to 0 disables the LoRA entirely; values above 1.0 amplify the effect. Range: 0.0 - 10.0.

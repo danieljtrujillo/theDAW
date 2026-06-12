@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-10T16:16:00.191Z",
-  "repoRevision": "6317fdb87584",
+  "generatedAt": "2026-06-12T01:05:59.027Z",
+  "repoRevision": "ebd77289935f",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -643,6 +643,7 @@
         "#13-5-bundle-downloads-and-lineage",
         "#19-14-chimera",
         "#25-3-current-feature-to-screenshot-map",
+        "#27-1-the-sidecar-and-conditioning",
         "#30-youtube-import"
       ],
       "coverage": "documented",
@@ -655,7 +656,8 @@
         "#6-4-1-microphone-recorder",
         "#10-1-inputs",
         "#10-4-export",
-        "#13-1-automatic-entry-creation"
+        "#13-1-automatic-entry-creation",
+        "#25-5-promo-video-capture"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -683,7 +685,8 @@
         "#19-13-disk-backed-library",
         "#19-15-stems",
         "#library-storage-fills-the-disk",
-        "#zustand-store-architecture"
+        "#zustand-store-architecture",
+        "#33-1-notation-artifacts"
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
@@ -716,7 +719,8 @@
         "#6-4-1-microphone-recorder",
         "#13-4-per-entry-controls",
         "#13-7-midi-conversion",
-        "#19-16-midi"
+        "#19-16-midi",
+        "#33-notation-score-tabs-and-arrangements"
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."
@@ -837,7 +841,8 @@
         "#table-of-contents",
         "#27-magenta-realtime-2",
         "#27-1-the-sidecar-and-conditioning",
-        "#27-2-first-non-mac-port-of-magenta-realtime-2"
+        "#27-2-first-non-mac-port-of-magenta-realtime-2",
+        "#33-6-prompt-inference"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."
@@ -876,6 +881,7 @@
       "docAnchors": [
         "#table-of-contents",
         "#1-repository-anatomy",
+        "#prerequisites",
         "#30-youtube-import"
       ],
       "coverage": "documented",

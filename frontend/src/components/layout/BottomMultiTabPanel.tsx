@@ -9,11 +9,13 @@
 import React, { useState } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
+  FileMusic,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { PianoRoll } from '../audio/PianoRoll';
 import { StepSequencer } from '../audio/StepSequencer';
 import { DetailsView } from './DetailsView';
+import { ScoreView } from './ScoreView';
 import { MediaBucketView } from './MediaBucketView';
 import { SlidePanel } from './SlidePanel';
 import { DetachableWindow } from './DetachableWindow';
@@ -24,6 +26,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'spectral',   label: 'Visualize',    icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
   { id: 'piano-roll', label: 'Piano',        icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
   { id: 'step-seq',   label: 'Sequence',     icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'score',      label: 'Score',        icon: FileMusic,  colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'details',    label: 'Details',      icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'bucket',     label: 'Media',        icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
   { id: 'slide',      label: 'SLIDE',        icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
@@ -135,6 +138,11 @@ export const BottomMultiTabPanel: React.FC = () => {
         {activeTab === 'step-seq' && (
           <div className="absolute inset-0 overflow-y-auto">
             <StepSequencer />
+          </div>
+        )}
+        {activeTab === 'score' && (
+          <div className="absolute inset-0">
+            <ScoreView />
           </div>
         )}
         {activeTab === 'bucket' && (

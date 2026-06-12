@@ -7,23 +7,18 @@ import {
   Workflow,
   Tv2,
   Disc,
-  ChevronLeft,
-  ChevronRight,
-  PanelRightOpen,
-  PanelRightClose,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
 /** The five workspace tabs introduced in the top-bar restructure
  *  (plan step 3a). Centered, horizontally filling the bar with
- *  padding; the right side-panel collapse/expand arrow lives at the
- *  inner-right edge. No left panel — removed per layout invariant. */
+ *  padding. The library-panel toggle now lives in the header icon
+ *  cluster (Shell), so this bar is tabs-only. No left panel — removed
+ *  per layout invariant. */
 
 interface CenterTabBarProps {
   activeTab: CenterTab;
   onTabChange: (tab: CenterTab) => void;
-  isRightPanelOpen: boolean;
-  onToggleRightPanel: () => void;
   /** When true, render bare (no own bar chrome) so it can sit inside the
    *  combined header row instead of as its own strip. */
   embedded?: boolean;
@@ -120,8 +115,6 @@ const TABS: Array<{
 export const CenterTabBar: React.FC<CenterTabBarProps> = ({
   activeTab,
   onTabChange,
-  isRightPanelOpen,
-  onToggleRightPanel,
   embedded = false,
 }) => {
   return (
@@ -158,18 +151,6 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
           );
         })}
       </div>
-
-      {/* Right side-panel toggle */}
-      <button
-        type="button"
-        onClick={onToggleRightPanel}
-        className="flex items-center justify-center w-9 self-stretch text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors rounded"
-        title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library panel`}
-        aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library panel`}
-      >
-        {isRightPanelOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-        {isRightPanelOpen ? <ChevronRight className="w-3 h-3 opacity-60 -ml-0.5" /> : <ChevronLeft className="w-3 h-3 opacity-60 -ml-0.5" />}
-      </button>
     </div>
   );
 };

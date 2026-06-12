@@ -4,8 +4,10 @@ console window. The inner process exits with sentinel code 88 to
 request a restart; any other exit code (including 0) terminates the
 supervisor.
 
-Run via `python -m backend._supervisor` (start-dev.bat invokes this
-instead of backend.run directly).
+theDAW.bat launches the full one-console dev stack (backend + frontend
++ tunnel) via `backend._devstack`, which embeds this same respawn
+contract. This module is the backend-only path, runnable standalone
+via `python -m backend._supervisor`.
 """
 
 from __future__ import annotations

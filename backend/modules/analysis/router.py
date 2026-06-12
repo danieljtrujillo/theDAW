@@ -11,6 +11,7 @@ Endpoints (prefix from module.json → ``/api/analysis``):
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from backend.modules.library.router import get_store as get_library_store
 
 from .engine import ANALYSIS_VERSION, analyze_and_persist
 from .ffprobe import has_ffprobe
+from .prompt import generate_prompt
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +36,58 @@ def get_capabilities() -> dict:
         "ok": True,
         "ffprobe": has_ffprobe(),
         "engines": ["aubio (tempo)", "librosa (key/pitch/bars/rms)"],
+        "prompt_inference": "deterministic",
+        "semantic_tags": True,
+        "ml_enrichers": [],
     }
+
+
+def _analysis_from_row(row: dict) -> dict:
+    """Reconstruct the fields the prompt generator needs from a stored
+    analysis row, pulling duration/channels out of the ffprobe summary."""
+    try:
+        summary = (json.loads(row.get("ffprobe_json") or "{}") or {}).get("_summary")
+    except (TypeError, ValueError):
+        summary = None
+    summary = summary or {}
+    return {
+        "bpm": row.get("bpm"),
+        "key": row.get("key"),
+        "scale": row.get("scale"),
+        "key_confidence": row.get("key_confidence"),
+        "rms_db": row.get("rms_db"),
+        "loudness_lufs": row.get("loudness_lufs"),
+        "pitch_mean_hz": row.get("pitch_mean_hz"),
+        "pitch_std_hz": row.get("pitch_std_hz"),
+        "genre": row.get("genre"),
+        "duration_sec": summary.get("duration_sec"),
+        "channels": summary.get("channels"),
+    }
+
+
+@router.get("/{entry_id}/prompt")
+def get_prompt(entry_id: str) -> dict:
+    """Generate a Stable Audio-style prompt and semantic tags from an entry's
+    analysis. Regenerated from the stored analysis each call, so entries
+    analyzed before this feature still get a prompt."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    row = store.db.get_analysis(entry_id)
+    if row is None:
+        raise HTTPException(404, f"entry {entry_id!r} has no analysis yet")
+
+    try:
+        embedded = json.loads(row.get("embedded_tags_json") or "{}")
+    except (TypeError, ValueError):
+        embedded = {}
+    title = str(getattr(store.get_entry(entry_id), "title", "") or "")
+    result = generate_prompt(
+        _analysis_from_row(row),
+        embedded_tags=embedded if isinstance(embedded, dict) else {},
+        title=title,
+    )
+    return {"entry_id": entry_id, **result}
 
 
 @router.get("/{entry_id}")

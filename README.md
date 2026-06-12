@@ -2,9 +2,9 @@
 
 **by GANTASMO**
 
-theDAW is an all-in-one application for music creation. The generative engine renders audio from several inputs: supplied init audio (a voice recording, an imported file, a clip from the library or media bucket, a pattern rendered from the piano roll or step sequencer, or any other session audio), a text prompt, a painted inpaint region, and the Chimera engine, which blends and beat-aligns several source clips into one generation. The workspace opens into a full studio for composition, arrangement, editing, and mixing, and into a live rig for DJing and VJing with deep MIDI mapping for any controller. Audio and visual effects, real-time visualizers, and an interactive genealogy graph complete the environment. theDAW covers the full path from an initial idea through a finished render to a live performance.
+theDAW is an all-in-one application for music creation. The generative engine renders audio from several inputs: supplied init audio (a voice recording, an imported file, a clip from the library or media bucket, a pattern rendered from the piano roll or step sequencer, or any other session audio), a text prompt, a painted inpaint region, and the Chimera engine, which analyzes, blends, and beat-aligns several source clips into one generation, rendered live as the CRISPR splice scene. The workspace opens into a full studio for composition, arrangement, editing, and mixing, and into a live rig for DJing and VJing with deep MIDI mapping for any controller. Audio and visual effects, real-time visualizers, and an interactive genealogy graph complete the environment. theDAW covers the full path from an initial idea through a finished render to a live performance.
 
-theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. The [Generate](#generate-cloud-and-real-time) section describes it. Live coding and Unity integration are in development.
+theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. Magenta lives in the same Model dropdown as the local Stable Audio engines, and selecting it swaps the GPU automatically: Stable Audio parks in system RAM, the engine starts in WSL2, and a status pill tracks it to READY. Picking a Stable Audio model reverses the swap. The [Generate](#generate-cloud-and-real-time) section describes it. Live coding and Unity integration are in development.
 
 > **Source of truth:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md) documents every feature, control, and endpoint. The in-app **Docs** button renders it as an interactive modal with PDF export.
 
@@ -30,18 +30,30 @@ theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, which r
 |---|---|---|
 | **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | Async HTTP wrapper. It runs a generation job queue, FFmpeg audio processing, and model introspection on port 8600. |
-| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `chimera`, `controllervision`, `effects` (at `/api/studio`), `library`, `midi`, `settings`, `stems`, `vj`, and `ytimport`, plus cloud and real-time generation (`suno`, `magenta`) and the six-family Edit Tool Stack under `/api/edit/*` (mastering, restoration, enhance, delivery, creative-fx, creative-neural). |
-| **theDAW interface** | `frontend/` | React 19, Vite 6, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, the analyzer, and the live tools. It proxies `/api/*` to the backend on port 5173 in development. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `chimera`, `controllervision`, `effects` (at `/api/studio`), `library`, `midi`, `notation`, `settings`, `stems`, `vj`, and `ytimport`, plus cloud and real-time generation (`suno`, `magenta`) and the six-family Edit Tool Stack under `/api/edit/*` (mastering, restoration, enhance, delivery, creative-fx, creative-neural). |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, the analyzer, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend on 8600. |
 
 ---
+
+## Prerequisites
+
+Install these and put each on your PATH first:
+
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — the Python environment and package manager (creates the venv, installs torch/CUDA).
+- **[Node.js](https://nodejs.org/) v20.19+ or v22.12+** (includes npm) — the frontend dev server and the VJ sidecar. Vite 7 requires this floor.
+- **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH** — every audio path uses it: effects, exports, library ingest, MIDI conversion, YouTube import.
+- **[Git](https://git-scm.com/)** — clone with `--recurse-submodules` so the Magenta sidecar's vendored source is present.
+- **NVIDIA driver 550+** for the Medium model and Magenta. The Small model runs on CPU.
+
+On Windows, `theDAW.bat` checks for uv/node/npm and, if a required tool is missing, runs a one-time setup helper that detects your hardware and installs uv / Node / FFmpeg / Git for you after a single confirmation (or double-click `Setup-theDAW.bat` to run it directly). It then bootstraps the venv + `node_modules` and launches, so a fresh clone is genuinely one double-click away. The [Windows setup guide](docs/windows/setup-guide.md) covers the model and CUDA specifics.
 
 ## Quick Start
 
 ```powershell
-.\start-dev.bat
+.\theDAW.bat
 ```
 
-The launcher kills stale processes on ports 5173 and 8600, starts the backend, waits for it to bind, then starts Vite and opens `http://localhost:5173`.
+The launcher checks prerequisites, bootstraps dependencies when the tree is fresh (`uv sync --group dev`, `npm install`), kills stale processes on ports 5173/8600/5187, then runs the backend, Vite, and the optional tunnel together in one console (streamed as prefixed `[backend]` / `[frontend]` / `[tunnel]` logs) and opens `http://localhost:5173`. The in-app Restart button still works because the backend runs under a supervisor.
 
 Manual launch:
 
@@ -164,7 +176,13 @@ The library lives on the backend, with audio on disk, metadata in `data/library.
   <img src="docs/readme/slide.png" alt="SLIDE glass control surface" width="410">
 </p>
 
-The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS and peak meters, a LIVE indicator, and a fullscreen toggle. The piano roll edits MIDI-style notes, imports and exports MIDI, and renders to the editor. The step sequencer runs a 16-step drum machine at 40 to 240 BPM with five synthesized voices, random fill, and render-to-editor. The media bucket holds session audio in WAV, MP3, FLAC, OGG, AAC, M4A, and Opus. SLIDE presents a glass surface of faders and knobs synced with the VJ engine and the audio. Details shows the selected library entry.
+The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS and peak meters, a LIVE indicator, and a fullscreen toggle. The piano roll edits MIDI-style notes, imports and exports MIDI, and renders to the editor. The step sequencer runs a 16-step drum machine at 40 to 240 BPM with five synthesized voices, random fill, and render-to-editor. The media bucket holds session audio in WAV, MP3, FLAC, OGG, AAC, M4A, and Opus. SLIDE presents a glass surface of faders and knobs synced with the VJ engine and the audio. Details shows the selected library entry, and Score renders a track's notation, tabs, and arrangements (below).
+
+### Notation, score, tabs, and prompt inference
+
+<p align="center"><img src="docs/readme/score.png" alt="Score panel rendering guitar tablature from a track's MIDI" width="820"></p>
+
+The Score tab turns a track's MIDI into symbolic music. MAKE SHEET converts the first MIDI to MusicXML with music21 and renders it as standard notation through OpenSheetMusicDisplay. The Tabs section arranges guitar or bass tablature for a chosen tuning, capo, and difficulty, placing each note on the string and fret that minimizes hand travel through a dynamic-programming pass, and renders interactive tablature with alphaTab. Arrange builds a lead-sheet, piano-reduction, simplified, or band-score MusicXML from the track's MIDIs. Scores export to ABC, and to PDF and SVG when MuseScore is installed. Every symbolic file is a notation artifact (midi, musicxml, abc, alphatex, pdf, svg) stored per track with lineage to its source. In the Details panel, PROMPT INFERENCE derives a Stable Audio prompt and semantic tags from a track's analysis (tempo, key, energy, timbre, length), and USE AS PROMPT drops the text into the MAKE form.
 
 ### MIDI mapping and Controller Vision
 Controller recognition identifies hardware across three tiers: a library of roughly 110 device profiles, a scored auto-detect that matches an unknown rig to the closest profile, and a learn-by-capture mode that binds a control the moment it moves. The DJ tab maps CC and note messages to deck, mixer, and hotcue actions. Controller Vision detects and identifies a controller from a photo through OpenCV and a vision LLM, including a LAN phone-pairing capture flow. Photo-driven layout inference is planned.
@@ -200,8 +218,15 @@ Runtime LoRA strength changes through `set_lora_strength(model, 0.5, lora_index=
 | [docs/guides/prompting.md](docs/guides/prompting.md) | Prompt structure, conditioning signals, and style reference. |
 | [docs/guides/SUNO_EXTERNAL_API.md](docs/guides/SUNO_EXTERNAL_API.md) | Suno cloud-generation API reference covering modes, polling, and usage. |
 | [docs/guides/model-overview.md](docs/guides/model-overview.md) | Architecture design and model comparison. |
+| [docs/guides/notation-and-score.md](docs/guides/notation-and-score.md) | Audio to MIDI, sheet music, tabs, arrangements, and prompt inference. |
 | [docs/workflows/inference.md](docs/workflows/inference.md) · [lora.md](docs/workflows/lora.md) · [autoencoder.md](docs/workflows/autoencoder.md) | Inference modes, LoRA adapters and training, and the standalone autoencoder. |
 | [docs/windows/setup-guide.md](docs/windows/setup-guide.md) · [troubleshooting.md](docs/windows/troubleshooting.md) | Windows installation (CUDA, Flash Attention, soundfile) and fixes. |
+
+---
+
+## Self-documenting
+
+theDAW generates its own documentation and promo material from the live app. `scripts/screenshots/` drives a real session to capture feature screenshots and a feature-vs-documentation coverage report (`npm --prefix frontend run screenshots`), and `frontend/_capture_clips.mjs` is a Playwright harness that records the running app through every feature into the feature-tour video that `showcase/build_roughcut.sh` stitches in 16:9 and 9:16. The feature images above are frames from that capture. The in-app assistant answers from these same documents through a ChromaDB RAG index, so the docs, the video, and the assistant all stay sourced from one place.
 
 ---
 
@@ -209,7 +234,7 @@ Runtime LoRA strength changes through `set_lora_strength(model, 0.5, lora_index=
 
 **Static glitch output on the Medium model.** Flash Attention is not installed correctly. Verify it with `uv run python -c "from flash_attn import flash_attn_func; import flash_attn; print(flash_attn.__version__)"` and reinstall a wheel matching the Python, torch, and CUDA combination from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
 
-**"API UNREACHABLE" banner.** The backend is not listening on port 8600. Test it with `curl http://localhost:8600/api/health`. On Windows, `.\start-dev.bat` clears stale processes automatically.
+**"API UNREACHABLE" banner.** The backend is not listening on port 8600. Test it with `curl http://localhost:8600/api/health`. On Windows, `.\theDAW.bat` clears stale processes automatically.
 
 **Out-of-memory on the Medium model.** The Medium pipeline requires approximately 8 GB VRAM. The `small` model, a shorter `duration`, or freeing competing CUDA processes resolves it.
 
@@ -232,6 +257,7 @@ Special thanks to [Music Hackspace](https://musichackspace.org), [Berklee Colleg
 - **[Suno](https://suno.com)** powers cloud music generation.
 - **[T5Gemma](https://huggingface.co/google/t5gemma-b-b-ul2)** by Google handles text conditioning.
 - **[Demucs](https://github.com/facebookresearch/demucs)** by Meta AI handles stem separation, and **[basic-pitch](https://github.com/spotify/basic-pitch)** by Spotify handles audio-to-MIDI transcription.
+- **[music21](https://github.com/cuthbertLab/music21)** by MIT builds MusicXML, ABC, tabs, and arrangements, **[alphaTab](https://www.alphatab.net)** and **[OpenSheetMusicDisplay](https://opensheetmusicdisplay.org)** render tablature and scores in the browser, and **[MuseScore](https://musescore.org)** engraves PDF and SVG.
 - **[MLX](https://github.com/ml-explore/mlx)** by Apple is the inference core the Magenta port builds on, extended here with a CUDA backend.
 - **[PyTorch](https://pytorch.org)**, **[FFmpeg](https://ffmpeg.org)**, **[three.js](https://threejs.org)**, **[react-force-graph](https://github.com/vasturiano/react-force-graph)**, **[WaveSurfer.js](https://wavesurfer.xyz)**, **[React](https://react.dev)**, **[Vite](https://vitejs.dev)**, and **[Tailwind CSS](https://tailwindcss.com)** carry the rest, alongside the wider open-source community.
 

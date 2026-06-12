@@ -42,7 +42,7 @@ let ETU_PIANO = { bpm: 120, totalSteps: 64, notes: [] };
 try { ETU_PIANO = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'showcase', '_etu_pianoroll.json'), 'utf8')); } catch (e) {}
 // The Magenta RT2 NVIDIA port — its standalone Studio UI + a repo/readme card (both static, file://).
 const fileUrl = (p) => 'file:///' + path.resolve(ROOT, p).replace(/\\/g, '/');
-const MAGENTA_STUDIO = fileUrl('sidecars/magenta-rt2-nvidia/port/oneclick/studio/index.html');
+const MAGENTA_STUDIO = fileUrl('sidecars/magenta-rt2-nvidia/app/index.html');
 const MAGENTA_CARD = fileUrl('showcase/_magenta_card.html');
 
 // Full coverage: every tab + every feature, with Et Tu Machina present throughout so
@@ -117,6 +117,14 @@ const SCENES = [
   { id: '70_vj-mobile',         tab: 'vj',    play: true,  vjClip: true, vjMobile: true, hold: 8 },
   { id: '71_dj-midi-learn',     tab: 'dj',    play: true,  djDecks: true, djMidiLearn: true, hold: 7 },
   { id: '69_controller-vision', tab: 'make',  play: false, bottomTab: 'slide', maximizePanel: true, slideView: 'controller', controllerVision: true, hold: 7 },
+  // ── NEW since the last shoot (2026-06-10): the full MRT2 conditioning panel + the ENTIRE
+  //    CRISPR DNA splice sequence through a REAL generation run (analyze → chop → weave → fuse).
+  //    72 runs a real GPU job, so it sits last among app scenes; only nav scenes follow it. ──
+  { id: '73_magenta-conditioning', tab: 'make', play: false, magentaCond: true, hold: 10 },
+  // The REAL sidecar on film: an actual in-app Magenta generation against the live
+  // extended engine (requires the engine running — pick Magenta in the dropdown first).
+  { id: '74_magenta-live-generate', tab: 'make', play: false, magentaCond: true, magentaLive: true, hold: 60, holdUntilComplete: 180 },
+  { id: '72_crispr-dna', tab: 'make', play: false, chimeraBuild: true, crisprRun: true, hold: 150, holdUntilComplete: 330 },
   // ── nav-scenes (file://) — Magenta RT2 NVIDIA port. MUST stay last (they navigate away). ──
   { id: '63_magenta-studio-live', nav: 'http://localhost:8778', hold: 7 },
   { id: '61_magenta-port-ui', nav: MAGENTA_STUDIO, hold: 7 },
@@ -254,7 +262,21 @@ async function applyScene(spec) {
 
   try {
     const gp = (await imp('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
-    gp.getState().setField('model', spec.sunoModel ? 'suno' : (spec.magentaMake ? 'magenta-small' : 'medium'));
+    gp.getState().setField('model', spec.sunoModel ? 'suno' : ((spec.magentaMake || spec.magentaCond) ? 'magenta-small' : 'medium'));
+    // Magenta scenes: surface the model option without the sidecar probe, and for the
+    // conditioning scene populate the FULL conditioning panel (notes + knobs + style source).
+    if (spec.magentaMake || spec.magentaCond) { try { gp.getState().setField('magentaAvailable', true); } catch (e) {} }
+    if (spec.magentaCond) {
+      try {
+        gp.getState().setField('magNotes', [48, 55, 60, 63, 67, 70]);
+        gp.getState().setField('magTemperature', 1.1);
+        gp.getState().setField('magTopK', 30);
+        gp.getState().setField('magCfgMusiccoca', 4.0);
+        gp.getState().setField('magCfgNotes', 2.5);
+        gp.getState().setField('magDrums', 1);
+        gp.getState().setField('magSeed', 42);
+      } catch (e) { log.push('magcond ' + e.message); }
+    }
     if (!C.srcFile) { const b = await (await fetch(spec.heroUrl)).blob(); C.srcFile = new File([b], 'et-tu-machina.wav', { type: 'audio/wav' }); }
     if (spec.inpaint) {
       gp.getState().setField('initAudioFile', C.srcFile);
@@ -268,7 +290,9 @@ async function applyScene(spec) {
       gp.getState().setField('inpaintEnabled', false);
     }
     // Build a CHIMERA stack — fold Et Tu Machina + two of its stems into 3 chimera tracks.
-    if (spec.chimeraBuild && !C.chimeraBuilt) {
+    // Guard on the CLIPS being present (not a one-time flag): non-chimera scenes clear the
+    // stack, and 72_crispr-dna needs a fresh rebuild long after 23_chimera ran.
+    if (spec.chimeraBuild && gp.getState().chimera.clips.length === 0) {
       const srcs = [{ u: spec.heroUrl, l: 'Et Tu Machina' }, { u: spec.stems[0].url, l: 'Drums' }, { u: spec.stems[2].url, l: 'Vocals' }];
       for (const s of srcs) { try { const b = await (await fetch(s.u)).blob(); gp.getState().addChimeraClip({ blob: b, mimeType: 'audio/wav', label: s.l }); } catch (e) { log.push('chimera ' + e.message); } }
       try { gp.getState().setChimeraField('targetBpm', 124); gp.getState().setChimeraField('alignMode', 'weave'); } catch (e) {}
@@ -785,6 +809,41 @@ async function flyAround3d(page, seconds) {
 async function holdAction(page, scene) {
   const secs = scene.hold;
   const t0 = Date.now();
+  // CRISPR DNA / live Magenta: press CREATE exactly like the footer button, then
+  // film the run until a terminal label (COMPLETE/FAILED) or the cap.
+  if (scene.crisprRun || scene.magentaLive) {
+    if (scene.crisprRun) {
+      const tA = Date.now();
+      while (Date.now() - tA < 30000) {
+        const ready = await page.evaluate(async () => {
+          const gp = (await import('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
+          const cs = gp.getState().chimera.clips;
+          return cs.length > 0 && cs.every((c) => c.detectedBpm != null || (c.beats && c.beats.length));
+        }).catch(() => false);
+        if (ready) break;
+        await sleep(1000);
+      }
+    }
+    await page.evaluate(async (live) => {
+      const gs = await import('/src/state/generateStore.ts');
+      const gp = (await import('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
+      if (live) {
+        gp.getState().setField('prompt', 'neon synthwave arps over a driving beat, wide analog pads');
+        gp.getState().setField('duration', 12);
+      }
+      void gs.useGenerateStore.getState().submitGeneration(gs.buildGenerateParamsFromState(gp.getState()));
+    }, !!scene.magentaLive).catch(() => {});
+    const cap = (scene.holdUntilComplete || 300) * 1000;
+    let label = '';
+    while (Date.now() - t0 < cap) {
+      label = await page.evaluate(async () => (await import('/src/state/generateStore.ts')).useGenerateStore.getState().statusLabel).catch(() => '');
+      if (/^(COMPLETE|FAILED|SERVER RESET|STOPPED)/i.test(label || '')) break;
+      await sleep(1000);
+    }
+    console.log(`  crispr run ended with statusLabel=${label} after ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+    await sleep(6000); // hold the fused output strand
+    return;
+  }
   if (scene.flyAround) return flyAround3d(page, secs);
   if (scene.vjTour) return vjTour(page, secs);
   if (scene.djPerf) return djPerf(page, secs);

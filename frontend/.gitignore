@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# alphaTab runtime assets (Bravura font + SONiVOX soundfont) are copied from
+# node_modules by @coderline/alphatab-vite on dev/build. Regenerable; ~6 MB.
+public/font/
+public/soundfont/

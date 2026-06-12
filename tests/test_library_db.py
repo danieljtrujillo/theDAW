@@ -40,7 +40,7 @@ def _make_entry_payload(entry_id: str, **overrides) -> dict:
 
 def test_schema_migrates_on_first_open(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
-    assert db.schema_version() == 1
+    assert db.schema_version() == 3
     assert db.count_entries() == 0
 
 
@@ -186,6 +186,34 @@ def test_stems_and_midis(tmp_path: Path):
     )
     midis = db.list_midis("track")
     assert {m["source"] for m in midis} == {"full", "stem"}
+
+
+def test_notation_artifacts_round_trip(tmp_path: Path):
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry(_make_entry_payload("track"))
+
+    db.add_notation_artifact(
+        artifact_id="track_score_xml",
+        entry_id="track",
+        kind="musicxml",
+        path="track/notation/score.musicxml",
+        source_ref="track_full_mid",
+        engine="music21",
+        engine_version="10.3.0",
+        metadata={"source_midi": "track/midi/full.mid"},
+    )
+
+    artifacts = db.list_notation_artifacts("track")
+    assert len(artifacts) == 1
+    assert artifacts[0]["kind"] == "musicxml"
+    assert (
+        json.loads(artifacts[0]["metadata_json"])["source_midi"]
+        == "track/midi/full.mid"
+    )
+
+    fetched = db.get_notation_artifact("track_score_xml")
+    assert fetched is not None
+    assert fetched["path"].endswith("score.musicxml")
 
 
 def _seed_fs_entry(root: Path, entry_id: str) -> None:
