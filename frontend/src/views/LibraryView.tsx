@@ -5,6 +5,7 @@ import {
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
+  Film, Image as ImageIcon, Upload,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { LineageModal } from '../components/library/LineageModal';
@@ -21,6 +22,7 @@ import { useStatusBarStore } from '../state/statusBarStore';
 import { useFeatureToggleStore } from '../state/featureToggleStore';
 import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
+import { listMedia, importMedia, deleteMedia, MEDIA_ACCEPT } from '../lib/mediaLibrary';
 import { setAudioDragData } from '../lib/audioDnD';
 import {
   loadMidiIntoPianoRoll,
@@ -66,7 +68,7 @@ const downloadEntry = (entry: LibraryEntry, url: string) => {
 
 export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpand?: () => void }> = ({ onSwitchTab, onExpand }) => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
-  const [subTab, setSubTab] = useState<'tracks' | 'stems' | 'midi'>('tracks');
+  const [subTab, setSubTab] = useState<'tracks' | 'stems' | 'midi' | 'video'>('tracks');
   const [lineageOpen, setLineageOpen] = useState<string | null>(null);
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
@@ -78,6 +80,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const entryMenu = useContextMenu<{ entryId: string }>();
   const [allStems, setAllStems] = useState<Array<Record<string, unknown>> | null>(null);
   const [allMidis, setAllMidis] = useState<Array<Record<string, unknown>> | null>(null);
+  // VJ video library: video + image entries live outside the audio store
+  // (the default /entries list is audio-only). Fetched lazily when the
+  // VIDEO tab opens and re-fetched after an import / delete.
+  const [mediaEntries, setMediaEntries] = useState<LibraryEntry[] | null>(null);
   const [runningKind, setRunningKind] = useState<{ id: string; kind: 'analysis' | 'stems' | 'midi' } | null>(null);
   const [stemsBanner, setStemsBanner] = useState<{ phase: string; progress: number; message: string } | null>(null);
   const stemsAbortControllerRef = useRef<AbortController | null>(null);
@@ -284,7 +290,23 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         .then((j) => setAllMidis(j.midis || []))
         .catch(() => setAllMidis([]));
     }
-  }, [subTab, allStems, allMidis]);
+    if (subTab === 'video' && mediaEntries === null) {
+      void listMedia()
+        .then((rows) => setMediaEntries(rows))
+        .catch((e) => {
+          logError('library', `Failed to load media library: ${e instanceof Error ? e.message : String(e)}`);
+          setMediaEntries([]);
+        });
+    }
+  }, [subTab, allStems, allMidis, mediaEntries]);
+
+  const refreshMedia = React.useCallback(async () => {
+    try {
+      setMediaEntries(await listMedia());
+    } catch (e) {
+      logError('library', `Failed to refresh media library: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
 
   const stemsByParent = useMemo(() => {
     const map: Record<string, Array<Record<string, unknown>>> = {};
@@ -785,6 +807,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           <SubTabButton active={subTab === 'midi'} onClick={() => setSubTab('midi')}>
             MIDI ({allMidis?.length ?? '…'})
           </SubTabButton>
+          <SubTabButton active={subTab === 'video'} onClick={() => setSubTab('video')}>
+            Video ({mediaEntries?.length ?? '…'})
+          </SubTabButton>
         </div>
 
         {subTab === 'tracks' && (<>
@@ -1009,6 +1034,12 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             parentTitles={Object.fromEntries(entries.map((e) => [e.id, e.title]))}
             kind="midi"
             placeholder={allMidis === null ? 'Loading MIDI…' : 'No MIDI yet. Enable auto-MIDI in Settings or right-click a track → Convert to MIDI.'}
+          />
+        )}
+        {subTab === 'video' && (
+          <MediaGrid
+            entries={mediaEntries}
+            onChanged={refreshMedia}
           />
         )}
       </Section>
@@ -1387,6 +1418,170 @@ const SubTabButton: React.FC<SubTabButtonProps> = ({ active, onClick, icon, chil
     {children}
   </button>
 );
+
+
+/* ═══════════════════════════════ MediaGrid ════════════════════════════════ */
+
+/** VJ video library: a thumbnail grid of imported video/image entries with
+ *  an import button. Videos and alpha-capable media (transparent PNG/WebP,
+ *  alpha WebM) are badged so overlay-capable clips are identifiable. Entries
+ *  persist server-side, so the VJ cue survives reloads once routed here. */
+const MediaGrid: React.FC<{
+  entries: LibraryEntry[] | null;
+  onChanged: () => Promise<void>;
+}> = ({ entries, onChanged }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const onPick = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    let ok = 0;
+    let failed = 0;
+    for (const file of Array.from(files)) {
+      try {
+        await importMedia(file);
+        ok += 1;
+      } catch (e) {
+        failed += 1;
+        logError('library', `Media import failed for ${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setUploading(false);
+    if (ok) logInfo('library', `Imported ${ok} media file${ok === 1 ? '' : 's'} into the library.`);
+    await onChanged();
+  };
+
+  const onRemove = async (entry: LibraryEntry) => {
+    try {
+      await deleteMedia(entry.id);
+      await onChanged();
+    } catch (e) {
+      logError('library', `Media delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  return (
+    <div className="px-1">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[9px] font-mono text-zinc-600">
+          Videos and images for the VJ tab. Transparent media can act as overlays.
+        </span>
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[9px] font-black uppercase tracking-widest border border-purple-500/40 bg-purple-500/15 text-purple-200 hover:bg-purple-500/25 disabled:opacity-50 transition-colors"
+        >
+          {uploading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
+          {uploading ? 'Importing…' : 'Import media'}
+        </button>
+        <label htmlFor="media-import-input" className="sr-only">Import video or image files</label>
+        <input
+          ref={fileInputRef}
+          id="media-import-input"
+          name="media-import-input"
+          type="file"
+          accept={MEDIA_ACCEPT}
+          multiple
+          hidden
+          onChange={(e) => { void onPick(e.target.files); e.target.value = ''; }}
+        />
+      </div>
+
+      {entries === null ? (
+        <div className="flex items-center gap-2 text-[10px] text-zinc-500 py-8 justify-center">
+          <Loader2 size={12} className="animate-spin" /> Loading media…
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="text-[10px] text-zinc-600 py-8 text-center">
+          No media yet. Import videos or images, or load clips in the VJ tab — they are saved here.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          {entries.map((entry) => (
+            <MediaCard key={entry.id} entry={entry} onRemove={() => onRemove(entry)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const MediaCard: React.FC<{ entry: LibraryEntry; onRemove: () => void }> = ({ entry, onRemove }) => {
+  const isVideo = entry.kind === 'video';
+  const mediaUrl = entry.mediaUrl ?? entry.audioUrl;
+  return (
+    <div
+      className="group relative rounded-lg overflow-hidden border border-white/8 bg-black/40"
+      draggable
+      onDragStart={(e) => {
+        // Stable URL so a drop target (VJ bridge in B3, or any consumer)
+        // can reference the persisted file rather than a session blob.
+        e.dataTransfer.setData('text/uri-list', mediaUrl);
+        e.dataTransfer.setData(
+          'application/x-thedaw-media',
+          JSON.stringify({
+            id: entry.id,
+            url: mediaUrl,
+            kind: entry.kind ?? 'video',
+            name: entry.title,
+            hasAlpha: !!entry.hasAlpha,
+          }),
+        );
+      }}
+    >
+      <div className="aspect-video bg-black/60 flex items-center justify-center overflow-hidden">
+        {entry.thumbUrl ? (
+          <img
+            src={entry.thumbUrl}
+            alt={`Thumbnail for ${entry.title}`}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="text-zinc-700">
+            {isVideo ? <Film size={28} /> : <ImageIcon size={28} />}
+          </div>
+        )}
+      </div>
+
+      {/* Badges */}
+      <div className="absolute top-1 left-1 flex items-center gap-1">
+        <span className="flex items-center gap-1 px-1 py-0.5 rounded bg-black/70 text-[8px] font-black uppercase tracking-wider text-zinc-300">
+          {isVideo ? <Film size={9} /> : <ImageIcon size={9} />}
+          {isVideo ? 'Video' : 'Image'}
+        </span>
+        {entry.hasAlpha && (
+          <span
+            className="px-1 py-0.5 rounded bg-fuchsia-500/30 text-[8px] font-black uppercase tracking-wider text-fuchsia-200"
+            title="Transparent — usable as an overlay"
+          >
+            Alpha
+          </span>
+        )}
+      </div>
+      {isVideo && entry.duration > 0 && (
+        <span className="absolute bottom-1 right-1 px-1 py-0.5 rounded bg-black/70 text-[8px] font-mono text-zinc-300">
+          {formatDuration(entry.duration)}
+        </span>
+      )}
+
+      {/* Footer: title + remove */}
+      <div className="flex items-center justify-between gap-1 px-1.5 py-1">
+        <span className="text-[9px] text-zinc-300 truncate" title={entry.title}>{entry.title}</span>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${entry.title} from the media library`}
+          className="shrink-0 text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 
 interface SubTabListProps {

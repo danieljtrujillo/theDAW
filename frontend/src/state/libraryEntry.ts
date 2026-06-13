@@ -34,6 +34,20 @@ export interface LibraryEntry {
   playCount?: number;
   /** Unix seconds of the last play, or null when never played. */
   lastPlayedAt?: number | null;
+  /**
+   * Media kind. 'audio' is the default and original citizen. 'video' and
+   * 'image' entries back the VJ video library + overlays; they carry
+   * `mediaUrl` / `thumbUrl` / dimensions / `hasAlpha` instead of audio
+   * analysis. `audioUrl` falls back to the media URL for these so generic
+   * consumers never see an empty URL.
+   */
+  kind?: 'audio' | 'video' | 'image';
+  mediaUrl?: string;
+  thumbUrl?: string | null;
+  width?: number | null;
+  height?: number | null;
+  /** True for transparent PNG/WebP or alpha WebM — overlay-capable media. */
+  hasAlpha?: boolean;
 }
 
 /** Subset of fields a client is allowed to PATCH. Must match the

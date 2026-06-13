@@ -746,11 +746,23 @@ Important endpoints:
 - `GET /api/midi/{entry_id}` lists MIDI rows for an entry.
 - `GET /api/midi/file/{midi_id}` streams `.mid` bytes for import into Piano Roll or Step Sequencer.
 
-### 13.8 Library Analysis
+### 13.8 Video and Image Media
+
+The Library's **Video** sub-tab holds video and image entries (`kind='video'` and `kind='image'`) separately from audio, so the Tracks, Stems, and MIDI sub-tabs stay audio-only. **Import media** accepts common video and image formats (mp4, webm, mov, png, webp, gif, and more). Each import stores the original file untouched under `data/generations/<id>/`, probes its dimensions, duration, and transparency, and renders a poster thumbnail. Transparent media (a PNG/WebP with an alpha channel, or an alpha WebM) is badged **Alpha** to mark it as overlay-capable.
+
+Important endpoints:
+- `GET /api/library/entries?kind=media` lists video and image entries (`kind=audio` is the default for the audio library; `kind=all` returns everything).
+- `POST /api/library/import-media` accepts a video or image upload and returns the new entry.
+- `GET /api/library/media/{id}` streams the file with Range support for video scrubbing.
+- `GET /api/library/media/{id}/thumb` serves the poster thumbnail.
+
+This media library backs the VJ tab: clips loaded there are saved as stable library entries, so a VJ cue survives a reload, and alpha-capable media can drive overlays.
+
+### 13.9 Library Analysis
 
 A stats footer shows the total entry count, the favorites count, cumulative storage size, and cumulative playback duration.
 
-### 13.9 Suggest a Playlist
+### 13.10 Suggest a Playlist
 
 The **SUGGEST** button opens a playlist builder that sequences analyzed tracks into a continuous set. The criteria are a target length, an optional BPM range, a flow shape (Steady, Build up, Wind down, or Wave), a harmonic toggle, and an optional genre or text filter. The backend engine (`POST /api/library/suggest-playlist`) reads each track's analysis and orders the set by harmonic key on the Camelot wheel, the chosen BPM flow, and small nudges toward popular and stylistically varied picks, filling the time budget. Each result row shows its BPM, Camelot code, and the reason it was chosen.
 
@@ -761,7 +773,7 @@ Two actions run the result:
 
 Suggestions are strongest when the library is analyzed. Unanalyzed tracks still fill the budget but cannot be harmonically sequenced; the analyzer and the analyze-on-add toggle cover this over time.
 
-### 13.10 Empty State
+### 13.11 Empty State
 
 Shown until the first generation. It contains a **Go generate something** button that switches the active workspace to MAKE.
 
