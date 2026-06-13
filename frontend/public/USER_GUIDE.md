@@ -497,7 +497,7 @@ The mixer is the console between the decks. Each channel has a gain knob, a thre
 
 ### 9.4 Live Stems and FX
 
-Each deck has an FX and stems rack. Live stem faders ride the separated drums, bass, other, and vocals derived from Demucs, so a part can be pulled out or pushed up during playback. The FX rack adds per-deck effects on top of the EQ and filter.
+Each deck has an FX and stems rack. A one-touch **Stems** toggle switches the deck between the full track and its four separated parts (drums, bass, other, vocals from Demucs), keeping the playhead in place both directions; cached stems load instantly, and an unseparated track separates on first use. In stem mode each part gets a mute pad (tap to drop it, right-click to solo) and a fine fader for level rides, so a part can be pulled out, soloed, or pushed up during playback. The FX rack adds per-deck effects on top of the EQ and filter.
 
 ### 9.5 Cue / Headphone Output
 
@@ -510,7 +510,7 @@ DJ MIDI-learn binds a hardware controller to deck, mixer, and hotcue actions. It
 ### 9.7 Automix, Sampler, and Side List
 
 - **Automix** sequences a setlist hands-free, beatmatching each transition. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9).
-- **Sampler bank**: drag a clip onto a pad to load a one-shot, then trigger pads during a set.
+- **Sampler bank**: drag a clip onto a pad to load it, then trigger pads during a set. Each pad has a **Loop** toggle (the pad holds the sample until pressed again) and a **Choke** toggle (firing one choke pad cuts the others, for mutually exclusive sounds like open and closed hats). Pad assignments and their loop and choke settings persist across reloads.
 - **Side List**: a play-next staging lane above the browser. Stage upcoming tracks, reorder them, and pull them onto a deck when ready.
 
 ### 9.8 Browser and Source Tree

@@ -147,6 +147,18 @@ function useDeck(deckId: djEngine.DeckId, entryId: string | null, hasTrack: bool
   }), [deckId]);
   useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
 
+  // Key-lock (master tempo) defaults ON the first time a deck gets a track, so
+  // tempo changes and SYNC keep the original pitch out of the box (the
+  // Signalsmith time-stretch corrects the playbackRate pitch shift). Applied
+  // once per deck; an explicit user toggle afterwards wins.
+  const keylockDefaultedRef = useRef(false);
+  useEffect(() => {
+    if (entryId && !keylockDefaultedRef.current) {
+      keylockDefaultedRef.current = true;
+      void djEngine.setDeckKeylock(deckId, true);
+    }
+  }, [entryId, deckId]);
+
   const autoCuedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!entryId || autoCuedRef.current === entryId) return;
@@ -713,10 +725,25 @@ const SAMPLER_SLOTS = 10;
 const SamplerRail: React.FC = () => {
   const pads = useDjSampler((s) => s.pads);
   const setPad = useDjSampler((s) => s.setPad);
+  const setPadOpts = useDjSampler((s) => s.setPadOpts);
   const clearPad = useDjSampler((s) => s.clearPad);
   const entries = useLibraryStore((s) => s.entries);
   const [over, setOver] = useState<number | null>(null);
+  // Which loop pads are currently sounding, for a lit state (loops toggle).
+  const [looping, setLooping] = useState<Record<number, boolean>>({});
   const loadedRef = useRef<Set<string>>(new Set());
+
+  const fire = (i: number) => {
+    const pad = pads[i];
+    if (!pad) return;
+    djEngine.triggerSample(`sampler:${i}`, { gain: pad.gain ?? 1, loop: pad.loop, choke: pad.choke });
+    if (pad.loop) setLooping((l) => ({ ...l, [i]: !l[i] }));
+  };
+  const clear = (i: number) => {
+    djEngine.clearSample(`sampler:${i}`);
+    clearPad(i);
+    setLooping((l) => { const n = { ...l }; delete n[i]; return n; });
+  };
 
   // Decode each persisted pad's sample into the engine once (after a reload).
   useEffect(() => {
@@ -755,26 +782,50 @@ const SamplerRail: React.FC = () => {
       <div className="flex-1 min-h-0 grid grid-cols-2 gap-1 p-1.5 content-start">
         {Array.from({ length: SAMPLER_SLOTS }, (_, i) => {
           const pad = pads[i];
+          const isLooping = pad?.loop && looping[i];
           return (
-            <button key={i} type="button"
-              onClick={() => { if (pad) djEngine.triggerSample(`sampler:${i}`); }}
-              onContextMenu={(e) => { e.preventDefault(); if (pad) { djEngine.clearSample(`sampler:${i}`); clearPad(i); } }}
+            <div key={i}
               onDragOver={(e) => { if (e.dataTransfer.types.includes(DJ_TRACK_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(i); } }}
               onDragLeave={() => setOver((o) => (o === i ? null : o))}
               onDrop={(e) => void drop(i, e)}
-              title={pad ? `${pad.name} — click to fire, right-click to clear` : 'Drop a library track here to load a one-shot'}
-              className={`flex flex-col items-center justify-center gap-0.5 rounded-md border py-1.5 transition-colors active:scale-95 ${
+              className={`relative flex flex-col rounded-md border overflow-hidden transition-colors ${
                 over === i ? 'border-amber-400/70 bg-amber-500/15'
-                  : pad ? 'border-amber-500/40 bg-amber-500/8 text-amber-200 hover:bg-amber-500/15'
-                    : 'border-white/10 bg-black/40 text-zinc-600 hover:border-white/20'
+                  : isLooping ? 'border-emerald-400/70 bg-emerald-500/15'
+                    : pad ? 'border-amber-500/40 bg-amber-500/8' : 'border-white/10 bg-black/40'
               }`}>
-              <span className="text-[11px] font-black leading-none">{i === 9 ? 0 : i + 1}</span>
-              <span className="text-[7px] font-mono uppercase tracking-wide leading-none truncate max-w-full px-0.5">{pad ? pad.name : '—'}</span>
-            </button>
+              <button type="button"
+                onClick={() => fire(i)}
+                onContextMenu={(e) => { e.preventDefault(); if (pad) clear(i); }}
+                title={pad ? `${pad.name} — click to ${pad.loop ? 'start/stop the loop' : 'fire'}, right-click to clear` : 'Drop a library track here to load a pad'}
+                className={`flex flex-col items-center justify-center gap-0.5 py-1.5 active:scale-95 transition-transform ${
+                  pad ? (isLooping ? 'text-emerald-100' : 'text-amber-200') : 'text-zinc-600'
+                }`}>
+                <span className="text-[11px] font-black leading-none">{i === 9 ? 0 : i + 1}</span>
+                <span className="text-[7px] font-mono uppercase tracking-wide leading-none truncate max-w-full px-0.5">{pad ? pad.name : '—'}</span>
+              </button>
+              {pad && (
+                <div className="flex border-t border-white/10 divide-x divide-white/10">
+                  <button type="button"
+                    onClick={() => setPadOpts(i, { loop: !pad.loop })}
+                    aria-pressed={!!pad.loop}
+                    title={pad.loop ? 'Loop ON — pad holds the sample until pressed again' : 'One-shot — click to make this pad loop'}
+                    className={`flex-1 text-[7px] font-black leading-none py-0.5 transition-colors ${pad.loop ? 'bg-emerald-500/25 text-emerald-200' : 'text-zinc-500 hover:text-zinc-200'}`}>
+                    LOOP
+                  </button>
+                  <button type="button"
+                    onClick={() => setPadOpts(i, { choke: !pad.choke })}
+                    aria-pressed={!!pad.choke}
+                    title={pad.choke ? 'Choke ON — firing this pad cuts the other choke pads' : 'Click to add this pad to the choke group (mutually exclusive)'}
+                    className={`flex-1 text-[7px] font-black leading-none py-0.5 transition-colors ${pad.choke ? 'bg-rose-500/25 text-rose-200' : 'text-zinc-500 hover:text-zinc-200'}`}>
+                    CHOKE
+                  </button>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
-      <div className="shrink-0 px-1.5 pb-1.5 text-[7px] font-mono text-zinc-600 text-center">click fires · right-click clears</div>
+      <div className="shrink-0 px-1.5 pb-1.5 text-[7px] font-mono text-zinc-600 text-center">click fires · loop / choke per pad · right-click clears</div>
     </div>
   );
 };
@@ -814,29 +865,58 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
   const [fx, setFx] = useState<Record<string, number>>({ flanger: 0, reverb: 0, wahwah: 0 });
   const onFx = (k: djEngine.DjFx, v: number) => { setFx((p) => ({ ...p, [k]: v })); djEngine.setDeckFx(deck, k, v); };
 
-  // Live stems (D4): load (separate if needed) cached stems, then per-stem faders.
+  // Live stems (E): one-touch STEMS toggle → 4 mute/solo pads + fine faders.
+  // Cached stems load instantly; an uncached track separates on first toggle.
   const [stemNames, setStemNames] = useState<string[]>(() => djEngine.getDeckStemNames(deck));
   const [stemLevels, setStemLevels] = useState<Record<string, number>>({});
+  const [stemMuted, setStemMuted] = useState<Record<string, boolean>>({});
+  const [soloStem, setSoloStem] = useState<string | null>(null);
   const [stemBusy, setStemBusy] = useState(false);
   const [stemMsg, setStemMsg] = useState<string | null>(null);
+  const stemsOn = stemNames.length > 0;
   // The engine clears stems on track change (loadDeck) — mirror that here.
-  useEffect(() => { setStemNames(djEngine.getDeckStemNames(deck)); setStemMsg(null); }, [entryId, deck]);
-  const loadStems = async () => {
-    if (!entryId || stemBusy) return;
+  useEffect(() => {
+    setStemNames(djEngine.getDeckStemNames(deck));
+    setStemMuted({}); setSoloStem(null); setStemMsg(null);
+  }, [entryId, deck]);
+  // Apply effective gains whenever a level / mute / solo changes: a stem is
+  // silent when explicitly muted, or when a different stem is solo'd.
+  useEffect(() => {
+    if (!stemsOn) return;
+    for (const name of stemNames) {
+      const silenced = !!stemMuted[name] || (soloStem !== null && soloStem !== name);
+      djEngine.setStemGain(deck, name, silenced ? 0 : (stemLevels[name] ?? 1));
+    }
+  }, [stemsOn, stemNames, stemLevels, stemMuted, soloStem, deck]);
+
+  const toggleStems = async () => {
+    if (stemBusy) return;
+    if (stemsOn) {
+      setStemBusy(true); setStemMsg('…');
+      try { await djEngine.unloadDeckStems(deck); setStemNames([]); setSoloStem(null); setStemMsg(null); }
+      catch (e) { setStemMsg(e instanceof Error ? e.message.slice(0, 20) : 'failed'); }
+      finally { setStemBusy(false); }
+      return;
+    }
+    if (!entryId) return;
     setStemBusy(true); setStemMsg('checking…');
     try {
-      const refs = await ensureStems(entryId, { stems: 4, quality: 'fast' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
+      // 6 stems (drums/bass/other/vocals/guitar/piano) so every part is
+      // toggleable; 'balanced' adds the fine-tuned shifts for cleaner splits.
+      const refs = await ensureStems(entryId, { stems: 6, quality: 'balanced' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
       if (!refs.length) { setStemMsg('no stems'); return; }
       setStemMsg('loading…');
       const names = await djEngine.loadDeckStems(deck, refs);
       setStemNames(names);
       setStemLevels(Object.fromEntries(names.map((n) => [n, 1])));
-      setStemMsg(null);
+      setStemMuted({}); setSoloStem(null); setStemMsg(null);
     } catch (e) {
       setStemMsg(e instanceof Error ? e.message.slice(0, 24) : 'failed');
     } finally { setStemBusy(false); }
   };
-  const onStem = (name: string, v: number) => { setStemLevels((p) => ({ ...p, [name]: v })); djEngine.setStemGain(deck, name, v); };
+  const toggleStemMute = (name: string) => setStemMuted((m) => ({ ...m, [name]: !m[name] }));
+  const toggleStemSolo = (name: string) => setSoloStem((s) => (s === name ? null : name));
+  const onStemLevel = (name: string, v: number) => setStemLevels((p) => ({ ...p, [name]: v }));
 
   return (
     <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
@@ -851,29 +931,66 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
             <SlideKnob key={key} label={label} value={fx[key]} onChange={(v) => onFx(key, v)} min={0} max={1} step={0.01} size={30} centerReadout />
           ))}
         </div>
-        {/* Live stems (D4) — per-stem gain faders, or a load/separate button */}
+        {/* Live stems (E) — one-touch toggle, then mute/solo pads + fine faders */}
         <div className="mt-auto w-fit">
           <div className={`flex items-center gap-1 mb-1 ${toCenter ? 'flex-row-reverse' : ''}`}>
-            <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Stems</span>
-            {stemNames.length === 0 ? (
-              <button onClick={() => void loadStems()} disabled={!entryId || stemBusy}
-                className="ml-auto text-[7px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/20 disabled:opacity-30 disabled:pointer-events-none"
-                title={entryId ? 'Separate this track into stems (cached if already done) → 4 live faders' : 'Load a track first'}>
-                {stemBusy ? (stemMsg ?? 'working…') : 'Load'}
-              </button>
-            ) : stemMsg ? (
-              <span className="ml-auto text-[7px] font-mono text-rose-300 truncate" title={stemMsg}>{stemMsg}</span>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => void toggleStems()}
+              disabled={(!entryId && !stemsOn) || stemBusy}
+              aria-pressed={stemsOn}
+              title={stemsOn
+                ? 'Stems ON — click to return to the full track (keeps the playhead)'
+                : entryId ? 'Play this track as live stems (cached if already separated)' : 'Load a track first'}
+              className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded border transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                stemsOn
+                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
+                  : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/20'
+              }`}>
+              {stemBusy ? (stemMsg ?? '…') : (stemsOn ? 'Stems ●' : 'Stems')}
+            </button>
+            {!stemBusy && stemMsg && !stemsOn && (
+              <span className="text-[7px] font-mono text-rose-300 truncate max-w-20" title={stemMsg}>{stemMsg}</span>
+            )}
           </div>
-          {stemNames.length > 0 ? (
-            <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${Math.min(stemNames.length, 4)}, minmax(0,1fr))` }}>
-              {stemNames.slice(0, 4).map((name) => (
-                <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStem(name, v)} min={0} max={1} step={0.01} size={28} centerReadout />
-              ))}
-            </div>
-          ) : (
-            stemBusy && <div className="text-[8px] font-mono text-zinc-600 truncate" title={stemMsg ?? ''}>{stemMsg ?? 'working…'}</div>
-          )}
+          {stemsOn && (() => {
+            // Show every separated stem (4 or 6: drums/bass/other/vocals/
+            // guitar/piano). Use 3 columns past 4 stems so 6 reads as 3×2.
+            const shown = stemNames.slice(0, 6);
+            const cols = shown.length <= 4 ? shown.length : 3;
+            return (
+            <>
+              {/* Mute / solo pads — tap to mute, right-click to solo */}
+              <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+                {shown.map((name) => {
+                  const isSolo = soloStem === name;
+                  const active = !stemMuted[name] && (soloStem === null || isSolo);
+                  return (
+                    <button key={name} type="button"
+                      onClick={() => toggleStemMute(name)}
+                      onContextMenu={(e) => { e.preventDefault(); toggleStemSolo(name); }}
+                      aria-pressed={active}
+                      title={`${stemLabel(name)} — click to ${active ? 'mute' : 'unmute'}, right-click to ${isSolo ? 'clear solo' : 'solo'}`}
+                      className={`px-1 py-1 rounded border text-[8px] font-black uppercase tracking-wide transition-colors active:scale-95 ${
+                        isSolo ? 'border-amber-400/70 bg-amber-500/20 text-amber-100'
+                          : active
+                            ? (accent === 'purple' ? 'border-purple-500/50 bg-purple-500/15 text-purple-100' : 'border-cyan-500/50 bg-cyan-500/15 text-cyan-100')
+                            : 'border-white/10 bg-black/40 text-zinc-600'
+                      }`}>
+                      {stemLabel(name)}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Fine faders */}
+              <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+                {shown.map((name) => (
+                  <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStemLevel(name, v)} min={0} max={1} step={0.01} size={26} centerReadout />
+                ))}
+              </div>
+            </>
+            );
+          })()}
         </div>
       </div>
     </div>
