@@ -54,6 +54,7 @@ export default defineConfig(({mode}) => {
         '/api': {
           target: 'http://localhost:8600',
           changeOrigin: true,
+          ws: true, // proxy WebSocket upgrades too (e.g. /api/questmidi/ws)
           timeout: 0,
           proxyTimeout: 0,
           configure: (proxy) => {

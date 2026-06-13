@@ -17,6 +17,7 @@ import { useLibraryStore } from './state/libraryStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
+import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
 
@@ -183,6 +184,16 @@ export default function App() {
         access.onstatechange = null;
       }
     };
+  }, [midiEnabled]);
+
+  // Quest MIDI bridge (loopMIDI-free): when MIDI is on, open the WebSocket to
+  // the backend `questmidi` module. It hosts the localhost TCP listener + adb
+  // reverse and relays the headset's MIDI onto the same midiBus as hardware
+  // controllers, so nothing else needs to change to react to the Quest.
+  useEffect(() => {
+    if (!midiEnabled) return;
+    startQuestMidi();
+    return () => stopQuestMidi();
   }, [midiEnabled]);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {
