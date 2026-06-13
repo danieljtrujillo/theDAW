@@ -1,0 +1,10 @@
+{
+  "name": "questmidi",
+  "label": "Quest MIDI",
+  "enabled": true,
+  "icon": "Hand",
+  "sidebar": false,
+  "api_prefix": "/api/questmidi",
+  "backend": true,
+  "description": "Bridges the GANTASMO-MIDI Quest app straight into theDAW with no loopMIDI and no separate Node bridge. Hosts a localhost TCP listener (adb reverse over USB), relays Quest MIDI to the frontend midiBus over a WebSocket, and forwards return MIDI back to the headset (e.g. to drive the GANTASMO Visor). Disable to skip the auto-start on backend launch."
+}
