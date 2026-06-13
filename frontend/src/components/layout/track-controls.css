@@ -570,6 +570,25 @@
 .sl-nav.next { right: 2px; }
 
 .sl-section { margin-bottom: 16px; }
+
+/* Sticky page controller: docked to the bottom of the SLIDE surface in ROW and
+   FOCUS so paging never scrolls away; the lanes sit just above it (the views
+   bottom-anchor via mt-auto). Bleeds over the surface's horizontal padding and
+   fades the lanes that scroll beneath it. */
+.sl-pagedock {
+  position: sticky;
+  bottom: 0;
+  z-index: 12;
+  margin: 0 -12px;
+  padding: 2px 12px 10px;
+  background: linear-gradient(to top, rgba(9, 7, 13, 0.95) 0%, rgba(9, 7, 13, 0.7) 65%, transparent 100%);
+  backdrop-filter: blur(3px);
+}
+/* Bottom-anchored views: the dock IS the bottom edge, so the section's usual
+   trailing gap would float it above the panel floor. */
+.sl-pagedock .sl-pagelight { margin-bottom: 0; }
+.mt-auto > .sl-section { margin-bottom: 0; }
+
 .sl-section-head {
   font: 800 8px/1 system-ui;
   letter-spacing: 0.22em;

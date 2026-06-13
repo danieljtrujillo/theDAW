@@ -530,17 +530,19 @@ const FocusStrip: React.FC<{
       </div>
       <button className="sl-nav prev" onClick={() => nudge(-1)}>◀</button>
       <button className="sl-nav next" onClick={() => nudge(1)}>▶</button>
-      <div className="sl-pagelight" style={{ ['--pl' as string]: pageColor }}>
-        {Array.from({ length: pageCount }, (_, p) => (
-          <div
-            key={p}
-            className="sl-pageseg"
-            ref={(el) => { if (el) segRefs.current[p] = el; }}
-            title={`Page ${p + 1}`}
-            onClick={() => onPickPage(p)}
-          />
-        ))}
-        <div className="sl-pagenum" ref={numRef}>PAGE 1 / {pageCount}</div>
+      <div className="sl-pagedock">
+        <div className="sl-pagelight" style={{ ['--pl' as string]: pageColor }}>
+          {Array.from({ length: pageCount }, (_, p) => (
+            <div
+              key={p}
+              className="sl-pageseg"
+              ref={(el) => { if (el) segRefs.current[p] = el; }}
+              title={`Page ${p + 1}`}
+              onClick={() => onPickPage(p)}
+            />
+          ))}
+          <div className="sl-pagenum" ref={numRef}>PAGE 1 / {pageCount}</div>
+        </div>
       </div>
     </div>
   );
@@ -577,13 +579,43 @@ export const SlidePanel: React.FC = () => {
   const commitLearn = useLearnedProfilesStore((s) => s.commit);
   const [cvOpen, setCvOpen] = useState(false);
   // Controller-view zoom — lets a big device (e.g. a 92-control rig) be seen
-  // whole (zoom out) or a section worked closely (zoom in). 1 = fit.
+  // whole (the view OPENS fitted to the window) or a section worked up close.
   const [ctrlZoom, setCtrlZoom] = useState(1);
-  const clampZoom = (z: number) => Math.max(0.4, Math.min(2, Math.round(z * 20) / 20));
+  const clampZoom = (z: number) => Math.max(0.25, Math.min(2.5, Math.round(z * 20) / 20));
+  const ctrlSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const ctrlContentRef = useRef<HTMLDivElement | null>(null);
+  // Natural (unscaled) size of the rendered device; sizes the scale wrapper so
+  // zooming never leaves ghost scroll space.
+  const [ctrlNat, setCtrlNat] = useState<{ w: number; h: number } | null>(null);
+
+  const fitZoom = useCallback(() => {
+    const surf = ctrlSurfaceRef.current;
+    const content = ctrlContentRef.current;
+    const scrollport = surf?.parentElement;
+    if (!surf || !content || !scrollport) return;
+    const natW = content.offsetWidth;
+    const natH = content.offsetHeight;
+    if (!natW || !natH) return;
+    setCtrlNat({ w: natW, h: natH });
+    const fit = Math.min(
+      (scrollport.clientWidth - 28) / natW,
+      (scrollport.clientHeight - 28) / natH,
+    );
+    setCtrlZoom(clampZoom(fit));
+  }, []);
+
+  // Open fitted: whenever the controller view activates or the device changes,
+  // size the whole rig into the window. (deviceSize derives from profileId, so
+  // profileId is the change signal.)
+  useEffect(() => {
+    if (view !== 'controller') return;
+    const t = setTimeout(fitZoom, 60);
+    return () => clearTimeout(t);
+  }, [view, profileId, fitZoom]);
+
   // Mouse-wheel zoom over the controller surface. React's delegated onWheel is
   // passive, so preventDefault (to stop the panel scrolling) needs a native
   // non-passive listener bound while the controller view is active.
-  const ctrlSurfaceRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (view !== 'controller') return;
     const el = ctrlSurfaceRef.current;
@@ -595,6 +627,50 @@ export const SlidePanel: React.FC = () => {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
+  }, [view]);
+
+  // Left-click drag on the background pans the view (controls keep their own
+  // pointer handling; panning only starts from empty surface).
+  useEffect(() => {
+    if (view !== 'controller') return;
+    const el = ctrlSurfaceRef.current;
+    const scrollport = el?.parentElement as HTMLElement | null;
+    if (!el || !scrollport) return;
+    let panning = false;
+    let sx = 0;
+    let sy = 0;
+    let sl = 0;
+    let st = 0;
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement;
+      if (t.closest('.ts-body, .tk-dial, .tp-btn, .sl-grip, .sl-lock, button, input, select, [role="slider"]')) return;
+      panning = true;
+      sx = e.clientX;
+      sy = e.clientY;
+      sl = scrollport.scrollLeft;
+      st = scrollport.scrollTop;
+      el.style.cursor = 'grabbing';
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!panning) return;
+      scrollport.scrollLeft = sl - (e.clientX - sx);
+      scrollport.scrollTop = st - (e.clientY - sy);
+    };
+    const onUp = () => {
+      panning = false;
+      el.style.cursor = 'grab';
+    };
+    el.style.cursor = 'grab';
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      el.style.cursor = '';
+      el.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
   }, [view]);
   const setPageNavBinding = useSlideStore((s) => s.setPageNavBinding);
   const swapSlots = useSlideStore((s) => s.swapSlots);
@@ -1007,58 +1083,66 @@ export const SlidePanel: React.FC = () => {
       </div>
 
       {/* surface */}
-      <div className="flex-1 min-h-0 overflow-auto p-3 relative">
+      <div className={`flex-1 min-h-0 overflow-auto relative flex flex-col ${view === 'controller' ? 'p-3' : 'px-3 pt-3 pb-0'}`}>
         {view === 'controller' ? (
-          // Controller view is CENTERED and ZOOMABLE so a whole device (even a
-          // big custom rig) fits, or a section can be worked up close.
+          // Controller view OPENS FITTED to the window, mouse-wheel zooms, and
+          // left-click drag on the background pans around the device.
           <>
             <div className="absolute top-2 right-2 z-20 flex items-center gap-1 rounded-md border border-white/12 bg-black/60 backdrop-blur px-1 py-0.5">
               <button onClick={() => setCtrlZoom((z) => clampZoom(z - 0.1))} className="px-1.5 py-0.5 text-zinc-300 hover:text-white text-[11px]" title="Zoom out">−</button>
-              <button onClick={() => setCtrlZoom(1)} className="px-1.5 py-0.5 text-[8px] font-mono text-zinc-400 hover:text-white tabular-nums" title="Reset zoom (fit)">{Math.round(ctrlZoom * 100)}%</button>
+              <button onClick={fitZoom} className="px-1.5 py-0.5 text-[8px] font-mono text-zinc-400 hover:text-white tabular-nums" title="Fit the whole controller in the window">{Math.round(ctrlZoom * 100)}%</button>
               <button onClick={() => setCtrlZoom((z) => clampZoom(z + 0.1))} className="px-1.5 py-0.5 text-zinc-300 hover:text-white text-[11px]" title="Zoom in">+</button>
             </div>
-            <div ref={ctrlSurfaceRef} className="min-h-full flex items-start justify-center" title="Scroll to zoom">
-              <div style={{ transform: `scale(${ctrlZoom})`, transformOrigin: 'top center', transition: 'transform 0.12s ease' }}>
-                <ControllerView
-                  profile={profile}
-                  content={content}
-                  bank={bank}
-                  deviceSize={deviceSize}
-                  pageCount={pageCount}
-                  pageColor={pageColor}
-                  resolve={resolve}
-                  onDropItem={onDropItem}
-                  onPickPage={setBank}
-                  profileId={profileId}
-                  mapMode={mapMode}
-                  learnPos={learnPos}
-                  autoWalk={autoWalk}
-                />
+            <div ref={ctrlSurfaceRef} className="min-h-full flex items-start justify-center" title="Scroll to zoom · drag the background to pan">
+              <div style={ctrlNat ? { width: ctrlNat.w * ctrlZoom, height: ctrlNat.h * ctrlZoom } : undefined}>
+                <div ref={ctrlContentRef} style={{ transform: `scale(${ctrlZoom})`, transformOrigin: 'top left', transition: 'transform 0.12s ease', width: 'fit-content' }}>
+                  <ControllerView
+                    profile={profile}
+                    content={content}
+                    bank={bank}
+                    deviceSize={deviceSize}
+                    pageCount={pageCount}
+                    pageColor={pageColor}
+                    resolve={resolve}
+                    onDropItem={onDropItem}
+                    onPickPage={setBank}
+                    profileId={profileId}
+                    mapMode={mapMode}
+                    learnPos={learnPos}
+                    autoWalk={autoWalk}
+                  />
+                </div>
               </div>
             </div>
           </>
         ) : view === 'focus' ? (
-          <FocusStrip
-            content={content}
-            items={focusItems}
-            pageSize={pageSize}
-            startPage={bank}
-            pageColor={pageColor}
-            pageCount={pageCount}
-            onDropItem={onDropItem}
-            onPickPage={setBank}
-          />
+          // mt-auto anchors the lanes to the BOTTOM of the panel; the page
+          // controller below them is sticky so it never scrolls away.
+          <div className="mt-auto">
+            <FocusStrip
+              content={content}
+              items={focusItems}
+              pageSize={pageSize}
+              startPage={bank}
+              pageColor={pageColor}
+              pageCount={pageCount}
+              onDropItem={onDropItem}
+              onPickPage={setBank}
+            />
+          </div>
         ) : (
-          <RowView
-            content={content}
-            bank={bank}
-            pageSize={pageSize}
-            pageCount={pageCount}
-            pageColor={pageColor}
-            resolve={resolve}
-            onDropItem={onDropItem}
-            onPickPage={setBank}
-          />
+          <div className="mt-auto">
+            <RowView
+              content={content}
+              bank={bank}
+              pageSize={pageSize}
+              pageCount={pageCount}
+              pageColor={pageColor}
+              resolve={resolve}
+              onDropItem={onDropItem}
+              onPickPage={setBank}
+            />
+          </div>
         )}
       </div>
 
@@ -1105,7 +1189,9 @@ const RowView: React.FC<{
           );
         })}
       </div>
-      <PageLight count={pageCount} active={bank} color={pageColor} onPick={onPickPage} />
+      <div className="sl-pagedock">
+        <PageLight count={pageCount} active={bank} color={pageColor} onPick={onPickPage} />
+      </div>
     </div>
   );
 };
