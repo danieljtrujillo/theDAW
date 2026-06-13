@@ -147,6 +147,18 @@ function useDeck(deckId: djEngine.DeckId, entryId: string | null, hasTrack: bool
   }), [deckId]);
   useEffect(() => { if (!loopActive) setActiveLoopBeats(null); }, [loopActive]);
 
+  // Key-lock (master tempo) defaults ON the first time a deck gets a track, so
+  // tempo changes and SYNC keep the original pitch out of the box (the
+  // Signalsmith time-stretch corrects the playbackRate pitch shift). Applied
+  // once per deck; an explicit user toggle afterwards wins.
+  const keylockDefaultedRef = useRef(false);
+  useEffect(() => {
+    if (entryId && !keylockDefaultedRef.current) {
+      keylockDefaultedRef.current = true;
+      void djEngine.setDeckKeylock(deckId, true);
+    }
+  }, [entryId, deckId]);
+
   const autoCuedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!entryId || autoCuedRef.current === entryId) return;
@@ -889,7 +901,9 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
     if (!entryId) return;
     setStemBusy(true); setStemMsg('checking…');
     try {
-      const refs = await ensureStems(entryId, { stems: 4, quality: 'fast' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
+      // 'balanced' uses the fine-tuned htdemucs_ft model — a clear quality jump
+      // over 'fast' (plain htdemucs), at a still-practical separation time.
+      const refs = await ensureStems(entryId, { stems: 4, quality: 'balanced' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
       if (!refs.length) { setStemMsg('no stems'); return; }
       setStemMsg('loading…');
       const names = await djEngine.loadDeckStems(deck, refs);
