@@ -74,6 +74,15 @@ class LibraryRecord:
     chimera_sources: list[str] = field(default_factory=list)
     # Optional pointers to extra artifacts on disk.
     spectrogram_paths: dict[str, Optional[str]] = field(default_factory=dict)
+    # Media (video / image) entries. 'audio' keeps the original contract;
+    # 'video' / 'image' carry a stream URL, a poster thumbnail, pixel
+    # dimensions, and an alpha flag (overlay-capable when True).
+    kind: str = "audio"
+    media_url: Optional[str] = None
+    thumb_url: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    has_alpha: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +107,12 @@ class LibraryRecord:
             "source": self.source,
             "chimera_sources": list(self.chimera_sources),
             "spectrogram_paths": dict(self.spectrogram_paths),
+            "kind": self.kind,
+            "media_url": self.media_url,
+            "thumb_url": self.thumb_url,
+            "width": self.width,
+            "height": self.height,
+            "has_alpha": self.has_alpha,
         }
 
 
@@ -112,6 +127,50 @@ def default_library_root(project_root: Path) -> Path:
 
 def _audio_url_for(api_prefix: str, entry_id: str) -> str:
     return f"{api_prefix}/audio/{entry_id}"
+
+
+def _media_url_for(api_prefix: str, entry_id: str) -> str:
+    return f"{api_prefix}/media/{entry_id}"
+
+
+def _thumb_url_for(api_prefix: str, entry_id: str) -> str:
+    return f"{api_prefix}/media/{entry_id}/thumb"
+
+
+_MEDIA_EXTS = {
+    ".mp4",
+    ".webm",
+    ".mov",
+    ".mkv",
+    ".m4v",
+    ".avi",
+    ".ogv",
+    ".png",
+    ".webp",
+    ".gif",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".avif",
+    ".apng",
+}
+
+
+def _resolve_media_file(entry_dir: Path, meta: dict[str, Any]) -> Optional[Path]:
+    """Resolve a video/image file for a media entry: the declared name
+    first, then the first recognized media file in the directory (the
+    poster thumbnail is skipped)."""
+    declared = meta.get("media_filename") or meta.get("filename")
+    if declared:
+        candidate = entry_dir / declared
+        if candidate.is_file():
+            return candidate
+    for path in sorted(entry_dir.iterdir()):
+        if path.name == "thumb.jpg":
+            continue
+        if path.is_file() and path.suffix.lower() in _MEDIA_EXTS:
+            return path
+    return None
 
 
 def _metadata_path(entry_dir: Path) -> Path:
@@ -187,6 +246,14 @@ def _record_from_metadata(
                 meta["prompt"] = api_meta["description"]
 
     entry_id = entry_dir.name
+
+    # Media (video / image) entries take a separate path: they resolve a
+    # media file (not audio), carry a poster thumbnail + dimensions, and
+    # stream from /media/<id> rather than /audio/<id>.
+    kind = str(meta.get("kind") or "audio")
+    if kind in ("video", "image"):
+        return _media_record_from_metadata(entry_dir, meta, api_prefix, kind)
+
     audio_file = _resolve_audio_file(entry_dir, meta)
 
     # CHANGED: allow CDN-only entries (no local audio file) when a
@@ -266,6 +333,75 @@ def _record_from_metadata(
     )
 
 
+def _media_record_from_metadata(
+    entry_dir: Path,
+    meta: dict[str, Any],
+    api_prefix: str,
+    kind: str,
+) -> Optional[LibraryRecord]:
+    """Build a LibraryRecord for a video/image entry. Returns None when no
+    media file resolves on disk."""
+    entry_id = entry_dir.name
+    media_file = _resolve_media_file(entry_dir, meta)
+    if media_file is None:
+        return None
+
+    try:
+        size = media_file.stat().st_size
+    except OSError:
+        size = 0
+
+    timestamp = meta.get("timestamp")
+    if not timestamp:
+        saved_at = meta.get("saved_at")
+        if isinstance(saved_at, (int, float)):
+            timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(saved_at)) + "Z"
+        else:
+            timestamp = ""
+
+    has_thumb = (entry_dir / "thumb.jpg").is_file()
+    # audio_url points at the media stream too, so generic consumers that
+    # read audio_url never hit an empty/broken URL for a media entry.
+    media_url = _media_url_for(api_prefix, entry_id)
+
+    return LibraryRecord(
+        id=entry_id,
+        title=str(meta.get("title") or media_file.name),
+        prompt=str(meta.get("prompt") or ""),
+        negative_prompt=str(meta.get("negative_prompt") or ""),
+        model=str(meta.get("model") or "import"),
+        duration=float(meta.get("duration") or 0.0),
+        steps=0,
+        cfg=0.0,
+        seed=0,
+        audio_url=media_url,
+        audio_filename=media_file.name,
+        mime_type=str(meta.get("mime_type") or ""),
+        file_size_bytes=size,
+        timestamp=timestamp,
+        favorite=bool(meta.get("favorite", False)),
+        rating=None,
+        tags=list(meta.get("tags") or []),
+        notes=str(meta.get("notes") or ""),
+        source=str(meta.get("source") or "import"),
+        chimera_sources=[],
+        spectrogram_paths={},
+        kind=kind,
+        media_url=media_url,
+        thumb_url=_thumb_url_for(api_prefix, entry_id) if has_thumb else None,
+        width=_int_or_none(meta.get("width")),
+        height=_int_or_none(meta.get("height")),
+        has_alpha=bool(meta.get("has_alpha", False)),
+    )
+
+
+def _int_or_none(v: Any) -> Optional[int]:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 class LibraryStore:
     """Filesystem-backed library with an attached SQLite query layer.
 
@@ -304,9 +440,16 @@ class LibraryStore:
 
     # ---- Read ---------------------------------------------------------------
 
-    def list_entries(self) -> list[LibraryRecord]:
+    def list_entries(
+        self, kinds: Optional[Iterable[str]] = None
+    ) -> list[LibraryRecord]:
+        """List entries, optionally restricted to a set of ``kind`` values
+        ('audio' | 'video' | 'image'). ``kinds=None`` returns every kind
+        (used by reindex); callers that want the historical audio-only
+        behavior pass ``kinds={'audio'}``."""
         if not self.root.is_dir():
             return []
+        kind_set = set(kinds) if kinds is not None else None
         out: list[LibraryRecord] = []
         for child in sorted(self.root.iterdir()):
             if not child.is_dir():
@@ -317,7 +460,7 @@ class LibraryStore:
             direct_meta = _read_metadata(child)
             if direct_meta is not None:
                 record = _record_from_metadata(child, direct_meta, self.api_prefix)
-                if record is not None:
+                if record is not None and (kind_set is None or record.kind in kind_set):
                     out.append(record)
                 continue
             for inner in sorted(child.iterdir()):
@@ -333,8 +476,14 @@ class LibraryStore:
                 record = _record_from_metadata(inner, meta, self.api_prefix)
                 if record is None:
                     continue
+                if kind_set is not None and record.kind not in kind_set:
+                    continue
                 record.id = entry_id
-                record.audio_url = _audio_url_for(self.api_prefix, entry_id)
+                if record.kind == "audio":
+                    record.audio_url = _audio_url_for(self.api_prefix, entry_id)
+                else:
+                    record.media_url = _media_url_for(self.api_prefix, entry_id)
+                    record.audio_url = record.media_url
                 out.append(record)
         return out
 
@@ -357,6 +506,25 @@ class LibraryStore:
             return None
         meta = _read_metadata(entry_dir) or {}
         return _resolve_audio_file(entry_dir, meta)
+
+    def get_media_path(self, entry_id: str) -> Optional[Path]:
+        """Resolve the video/image file for a media entry (None for audio
+        entries or unknown ids)."""
+        entry_dir = self._dir_for(entry_id)
+        if entry_dir is None:
+            return None
+        meta = _read_metadata(entry_dir) or {}
+        if str(meta.get("kind") or "audio") not in ("video", "image"):
+            return None
+        return _resolve_media_file(entry_dir, meta)
+
+    def get_thumb_path(self, entry_id: str) -> Optional[Path]:
+        """Resolve the poster thumbnail for a media entry, if one exists."""
+        entry_dir = self._dir_for(entry_id)
+        if entry_dir is None:
+            return None
+        thumb = entry_dir / "thumb.jpg"
+        return thumb if thumb.is_file() else None
 
     # ---- Write --------------------------------------------------------------
 
@@ -475,6 +643,73 @@ class LibraryStore:
         _maybe_enqueue_midi(self, entry_id, source="import")
         return record
 
+    def import_media(
+        self,
+        media_bytes: bytes,
+        filename: str,
+        mime_type: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> LibraryRecord:
+        """Import a video or image as a library entry (kind='video'|'image').
+
+        Stores the original file untouched, probes it for dimensions /
+        duration / alpha, and renders a poster thumbnail. None of the
+        audio analysis/stems/midi pipelines run for media. Raises
+        ValueError for an unrecognized media extension.
+        """
+        from . import media as media_probe
+
+        kind = media_probe.classify_ext(filename)
+        if kind is None:
+            raise ValueError(
+                f"unrecognized media type for {filename!r} "
+                "(expected a video or image file)"
+            )
+
+        entry_id = uuid.uuid4().hex
+        entry_dir = self.root / entry_id
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        suffix = Path(filename).suffix.lower()
+        safe_name = Path(filename).stem[:80] or "media"
+        target_name = f"{safe_name}{suffix}"
+        target_path = entry_dir / target_name
+        target_path.write_bytes(media_bytes)
+
+        probe = media_probe.probe_media(target_path, kind)
+        thumb_path = entry_dir / "thumb.jpg"
+        media_probe.make_thumbnail(target_path, kind, thumb_path)
+
+        meta_in = dict(metadata or {})
+        record_meta: dict[str, Any] = {
+            "id": entry_id,
+            "kind": kind,
+            "filename": target_name,
+            "media_filename": target_name,
+            "mime_type": mime_type or "",
+            "title": meta_in.get("title") or safe_name,
+            "prompt": meta_in.get("prompt", ""),
+            "negative_prompt": "",
+            "model": meta_in.get("model", "import"),
+            "duration": probe.get("duration") or 0.0,
+            "favorite": False,
+            "rating": None,
+            "tags": list(meta_in.get("tags", [])),
+            "notes": meta_in.get("notes", ""),
+            "source": meta_in.get("source", "import"),
+            "width": probe.get("width"),
+            "height": probe.get("height"),
+            "has_alpha": bool(probe.get("has_alpha")),
+            "saved_at": time.time(),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _write_metadata(entry_dir, record_meta)
+        record = _media_record_from_metadata(
+            entry_dir, record_meta, self.api_prefix, kind
+        )
+        assert record is not None, "freshly imported media must resolve"
+        self._sync_record_to_db(record, record_meta)
+        return record
+
     # ---- DB sync / reindex --------------------------------------------------
 
     def _sync_record_to_db(
@@ -486,7 +721,7 @@ class LibraryStore:
             return
         payload: dict[str, Any] = {
             "id": record.id,
-            "kind": "audio",
+            "kind": record.kind,
             "title": record.title,
             "prompt": record.prompt,
             "negative_prompt": record.negative_prompt,

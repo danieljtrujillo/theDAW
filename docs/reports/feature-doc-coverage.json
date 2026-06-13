@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-13T01:56:33.643Z",
-  "repoRevision": "36780211cc46",
+  "generatedAt": "2026-06-13T02:25:56.166Z",
+  "repoRevision": "e709585f21c2",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -684,6 +684,7 @@
         "#purpose",
         "#13-1-automatic-entry-creation",
         "#13-4-per-entry-controls",
+        "#13-8-video-and-image-media",
         "#19-13-disk-backed-library",
         "#19-15-stems",
         "#library-storage-fills-the-disk",
@@ -752,6 +753,7 @@
         "#6-8-run-generation",
         "#7-4-inpainting-from-the-editor",
         "#10-2-pop-out-and-mobile",
+        "#13-8-video-and-image-media",
         "#14-2-voice-synthesis",
         "#16-5-media",
         "#controls",
@@ -804,6 +806,7 @@
         "#purpose",
         "#10-3-bridges",
         "#10-4-export",
+        "#13-8-video-and-image-media",
         "#19-17-vj"
       ],
       "coverage": "documented",

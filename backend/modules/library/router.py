@@ -2,12 +2,15 @@
 
 Endpoints (prefix from module.json → `/api/library`):
 
-    GET    /entries            list all library entries (no audio bytes)
+    GET    /entries            list entries (?kind=audio|video|image|media|all)
     GET    /entries/{id}       single entry record
     GET    /audio/{id}         stream the audio file
+    GET    /media/{id}         stream a video/image entry (Range-capable)
+    GET    /media/{id}/thumb   poster thumbnail for a media entry
     PATCH  /entries/{id}       update user-mutable fields
     DELETE /entries/{id}       remove the entry (audio + metadata)
     POST   /import             accept an audio upload, return new entry
+    POST   /import-media       accept a video/image upload, return new entry
 
 The audio stream uses FileResponse so range requests work (essential for
 the player to scrub) and there's no in-memory copy of large files.
@@ -62,12 +65,33 @@ def _attach_play_counts(store: LibraryStore, entries: list[dict[str, Any]]) -> N
         e["last_played_at"] = row.get("last_played_at")
 
 
+_KIND_FILTERS: dict[str, Optional[set[str]]] = {
+    "audio": {"audio"},
+    "video": {"video"},
+    "image": {"image"},
+    "media": {"video", "image"},
+    "all": None,
+}
+
+
 @router.get("/entries")
-def list_entries() -> dict[str, Any]:
+def list_entries(kind: str = "audio") -> dict[str, Any]:
+    # Default 'audio' preserves the historical behavior: the tracks/stems/
+    # midi library never sees video/image entries. The VIDEO tab requests
+    # ?kind=media (video + image); ?kind=all returns everything.
+    if kind not in _KIND_FILTERS:
+        raise HTTPException(
+            400, f"kind must be one of {sorted(_KIND_FILTERS)}, got {kind!r}"
+        )
     store = get_store()
-    entries = [r.to_dict() for r in store.list_entries()]
+    entries = [r.to_dict() for r in store.list_entries(kinds=_KIND_FILTERS[kind])]
     _attach_play_counts(store, entries)
-    return {"entries": entries, "count": len(entries), "root": str(store.root)}
+    return {
+        "entries": entries,
+        "count": len(entries),
+        "root": str(store.root),
+        "kind": kind,
+    }
 
 
 @router.get("/entries/{entry_id}")
@@ -151,6 +175,62 @@ def stream_stem_audio(stem_id: str) -> FileResponse:
                     filename=path.name,
                 )
     raise HTTPException(404, f"stem {stem_id!r} not found")
+
+
+@router.get("/media/{entry_id}")
+def stream_media(entry_id: str) -> FileResponse:
+    """Stream a video/image library entry. FileResponse honors Range
+    requests, which video scrubbing needs."""
+    store = get_store()
+    media_path = store.get_media_path(entry_id)
+    if media_path is None or not media_path.is_file():
+        raise HTTPException(404, f"Media for entry {entry_id!r} not found")
+    mime, _ = mimetypes.guess_type(str(media_path))
+    return FileResponse(
+        path=str(media_path),
+        media_type=mime or "application/octet-stream",
+        filename=media_path.name,
+    )
+
+
+@router.get("/media/{entry_id}/thumb")
+def stream_media_thumb(entry_id: str) -> FileResponse:
+    """Serve the poster thumbnail for a media entry (JPEG)."""
+    store = get_store()
+    thumb_path = store.get_thumb_path(entry_id)
+    if thumb_path is None or not thumb_path.is_file():
+        raise HTTPException(404, f"Thumbnail for entry {entry_id!r} not found")
+    return FileResponse(path=str(thumb_path), media_type="image/jpeg")
+
+
+@router.post("/import-media")
+async def import_media(
+    file: UploadFile = File(...),
+    metadata: str = Form("{}"),
+) -> dict[str, Any]:
+    """Import a video or image (kind='video'|'image'). Stores the original
+    untouched, probes dimensions / duration / alpha, renders a poster."""
+    try:
+        meta_dict = json.loads(metadata) if metadata else {}
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"metadata must be JSON: {e}")
+    if not isinstance(meta_dict, dict):
+        raise HTTPException(400, "metadata must be a JSON object")
+
+    media_bytes = await file.read()
+    if not media_bytes:
+        raise HTTPException(400, "empty file")
+
+    try:
+        record = get_store().import_media(
+            media_bytes=media_bytes,
+            filename=file.filename or "import.bin",
+            mime_type=file.content_type or "",
+            metadata=meta_dict,
+        )
+    except ValueError as e:
+        raise HTTPException(415, str(e))
+    return record.to_dict()
 
 
 @router.patch("/entries/{entry_id}")
