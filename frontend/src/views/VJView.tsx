@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tv2,
   ExternalLink,
@@ -121,6 +121,21 @@ export const VJView: React.FC = () => {
   // URL (fallback '*' if unparseable) instead of a blanket wildcard, and route
   // to the popped-out window when detached, else the in-tab iframe.
   const vjOrigin = (() => { try { return url ? new URL(url).origin : '*'; } catch { return '*'; } })();
+
+  // The VJ uploads media it imports straight to the library so the cue
+  // survives a reload. It can't read our (cross-origin) location, so we
+  // hand it our origin via `?api=`; it serves /api directly (production)
+  // or through the Vite dev proxy (development) either way.
+  const vjSrc = useMemo(() => {
+    if (!url) return null;
+    try {
+      const u = new URL(url);
+      u.searchParams.set('api', window.location.origin);
+      return u.toString();
+    } catch {
+      return url;
+    }
+  }, [url]);
   const postToIframe = (payload: Record<string, unknown>) => {
     const w = popped ? poppedWindowRef.current : iframeRef.current?.contentWindow;
     if (!w) return;
@@ -445,12 +460,12 @@ export const VJView: React.FC = () => {
   }, [popped]);
 
   const popOut = () => {
-    if (!url) return;
+    if (!vjSrc) return;
     // 1280x800 is a reasonable default for a VJ canvas — big enough
     // to look good on a second monitor, small enough to not auto-
     // maximize on a single-screen setup.
     const w = window.open(
-      url,
+      vjSrc,
       'sa3-vj-window',
       'noopener=no,width=1280,height=800,location=no,menubar=no,toolbar=no,status=no',
     );
@@ -766,10 +781,10 @@ export const VJView: React.FC = () => {
             </button>
           </div>
         )}
-        {status === 'ready' && !popped && url && (
+        {status === 'ready' && !popped && vjSrc && (
           <iframe
             ref={iframeRef}
-            src={url}
+            src={vjSrc}
             onLoad={handleIframeLoad}
             // The VJ project hosts its own controls + canvas. We grant
             // microphone permission so the user can VJ to mic input
