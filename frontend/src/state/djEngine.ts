@@ -117,6 +117,15 @@ interface Deck {
   fx: DeckFx | null;
   // Cue/headphone send (D6): filter → cueSend → cueBus → headphone sink. 0 = off.
   cueSend: GainNode;
+  // Vinyl/scratch mode (jog wheel): a worklet that reads the full-track buffer
+  // at a hand-driven velocity (forward/reverse), feeding delayComp directly so
+  // it rides the EQ/filter/crossfader but bypasses key-lock (scratch must pitch-
+  // bend). Lazily created; null when never scratched.
+  vinyl: AudioWorkletNode | null;
+  vinylActive: boolean;
+  vinylPos: number; // last read-head position (sec) the worklet reported
+  vinylWasPlaying: boolean; // deck playing state captured on grab, to restore
+  vinylLoadedUrl: string | null; // which track's samples the worklet holds
 }
 
 const RAMP_TC = 0.012;
@@ -262,6 +271,7 @@ function buildDeck(id: DeckId): Deck {
     loopActive: false, loopIn: 0, loopOut: 0, rollResume: false,
     slip: false, virtualBase: 0, virtualStart: 0,
     fx: null,
+    vinyl: null, vinylActive: false, vinylPos: 0, vinylWasPlaying: false, vinylLoadedUrl: null,
   };
   decks[id] = deck;
   return deck;
@@ -358,7 +368,9 @@ function statusOf(id: DeckId): DeckStatus {
     playing: d.playing,
     decoding: d.decoding,
     hasBuffer: !!d.buffer || (d.stemMode && !!d.stems?.length),
-    currentTime: audiblePos(d),
+    // During a scratch the worklet drives playback, so the read-head it
+    // reports (vinylPos) is the true position for the platter + waveform.
+    currentTime: d.vinylActive ? clamp(d.vinylPos, 0, deckDuration(d)) : audiblePos(d),
     duration: deckDuration(d),
     loopActive: d.loopActive,
     loopIn: d.loopActive ? d.loopIn : null,
@@ -971,6 +983,126 @@ export function getDeckStemNames(id: DeckId): string[] {
 
 export function hasStems(id: DeckId): boolean {
   return !!decks[id]?.stemMode;
+}
+
+/* -------------------------------- vinyl / scratch (jog) -------------------- */
+
+let _vinylModule: Promise<void> | null = null;
+let _scratchMode: 'classic' | 'cyber' = 'classic';
+
+function ensureVinylModule(ctx: AudioContext): Promise<void> {
+  if (!_vinylModule) {
+    _vinylModule = ctx.audioWorklet.addModule('/vinyl-scratch.worklet.js').catch((e) => {
+      _vinylModule = null; // allow a later retry
+      throw e;
+    });
+  }
+  return _vinylModule;
+}
+
+/** Scratch character for all decks: 'classic' (clean turntable) or 'cyber'
+ *  (fragmented, bit-crushed glitch). Pushed live to any active vinyl node. */
+export function setScratchMode(mode: 'classic' | 'cyber'): void {
+  _scratchMode = mode;
+  for (const id of ['A', 'B'] as DeckId[]) {
+    decks[id]?.vinyl?.port.postMessage({ type: 'mode', mode });
+  }
+}
+export function getScratchMode(): 'classic' | 'cyber' {
+  return _scratchMode;
+}
+
+/** True when a deck can scratch: it needs a decoded full-track buffer. Stem
+ *  mode and empty decks fall back to plain jog-seek. */
+export function canScratch(id: DeckId): boolean {
+  const d = decks[id];
+  return !!d && !!d.buffer && !d.stemMode;
+}
+
+/** Grab the platter: hand playback to the scratch worklet at the current
+ *  position. The jog then drives velocity via setVinylVelocity; release spins
+ *  up and hands back to the normal source (exitVinyl). */
+export async function enterVinyl(id: DeckId): Promise<boolean> {
+  const d = decks[id];
+  if (!d || !d.buffer || d.stemMode || d.vinylActive) return false;
+  const ctx = getEngineCtx();
+  if (ctx.state === 'suspended') void ctx.resume().catch(() => { /* retry next gesture */ });
+  try {
+    await ensureVinylModule(ctx);
+  } catch (e) {
+    logError('dj', `Deck ${id} scratch unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+  // The deck may have been re-loaded / gone to stems while the module loaded.
+  if (!d.buffer || d.stemMode || d.vinylActive) return false;
+  if (d.vinyl == null) {
+    d.vinyl = new AudioWorkletNode(ctx, 'vinyl-scratch', { numberOfInputs: 0, outputChannelCount: [2] });
+    d.vinyl.port.onmessage = (e) => { if (e.data?.type === 'pos') d.vinylPos = e.data.sec; };
+  }
+  // (Re)load the track's samples into the worklet when the track changed.
+  if (d.vinylLoadedUrl !== d.loadedUrl) {
+    const mono = d.buffer.numberOfChannels <= 1;
+    const lc = new Float32Array(d.buffer.getChannelData(0));
+    const rc = mono ? lc : new Float32Array(d.buffer.getChannelData(1));
+    d.vinyl.port.postMessage(
+      { type: 'load', l: lc, r: rc, len: d.buffer.length },
+      mono ? [lc.buffer] : [lc.buffer, rc.buffer],
+    );
+    d.vinylLoadedUrl = d.loadedUrl;
+  }
+  const pos = audiblePos(d);
+  d.vinylWasPlaying = d.playing;
+  d.vinylPos = pos;
+  stopSource(d); // silence the normal source; the worklet sounds now
+  d.vinyl.port.postMessage({ type: 'mode', mode: _scratchMode });
+  d.vinyl.port.postMessage({ type: 'pos', sec: pos });
+  d.vinyl.port.postMessage({ type: 'vel', vel: d.vinylWasPlaying ? d.rate : 0, immediate: true });
+  d.vinyl.port.postMessage({ type: 'ease', ease: 0.4 });
+  d.vinyl.port.postMessage({ type: 'play', on: true });
+  // Feed straight into delayComp so it rides EQ/filter/crossfader but bypasses
+  // the key-lock stretch (a scratch must be allowed to pitch-bend).
+  try { d.vinyl.connect(d.delayComp); } catch { /* already connected */ }
+  d.vinylActive = true;
+  d.playing = true;
+  emit();
+  return true;
+}
+
+/** Drive scratch velocity from the jog: 1 = normal forward, -1 = reverse, 0 =
+ *  stopped. `ease` is high for hand scratches (snappy) and low for the
+ *  wind-down / spin-up ramps. */
+export function setVinylVelocity(id: DeckId, vel: number, ease = 0.4): void {
+  const d = decks[id];
+  if (!d?.vinyl || !d.vinylActive) return;
+  d.vinyl.port.postMessage({ type: 'ease', ease });
+  d.vinyl.port.postMessage({ type: 'vel', vel });
+}
+
+/** Release the platter: spin back up to speed (if it was playing) then hand
+ *  playback back to the normal source at the read-head. `spinUp=false` settles
+ *  immediately. */
+export function exitVinyl(id: DeckId, spinUp = true): void {
+  const d = decks[id];
+  if (!d?.vinyl || !d.vinylActive) return;
+  const finalize = () => {
+    const dd = decks[id];
+    if (!dd?.vinyl || !dd.vinylActive) return;
+    const pos = clamp(dd.vinylPos, 0, deckDuration(dd));
+    dd.vinyl.port.postMessage({ type: 'play', on: false });
+    try { dd.vinyl.disconnect(); } catch { /* gone */ }
+    dd.vinylActive = false;
+    dd.startOffset = pos;
+    if (dd.vinylWasPlaying) startSource(dd, pos);
+    else dd.playing = false;
+    emit();
+  };
+  if (spinUp && d.vinylWasPlaying) {
+    setVinylVelocity(id, d.rate, 0.06); // slow ramp back to speed = spin-up
+    setTimeout(finalize, 320);
+  } else {
+    setVinylVelocity(id, 0, 0.08); // wind down to a stop
+    setTimeout(finalize, spinUp ? 240 : 0);
+  }
 }
 
 /** Tear everything down (DJ tab unmount). Rarely called — the tab is warmed. */

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { rgb, rgba, type RGB } from '../../lib/trackColor';
 import * as djEngine from '../../state/djEngine';
+import { useDjVinyl } from '../../state/djVinylStore';
 
 /* ── JogWheel ──────────────────────────────────────────────────────────
    A DJ deck platter: a spinning disc with a position-progress ring and a
@@ -30,6 +31,11 @@ export function JogWheel({ deckId, color, size = 132, disabled, fill }: {
   const ringRef = useRef<SVGCircleElement>(null);
   const [dim, setDim] = useState(size);
 
+  // Scratch character (shared by both decks), pushed live to the engine.
+  const scratchMode = useDjVinyl((s) => s.mode);
+  const toggleScratch = useDjVinyl((s) => s.toggle);
+  useEffect(() => { djEngine.setScratchMode(scratchMode); }, [scratchMode]);
+
   // In fill mode, track the container's smaller side as the platter diameter.
   useEffect(() => {
     if (!fill) { setDim(size); return; }
@@ -58,28 +64,63 @@ export function JogWheel({ deckId, color, size = 132, disabled, fill }: {
     }
   }), [deckId, circ]);
 
-  // Vinyl scrub — rotational drag seeks proportionally.
-  const scrubbing = useRef(false);
-  const startAngle = useRef(0);
-  const startTime = useRef(0);
-  const pendingT = useRef<number | null>(null);
-  const raf = useRef(0);
   const angleOf = (e: React.PointerEvent) => {
     const el = rootRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
     return Math.atan2(e.clientY - (rect.top + rect.height / 2), e.clientX - (rect.left + rect.width / 2));
   };
+
+  // ── Vinyl / scratch: grab hands playback to the scratch worklet; hand
+  //    motion sets velocity (forward + reverse), a still hold winds down to a
+  //    stop, release spins back up. Only when the deck can scratch (full-track
+  //    buffer); stem mode / empty falls back to the silent seek-scrub below. ──
+  const vinylOn = useRef(false);
+  const lastA = useRef(0);
+  const lastT = useRef(0);
+  const stall = useRef(0);
+  const VEL_K = SEC_PER_REV / (2 * Math.PI); // angular speed → playback velocity
+  const clampV = (v: number) => Math.max(-16, Math.min(16, v));
+  const armStall = () => {
+    window.clearTimeout(stall.current);
+    stall.current = window.setTimeout(() => djEngine.setVinylVelocity(deckId, 0, 0.06), 70);
+  };
+
+  // ── Fallback silent seek-scrub (stem mode / no decoded buffer) ──────────
+  const scrubbing = useRef(false);
+  const startAngle = useRef(0);
+  const startTime = useRef(0);
+  const pendingT = useRef<number | null>(null);
+  const raf = useRef(0);
   const apply = () => { raf.current = 0; const t = pendingT.current; pendingT.current = null; if (t != null) djEngine.seekDeck(deckId, t); };
+
   const onDown = (e: React.PointerEvent) => {
     if (disabled || djEngine.getStatus(deckId).duration <= 0) return;
-    scrubbing.current = true;
-    startAngle.current = angleOf(e);
-    startTime.current = djEngine.getStatus(deckId).currentTime;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     e.preventDefault();
+    lastA.current = angleOf(e); lastT.current = e.timeStamp;
+    if (djEngine.canScratch(deckId)) {
+      vinylOn.current = true;
+      void djEngine.enterVinyl(deckId);
+      armStall();
+    } else {
+      scrubbing.current = true;
+      startAngle.current = angleOf(e);
+      startTime.current = djEngine.getStatus(deckId).currentTime;
+    }
   };
   const onMove = (e: React.PointerEvent) => {
+    if (vinylOn.current) {
+      const a = angleOf(e);
+      let dA = a - lastA.current;
+      while (dA > Math.PI) dA -= 2 * Math.PI;
+      while (dA < -Math.PI) dA += 2 * Math.PI;
+      const dt = Math.max(4, e.timeStamp - lastT.current) / 1000; // seconds (min 4ms)
+      lastA.current = a; lastT.current = e.timeStamp;
+      djEngine.setVinylVelocity(deckId, clampV((dA / dt) * VEL_K), 0.5);
+      armStall(); // keep resetting the wind-down timer while the hand moves
+      return;
+    }
     if (!scrubbing.current) return;
     let d = angleOf(e) - startAngle.current;
     while (d > Math.PI) d -= 2 * Math.PI;
@@ -87,8 +128,20 @@ export function JogWheel({ deckId, color, size = 132, disabled, fill }: {
     pendingT.current = Math.max(0, startTime.current + (d / (2 * Math.PI)) * SEC_PER_REV * SCRUB_TURNS);
     if (!raf.current) raf.current = requestAnimationFrame(apply);
   };
-  const onUp = (e: React.PointerEvent) => { scrubbing.current = false; e.currentTarget.releasePointerCapture?.(e.pointerId); };
-  useEffect(() => () => { if (raf.current) cancelAnimationFrame(raf.current); }, []);
+  const onUp = (e: React.PointerEvent) => {
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (vinylOn.current) {
+      vinylOn.current = false;
+      window.clearTimeout(stall.current);
+      djEngine.exitVinyl(deckId, true);
+      return;
+    }
+    scrubbing.current = false;
+  };
+  useEffect(() => () => {
+    if (raf.current) cancelAnimationFrame(raf.current);
+    window.clearTimeout(stall.current);
+  }, []);
 
   const wheel = (
     <div
@@ -121,6 +174,25 @@ export function JogWheel({ deckId, color, size = 132, disabled, fill }: {
           <span className="font-black uppercase" style={{ color: rgb(color), fontSize: Math.max(11, D * 0.1) }}>{deckId}</span>
         </div>
       </div>
+      {/* Scratch character toggle — classic vinyl vs cyber glitch (global). */}
+      {!disabled && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); toggleScratch(); }}
+          title={scratchMode === 'cyber'
+            ? 'Scratch sound: CYBER glitch — click for classic vinyl'
+            : 'Scratch sound: CLASSIC vinyl — click for cyber glitch'}
+          className={`absolute left-1/2 -translate-x-1/2 rounded-full border px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wider transition-colors ${
+            scratchMode === 'cyber'
+              ? 'border-fuchsia-400/60 bg-fuchsia-500/20 text-fuchsia-200'
+              : 'border-white/15 bg-black/60 text-zinc-300 hover:border-white/30'
+          }`}
+          style={{ bottom: Math.round(D * 0.08) }}
+        >
+          {scratchMode === 'cyber' ? 'Cyber' : 'Vinyl'}
+        </button>
+      )}
     </div>
   );
 
