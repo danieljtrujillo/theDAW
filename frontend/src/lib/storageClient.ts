@@ -20,6 +20,14 @@ export interface CatalogModel {
   source: 'local' | 'cached' | 'download';
 }
 
+export interface LocationModel {
+  name: string;
+  path: string;
+  bytes: number | null;
+  recommended?: boolean;
+  note?: string;
+}
+
 export interface StorageLocation {
   key: string;
   label: string;
@@ -28,6 +36,25 @@ export interface StorageLocation {
   exists: boolean;
   bytes: number | null;
   files: number | null;
+  models?: LocationModel[];
+}
+
+export interface CheckpointInspection {
+  path: string;
+  exists: boolean;
+  kind: 'file' | 'folder' | 'missing';
+  safetensors: Array<{ name: string; path: string; bytes: number }>;
+  configs: Array<{ name: string; path: string; valid: boolean }>;
+  resolves: boolean;
+  config_path?: string;
+  ckpt_path?: string;
+  problem: string | null;
+  recognized: {
+    model: string;
+    repo_id: string;
+    config_name: string;
+    config_available: boolean;
+  } | null;
 }
 
 export interface HfRepo {
@@ -42,6 +69,36 @@ export interface HfRepo {
 export interface PathPickerResult {
   path: string | null;
   cancelled: boolean;
+}
+
+export interface ModelOptionStatus {
+  id: string;
+  label: string;
+  source: string;
+  repo_id?: string;
+  path?: string;
+  active?: boolean;
+  loaded?: boolean;
+  recommended?: boolean;
+  reason?: string | null;
+}
+
+export interface ModelProviderStatus {
+  id: string;
+  label: string;
+  state: string;
+  summary: string;
+  active?: boolean;
+  location?: string | null;
+  active_model?: string | null;
+  loaded_models?: string[];
+  models?: ModelOptionStatus[];
+}
+
+export interface ModelStatusResponse {
+  providers: ModelProviderStatus[];
+  usable_generation: boolean;
+  local_only: boolean;
 }
 
 async function json<T>(r: Response): Promise<T> {
@@ -110,6 +167,26 @@ export async function pickFolder(): Promise<PathPickerResult> {
 
 export async function pickFile(): Promise<PathPickerResult> {
   return json(await fetch('/api/storage/pick-file', { method: 'POST' }));
+}
+
+export async function fetchModelStatus(): Promise<ModelStatusResponse> {
+  return json(await fetch('/api/storage/model-status'));
+}
+
+export async function inspectCheckpoint(path: string): Promise<CheckpointInspection> {
+  return json(await fetch('/api/storage/checkpoints/inspect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  }));
+}
+
+export async function generateCheckpointConfig(path: string): Promise<{ created: string | null; model?: string }> {
+  return json(await fetch('/api/storage/checkpoints/generate-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  }));
 }
 
 export function formatBytes(bytes: number | null | undefined): string {

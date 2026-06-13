@@ -5,6 +5,7 @@ import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
 import { useGenerateParamsStore, type GenerateParamsState } from './generateParamsStore';
 import { getOrRenderChimera } from '../lib/chimeraClient';
+import { fetchModelStatus } from '../lib/storageClient';
 
 export interface GenerateParams {
   prompt: string;
@@ -454,6 +455,30 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
     if (!prompt) {
       set({ error: 'Prompt is required before generation can start.' });
       return;
+    }
+
+    // No-model guard: a fresh local-only install has nothing to generate
+    // with. Warn and route to Settings → Models instead of failing into a
+    // blocked download or an opaque backend error. Probe failures never block.
+    try {
+      const status = await fetchModelStatus();
+      const stable = status.providers.find((p) => p.id === 'stable');
+      const selected = stable?.models?.find((m) => m.id === params.model);
+      const selectionBlocked =
+        !params.model.startsWith('magenta-') && params.model !== 'suno' && !!selected
+        && (selected.source === 'missing' || (selected.source === 'download' && status.local_only));
+      if (!status.usable_generation || selectionBlocked) {
+        const msg = status.usable_generation
+          ? `${params.model} is not on this machine and local-only blocks downloads. Pick an installed model in Settings → Models, or allow the one-time download there.`
+          : 'No usable model is configured yet. Pick a local checkpoint, connect Suno, set up Magenta, or allow a one-time Stable Audio download — Settings → Models has all of it.';
+        logError('generate', msg);
+        useStatusBarStore.getState().setText('NO USABLE MODEL — see Settings → Models');
+        set({ error: msg, isGenerating: false, jobStatus: 'idle', statusLabel: 'IDLE' });
+        window.dispatchEvent(new CustomEvent('stabledaw:open-settings', { detail: { section: 'models' } }));
+        return;
+      }
+    } catch {
+      // Status endpoint unreachable: let the normal submit path surface errors.
     }
 
     const previousUrl = get().lastAudioUrl;

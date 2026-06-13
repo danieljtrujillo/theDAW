@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid, HardDrive } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import {
-  addCheckpoint, fetchCheckpoints, fetchHfCache, fetchLocations, formatBytes,
-  openLocation, removeCheckpoint, setLocalOnly,
-  type CatalogModel, type HfRepo, type RegisteredCheckpoint, type StorageLocation,
+  addCheckpoint, fetchCheckpoints, fetchHfCache, fetchLocations, fetchModelStatus, formatBytes,
+  generateCheckpointConfig, inspectCheckpoint, openLocation, removeCheckpoint, setLocalOnly,
+  type CheckpointInspection, type HfRepo, type ModelOptionStatus, type ModelProviderStatus,
+  type RegisteredCheckpoint, type StorageLocation,
 } from '../../lib/storageClient';
 import { useLayoutPrefs, UI_SCALE_MIN, UI_SCALE_MAX } from '../../state/layoutPrefsStore';
 import { SlideTrack } from '../audio/SlideTrack';
@@ -297,10 +298,24 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
 };
 
 /* ── Models & Storage (local checkpoints, model locations, HF cache) ──────── */
+
+/** Hover detail for a location's size: every model in the directory with its
+ *  path and size, the recommended pick starred. */
+const locationInventoryTitle = (loc: StorageLocation): string | undefined => {
+  const models = loc.models ?? [];
+  if (!models.length) return loc.files != null ? `${loc.files} files` : undefined;
+  const lines = models.slice(0, 14).map((m) =>
+    `${m.recommended ? '★ ' : ''}${m.name} — ${formatBytes(m.bytes)}\n    ${m.path}${m.note ? `\n    ${m.note}` : ''}`);
+  if (models.length > 14) lines.push(`…and ${models.length - 14} more`);
+  return lines.join('\n');
+};
+
 const StorageSettingsSection: React.FC = () => {
   const [registered, setRegistered] = useState<RegisteredCheckpoint[]>([]);
-  const [catalog, setCatalog] = useState<CatalogModel[]>([]);
   const [localOnly, setLocalOnlyState] = useState(false);
+  const [modelProviders, setModelProviders] = useState<ModelProviderStatus[]>([]);
+  const [modelStatusLoading, setModelStatusLoading] = useState(false);
+  const [modelStatusError, setModelStatusError] = useState<string | null>(null);
   const [locations, setLocations] = useState<StorageLocation[]>([]);
   const [hfRepos, setHfRepos] = useState<HfRepo[]>([]);
   const [hfTotal, setHfTotal] = useState(0);
@@ -310,44 +325,96 @@ const StorageSettingsSection: React.FC = () => {
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [sizesLoading, setSizesLoading] = useState(false);
+  const [inspection, setInspection] = useState<CheckpointInspection | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  // The MAKE no-model warning opens Settings with {section:'models'}; pulse
+  // the section so first-time users land exactly where the fix lives.
+  const sectionRef = React.useRef<HTMLDivElement>(null);
+  const [highlight, setHighlight] = useState(false);
+  useEffect(() => {
+    const onFocusModels = (e: Event) => {
+      if ((e as CustomEvent).detail?.section !== 'models') return;
+      setHighlight(true);
+      setTimeout(() => sectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
+      setTimeout(() => setHighlight(false), 2600);
+    };
+    window.addEventListener('stabledaw:open-settings', onFocusModels);
+    return () => window.removeEventListener('stabledaw:open-settings', onFocusModels);
+  }, []);
 
   const reload = React.useCallback(() => {
     fetchCheckpoints()
-      .then((d) => { setRegistered(d.registered); setCatalog(d.catalog); setLocalOnlyState(d.local_only); })
+      .then((d) => { setRegistered(d.registered); setLocalOnlyState(d.local_only); })
       .catch(() => undefined);
+  }, []);
+
+  const reloadModelStatus = React.useCallback(() => {
+    setModelStatusLoading(true);
+    setModelStatusError(null);
+    fetchModelStatus()
+      .then((d) => {
+        setModelProviders(d.providers);
+        setLocalOnlyState(d.local_only);
+      })
+      .catch((e) => {
+        setModelProviders([]);
+        setModelStatusError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setModelStatusLoading(false));
   }, []);
 
   useEffect(() => {
     reload();
+    reloadModelStatus();
     setSizesLoading(true);
     fetchLocations().then(setLocations).catch(() => setLocations([])).finally(() => setSizesLoading(false));
     fetchHfCache().then((d) => { setHfRepos(d.repos); setHfTotal(d.total_bytes); }).catch(() => setHfRepos([]));
-  }, [reload]);
+  }, [reload, reloadModelStatus]);
 
   const onAdd = async () => {
     const path = addPath.trim();
     if (!path) return;
     setAdding(true);
     setAddError(null);
+    setInspection(null);
     try {
       await addCheckpoint(path, addName.trim() || undefined);
       setAddPath('');
       setAddName('');
       reload();
+      reloadModelStatus();
     } catch (e) {
-      setAddError(e instanceof Error ? e.message : String(e));
+      // Inspect the path so the failure says exactly what is missing and,
+      // for recognized built-in checkpoints, offers to generate the config.
+      const info = await inspectCheckpoint(path).catch(() => null);
+      setInspection(info);
+      setAddError(info?.problem ?? (e instanceof Error ? e.message : String(e)));
     } finally {
       setAdding(false);
     }
   };
 
-  const sourceChip = (source: CatalogModel['source']) =>
-    source === 'local' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
-      : source === 'cached' ? 'border-sky-500/40 text-sky-300 bg-sky-500/10'
-      : 'border-zinc-600/40 text-zinc-400 bg-white/3';
+  const onGenerateConfig = async () => {
+    const path = addPath.trim();
+    if (!path) return;
+    setGenerating(true);
+    try {
+      const r = await generateCheckpointConfig(path);
+      if (r.created) {
+        setAddError(null);
+        setInspection(null);
+        await onAdd();
+      }
+    } catch (e) {
+      setAddError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
-    <>
+    <div ref={sectionRef} className={highlight ? 'rounded ring-2 ring-purple-500/60 transition-shadow' : undefined}>
       {/* Section: Models & Storage */}
       <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
         <HardDrive className="w-3 h-3 text-purple-400" />
@@ -360,7 +427,14 @@ const StorageSettingsSection: React.FC = () => {
 
       {/* Local-only switch */}
       <button
-        onClick={() => { void setLocalOnly(!localOnly).then(setLocalOnlyState).catch(() => undefined); }}
+        onClick={() => {
+          void setLocalOnly(!localOnly)
+            .then((enabled) => {
+              setLocalOnlyState(enabled);
+              reloadModelStatus();
+            })
+            .catch(() => undefined);
+        }}
         aria-pressed={localOnly}
         className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-2 rounded border border-white/10 bg-white/3 hover:bg-white/5 transition-colors text-left"
       >
@@ -371,21 +445,16 @@ const StorageSettingsSection: React.FC = () => {
         <span className="text-[8px] text-zinc-500 ml-auto">safe default · missing models warn instead of downloading</span>
       </button>
 
+      <ModelReadinessCards
+        providers={modelProviders}
+        loading={modelStatusLoading}
+        error={modelStatusError}
+        localOnly={localOnly}
+        onRefresh={reloadModelStatus}
+      />
+
       {/* CHANGED: Suno cloud-generation API key entry now lives inside Models. */}
       <SunoKeySettings />
-
-      {/* Catalog availability */}
-      <div className="flex items-center gap-1 flex-wrap mb-2">
-        {catalog.map((m) => (
-          <span
-            key={m.name}
-            className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border ${sourceChip(m.source)}`}
-            title={`${m.repo_id} — ${m.source === 'download' ? 'will download on first use' : `resolved ${m.source}`}`}
-          >
-            {m.name}: {m.source}
-          </span>
-        ))}
-      </div>
 
       {/* Registered local checkpoints */}
       <div className="flex flex-col gap-1 mb-2">
@@ -404,7 +473,14 @@ const StorageSettingsSection: React.FC = () => {
               Open
             </button>
             <button
-              onClick={() => { void removeCheckpoint(ck.id).then(reload).catch(() => undefined); }}
+              onClick={() => {
+                void removeCheckpoint(ck.id)
+                  .then(() => {
+                    reload();
+                    reloadModelStatus();
+                  })
+                  .catch(() => undefined);
+              }}
               className="text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors shrink-0"
               aria-label={`Remove ${ck.name} from the model list (files stay on disk)`}
               title="Removes the dropdown entry only — the files stay on disk."
@@ -450,6 +526,21 @@ const StorageSettingsSection: React.FC = () => {
           </button>
         </div>
         {addError && <p className="text-[8px] text-red-300">{addError}</p>}
+        {inspection && !inspection.resolves && inspection.recognized?.config_available && (
+          <button
+            onClick={() => void onGenerateConfig()}
+            disabled={generating}
+            className="self-start text-[8px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-amber-500/40 text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 transition-colors disabled:opacity-40"
+            title={`Copies the official ${inspection.recognized.config_name} from your local/cached copy next to the checkpoint. Nothing is guessed and nothing downloads.`}
+          >
+            {generating ? 'Generating…' : `Generate config (${inspection.recognized.model})`}
+          </button>
+        )}
+        {inspection && !inspection.resolves && (inspection.safetensors.length > 0 || inspection.configs.length > 0) && (
+          <p className="text-[8px] text-zinc-600">
+            Found there: {inspection.safetensors.length} checkpoint file(s), {inspection.configs.filter((c) => c.valid).length} valid config(s) of {inspection.configs.length} JSON file(s).
+          </p>
+        )}
       </div>
 
       {/* Locations */}
@@ -473,7 +564,12 @@ const StorageSettingsSection: React.FC = () => {
               <div className="text-[9px] text-zinc-300 truncate">{loc.label}</div>
               <div className="text-[8px] font-mono text-zinc-600 truncate" title={loc.path ?? undefined}>{loc.path ?? 'not found'}</div>
             </div>
-            <span className="text-[9px] font-mono text-zinc-400 tabular-nums shrink-0">{loc.exists ? formatBytes(loc.bytes) : '—'}</span>
+            <span
+              className={`text-[9px] font-mono text-zinc-400 tabular-nums shrink-0 ${loc.models?.length ? 'cursor-help underline decoration-dotted decoration-zinc-700 underline-offset-2' : ''}`}
+              title={locationInventoryTitle(loc)}
+            >
+              {loc.exists ? formatBytes(loc.bytes) : '—'}
+            </span>
             {loc.exists && loc.path && (
               <button
                 onClick={() => { void openLocation(loc.path as string).catch(() => undefined); }}
@@ -515,7 +611,129 @@ const StorageSettingsSection: React.FC = () => {
           {hfRepos.length === 0 && <p className="text-[8px] text-zinc-600 px-2.5">The cache is empty.</p>}
         </div>
       )}
-    </>
+    </div>
+  );
+};
+
+
+const MODEL_STATE_LABELS: Record<string, string> = {
+  active: 'Active',
+  ready: 'Ready',
+  cached: 'Cached',
+  local: 'Local',
+  needs_setup: 'Setup',
+  needs_key: 'Needs key',
+  missing_config: 'Missing config',
+  download_blocked: 'Blocked',
+  unavailable: 'Unavailable',
+};
+
+const MODEL_SOURCE_LABELS: Record<string, string> = {
+  local: 'Local',
+  cached: 'Cached',
+  download: 'Download',
+  registered: 'Registered',
+  api: 'API',
+  missing: 'Missing',
+};
+
+const modelStateClass = (state: string) => {
+  if (state === 'active' || state === 'ready' || state === 'local' || state === 'cached') {
+    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200';
+  }
+  if (state === 'needs_key' || state === 'needs_setup' || state === 'missing_config' || state === 'download_blocked') {
+    return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+  }
+  return 'border-zinc-600/40 bg-white/3 text-zinc-400';
+};
+
+const modelSourceClass = (source: string) => {
+  if (source === 'local' || source === 'registered' || source === 'api') {
+    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200';
+  }
+  if (source === 'cached') return 'border-sky-500/30 bg-sky-500/10 text-sky-200';
+  if (source === 'download') return 'border-zinc-600/40 bg-white/3 text-zinc-400';
+  return 'border-rose-500/30 bg-rose-500/10 text-rose-200';
+};
+
+const modelTooltip = (model: ModelOptionStatus) => [
+  model.label,
+  model.repo_id ? `repo: ${model.repo_id}` : null,
+  model.path ? `path: ${model.path}` : null,
+  model.reason || null,
+].filter(Boolean).join('\n');
+
+const ModelReadinessCards: React.FC<{
+  providers: ModelProviderStatus[];
+  loading: boolean;
+  error: string | null;
+  localOnly: boolean;
+  onRefresh: () => void;
+}> = ({ providers, loading, error, localOnly, onRefresh }) => (
+  <div className="mb-3 rounded border border-white/5 bg-black/15 p-2">
+    <div className="flex items-center gap-2 mb-2">
+      <span className="text-[8px] font-black uppercase tracking-widest text-zinc-400">Installed / Connected</span>
+      <span className={`text-[7px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border ${localOnly ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/30 bg-amber-500/10 text-amber-200'}`}>
+        {localOnly ? 'Local only on' : 'Downloads allowed'}
+      </span>
+      <button
+        type="button"
+        onClick={onRefresh}
+        className="ml-auto inline-flex items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-widest text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+      >
+        <RefreshCw className={`w-2.5 h-2.5 ${loading ? 'animate-spin' : ''}`} />
+        Refresh
+      </button>
+    </div>
+    {error && <p className="mb-2 text-[8px] text-rose-300">Model status failed: {error}</p>}
+    {loading && providers.length === 0 ? (
+      <div className="flex items-center gap-2 px-2 py-3 text-[9px] font-mono text-zinc-600">
+        <RefreshCw className="w-3 h-3 animate-spin" /> Checking local models and APIs…
+      </div>
+    ) : (
+      <div className="grid grid-cols-2 gap-1.5">
+        {providers.map((provider) => (
+          <ModelProviderCard key={provider.id} provider={provider} />
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provider }) => {
+  const models = provider.models ?? [];
+  const orderedModels = [...models].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)));
+  const visibleModels = orderedModels.slice(0, 4);
+  const hiddenCount = Math.max(0, orderedModels.length - visibleModels.length);
+  return (
+    <article className="min-w-0 rounded border border-white/8 bg-white/3 p-2">
+      <div className="flex items-start gap-2 mb-1">
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-bold text-zinc-100 truncate">{provider.label}</div>
+          {provider.location && <div className="text-[7px] font-mono text-zinc-600 truncate" title={provider.location}>{provider.location}</div>}
+        </div>
+        <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[7px] font-mono uppercase tracking-widest ${modelStateClass(provider.state)}`}>
+          {MODEL_STATE_LABELS[provider.state] ?? provider.state}
+        </span>
+      </div>
+      <p className="mb-1.5 min-h-7 text-[8px] leading-snug text-zinc-500" title={provider.summary}>{provider.summary}</p>
+      {visibleModels.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {visibleModels.map((model) => (
+            <span
+              key={model.id}
+              title={modelTooltip(model)}
+              className={`max-w-full truncate rounded border px-1 py-0.5 text-[7px] font-mono uppercase tracking-wide ${modelSourceClass(model.source)}`}
+            >
+              {model.recommended ? '★ ' : ''}{model.label}: {MODEL_SOURCE_LABELS[model.source] ?? model.source}
+            </span>
+          ))}
+          {hiddenCount > 0 && <span className="rounded border border-white/10 px-1 py-0.5 text-[7px] font-mono text-zinc-500">+{hiddenCount}</span>}
+        </div>
+      ) : (
+        <div className="text-[8px] font-mono text-zinc-700">No model details reported.</div>
+      )}
+    </article>
   );
 };
 

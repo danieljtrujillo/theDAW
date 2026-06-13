@@ -1450,7 +1450,7 @@ ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weight
 
 The MAKE Model dropdown also lists two engines beyond these checkpoints. `magenta-small` reaches the Magenta RealTime 2 sidecar for streaming text-to-music (§27). Suno cloud generation sits under `suno` (§26). Both options share the dropdown with the local Stable Audio models, so one session can move across them without leaving MAKE.
 
-### 21.1 Models & Storage: local checkpoints and the no-download guarantee
+### 21.1 Settings → Models: local checkpoints and the no-download guarantee
 
 Nothing downloads at startup. The backend boots without touching a checkpoint, and a model loads only at the first CREATE that needs it. Resolution runs local-first on every load:
 
@@ -1458,21 +1458,28 @@ Nothing downloads at startup. The backend boots without touching a checkpoint, a
 2. **The Hugging Face cache** — anything a previous session already downloaded.
 3. **A one-time download** from the model's HF repo, only when neither local source has the files.
 
-**Settings → Models & Storage** puts all of this on screen:
+The **Models** section sits directly below the pinned Restart/Shutdown controls in Settings, with Layout Settings right under it and the backend modules as compact tiles below that. It puts the whole model story on screen:
 
-- **Local only (never download)** pins resolution to steps 1 and 2. A missing model then fails with a clear message instead of downloading. The switch persists across restarts (it drives `SA3_LOCAL_ONLY`).
-- **Catalog chips** show where each built-in model would come from right now: `local`, `cached`, or `download`.
-- **Add a checkpoint you already have** registers any checkpoint on disk: point it at a folder containing a model config JSON plus one `.safetensors` file, or at the `.safetensors` file itself with its config alongside. Registered checkpoints appear under **LOCAL CHECKPOINTS** in the MAKE Model dropdown and generate exactly like catalog models. Removing an entry only removes the dropdown entry; files are never touched.
-- **Where everything lives** lists every model location with its size and an **Open** button that reveals it in Explorer: the HF cache, each local model folder, the generated-audio library, the assistant's RAG index, the Torch hub cache, and the Magenta WSL assets and engine venv (via `\\wsl.localhost\…`).
+- **Local only (never download)** is **ON by default for fresh installs**, so nothing ever downloads until it is explicitly allowed; an existing explicit choice is preserved. With it on, a missing model fails with a clear message instead of downloading. The switch persists across restarts (it drives `SA3_LOCAL_ONLY`).
+- **Installed / Connected cards** cover every engine in one glance: Stable Audio 3 (catalog plus registered checkpoints, with the active/loaded model and a ★ on the recommended option), Magenta RT2 (running / installed / needs Setup-MRT2), Suno API (key configured or not, with the key field right below), Demucs/stems, and the MIDI engines. States read Active, Ready, Cached, Local, Setup, Needs key, Missing config, or Blocked.
+- **Add a checkpoint you already have** registers any checkpoint on disk, with a **Browse** button that opens the native Windows folder picker (typing a path still works). Point it at a folder containing a model config JSON plus one `.safetensors` file, or at the `.safetensors` file itself. Registered checkpoints appear under **LOCAL CHECKPOINTS** in the MAKE model picker and generate exactly like catalog models. Removing an entry never touches the files.
+- **When a config JSON is missing**, the failure says exactly what was found (checkpoints, configs, what failed to pair). The config comes from the Hugging Face repo the checkpoint belongs to, or from the training/export run that produced it. When the checkpoint is a recognized built-in variant and the matching config exists locally or in the cache, a **Generate config** button copies the official JSON next to the checkpoint; configs are never guessed for unknown architectures.
+- **Locations** lists every model location with its size and an **Open** button: the HF cache, each local model folder, the generated-audio library, the assistant's RAG index, the Torch hub cache, and the Magenta WSL assets and engine venv (via `\\wsl.localhost\…`). Hovering a size shows what models live in that directory, their exact paths and sizes, and stars the recommended pick when several are present (ARC over RF, medium over small).
 - **Hugging Face cache breakdown** expands to a per-repo size table, each row openable in Explorer.
+
+**No usable model?** Pressing CREATE (or LOAD) with nothing installed, or with a selection that local-only would block, never fails silently: the run stops with a plain-language explanation and Settings opens straight to the Models section, which pulses to show where the fix lives.
 
 | Method · Path | Purpose |
 |---|---|
-| `GET /api/storage/locations` | Every model/data location with size and file count (`?refresh=1` recomputes). |
+| `GET /api/storage/locations` | Every model/data location with size, file count, and the per-directory model inventory (`?refresh=1` recomputes). |
+| `GET /api/storage/model-status` | One readiness report for every engine (Stable, Magenta, Suno, Demucs, MIDI), including `usable_generation`. |
 | `GET /api/storage/hf-cache` | Per-repo breakdown of the Hugging Face cache. |
 | `GET/POST /api/storage/checkpoints` · `DELETE /api/storage/checkpoints/{id}` | List, register, and unregister local checkpoints. |
+| `POST /api/storage/checkpoints/inspect` | Pre-registration report: found checkpoints/configs, the exact problem, recognized variant. |
+| `POST /api/storage/checkpoints/generate-config` | Copy the official config next to a recognized built-in checkpoint (never guessed, never downloaded). |
 | `GET/PUT /api/storage/local-only` | Read or set the no-download switch. |
 | `GET /api/storage/resolution-log` | Every resolution decision this session: which file came from which local folder, the HF cache, or a download. |
+| `POST /api/storage/pick-folder` · `POST /api/storage/pick-file` | Native Windows path pickers behind every Browse button. |
 | `POST /api/storage/open` | Open a known location in Explorer. |
 | `POST /api/model/load` | Pre-load a model (the MAKE LOAD button); the response carries the full resolution trail. |
 

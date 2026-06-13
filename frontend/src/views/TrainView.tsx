@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { Zap, Brain, Activity, Terminal, Layers, Cpu, Database, BarChart3, UploadCloud } from 'lucide-react';
 import { Section } from '../components/ui/Section';
+import { PathInput } from '../components/ui/PathInput';
 import { useTrainingStore } from '../state/trainingStore';
 import { ControlSurface } from '../components/surface/ControlSurface';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
@@ -113,7 +114,16 @@ function buildTrainRegistry(p: TrainRegArgs): WidgetRegistry {
         <UploadCloud className="w-5 h-5 text-zinc-600" />
         <span className="text-[9px] text-zinc-500 font-mono tracking-widest uppercase">Load Dataset (.zip / folder)</span>
       </div>
-      <input type="text" name="train-dataset-path" className="compact-input w-full mt-2" placeholder="Dataset path on local machine (required by /api/jobs/train-lora)" value={p.params.datasetPath} onChange={(e) => p.setParams({ ...p.params, datasetPath: e.target.value })} />
+      <PathInput
+        id="train-dataset-path"
+        name="train-dataset-path"
+        label="Dataset folder"
+        kind="folder"
+        value={p.params.datasetPath}
+        onChange={(v) => p.setParams({ ...p.params, datasetPath: v })}
+        placeholder="Dataset path on local machine (required by /api/jobs/train-lora)"
+        className="mt-2"
+      />
       <div className="mt-2 space-y-1">
         <div className="flex items-center justify-between p-1.5 bg-white/5 rounded"><span className="text-zinc-400">techno_kicks_2024</span><span className="text-[8px] font-mono text-zinc-600">128 samples</span></div>
         <div className="flex items-center justify-between p-1.5 bg-white/5 rounded opacity-50"><span className="text-zinc-400">ambient_pads_raw</span><span className="text-[8px] font-mono text-zinc-600">Waiting...</span></div>

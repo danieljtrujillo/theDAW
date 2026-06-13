@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-12T22:52:36.112Z",
-  "repoRevision": "12234b76853b",
+  "generatedAt": "2026-06-13T00:02:38.114Z",
+  "repoRevision": "344da9a6a78d",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -735,7 +735,7 @@
         "#19-8-jobs-list",
         "#19-11-assistant",
         "#19-12-module-loader",
-        "#21-1-models-storage-local-checkpoints-and-the-no-download-guarantee",
+        "#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee",
         "#api-unreachable-banner-in-the-header",
         "#backend-job-persistence",
         "#25-3-current-feature-to-screenshot-map",
@@ -831,6 +831,7 @@
         "#12-3-how-the-visualizations-are-rendered",
         "#19-14-chimera",
         "#21-models",
+        "#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee",
         "#26-cloud-generation-suno",
         "#26-1-modes",
         "#26-2-flow-and-library-integration",
@@ -847,6 +848,7 @@
         "#table-of-contents",
         "#6-2-generation-parameters",
         "#21-models",
+        "#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee",
         "#27-magenta-realtime-2",
         "#27-1-the-sidecar-and-conditioning",
         "#27-2-first-non-mac-port-of-magenta-realtime-2",
