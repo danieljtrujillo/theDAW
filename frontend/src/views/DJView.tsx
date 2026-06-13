@@ -985,7 +985,7 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
               {/* Fine faders */}
               <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
                 {shown.map((name) => (
-                  <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStemLevel(name, v)} min={0} max={1} step={0.01} size={26} centerReadout />
+                  <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStemLevel(name, v)} min={0} max={1} step={0.01} size={26} centerReadout defaultValue={1} />
                 ))}
               </div>
             </>
