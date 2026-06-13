@@ -901,9 +901,9 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
     if (!entryId) return;
     setStemBusy(true); setStemMsg('checking…');
     try {
-      // 'balanced' uses the fine-tuned htdemucs_ft model — a clear quality jump
-      // over 'fast' (plain htdemucs), at a still-practical separation time.
-      const refs = await ensureStems(entryId, { stems: 4, quality: 'balanced' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
+      // 6 stems (drums/bass/other/vocals/guitar/piano) so every part is
+      // toggleable; 'balanced' adds the fine-tuned shifts for cleaner splits.
+      const refs = await ensureStems(entryId, { stems: 6, quality: 'balanced' }, (pct, phase) => setStemMsg(`${phase} ${pct}%`));
       if (!refs.length) { setStemMsg('no stems'); return; }
       setStemMsg('loading…');
       const names = await djEngine.loadDeckStems(deck, refs);
@@ -953,11 +953,16 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
               <span className="text-[7px] font-mono text-rose-300 truncate max-w-20" title={stemMsg}>{stemMsg}</span>
             )}
           </div>
-          {stemsOn && (
+          {stemsOn && (() => {
+            // Show every separated stem (4 or 6: drums/bass/other/vocals/
+            // guitar/piano). Use 3 columns past 4 stems so 6 reads as 3×2.
+            const shown = stemNames.slice(0, 6);
+            const cols = shown.length <= 4 ? shown.length : 3;
+            return (
             <>
               {/* Mute / solo pads — tap to mute, right-click to solo */}
-              <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: `repeat(${Math.min(stemNames.length, 4)}, minmax(0,1fr))` }}>
-                {stemNames.slice(0, 4).map((name) => {
+              <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+                {shown.map((name) => {
                   const isSolo = soloStem === name;
                   const active = !stemMuted[name] && (soloStem === null || isSolo);
                   return (
@@ -978,13 +983,14 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
                 })}
               </div>
               {/* Fine faders */}
-              <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${Math.min(stemNames.length, 4)}, minmax(0,1fr))` }}>
-                {stemNames.slice(0, 4).map((name) => (
+              <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+                {shown.map((name) => (
                   <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStemLevel(name, v)} min={0} max={1} step={0.01} size={26} centerReadout />
                 ))}
               </div>
             </>
-          )}
+            );
+          })()}
         </div>
       </div>
     </div>
