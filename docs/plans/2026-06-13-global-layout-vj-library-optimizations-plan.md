@@ -14,6 +14,10 @@
 >
 > Try to find ways we can optimize the VJ tab/sidecar so it runs more efficiently/smoothly. If there are efficiency gains to be had elsewhere (like optimizing everything in our library) I am all ears.
 
+Added later (user, verbatim):
+
+> finish integrating the live stems in DJ, have the sampler and stem activation super simple, but versatile. Fill some of those gaps.
+
 Already shipped from the same request batch (PR #19): SLIDE Row/Focus bottom-anchored lanes + sticky `.sl-pagedock`, controller view fit-on-open/wheel-zoom/drag-pan, piano-transcription-inference installed + declared. Visual sign-off on the SLIDE behaviors is still pending the user's eyes.
 
 ---
@@ -51,6 +55,8 @@ Already shipped from the same request batch (PR #19): SLIDE Row/Focus bottom-anc
 2. **Phase B — VJ video library** (4 sub-phases below).
 3. **Phase C — global Edit Layout**: MAKE → EDIT → LEARN, one PR each.
 4. **Phase D — micro-perf**: rVFC in VJ loop, selector-izing big views, H264 recording option.
+5. **Phase E — DJ live stems finish + simple sampler/stem activation** (section 6.5). Can be pulled ahead of C/D on green-light; it is independent of the layout and VJ work.
+6. **Phase F — library Opus autoconvert** (section 6.6). Audit-first: a compatibility matrix of every consumer of library audio BEFORE any conversion code. User: library is getting big quickly; this is a real disk-pressure item.
 
 ---
 
@@ -129,6 +135,45 @@ Each phase: tsc + manual visual pass + user eyes before merge; one PR per tab.
 4. (Investigate-only) the global ~1.1x transform: prototype `zoom` property behind a flag; verify every canvas surface (memory `project_ui_css_transform_scale`) before any switch.
 
 ---
+
+## 6.5. Phase E — DJ live stems finish + simple/versatile sampler & stem activation
+
+User ask (verbatim, added after the original batch): "finish integrating the live stems in DJ, have the sampler and stem activation super simple, but versatile. Fill some of those gaps."
+
+### Verified current state (2026-06-12)
+- `frontend/src/lib/djStems.ts` — `listStems()` (cached stems via `/api/stems/{entry}` → `/api/library/stems/{id}/audio`) and `ensureStems()` (foreground `POST /api/stems/{entry}/run`, 4-stem fast default, 1.5s progress polling).
+- `frontend/src/state/djEngine.ts` — D4 plumbing DONE: `loadDeckStems()` decodes N stems → per-stem gain → deck `srcBus` (frees the full buffer), `setStemGain()`, stem-mode transport parity (start/seek/loop/duration all handle `stemMode`), `teardownStems()` on track swap.
+- `frontend/src/views/DJView.tsx` — per-deck stems activation calls `ensureStems` then `loadDeckStems` (~line 828), per-stem faders via `onStem` (~839); `SamplerRail` (D7, ~706): 10 one-shot pads, library-track drag-drop, persisted pad→entry map in `djSamplerStore` (`thedaw.dj.sampler.v1`), buffers re-decoded on mount, right-click clears.
+- Memory `project_dj_feature` pending items that overlap: deck persistence, true real-time stems.
+
+### Gaps to fill (candidate list; scope confirmed at green-light)
+- **E1. One-touch stem activation.** Single per-deck STEMS toggle with visible states (OFF → SEPARATING n% → ON) instead of the current run-then-faders flow. Switching deck ↔ stem mode must preserve playhead position both directions (full→stems already does; verify stems→full restores the buffer instead of leaving the deck empty — today `loadDeckStems` frees `d.buffer`, so OFF requires a re-decode path).
+- **E2. Pre-separation in the background.** DOWNGRADED per user 2026-06-12: "almost anything being pulled from the library should have stems already, so dont sweat that. Realtime stemming while performing would be fairly uncommon." The primary path is instant load of CACHED stems; live separation stays as the existing fallback flow, no background queue needed. E1's toggle should therefore show ON-ready (cached) vs a small "needs separation" state instead of optimistic auto-runs.
+- **E3. Stem pads, not just faders.** Four big mute/solo-style toggle pads per deck (vocals/drums/bass/other) as the primary control — tap kills/restores a stem; faders remain for fine control (hold/expand). MIDI-mappable through the existing djControlMap learn flow.
+- **E4. Sampler ↔ stems versatility.** Pads accept ANY source: library track (today), a deck's isolated stem, or a loop slice. Per-pad gain + one-shot/loop toggle + optional choke group. Keep the 10-pad rail layout; persistence extends `djSamplerStore` (new pad source types must round-trip the reload re-decode path).
+- **E5. Deck + stem persistence.** Reload restores per-deck loaded track, stem mode, and stem levels (folds in the long-pending "deck persistence" item).
+- **E6. Automix stem transitions (stretch).** Automix transitions can do stem swaps (bass-kill cross, vocal-only intro) for tracks whose stems are cached. Only after E1–E3 land.
+
+Validation: live A/B on the rig with real separated tracks (user's eyes + ears; headless checks are insufficient). Watch VRAM/RAM — stem mode quadruples decoded buffers per deck; the 6 GB card is not the constraint here (Web Audio is CPU/RAM) but demucs separation runs on it, so never auto-separate while an SA3/Magenta generate is in flight (respect the existing GPU guards).
+
+## 6.6. Phase F — library Opus autoconvert
+
+User ask (2026-06-12, verbatim): "We also forgot to finish the autoconvert to opus feature (verify what features of ours can and can't use that so we don't screw ourselves). It would be very helpful as my library is getting big quickly."
+
+State check (2026-06-12): NO partial implementation exists — `grep` for autoconvert/transcode/opusify across the repo finds nothing library-side. Opus is already a first-class format elsewhere: ytimport imports as Opus (stream-copy when possible, 192k transcode otherwise, `backend/modules/ytimport/engine.py`), delivery + effects modules export Opus (`libopus`), `backend/core/module_base.py` maps the mime, library tag reader handles `.opus`. So this phase is greenfield: convert library WAV generations to Opus (likely 192k VBR, matching ytimport's transparency choice) to reclaim disk.
+
+**F1 — compatibility audit (MANDATORY before any conversion code).** Build the matrix of every consumer of a library entry's audio file and verify Opus-readiness empirically, not by reasoning:
+- Web Audio `decodeAudioData` (player, DJ decks, live mixer, sampler pads) — expected fine, verify in OUR app.
+- Stems separation (demucs sidecar) — ffmpeg-backed load, expected fine; verify the sidecar venv's torchcodec/FFmpeg path decodes Opus.
+- Analysis (aubio/librosa BPM/key), waveform peaks, spectrograms — librosa needs soundfile/audioread Opus support; aubio may NOT read Opus directly. Verify each.
+- MIDI transcription (basic-pitch, piano-transcription-inference) — check their loaders.
+- Notation/partitura/music21 pipelines that start from audio.
+- Init-audio / inpainting / chimera / remix flows that feed audio BACK into generation — lossy input changes results; these may warrant keeping WAV or decoding to a temp WAV.
+- EDIT tools (49 FFmpeg edit-tool endpoints) — ffmpeg-backed, expected fine.
+- Export/delivery — re-encoding lossy→lossy is a quality cliff; UI should surface "source is Opus" where relevant.
+Output of F1: a table in this plan (or a follow-up doc) with VERIFIED yes/no/needs-shim per consumer, plus the decision on which consumers get a decode-to-temp-WAV shim vs. which block conversion.
+**F2 — conversion mechanics (after F1).** Per-entry convert + bulk "convert older than N days / all" action, default-on toggle for NEW generations vs. keep-WAV setting, originals deleted only after a verified ffprobe pass on the new file, `metadata.json` + DB mime/size updates, stems and artifacts unaffected (separate files). Settings → Storage surface showing reclaimable space estimate.
+**F3 — guard rails.** Never convert entries referenced as init/inpaint sources if F1 says lossless matters there (or always keep a flag for "this entry was lossy-converted" so generation flows can warn).
 
 ## 7. Standing constraints (apply to all phases)
 
