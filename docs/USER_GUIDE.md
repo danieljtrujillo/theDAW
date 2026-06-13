@@ -529,7 +529,7 @@ A floating **Edit Layout** control turns on Design Mode. In Design Mode, panels 
 
 ### Purpose
 
-The VJ tab (`VJView`) embeds the GANTASMO-LIVE-VJ visual engine as a live, audio-reactive instrument. The backend `vj` module spawns the engine's dev server lazily, and the tab fetches its live URL from `/api/vj/url`, so the port is never hardcoded. First launch runs `npm install` in the VJ project and can take a minute; later launches are fast.
+The VJ tab (`VJView`) embeds the GANTASMO-LIVE-VJ visual engine as a live, audio-reactive instrument. The backend `vj` module serves the engine lazily as a production build (it rebuilds automatically when the engine's source is newer than the build, and `theDAW_VJ_DEV=1` forces the HMR dev server for engine development), and the tab fetches its live URL from `/api/vj/url`, so the port is never hardcoded. First launch runs `npm install` plus a one-time build in the VJ project and can take a minute; later launches are fast.
 
 ### 10.1 Inputs
 
@@ -544,7 +544,7 @@ A toolbar row toggles which signals feed the visuals. At least one input stays a
 
 The camera input extends past a webcam on the host machine. Any device that opens theDAW in a browser and grants camera permission serves as the source.
 
-- **Phone or tablet cameras on the same Wi-Fi.** The phone opens theDAW at the LAN URL (see §10.2 Mobile, or the Mobile Access panel in the shell header) and grants the camera prompt, and the phone's camera then streams into the visuals. The Vite dev server binds `0.0.0.0` and the backend auto-detects the LAN IP, so the only requirement is a network that permits device-to-device connections.
+- **Phone or tablet cameras on the same Wi-Fi.** The phone opens theDAW at the LAN URL (see §10.2 Mobile, or the Mobile Access panel in the shell header) and grants the camera prompt, and the phone's camera then streams into the visuals. The Vite server binds `0.0.0.0` and the backend auto-detects the LAN IP, so the only requirement is a network that permits device-to-device connections.
 - **Quest 3 headsets and off-network devices.** A device away from the LAN, such as a Quest 3, a phone on cellular, or a remote camera, joins through a public tunnel. A Cloudflare Tunnel or other public URL goes into the **External URL override** in the Mobile Access panel, and the headset or phone opens that URL in its browser and feeds its camera the same way. The browser exposes the Quest 3's passthrough and visible-light cameras like any other camera.
 - **Capture inputs.** Anything that presents to the operating system as a camera, including HDMI capture cards, DSLRs in webcam mode, OBS virtual camera, and NDI-to-webcam bridges, appears in the browser's device list and selects as the source.
 
@@ -1337,7 +1337,7 @@ MIDI conversion runs on full entries and, when available, separated stems. The s
 
 ### 19.17 VJ
 
-The VJ module powers the VJ center tab and its embedded iframe. The frontend fetches the engine URL from `GET /api/vj/url`, which also returns a `mobile_url` for LAN access when the machine has a non-loopback address. The backend spawns the visual engine's dev server lazily; the port and project path can be overridden through the `theDAW_VJ_PORT` and `theDAW_VJ_PROJECT` environment variables. Use the Settings modal module list and the VJ tab loading state to confirm availability.
+The VJ module powers the VJ center tab and its embedded iframe. The frontend fetches the engine URL from `GET /api/vj/url`, which also returns a `mobile_url` for LAN access when the machine has a non-loopback address. The backend serves the visual engine lazily as a production build (`vite preview`), rebuilding when the engine's source is newer than `dist/`; the port and project path can be overridden through the `theDAW_VJ_PORT` and `theDAW_VJ_PROJECT` environment variables, and `theDAW_VJ_DEV=1` forces the HMR dev server for engine development. Use the Settings modal module list and the VJ tab loading state to confirm availability.
 
 ### 19.18 Notation and Prompt Inference
 

@@ -1693,7 +1693,15 @@ async def generate_jobs(
 
 @app.get("/api/jobs")
 async def list_jobs():
-    return {"jobs": list(JOBS.values())}
+    # Summaries only: a completed generate job's "result" carries the
+    # full base64 audio + spectrograms (megabytes per job), and the
+    # training poller hits this list repeatedly. Payloads stay on the
+    # per-job GET below, which is what the generate flow polls.
+    return {
+        "jobs": [
+            {k: v for k, v in job.items() if k != "result"} for job in JOBS.values()
+        ]
+    }
 
 
 @app.get("/api/jobs/{job_id}")

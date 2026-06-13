@@ -1,11 +1,18 @@
-"""Manage the GANTASMO-LIVE-VJ Vite dev server as an SA3 sidecar.
+"""Manage the GANTASMO-LIVE-VJ Vite server as an SA3 sidecar.
 
 The VJ project lives in its own repo at
 ``D:/StableAudio/GANTASMO-LIVE-VJ`` (overridable via
 ``theDAW_VJ_PROJECT``). It's a vanilla Vite/React app — no Python,
 no heavy ML deps — so the spawn logic is much simpler than the stems
-sidecar: just shell out to ``npm run dev`` with ``--port <N>`` and
-poll the port until the dev server is listening.
+sidecar: build (when stale) + ``npm run preview`` and poll the port
+until the server is listening.
+
+By default the sidecar serves a PRODUCTION build (``vite preview``
+over ``dist/``): no HMR websocket, no per-request transforms, no
+file watcher — measurably lighter than the dev server during
+performance use. ``dist/`` is rebuilt automatically when missing or
+older than the newest source file. Set ``theDAW_VJ_DEV=1`` to force
+the dev server (HMR) while working ON the VJ app itself.
 
 We deliberately use a NON-default port (5187) because:
   * 3000 (React default) is the user's explicit "don't use this"
@@ -49,6 +56,19 @@ DEFAULT_PROJECT_PATH = Path(r"D:/StableAudio/GANTASMO-LIVE-VJ")
 DEFAULT_PORT = 5187
 PORT_READY_TIMEOUT_SEC = 60.0
 PORT_POLL_INTERVAL_SEC = 0.5
+BUILD_TIMEOUT_SEC = 300.0
+
+# Inputs to the staleness check: the newest mtime across these (files
+# directly, directories recursively) is compared against dist/index.html,
+# which vite rewrites on every build.
+_SOURCE_DIRS = ("src", "assets", "public")
+_SOURCE_FILES = (
+    "index.html",
+    "vite.config.ts",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+)
 
 
 @dataclass
@@ -56,6 +76,7 @@ class VJConfig:
     project_path: Path
     port: int
     npm_path: str
+    dev_mode: bool
 
 
 _state_lock = Lock()
@@ -80,7 +101,62 @@ def resolve_config() -> VJConfig:
     # generic FileNotFoundError.
     npm_path = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
 
-    return VJConfig(project_path=project_path, port=port, npm_path=npm_path)
+    dev_mode = os.getenv("theDAW_VJ_DEV") == "1"
+
+    return VJConfig(
+        project_path=project_path, port=port, npm_path=npm_path, dev_mode=dev_mode
+    )
+
+
+def _newest_source_mtime(root: Path) -> float:
+    newest = 0.0
+    for name in _SOURCE_FILES:
+        f = root / name
+        if f.is_file():
+            newest = max(newest, f.stat().st_mtime)
+    for name in _SOURCE_DIRS:
+        d = root / name
+        if d.is_dir():
+            for p in d.rglob("*"):
+                if p.is_file():
+                    newest = max(newest, p.stat().st_mtime)
+    return newest
+
+
+def _build_is_stale(root: Path) -> bool:
+    """True when dist/ is missing or older than the newest source file."""
+    marker = root / "dist" / "index.html"
+    if not marker.is_file():
+        return True
+    return _newest_source_mtime(root) > marker.stat().st_mtime
+
+
+def _ensure_build(cfg: VJConfig) -> None:
+    """Run ``npm run build`` when dist/ is missing or stale. Raises
+    RuntimeError with the build log tail on failure."""
+    if not _build_is_stale(cfg.project_path):
+        return
+    log.info("vj.sidecar: dist/ missing or stale — running npm run build")
+    try:
+        proc = subprocess.run(
+            [cfg.npm_path, "run", "build"],
+            cwd=str(cfg.project_path),
+            capture_output=True,
+            timeout=BUILD_TIMEOUT_SEC,
+            shell=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(f"VJ sidecar: npm not found ({e}). Install Node.js.") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"VJ build timed out after {int(BUILD_TIMEOUT_SEC)}s in {cfg.project_path}."
+        ) from e
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace")[-2000:]
+        raise RuntimeError(
+            f"VJ build failed (rc={proc.returncode}) in {cfg.project_path}:\n{tail}"
+        )
+    log.info("vj.sidecar: build complete")
 
 
 def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
@@ -147,6 +223,10 @@ def probe() -> dict:
     return {
         "project_path": str(pkg),
         "port": cfg.port,
+        # "preview" = production build via `vite preview` (default);
+        # "dev" = HMR dev server (theDAW_VJ_DEV=1).
+        "mode": "dev" if cfg.dev_mode else "preview",
+        "build_stale": _build_is_stale(pkg) if pkg.is_dir() else None,
         "listening": listening,
         "process_alive": _proc is not None and _proc.poll() is None,
         "url": _resolved_url or f"http://localhost:{cfg.port}",
@@ -160,9 +240,10 @@ def probe() -> dict:
 
 
 def ensure_running(*, wait_for_ready: bool = True) -> str:
-    """Spawn the VJ Vite dev server if it isn't already, and return the
-    URL it serves on. Safe to call repeatedly — no-ops if the port is
-    already listening, even if some OTHER process started the server."""
+    """Spawn the VJ Vite server (preview by default, dev with
+    theDAW_VJ_DEV=1) if it isn't already, and return the URL it serves
+    on. Safe to call repeatedly — no-ops if the port is already
+    listening, even if some OTHER process started the server."""
     global _proc, _resolved_url
     with _state_lock:
         cfg = resolve_config()
@@ -213,7 +294,26 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                         "Run it manually to see the full error output, then retry."
                     )
                 log.info("vj.sidecar: npm install complete")
-            cmd = [cfg.npm_path, "run", "dev", "--", "--port", str(cfg.port)]
+            if cfg.dev_mode:
+                cmd = [cfg.npm_path, "run", "dev", "--", "--port", str(cfg.port)]
+            else:
+                # Production serve: build once (when stale), then `vite
+                # preview` over dist/ — same port contract and SPA
+                # behavior as the dev server, none of its per-request
+                # work. `--host` (bare) binds 0.0.0.0 so the LAN/mobile
+                # URL keeps working; allowedHosts is inherited from the
+                # project's server config.
+                _ensure_build(cfg)
+                cmd = [
+                    cfg.npm_path,
+                    "run",
+                    "preview",
+                    "--",
+                    "--port",
+                    str(cfg.port),
+                    "--strictPort",
+                    "--host",
+                ]
             log.info(
                 "vj.sidecar: spawning %s (cwd=%s)",
                 " ".join(cmd),
@@ -254,7 +354,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 raise RuntimeError(
                     "VJ sidecar exited before becoming ready (rc="
                     f"{_proc.returncode}). Check the project's "
-                    "package.json `dev` script."
+                    "package.json scripts (preview/dev)."
                 )
             time.sleep(PORT_POLL_INTERVAL_SEC)
         raise RuntimeError(
@@ -275,8 +375,19 @@ def stop() -> bool:
             _proc = None
             return False
         try:
-            _proc.terminate()
-            _proc.wait(timeout=5.0)
+            if sys.platform == "win32":
+                # npm.cmd is a shim: terminate() kills the cmd wrapper
+                # and leaves the node (vite) child listening. Kill the
+                # whole tree.
+                subprocess.call(
+                    ["taskkill", "/PID", str(_proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                _proc.wait(timeout=5.0)
+            else:
+                _proc.terminate()
+                _proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
             _proc.kill()
         finally:
