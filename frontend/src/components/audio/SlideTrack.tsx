@@ -11,7 +11,7 @@ const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
    `className` (e.g. "w-full", "flex-1", "w-16"); pass `tint` to pin the colour
    instead of having it track the value. */
 export function SlideTrack({
-  value, onChange, min, max, step = 1, className, tint, ariaLabel, ariaLabelledBy, id,
+  value, onChange, min, max, step = 1, className, tint, ariaLabel, ariaLabelledBy, id, defaultValue,
 }: {
   value: number;
   onChange: (v: number) => void;
@@ -23,6 +23,8 @@ export function SlideTrack({
   ariaLabel?: string;
   ariaLabelledBy?: string;
   id?: string;
+  /** Value a double-click resets to. Defaults to 0 (clamped into range). */
+  defaultValue?: number;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
@@ -80,6 +82,7 @@ export function SlideTrack({
       style={{ touchAction: 'none', ...accentVars(tint ?? t) }}
       onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
       onWheel={onWheel} onKeyDown={onKeyDown}
+      onDoubleClick={() => onChange(clamp(defaultValue ?? 0, min, max))}
     >
       <div className="absolute inset-y-0.5 left-0.5 rounded-full"
         style={{ width: `calc(${t * 100}% - 2px)`, background: rgb(base), boxShadow: `0 0 8px ${rgba(base, 0.7)}`, transition: drag ? 'none' : 'width 0.08s ease' }} />

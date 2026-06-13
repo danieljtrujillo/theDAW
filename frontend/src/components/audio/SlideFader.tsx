@@ -43,9 +43,11 @@ interface SlideFaderProps {
   /** Fixed accent colour position 0..1 (style/skin override); when set the
    *  colour no longer tracks the value. Used by custom controls. */
   tint?: number;
+  /** Value a double-click resets to. Defaults to 0 (clamped into range). */
+  defaultValue?: number;
 }
 
-const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min, max, step = 0.01, tipKey, rulerSide = 'left', tint }) => {
+const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min, max, step = 0.01, tipKey, rulerSide = 'left', tint, defaultValue }) => {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const [drag, setDrag] = useState(false);
@@ -82,6 +84,8 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
   const onWheel = (e: React.WheelEvent) => {
     onChange(clamp(+(value + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1)).toFixed(6), min, max));
   };
+  // Double-click resets to the control's default (0 unless overridden).
+  const onDoubleClick = () => onChange(clamp(defaultValue ?? 0, min, max));
   const onKeyDown = (e: React.KeyboardEvent) => {
     const s = step * (e.shiftKey ? 10 : 1);
     let h = true;
@@ -149,6 +153,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          onDoubleClick={onDoubleClick}
           onWheel={onWheel}
           onMouseEnter={() => setActive(true)}
           onMouseLeave={() => { if (!dragging.current) setActive(false); }}

@@ -41,6 +41,7 @@ import { useDjAutomix } from '../state/djAutomixStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
+import { useDjBrowser, type DjColKey, DJ_COL_MIN_WIDTH } from '../state/djBrowserStore';
 import { useDjCuesStore, HOTCUE_SLOTS } from '../state/djCuesStore';
 import { toCamelot, keyLabel } from '../lib/camelot';
 import { buildBeatgrid } from '../lib/beatgrid';
@@ -985,7 +986,7 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
               {/* Fine faders */}
               <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
                 {shown.map((name) => (
-                  <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStemLevel(name, v)} min={0} max={1} step={0.01} size={26} centerReadout />
+                  <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStemLevel(name, v)} min={0} max={1} step={0.01} size={26} centerReadout defaultValue={1} />
                 ))}
               </div>
             </>
@@ -1114,6 +1115,91 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
   const sourceLabel = isSet ? set!.name : (LIB_SOURCE_LABEL[source.kind as LibSourceKind] ?? 'Library');
   const rows = q.trim() ? baseRows.filter((r) => r.title.toLowerCase().includes(q.trim().toLowerCase())) : baseRows;
 
+  // ── Column layout: persisted order / widths / sort (resize · reorder · sort) ──
+  const colOrder = useDjBrowser((s) => s.order);
+  const colWidths = useDjBrowser((s) => s.widths);
+  const sortKey = useDjBrowser((s) => s.sortKey);
+  const sortDir = useDjBrowser((s) => s.sortDir);
+  const setColWidth = useDjBrowser((s) => s.setWidth);
+  const moveColumn = useDjBrowser((s) => s.moveColumn);
+  const toggleSort = useDjBrowser((s) => s.toggleSort);
+
+  const COL_META: Record<DjColKey, { label: string; align: 'left' | 'right' }> = {
+    index: { label: '#', align: 'right' },
+    title: { label: 'Title', align: 'left' },
+    bpm: { label: 'BPM', align: 'right' },
+    key: { label: 'Key', align: 'left' },
+    len: { label: 'Len', align: 'right' },
+  };
+  const gridTemplate =
+    colOrder.map((k) => (k === 'title' ? `minmax(${DJ_COL_MIN_WIDTH.title}px,1fr)` : `${colWidths[k]}px`)).join(' ') + ' 4.2rem';
+
+  // Sort rows by the active column; nulls/unknowns always sort last.
+  const sortedRows = (() => {
+    if (sortKey === 'index') return sortDir === 'asc' ? rows : [...rows].reverse();
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const val = (r: Row): number | string =>
+      sortKey === 'title' ? r.title.toLowerCase()
+        : sortKey === 'bpm' ? (r.bpm ?? NaN)
+          : sortKey === 'key' ? (r.key ?? '')
+            : (r.dur ?? NaN);
+    return [...rows].map((r, i) => ({ r, i })).sort((a, b) => {
+      const va = val(a.r), vb = val(b.r);
+      const na = typeof va === 'number' ? Number.isNaN(va) : va === '';
+      const nb = typeof vb === 'number' ? Number.isNaN(vb) : vb === '';
+      if (na && nb) return a.i - b.i;
+      if (na) return 1;
+      if (nb) return -1;
+      if (va < vb) return -dir;
+      if (va > vb) return dir;
+      return a.i - b.i;
+    }).map((x) => x.r);
+  })();
+
+  // Resize (drag the header edge) + auto-fit (double-click it).
+  const resizeRef = useRef<{ key: DjColKey; startX: number; startW: number } | null>(null);
+  const measureCv = useRef<HTMLCanvasElement | null>(null);
+  const onResizeDown = (k: DjColKey, e: React.PointerEvent) => {
+    if (k === 'title') return;
+    e.stopPropagation(); e.preventDefault();
+    resizeRef.current = { key: k, startX: e.clientX, startW: colWidths[k] };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const onResizeMove = (e: React.PointerEvent) => {
+    const rs = resizeRef.current;
+    if (rs) setColWidth(rs.key, rs.startW + (e.clientX - rs.startX));
+  };
+  const onResizeUp = (e: React.PointerEvent) => {
+    if (resizeRef.current) { (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId); resizeRef.current = null; }
+  };
+  const autofit = (k: DjColKey) => {
+    if (k === 'title') return;
+    const cv = measureCv.current ?? (measureCv.current = document.createElement('canvas'));
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    ctx.font = '9px ui-monospace, SFMono-Regular, monospace';
+    const cellText = (r: Row): string =>
+      k === 'bpm' ? (r.bpm != null ? r.bpm.toFixed(0) : '—')
+        : k === 'key' ? (r.key ?? '—')
+          : k === 'len' ? (r.dur != null ? fmtTime(r.dur) : '—')
+            : '00';
+    let w = ctx.measureText(COL_META[k].label).width;
+    for (const r of sortedRows) w = Math.max(w, ctx.measureText(cellText(r)).width);
+    setColWidth(k, Math.ceil(w) + 14); // text + cell padding, clamped to the column min in the store
+  };
+  const [dragCol, setDragCol] = useState<DjColKey | null>(null);
+
+  const renderCell = (k: DjColKey, r: Row, displayIdx: number): React.ReactNode => {
+    switch (k) {
+      case 'index': return <span key={k} className="text-right text-zinc-600">{String(displayIdx + 1).padStart(2, '0')}</span>;
+      case 'title': return <span key={k} className="truncate text-zinc-300" title={r.title}>{r.title}</span>;
+      case 'bpm': return <span key={k} className="text-right tabular-nums text-zinc-500">{r.bpm != null ? r.bpm.toFixed(0) : '—'}</span>;
+      case 'key': return <span key={k} className="text-zinc-500">{r.key ?? '—'}</span>;
+      case 'len': return <span key={k} className="text-right tabular-nums text-zinc-600">{r.dur != null ? fmtTime(r.dur) : '—'}</span>;
+      default: return null;
+    }
+  };
+
   const commitRename = () => { if (set && editName.trim()) renameSetlist(set.id, editName.trim()); setEditing(false); };
   const reorder = (from: number, to: number) => {
     if (!set || to < 0 || to >= set.entries.length) return;
@@ -1154,9 +1240,39 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
         )}
       </div>
 
-      {/* column header */}
-      <div className="shrink-0 grid items-center gap-1 px-2 py-0.5 border-b border-white/5 text-[7px] font-black uppercase tracking-wider text-zinc-600" style={{ gridTemplateColumns: '1.6rem minmax(0,1fr) 2.6rem 2.4rem 2.6rem 4.2rem' }}>
-        <span className="text-right">#</span><span>Title</span><span className="text-right">BPM</span><span>Key</span><span className="text-right">Len</span><span className="text-right pr-1">Load</span>
+      {/* column header — click to sort (re-click inverts), drag to reorder,
+          drag the right edge to resize, double-click the edge to auto-fit */}
+      <div className="shrink-0 grid items-center gap-1 px-2 py-0.5 border-b border-white/5 text-[7px] font-black uppercase tracking-wider text-zinc-600" style={{ gridTemplateColumns: gridTemplate }}>
+        {colOrder.map((k) => {
+          const meta = COL_META[k];
+          const sorted = sortKey === k;
+          return (
+            <div key={k}
+              draggable
+              onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('application/x-dj-col', k); setDragCol(k); }}
+              onDragEnd={() => setDragCol(null)}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-dj-col')) e.preventDefault(); }}
+              onDrop={(e) => { e.preventDefault(); const from = e.dataTransfer.getData('application/x-dj-col') as DjColKey; if (from && from !== k) moveColumn(from, k); setDragCol(null); }}
+              className={`relative flex items-center gap-0.5 select-none ${meta.align === 'right' ? 'justify-end' : ''} ${dragCol === k ? 'opacity-40' : ''}`}
+              title="Click to sort · drag to reorder · drag edge to resize · double-click edge to auto-fit"
+            >
+              <button type="button" onClick={() => toggleSort(k)} className="truncate uppercase hover:text-zinc-300 cursor-pointer">{meta.label}</button>
+              {sorted && <span className="text-purple-300 leading-none">{sortDir === 'asc' ? '▲' : '▼'}</span>}
+              {k !== 'title' && (
+                <span
+                  onPointerDown={(e) => onResizeDown(k, e)}
+                  onPointerMove={onResizeMove}
+                  onPointerUp={onResizeUp}
+                  onPointerCancel={onResizeUp}
+                  onDoubleClick={(e) => { e.stopPropagation(); autofit(k); }}
+                  onDragStart={(e) => e.preventDefault()}
+                  className="absolute -right-1 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-purple-400/40 rounded"
+                />
+              )}
+            </div>
+          );
+        })}
+        <span className="text-right pr-1">Load</span>
       </div>
 
       {/* rows */}
@@ -1165,16 +1281,12 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
           <div className="h-full grid place-items-center text-[9px] font-mono text-zinc-600 px-3 text-center">
             {isSet ? 'Empty set — drag tracks here, or Save a loaded deck.' : (entries.length === 0 ? 'Library empty — generate or import audio.' : 'No matches.')}
           </div>
-        ) : rows.map((r, i) => (
-          <div key={(r.entryId ?? 'x') + i} draggable={!!r.entryId}
+        ) : sortedRows.map((r, i) => (
+          <div key={(r.entryId ?? 'x') + '-' + i} draggable={!!r.entryId}
             onDragStart={(ev) => { if (!r.entryId) return; ev.dataTransfer.effectAllowed = 'copy'; ev.dataTransfer.setData(DJ_TRACK_MIME, r.entryId); ev.dataTransfer.setData('text/plain', r.title); }}
             className="grid items-center gap-1 px-2 py-0.5 text-[9px] font-mono text-zinc-400 hover:bg-white/5 border-b border-white/3 group/row cursor-grab active:cursor-grabbing"
-            style={{ gridTemplateColumns: '1.6rem minmax(0,1fr) 2.6rem 2.4rem 2.6rem 4.2rem' }}>
-            <span className="text-right text-zinc-600">{String(i + 1).padStart(2, '0')}</span>
-            <span className="truncate text-zinc-300" title={r.title}>{r.title}</span>
-            <span className="text-right tabular-nums text-zinc-500">{r.bpm != null ? r.bpm.toFixed(0) : '—'}</span>
-            <span className="text-zinc-500">{r.key ?? '—'}</span>
-            <span className="text-right tabular-nums text-zinc-600">{r.dur != null ? fmtTime(r.dur) : '—'}</span>
+            style={{ gridTemplateColumns: gridTemplate }}>
+            {colOrder.map((k) => renderCell(k, r, i))}
             <span className="flex items-center gap-0.5 justify-end pr-0.5">
               {isSet ? (
                 <span className="hidden group-hover/row:flex items-center gap-0.5">

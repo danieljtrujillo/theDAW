@@ -39,10 +39,13 @@ interface SlideKnobProps {
   /** Fixed accent colour position 0..1 (a style/skin override). When set, the
    *  dial colour no longer tracks the value — used by custom controls. */
   tint?: number;
+  /** Value a double-click resets to. Defaults to the bipolar midpoint for
+   *  `center` dials, else 0 (clamped into range). */
+  defaultValue?: number;
 }
 
 const SlideKnobImpl: React.FC<SlideKnobProps> = ({
-  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false, center = false, tint,
+  label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false, center = false, tint, defaultValue,
 }) => {
   const dragging = useRef(false);
   const lastY = useRef(0);
@@ -93,6 +96,9 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
   const onWheel = (e: React.WheelEvent) => {
     onChange(snap(value + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1)));
   };
+  // Double-click resets to the control's default (bipolar dials → center).
+  const resetValue = defaultValue ?? (center ? (min + max) / 2 : clamp(0, min, max));
+  const onDoubleClick = () => onChange(snap(resetValue));
   const onKeyDown = (e: React.KeyboardEvent) => {
     const s = step * (e.shiftKey ? 10 : 1);
     let h = true;
@@ -129,6 +135,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onDoubleClick={onDoubleClick}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
         onMouseEnter={() => setActive(true)}
