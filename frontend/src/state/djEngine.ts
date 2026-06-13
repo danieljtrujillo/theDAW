@@ -731,20 +731,69 @@ export async function loadSample(padId: string, url: string): Promise<void> {
   samples.set(padId, await ctx.decodeAudioData(await r.arrayBuffer()));
 }
 
-/** Fire a pad's sample as a one-shot through the DJ master (polyphonic). */
-export function triggerSample(padId: string): void {
+// Live sampler voices per pad (so loops can stop + choke groups can cut).
+const sampleVoices = new Map<string, AudioBufferSourceNode[]>();
+// Pads currently set to choke (mutually exclusive): firing one cuts the others.
+const chokePads = new Set<string>();
+
+export interface TriggerOpts { gain?: number; loop?: boolean; choke?: boolean }
+
+/** Fire a pad's sample through the DJ master. One-shot by default (polyphonic);
+ *  a `loop` pad toggles (re-trigger stops it); a `choke` pad cuts every other
+ *  choke pad first (monophonic group, e.g. open/closed hat). `gain` is 0..1. */
+export function triggerSample(padId: string, opts: TriggerOpts = {}): void {
   const buf = samples.get(padId);
   if (!buf) return;
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume().catch(() => { /* retry next gesture */ });
+
+  // A looping pad that's already playing stops on the next press.
+  if (opts.loop && (sampleVoices.get(padId)?.length ?? 0) > 0) { stopSample(padId); return; }
+
+  // Choke: cut every OTHER choke pad's voices before firing this one.
+  if (opts.choke) {
+    chokePads.add(padId);
+    for (const id of chokePads) if (id !== padId) stopSample(id);
+  } else {
+    chokePads.delete(padId);
+  }
+
+  const g = ctx.createGain();
+  g.gain.value = clamp(opts.gain ?? 1, 0, 1);
+  g.connect(ensureSamplerGain());
   const s = ctx.createBufferSource();
   s.buffer = buf;
-  s.connect(ensureSamplerGain());
-  s.onended = () => { try { s.disconnect(); } catch { /* gone */ } };
+  s.loop = !!opts.loop;
+  s.connect(g);
+  const arr = sampleVoices.get(padId) ?? [];
+  arr.push(s);
+  sampleVoices.set(padId, arr);
+  s.onended = () => {
+    try { s.disconnect(); g.disconnect(); } catch { /* gone */ }
+    const live = sampleVoices.get(padId);
+    if (live) { const i = live.indexOf(s); if (i >= 0) live.splice(i, 1); }
+  };
   s.start();
 }
 
-export function clearSample(padId: string): void { samples.delete(padId); }
+/** Stop a pad's currently-playing voices (loops, or a long one-shot). */
+export function stopSample(padId: string): void {
+  const arr = sampleVoices.get(padId);
+  if (!arr) return;
+  for (const s of [...arr]) { try { s.stop(); } catch { /* already ended */ } }
+  sampleVoices.set(padId, []);
+}
+
+/** True if a pad has any voice currently sounding (used for loop pad lit state). */
+export function sampleIsPlaying(padId: string): boolean {
+  return (sampleVoices.get(padId)?.length ?? 0) > 0;
+}
+
+export function clearSample(padId: string): void {
+  stopSample(padId);
+  chokePads.delete(padId);
+  samples.delete(padId);
+}
 export function hasSample(padId: string): boolean { return samples.has(padId); }
 
 /** Crossfader position in [-1, 1] (equal-power). */
@@ -869,6 +918,43 @@ export async function loadDeckStems(id: DeckId, stems: Array<{ name: string; url
   else d.startOffset = clamp(pos, 0, dur);
   emit();
   return d.stems.map((s) => s.name);
+}
+
+/** Turn stem mode OFF: reload the full-track buffer from the deck's loadedUrl
+ *  and restore single-source playback, preserving the playhead. The inverse of
+ *  loadDeckStems (which freed the full buffer to play stems). No-op off stems. */
+export async function unloadDeckStems(id: DeckId): Promise<void> {
+  const d = decks[id];
+  if (!d || !d.stemMode) return;
+  const url = d.loadedUrl;
+  const wasPlaying = d.playing;
+  const pos = audiblePos(d);
+  if (!url) {
+    // Nothing to restore — just drop stem mode (deck goes silent until reload).
+    stopSource(d);
+    teardownStems(d);
+    emit();
+    return;
+  }
+  d.decoding = true;
+  emit();
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`fetch ${resp.status}`);
+    const buf = await getEngineCtx().decodeAudioData(await resp.arrayBuffer());
+    if (d.loadedUrl !== url) return; // re-loaded with a different track meanwhile
+    stopSource(d);
+    teardownStems(d);
+    d.buffer = buf;
+    const dur = deckDuration(d);
+    if (wasPlaying) startSource(d, clamp(pos, 0, dur));
+    else d.startOffset = clamp(pos, 0, dur);
+  } catch (e) {
+    logError('dj', `Deck ${id} stem-off reload failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    if (d.loadedUrl === url) d.decoding = false;
+  }
+  emit();
 }
 
 /** Set a stem's live gain (0..1). 0 = pulled out (e.g. mute the vocals). */
