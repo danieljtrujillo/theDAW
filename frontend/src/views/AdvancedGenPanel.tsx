@@ -289,7 +289,15 @@ export const AdvancedGenPanel: React.FC<{
       // Pre-flight: announce where this model will come from BEFORE loading,
       // and call out loudly when a download is about to happen.
       if (!model.startsWith('local:')) {
-        const cat = await fetchCheckpoints().then((d) => d.catalog.find((c) => c.name === model)).catch(() => null);
+        const data = await fetchCheckpoints().catch(() => null);
+        const cat = data?.catalog.find((c) => c.name === model) ?? null;
+        if (cat?.source === 'download' && data?.local_only) {
+          // Local-only would just block this server-side; route to the fix.
+          logWarn('model', `${model}: not on this machine, and local-only blocks downloads. Pick an installed model or allow the download in Settings → Models.`);
+          window.dispatchEvent(new CustomEvent('stabledaw:open-settings', { detail: { section: 'models' } }));
+          setModelLoadState('idle');
+          return;
+        }
         if (cat?.source === 'download') {
           logWarn('model', `${model}: not in any local folder or the HF cache — this load DOWNLOADS it from huggingface.co/${cat.repo_id} (one-time)`);
         } else if (cat) {
