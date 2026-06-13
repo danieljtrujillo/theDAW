@@ -46,6 +46,10 @@ dependencies = [
     # These were installed manually but undeclared, so `uv sync` pruned them and
     # broke the MIDI module; declared here so the working set is stable.
     "basic-pitch>=0.4.0",
+    # Piano-roll transcription engine (the midi module's second engine beside
+    # basic-pitch). Downloads its checkpoint (~165 MB) to ~/piano_transcription
+    # on first use.
+    "piano-transcription-inference>=0.0.5",
     "pretty_midi>=0.2.11",
     "mido>=1.3.3",
     # notation module — symbolic music conversion / analysis backbone.
