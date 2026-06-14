@@ -268,7 +268,31 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
     }
 
 
+def _ensure_librosa_core_audio_shim() -> None:
+    """piano_transcription_inference's ``load_audio`` calls the pre-0.10
+    ``librosa.core.audio.{to_mono,resample}`` / ``librosa.core.audio.util``
+    API, which librosa >= 0.10 removed (it lives at ``librosa.to_mono`` /
+    ``librosa.resample`` / ``librosa.util`` now). Re-expose a ``librosa.core.audio``
+    module pointing at the moved functions so transcription works without
+    downgrading librosa.
+    """
+    import types
+
+    import librosa
+    import librosa.core
+    import librosa.util
+
+    if hasattr(librosa.core, "audio"):
+        return
+    shim = types.ModuleType("librosa.core.audio")
+    shim.to_mono = librosa.to_mono  # type: ignore[attr-defined]
+    shim.resample = librosa.resample  # type: ignore[attr-defined]
+    shim.util = librosa.util  # type: ignore[attr-defined]
+    librosa.core.audio = shim  # type: ignore[attr-defined]
+
+
 def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
+    _ensure_librosa_core_audio_shim()
     from piano_transcription_inference import (  # type: ignore[import]
         PianoTranscription,
         sample_rate,

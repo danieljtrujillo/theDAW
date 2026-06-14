@@ -155,6 +155,52 @@ def _export_root() -> str:
         return "exports/vj"
 
 
+def _resolved_export_root() -> str:
+    """Absolute, display-ready export root (resolving a relative setting
+    against the project root, the same way the exporter does)."""
+    try:
+        return str(export.resolve_export_dir(_export_root(), ""))
+    except OSError:
+        return _export_root()
+
+
+@router.get("/export-folder")
+def get_export_folder() -> dict:
+    """Current VJ export output folder — the raw setting plus the absolute
+    path takes are actually written under."""
+    return {
+        "ok": True,
+        "setting": _export_root(),
+        "path": _resolved_export_root(),
+    }
+
+
+@router.post("/export-folder/pick")
+def post_pick_export_folder() -> dict:
+    """Open a native OS folder picker so the user can click-through to an
+    output folder instead of typing a path. On confirm, persists the chosen
+    absolute path as ``vj.export_root`` and returns it. ``cancelled`` is true
+    when the user dismissed the dialog (the setting is left unchanged)."""
+    from ..settings.router import get_store
+
+    from backend.core.folder_dialog import pick_folder
+
+    chosen = pick_folder(
+        title="Choose theDAW VJ export output folder",
+        initial=_resolved_export_root(),
+    )
+    if not chosen:
+        return {"ok": True, "cancelled": True, "path": _resolved_export_root()}
+    try:
+        get_store().patch({"vj": {"export_root": chosen}})
+    except Exception as e:  # noqa: BLE001 — surface a clear save failure
+        raise HTTPException(
+            status_code=500, detail=f"Picked {chosen} but could not save it: {e}"
+        ) from e
+    log.info("vj.export: export_root set to %s", chosen)
+    return {"ok": True, "cancelled": False, "path": chosen, "setting": chosen}
+
+
 @router.post("/export")
 def post_export(
     file: UploadFile = File(...),

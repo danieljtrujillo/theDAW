@@ -1,0 +1,10 @@
+{
+  "name": "questcast",
+  "label": "Quest Cast",
+  "enabled": true,
+  "icon": "MonitorPlay",
+  "sidebar": false,
+  "api_prefix": "/api/questcast",
+  "backend": true,
+  "description": "Pipes a Quest (or any ADB device) into theDAW as a live video source with no terminal and no external scrcpy/OBS. Manages a Node sidecar that speaks the scrcpy protocol over the adb questmidi already uses, and relays raw H.264 to the browser over WebSocket (decoded with WebCodecs in the VJ). Disable to skip it entirely."
+}

@@ -28,6 +28,7 @@ import type { VisualControl } from '../state/slideStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useVjSetStatusStore } from '../state/vjSetStatusStore';
 import { logError, logInfo } from '../state/logStore';
+import { describeQuestCastStatus, type QuestCastStatus } from '../components/vj/QuestCastPreview';
 
 
 /**
@@ -87,10 +88,66 @@ export const VJView: React.FC = () => {
   // when the source is changed from inside the VJ app.
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [questStatus, setQuestStatus] = useState<QuestCastStatus | null>(null);
+  const [questBusy, setQuestBusy] = useState(false);
+  const [questDetail, setQuestDetail] = useState('QuestCast status not loaded yet.');
   const toggleCamera = () => {
     const next = !cameraOn;
     setCameraOn(next); // optimistic; reconciled by the camera-state echo
     postToIframe({ type: 'sa3-vj/camera', on: next });
+  };
+
+  const applyQuestStatus = (next: QuestCastStatus): string => {
+    setQuestStatus(next);
+    const summary = describeQuestCastStatus(next);
+    setQuestDetail(summary);
+    return summary;
+  };
+
+  const fetchQuestJson = async (path: string, init?: RequestInit): Promise<QuestCastStatus> => {
+    const response = await fetch(path, init);
+    const body = (await response.json().catch(() => ({}))) as QuestCastStatus;
+    if (!response.ok) {
+      throw new Error(body.detail || body.error || body.message || `QuestCast backend returned ${response.status}`);
+    }
+    return body;
+  };
+
+  const loadQuestStatus = async (quiet = false): Promise<QuestCastStatus | null> => {
+    if (!quiet) setQuestBusy(true);
+    try {
+      const body = await fetchQuestJson('/api/questcast/status');
+      const summary = applyQuestStatus(body);
+      if (!quiet) logInfo('questcast', `Status: ${summary}`);
+      return body;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      applyQuestStatus({ state: 'error', error: message });
+      if (!quiet) logError('questcast', `Status failed: ${message}`);
+      return null;
+    } finally {
+      if (!quiet) setQuestBusy(false);
+    }
+  };
+
+  const setQuestRelay = async (action: 'start' | 'stop') => {
+    setQuestBusy(true);
+    setQuestDetail(action === 'start' ? 'Starting ADB + scrcpy relay…' : 'Stopping QuestCast relay…');
+    try {
+      const body = await fetchQuestJson(`/api/questcast/${action}`, { method: 'POST' });
+      const summary = applyQuestStatus(body);
+      if (body.ok === false || body.state === 'error' || body.error) {
+        logError('questcast', `${action} reported a problem: ${summary}`);
+      } else {
+        logInfo('questcast', `${action === 'start' ? 'Started' : 'Stopped'}: ${summary}`);
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      applyQuestStatus({ state: 'error', error: message });
+      logError('questcast', `${action} failed: ${message}`);
+    } finally {
+      setQuestBusy(false);
+    }
   };
 
   // Live SET hand-off status — "sending…" optimistically, "confirmed" once the
@@ -180,6 +237,14 @@ export const VJView: React.FC = () => {
 
   useEffect(() => {
     void loadUrl();
+  }, []);
+
+  // QuestCast diagnostics: lightweight polling only reads backend state. Start
+  // and stop are explicit button actions so ADB/scrcpy never spawn silently.
+  useEffect(() => {
+    void loadQuestStatus(true);
+    const timer = window.setInterval(() => void loadQuestStatus(true), 5000);
+    return () => window.clearInterval(timer);
   }, []);
 
   // ── Audio bridge: read SA3's master AnalyserNode every animation
@@ -487,6 +552,24 @@ export const VJView: React.FC = () => {
     setPopped(false);
   };
 
+  const questState = typeof questStatus?.state === 'string'
+    ? questStatus.state
+    : questStatus?.running
+    ? 'running'
+    : 'idle';
+  const questReady = questState === 'ready';
+  const questRunning = Boolean(questStatus?.running) || questReady;
+  const questErrored = questState === 'error' || Boolean(questStatus?.error);
+  const questLabel = questReady
+    ? typeof questStatus?.ws_port === 'number'
+      ? `WS ${questStatus.ws_port}`
+      : 'Ready'
+    : questErrored
+    ? 'Error'
+    : questRunning
+    ? questState
+    : 'Start';
+
   return (
     <div className="absolute inset-0 flex flex-col bg-black">
       {/* Toolbar */}
@@ -585,6 +668,46 @@ export const VJView: React.FC = () => {
             {cameraOn ? <Camera className="w-2.5 h-2.5" /> : <CameraOff className="w-2.5 h-2.5" />}
             Cam
           </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => void setQuestRelay(questRunning ? 'stop' : 'start')}
+              disabled={questBusy}
+              className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors disabled:opacity-60 disabled:pointer-events-none ${
+                questErrored
+                  ? 'border-rose-500/50 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                  : questReady
+                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                  : questRunning
+                  ? 'border-sky-500/50 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20'
+                  : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/5'
+              }`}
+              title={`${questRunning ? 'Click to stop' : 'Click to start'} direct QuestCast ADB/scrcpy relay. This does not use the browser window picker. ${questDetail}`}
+              aria-label="Toggle QuestCast ADB video relay"
+              aria-pressed={questRunning}
+            >
+              {questBusy ? (
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              ) : questErrored ? (
+                <AlertCircle className="w-2.5 h-2.5" />
+              ) : questReady ? (
+                <Check className="w-2.5 h-2.5" />
+              ) : (
+                <Tv2 className="w-2.5 h-2.5" />
+              )}
+              Quest Direct {questLabel}
+            </button>
+            <button
+              type="button"
+              onClick={() => void loadQuestStatus()}
+              disabled={questBusy}
+              className="p-1 rounded border border-white/10 text-zinc-500 hover:text-zinc-100 hover:border-white/20 hover:bg-white/5 disabled:opacity-50 disabled:pointer-events-none"
+              title={`Refresh QuestCast status. ${questDetail}`}
+              aria-label="Refresh QuestCast status"
+            >
+              <RefreshCw className="w-2.5 h-2.5" />
+            </button>
+          </div>
           {/* Master MIDI toggle — grey when OFF (no Web MIDI access, no
               prompt), colour when ON. Turning it on lets a controller
               drive the piano synth, the global MIDI bus, and the VJ
@@ -793,8 +916,11 @@ export const VJView: React.FC = () => {
             // `midi` is required so the iframe (VJ project) can call
             // navigator.requestMIDIAccess() — without it the browser's
             // Permissions Policy blocks the call inside the iframe even
-            // though SA3 has access at the top frame.
-            allow="microphone; camera; autoplay; fullscreen; midi"
+            // though SA3 has access at the top frame. `display-capture`
+            // lets the VJ's SCREEN source call getDisplayMedia() to grab a
+            // window/display (e.g. a scrcpy-mirrored Quest) from inside the
+            // iframe.
+            allow="microphone; camera; autoplay; fullscreen; midi; display-capture; clipboard-write"
             // sandbox is deliberately NOT set here because the VJ app
             // is a same-origin (localhost) sibling app we control —
             // we want full window APIs (audio context, MIDI, etc.).
@@ -802,6 +928,10 @@ export const VJView: React.FC = () => {
             title="VJ — Live visuals"
           />
         )}
+        {/* The live Quest preview now lives INSIDE the VJ app's right panel,
+            reusing the in-VJ decoded stream — so we no longer decode a second
+            copy here (kills the double HW-decode of the 60fps feed). The host
+            toolbar still controls the relay (start/stop/refresh). */}
       </div>
     </div>
   );

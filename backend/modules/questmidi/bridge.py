@@ -19,9 +19,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 from typing import Awaitable, Callable, Optional
+
+from backend.core.adb import resolve_adb_path
 
 log = logging.getLogger(__name__)
 
@@ -38,10 +39,9 @@ def _port() -> int:
 
 def _adb_path() -> Optional[str]:
     """Resolve adb: explicit env override, else PATH."""
-    env = os.getenv("theDAW_QUESTMIDI_ADB")
-    if env and os.path.isfile(env):
-        return env
-    return shutil.which("adb") or shutil.which("adb.exe")
+    return resolve_adb_path(
+        "theDAW_QUESTMIDI_ADB", "theDAW_ADB", "theDAW_QUESTCAST_ADB"
+    )
 
 
 class _State:
