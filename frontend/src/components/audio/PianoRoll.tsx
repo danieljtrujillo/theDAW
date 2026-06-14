@@ -8,6 +8,7 @@ import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import { triggerSynthVoice, renderStepNotesToBlob } from '../../lib/midiSynth';
 
 const NOTE_HEIGHT = 12;
 const HEADER_HEIGHT = 22;
@@ -17,43 +18,13 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 const isBlackKey = (midi: number) => [1, 3, 6, 8, 10].includes(midi % 12);
 const noteLabel = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
-/**
- * Schedule a single sawtooth+lowpass+env voice on the given context. Used both
- * for live playback (engine ctx + master gain) and offline rendering
- * (OfflineAudioContext + its destination).
- */
-const triggerPianoNoteOn = (
-  ctx: BaseAudioContext,
-  dest: AudioNode,
-  midi: number,
-  velocity: number,
-  when: number,
-  duration: number,
-  master: number,
-): void => {
-  const freq = 440 * Math.pow(2, (midi - 69) / 12);
-  const osc = ctx.createOscillator();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(freq, when);
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass';
-  lp.frequency.setValueAtTime(Math.min(8000, freq * 6), when);
-  const env = ctx.createGain();
-  const peak = (velocity / 127) * 0.7 * master;
-  env.gain.setValueAtTime(0.001, when);
-  env.gain.exponentialRampToValueAtTime(peak, when + 0.008);
-  env.gain.setTargetAtTime(peak * 0.5, when + 0.05, 0.08);
-  env.gain.setTargetAtTime(0.001, when + duration, 0.05);
-  osc.connect(lp).connect(env).connect(dest);
-  osc.start(when);
-  osc.stop(when + duration + 0.2);
-};
-
-/** Live preview convenience: route through the shared engine master/analyser. */
+/** Live preview convenience: route the shared synth voice through the engine
+ *  master/analyser. The voice itself lives in `lib/midiSynth` so previews,
+ *  bounces, and library MIDI renders all sound identical. */
 const triggerPianoNote = (midi: number, velocity: number, when: number, duration: number, master: number) => {
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume();
-  triggerPianoNoteOn(ctx, getMasterGain(), midi, velocity, when, duration, master);
+  triggerSynthVoice(ctx, getMasterGain(), midi, velocity, when, duration, master);
 };
 
 /**
@@ -75,67 +46,14 @@ export const triggerPianoNoteFromMidi = (midi: number, velocity = 100, duration 
   triggerPianoNote(midi, velocity, ctx.currentTime + 0.02, duration, 0.8);
 };
 
-// --- WAV encoder (16-bit PCM, mirrors WaveformEditor.encodeWav) ---
-const encodeWavBlob = (audioBuf: AudioBuffer): Blob => {
-  const numCh = audioBuf.numberOfChannels;
-  const sr = audioBuf.sampleRate;
-  const len = audioBuf.length;
-  const buffer = new ArrayBuffer(44 + len * numCh * 2);
-  const view = new DataView(buffer);
-  const writeStr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + len * numCh * 2, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numCh, true);
-  view.setUint32(24, sr, true);
-  view.setUint32(28, sr * numCh * 2, true);
-  view.setUint16(32, numCh * 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, len * numCh * 2, true);
-  const channels: Float32Array[] = [];
-  for (let c = 0; c < numCh; c += 1) channels.push(audioBuf.getChannelData(c));
-  let offset = 44;
-  for (let i = 0; i < len; i += 1) {
-    for (let c = 0; c < numCh; c += 1) {
-      const sample = Math.max(-1, Math.min(1, channels[c][i]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
-    }
-  }
-  return new Blob([buffer], { type: 'audio/wav' });
-};
-
-/** Render the current pattern offline to a WAV Blob. Used by SEND TO EDITOR. */
-const renderPianoRollToBlob = async (
+/** Render the current pattern offline to a WAV Blob. Used by SEND TO EDITOR.
+ *  Delegates to the shared step renderer in `lib/midiSynth`. */
+const renderPianoRollToBlob = (
   notes: PianoNote[],
   bpm: number,
   totalSteps: number,
-): Promise<{ blob: Blob; duration: number }> => {
-  const sr = 44100;
-  const stepSec = 60 / Math.max(40, bpm) / 4; // 16th note seconds
-  // Total length = (last note end + 0.5s tail).
-  let maxEnd = 0;
-  for (const n of notes) {
-    const end = (n.step + n.length) * stepSec;
-    if (end > maxEnd) maxEnd = end;
-  }
-  const padTail = 0.6;
-  const totalSec = Math.max(maxEnd, totalSteps * stepSec) + padTail;
-  const offline = new OfflineAudioContext(2, Math.ceil(totalSec * sr), sr);
-  for (const n of notes) {
-    const when = n.step * stepSec;
-    const dur = n.length * stepSec;
-    triggerPianoNoteOn(offline, offline.destination, n.note, n.velocity, when, dur, 1);
-  }
-  const rendered = await offline.startRendering();
-  return { blob: encodeWavBlob(rendered), duration: rendered.duration };
-};
+): Promise<{ blob: Blob; duration: number }> =>
+  renderStepNotesToBlob(notes, bpm, totalSteps);
 
 // Re-declared after the imports section so it picks up the imported
 // MidiMapper symbol without circular-import gymnastics.

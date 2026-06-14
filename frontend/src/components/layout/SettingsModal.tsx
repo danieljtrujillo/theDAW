@@ -12,21 +12,17 @@ import { SlideTrack } from '../audio/SlideTrack';
 import { PathInput } from '../ui/PathInput';
 // CHANGED: Suno cloud-generation API key section (surfaced in Settings).
 import { SunoKeySettings } from '../../suno/SunoKeySettings';
-
-interface ModuleConfig {
-  name: string;
-  label?: string;
-  description?: string;
-  version?: string;
-  enabled: boolean;
-  api_prefix?: string;
-  _dir?: string;
-  _loaded?: boolean;
-}
+import { useModuleStore, type ModuleConfig } from '../../state/moduleStore';
 
 export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
-  const [modules, setModules] = useState<ModuleConfig[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Modules come from the shared store, preloaded on backend-ready (App.tsx).
+  // The modal never fetches on open, so it can't show a false "no modules"
+  // during a backend (re)start — the list is already cached and warm.
+  const modules = useModuleStore((s) => s.modules);
+  const loading = useModuleStore((s) => s.loading && !s.loaded);
+  const moduleError = useModuleStore((s) => s.error);
+  const loadModules = useModuleStore((s) => s.load);
+  const setModuleEnabled = useModuleStore((s) => s.setEnabled);
   const [dirty, setDirty] = useState(false);
   const [changedModules, setChangedModules] = useState<Set<string>>(() => new Set());
   const [toggling, setToggling] = useState<string | null>(null);
@@ -44,27 +40,20 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
 
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
     setDirty(false);
     setChangedModules(new Set());
     void refreshFeatures();
-    fetch('/api/modules/all')
-      .then((r) => r.json() as Promise<ModuleConfig[]>)
-      .then((data) => setModules(Array.isArray(data) ? data : []))
-      .catch(() => setModules([]))
-      .finally(() => setLoading(false));
-  }, [open, refreshFeatures]);
+    // The catalog is normally already warm (preloaded on backend-ready). This
+    // is a no-op when loaded; it only does work if the preload hasn't run yet
+    // or a previous attempt errored.
+    void loadModules();
+  }, [open, refreshFeatures, loadModules]);
 
   const toggleModule = async (dirName: string, enabled: boolean) => {
     setToggling(dirName);
     try {
-      const res = await fetch(`/api/modules/${dirName}/enabled`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
-      if (res.ok) {
-        setModules((prev) => prev.map((m) => (m._dir === dirName ? { ...m, enabled } : m)));
+      const ok = await setModuleEnabled(dirName, enabled);
+      if (ok) {
         setDirty(true);
         setChangedModules((prev) => new Set(prev).add(dirName));
       }
@@ -133,6 +122,18 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             <div className="flex items-center justify-center gap-2 py-10 text-zinc-600">
               <RefreshCw className="w-3.5 h-3.5 animate-spin" />
               <span className="text-[9px] font-mono">Loading modules...</span>
+            </div>
+          ) : moduleError ? (
+            <div className="flex flex-col items-center gap-2 py-8 text-center">
+              <AlertTriangle className="w-4 h-4 text-amber-400" />
+              <span className="text-[9px] font-mono text-amber-300">Couldn't reach the backend ({moduleError}).</span>
+              <span className="text-[8px] font-mono text-zinc-600">Modules are loaded from the server — this is a connection issue, not missing modules.</span>
+              <button
+                onClick={() => void loadModules()}
+                className="mt-1 px-3 py-1 rounded border border-purple-500/40 bg-purple-500/15 hover:bg-purple-500/25 text-purple-200 text-[9px] font-black uppercase tracking-widest"
+              >
+                Retry
+              </button>
             </div>
           ) : modules.length === 0 ? (
             <div className="text-center py-10 text-[9px] text-zinc-600 font-mono">No modules found in backend/modules/</div>

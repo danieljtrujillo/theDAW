@@ -36,7 +36,7 @@ from typing import Any, Iterator, Optional
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 # Each tuple is (schema_version_after_running, statements list).
@@ -232,6 +232,16 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE entries ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE entries ADD COLUMN last_played_at REAL",
             "CREATE INDEX IF NOT EXISTS idx_entries_play_count ON entries(play_count DESC)",
+        ],
+    ),
+    (
+        5,
+        [
+            # Stems and MIDI become first-class library items: they can be
+            # favorited just like parent tracks. Default 0 keeps existing
+            # rows unflagged.
+            "ALTER TABLE stems ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE midis ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
         ],
     ),
 ]
@@ -708,6 +718,35 @@ class LibraryDB:
             cur.close()
             return [dict(r) for r in rows]
 
+    def get_stem(self, stem_id: str) -> Optional[dict[str, Any]]:
+        """Look one stem row up by its globally-unique id."""
+        with self._writelock:
+            cur = self._conn.cursor()
+            row = cur.execute("SELECT * FROM stems WHERE id = ?", (stem_id,)).fetchone()
+            cur.close()
+            return dict(row) if row else None
+
+    def set_stem_favorite(self, stem_id: str, favorite: bool) -> bool:
+        with self._txn() as cur:
+            cur.execute(
+                "UPDATE stems SET favorite = ? WHERE id = ?",
+                (1 if favorite else 0, stem_id),
+            )
+            return cur.rowcount > 0
+
+    def delete_stem(self, stem_id: str) -> bool:
+        """Drop one stem row. Caller is responsible for deleting the file on
+        disk (the path lives in ``audio_path``)."""
+        with self._txn() as cur:
+            cur.execute("DELETE FROM stems WHERE id = ?", (stem_id,))
+            deleted = cur.rowcount > 0
+            # Polymorphic edges may reference this stem id (stems-of / midi-of).
+            cur.execute(
+                "DELETE FROM relations WHERE from_id = ? OR to_id = ?",
+                (stem_id, stem_id),
+            )
+            return deleted
+
     def add_midi(
         self,
         *,
@@ -750,6 +789,34 @@ class LibraryDB:
             ).fetchall()
             cur.close()
             return [dict(r) for r in rows]
+
+    def get_midi(self, midi_id: str) -> Optional[dict[str, Any]]:
+        """Look one MIDI row up by its globally-unique id."""
+        with self._writelock:
+            cur = self._conn.cursor()
+            row = cur.execute("SELECT * FROM midis WHERE id = ?", (midi_id,)).fetchone()
+            cur.close()
+            return dict(row) if row else None
+
+    def set_midi_favorite(self, midi_id: str, favorite: bool) -> bool:
+        with self._txn() as cur:
+            cur.execute(
+                "UPDATE midis SET favorite = ? WHERE id = ?",
+                (1 if favorite else 0, midi_id),
+            )
+            return cur.rowcount > 0
+
+    def delete_midi(self, midi_id: str) -> bool:
+        """Drop one MIDI row. Caller deletes the .mid file on disk
+        (path lives in ``midi_path``)."""
+        with self._txn() as cur:
+            cur.execute("DELETE FROM midis WHERE id = ?", (midi_id,))
+            deleted = cur.rowcount > 0
+            cur.execute(
+                "DELETE FROM relations WHERE from_id = ? OR to_id = ?",
+                (midi_id, midi_id),
+            )
+            return deleted
 
     def add_notation_artifact(
         self,

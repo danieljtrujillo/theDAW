@@ -58,14 +58,15 @@ export default defineConfig(({mode}) => {
           timeout: 0,
           proxyTimeout: 0,
           configure: (proxy) => {
-            proxy.on('error', (err, _req, res) => {
-              // Return a proper JSON error instead of silently swallowing.
-              // Without this, failed proxy requests hang indefinitely or
-              // fall through to Vite's SPA handler producing misleading
-              // "Not Found" or HTML responses instead of clear error JSON.
-              if (res && !res.headersSent) {
-                res.writeHead(502, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
+            proxy.on('error', (_err, _req, res) => {
+              // For HTTP errors res is ServerResponse; for WebSocket errors it
+              // is a net.Socket (no writeHead). Guard before writing headers.
+              const r = res as Record<string, unknown>;
+              if (typeof r['writeHead'] === 'function' && !r['headersSent']) {
+                (r['writeHead'] as (s: number, h: Record<string, string>) => void)(
+                  502, { 'Content-Type': 'application/json' }
+                );
+                (r['end'] as (b: string) => void)(JSON.stringify({
                   detail: 'Backend unreachable — is the server running on port 8600?',
                 }));
               }
