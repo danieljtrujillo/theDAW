@@ -712,10 +712,25 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
 
           // Load the first new entry into the player so playback works
           // immediately. The blob comes from the backend streaming URL.
-          const after = useLibraryStore.getState().entries;
-          const firstEntry = items[0]?.audio_base64
-            ? after.find((e) => e.id === `${jobId}_00`) ?? after.find((e) => e.id === jobId)
-            : null;
+          //
+          // The backend writes artifacts synchronously before reporting
+          // 'completed', but the library list index can lag that write by a
+          // beat — when it does, the entry isn't in the just-refreshed list
+          // and the track silently fails to appear ("manual reload"). Re-
+          // refresh a few times until the expected id shows up so generated
+          // tracks reliably land in the library.
+          const findFirst = () => {
+            const after = useLibraryStore.getState().entries;
+            return items[0]?.audio_base64
+              ? after.find((e) => e.id === `${jobId}_00`) ?? after.find((e) => e.id === jobId) ?? null
+              : null;
+          };
+          let firstEntry = findFirst();
+          for (let attempt = 0; !firstEntry && items[0]?.audio_base64 && attempt < 5; attempt += 1) {
+            await wait(400);
+            await useLibraryStore.getState().refresh();
+            firstEntry = findFirst();
+          }
           if (firstEntry) {
             try {
               const loadT0 = performance.now();
@@ -735,7 +750,10 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
               logError('generate', `Player load failed: ${msg}`);
             }
           } else {
-            logError('generate', `Could not find freshly-saved entry for job ${jobId}; library may need a manual reload.`);
+            // Retries exhausted: surface it instead of leaving the user to
+            // wonder why a track they just generated is missing.
+            logError('generate', `Could not find freshly-saved entry for job ${jobId} after retries — try reloading the library panel.`);
+            useStatusBarStore.getState().setText('Saved to disk, but the library list did not refresh — reload the Library panel.');
           }
 
           useStatusBarStore.getState().setText('GENERATION COMPLETE');

@@ -425,6 +425,13 @@ Two related problems, one task:
 
 Guard rail: the VJ app lives in a separate repo working tree — the error-message fix is a separate commit there (standing constraint §7).
 
+**Research findings (2026-06-13).** Quest video-in without MQDH is feasible; two tiers:
+
+- **Tier 1 — rendered headset view, zero app changes to the source (RECOMMENDED first).** The Quest is Android, so `scrcpy` (FOSS, ADB over USB or Wi-Fi, no MQDH) mirrors the in-headset rendered view to a desktop window. Pipe that window through OBS → **OBS Virtual Camera**, which then appears as a normal `videoinput` device. The VJ app already takes a camera via `getUserMedia`, so the only code gap is the camera source: `GANTASMO-LIVE-VJ/src/useMedia.ts:71` hardcodes `{ facingMode: 'environment' }` with NO device picker, so it grabs the default camera and the user can't choose the OBS virtual cam. **Concrete task: add a device picker** — `navigator.mediaDevices.enumerateDevices()` → list `videoinput`s → request `{ deviceId: { exact } }`. That single change unlocks scrcpy→OBS→VJ (and any other capture device) with no Quest-side dependency beyond scrcpy+OBS.
+- **Tier 2 — raw passthrough, needs Unity work.** The Quest browser cannot access the passthrough/headset cameras (no web API). Raw passthrough requires the **Quest Passthrough Camera API** (Quest 3, recent Meta SDK) inside a native/Unity app, which then streams out over WebRTC/RTSP to the VJ app as a source. This ties into the existing `GANTASMO-MIDI` Unity app (memory `project_gantasmo_midi_unity`) — reuse its transport. Bigger lift; only pursue if Tier 1's rendered view isn't enough.
+
+Dependency footprint: Tier 1 = scrcpy + OBS (both FOSS, user-installed, no app deps) + a ~30-line device-picker change in the VJ app. Tier 2 = Unity Passthrough Camera API + a WebRTC/RTSP path. Recommend shipping Tier 1's device picker first.
+
 ## 6.8. Phase H — active incident fix: stems sidecar timeout + MIDI charmap error
 
 User ask (2026-06-13): resolve the backend failure where library import returned 200, stems sidecar failed to write `backend_port.txt` within 300 seconds after missing `torch`/`torchcrepe`, `torchvision 0.27.0` required `torch==2.12.0` but `torch 2.11.0+cu128` was installed, and `basic_pitch` MIDI conversion failed on Windows with a `charmap` emoji encoding error.
