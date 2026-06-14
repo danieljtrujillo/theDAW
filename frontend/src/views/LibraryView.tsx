@@ -24,8 +24,10 @@ import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { listMedia, importMedia, deleteMedia, MEDIA_ACCEPT } from '../lib/mediaLibrary';
 import { setAudioDragData } from '../lib/audioDnD';
+import { renderMidiBufferToBlob } from '../lib/midiSynth';
 import {
   loadMidiIntoPianoRoll,
+  midiIdToSendable,
   sendAudioToChimera,
   sendAudioToEditor,
   sendAudioToInit,
@@ -305,6 +307,27 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       setMediaEntries(await listMedia());
     } catch (e) {
       logError('library', `Failed to refresh media library: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
+
+  // In-place refresh of the stems / midi indexes (no null-flicker, unlike the
+  // lazy first-load). Passed to SubTabList so favorite / delete update the list
+  // without resetting the sub-tab to its "Loading…" placeholder.
+  const refreshStems = React.useCallback(async () => {
+    try {
+      const j = await fetch('/api/library/_all/stems').then((r) => r.json());
+      setAllStems(j.stems || []);
+    } catch (e) {
+      logError('library', `Failed to refresh stems: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
+
+  const refreshMidi = React.useCallback(async () => {
+    try {
+      const j = await fetch('/api/library/_all/midi').then((r) => r.json());
+      setAllMidis(j.midis || []);
+    } catch (e) {
+      logError('library', `Failed to refresh MIDI: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, []);
 
@@ -1026,6 +1049,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             parentTitles={Object.fromEntries(entries.map((e) => [e.id, e.title]))}
             kind="stem"
             placeholder={allStems === null ? 'Loading stems…' : 'No stems yet. Enable auto-stems in Settings or right-click a track → Separate stems.'}
+            onMutated={refreshStems}
           />
         )}
         {subTab === 'midi' && (
@@ -1034,6 +1058,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             parentTitles={Object.fromEntries(entries.map((e) => [e.id, e.title]))}
             kind="midi"
             placeholder={allMidis === null ? 'Loading MIDI…' : 'No MIDI yet. Enable auto-MIDI in Settings or right-click a track → Convert to MIDI.'}
+            onMutated={refreshMidi}
           />
         )}
         {subTab === 'video' && (
@@ -1589,6 +1614,8 @@ interface SubTabListProps {
   parentTitles: Record<string, string>;
   kind: 'stem' | 'midi';
   placeholder: string;
+  /** Re-fetch the index in place after a favorite toggle or delete. */
+  onMutated: () => void | Promise<void>;
 }
 
 type SubTabRowPayload =
@@ -1596,12 +1623,76 @@ type SubTabRowPayload =
   | { kind: 'stem'; row: Record<string, unknown> };
 
 
-const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder }) => {
+const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated }) => {
   const parentIds = Object.keys(byParent);
   // Shared ContextMenu primitive — fixes drift under .dense-layout
   // zoom and gives consistent close-on-outside behavior across the
   // app (plan step 3d migration).
   const rowMenu = useContextMenu<SubTabRowPayload>();
+
+  // Stems and MIDI are first-class library items: they play through the
+  // global engine, can be favorited, and can be deleted independently of
+  // their parent track. MIDI playback synthesizes via the shared sawtooth
+  // engine in lib/midiSynth (no soundfont needed).
+  const engineLoad = usePlayerStore((s) => s.load);
+  const enginePlay = usePlayerStore((s) => s.play);
+  const enginePause = usePlayerStore((s) => s.pause);
+  const engineIsPlaying = usePlayerStore((s) => s.isPlaying);
+  const engineEntryId = usePlayerStore((s) => s.currentEntryId);
+  const [playingRowKey, setPlayingRowKey] = useState<string | null>(null);
+  const [busyRowKey, setBusyRowKey] = useState<string | null>(null);
+
+  // Stems / MIDI load with no entryId, so currentEntryId is null while one is
+  // playing. If a real track takes over the engine, currentEntryId goes
+  // non-null and our rows stop showing the pause state.
+  const rowIsPlaying = (rowKey: string) =>
+    playingRowKey === rowKey && engineIsPlaying && engineEntryId === null;
+
+  const playRow = async (rowKey: string, label: string, fetchBlob: () => Promise<Blob>) => {
+    if (rowIsPlaying(rowKey)) {
+      enginePause();
+      return;
+    }
+    setBusyRowKey(rowKey);
+    try {
+      const blob = await fetchBlob();
+      await engineLoad(blob, { label });
+      enginePlay();
+      setPlayingRowKey(rowKey);
+    } catch (e) {
+      logError('library', `Could not play ${label}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyRowKey(null);
+    }
+  };
+
+  const toggleFavorite = async (isMidi: boolean, rowId: string, current: boolean) => {
+    const url = isMidi ? `/api/midi/file/${rowId}` : `/api/library/stems/${rowId}`;
+    try {
+      const res = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorite: !current }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await onMutated();
+    } catch (e) {
+      logError('library', `Could not update favorite: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const deleteRow = async (isMidi: boolean, rowId: string, label: string) => {
+    if (!window.confirm(`Delete "${label}"? This removes the file from disk and cannot be undone.`)) return;
+    const url = isMidi ? `/api/midi/file/${rowId}` : `/api/library/stems/${rowId}`;
+    try {
+      const res = await fetch(url, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      logInfo('library', `Deleted ${isMidi ? 'MIDI' : 'stem'} "${label}".`);
+      await onMutated();
+    } catch (e) {
+      logError('library', `Could not delete: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   if (parentIds.length === 0) {
     return <p className="text-[10px] text-zinc-500 italic py-4 text-center">{placeholder}</p>;
@@ -1612,6 +1703,7 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
   let menuTitle = '';
 
   if (payload?.kind === 'midi') {
+    const sendable = midiIdToSendable(payload.midiId, payload.label);
     menuTitle = `MIDI · ${payload.label}`;
     menuItems = [
       {
@@ -1626,6 +1718,33 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         icon: <ListOrdered className="w-3 h-3" />,
         onSelect: () => { void sendMidiIdToTarget(payload.midiId, 'step-seq'); },
       },
+      { type: 'separator' },
+      {
+        type: 'item',
+        label: 'Send to editor (synth)',
+        icon: <Layers className="w-3 h-3" />,
+        hint: 'new track',
+        onSelect: () => { void sendAudioToEditor(sendable, 'editor-new-track'); },
+      },
+      {
+        type: 'item',
+        label: 'Send to Init audio (synth)',
+        icon: <Wand2 className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToInit(sendable); },
+      },
+      {
+        type: 'item',
+        label: 'Send to Inpaint (synth)',
+        icon: <PenLine className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToInpaint(sendable); },
+      },
+      {
+        type: 'item',
+        label: 'Add to Chimera (synth)',
+        icon: <Music className="w-3 h-3" />,
+        onSelect: () => { void sendAudioToChimera([sendable]); },
+      },
+      { type: 'separator' },
       {
         type: 'item',
         label: 'Download .mid',
@@ -1638,6 +1757,13 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
           a.click();
           document.body.removeChild(a);
         },
+      },
+      {
+        type: 'item',
+        label: 'Delete MIDI',
+        icon: <Trash2 className="w-3 h-3" />,
+        danger: true,
+        onSelect: () => { void deleteRow(true, payload.midiId, payload.label); },
       },
     ];
   } else if (payload?.kind === 'stem') {
@@ -1671,6 +1797,7 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         icon: <Music className="w-3 h-3" />,
         onSelect: () => { void sendAudioToChimera([sendable]); },
       },
+      { type: 'separator' },
       {
         type: 'item',
         label: 'Download .wav',
@@ -1683,6 +1810,13 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
           a.click();
           document.body.removeChild(a);
         },
+      },
+      {
+        type: 'item',
+        label: 'Delete stem',
+        icon: <Trash2 className="w-3 h-3" />,
+        danger: true,
+        onSelect: () => { void deleteRow(false, stemId, stemName); },
       },
     ];
   }
@@ -1697,30 +1831,83 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
           <div className="flex flex-col gap-0.5">
             {byParent[pid].map((row, idx) => {
               const isMidi = kind === 'midi';
-              const midiId = String(row.id ?? '');
-              const label = String((isMidi ? row.source : row.stem_name) ?? 'item');
+              const rowId = String(row.id ?? '');
+              const name = isMidi ? String(row.source ?? 'midi') : String(row.stem_name ?? 'stem');
+              const label = parentTitles[pid] ? `${parentTitles[pid]} · ${name}` : name;
+              const favorite = !!row.favorite;
+              const rowKey = `${kind}:${rowId}`;
+              const busy = busyRowKey === rowKey;
+              const playing = rowIsPlaying(rowKey);
+              const meta = isMidi
+                ? `${row.engine ?? ''}`
+                : `${row.model ?? ''} ${row.model_variant ?? ''}`.trim();
               return (
                 <div
-                  key={String(row.id ?? idx)}
-                  className="flex items-center justify-between text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded cursor-context-menu"
+                  key={rowId || idx}
+                  className="group flex items-center gap-1 text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded"
                   onContextMenu={(e) => {
                     if (isMidi) {
-                      if (!midiId) return;
-                      rowMenu.open(e, { kind: 'midi', midiId, label });
+                      if (!rowId) return;
+                      rowMenu.open(e, { kind: 'midi', midiId: rowId, label });
                     } else {
                       rowMenu.open(e, { kind: 'stem', row });
                     }
                   }}
-                  title="Right-click to send this anywhere"
+                  title="Right-click for more — send to editor / init / inpaint / chimera"
                 >
-                  <span className="truncate">
-                    {kind === 'stem' ? String(row.stem_name ?? 'stem') : String(row.source ?? 'midi')}
-                  </span>
-                  <span className="text-[8px] text-zinc-600 ml-2">
-                    {kind === 'stem'
-                      ? `${row.model ?? ''} ${row.model_variant ?? ''}`.trim()
-                      : `${row.engine ?? ''}`}
-                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 p-0.5 rounded hover:bg-white/10"
+                    onClick={() => { void toggleFavorite(isMidi, rowId, favorite); }}
+                    title={favorite ? 'Unfavorite' : 'Favorite'}
+                    aria-label={favorite ? `Unfavorite ${name}` : `Favorite ${name}`}
+                  >
+                    <Star className={`w-2.5 h-2.5 ${favorite ? 'text-yellow-500 fill-current' : 'text-zinc-700'}`} />
+                  </button>
+                  <button
+                    type="button"
+                    className="shrink-0 p-0.5 rounded hover:bg-white/10"
+                    disabled={busy}
+                    onClick={() => {
+                      void playRow(
+                        rowKey,
+                        label,
+                        isMidi
+                          ? async () => {
+                              const res = await fetch(`/api/midi/file/${rowId}`);
+                              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                              const { blob } = await renderMidiBufferToBlob(await res.arrayBuffer());
+                              return blob;
+                            }
+                          : async () => {
+                              const res = await fetch(`/api/library/stems/${rowId}/audio`);
+                              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                              return res.blob();
+                            },
+                      );
+                    }}
+                    title={playing ? 'Pause' : isMidi ? 'Play (synth)' : 'Play'}
+                    aria-label={playing ? `Pause ${name}` : `Play ${name}`}
+                  >
+                    {busy ? (
+                      <Loader2 className="w-2.5 h-2.5 animate-spin text-purple-400" />
+                    ) : playing ? (
+                      <Pause className="w-2.5 h-2.5 text-purple-400" />
+                    ) : (
+                      <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />
+                    )}
+                  </button>
+                  <span className="truncate flex-1 min-w-0">{name}</span>
+                  <span className="text-[8px] text-zinc-600 ml-1 shrink-0">{meta}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 p-0.5 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => { void deleteRow(isMidi, rowId, name); }}
+                    title="Delete"
+                    aria-label={`Delete ${name}`}
+                  >
+                    <Trash2 className="w-2.5 h-2.5 text-zinc-600 hover:text-red-400" />
+                  </button>
                 </div>
               );
             })}

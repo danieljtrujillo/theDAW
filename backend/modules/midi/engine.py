@@ -17,7 +17,9 @@ caller-supplied output path; we don't manage paths internally.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
+import io
 import logging
 import shutil
 import subprocess
@@ -226,15 +228,27 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=str(output_path.parent)) as td:
         td_path = Path(td)
-        predict_and_save(
-            audio_path_list=[str(audio_path)],
-            output_directory=str(td_path),
-            save_midi=True,
-            sonify_midi=False,
-            save_model_outputs=False,
-            save_notes=False,
-            model_or_model_path=ICASSP_2022_MODEL_PATH,
-        )
+        # basic-pitch prints status with emoji (🚨, etc.). On Windows the
+        # console/log stream is often a legacy code page (cp1252), so the
+        # library's own print() raises UnicodeEncodeError ('charmap' codec
+        # can't encode '\U0001f6a8') and kills a conversion that would
+        # otherwise succeed. Capture its stdout/stderr into a str buffer —
+        # StringIO holds text, never encodes, so it cannot crash — then log
+        # the (now harmless) chatter at debug level.
+        chatter = io.StringIO()
+        with contextlib.redirect_stdout(chatter), contextlib.redirect_stderr(chatter):
+            predict_and_save(
+                audio_path_list=[str(audio_path)],
+                output_directory=str(td_path),
+                save_midi=True,
+                sonify_midi=False,
+                save_model_outputs=False,
+                save_notes=False,
+                model_or_model_path=ICASSP_2022_MODEL_PATH,
+            )
+        captured = chatter.getvalue().strip()
+        if captured:
+            log.debug("basic_pitch output: %s", captured)
         # basic-pitch names: <stem>_basic_pitch.mid
         produced = next(td_path.glob("*_basic_pitch.mid"), None)
         if produced is None:

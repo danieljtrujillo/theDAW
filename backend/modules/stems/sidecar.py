@@ -27,6 +27,7 @@ the ``stems`` module + flip an auto-toggle, OR via an explicit
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -40,6 +41,50 @@ from typing import Optional
 import httpx
 
 log = logging.getLogger(__name__)
+
+
+# Packages the sidecar genuinely needs to separate stems. demucs imports but
+# is useless without torch/torchaudio; torchcrepe drives the crepe pitch path.
+# The historical probe only checked demucs, so a venv with demucs present but
+# torch/torchcrepe missing spawned anyway — then run_backend.py tried to self-
+# install them and blew the entire 300s readiness window. We now gate on ALL of
+# these being importable before spawning.
+_CRITICAL_PACKAGES: tuple[str, ...] = ("demucs", "torch", "torchaudio", "torchcrepe")
+
+
+def _probe_packages(python_exe: Path) -> dict:
+    """Import every critical package in the sidecar Python in ONE subprocess.
+
+    Returns ``{pkg: {"ok": bool, "version": str|None, "error": str|None}}``,
+    or ``{"_error": ...}`` if the probe itself couldn't run. Cheap (a single
+    interpreter start) and never raises."""
+    script = (
+        "import json, importlib\n"
+        f"pkgs = {list(_CRITICAL_PACKAGES)!r}\n"
+        "out = {}\n"
+        "for p in pkgs:\n"
+        "    try:\n"
+        "        m = importlib.import_module(p)\n"
+        "        out[p] = {'ok': True, 'version': getattr(m, '__version__', None)}\n"
+        "    except Exception as e:\n"
+        "        out[p] = {'ok': False, 'error': repr(e)[:300]}\n"
+        "print(json.dumps(out))\n"
+    )
+    try:
+        result = subprocess.run(
+            [str(python_exe), "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return {"_error": repr(e)}
+    if result.returncode != 0:
+        return {"_error": result.stderr.strip()[:300] or "probe subprocess failed"}
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as e:
+        return {"_error": f"probe parse failed: {e}"}
 
 
 DEFAULT_PACKAGE_PATH = Path(r"D:/StableAudio/JoshOG/integration-package/backend")
@@ -173,23 +218,38 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
         )
         return out
 
+    # Per-package import check (demucs + torch + torchaudio + torchcrepe), not
+    # demucs alone — a venv can import demucs while torch/torchcrepe are missing
+    # or broken, which is exactly what stalled the sidecar before.
+    out["packages"] = {}
+    out["missing_critical"] = []
+    out["critical_ok"] = False
     if cfg.python_exe.is_file():
-        try:
-            result = subprocess.run(
-                [str(cfg.python_exe), "-c", "import demucs; print(demucs.__version__)"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if result.returncode == 0:
-                out["demucs_importable"] = True
-                out["demucs_version"] = result.stdout.strip()
+        pkgs = _probe_packages(cfg.python_exe)
+        if "_error" in pkgs:
+            out["demucs_error"] = pkgs["_error"]
+            out["missing_critical"] = list(_CRITICAL_PACKAGES)
+        else:
+            out["packages"] = pkgs
+            out["missing_critical"] = [
+                p for p in _CRITICAL_PACKAGES if not pkgs.get(p, {}).get("ok")
+            ]
+            out["critical_ok"] = len(out["missing_critical"]) == 0
+            demucs_info = pkgs.get("demucs", {})
+            out["demucs_importable"] = bool(demucs_info.get("ok"))
+            if demucs_info.get("ok"):
+                out["demucs_version"] = demucs_info.get("version")
             else:
-                out["demucs_error"] = result.stderr.strip()[:300]
-        except (subprocess.TimeoutExpired, OSError) as e:
-            out["demucs_error"] = repr(e)
+                out["demucs_error"] = demucs_info.get("error")
+            # Surface the first broken critical so logs/UI name a real cause.
+            if out["missing_critical"]:
+                first = out["missing_critical"][0]
+                first_err = pkgs.get(first, {}).get("error")
+                if first_err and not out.get("demucs_error"):
+                    out["demucs_error"] = f"{first}: {first_err}"
     else:
         out["demucs_error"] = f"python_exe not found: {cfg.python_exe}"
+        out["missing_critical"] = list(_CRITICAL_PACKAGES)
 
     port_file = _port_file(cfg)
     if port_file.is_file():
@@ -201,7 +261,7 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
             pass
 
     out["ok"] = (
-        out["package_exists"] and out["run_backend_exists"] and out["demucs_importable"]
+        out["package_exists"] and out["run_backend_exists"] and out["critical_ok"]
     )
     return out
 
@@ -261,12 +321,19 @@ class StemsSidecar:
         if not run_backend.is_file():
             raise RuntimeError(f"stems sidecar launcher missing: {run_backend}")
 
-        # If demucs isn't importable in the configured Python, install
-        # deps ourselves rather than letting run_backend.py try (it uses
-        # plain `python -m pip` which fails in uv-managed venvs that
-        # ship without pip). We use ensurepip / uv-pip fallback.
-        if not probe(self.cfg).get("demucs_importable"):
-            log.info("stems.sidecar: demucs not importable — installing deps first")
+        # If ANY critical package (demucs/torch/torchaudio/torchcrepe) is
+        # missing or broken, install deps ourselves BEFORE spawning rather
+        # than letting run_backend.py try (it uses plain `python -m pip`,
+        # which fails in uv-managed venvs without pip AND can spend the whole
+        # readiness window resolving torch conflicts, the original 300s-stall
+        # bug). We use ensurepip / uv-pip fallback.
+        pr = probe(self.cfg)
+        if not pr.get("critical_ok"):
+            missing = pr.get("missing_critical") or ["demucs"]
+            log.info(
+                "stems.sidecar: critical deps not ready (%s) — installing first",
+                ", ".join(missing),
+            )
             install_result = install_dependencies(self.cfg)
             if not install_result.get("ok"):
                 err_blob = (
@@ -274,8 +341,19 @@ class StemsSidecar:
                 )
                 raise RuntimeError(
                     "stems sidecar dep install failed "
-                    f"({install_result.get('install_mode', 'unknown')}): "
+                    f"({install_result.get('install_mode', 'unknown')}); "
+                    f"missing before install: {', '.join(missing)}. "
                     f"{err_blob[:600]}"
+                )
+            # Re-probe so a post-install gap surfaces here with a clear list
+            # instead of as an opaque 300s port-file timeout downstream.
+            pr2 = probe(self.cfg)
+            if not pr2.get("critical_ok"):
+                still = pr2.get("missing_critical") or []
+                raise RuntimeError(
+                    "stems sidecar deps still missing after install: "
+                    f"{', '.join(still)}. See install logs / sidecar venv "
+                    f"({self.cfg.python_exe})."
                 )
 
         # Clear any stale port file.
@@ -315,10 +393,20 @@ class StemsSidecar:
         if port is None:
             stdout_tail = _tail_log(self._stdout_log)
             stderr_tail = _tail_log(self._stderr_log)
+            # Snapshot dep state so the failure names a concrete cause rather
+            # than just "timed out" (deps were already installed above, so a
+            # gap here points at a different boot problem).
+            post = probe(self.cfg)
+            missing = post.get("missing_critical") or []
             self.stop()
+            dep_note = (
+                f" Critical deps still missing: {', '.join(missing)}."
+                if missing
+                else " All critical deps import OK — check the log tails for a boot error."
+            )
             raise RuntimeError(
                 f"stems sidecar didn't write {PORT_FILENAME} within "
-                f"{HEALTH_TIMEOUT_SEC}s.\n"
+                f"{HEALTH_TIMEOUT_SEC}s.{dep_note}\n"
                 f"stdout tail: {stdout_tail[:500]}\n"
                 f"stderr tail: {stderr_tail[:500]}"
             )

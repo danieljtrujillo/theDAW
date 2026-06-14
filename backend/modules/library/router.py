@@ -177,6 +177,43 @@ def stream_stem_audio(stem_id: str) -> FileResponse:
     raise HTTPException(404, f"stem {stem_id!r} not found")
 
 
+@router.patch("/stems/{stem_id}")
+def update_stem(stem_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Mutate a stem row. Currently only ``favorite`` is user-mutable so
+    stems behave like first-class library items."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    if "favorite" in patch:
+        ok = store.db.set_stem_favorite(stem_id, bool(patch["favorite"]))
+        if not ok:
+            raise HTTPException(404, f"stem {stem_id!r} not found")
+    row = store.db.get_stem(stem_id)
+    if row is None:
+        raise HTTPException(404, f"stem {stem_id!r} not found")
+    return dict(row)
+
+
+@router.delete("/stems/{stem_id}")
+def delete_stem(stem_id: str) -> dict[str, Any]:
+    """Delete one separated stem (its WAV on disk + its DB row), leaving the
+    parent track and sibling stems untouched."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    row = store.db.get_stem(stem_id)
+    if row is None:
+        raise HTTPException(404, f"stem {stem_id!r} not found")
+    audio_path = Path(row.get("audio_path") or "")
+    if audio_path.is_file():
+        try:
+            audio_path.unlink()
+        except OSError as e:
+            log.warning("library: failed to delete stem file %s: %s", audio_path, e)
+    store.db.delete_stem(stem_id)
+    return {"deleted": stem_id}
+
+
 @router.get("/media/{entry_id}")
 def stream_media(entry_id: str) -> FileResponse:
     """Stream a video/image library entry. FileResponse honors Range

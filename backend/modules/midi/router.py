@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import FileResponse
 
 from backend.modules.library.router import get_store as get_library_store
@@ -87,6 +88,43 @@ def get_midi_file(midi_id: str) -> FileResponse:
                     filename=path.name,
                 )
     raise HTTPException(404, f"midi row {midi_id!r} not found")
+
+
+@router.patch("/file/{midi_id}")
+def update_midi(midi_id: str, patch: dict[str, Any] = Body(...)) -> dict:
+    """Mutate a MIDI row. Only ``favorite`` is user-mutable so MIDI rows
+    behave like first-class library items."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    if "favorite" in patch:
+        ok = store.db.set_midi_favorite(midi_id, bool(patch["favorite"]))
+        if not ok:
+            raise HTTPException(404, f"midi row {midi_id!r} not found")
+    row = store.db.get_midi(midi_id)
+    if row is None:
+        raise HTTPException(404, f"midi row {midi_id!r} not found")
+    return dict(row)
+
+
+@router.delete("/file/{midi_id}")
+def delete_midi_file(midi_id: str) -> dict:
+    """Delete one MIDI conversion (its .mid on disk + its DB row), leaving
+    the parent track untouched."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    row = store.db.get_midi(midi_id)
+    if row is None:
+        raise HTTPException(404, f"midi row {midi_id!r} not found")
+    midi_path = Path(row.get("midi_path") or "")
+    if midi_path.is_file():
+        try:
+            midi_path.unlink()
+        except OSError as e:
+            log.warning("midi: failed to delete file %s: %s", midi_path, e)
+    store.db.delete_midi(midi_id)
+    return {"deleted": midi_id}
 
 
 @router.get("/{entry_id}")

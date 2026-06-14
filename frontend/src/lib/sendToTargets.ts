@@ -21,6 +21,7 @@ import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
+import { renderMidiBufferToBlob } from './midiSynth';
 import { logError, logInfo } from '../state/logStore';
 
 /** Default mime for stems / mic recordings when none provided. */
@@ -203,6 +204,26 @@ export async function sendMidiIdToTarget(midiId: string, target: MidiSendTarget)
   } catch (e) {
     logError('send-to', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * Build a SendableAudio that synthesizes a library MIDI row into audio on
+ * demand. Lets MIDI flow into every audio destination (editor / init / inpaint
+ * / chimera) the same way a stem or track does. Rendering is lazy — the synth
+ * only runs when a consumer actually pulls the blob.
+ */
+export function midiIdToSendable(midiId: string, label = 'midi'): SendableAudio {
+  return {
+    label,
+    mimeType: 'audio/wav',
+    fetcher: async () => {
+      const res = await fetch(`/api/midi/file/${midiId}`);
+      if (!res.ok) throw new Error(`midi ${midiId} fetch HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      const { blob } = await renderMidiBufferToBlob(buf);
+      return blob;
+    },
+  };
 }
 
 /** Build a SendableAudio from a stem row pulled from /api/library/_all/stems. */
