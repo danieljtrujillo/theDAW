@@ -46,6 +46,10 @@ dependencies = [
     # These were installed manually but undeclared, so `uv sync` pruned them and
     # broke the MIDI module; declared here so the working set is stable.
     "basic-pitch>=0.4.0",
+    # basic-pitch (and some other deps) import the legacy `pkg_resources`, which
+    # setuptools >= 81 REMOVED. Pin below 81 so `pkg_resources` keeps shipping;
+    # without it basic-pitch conversion fails with "No module named 'pkg_resources'".
+    "setuptools<81",
     # Piano-roll transcription engine (the midi module's second engine beside
     # basic-pitch). Downloads its checkpoint (~165 MB) to ~/piano_transcription
     # on first use.
