@@ -14,6 +14,7 @@ import { logInfo, logWarn } from './state/logStore';
 import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
+import { useModuleStore } from './state/moduleStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
@@ -75,6 +76,14 @@ export default function App() {
     const ric = (window as unknown as { requestIdleCallback?: IdleCb }).requestIdleCallback;
     if (typeof ric === 'function') ric(() => void useLibraryStore.getState().load(), { timeout: 1500 });
     else setTimeout(() => void useLibraryStore.getState().load(), 0);
+  }, [isBackendReady]);
+
+  // Preload the backend module catalog the moment the backend is ready, so the
+  // Settings modal reads a cached list instead of fetching on open (which used
+  // to fail transiently during a (re)start and look like all modules vanished).
+  useEffect(() => {
+    if (!isBackendReady) return;
+    void useModuleStore.getState().load();
   }, [isBackendReady]);
 
   useEffect(() => {

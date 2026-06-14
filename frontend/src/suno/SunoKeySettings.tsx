@@ -99,24 +99,36 @@ export const SunoKeySettings: React.FC = () => {
           platform console. It's stored on the backend — never in the browser — and used for cloud generation.
         </p>
 
-        <div className="flex gap-1.5">
+        {/* Wrapped in a <form> so the password field has a containing form
+            (silences the Chrome "password field is not contained in a form"
+            warning) and Enter submits via the form, not an ad-hoc keydown. */}
+        <form
+          className="flex gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <label htmlFor="suno-api-key" className="sr-only">
+            Suno API key
+          </label>
           <div className="relative flex-1">
             <input
+              id="suno-api-key"
               type={show ? 'text' : 'password'}
               name="suno-api-key"
+              autoComplete="off"
               className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 pr-7 text-[10px] font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
               placeholder={configured ? 'Paste a new key to replace…' : 'sk_live_…'}
               value={val}
               onChange={(e) => setVal(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void save();
-              }}
             />
             <HoverTip text={show ? 'Hide the key — mask the characters again.' : 'Show the key — reveal what you typed.'}>
               <button
                 type="button"
                 onClick={() => setShow((v) => !v)}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-300"
+                aria-label={show ? 'Hide the API key' : 'Show the API key'}
               >
                 {show ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
               </button>
@@ -124,7 +136,7 @@ export const SunoKeySettings: React.FC = () => {
           </div>
           <HoverTip text="Save this key to the backend and reconnect the cloud generator.">
             <button
-              onClick={() => void save()}
+              type="submit"
               disabled={busy || !val.trim()}
               className="px-3 py-1.5 rounded border border-purple-500/40 bg-purple-500/15 hover:bg-purple-500/25 disabled:opacity-40 disabled:cursor-not-allowed text-purple-200 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5"
             >
@@ -132,7 +144,7 @@ export const SunoKeySettings: React.FC = () => {
               {busy ? 'Saving' : saved ? 'Saved' : 'Save'}
             </button>
           </HoverTip>
-        </div>
+        </form>
 
         {err && <span className="text-[9px] text-red-400">{err}</span>}
 
