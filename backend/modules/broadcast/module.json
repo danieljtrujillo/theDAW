@@ -1,0 +1,10 @@
+{
+  "name": "broadcast",
+  "label": "VJ Broadcast",
+  "enabled": true,
+  "icon": "Radio",
+  "sidebar": false,
+  "api_prefix": "/api/broadcast",
+  "backend": true,
+  "description": "Live watch-link for the VJ output. A WebRTC signaling relay (rooms over WebSocket) lets viewers on the venue LAN — or, with TURN, anywhere — open a link and watch the live visuals with audio, peer-to-peer (no media passes through the server, so quality/latency stay venue-grade). Serves a self-contained viewer page. Disable to turn off broadcasting."
+}
