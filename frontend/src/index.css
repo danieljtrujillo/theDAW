@@ -5,6 +5,36 @@
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* Orbitron — techno display face for the boot wordmark ("by GANTASMO").
+   Bundled locally (frontend/public/Orbitron.ttf) so the boot needs no network. */
+@font-face {
+  font-family: "Orbitron";
+  src: url("/Orbitron.ttf") format("truetype");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Boot screen animations (loading bar sweep + the "brought to you by" glitch). */
+@keyframes boot-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(360%); }
+}
+@keyframes boot-glitch {
+  0% { opacity: 0; transform: translateX(-6px); clip-path: inset(40% 0 40% 0); }
+  20% { opacity: 1; transform: translateX(4px); clip-path: inset(0 0 70% 0); text-shadow: 2px 0 #5cf0ff, -2px 0 #ff3b6b; }
+  40% { transform: translateX(-3px); clip-path: inset(60% 0 10% 0); text-shadow: -2px 0 #5cf0ff, 2px 0 #ff3b6b; }
+  60% { transform: translateX(2px); clip-path: inset(10% 0 30% 0); text-shadow: none; }
+  100% { opacity: 1; transform: translateX(0); clip-path: inset(0 0 0 0); text-shadow: none; }
+}
+.boot-glitch {
+  animation: boot-glitch 0.9s steps(2, end) 1 both, boot-flicker 2.2s ease-in-out infinite;
+}
+@keyframes boot-flicker {
+  0%, 100% { opacity: 0.92; }
+  50% { opacity: 1; }
+}
+
 @layer base {
   :root {
     --bg: #07050a;

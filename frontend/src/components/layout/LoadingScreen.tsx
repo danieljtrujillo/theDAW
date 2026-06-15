@@ -1,65 +1,57 @@
 import React, { useEffect, useState } from 'react';
-import { useStatusBarStore } from '../../state/statusBarStore';
+import { LiquidChromeTitle } from './LiquidChromeTitle';
 
 interface LoadingScreenProps {
   onSkip: () => void;
+  onComplete?: () => void;
 }
 
-export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip }) => {
-  const text = useStatusBarStore((s) => s.text);
-  const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
+/**
+ * The boot screen IS the cinematic — the liquid-chrome theDAW model pouring in
+ * over a dark purple steel field, "by GANTASMO" forming from electricity
+ * beneath it. No labels, never says "loading". If WebGL doesn't start, it falls
+ * back to static branding (and reports complete so the host doesn't hang). A
+ * tiny "continue without backend" escape appears only after a genuinely long
+ * wait.
+ */
+export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete }) => {
   const [elapsed, setElapsed] = useState(0);
-  const [dots, setDots] = useState('');
+  const [cinematicActive, setCinematicActive] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((e) => e + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
+  // If WebGL never started there is no formation to wait on — report complete so
+  // the host hands off the moment the backend is ready.
   useEffect(() => {
-    const t = setInterval(() => setDots((d) => (d.length >= 3 ? '' : d + '.')), 400);
-    return () => clearInterval(t);
-  }, []);
+    if (cinematicActive === false && elapsed >= 1) onComplete?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cinematicActive, elapsed]);
 
   return (
-    <div className="fixed inset-0 bg-[#07050a] flex flex-col items-center justify-center z-200 select-none">
-      {/* Pulsing orb */}
-      <div className="relative mb-10 flex items-center justify-center">
-        <div className="absolute w-24 h-24 rounded-full bg-purple-600/10 animate-ping" style={{ animationDuration: '2s' }} />
-        <div className="absolute w-16 h-16 rounded-full bg-purple-600/15 animate-ping" style={{ animationDuration: '2s', animationDelay: '0.3s' }} />
-        <div className="relative w-12 h-12 rounded-full border border-purple-500/40 bg-purple-950/60 flex items-center justify-center">
-          <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-purple-400 animate-spin" />
-          <div className="w-2 h-2 rounded-full bg-purple-400" />
+    <div className="fixed inset-0 z-200 select-none overflow-hidden bg-[radial-gradient(120%_120%_at_50%_42%,#241640_0%,#160e28_55%,#0d0818_100%)]">
+      {/* Liquid-chrome cinematic (the whole screen). */}
+      <LiquidChromeTitle onActive={setCinematicActive} onComplete={onComplete} />
+
+      {/* Static fallback ONLY if WebGL genuinely never starts. The 3s grace stops
+          it from flashing in during the brief gap before the cinematic's first
+          frame (which previously showed the flat branding for a beat at startup). */}
+      {!cinematicActive && elapsed >= 3 && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+          <span className="text-3xl font-black uppercase tracking-[0.36em] pl-[0.36em] text-zinc-100">
+            theDAW
+          </span>
+          <span className="text-[10px] font-mono uppercase tracking-[0.4em] text-zinc-600">by GANTASMO</span>
         </div>
-      </div>
+      )}
 
-      {/* App name */}
-      <div className="flex flex-col items-center gap-1 mb-8">
-        <span className="text-[18px] font-black uppercase tracking-[0.4em] text-zinc-100">theDAW</span>
-        <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-600">by GANTASMO · Stable Audio 3</span>
-      </div>
-
-      {/* Status */}
-      <div className="flex flex-col items-center gap-2">
-        <span className="text-[11px] font-mono text-zinc-500 min-w-52 text-center">
-          {isBackendReady ? text : `Connecting to backend${dots}`}
-        </span>
-        <div className="flex items-center gap-2">
-          <div className="w-24 h-px bg-zinc-800 relative overflow-hidden">
-            <div
-              className="absolute inset-y-0 left-0 bg-purple-500/60 transition-all duration-1000"
-              style={{ width: `${Math.min(100, (elapsed / 20) * 100)}%` }}
-            />
-          </div>
-          <span className="text-[9px] font-mono text-zinc-700 w-6">{elapsed}s</span>
-        </div>
-      </div>
-
-      {/* Skip after 15s */}
-      {elapsed >= 15 && (
+      {/* Real escape only after a genuine wait. */}
+      {elapsed >= 40 && (
         <button
           onClick={onSkip}
-          className="mt-10 text-[9px] font-mono text-zinc-700 hover:text-zinc-400 transition-colors underline"
+          className="absolute bottom-2 right-3 text-[9px] font-mono text-zinc-700 hover:text-zinc-400 transition-colors underline"
         >
           Continue without backend
         </button>
@@ -67,4 +59,3 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip }) => {
     </div>
   );
 };
-

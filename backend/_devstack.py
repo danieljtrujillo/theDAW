@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -89,8 +90,6 @@ def _pump(tag: str, proc: subprocess.Popen) -> None:
         return
     for line in proc.stdout:
         _emit(tag, line)
-        if tag == "frontend" and not _browser_opened.is_set() and "Local:" in line:
-            _open_browser()
 
 
 def _open_browser() -> None:
@@ -99,6 +98,23 @@ def _open_browser() -> None:
     _browser_opened.set()
     try:
         webbrowser.open(FRONTEND_URL)
+    except Exception:
+        pass
+
+
+def _minimize_console() -> None:
+    """Drop the launcher console out of sight once the app window is up — the
+    user should only ever see theDAW, not the log stream. The console keeps
+    running (logs land there, restorable from the taskbar). Set
+    ``theDAW_KEEP_CONSOLE=1`` to keep it in front (debugging the stack)."""
+    if not IS_WINDOWS or os.environ.get("theDAW_KEEP_CONSOLE"):
+        return
+    try:
+        import ctypes
+
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
     except Exception:
         pass
 
@@ -141,13 +157,35 @@ def _run_backend(children: list) -> None:
         return
 
 
-def _browser_fallback() -> None:
-    time.sleep(10)
+def _port_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_then_open_browser() -> None:
+    """Open the browser the instant Vite is actually accepting connections on
+    5173, instead of parsing its (buffered, colored) stdout for a "Local:" line
+    that rarely matches and left the launch waiting on a 10s timer. Falls back to
+    opening anyway after a long wait so the launch never hangs."""
+    deadline = time.time() + 60.0
+    while not _shutdown.is_set() and time.time() < deadline:
+        if _port_open("127.0.0.1", 5173):
+            _open_browser()
+            return
+        time.sleep(0.2)
     if not _shutdown.is_set():
         _open_browser()
 
 
 def main() -> int:
+    # Drop the launcher console immediately so the user sees only the app, never
+    # the log stream. It keeps running (restorable from the taskbar);
+    # theDAW_KEEP_CONSOLE=1 keeps it in front for debugging.
+    _minimize_console()
+
     if not _enable_ansi():
         for key in COLORS:
             COLORS[key] = ""
@@ -174,7 +212,7 @@ def main() -> int:
     else:
         _emit("stack", "localtunnel not installed — public link skipped")
 
-    threading.Thread(target=_browser_fallback, daemon=True).start()
+    threading.Thread(target=_wait_then_open_browser, daemon=True).start()
 
     # Backend supervisor on its own thread so Ctrl-C lands in main().
     backend = threading.Thread(target=_run_backend, args=(children,), daemon=True)

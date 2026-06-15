@@ -1,9 +1,5 @@
 @echo off
 title theDAW
-echo ========================================
-echo   theDAW
-echo ========================================
-echo.
 
 :: Run from the repo root (this script's folder) so the checks + bootstrap
 :: below resolve .venv / frontend\node_modules relative to the project.
@@ -15,7 +11,6 @@ cd /d "%~dp0"
 :: ffmpeg = all audio I/O (effects, exports, library ingest, MIDI, YouTube)
 :: The public tunnel (localtunnel "lt") is optional and auto-detected by the
 :: dev stack at the end.
-echo Checking prerequisites...
 set "MISSING="
 where uv     >nul 2>&1 || set "MISSING=%MISSING% uv"
 where node   >nul 2>&1 || set "MISSING=%MISSING% node"
@@ -35,8 +30,6 @@ where uv   >nul 2>&1 || goto :needtools
 where node >nul 2>&1 || goto :needtools
 where npm  >nul 2>&1 || goto :needtools
 where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
-echo   [OK] prerequisites checked.
-echo.
 
 :: -- Bootstrap dependencies if this is a fresh / incomplete tree --------
 if not exist ".venv\Scripts\activate" (
@@ -66,7 +59,6 @@ if not exist "frontend\node_modules" (
 echo.
 
 :: -- Kill any stale processes on our ports ------------------------------
-echo Cleaning up stale processes...
 for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5173 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8600 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5187 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
@@ -78,11 +70,6 @@ timeout /t 1 /nobreak >nul
 :: localtunnel, streaming all three as prefixed [backend] / [frontend] /
 :: [tunnel] log lines here. It opens http://localhost:5173 once Vite is ready.
 :: Ctrl-C in this window stops everything.
-echo Starting theDAW (backend + frontend + tunnel) in this console...
-echo   Backend API:  http://localhost:8600
-echo   Frontend UI:  http://localhost:5173
-echo   VJ sidecar:   http://localhost:5187  ^(auto-spawned by backend^)
-echo.
 call .venv\Scripts\activate
 python -m backend._devstack
 

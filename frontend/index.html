@@ -9,8 +9,23 @@
          "please refetch" signal. Bump when /favicon.svg changes. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4" />
     <title>theDAW · by GANTASMO</title>
+    <!-- Instant boot cover. Pure inline HTML/CSS so it paints on the FIRST byte,
+         before the JS bundle, React, or any /api request — the user never sees a
+         blank page (or the launcher console) during startup. The React loading
+         screen renders on top of it, then main.tsx removes this node. -->
+    <style>
+      /* Instant cover: the same dark purple steel as the cinematic background,
+         so the browser paints it immediately with no blank gap and no text. */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        background: radial-gradient(120% 120% at 50% 42%, #241640 0%, #160e28 55%, #0d0818 100%);
+      }
+    </style>
   </head>
-  <body>
+  <body style="margin: 0; background: #0d0818">
+    <div id="boot-splash"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

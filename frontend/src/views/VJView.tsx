@@ -214,29 +214,46 @@ export const VJView: React.FC = () => {
   // Fetch the VJ URL on mount. The backend will spawn the dev server
   // if it isn't already running — this can take ~30s on first launch
   // (npm install) and ~2-3s on subsequent launches.
-  const loadUrl = async () => {
+  // While the backend is still coming up the VJ URL fetch fails — that's not an
+  // error, it's still loading. Retry quietly for a while and only surface a real
+  // error if it never comes up, so the user just sees "Loading…".
+  const loadRetriesRef = useRef(0);
+  const loadTimerRef = useRef<number | null>(null);
+  const MAX_LOAD_RETRIES = 20; // ~40s of 2s retries
+
+  const loadUrl = async (manual = false) => {
+    if (manual) loadRetriesRef.current = 0;
+    if (loadTimerRef.current !== null) {
+      window.clearTimeout(loadTimerRef.current);
+      loadTimerRef.current = null;
+    }
     setStatus('loading');
-    setDetail('Asking SA3 backend for the VJ URL…');
     try {
       const r = await fetch('/api/vj/url');
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({ detail: '' }));
-        throw new Error(body.detail || `backend returned ${r.status}`);
-      }
+      if (!r.ok) throw new Error(`backend returned ${r.status}`);
       const j = (await r.json()) as { url: string; mobile_url?: string | null };
       setUrl(j.url);
       setMobileUrl(j.mobile_url ?? null);
+      loadRetriesRef.current = 0;
       setStatus('ready');
       setDetail('');
-
     } catch (e) {
-      setStatus('error');
-      setDetail(e instanceof Error ? e.message : String(e));
+      if (loadRetriesRef.current < MAX_LOAD_RETRIES) {
+        loadRetriesRef.current += 1;
+        setStatus('loading');
+        loadTimerRef.current = window.setTimeout(() => void loadUrl(), 2000);
+      } else {
+        setStatus('error');
+        setDetail(e instanceof Error ? e.message : String(e));
+      }
     }
   };
 
   useEffect(() => {
     void loadUrl();
+    return () => {
+      if (loadTimerRef.current !== null) window.clearTimeout(loadTimerRef.current);
+    };
   }, []);
 
   // QuestCast diagnostics: lightweight polling only reads backend state. Start
@@ -814,7 +831,7 @@ export const VJView: React.FC = () => {
           </div>
           <button
             type="button"
-            onClick={() => void loadUrl()}
+            onClick={() => void loadUrl(true)}
             className="p-1.5 rounded border border-white/5 hover:bg-white/5 text-zinc-400 hover:text-zinc-100"
             title="Reload the VJ iframe"
             aria-label="Reload VJ"
@@ -855,38 +872,21 @@ export const VJView: React.FC = () => {
       <div className="flex-1 relative min-h-0">
         {status === 'loading' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
-            <Loader2 className="w-5 h-5 animate-spin text-fuchsia-300" />
-            <span className="text-[10px] font-mono uppercase tracking-widest">
-              {detail || 'Booting VJ sidecar…'}
-            </span>
-            <span className="text-[9px] font-mono text-zinc-600 max-w-md text-center leading-relaxed">
-              First launch runs `npm install` in the VJ project — this
-              can take a minute. Subsequent launches are fast.
-            </span>
+            <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
+            <span className="text-sm">Loading…</span>
           </div>
         )}
         {status === 'error' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-rose-300 px-6">
-            <AlertCircle className="w-5 h-5" />
-            <span className="text-[10px] font-mono uppercase tracking-widest">
-              VJ sidecar failed
-            </span>
-            <span className="text-[9px] font-mono text-rose-200/80 max-w-xl text-center leading-relaxed">
-              {detail}
-            </span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-300 px-6">
+            <AlertCircle className="w-5 h-5 text-zinc-500" />
+            <span className="text-sm">The VJ engine didn’t start.</span>
             <button
               type="button"
-              onClick={() => void loadUrl()}
-              className="mt-2 px-3 py-1.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5"
+              onClick={() => void loadUrl(true)}
+              className="mt-1 px-3 py-1.5 rounded border border-zinc-700 hover:bg-white/5 text-zinc-300 text-xs flex items-center gap-1.5"
             >
               <RefreshCw className="w-3 h-3" /> Retry
             </button>
-            <span className="text-[8px] font-mono text-zinc-600 max-w-xl text-center leading-relaxed">
-              Check the theDAW console for the spawn error. Most
-              common causes: Node not on PATH, the VJ project path is
-              wrong (override with theDAW_VJ_PROJECT), or port 5187
-              is already in use (override with theDAW_VJ_PORT).
-            </span>
           </div>
         )}
         {status === 'ready' && popped && (

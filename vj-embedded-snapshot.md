@@ -1,0 +1,767 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "theDAW logo theDAW by GANTASMO" [ref=e5] [cursor=pointer]:
+        - /url: https://github.com/gantasmo/theDAW
+        - img "theDAW logo" [ref=e6]
+        - generic [ref=e7]:
+          - generic [ref=e8]: theDAW
+          - generic [ref=e9]: by GANTASMO
+      - generic [ref=e11]:
+        - button "Make" [ref=e12]:
+          - img [ref=e13]
+          - generic [ref=e16]: Make
+        - button "Edit" [ref=e17]:
+          - img [ref=e18]
+          - generic [ref=e24]: Edit
+        - button "Mix" [ref=e25]:
+          - img [ref=e26]
+          - generic [ref=e28]: Mix
+        - button "DJ" [ref=e29]:
+          - img [ref=e30]
+          - generic [ref=e33]: DJ
+        - button "VJ" [ref=e34]:
+          - img [ref=e35]
+          - generic [ref=e37]: VJ
+        - button "Train" [ref=e38]:
+          - img [ref=e39]
+          - generic [ref=e47]: Train
+        - button "Learn" [ref=e48]:
+          - img [ref=e49]
+          - generic [ref=e53]: Learn
+      - generic [ref=e54]:
+        - button "Open documentation" [ref=e55]:
+          - img [ref=e56]
+        - button "Open mobile access QR/link" [ref=e58]:
+          - img [ref=e59]
+        - button "Settings" [ref=e61]:
+          - img [ref=e62]
+    - generic [ref=e65]:
+      - main [ref=e66]:
+        - generic [ref=e197]:
+          - generic [ref=e198]:
+            - generic [ref=e199]:
+              - img [ref=e200]
+              - generic [ref=e202]: VJ · Live Visuals
+              - generic [ref=e203]: http://localhost:5187
+            - generic [ref=e204]:
+              - button "Mic" [ref=e205]:
+                - img [ref=e206]
+                - text: Mic
+              - button "Audio 20" [ref=e266]:
+                - img [ref=e210]
+                - text: Audio 20
+              - button "MIDI" [ref=e214]:
+                - img [ref=e215]
+                - text: MIDI
+              - button "Cam" [pressed] [ref=e217]:
+                - img [ref=e218]
+                - text: Cam
+              - button "Toggle MIDI" [ref=e221]:
+                - img [ref=e222]
+                - text: MIDI
+              - button "Mobile URL" [ref=e225]:
+                - img [ref=e226]
+                - text: Mobile
+              - button "Reload VJ" [ref=e228]:
+                - img [ref=e229]
+              - button "Pop out" [ref=e234]:
+                - img [ref=e235]
+                - generic [ref=e239]: Pop out
+          - iframe [active] [ref=e241]:
+            - generic [ref=f1e3]:
+              - main [ref=f1e4]:
+                - generic [ref=f1e6]:
+                  - img
+                - button "MIDI" [ref=f1e8]:
+                  - img [ref=f1e10]
+                  - generic [ref=f1e13]: MIDI
+                - generic [ref=f1e14]:
+                  - img [ref=f1e15]
+                  - heading "Optics Offline" [level=2] [ref=f1e17]
+                  - paragraph [ref=f1e18]: SYS::ERR Give the browser access to your camera in the site permissions, then try again.
+                  - paragraph [ref=f1e19]: Critical failure accessing physical video buffer. Check hardware connections to the mainboard or browser permissions.
+              - complementary [ref=f1e20]:
+                - generic [ref=f1e21]:
+                  - generic [ref=f1e22]:
+                    - generic [ref=f1e23]:
+                      - button "REC" [ref=f1e24]: REC
+                      - combobox "Recording resolution — HD 720p · FHD 1080p · UHD 4K. Locks during a take." [ref=f1e26] [cursor=pointer]:
+                        - option "HD"
+                        - option "FHD" [selected]
+                        - option "UHD"
+                      - combobox "Export codec — H264/H265 → .mp4 · ProRes → .mov · PNG SEQ → zipped frames + WAV. Locks during a take." [ref=f1e27] [cursor=pointer]:
+                        - option "H264" [selected]
+                        - option "H265"
+                        - option "ProRes"
+                        - option "PNG SEQ"
+                      - button "Set export subfolder" [ref=f1e28]:
+                        - img [ref=f1e29]
+                      - generic "Camera offline / sys error" [ref=f1e31]: CAM ERR
+                    - generic [ref=f1e32]:
+                      - button "Standard Layout" [active] [ref=f1e33]:
+                        - img [ref=f1e34]
+                      - button "50/50 Split Layout" [ref=f1e38]:
+                        - img [ref=f1e39]
+                      - button "Preview (Resolume Style)" [ref=f1e41]:
+                        - img [ref=f1e42]
+                      - button "Fullscreen Output" [ref=f1e44]:
+                        - img [ref=f1e45]
+                      - button "Master Reset" [ref=f1e51]:
+                        - img [ref=f1e52]
+                  - generic [ref=f1e57]:
+                    - heading "SOURCE // MATRIX" [level=2] [ref=f1e58]:
+                      - img [ref=f1e59]
+                      - text: SOURCE // MATRIX
+                    - generic [ref=f1e65]:
+                      - generic [ref=f1e66]:
+                        - button "CAM (Live)" [ref=f1e790]
+                        - button "MEM (Clip)" [ref=f1e792]
+                      - generic [ref=f1e71]:
+                        - generic [ref=f1e72]: CAM
+                        - slider "Crossfade CAM ↔ MEM" [ref=f1e73]: "0"
+                        - generic [ref=f1e74]: MEM
+                    - generic [ref=f1e75]:
+                      - generic [ref=f1e76]:
+                        - button "DEVICE" [ref=f1e794]
+                        - button "SCREEN" [ref=f1e796]
+                      - generic [ref=f1e81]:
+                        - generic [ref=f1e82]: Camera device
+                        - combobox "Camera device" [ref=f1e83]:
+                          - option "Default camera" [selected]
+                          - option "Camera 1"
+                      - paragraph [ref=f1e84]: SCREEN captures a window or display (e.g. a scrcpy-mirrored Quest). No OBS needed.
+                    - generic [ref=f1e85]:
+                      - generic [ref=f1e86]: Canvas Format
+                      - generic [ref=f1e87]:
+                        - button "FREE" [ref=f1e798]
+                        - button "16:9" [ref=f1e800]
+                        - button "4:3" [ref=f1e802]
+                        - button "9:16" [ref=f1e804]
+                        - button "1:1" [ref=f1e806]
+                        - button "21:9" [ref=f1e808]
+                    - generic [ref=f1e100]:
+                      - button "Mute clip audio" [ref=f1e101]:
+                        - text: MUTE
+                        - generic [ref=f1e102]: "OFF"
+                      - generic [ref=f1e103]:
+                        - button "SELECT & IMPORT VIDEO CLIPS" [ref=f1e104] [cursor=pointer]:
+                          - img [ref=f1e105]
+                          - text: SELECT & IMPORT VIDEO CLIPS
+                        - button "Choose File" [ref=f1e108] [cursor=pointer]
+                  - generic [ref=f1e109]:
+                    - generic [ref=f1e110]:
+                      - heading "DECK A // GEOMETRICS" [level=2] [ref=f1e111]:
+                        - generic [ref=f1e112]:
+                          - img [ref=f1e113]
+                          - text: DECK A // GEOMETRICS
+                      - generic [ref=f1e116]:
+                        - button "Mirror X" [ref=f1e810]
+                        - button "Mirror Y" [ref=f1e812]
+                        - button "Kaleido" [ref=f1e814]
+                      - generic [ref=f1e123]:
+                        - button "HDR/EQUI" [ref=f1e816]
+                        - button "Soft Edges" [ref=f1e818]
+                        - button "SBS 3D" [ref=f1e820]
+                        - button "TB 3D" [ref=f1e822]
+                      - generic [ref=f1e823]:
+                        - generic [ref=f1e824]:
+                          - generic "Double click to reset" [ref=f1e825] [cursor=pointer]:
+                            - generic [ref=f1e826]: Grid Tiling
+                          - generic [ref=f1e828]: 1x
+                        - slider [ref=f1e830]: "1"
+                      - generic [ref=f1e831]:
+                        - generic [ref=f1e832]:
+                          - generic "Double click to reset" [ref=f1e833] [cursor=pointer]:
+                            - generic [ref=f1e834]: Radial Mirror (Spokes)
+                          - generic [ref=f1e836]: "0"
+                        - slider [ref=f1e838]: "0"
+                      - generic [ref=f1e839]:
+                        - generic [ref=f1e840]:
+                          - generic "Double click to reset" [ref=f1e841] [cursor=pointer]:
+                            - generic [ref=f1e842]: Feedback Wash
+                          - generic [ref=f1e844]: "0.85"
+                        - slider [ref=f1e846]: "0.85"
+                      - generic [ref=f1e847]:
+                        - generic [ref=f1e848]:
+                          - generic "Double click to reset" [ref=f1e849] [cursor=pointer]:
+                            - generic [ref=f1e850]: Strobe Burst
+                          - generic [ref=f1e852]: "0.00"
+                        - slider [ref=f1e854]: "0"
+                      - generic [ref=f1e164]:
+                        - generic [ref=f1e165]:
+                          - img [ref=f1e166]
+                          - text: RENDER PERFORMANCE
+                        - generic [ref=f1e169]:
+                          - button "HIGH 1.0x" [ref=f1e856]
+                          - button "MED 0.75x" [ref=f1e858]
+                          - button "LOW 0.5x" [ref=f1e860]
+                    - generic [ref=f1e176]:
+                      - heading "DECK B // CORRUPTION" [level=2] [ref=f1e177]:
+                        - generic [ref=f1e178]:
+                          - img [ref=f1e179]
+                          - text: DECK B // CORRUPTION
+                      - generic [ref=f1e182]:
+                        - generic [ref=f1e861]:
+                          - generic [ref=f1e862]:
+                            - generic "Double click to reset" [ref=f1e863] [cursor=pointer]:
+                              - generic [ref=f1e864]: Glitch
+                            - generic [ref=f1e866]: "0.00"
+                          - slider [ref=f1e868]: "0"
+                        - generic [ref=f1e869]:
+                          - generic [ref=f1e870]:
+                            - generic "Double click to reset" [ref=f1e871] [cursor=pointer]:
+                              - generic [ref=f1e872]: Ghosting
+                            - generic [ref=f1e874]: "0.00"
+                          - slider [ref=f1e876]: "0"
+                        - generic [ref=f1e877]:
+                          - generic [ref=f1e878]:
+                            - generic "Double click to reset" [ref=f1e879] [cursor=pointer]:
+                              - generic [ref=f1e880]: Anaglyph
+                            - generic [ref=f1e882]: "0.00"
+                          - slider [ref=f1e884]: "0"
+                        - generic [ref=f1e885]:
+                          - generic [ref=f1e886]:
+                            - generic "Double click to reset" [ref=f1e887] [cursor=pointer]:
+                              - generic [ref=f1e888]: Wave Warp
+                            - generic [ref=f1e890]: "0.00"
+                          - slider [ref=f1e892]: "0"
+                        - generic [ref=f1e893]:
+                          - generic [ref=f1e894]:
+                            - generic "Double click to reset" [ref=f1e895] [cursor=pointer]:
+                              - generic [ref=f1e896]: Chroma Ab
+                            - generic [ref=f1e898]: "0.00"
+                          - slider [ref=f1e900]: "0"
+                        - generic [ref=f1e901]:
+                          - generic [ref=f1e902]:
+                            - generic "Double click to reset" [ref=f1e903] [cursor=pointer]:
+                              - generic [ref=f1e904]: Backskip
+                            - generic [ref=f1e906]: "0.00"
+                          - slider [ref=f1e908]: "0"
+                        - generic [ref=f1e909]:
+                          - generic [ref=f1e910]:
+                            - generic "Double click to reset" [ref=f1e911] [cursor=pointer]:
+                              - generic [ref=f1e912]: Pixel Destroy
+                            - generic [ref=f1e914]: "0.00"
+                          - slider [ref=f1e916]: "0"
+                    - generic [ref=f1e239]:
+                      - heading "DECK C // CHROMATICS" [level=2] [ref=f1e240]:
+                        - generic [ref=f1e241]:
+                          - img [ref=f1e242]
+                          - text: DECK C // CHROMATICS
+                      - generic [ref=f1e917]:
+                        - generic [ref=f1e918]:
+                          - generic "Double click to reset" [ref=f1e919] [cursor=pointer]:
+                            - generic [ref=f1e920]: Hue Cycle
+                          - generic [ref=f1e922]: 0°
+                        - slider [ref=f1e924]: "0"
+                      - generic [ref=f1e925]:
+                        - generic [ref=f1e926]:
+                          - generic "Double click to reset" [ref=f1e927] [cursor=pointer]:
+                            - generic [ref=f1e928]: Saturation
+                          - generic [ref=f1e930]: 100%
+                        - slider [ref=f1e932]: "100"
+                      - generic [ref=f1e933]:
+                        - generic [ref=f1e934]:
+                          - generic "Double click to reset" [ref=f1e935] [cursor=pointer]:
+                            - generic [ref=f1e936]: Contrast
+                          - generic [ref=f1e938]: 100%
+                        - slider [ref=f1e940]: "100"
+                      - generic [ref=f1e941]:
+                        - generic [ref=f1e942]:
+                          - generic "Double click to reset" [ref=f1e943] [cursor=pointer]:
+                            - generic [ref=f1e944]: Brightness
+                          - generic [ref=f1e946]: 100%
+                        - slider [ref=f1e948]: "100"
+                      - generic [ref=f1e275]:
+                        - button "INV" [ref=f1e950]
+                        - button "EDG" [ref=f1e952]
+                        - button "CRT" [ref=f1e954]
+                        - button "SCN" [ref=f1e956]
+                        - button "VIG" [ref=f1e958]
+                      - generic [ref=f1e286]:
+                        - generic [ref=f1e287]: FX TIER · LOOKS
+                        - generic [ref=f1e959]:
+                          - generic [ref=f1e960]:
+                            - generic "Double click to reset" [ref=f1e961] [cursor=pointer]:
+                              - generic [ref=f1e962]: Sepia
+                            - generic [ref=f1e964]: "0.00"
+                          - slider [ref=f1e966]: "0"
+                        - generic [ref=f1e967]:
+                          - generic [ref=f1e968]:
+                            - generic "Double click to reset" [ref=f1e969] [cursor=pointer]:
+                              - generic [ref=f1e970]: Grayscale
+                            - generic [ref=f1e972]: "0.00"
+                          - slider [ref=f1e974]: "0"
+                        - generic [ref=f1e975]:
+                          - generic [ref=f1e976]:
+                            - generic "Double click to reset" [ref=f1e977] [cursor=pointer]:
+                              - generic [ref=f1e978]: Soft Blur
+                            - generic [ref=f1e980]: "0.00"
+                          - slider [ref=f1e982]: "0"
+                  - generic [ref=f1e313]:
+                    - heading "DECK D // TIMECODE" [level=2] [ref=f1e314]:
+                      - generic [ref=f1e315]:
+                        - img [ref=f1e316]
+                        - text: DECK D // TIMECODE
+                    - generic [ref=f1e318]:
+                      - button "Reverse [!]" [ref=f1e984]
+                      - button "FREEZE PAUSE" [ref=f1e986]
+                    - generic [ref=f1e987]:
+                      - generic [ref=f1e988]:
+                        - generic "Double click to reset" [ref=f1e989] [cursor=pointer]:
+                          - generic [ref=f1e990]: Playback Speed %
+                        - generic [ref=f1e992]: 1.00x
+                      - slider [ref=f1e994]: "1"
+                    - generic [ref=f1e995]:
+                      - generic [ref=f1e996]:
+                        - generic "Double click to reset" [ref=f1e997] [cursor=pointer]:
+                          - generic [ref=f1e998]: Posterize Time (Stutter)
+                        - generic [ref=f1e1000]: 60fps
+                      - slider [ref=f1e1002]: "60"
+                    - generic [ref=f1e1003]:
+                      - generic [ref=f1e1004]:
+                        - generic "Double click to reset" [ref=f1e1005] [cursor=pointer]:
+                          - generic [ref=f1e1006]: Echo/Motion Trails
+                        - generic [ref=f1e1008]: 0fr
+                      - slider [ref=f1e1010]: "0"
+                    - generic [ref=f1e1011]:
+                      - generic [ref=f1e1012]:
+                        - generic "Double click to reset" [ref=f1e1013] [cursor=pointer]:
+                          - generic [ref=f1e1014]: Time Displace
+                        - generic [ref=f1e1016]: "0.00"
+                      - slider [ref=f1e1018]: "0"
+                    - generic [ref=f1e1019]:
+                      - generic [ref=f1e1020]:
+                        - generic "Double click to reset" [ref=f1e1021] [cursor=pointer]:
+                          - generic [ref=f1e1022]: Slit Scan (Y)
+                        - generic [ref=f1e1024]: "0.00"
+                      - slider [ref=f1e1026]: "0"
+                  - generic [ref=f1e363]:
+                    - heading "PLUGINS // MANAGER 38/38 LIVE" [level=2] [ref=f1e364]:
+                      - generic [ref=f1e365]:
+                        - img [ref=f1e366]
+                        - text: PLUGINS // MANAGER
+                      - generic [ref=f1e376]: 38/38 LIVE
+                    - generic [ref=f1e377]:
+                      - heading "A GPU & Geometry Shaders" [level=3] [ref=f1e378]:
+                        - generic [ref=f1e379]: A
+                        - generic [ref=f1e380]: GPU & Geometry Shaders
+                      - generic [ref=f1e381]:
+                        - generic [ref=f1e383]:
+                          - button "01 Radial Mirror & Kaleidoscope mid OFF" [ref=f1e384]:
+                            - img [ref=f1e385]
+                            - generic [ref=f1e387]: "01"
+                            - generic [ref=f1e388]: Radial Mirror & Kaleidoscope
+                            - generic "Reacts to mid" [ref=f1e389]: mid
+                            - generic [ref=f1e390]: "OFF"
+                          - button "SOLO" [ref=f1e391]
+                        - generic [ref=f1e393]:
+                          - button "02 Video Feedback & Droste Tunnel volume OFF" [ref=f1e394]:
+                            - img [ref=f1e395]
+                            - generic [ref=f1e397]: "02"
+                            - generic [ref=f1e398]: Video Feedback & Droste Tunnel
+                            - generic "Reacts to volume" [ref=f1e399]: volume
+                            - generic [ref=f1e400]: "OFF"
+                          - button "SOLO" [ref=f1e401]
+                        - generic [ref=f1e403]:
+                          - button "03 Reaction-Diffusion Skin bass OFF" [ref=f1e404]:
+                            - img [ref=f1e405]
+                            - generic [ref=f1e407]: "03"
+                            - generic [ref=f1e408]: Reaction-Diffusion Skin
+                            - generic "Reacts to bass" [ref=f1e409]: bass
+                            - generic [ref=f1e410]: "OFF"
+                          - button "SOLO" [ref=f1e411]
+                        - generic [ref=f1e413]:
+                          - button "04 SDF Raymarch Portal mid OFF" [ref=f1e414]:
+                            - img [ref=f1e415]
+                            - generic [ref=f1e417]: "04"
+                            - generic [ref=f1e418]: SDF Raymarch Portal
+                            - generic "Reacts to mid" [ref=f1e419]: mid
+                            - generic [ref=f1e420]: "OFF"
+                          - button "SOLO" [ref=f1e421]
+                        - generic [ref=f1e423]:
+                          - button "05 Slit-Scan / Time Echo high OFF" [ref=f1e424]:
+                            - img [ref=f1e425]
+                            - generic [ref=f1e427]: "05"
+                            - generic [ref=f1e428]: Slit-Scan / Time Echo
+                            - generic "Reacts to high" [ref=f1e429]: high
+                            - generic [ref=f1e430]: "OFF"
+                          - button "SOLO" [ref=f1e431]
+                        - generic [ref=f1e433]:
+                          - button "06 Chromatic Refraction / Heat Haze high OFF" [ref=f1e434]:
+                            - img [ref=f1e435]
+                            - generic [ref=f1e437]: "06"
+                            - generic [ref=f1e438]: Chromatic Refraction / Heat Haze
+                            - generic "Reacts to high" [ref=f1e439]: high
+                            - generic [ref=f1e440]: "OFF"
+                          - button "SOLO" [ref=f1e441]
+                        - generic [ref=f1e443]:
+                          - button "07 Hologram Glitch high OFF" [ref=f1e444]:
+                            - img [ref=f1e445]
+                            - generic [ref=f1e447]: "07"
+                            - generic [ref=f1e448]: Hologram Glitch
+                            - generic "Reacts to high" [ref=f1e449]: high
+                            - generic [ref=f1e450]: "OFF"
+                          - button "SOLO" [ref=f1e451]
+                        - generic [ref=f1e453]:
+                          - button "08 Topographic Isolines mid OFF" [ref=f1e454]:
+                            - img [ref=f1e455]
+                            - generic [ref=f1e457]: "08"
+                            - generic [ref=f1e458]: Topographic Isolines
+                            - generic "Reacts to mid" [ref=f1e459]: mid
+                            - generic [ref=f1e460]: "OFF"
+                          - button "SOLO" [ref=f1e461]
+                        - generic [ref=f1e463]:
+                          - button "09 Fluid Displacement volume OFF" [ref=f1e464]:
+                            - img [ref=f1e465]
+                            - generic [ref=f1e467]: "09"
+                            - generic [ref=f1e468]: Fluid Displacement
+                            - generic "Reacts to volume" [ref=f1e469]: volume
+                            - generic [ref=f1e470]: "OFF"
+                          - button "SOLO" [ref=f1e471]
+                        - generic [ref=f1e473]:
+                          - button "10 Standard Transition Wipes none OFF" [ref=f1e474]:
+                            - img [ref=f1e475]
+                            - generic [ref=f1e477]: "10"
+                            - generic [ref=f1e478]: Standard Transition Wipes
+                            - generic "Reacts to none" [ref=f1e479]: none
+                            - generic [ref=f1e480]: "OFF"
+                          - button "SOLO" [ref=f1e481]
+                    - generic [ref=f1e482]:
+                      - heading "B Depth · Spatial · Volumetric" [level=3] [ref=f1e483]:
+                        - generic [ref=f1e484]: B
+                        - generic [ref=f1e485]: Depth · Spatial · Volumetric
+                      - generic [ref=f1e486]:
+                        - generic [ref=f1e488]:
+                          - button "11 Metric Depth Fog bass OFF" [ref=f1e489]:
+                            - img [ref=f1e490]
+                            - generic [ref=f1e492]: "11"
+                            - generic [ref=f1e493]: Metric Depth Fog
+                            - generic "Reacts to bass" [ref=f1e494]: bass
+                            - generic [ref=f1e495]: "OFF"
+                          - button "SOLO" [ref=f1e496]
+                        - generic [ref=f1e498]:
+                          - button "12 Depth-Ray Normals Relighting mid OFF" [ref=f1e499]:
+                            - img [ref=f1e500]
+                            - generic [ref=f1e502]: "12"
+                            - generic [ref=f1e503]: Depth-Ray Normals Relighting
+                            - generic "Reacts to mid" [ref=f1e504]: mid
+                            - generic [ref=f1e505]: "OFF"
+                          - button "SOLO" [ref=f1e506]
+                        - generic [ref=f1e508]:
+                          - button "13 Camera-Pose Handheld Dolly volume OFF" [ref=f1e509]:
+                            - img [ref=f1e510]
+                            - generic [ref=f1e512]: "13"
+                            - generic [ref=f1e513]: Camera-Pose Handheld Dolly
+                            - generic "Reacts to volume" [ref=f1e514]: volume
+                            - generic [ref=f1e515]: "OFF"
+                          - button "SOLO" [ref=f1e516]
+                        - generic [ref=f1e518]:
+                          - button "14 Depth-Collision Particles bass OFF" [ref=f1e519]:
+                            - img [ref=f1e520]
+                            - generic [ref=f1e522]: "14"
+                            - generic [ref=f1e523]: Depth-Collision Particles
+                            - generic "Reacts to bass" [ref=f1e524]: bass
+                            - generic [ref=f1e525]: "OFF"
+                          - button "SOLO" [ref=f1e526]
+                        - generic [ref=f1e528]:
+                          - button "15 Z-Quantized Plane Splits mid OFF" [ref=f1e529]:
+                            - img [ref=f1e530]
+                            - generic [ref=f1e532]: "15"
+                            - generic [ref=f1e533]: Z-Quantized Plane Splits
+                            - generic "Reacts to mid" [ref=f1e534]: mid
+                            - generic [ref=f1e535]: "OFF"
+                          - button "SOLO" [ref=f1e536]
+                        - generic [ref=f1e538]:
+                          - button "16 Depth-Edge Comic Outline high OFF" [ref=f1e539]:
+                            - img [ref=f1e540]
+                            - generic [ref=f1e542]: "16"
+                            - generic [ref=f1e543]: Depth-Edge Comic Outline
+                            - generic "Reacts to high" [ref=f1e544]: high
+                            - generic [ref=f1e545]: "OFF"
+                          - button "SOLO" [ref=f1e546]
+                        - generic [ref=f1e548]:
+                          - button "17 Point-Cloud Portrait volume OFF" [ref=f1e549]:
+                            - img [ref=f1e550]
+                            - generic [ref=f1e552]: "17"
+                            - generic [ref=f1e553]: Point-Cloud Portrait
+                            - generic "Reacts to volume" [ref=f1e554]: volume
+                            - generic [ref=f1e555]: "OFF"
+                          - button "SOLO" [ref=f1e556]
+                        - generic [ref=f1e558]:
+                          - button "18 Occlusion-Correct AR none OFF" [ref=f1e559]:
+                            - img [ref=f1e560]
+                            - generic [ref=f1e562]: "18"
+                            - generic [ref=f1e563]: Occlusion-Correct AR
+                            - generic "Reacts to none" [ref=f1e564]: none
+                            - generic [ref=f1e565]: "OFF"
+                          - button "SOLO" [ref=f1e566]
+                        - generic [ref=f1e568]:
+                          - button "19 Tilt-Shift Miniature none OFF" [ref=f1e569]:
+                            - img [ref=f1e570]
+                            - generic [ref=f1e572]: "19"
+                            - generic [ref=f1e573]: Tilt-Shift Miniature
+                            - generic "Reacts to none" [ref=f1e574]: none
+                            - generic [ref=f1e575]: "OFF"
+                          - button "SOLO" [ref=f1e576]
+                        - generic [ref=f1e578]:
+                          - button "20 RGBD Video Reconstitution volume OFF" [ref=f1e579]:
+                            - img [ref=f1e580]
+                            - generic [ref=f1e582]: "20"
+                            - generic [ref=f1e583]: RGBD Video Reconstitution
+                            - generic "Reacts to volume" [ref=f1e584]: volume
+                            - generic [ref=f1e585]: "OFF"
+                          - button "SOLO" [ref=f1e586]
+                    - generic [ref=f1e587]:
+                      - heading "C Object & Concept Masks" [level=3] [ref=f1e588]:
+                        - generic [ref=f1e589]: C
+                        - generic [ref=f1e590]: Object & Concept Masks
+                      - generic [ref=f1e591]:
+                        - generic [ref=f1e593]:
+                          - button "21 Robust Video Matting Keyer none OFF" [ref=f1e594]:
+                            - img [ref=f1e595]
+                            - generic [ref=f1e597]: "21"
+                            - generic [ref=f1e598]: Robust Video Matting Keyer
+                            - generic "Reacts to none" [ref=f1e599]: none
+                            - generic [ref=f1e600]: "OFF"
+                          - button "SOLO" [ref=f1e601]
+                        - generic [ref=f1e603]:
+                          - button "22 BiRefNet Fine Matting none OFF" [ref=f1e604]:
+                            - img [ref=f1e605]
+                            - generic [ref=f1e607]: "22"
+                            - generic [ref=f1e608]: BiRefNet Fine Matting
+                            - generic "Reacts to none" [ref=f1e609]: none
+                            - generic [ref=f1e610]: "OFF"
+                          - button "SOLO" [ref=f1e611]
+                        - generic [ref=f1e613]:
+                          - button "23 Concept-Prompt Mask-to-FX mid OFF" [ref=f1e614]:
+                            - img [ref=f1e615]
+                            - generic [ref=f1e617]: "23"
+                            - generic [ref=f1e618]: Concept-Prompt Mask-to-FX
+                            - generic "Reacts to mid" [ref=f1e619]: mid
+                            - generic [ref=f1e620]: "OFF"
+                          - button "SOLO" [ref=f1e621]
+                        - generic [ref=f1e623]:
+                          - button "24 Exemplar Magic Wand none OFF" [ref=f1e624]:
+                            - img [ref=f1e625]
+                            - generic [ref=f1e627]: "24"
+                            - generic [ref=f1e628]: Exemplar Magic Wand
+                            - generic "Reacts to none" [ref=f1e629]: none
+                            - generic [ref=f1e630]: "OFF"
+                          - button "SOLO" [ref=f1e631]
+                        - generic [ref=f1e633]:
+                          - button "25 Per-Instance Glitch high OFF" [ref=f1e634]:
+                            - img [ref=f1e635]
+                            - generic [ref=f1e637]: "25"
+                            - generic [ref=f1e638]: Per-Instance Glitch
+                            - generic "Reacts to high" [ref=f1e639]: high
+                            - generic [ref=f1e640]: "OFF"
+                          - button "SOLO" [ref=f1e641]
+                        - generic [ref=f1e643]:
+                          - button "26 Object Removal / Clean Plate none OFF" [ref=f1e644]:
+                            - img [ref=f1e645]
+                            - generic [ref=f1e647]: "26"
+                            - generic [ref=f1e648]: Object Removal / Clean Plate
+                            - generic "Reacts to none" [ref=f1e649]: none
+                            - generic [ref=f1e650]: "OFF"
+                          - button "SOLO" [ref=f1e651]
+                        - generic [ref=f1e653]:
+                          - button "27 Object-As-Light-Source volume OFF" [ref=f1e654]:
+                            - img [ref=f1e655]
+                            - generic [ref=f1e657]: "27"
+                            - generic [ref=f1e658]: Object-As-Light-Source
+                            - generic "Reacts to volume" [ref=f1e659]: volume
+                            - generic [ref=f1e660]: "OFF"
+                          - button "SOLO" [ref=f1e661]
+                        - generic [ref=f1e663]:
+                          - button "28 Live Rotoscope Stroke mid OFF" [ref=f1e664]:
+                            - img [ref=f1e665]
+                            - generic [ref=f1e667]: "28"
+                            - generic [ref=f1e668]: Live Rotoscope Stroke
+                            - generic "Reacts to mid" [ref=f1e669]: mid
+                            - generic [ref=f1e670]: "OFF"
+                          - button "SOLO" [ref=f1e671]
+                        - generic [ref=f1e673]:
+                          - button "29 Collage / Cutout World none OFF" [ref=f1e674]:
+                            - img [ref=f1e675]
+                            - generic [ref=f1e677]: "29"
+                            - generic [ref=f1e678]: Collage / Cutout World
+                            - generic "Reacts to none" [ref=f1e679]: none
+                            - generic [ref=f1e680]: "OFF"
+                          - button "SOLO" [ref=f1e681]
+                    - generic [ref=f1e682]:
+                      - heading "D Generative & Optical Flow" [level=3] [ref=f1e683]:
+                        - generic [ref=f1e684]: D
+                        - generic [ref=f1e685]: Generative & Optical Flow
+                      - generic [ref=f1e686]:
+                        - generic [ref=f1e688]:
+                          - button "30 StreamDiffusion Live Restyle none OFF" [ref=f1e689]:
+                            - img [ref=f1e690]
+                            - generic [ref=f1e692]: "30"
+                            - generic [ref=f1e693]: StreamDiffusion Live Restyle
+                            - generic "Reacts to none" [ref=f1e694]: none
+                            - generic [ref=f1e695]: "OFF"
+                          - button "SOLO" [ref=f1e696]
+                        - generic [ref=f1e698]:
+                          - button "31 Flow-Stabilized Restyle none OFF" [ref=f1e699]:
+                            - img [ref=f1e700]
+                            - generic [ref=f1e702]: "31"
+                            - generic [ref=f1e703]: Flow-Stabilized Restyle
+                            - generic "Reacts to none" [ref=f1e704]: none
+                            - generic [ref=f1e705]: "OFF"
+                          - button "SOLO" [ref=f1e706]
+                        - generic [ref=f1e708]:
+                          - button "32 Depth-Conditioned World Swap none OFF" [ref=f1e709]:
+                            - img [ref=f1e710]
+                            - generic [ref=f1e712]: "32"
+                            - generic [ref=f1e713]: Depth-Conditioned World Swap
+                            - generic "Reacts to none" [ref=f1e714]: none
+                            - generic [ref=f1e715]: "OFF"
+                          - button "SOLO" [ref=f1e716]
+                        - generic [ref=f1e718]:
+                          - button "33 Pose-Conditioned Character none OFF" [ref=f1e719]:
+                            - img [ref=f1e720]
+                            - generic [ref=f1e722]: "33"
+                            - generic [ref=f1e723]: Pose-Conditioned Character
+                            - generic "Reacts to none" [ref=f1e724]: none
+                            - generic [ref=f1e725]: "OFF"
+                          - button "SOLO" [ref=f1e726]
+                        - generic [ref=f1e728]:
+                          - button "34 Masked Region Generation none OFF" [ref=f1e729]:
+                            - img [ref=f1e730]
+                            - generic [ref=f1e732]: "34"
+                            - generic [ref=f1e733]: Masked Region Generation
+                            - generic "Reacts to none" [ref=f1e734]: none
+                            - generic [ref=f1e735]: "OFF"
+                          - button "SOLO" [ref=f1e736]
+                        - generic [ref=f1e738]:
+                          - button "35 Recursive Dream Feedback bass OFF" [ref=f1e739]:
+                            - img [ref=f1e740]
+                            - generic [ref=f1e742]: "35"
+                            - generic [ref=f1e743]: Recursive Dream Feedback
+                            - generic "Reacts to bass" [ref=f1e744]: bass
+                            - generic [ref=f1e745]: "OFF"
+                          - button "SOLO" [ref=f1e746]
+                        - generic [ref=f1e748]:
+                          - button "36 Optical-Flow Liquid Smear volume OFF" [ref=f1e749]:
+                            - img [ref=f1e750]
+                            - generic [ref=f1e752]: "36"
+                            - generic [ref=f1e753]: Optical-Flow Liquid Smear
+                            - generic "Reacts to volume" [ref=f1e754]: volume
+                            - generic [ref=f1e755]: "OFF"
+                          - button "SOLO" [ref=f1e756]
+                        - generic [ref=f1e758]:
+                          - button "37 Real Datamosh bass OFF" [ref=f1e759]:
+                            - img [ref=f1e760]
+                            - generic [ref=f1e762]: "37"
+                            - generic [ref=f1e763]: Real Datamosh
+                            - generic "Reacts to bass" [ref=f1e764]: bass
+                            - generic [ref=f1e765]: "OFF"
+                          - button "SOLO" [ref=f1e766]
+                        - generic [ref=f1e768]:
+                          - button "38 Particle Advection Field mid OFF" [ref=f1e769]:
+                            - img [ref=f1e770]
+                            - generic [ref=f1e772]: "38"
+                            - generic [ref=f1e773]: Particle Advection Field
+                            - generic "Reacts to mid" [ref=f1e774]: mid
+                            - generic [ref=f1e775]: "OFF"
+                          - button "SOLO" [ref=f1e776]
+                    - paragraph [ref=f1e777]: 38 effects cataloged. Implemented plugins expose live controls; planned entries activate as their renderer passes land.
+                  - generic [ref=f1e778]:
+                    - generic [ref=f1e779]:
+                      - heading "MASTER SYNC BUS" [level=3] [ref=f1e780]: MASTER SYNC BUS
+                      - generic [ref=f1e782]:
+                        - button "AUTO OFF" [ref=f1e1028]
+                        - button "MIC OFF" [ref=f1e1030]
+                        - button "LFO OFF" [ref=f1e1032]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic "Double click to reset":
+                            - generic: BPM Clock Base
+                          - generic:
+                            - generic: "128"
+                        - generic:
+                          - slider: "128"
+                      - paragraph: LFO Modulates Spikes & Ghosting
+      - button "Expand library" [ref=e73]:
+        - img [ref=e74]
+        - img [ref=e76]
+    - generic [ref=e78]:
+      - button "Expand bottom panel" [ref=e79]
+      - generic:
+        - img
+      - generic [ref=e80]:
+        - button "Expand log" [ref=e81]:
+          - img [ref=e82]
+          - generic [ref=e84]: LOG
+          - generic [ref=e243]:
+            - generic [ref=e244]:
+              - generic [ref=e245]: CPU
+              - generic [ref=e246]: 9%
+            - generic [ref=e247]:
+              - generic [ref=e248]: GPU
+              - generic [ref=e249]: 28%
+            - generic [ref=e250]:
+              - generic [ref=e251]: TEMP
+              - generic [ref=e252]: 54°C
+            - generic [ref=e253]:
+              - generic [ref=e254]: VRAM
+              - generic [ref=e255]: 0/6G
+            - generic [ref=e256]:
+              - generic [ref=e257]: RAM
+              - generic [ref=e258]: 25.2/63.3G
+        - button "CREATE" [ref=e259]:
+          - generic [ref=e260]:
+            - img [ref=e261]
+            - text: CREATE
+  - contentinfo [ref=e92]:
+    - generic [ref=e93]:
+      - generic [ref=e94]:
+        - img [ref=e95]
+        - searchbox "Global library search (Ctrl-K / Cmd-K)" [ref=e98]
+      - generic [ref=e99]:
+        - heading "VJ · live visuals" [level=4] [ref=e263]
+        - generic [ref=e101]:
+          - generic [ref=e102]: LIBRARY
+          - generic [ref=e103]: "--:-- // 48kHz"
+      - generic [ref=e104]:
+        - button [ref=e105]:
+          - img [ref=e106]
+        - button [ref=e108]:
+          - img [ref=e109]
+    - generic [ref=e115]:
+      - generic [ref=e116]:
+        - button "Looping on" [ref=e117]:
+          - img [ref=e118]
+        - button "Jump to start" [disabled] [ref=e123]:
+          - img [ref=e124]
+        - button "Play" [ref=e126]:
+          - img [ref=e127]
+        - button "Jump to end" [disabled] [ref=e129]:
+          - img [ref=e130]
+        - button "Toggle fullscreen" [ref=e132]:
+          - img [ref=e133]
+      - generic [ref=e138]:
+        - generic [ref=e139]: 0:00
+        - generic [ref=e142]: 0:00
+    - generic [ref=e143]:
+      - button "14 - Just Give Up.wav 6:13 Up Next" [ref=e264]:
+        - heading "14 - Just Give Up.wav" [level=4] [ref=e265]
+        - generic [ref=e146]:
+          - generic [ref=e147]: 6:13
+          - generic [ref=e148]: Up Next
+      - generic [ref=e149]:
+        - generic [ref=e150]:
+          - button "Mute" [ref=e151]:
+            - img [ref=e152]
+          - slider "Volume" [ref=e156] [cursor=pointer]
+        - generic [ref=e160]:
+          - button "Download current track" [disabled]:
+            - img
+          - button [ref=e161]:
+            - img [ref=e162]
+  - button "Toggle orb panel" [ref=e166]:
+    - img [ref=e172]
+    - text: Drag to move

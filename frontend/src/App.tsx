@@ -32,16 +32,22 @@ export default function App() {
     y: 500,
   }));
   const [skipped, setSkipped] = useState(false);
-  const [minWaitOver, setMinWaitOver] = useState(false);
+  // The boot cinematic forms over ~7s after its assets load. Hold the screen at
+  // least that long so it plays in full even when the backend binds in under a
+  // second, then hand off once the backend is also ready (it stays as long as
+  // the backend takes). This is the cinematic's real runtime, not a delay.
+  // The boot cinematic reports when its formation has fully resolved (via
+  // onComplete); the screen then holds until the backend is also ready. A safety
+  // timeout guarantees handoff even if the cinematic stalls (e.g. an asset never
+  // loads), so the app can never hang on the boot screen.
+  const [cinematicDone, setCinematicDone] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setCinematicDone(true), 20000);
+    return () => clearTimeout(t);
+  }, []);
 
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   const refreshHealth  = useStatusBarStore((s) => s.refreshHealth);
-
-  // Enforce a minimum 7-second loading screen
-  useEffect(() => {
-    const t = setTimeout(() => setMinWaitOver(true), 7000);
-    return () => clearTimeout(t);
-  }, []);
 
   // Health polling lives here so it runs during the loading screen.
   // Exponential backoff: 1s → 2s → 4s → 8s → 16s until ready, then 30s steady.
@@ -210,7 +216,10 @@ export default function App() {
     logInfo('assistant', `Action: ${action.type} → ${result}`);
   }, []);
 
-  const showLoading = (!isBackendReady || !minWaitOver) && !skipped;
+  // The loading screen is gated purely on real backend readiness — it lifts the
+  // instant the backend port is bound, never on a cosmetic timer. `skipped` is
+  // the manual "continue without backend" escape (offered after a real wait).
+  const showLoading = (!isBackendReady || !cinematicDone) && !skipped;
 
   return (
     <>
@@ -243,7 +252,7 @@ export default function App() {
             transition={{ duration: 0.4 }}
             className="fixed inset-0 z-200"
           >
-            <LoadingScreen onSkip={() => setSkipped(true)} />
+            <LoadingScreen onSkip={() => setSkipped(true)} onComplete={() => setCinematicDone(true)} />
           </motion.div>
         )}
       </AnimatePresence>

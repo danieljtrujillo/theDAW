@@ -2,11 +2,26 @@ import {alphaTab} from '@coderline/alphatab-vite';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig, loadEnv} from 'vite';
+import {createLogger, defineConfig, loadEnv} from 'vite';
+
+// During startup the frontend comes up before the backend binds :8600, so every
+// proxied /api request (health, modules, library, assistant, …) fails with
+// ECONNREFUSED until it does. Vite logs each one ("[vite] http proxy error: …"),
+// which floods the console for 20-30s and looks like a crash. Those are benign
+// retries — the app's own loading screen reflects real readiness — so this
+// logger drops just that proxy-error noise and passes every other log through.
+const quietLogger = createLogger();
+const baseError = quietLogger.error.bind(quietLogger);
+quietLogger.error = (msg, options) => {
+  const s = typeof msg === 'string' ? msg : '';
+  if (s.includes('proxy error') || s.includes('ECONNREFUSED')) return;
+  baseError(msg, options);
+};
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
+    customLogger: quietLogger,
     // alphaTab() copies the Bravura font + worker/worklet assets and wires
     // their URLs through Vite, so the Score-tab tab viewer needs no manual
     // font configuration. It returns an array of plugins; Vite flattens it.
