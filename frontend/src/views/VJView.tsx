@@ -90,7 +90,7 @@ export const VJView: React.FC = () => {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [questStatus, setQuestStatus] = useState<QuestCastStatus | null>(null);
   const [questBusy, setQuestBusy] = useState(false);
-  const [questDetail, setQuestDetail] = useState('QuestCast status not loaded yet.');
+  const [questDetail, setQuestDetail] = useState('delinQuest status not loaded yet.');
   const toggleCamera = () => {
     const next = !cameraOn;
     setCameraOn(next); // optimistic; reconciled by the camera-state echo
@@ -108,7 +108,7 @@ export const VJView: React.FC = () => {
     const response = await fetch(path, init);
     const body = (await response.json().catch(() => ({}))) as QuestCastStatus;
     if (!response.ok) {
-      throw new Error(body.detail || body.error || body.message || `QuestCast backend returned ${response.status}`);
+      throw new Error(body.detail || body.error || body.message || `delinQuest backend returned ${response.status}`);
     }
     return body;
   };
@@ -118,12 +118,12 @@ export const VJView: React.FC = () => {
     try {
       const body = await fetchQuestJson('/api/questcast/status');
       const summary = applyQuestStatus(body);
-      if (!quiet) logInfo('questcast', `Status: ${summary}`);
+      if (!quiet) logInfo('delinquest', `Status: ${summary}`);
       return body;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       applyQuestStatus({ state: 'error', error: message });
-      if (!quiet) logError('questcast', `Status failed: ${message}`);
+      if (!quiet) logError('delinquest', `Status failed: ${message}`);
       return null;
     } finally {
       if (!quiet) setQuestBusy(false);
@@ -132,19 +132,19 @@ export const VJView: React.FC = () => {
 
   const setQuestRelay = async (action: 'start' | 'stop') => {
     setQuestBusy(true);
-    setQuestDetail(action === 'start' ? 'Starting ADB + scrcpy relay…' : 'Stopping QuestCast relay…');
+    setQuestDetail(action === 'start' ? 'Starting ADB + scrcpy relay…' : 'Stopping delinQuest relay…');
     try {
       const body = await fetchQuestJson(`/api/questcast/${action}`, { method: 'POST' });
       const summary = applyQuestStatus(body);
       if (body.ok === false || body.state === 'error' || body.error) {
-        logError('questcast', `${action} reported a problem: ${summary}`);
+        logError('delinquest', `${action} reported a problem: ${summary}`);
       } else {
-        logInfo('questcast', `${action === 'start' ? 'Started' : 'Stopped'}: ${summary}`);
+        logInfo('delinquest', `${action === 'start' ? 'Started' : 'Stopped'}: ${summary}`);
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       applyQuestStatus({ state: 'error', error: message });
-      logError('questcast', `${action} failed: ${message}`);
+      logError('delinquest', `${action} failed: ${message}`);
     } finally {
       setQuestBusy(false);
     }
@@ -719,8 +719,8 @@ export const VJView: React.FC = () => {
                   ? 'border-sky-500/50 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20'
                   : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/5'
               }`}
-              title={`${questRunning ? 'Click to stop' : 'Click to start'} direct QuestCast ADB/scrcpy relay. This does not use the browser window picker. ${questDetail}`}
-              aria-label="Toggle QuestCast ADB video relay"
+              title={`${questRunning ? 'Click to stop' : 'Click to start'} direct delinQuest ADB/scrcpy relay. This does not use the browser window picker. ${questDetail}`}
+              aria-label="Toggle delinQuest ADB video relay"
               aria-pressed={questRunning}
             >
               {questBusy ? (
@@ -732,15 +732,15 @@ export const VJView: React.FC = () => {
               ) : (
                 <Tv2 className="w-2.5 h-2.5" />
               )}
-              Quest Direct {questLabel}
+              delinQuest {questLabel}
             </button>
             <button
               type="button"
               onClick={() => void loadQuestStatus()}
               disabled={questBusy}
               className="p-1 rounded border border-white/10 text-zinc-500 hover:text-zinc-100 hover:border-white/20 hover:bg-white/5 disabled:opacity-50 disabled:pointer-events-none"
-              title={`Refresh QuestCast status. ${questDetail}`}
-              aria-label="Refresh QuestCast status"
+              title={`Refresh delinQuest status. ${questDetail}`}
+              aria-label="Refresh delinQuest status"
             >
               <RefreshCw className="w-2.5 h-2.5" />
             </button>
