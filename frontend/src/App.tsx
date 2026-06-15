@@ -40,7 +40,12 @@ export default function App() {
   // onComplete); the screen then holds until the backend is also ready. A safety
   // timeout guarantees handoff even if the cinematic stalls (e.g. an asset never
   // loads), so the app can never hang on the boot screen.
-  const [cinematicDone, setCinematicDone] = useState(false);
+  // A `?nocinematic` query param (used by the screenshot/capture harness) skips
+  // the boot cinematic, so captures don't sit through its ~7s runtime and it
+  // never appears in the shots.
+  const [cinematicDone, setCinematicDone] = useState(
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('nocinematic'),
+  );
   useEffect(() => {
     const t = setTimeout(() => setCinematicDone(true), 20000);
     return () => clearTimeout(t);

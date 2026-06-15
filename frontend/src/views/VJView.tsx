@@ -157,6 +157,10 @@ export const VJView: React.FC = () => {
   const vjSetAcked = useVjSetStatusStore((s) => s.acked);
   const poppedWindowRef = useRef<Window | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // True once the in-tab iframe has actually loaded the VJ app. Until its onLoad
+  // fires, contentWindow is about:blank (host origin), so posting with the pinned
+  // VJ origin floods the console with origin-mismatch errors.
+  const iframeLoadedRef = useRef(false);
   const iframeReadyTimerRef = useRef<number | null>(null);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
@@ -196,11 +200,19 @@ export const VJView: React.FC = () => {
   const postToIframe = (payload: Record<string, unknown>) => {
     const w = popped ? poppedWindowRef.current : iframeRef.current?.contentWindow;
     if (!w) return;
+    // Skip until the in-tab iframe has loaded the VJ app, else we post to
+    // about:blank (host origin) and the pinned origin mismatches (console flood).
+    if (!popped && !iframeLoadedRef.current) return;
     try { w.postMessage(payload, vjOrigin); } catch { /* mid-navigation; retried next tick */ }
   };
   // Trust inbound messages only from our own in-tab iframe (a popped-out window
   // is a separate top-level window and can't postMessage back to us anyway).
   const isFromVj = (e: MessageEvent) => e.source != null && e.source === iframeRef.current?.contentWindow;
+
+  // A new VJ src reloads the iframe — re-gate posting until its onLoad fires again.
+  useEffect(() => {
+    iframeLoadedRef.current = false;
+  }, [vjSrc]);
 
   // OS/browser page visibility — pause the bridge when SA3 is minimised or
   // backgrounded, not only when another in-app tab is shown.
@@ -294,6 +306,11 @@ export const VJView: React.FC = () => {
     const highEnd = buf.length;
 
     const tick = () => {
+      // Hold off until the iframe has loaded the VJ app (avoid posting to about:blank).
+      if (!popped && !iframeLoadedRef.current) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       const now = performance.now();
       if (now - lastPost >= POST_DT) {
         lastPost = now;
@@ -499,7 +516,10 @@ export const VJView: React.FC = () => {
   }, [status, popped]);
 
   const handleIframeLoad = () => {
-
+    // The iframe has loaded the VJ app: contentWindow is now the VJ origin, so
+    // posting is safe. Set synchronously (ref, not state) so the sync() below
+    // isn't blocked by the not-yet-loaded gate.
+    iframeLoadedRef.current = true;
     if (iframeReadyTimerRef.current !== null) {
       window.clearTimeout(iframeReadyTimerRef.current);
       iframeReadyTimerRef.current = null;
