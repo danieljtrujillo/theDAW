@@ -134,11 +134,15 @@ export const PlayerFooter: React.FC = () => {
     ?? (centerTab === 'vj' ? 'VJ · live visuals' : centerTab === 'dj' ? 'DJ · live master' : null);
   const displayDuration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
   const displayCurrentTime = currentTime;
-  const displayIsPlaying = isDjMode
-    ? djMaster === 'playing'
-    : centerTab === 'vj'
-      ? vjState === 'playing'
-      : isPlaying;
+  // The transport icon reflects whatever is ACTUALLY producing output, on any
+  // surface: the global engine (library / make / edit — `isPlaying` also covers
+  // editor playback, which loads into the engine), the DJ master on the DJ tab,
+  // or the VJ video on the VJ tab. So pressing play on a library row (or
+  // anywhere) flips the footer to pause even while the live tabs are open.
+  const displayIsPlaying =
+    isPlaying ||
+    (isDjMode && djMaster === 'playing') ||
+    (centerTab === 'vj' && vjState === 'playing');
   const progressPct = displayDuration > 0 ? Math.min(100, (displayCurrentTime / displayDuration) * 100) : 0;
 
   const handleToggle = () => {

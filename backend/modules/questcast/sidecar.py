@@ -106,7 +106,7 @@ class QuestCastSidecar:
     def _ensure_adb_server(self) -> Optional[str]:
         adb = _adb_path()
         if not adb:
-            return "adb not found — install Android platform-tools or set theDAW_ADB / theDAW_QUESTCAST_ADB"
+            return "adb not found. Install Android platform-tools or set theDAW_ADB / theDAW_QUESTCAST_ADB"
         try:
             subprocess.run([adb, "start-server"], capture_output=True, timeout=20)
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -125,7 +125,7 @@ class QuestCastSidecar:
         npm = _npm_cmd()
         if not npm:
             return "npm not found — cannot bootstrap the questcast sidecar deps"
-        log.info("questcast: bootstrapping Node deps (one-time)…")
+        log.info("questcast: bootstrapping Node deps (one-time)...")
         try:
             result = subprocess.run(
                 [npm, "install"],
@@ -209,8 +209,23 @@ class QuestCastSidecar:
     def start(self, device_serial: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             if self.running:
-                self._record("start() ignored — relay already running")
-                return self.status()
+                state = self._status.get("state")
+                if state in ("ready", "starting"):
+                    self._record("start() ignored, relay already running")
+                    return self.status()
+                # Process is alive but the stream is dead (Quest slept / display
+                # off -> video-ended) or errored. Recycle it so a fresh scrcpy
+                # stream comes up, instead of leaving a zombie relay with no
+                # video (which forced a manual toggle/refresh before).
+                self._record(f"start() recycling stale relay (state={state})")
+                proc = self._proc
+                self._proc = None
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
 
             self._record(
                 f"start() requested (serial={device_serial or 'first device'})"
@@ -232,7 +247,7 @@ class QuestCastSidecar:
                 return {"ok": False, "error": err}
             self._record("adb start-server ok")
 
-            self._record("ensuring node deps + scrcpy server (bootstrap)…")
+            self._record("ensuring node deps + scrcpy server (bootstrap)...")
             err = self._ensure_bootstrap()
             if err:
                 self._record(f"ABORT: bootstrap: {err}")
@@ -293,7 +308,7 @@ class QuestCastSidecar:
             proc = self._proc
             self._proc = None
             self._status = {"state": "stopped"}
-            self._record("stop() requested — terminating relay")
+            self._record("stop() requested, terminating relay")
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:

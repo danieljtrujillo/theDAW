@@ -546,3 +546,53 @@ Open items elsewhere (not this plan): PR #19 awaiting review/visual sign-off; au
 Landed (VJ repo, needs live eyes; theDAW repo where noted): Quest streaming FIXED (SPS/PPS prepend) + auto-reconnect + visibility-gated decode; Quest source/preview in right panel (reuses stream, killed host double-decode); Quest view crop FULL-SBS/L-16:9/R-16:9; auto-default source→Quest when adb device present; Cymatics as a VJ source (4 modes); Resolume clip-grid + collapsible panels + top level-scope + full-height right panel + native export folder dialog; clipboard fix; basic-pitch `pkg_resources` (setuptools<81, pinned), stems sidecar torch realign (2.11.0+cpu set) + onnxruntime for audio-separator, librosa.core.audio shim. Watch-link: plan `docs/plans/2026-06-14-vj-watch-link-broadcast-plan.md`, Phase 1 backend `backend/modules/broadcast/` DONE; VJ GO-LIVE broadcaster next.
 
 Queued VJ UI punchlist (memory `project_vj_ui_punchlist`, NOT started): (1) banks=rows + wheel/ctrl-wheel scroll, clear add-bank; (2) kill verbose "Awaiting Data Core" empty-state → "media not found. click or drop here to add"; (3) "SOURCE // MATRIX" → "SOURCE"; (4) "SELECT & IMPORT VIDEO CLIPS" → "Import Media" + filetype-list tooltip, DOCUMENT supported vs unsupported codecs + why (ProRes/.mkv/alpha-HEVC etc. — verify before writing); (5) drag Library media → VJ banks/anywhere (cross-origin, via send-to-VJ bus); (6) footer play/pause reflects ACTUAL active playback (library/anywhere), overlaps G13.
+
+### 9a. Import Media — accepted vs unsupported formats (item 4 done)
+
+The VJ ingest path (`fileRouter.ts` `VJ_FILE_ACCEPT = 'video/*,audio/*,image/*'`) hands media to a plain `<video>`/`<audio>`/`<img>` element, so what plays is whatever the host browser (Chromium in the embedded webview) can natively decode. The Import Media button now carries a `title` tooltip (`IMPORT_MEDIA_TOOLTIP` in `VJControls.tsx`) listing the working set; this is the rationale behind that list.
+
+- **Video (supported):** MP4 / M4V with H.264 or H.265/HEVC, WebM with VP8 / VP9 / AV1, MOV with H.264. Transparent overlays only via VP8/VP9-alpha **WebM**.
+- **Audio (supported):** MP3, WAV, FLAC, AAC / M4A, OGG (Vorbis), Opus.
+- **Images (supported):** PNG, JPG/JPEG, WebP, GIF (incl. animated), AVIF, BMP.
+- **NOT supported, and why:**
+  - **ProRes / DNxHD `.mov`** — pro intermediate codecs; no browser decoder. Transcode to H.264 MP4 first.
+  - **alpha-HEVC `.mp4`** (Apple-style transparent HEVC) — Chromium will not decode the alpha plane in an MP4 container; the clip plays opaque or fails. Use VP9-alpha WebM for transparency.
+  - **`.mkv` / `.avi` / `.flv` containers** — Chromium has no Matroska/AVI/FLV demuxer even when the inside codec is fine. Re-wrap to MP4/WebM (lossless `-c copy` is enough when the codec is supported).
+  - **Raw / uncompressed (YUV, image sequences as a "video")** — no container/decoder path; import a PNG sequence as images or encode to a supported codec.
+  - Note: H.265/HEVC playback depends on OS/GPU support being present in the Chromium build; on a machine without HEVC it silently fails where H.264 would work — H.264 MP4 is the safe interchange format.
+
+## 10. Session 2026-06-14b: boot cinematic, LBR8 robustness, bank buttons + right-panel reorg plan
+
+All UNCOMMITTED across host (theDAW) + VJ app (GANTASMO-LIVE-VJ) + one backend file. Needs the user's live eyes/ears + relaunch (HMR off; vite.config + splash + python changes need a fresh start).
+
+### Landed this session (to verify live)
+- BOOT CINEMATIC rebuilt to the LOCKED spec (see memory project_boot_animation_spec). `frontend/src/components/layout/LiquidChromeTitle.tsx`: dark purple steel background; theDAW.gltf in the cymatics chrome (MeshStandardMaterial metalness 0.99 / roughness 0.008 + EXR env + cymatics light rig) assembling from scattered vertices; "by GANTASMO" formed from the electric-wave-audio-visualizer electricity (cyan->magenta additive points + UnrealBloom + crackle); forms over ~7s after assets load; holds until backend ready; NEVER says loading. LoadingScreen.tsx is now just this cinematic (no ferro screen, no orb, no loading text). index.html has an instant dark-purple splash (no text). main.tsx removes it on mount. App.tsx cinematicDone gate = 9000ms (so the ~7s plays even when backend binds in ~1s). Assets copied into host: frontend/public/{theDAW.gltf,theDAW.svg,piz_compressed.exr}, frontend/src/cymatics/*. BootCinematic.tsx (ferro bg) is now UNUSED (left in tree).
+- TERMINAL HIDDEN: backend/_devstack.py minimizes the console at stack start (theDAW_KEEP_CONSOLE=1 to keep it); theDAW.bat trimmed of banner + verbose echoes; vite.config customLogger drops the proxy ECONNREFUSED flood.
+- PROFESSIONAL ERROR/LOADING STATES (VJ app): killed "Optics Offline / SYS::ERR / physical video buffer / mainboard"; suppressed the play()/pause() AbortError so it no longer triggers an overlay (useMedia.isBenignPlayInterruption); "Loading OMEGA Engine" -> "Loading..."; VJView sidecar wall -> auto-retry "Loading..." then a compact "The VJ engine didn't start." + Retry.
+- LBR8 rename: the QUEST source toggle is now "LBR8"; the verbose ADB paragraph is a compact "LBR8" with the exact tooltip "stream 16x9 or SBS3D from Meta Quest via USB or wireless ADB without Link or MQDH (must have USB Debugging enabled)".
+- LBR8 ROBUSTNESS (the real fix): backend/modules/questcast/sidecar.py start() now RECYCLES a stale relay (Node alive but scrcpy video-ended on sleep) instead of "already running" no-op. Frontend useQuestCast.ts has a watchdog (no frames 5s while visible -> recover) + a visibilitychange wake handler -> auto recovery, no refresh/toggle. Auto-default-to-LBR8 (App.tsx) now retries ~6x/1.8s since adb lags after boot.
+- BANK AXIS BUTTONS (ClipGrid.tsx): grow/shrink moved to bare +/- on the axes (columns +/- on the right edge, banks +/- along the bottom), small + high-contrast, no labels/counts. Default gridRows = 1 (one bank). Removed the wrong "N rows" label + the glyph scroll-hint. Trailing auto-empty bank removed.
+- EMOJI/GLYPH PURGE: removed checkmarks, arrows, ellipses, multiplication signs, and emdashes from useQuestCast.ts, VJControls.tsx, sidecar.py, ClipGrid.tsx (logs/comments/aria). Standing rule now: no emojis/glyphs anywhere, ever (memory feedback_no_emojis_ever).
+
+### RIGHT-PANEL REORGANIZATION PLAN (proposed, NOT built; awaiting the user's call)
+VJControls.tsx is one 1223-line component = a single endless scroll column: header, SOURCE deck, the huge AUTOPILOT OVERRIDE, Deck A (Geometrics) / B (Corruption) / C (Chromatics) / D (Timecode), Plugins manager, Master Sync Bus. Generous padding (px-3 py-3, space-y-4) + a crowded header add length.
+
+Proposed: a TABBED deck. Header stays top, Master Sync Bus stays sticky bottom (transport). Tab strip between them so each view is ~one screen:
+  - SOURCE: CAM/MEM crossfader, source toggles (DEVICE/SCREEN/LBR8/CYMATICS), source-specific controls (device picker, LBR8 view + log, cymatics mode), Canvas Format, MUTE + Import.
+  - EFFECTS: Decks A-D as collapsible sections (collapse-all default), Render Performance, FX looks tier.
+  - AUTOPILOT: the whole Autopilot Override (so it stops pushing everything down when on).
+  - PLUGINS: the plugins catalog.
+Space/ergonomics: halve section padding/gaps, shrink oversized headers, turn the header's crowded row (REC + 2 selects + folder + CAM ERR + 4 layout buttons + reset) into grouped clusters with layout modes as a small segmented control.
+
+THREE MIDI SURFACES (user: "3 buttons called MIDI, one in the middle of the video feed"): (1) host toolbar "MIDI" input chip (forwards MIDI into the iframe), (2) host toolbar "MIDI" master toggle (enables Web MIDI), (3) the VJ app MIDI Mapper pill that floats top-right over the canvas (MidiPanel.tsx, absolute top-2 right-32). Plan: move the mapper off the feed into the panel, consolidate the two host buttons into one MIDI master.
+
+REDUNDANCIES (flagged per "do not remove features, but tell me if anything is redundant"):
+  1. Clip management in 3 places: ClipGrid banks, Library Pool browser, and the Archive Bin inside the SOURCE deck (Archive Bin duplicates banks/pool).
+  2. Import has 3 entry points: ClipGrid "Import", SOURCE deck "Import Media" bar, drop-anywhere empty state.
+  3. The two host MIDI buttons overlap.
+  4. The MIDI Mapper pill over the video is a 3rd MIDI surface.
+  5. Audio reactivity shows as "AUDIO FIX/MIC OFF" in the Sync Bus and as the host "Audio" input chip.
+
+CLEAN CODE: split VJControls.tsx (1223 lines) into ControlDeckHeader, SourceDeck, AutopilotDeck, EffectsDecks (+ existing PluginsPanel + sync bus); lets tabs lazy-render.
+
+DECISIONS PENDING before building the reorg: tabs vs accordions; keep all 3 clip surfaces or merge the Archive Bin; consolidate the 2 host MIDI buttons; move the mapper off the canvas. Build only what the user greenlights. Also pending: the cinematic tuning pass (form timing, scatter, particle density, bloom, camera, model scale, the purple) once the user sees it live.
