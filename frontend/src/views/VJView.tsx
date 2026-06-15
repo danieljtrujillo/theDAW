@@ -90,7 +90,7 @@ export const VJView: React.FC = () => {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [questStatus, setQuestStatus] = useState<QuestCastStatus | null>(null);
   const [questBusy, setQuestBusy] = useState(false);
-  const [questDetail, setQuestDetail] = useState('QuestCast status not loaded yet.');
+  const [questDetail, setQuestDetail] = useState('delinQuest status not loaded yet.');
   const toggleCamera = () => {
     const next = !cameraOn;
     setCameraOn(next); // optimistic; reconciled by the camera-state echo
@@ -108,7 +108,7 @@ export const VJView: React.FC = () => {
     const response = await fetch(path, init);
     const body = (await response.json().catch(() => ({}))) as QuestCastStatus;
     if (!response.ok) {
-      throw new Error(body.detail || body.error || body.message || `QuestCast backend returned ${response.status}`);
+      throw new Error(body.detail || body.error || body.message || `delinQuest backend returned ${response.status}`);
     }
     return body;
   };
@@ -118,12 +118,12 @@ export const VJView: React.FC = () => {
     try {
       const body = await fetchQuestJson('/api/questcast/status');
       const summary = applyQuestStatus(body);
-      if (!quiet) logInfo('questcast', `Status: ${summary}`);
+      if (!quiet) logInfo('delinquest', `Status: ${summary}`);
       return body;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       applyQuestStatus({ state: 'error', error: message });
-      if (!quiet) logError('questcast', `Status failed: ${message}`);
+      if (!quiet) logError('delinquest', `Status failed: ${message}`);
       return null;
     } finally {
       if (!quiet) setQuestBusy(false);
@@ -132,19 +132,19 @@ export const VJView: React.FC = () => {
 
   const setQuestRelay = async (action: 'start' | 'stop') => {
     setQuestBusy(true);
-    setQuestDetail(action === 'start' ? 'Starting ADB + scrcpy relay…' : 'Stopping QuestCast relay…');
+    setQuestDetail(action === 'start' ? 'Starting ADB + scrcpy relay…' : 'Stopping delinQuest relay…');
     try {
       const body = await fetchQuestJson(`/api/questcast/${action}`, { method: 'POST' });
       const summary = applyQuestStatus(body);
       if (body.ok === false || body.state === 'error' || body.error) {
-        logError('questcast', `${action} reported a problem: ${summary}`);
+        logError('delinquest', `${action} reported a problem: ${summary}`);
       } else {
-        logInfo('questcast', `${action === 'start' ? 'Started' : 'Stopped'}: ${summary}`);
+        logInfo('delinquest', `${action === 'start' ? 'Started' : 'Stopped'}: ${summary}`);
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       applyQuestStatus({ state: 'error', error: message });
-      logError('questcast', `${action} failed: ${message}`);
+      logError('delinquest', `${action} failed: ${message}`);
     } finally {
       setQuestBusy(false);
     }
@@ -157,6 +157,10 @@ export const VJView: React.FC = () => {
   const vjSetAcked = useVjSetStatusStore((s) => s.acked);
   const poppedWindowRef = useRef<Window | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // True once the in-tab iframe has actually loaded the VJ app. Until its onLoad
+  // fires, contentWindow is about:blank (host origin), so posting with the pinned
+  // VJ origin floods the console with origin-mismatch errors.
+  const iframeLoadedRef = useRef(false);
   const iframeReadyTimerRef = useRef<number | null>(null);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
@@ -196,11 +200,19 @@ export const VJView: React.FC = () => {
   const postToIframe = (payload: Record<string, unknown>) => {
     const w = popped ? poppedWindowRef.current : iframeRef.current?.contentWindow;
     if (!w) return;
+    // Skip until the in-tab iframe has loaded the VJ app, else we post to
+    // about:blank (host origin) and the pinned origin mismatches (console flood).
+    if (!popped && !iframeLoadedRef.current) return;
     try { w.postMessage(payload, vjOrigin); } catch { /* mid-navigation; retried next tick */ }
   };
   // Trust inbound messages only from our own in-tab iframe (a popped-out window
   // is a separate top-level window and can't postMessage back to us anyway).
   const isFromVj = (e: MessageEvent) => e.source != null && e.source === iframeRef.current?.contentWindow;
+
+  // A new VJ src reloads the iframe — re-gate posting until its onLoad fires again.
+  useEffect(() => {
+    iframeLoadedRef.current = false;
+  }, [vjSrc]);
 
   // OS/browser page visibility — pause the bridge when SA3 is minimised or
   // backgrounded, not only when another in-app tab is shown.
@@ -294,6 +306,11 @@ export const VJView: React.FC = () => {
     const highEnd = buf.length;
 
     const tick = () => {
+      // Hold off until the iframe has loaded the VJ app (avoid posting to about:blank).
+      if (!popped && !iframeLoadedRef.current) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       const now = performance.now();
       if (now - lastPost >= POST_DT) {
         lastPost = now;
@@ -499,7 +516,10 @@ export const VJView: React.FC = () => {
   }, [status, popped]);
 
   const handleIframeLoad = () => {
-
+    // The iframe has loaded the VJ app: contentWindow is now the VJ origin, so
+    // posting is safe. Set synchronously (ref, not state) so the sync() below
+    // isn't blocked by the not-yet-loaded gate.
+    iframeLoadedRef.current = true;
     if (iframeReadyTimerRef.current !== null) {
       window.clearTimeout(iframeReadyTimerRef.current);
       iframeReadyTimerRef.current = null;
@@ -699,8 +719,8 @@ export const VJView: React.FC = () => {
                   ? 'border-sky-500/50 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20'
                   : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/5'
               }`}
-              title={`${questRunning ? 'Click to stop' : 'Click to start'} direct QuestCast ADB/scrcpy relay. This does not use the browser window picker. ${questDetail}`}
-              aria-label="Toggle QuestCast ADB video relay"
+              title={`${questRunning ? 'Click to stop' : 'Click to start'} direct delinQuest ADB/scrcpy relay. This does not use the browser window picker. ${questDetail}`}
+              aria-label="Toggle delinQuest ADB video relay"
               aria-pressed={questRunning}
             >
               {questBusy ? (
@@ -712,15 +732,15 @@ export const VJView: React.FC = () => {
               ) : (
                 <Tv2 className="w-2.5 h-2.5" />
               )}
-              Quest Direct {questLabel}
+              delinQuest {questLabel}
             </button>
             <button
               type="button"
               onClick={() => void loadQuestStatus()}
               disabled={questBusy}
               className="p-1 rounded border border-white/10 text-zinc-500 hover:text-zinc-100 hover:border-white/20 hover:bg-white/5 disabled:opacity-50 disabled:pointer-events-none"
-              title={`Refresh QuestCast status. ${questDetail}`}
-              aria-label="Refresh QuestCast status"
+              title={`Refresh delinQuest status. ${questDetail}`}
+              aria-label="Refresh delinQuest status"
             >
               <RefreshCw className="w-2.5 h-2.5" />
             </button>

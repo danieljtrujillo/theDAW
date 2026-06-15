@@ -37,6 +37,9 @@ import {
 } from './specs.js';
 
 const FRONTEND = process.env.SA3_FRONTEND_URL ?? 'http://localhost:5173';
+// Navigate with ?nocinematic so the boot cinematic is skipped for captures (it
+// otherwise holds for ~7s per scene and would appear in the shots).
+const NAV = FRONTEND + (FRONTEND.includes('?') ? '&' : '?') + 'nocinematic=1';
 const BACKEND = process.env.SA3_BACKEND_URL ?? 'http://localhost:8600';
 const requireFromCwd = createRequire(path.join(process.cwd(), 'package.json'));
 const { chromium } = requireFromCwd('playwright') as typeof import('playwright');
@@ -119,13 +122,16 @@ interface Scene {
  * ready (e.g. in a test scenario).
  */
 async function waitForReady(page: Page): Promise<void> {
-  const overlay = page.locator('div.fixed.inset-0.bg-\\[\\#07050a\\].z-200').first();
+  // The boot overlay is the fixed inset-0 z-200 layer (App.tsx wraps LoadingScreen
+  // in it). With ?nocinematic the cinematic is skipped, so this lifts as soon as
+  // the backend health poll succeeds.
+  const overlay = page.locator('div.fixed.inset-0.z-200').first();
   // Wait up to 25s for the overlay to disappear naturally.
   try {
     await overlay.waitFor({ state: 'hidden', timeout: 25000 });
   } catch {
-    // Fallback: click the Skip button if it appeared.
-    const skip = page.getByRole('button', { name: /skip/i }).first();
+    // Fallback: click the escape button if it appeared.
+    const skip = page.getByRole('button', { name: /continue|skip/i }).first();
     if (await skip.isVisible().catch(() => false)) {
       await skip.click();
       await overlay.waitFor({ state: 'hidden', timeout: 5000 });
@@ -170,7 +176,7 @@ const SCENES: Scene[] = [
     name: '01-shell-make',
     description: 'App opened on MAKE tab — top bar + tabs + library closed',
     run: async (page) => {
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await page.waitForTimeout(800);
       await clickTab(page, 'Make');
@@ -184,7 +190,7 @@ const SCENES: Scene[] = [
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
       log(`showcase track: ${seed.title} (${seed.id.slice(0, 8)})`);
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await openLibrary(page);
       // Search by the showcase title so it scrolls into view.
@@ -201,7 +207,7 @@ const SCENES: Scene[] = [
     run: async (page) => {
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await openLibrary(page);
       await librarySearch(page, seed.title);
@@ -220,7 +226,7 @@ const SCENES: Scene[] = [
     run: async (page) => {
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await openLibrary(page);
       await librarySearch(page, seed.title);
@@ -236,7 +242,7 @@ const SCENES: Scene[] = [
     run: async (page) => {
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await openLibrary(page);
       await librarySearch(page, seed.title);
@@ -250,7 +256,7 @@ const SCENES: Scene[] = [
     name: '06-learn-tab-3d-graph',
     description: 'LEARN tab — 3D lineage graph with showcase node highlighted',
     run: async (page) => {
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await clickTab(page, 'Learn');
       // 3D graph needs a beat to settle the force layout.
@@ -262,7 +268,7 @@ const SCENES: Scene[] = [
     name: '07-settings-modal-with-shutdown',
     description: 'SETTINGS modal open showing pinned Restart + Shutdown footer',
     run: async (page) => {
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       // Click the gear icon top-right.
       await page.locator('button[title="Settings"]').first().click();
@@ -274,7 +280,7 @@ const SCENES: Scene[] = [
     name: '08-vj-tab-loading',
     description: 'VJ tab — either loading state OR iframe ready (whichever the sidecar is in)',
     run: async (page) => {
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await clickTab(page, 'VJ');
       // Give the iframe a beat to either load or show the loading
@@ -289,7 +295,7 @@ const SCENES: Scene[] = [
     run: async (page) => {
       const cohort = await pickCohort(BACKEND, 3);
       if (cohort.length === 0) throw new Error('no library entries');
-      await page.goto(FRONTEND);
+      await page.goto(NAV);
       await waitForReady(page);
       await openLibrary(page);
       // Select via Ctrl+click so multi-select kicks in.

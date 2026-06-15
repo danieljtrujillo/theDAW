@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 
 RESTART_EXIT_CODE = 88
@@ -180,6 +181,31 @@ def _wait_then_open_browser() -> None:
         _open_browser()
 
 
+def _warm_sidecars() -> None:
+    """Pre-spawn the lazily-started sidecars once the backend is up, so they are
+    ready before the user needs them instead of cold-starting on first use. The
+    VJ dev server (port 5187) is the important one: a GET to /api/vj/url makes the
+    backend ``vj`` module spawn it, so the VJ tab is already warm when opened."""
+    base = "http://127.0.0.1:8600"
+    deadline = time.time() + 120.0
+    while not _shutdown.is_set() and time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"{base}/api/health", timeout=2) as resp:
+                if resp.status == 200:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    if _shutdown.is_set():
+        return
+    try:
+        with urllib.request.urlopen(f"{base}/api/vj/url", timeout=120) as resp:
+            resp.read()
+        _emit("stack", "VJ sidecar warmed (dev server spawning on :5187)")
+    except Exception as exc:
+        _emit("stack", f"VJ sidecar warm-up skipped: {exc}")
+
+
 def main() -> int:
     # Drop the launcher console immediately so the user sees only the app, never
     # the log stream. It keeps running (restorable from the taskbar);
@@ -213,6 +239,7 @@ def main() -> int:
         _emit("stack", "localtunnel not installed — public link skipped")
 
     threading.Thread(target=_wait_then_open_browser, daemon=True).start()
+    threading.Thread(target=_warm_sidecars, daemon=True).start()
 
     # Backend supervisor on its own thread so Ctrl-C lands in main().
     backend = threading.Thread(target=_run_backend, args=(children,), daemon=True)

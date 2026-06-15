@@ -57,7 +57,7 @@ export const summarizeQuestCastDevices = (devices: QuestCastStatus['devices']): 
 };
 
 export const describeQuestCastStatus = (status: QuestCastStatus | null): string => {
-  if (!status) return 'QuestCast status not loaded yet.';
+  if (!status) return 'delinQuest status not loaded yet.';
   const state = typeof status.state === 'string' ? status.state : status.running ? 'running' : 'stopped';
   const parts = [`state ${state}`];
   if (status.error) parts.push(`error ${status.error}`);
@@ -148,7 +148,7 @@ export const QuestCastPreview: React.FC<QuestCastPreviewProps> = ({
       setStats({
         ...initialStats,
         connection: 'error',
-        error: 'This browser cannot preview QuestCast directly because WebCodecs VideoDecoder is unavailable. Use current Chrome or Edge.',
+        error: 'This browser cannot preview delinQuest directly because WebCodecs VideoDecoder is unavailable. Use current Chrome or Edge.',
       });
       return;
     }
@@ -222,7 +222,7 @@ export const QuestCastPreview: React.FC<QuestCastPreviewProps> = ({
       if (!closed) setStats((prev) => ({ ...prev, connection: 'connected', error: null }));
     };
 
-    socket.onerror = () => updateError('QuestCast WebSocket connection failed. Stop and start QuestCast, then try again.');
+    socket.onerror = () => updateError('delinQuest WebSocket connection failed. Stop and start delinQuest, then try again.');
     socket.onclose = () => {
       if (!closed) setStats((prev) => ({ ...prev, connection: ready ? 'idle' : prev.connection }));
     };
@@ -293,7 +293,7 @@ export const QuestCastPreview: React.FC<QuestCastPreviewProps> = ({
         <div className="flex items-center gap-2 min-w-0">
           <Tv2 className="w-3.5 h-3.5 text-sky-300 shrink-0" />
           <div className="min-w-0">
-            <div className="text-[9px] font-black uppercase tracking-widest text-sky-100">Quest Direct Preview</div>
+            <div className="text-[9px] font-black uppercase tracking-widest text-sky-100">delinQuest Preview</div>
             <div className="truncate text-[8px] font-mono text-zinc-500">No window picker. USB/ADB direct feed.</div>
           </div>
         </div>
@@ -328,7 +328,7 @@ export const QuestCastPreview: React.FC<QuestCastPreviewProps> = ({
 
       <div className="space-y-2 p-3">
         <p className="text-[8px] font-mono leading-relaxed text-zinc-400">
-          Use <span className="text-sky-200">Start Quest</span> for the direct QuestCast path. Do <span className="text-amber-200">not</span> choose a browser window for this path. The browser “choose a window” dialog is only for the separate VJ SCREEN source, and it requires an already-open scrcpy/window source.
+          Use <span className="text-sky-200">Start delinQuest</span> for the direct delinQuest path. Do <span className="text-amber-200">not</span> choose a browser window for this path. The browser “choose a window” dialog is only for the separate VJ SCREEN source, and it requires an already-open scrcpy/window source.
         </p>
         {(stats.error || status?.error || status?.message) && (
           <p className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1.5 text-[8px] font-mono leading-relaxed text-rose-200">
