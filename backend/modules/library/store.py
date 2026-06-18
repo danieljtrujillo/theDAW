@@ -198,6 +198,14 @@ def _write_metadata(entry_dir: Path, payload: dict[str, Any]) -> None:
 def _resolve_audio_file(entry_dir: Path, meta: dict[str, Any]) -> Optional[Path]:
     """Resolve the audio file for an entry. Try the metadata-declared name
     first, then any first audio file in the entry directory."""
+    # Reference-in-place entry (folder -> playlist): the audio lives OUTSIDE the
+    # library at source_path and is never copied in. Resolve straight to it so
+    # serving, analysis, and listing all read the original file.
+    source_path = meta.get("source_path")
+    if source_path:
+        ref = Path(source_path)
+        if ref.is_file():
+            return ref
     declared = meta.get("filename") or meta.get("audio_filename")
     if declared:
         candidate = entry_dir / declared
@@ -641,6 +649,71 @@ class LibraryStore:
         _maybe_enqueue_analysis(self, entry_id, source="import")
         _maybe_enqueue_stems(self, entry_id, source="import")
         _maybe_enqueue_midi(self, entry_id, source="import")
+        return record
+
+    def register_reference(
+        self,
+        source_path: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[LibraryRecord]:
+        """Register an on-disk audio file as a library entry WITHOUT copying it
+        (reference-in-place). Only a small metadata.json is written into the
+        library; the audio is served / analysed straight from ``source_path``.
+        Used by the folder -> playlist feature. Returns None when the path is
+        not a file."""
+        src = Path(source_path)
+        if not src.is_file():
+            return None
+        entry_id = uuid.uuid4().hex
+        entry_dir = self.root / entry_id
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        meta_in = dict(metadata or {})
+        ext = src.suffix.lower().lstrip(".")
+        mime = {
+            "mp3": "audio/mpeg",
+            "wav": "audio/wav",
+            "flac": "audio/flac",
+            "ogg": "audio/ogg",
+            "m4a": "audio/mp4",
+            "aac": "audio/aac",
+            "opus": "audio/opus",
+            "aif": "audio/aiff",
+            "aiff": "audio/aiff",
+            "wma": "audio/x-ms-wma",
+        }.get(ext, "audio/mpeg")
+        record_meta: dict[str, Any] = {
+            "id": entry_id,
+            "source_path": str(src.resolve()),
+            "filename": src.name,
+            "audio_filename": src.name,
+            "mime_type": mime,
+            "title": meta_in.get("title") or src.stem,
+            "prompt": "",
+            "negative_prompt": "",
+            "model": "reference",
+            "duration": 0.0,
+            "steps": 0,
+            "cfg": 0.0,
+            "seed": 0,
+            "favorite": False,
+            "rating": None,
+            "tags": list(meta_in.get("tags", [])),
+            "notes": meta_in.get("notes", ""),
+            "source": meta_in.get("source", "folder"),
+            "chimera_sources": [],
+            "saved_at": time.time(),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _write_metadata(entry_dir, record_meta)
+        record = _record_from_metadata(entry_dir, record_meta, self.api_prefix)
+        if record is None:
+            return None
+        record.id = entry_id
+        record.audio_url = _audio_url_for(self.api_prefix, entry_id)
+        self._sync_record_to_db(record, record_meta)
+        # Reference tracks still benefit from BG analysis (BPM/key for mixing);
+        # it reads get_audio_path, which now resolves to the external file.
+        _maybe_enqueue_analysis(self, entry_id, source="import")
         return record
 
     def import_media(

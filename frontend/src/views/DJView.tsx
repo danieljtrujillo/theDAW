@@ -25,7 +25,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Disc, Play, Pause, Plus, Save, Trash2, Cast, Music2,
   ChevronDown, ChevronRight, Magnet, Gauge, Lock,
-  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, Shield, Headphones, Piano, X,
+  KeyRound, Pencil, Search, Library as LibraryIcon, ListMusic, Layers, Sparkles, Download, Link2, Loader2, FolderPlus, Shield, Headphones, Piano, X,
 } from 'lucide-react';
 import { subscribeToMidi } from '../state/midiBus';
 import { useDjControlMap, sigLabel, type MidiKind } from '../state/djControlMap';
@@ -39,6 +39,7 @@ import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
 import { useDjAutomix } from '../state/djAutomixStore';
 import { useLibraryStore } from '../state/libraryStore';
+import { importFolder } from '../lib/mediaLibrary';
 import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
 import { useDjBrowser, type DjColKey, DJ_COL_MIN_WIDTH } from '../state/djBrowserStore';
@@ -1312,11 +1313,35 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
 /** Source tree — every entry is live: filtered views over the library
  *  (Library / Favorites / Generated / Imports), real Online Download, and the
  *  user's Sets. No placeholder/streaming stubs. */
+// Add a local folder as a reference-in-place playlist: register the audio files
+// (no copy), refresh the library so they resolve, then build + open a setlist.
+async function addFolderAsPlaylist(actions: {
+  createSetlist: (name: string) => string;
+  appendToSet: (id: string, entries: SetlistEntry[]) => void;
+  setActive: (id: string | null) => void;
+  setSource: (s: Source) => void;
+  refreshLibrary: () => Promise<void>;
+}): Promise<void> {
+  const res = await importFolder();
+  if (res.cancelled || res.entries.length === 0) return;
+  await actions.refreshLibrary();
+  const id = actions.createSetlist(res.name || 'Folder');
+  actions.appendToSet(
+    id,
+    res.entries.map((e) => ({ entryId: e.id, label: e.title, kind: 'audio' as const })),
+  );
+  actions.setActive(id);
+  actions.setSource({ kind: 'set', id });
+}
+
 const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; libCount: number }> = ({ source, setSource, libCount }) => {
   const entries = useLibraryStore((s) => s.entries);
   const setlists = useSetlistStore((s) => s.setlists);
   const createSetlist = useSetlistStore((s) => s.create);
   const setActive = useSetlistStore((s) => s.setActive);
+  const appendToSet = useSetlistStore((s) => s.append);
+  const refreshLibrary = useLibraryStore((s) => s.refresh);
+  const [addingFolder, setAddingFolder] = useState(false);
   const sets = Object.values(setlists).sort((a, b) => b.updatedAt - a.updatedAt);
   const favCount = entries.filter((e) => e.favorite).length;
   const genCount = entries.filter((e) => e.source === 'generate').length;
@@ -1388,7 +1413,17 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
           </div>
         )}
 
-        <Group label="Sets" right={<button onClick={() => { const id = createSetlist(`Set ${new Date().toLocaleDateString()}`); setActive(id); setSource({ kind: 'set', id }); }} className="ml-auto p-0.5 text-purple-300 hover:text-purple-100" title="New set"><Plus className="w-3 h-3" /></button>} />
+        <Group label="Sets" right={
+          <span className="ml-auto flex items-center gap-0.5">
+            <button
+              onClick={() => { setAddingFolder(true); void addFolderAsPlaylist({ createSetlist, appendToSet, setActive, setSource, refreshLibrary }).finally(() => setAddingFolder(false)); }}
+              disabled={addingFolder}
+              className="p-0.5 text-purple-300 hover:text-purple-100 disabled:opacity-40"
+              title="Add a local folder as a playlist (referenced in place — no copy)"
+            >{addingFolder ? <Loader2 className="w-3 h-3 animate-spin" /> : <FolderPlus className="w-3 h-3" />}</button>
+            <button onClick={() => { const id = createSetlist(`Set ${new Date().toLocaleDateString()}`); setActive(id); setSource({ kind: 'set', id }); }} className="p-0.5 text-purple-300 hover:text-purple-100" title="New empty set"><Plus className="w-3 h-3" /></button>
+          </span>
+        } />
         {sets.length === 0 ? (
           <div className="pl-4 pr-1.5 py-0.5 text-[9px] font-mono text-zinc-700">No sets — click +</div>
         ) : sets.map((s) => (

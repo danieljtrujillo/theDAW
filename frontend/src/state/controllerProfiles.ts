@@ -91,6 +91,11 @@ type Row = [id: string, name: string, vendor: string, category: ControllerCatego
 // first profile to reach a given match length wins ⇒ specifics must precede
 // fallbacks (they do).
 const ROWS: Row[] = [
+  /* ───────── GANTASMO (on-screen twin of the Quest XR MIDI surface; rendered by
+     WorldsCollidePanel and shown first in the controller picker). match=[] so it
+     never auto-detects a real device — it is picked manually / is the default. ───────── */
+  ['gantasmo-worlds-collide', 'GANTASMO - Worlds Collide', 'GANTASMO', 'mixer', [], [F(1, 6, 'FADERS'), F(1, 1, 'CROSSFADE'), K(1, 8, 'KNOBS'), B(2, 6, 'BUTTONS')]],
+
   /* ───────── Pioneer DJ ───────── */
   ['pioneer-ddj-flx2', 'Pioneer DDJ-FLX2', 'Pioneer DJ', 'dj', ['ddj-flx2', 'flx2'], DJ2],
   ['pioneer-ddj-flx4', 'Pioneer DDJ-FLX4', 'Pioneer DJ', 'dj', ['ddj-flx4', 'flx4'], DJ2],
@@ -319,7 +324,13 @@ export const CONTROLLER_PROFILES: ControllerProfile[] = ROWS.map(([id, name, ven
   id, name, vendor, category, match, sections,
 }));
 
-export const DEFAULT_PROFILE_ID = 'akai-midimix';
+/** The on-screen GANTASMO XR twin surface (see WorldsCollidePanel). */
+export const GANTASMO_WORLDS_COLLIDE_ID = 'gantasmo-worlds-collide';
+
+// Default to the on-screen GANTASMO surface so it is front-and-centre with no
+// hardware connected. Auto-detect still switches to a real controller when one
+// is connected.
+export const DEFAULT_PROFILE_ID = GANTASMO_WORLDS_COLLIDE_ID;
 
 /**
  * LEARNED profiles — built from a MIDI capture session (learnedProfilesStore).

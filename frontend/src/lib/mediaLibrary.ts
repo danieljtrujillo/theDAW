@@ -104,6 +104,27 @@ export async function deleteMedia(id: string): Promise<void> {
   }
 }
 
+/** Add a local folder of audio as a playlist, REFERENCE-IN-PLACE — nothing is
+ *  copied; theDAW registers entries that point at the on-disk files. With no
+ *  path, the backend opens a native folder picker. Returns the registered
+ *  entries (id + title) for the caller to build a setlist from. */
+export async function importFolder(
+  path?: string,
+): Promise<{ cancelled: boolean; folder: string | null; name?: string; entries: { id: string; title: string }[] }> {
+  const r = await fetch(`${BASE}/import-folder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(path ? { path } : {}),
+  });
+  if (!r.ok) throw new Error(`importFolder: ${await errorText(r)}`);
+  return (await r.json()) as {
+    cancelled: boolean;
+    folder: string | null;
+    name?: string;
+    entries: { id: string; title: string }[];
+  };
+}
+
 /** The MIME types the media import input accepts. */
 export const MEDIA_ACCEPT =
   'video/*,image/*,.mp4,.webm,.mov,.mkv,.m4v,.avi,.ogv,.png,.webp,.gif,.jpg,.jpeg,.bmp,.avif,.apng';

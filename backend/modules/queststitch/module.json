@@ -1,0 +1,10 @@
+{
+  "name": "queststitch",
+  "label": "Quest Stitch",
+  "enabled": true,
+  "icon": "Camera",
+  "sidebar": false,
+  "api_prefix": "/api/queststitch",
+  "backend": true,
+  "description": "Brings the CLEAN stitched Quest passthrough into theDAW as a live VJ source, separate from delinQuest (which mirrors the whole headset display). The Quest app encodes the stitch RenderTexture to H.264 and pushes it over adb reverse to this module, which relays it to the VJ over WebSocket in the same wire format questcast uses, so the VJ's WebCodecs decoder is reused. Disable to skip it entirely."
+}

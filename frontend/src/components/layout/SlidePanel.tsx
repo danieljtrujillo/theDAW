@@ -24,6 +24,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Rows3, Crosshair, LayoutGrid, RotateCcw, ChevronLeft, ChevronRight, Plus, Settings2, X, Trash2, Film, Target, Wand2, Sliders, Sparkles, Radio, Crosshair as MapPin, Check } from 'lucide-react';
 import './track-controls.css';
 import { TrackFader, TrackKnob, TrackPad } from './TrackControls';
+import WorldsCollidePanel from './WorldsCollidePanel';
 import {
   useSlideStore,
   resolveItem,
@@ -43,6 +44,7 @@ import {
   profileControlCount,
   profileKindCount,
   detectProfileFromNames,
+  GANTASMO_WORLDS_COLLIDE_ID,
   type ControlKind,
 } from '../../state/controllerProfiles';
 import { useEditorStore } from '../../state/editorStore';
@@ -953,6 +955,12 @@ export const SlidePanel: React.FC = () => {
           className="bg-[#111114] text-zinc-300 border border-white/12 rounded-md px-2 py-1 text-[9px] font-bold uppercase tracking-wider outline-none"
           title="Controller profile — picking one turns Auto off so your choice sticks"
         >
+          {/* GANTASMO on-screen XR twin — always first in the list. */}
+          {CONTROLLER_PROFILES.filter((p) => p.id === GANTASMO_WORLDS_COLLIDE_ID).map((p) => (
+            <optgroup key="gantasmo" label="GANTASMO">
+              <option value={p.id}>{p.name} · {profileControlCount(p)}</option>
+            </optgroup>
+          ))}
           {learnedProfiles.length > 0 && (
             <optgroup label="LEARNED (your devices)">
               {learnedProfiles
@@ -965,7 +973,7 @@ export const SlidePanel: React.FC = () => {
           )}
           {(['dj', 'pad', 'mixer', 'keys', 'generic'] as const).map((cat) => {
             const inCat = CONTROLLER_PROFILES
-              .filter((p) => (p.category ?? 'generic') === cat)
+              .filter((p) => (p.category ?? 'generic') === cat && p.id !== GANTASMO_WORLDS_COLLIDE_ID)
               .sort((a, b) => a.name.localeCompare(b.name)); // alpha within each group
             if (inCat.length === 0) return null;
             return (
@@ -1085,6 +1093,10 @@ export const SlidePanel: React.FC = () => {
       {/* surface */}
       <div className={`flex-1 min-h-0 overflow-auto relative flex flex-col ${view === 'controller' ? 'p-3' : 'px-3 pt-3 pb-0'}`}>
         {view === 'controller' ? (
+          profileId === GANTASMO_WORLDS_COLLIDE_ID ? (
+            // GANTASMO on-screen twin of the Quest XR MIDI surface.
+            <WorldsCollidePanel profileId={profileId} />
+          ) : (
           // Controller view OPENS FITTED to the window, mouse-wheel zooms, and
           // left-click drag on the background pans around the device.
           <>
@@ -1115,6 +1127,7 @@ export const SlidePanel: React.FC = () => {
               </div>
             </div>
           </>
+          )
         ) : view === 'focus' ? (
           // mt-auto anchors the lanes to the BOTTOM of the panel; the page
           // controller below them is sticky so it never scrolls away.

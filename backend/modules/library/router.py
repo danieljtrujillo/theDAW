@@ -270,6 +270,62 @@ async def import_media(
     return record.to_dict()
 
 
+_FOLDER_AUDIO_EXTS = {
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".m4a",
+    ".aac",
+    ".opus",
+    ".aif",
+    ".aiff",
+    ".wma",
+}
+
+
+class ImportFolderRequest(BaseModel):
+    path: Optional[str] = None
+    recursive: bool = True
+
+
+@router.post("/import-folder")
+def import_folder(
+    req: ImportFolderRequest = Body(default=ImportFolderRequest()),
+) -> dict[str, Any]:
+    """Add a local folder of audio as a playlist, REFERENCE-IN-PLACE: each file
+    becomes a library entry that points at the on-disk file (no copy), so it
+    plays / analyses like any track. With no ``path``, opens a native folder
+    picker. Returns the created entries; the caller builds the setlist."""
+    folder = req.path
+    if not folder:
+        from backend.core.folder_dialog import pick_folder
+
+        folder = pick_folder(title="Choose a music folder to add as a playlist")
+    if not folder:
+        return {"cancelled": True, "folder": None, "entries": []}
+    root = Path(folder)
+    if not root.is_dir():
+        raise HTTPException(400, f"not a folder: {folder!r}")
+    paths = root.rglob("*") if req.recursive else root.iterdir()
+    files = sorted(
+        (p for p in paths if p.is_file() and p.suffix.lower() in _FOLDER_AUDIO_EXTS),
+        key=lambda p: str(p).lower(),
+    )
+    store = get_store()
+    entries: list[dict[str, Any]] = []
+    for f in files:
+        rec = store.register_reference(str(f), {"source": "folder"})
+        if rec is not None:
+            entries.append(rec.to_dict())
+    return {
+        "cancelled": False,
+        "folder": str(root),
+        "name": root.name,
+        "entries": entries,
+    }
+
+
 @router.patch("/entries/{entry_id}")
 def update_entry(entry_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, Any]:
     record = get_store().update_entry(entry_id, patch)
