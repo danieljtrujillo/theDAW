@@ -131,3 +131,21 @@ def test_background_queue_records_failures():
     job = asyncio.run(scenario())
     assert job.status == "failed"
     assert job.error is not None and "nope" in job.error
+
+
+def test_background_queue_dedupes_active_job_names():
+    async def scenario():
+        idle = IdleManager(default_min_idle_seconds=0.0)
+        q = BackgroundQueue(idle_manager=idle, poll_interval=0.02)
+
+        async def work():
+            await asyncio.sleep(0.05)
+
+        first = q.enqueue("same", work)
+        second = q.enqueue("same", work)
+        return first, second, q.snapshot()
+
+    first, second, snap = asyncio.run(scenario())
+    assert first is second
+    assert snap["queue_depth"] == 1
+    assert snap["statuses"]["queued"] == 1

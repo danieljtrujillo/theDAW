@@ -1213,7 +1213,11 @@ async def generate(
     # lazy: load (or wake) the active model on first use; clear any resident
     # MRT2 engine first so SA3 never stacks on top of it (commit-limit crash)
     await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
-    generation_pipeline = _get_or_load_generation_pipeline(_active_model_name)
+    # Off the event loop (see /api/generate-jobs): a synchronous model load here
+    # would block the single worker and stall /health + media streaming.
+    generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+        None, _get_or_load_generation_pipeline, _active_model_name
+    )
 
     # Build dist_shift object
     dist_shift = None
@@ -1584,7 +1588,13 @@ async def generate_jobs(
     # swap must hold no matter who drives the model field (UI, assistant,
     # API callers, capture harnesses).
     await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
-    generation_pipeline = _get_or_load_generation_pipeline(normalized_model_name)
+    # Load/wake the model in a worker thread, never on the event loop: a
+    # synchronous from_pretrained here freezes the single uvicorn worker for the
+    # whole load, which is exactly when /health 502s and in-flight FileResponse
+    # streams (MIDI/audio) get truncated ("Invalid MIDI track chunk").
+    generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+        None, _get_or_load_generation_pipeline, normalized_model_name
+    )
 
     init_audio_tuple = None
     if init_audio is not None and init_audio.filename:
