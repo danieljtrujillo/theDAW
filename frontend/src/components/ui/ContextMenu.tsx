@@ -22,27 +22,21 @@
  * anywhere else all close the menu. Items run `onSelect` then the menu
  * auto-closes — callers don't need to remember to call `onClose`.
  */
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 /**
- * The Shell applies CSS `zoom: 0.85` (or 0.95 / 1.1 depending on viewport
- * width) via `.dense-layout` so the DAW fits more on screen. Chrome
- * reports `event.clientX/Y` from clicks INSIDE that scaled element in
- * UNSCALED layout pixels, but our menu portals to `document.body` which
- * is NOT inside the zoom — so painting `position: fixed; left:
- * clientX` lands the menu off to the right of the cursor (drift
- * increases linearly with X). We scale the saved coords by the live
- * `--layout-zoom` to put the menu where the user actually clicked.
+ * Anchor coords for a right-click menu. The Shell scales the DAW with CSS
+ * `zoom` (`.dense-layout`); spec-compliant Chrome reports `event.clientX/Y`
+ * in viewport pixels, and the menu portals to `document.body` (outside the
+ * zoom), so the raw client coords already land at the cursor — no scaling.
+ * (An earlier `clientX * --layout-zoom` correction over-shot the cursor on
+ * current Chrome and forced a synchronous reflow per open.)
  */
-const getLayoutZoom = (): number => {
-  if (typeof document === 'undefined') return 1;
-  const host = document.querySelector('.dense-layout');
-  if (!host) return 1;
-  const raw = getComputedStyle(host).getPropertyValue('--layout-zoom').trim();
-  const n = parseFloat(raw);
-  return Number.isFinite(n) && n > 0 ? n : 1;
-};
+export const menuAnchorFromEvent = (e: React.MouseEvent | MouseEvent): ContextMenuPosition => ({
+  x: e.clientX,
+  y: e.clientY,
+});
 
 export type ContextMenuItem =
   | {
@@ -118,15 +112,29 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       }
     };
     const onScroll = () => onClose();
-    window.addEventListener('mousedown', onDown);
-    window.addEventListener('contextmenu', onDown);
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('wheel', onScroll, { passive: true });
+    // Defer attaching the dismiss listeners to the next macrotask. The
+    // right-click that opens this menu is still mid-dispatch when React
+    // flushes this effect (discrete-event synchronous flush), so attaching
+    // synchronously lets that same `contextmenu`/`mousedown` bubble to
+    // `window` and immediately close the menu we just opened. A macrotask
+    // boundary guarantees the opening gesture is fully over first.
+    let attached = false;
+    const attach = () => {
+      attached = true;
+      window.addEventListener('mousedown', onDown);
+      window.addEventListener('contextmenu', onDown);
+      window.addEventListener('keydown', onKey);
+      window.addEventListener('wheel', onScroll, { passive: true });
+    };
+    const timer = window.setTimeout(attach, 0);
     return () => {
-      window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('contextmenu', onDown);
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('wheel', onScroll);
+      window.clearTimeout(timer);
+      if (attached) {
+        window.removeEventListener('mousedown', onDown);
+        window.removeEventListener('contextmenu', onDown);
+        window.removeEventListener('keydown', onKey);
+        window.removeEventListener('wheel', onScroll);
+      }
     };
   }, [position, onClose]);
 
@@ -150,7 +158,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       ref={menuRef}
       role="menu"
       className="fixed z-200 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] py-1 text-[10px] font-mono select-none"
-      style={{ left: pos.x, top: pos.y, minWidth }}
+      // maxWidth caps the menu so a long title/label actually truncates instead
+      // of stretching the menu hundreds of px wide (which then clamps far from
+      // the cursor); minWidth keeps short menus from looking cramped.
+      style={{ left: pos.x, top: pos.y, minWidth, maxWidth: 'min(22rem, 90vw)' }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => {
         // Suppress the browser's native right-click menu when the user
@@ -226,20 +237,17 @@ export function useContextMenu<T = unknown>(): {
     position: ContextMenuPosition;
     payload: T;
   } | null>(null);
+  // Stable handlers so memoized row lists don't re-render every parent render.
+  const open = useCallback((e: React.MouseEvent | MouseEvent, payload: T) => {
+    e.preventDefault();
+    setState({ position: menuAnchorFromEvent(e), payload });
+  }, []);
+  const close = useCallback(() => setState(null), []);
   return {
     position: state?.position ?? null,
     payload: state?.payload ?? null,
-    open: (e, payload) => {
-      e.preventDefault();
-      // Scale by --layout-zoom (see getLayoutZoom above) so the menu
-      // anchors to the cursor under the zoom-scaled Shell.
-      const z = getLayoutZoom();
-      setState({
-        position: { x: e.clientX * z, y: e.clientY * z },
-        payload,
-      });
-    },
-    close: () => setState(null),
+    open,
+    close,
   };
 }
 

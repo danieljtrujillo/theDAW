@@ -41,6 +41,9 @@ export interface AudioClip {
   sourceBpm?: number;
   /** When sourceKind === 'piano-roll', the grid length at render time. */
   sourceTotalSteps?: number;
+  /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
+   *  back to the track default, then the global active instrument. Audio clips: undefined. */
+  instrumentProgram?: number;
   /** Fade-in duration in seconds (0 = no fade). */
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
@@ -57,6 +60,8 @@ export interface EditorTrack {
   mute: boolean;
   solo: boolean;
   color: string;
+  /** Default GM program (0-127) for MIDI clips on this track; undefined = global default. */
+  instrumentProgram?: number;
 }
 
 interface EditorStoreState {

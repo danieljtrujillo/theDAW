@@ -38,7 +38,28 @@ interface PianoRollState {
   clear: () => void;
   setEditingClip: (id: string | null) => void;
   loadFromClip: (clipId: string, notes: PianoNote[], bpm: number, totalSteps: number) => void;
+  /** Replace the grid with imported notes, auto-fitting length AND pitch range
+   *  to the content (so a full-song / out-of-range import is fully visible). */
+  importNotes: (notes: PianoNote[], bpm?: number) => void;
 }
+
+const MIN_STEPS = 16;
+const MAX_STEPS = 4096; // ~256 bars; enough for full-song MIDI imports
+const MIN_PITCH_SPAN = 24; // keep at least two octaves visible even for a 1-note clip
+
+/** Fit grid length (snapped up to a bar) + pitch range (padded) to a note set. */
+const fitToNotes = (notes: PianoNote[]): { totalSteps: number; lowestNote: number; highestNote: number } => {
+  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  const totalSteps = Math.max(MIN_STEPS, Math.min(MAX_STEPS, Math.ceil(lastStep / 16) * 16));
+  let lo = notes.reduce((m, n) => Math.min(m, n.note), 127) - 2;
+  let hi = notes.reduce((m, n) => Math.max(m, n.note), 0) + 2;
+  if (hi - lo < MIN_PITCH_SPAN) {
+    const mid = Math.round((hi + lo) / 2);
+    lo = mid - Math.floor(MIN_PITCH_SPAN / 2);
+    hi = mid + Math.ceil(MIN_PITCH_SPAN / 2);
+  }
+  return { totalSteps, lowestNote: Math.max(0, lo), highestNote: Math.min(127, hi) };
+};
 
 const uid = (): string =>
   typeof crypto !== 'undefined' && crypto.randomUUID
@@ -67,7 +88,7 @@ export const usePianoRollStore = create<PianoRollState>()((set) => ({
   editingClipId: null,
 
   setBpm: (bpm) => set({ bpm: Math.max(40, Math.min(240, bpm)) }),
-  setTotalSteps: (totalSteps) => set({ totalSteps: Math.max(16, Math.min(256, totalSteps)) }),
+  setTotalSteps: (totalSteps) => set({ totalSteps: Math.max(MIN_STEPS, Math.min(MAX_STEPS, totalSteps)) }),
   setRange: (lo, hi) => set({ lowestNote: Math.max(0, lo), highestNote: Math.min(127, hi) }),
 
   addNote: (note) => {
@@ -94,15 +115,41 @@ export const usePianoRollStore = create<PianoRollState>()((set) => ({
   clear: () => set({ notes: [], selectedNoteId: null, editingClipId: null }),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
-  loadFromClip: (clipId, notes, bpm, totalSteps) =>
-    set({
-      notes: notes.map((n) => ({ ...n })),
-      bpm: Math.max(40, Math.min(240, bpm)),
-      totalSteps: Math.max(16, Math.min(256, totalSteps)),
-      editingClipId: clipId,
-      selectedNoteId: null,
-      isPlaying: false,
-      currentStep: 0,
+  loadFromClip: (clipId, incoming, bpm, totalSteps) =>
+    set(() => {
+      const notes = incoming.map((n) => ({ ...n }));
+      const fit = notes.length > 0 ? fitToNotes(notes) : null;
+      return {
+        notes,
+        bpm: Math.max(40, Math.min(240, bpm)),
+        totalSteps: Math.max(
+          MIN_STEPS,
+          Math.min(MAX_STEPS, Math.max(totalSteps, fit?.totalSteps ?? MIN_STEPS)),
+        ),
+        ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
+        editingClipId: clipId,
+        selectedNoteId: null,
+        isPlaying: false,
+        currentStep: 0,
+      };
+    }),
+
+  importNotes: (incoming, bpm) =>
+    set(() => {
+      const notes = incoming.map((n) => ({ ...n }));
+      if (notes.length === 0) {
+        return { notes, selectedNoteId: null, currentStep: 0, isPlaying: false };
+      }
+      return {
+        notes,
+        ...fitToNotes(notes),
+        selectedNoteId: null,
+        currentStep: 0,
+        isPlaying: false,
+        ...(typeof bpm === 'number' && Number.isFinite(bpm)
+          ? { bpm: Math.max(40, Math.min(240, Math.round(bpm))) }
+          : {}),
+      };
     }),
 }));
 

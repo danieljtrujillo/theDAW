@@ -25,6 +25,7 @@ import { addBlobsToChimera } from '../lib/chimeraClient';
 import { listMedia, importMedia, deleteMedia, MEDIA_ACCEPT } from '../lib/mediaLibrary';
 import { setAudioDragData } from '../lib/audioDnD';
 import { renderMidiBufferToBlob } from '../lib/midiSynth';
+import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from '../lib/fetchRetry';
 import {
   loadMidiIntoPianoRoll,
   midiIdToSendable,
@@ -1622,6 +1623,75 @@ type SubTabRowPayload =
   | { kind: 'midi'; midiId: string; label: string }
   | { kind: 'stem'; row: Record<string, unknown> };
 
+/**
+ * One stem/MIDI row, memoized so opening the right-click menu (or any other
+ * parent state change) doesn't re-render the whole hundreds-of-rows list — that
+ * full re-render was the 600ms+ contextmenu/mousedown jank. Props are stable
+ * (the row object, plus stable callbacks), so React.memo skips untouched rows.
+ */
+const SubTabRow = React.memo<{
+  row: Record<string, unknown>;
+  isMidi: boolean;
+  parentTitle: string;
+  isPlaying: boolean;
+  isBusy: boolean;
+  onPlay: (rowId: string, label: string, isMidi: boolean) => void;
+  onFavorite: (isMidi: boolean, rowId: string, current: boolean) => void;
+  onDelete: (isMidi: boolean, rowId: string, name: string) => void;
+  onContext: (e: React.MouseEvent, payload: SubTabRowPayload) => void;
+}>(({ row, isMidi, parentTitle, isPlaying, isBusy, onPlay, onFavorite, onDelete, onContext }) => {
+  const rowId = String(row.id ?? '');
+  const name = isMidi ? String(row.source ?? 'midi') : String(row.stem_name ?? 'stem');
+  const label = parentTitle ? `${parentTitle} · ${name}` : name;
+  const favorite = !!row.favorite;
+  const meta = isMidi ? `${row.engine ?? ''}` : `${row.model ?? ''} ${row.model_variant ?? ''}`.trim();
+  return (
+    <div
+      className="group flex items-center gap-1 text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded"
+      onContextMenu={(e) => onContext(e, isMidi ? { kind: 'midi', midiId: rowId, label } : { kind: 'stem', row })}
+      title="Right-click for more — send to editor / init / inpaint / chimera"
+    >
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-white/10"
+        onClick={() => onFavorite(isMidi, rowId, favorite)}
+        title={favorite ? 'Unfavorite' : 'Favorite'}
+        aria-label={favorite ? `Unfavorite ${name}` : `Favorite ${name}`}
+      >
+        <Star className={`w-2.5 h-2.5 ${favorite ? 'text-yellow-500 fill-current' : 'text-zinc-700'}`} />
+      </button>
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-white/10"
+        disabled={isBusy}
+        onClick={() => onPlay(rowId, label, isMidi)}
+        title={isPlaying ? 'Pause' : isMidi ? 'Play (synth)' : 'Play'}
+        aria-label={isPlaying ? `Pause ${name}` : `Play ${name}`}
+      >
+        {isBusy ? (
+          <Loader2 className="w-2.5 h-2.5 animate-spin text-purple-400" />
+        ) : isPlaying ? (
+          <Pause className="w-2.5 h-2.5 text-purple-400" />
+        ) : (
+          <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />
+        )}
+      </button>
+      <span className="truncate flex-1 min-w-0">{name}</span>
+      <span className="text-[8px] text-zinc-600 ml-1 shrink-0">{meta}</span>
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"
+        onClick={() => onDelete(isMidi, rowId, name)}
+        title="Delete"
+        aria-label={`Delete ${name}`}
+      >
+        <Trash2 className="w-2.5 h-2.5 text-zinc-600 hover:text-red-400" />
+      </button>
+    </div>
+  );
+});
+SubTabRow.displayName = 'SubTabRow';
+
 
 const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated }) => {
   const parentIds = Object.keys(byParent);
@@ -1634,13 +1704,14 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
   // global engine, can be favorited, and can be deleted independently of
   // their parent track. MIDI playback synthesizes via the shared sawtooth
   // engine in lib/midiSynth (no soundfont needed).
-  const engineLoad = usePlayerStore((s) => s.load);
-  const enginePlay = usePlayerStore((s) => s.play);
-  const enginePause = usePlayerStore((s) => s.pause);
   const engineIsPlaying = usePlayerStore((s) => s.isPlaying);
   const engineEntryId = usePlayerStore((s) => s.currentEntryId);
   const [playingRowKey, setPlayingRowKey] = useState<string | null>(null);
   const [busyRowKey, setBusyRowKey] = useState<string | null>(null);
+  // Ref mirror so the stable playRow callback can read the current playing row
+  // without being recreated each render (which would defeat row memoization).
+  const playingRowKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => { playingRowKeyRef.current = playingRowKey; }, [playingRowKey]);
 
   // Stems / MIDI load with no entryId, so currentEntryId is null while one is
   // playing. If a real track takes over the engine, currentEntryId goes
@@ -1648,25 +1719,42 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
   const rowIsPlaying = (rowKey: string) =>
     playingRowKey === rowKey && engineIsPlaying && engineEntryId === null;
 
-  const playRow = async (rowKey: string, label: string, fetchBlob: () => Promise<Blob>) => {
-    if (rowIsPlaying(rowKey)) {
-      enginePause();
+  // Stable handlers (read live engine state via getState) so SubTabRow's memo
+  // holds across parent re-renders (e.g. opening the context menu).
+  const playRow = React.useCallback(async (rowKey: string, label: string, fetchBlob: () => Promise<Blob>) => {
+    const ps = usePlayerStore.getState();
+    if (playingRowKeyRef.current === rowKey && ps.isPlaying && ps.currentEntryId === null) {
+      ps.pause();
       return;
     }
     setBusyRowKey(rowKey);
     try {
       const blob = await fetchBlob();
-      await engineLoad(blob, { label });
-      enginePlay();
+      await ps.load(blob, { label });
+      ps.play();
       setPlayingRowKey(rowKey);
     } catch (e) {
       logError('library', `Could not play ${label}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusyRowKey(null);
     }
-  };
+  }, []);
 
-  const toggleFavorite = async (isMidi: boolean, rowId: string, current: boolean) => {
+  const handlePlay = React.useCallback((rowId: string, label: string, isMidi: boolean) => {
+    const rowKey = `${isMidi ? 'midi' : 'stem'}:${rowId}`;
+    void playRow(
+      rowKey,
+      label,
+      isMidi
+        ? async () => {
+            const buf = await fetchMidiBytesWithRetry(`/api/midi/file/${rowId}`, { label });
+            return (await renderMidiBufferToBlob(buf)).blob;
+          }
+        : async () => fetchBlobWithRetry(`/api/library/stems/${rowId}/audio`, { label }),
+    );
+  }, [playRow]);
+
+  const toggleFavorite = React.useCallback(async (isMidi: boolean, rowId: string, current: boolean) => {
     const url = isMidi ? `/api/midi/file/${rowId}` : `/api/library/stems/${rowId}`;
     try {
       const res = await fetch(url, {
@@ -1679,9 +1767,9 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
     } catch (e) {
       logError('library', `Could not update favorite: ${e instanceof Error ? e.message : String(e)}`);
     }
-  };
+  }, [onMutated]);
 
-  const deleteRow = async (isMidi: boolean, rowId: string, label: string) => {
+  const deleteRow = React.useCallback(async (isMidi: boolean, rowId: string, label: string) => {
     if (!window.confirm(`Delete "${label}"? This removes the file from disk and cannot be undone.`)) return;
     const url = isMidi ? `/api/midi/file/${rowId}` : `/api/library/stems/${rowId}`;
     try {
@@ -1692,7 +1780,7 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
     } catch (e) {
       logError('library', `Could not delete: ${e instanceof Error ? e.message : String(e)}`);
     }
-  };
+  }, [onMutated]);
 
   if (parentIds.length === 0) {
     return <p className="text-[10px] text-zinc-500 italic py-4 text-center">{placeholder}</p>;
@@ -1830,85 +1918,21 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
           </div>
           <div className="flex flex-col gap-0.5">
             {byParent[pid].map((row, idx) => {
-              const isMidi = kind === 'midi';
               const rowId = String(row.id ?? '');
-              const name = isMidi ? String(row.source ?? 'midi') : String(row.stem_name ?? 'stem');
-              const label = parentTitles[pid] ? `${parentTitles[pid]} · ${name}` : name;
-              const favorite = !!row.favorite;
               const rowKey = `${kind}:${rowId}`;
-              const busy = busyRowKey === rowKey;
-              const playing = rowIsPlaying(rowKey);
-              const meta = isMidi
-                ? `${row.engine ?? ''}`
-                : `${row.model ?? ''} ${row.model_variant ?? ''}`.trim();
               return (
-                <div
+                <SubTabRow
                   key={rowId || idx}
-                  className="group flex items-center gap-1 text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded"
-                  onContextMenu={(e) => {
-                    if (isMidi) {
-                      if (!rowId) return;
-                      rowMenu.open(e, { kind: 'midi', midiId: rowId, label });
-                    } else {
-                      rowMenu.open(e, { kind: 'stem', row });
-                    }
-                  }}
-                  title="Right-click for more — send to editor / init / inpaint / chimera"
-                >
-                  <button
-                    type="button"
-                    className="shrink-0 p-0.5 rounded hover:bg-white/10"
-                    onClick={() => { void toggleFavorite(isMidi, rowId, favorite); }}
-                    title={favorite ? 'Unfavorite' : 'Favorite'}
-                    aria-label={favorite ? `Unfavorite ${name}` : `Favorite ${name}`}
-                  >
-                    <Star className={`w-2.5 h-2.5 ${favorite ? 'text-yellow-500 fill-current' : 'text-zinc-700'}`} />
-                  </button>
-                  <button
-                    type="button"
-                    className="shrink-0 p-0.5 rounded hover:bg-white/10"
-                    disabled={busy}
-                    onClick={() => {
-                      void playRow(
-                        rowKey,
-                        label,
-                        isMidi
-                          ? async () => {
-                              const res = await fetch(`/api/midi/file/${rowId}`);
-                              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                              const { blob } = await renderMidiBufferToBlob(await res.arrayBuffer());
-                              return blob;
-                            }
-                          : async () => {
-                              const res = await fetch(`/api/library/stems/${rowId}/audio`);
-                              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                              return res.blob();
-                            },
-                      );
-                    }}
-                    title={playing ? 'Pause' : isMidi ? 'Play (synth)' : 'Play'}
-                    aria-label={playing ? `Pause ${name}` : `Play ${name}`}
-                  >
-                    {busy ? (
-                      <Loader2 className="w-2.5 h-2.5 animate-spin text-purple-400" />
-                    ) : playing ? (
-                      <Pause className="w-2.5 h-2.5 text-purple-400" />
-                    ) : (
-                      <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />
-                    )}
-                  </button>
-                  <span className="truncate flex-1 min-w-0">{name}</span>
-                  <span className="text-[8px] text-zinc-600 ml-1 shrink-0">{meta}</span>
-                  <button
-                    type="button"
-                    className="shrink-0 p-0.5 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={() => { void deleteRow(isMidi, rowId, name); }}
-                    title="Delete"
-                    aria-label={`Delete ${name}`}
-                  >
-                    <Trash2 className="w-2.5 h-2.5 text-zinc-600 hover:text-red-400" />
-                  </button>
-                </div>
+                  row={row}
+                  isMidi={kind === 'midi'}
+                  parentTitle={parentTitles[pid] ?? ''}
+                  isPlaying={rowIsPlaying(rowKey)}
+                  isBusy={busyRowKey === rowKey}
+                  onPlay={handlePlay}
+                  onFavorite={toggleFavorite}
+                  onDelete={deleteRow}
+                  onContext={rowMenu.open}
+                />
               );
             })}
           </div>

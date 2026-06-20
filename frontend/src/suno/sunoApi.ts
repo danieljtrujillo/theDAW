@@ -15,6 +15,8 @@
  *   GET  /audio/{id}        → MP3 blob
  */
 
+import { fetchBlobWithRetry } from '../lib/fetchRetry';
+
 export type SunoStatus = 'submitted' | 'queued' | 'streaming' | 'complete' | 'error';
 
 export interface SunoJob {
@@ -100,9 +102,6 @@ export const sunoApi = {
   usage: (): Promise<Record<string, any>> => getJson('/usage'),
 
   /** Fetch the finished MP3 as a Blob (served by our backend → no CORS). */
-  fetchAudioBlob: async (id: string): Promise<Blob> => {
-    const resp = await fetch(`/api/suno/audio/${id}`);
-    if (!resp.ok) throw new Error(`Audio fetch failed: HTTP ${resp.status}`);
-    return resp.blob();
-  },
+  fetchAudioBlob: (id: string): Promise<Blob> =>
+    fetchBlobWithRetry(`/api/suno/audio/${id}`, { label: `suno:${id}` }),
 };

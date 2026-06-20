@@ -1010,9 +1010,13 @@ def _maybe_enqueue_midi(
     async def _run() -> None:
         from backend.modules.midi.runner import convert_entry
 
-        # convert_entry is sync but cheap (just CPU-bound model
-        # inference) — fine inside the background worker's event loop.
-        convert_entry(
+        import asyncio
+
+        # convert_entry is CPU/model-bound and may run piano transcription over
+        # many segments. Keep it off the asyncio event loop so health/static
+        # endpoints do not stall while the idle worker is busy.
+        await asyncio.to_thread(
+            convert_entry,
             store.db,  # type: ignore[arg-type]
             entry_id,
             audio_path,

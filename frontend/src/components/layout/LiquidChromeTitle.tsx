@@ -354,14 +354,14 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
     const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 1.15, 0.8, 0.18);
     composer.addPass(bloom);
 
-    const clock = new THREE.Clock();
+    const clockStart = performance.now(); // elapsed seconds, no deprecated THREE.Clock
     let raf = 0;
     let startedAt = -1; // formation clock starts once assets are ready
     let completed = false;
 
     const animate = () => {
       raf = requestAnimationFrame(animate);
-      const t = clock.getElapsedTime();
+      const t = (performance.now() - clockStart) / 1000;
       eMat.uniforms.uTime.value = t;
       eMat.uniforms.uOriginY.value = gantasmoOriginY;
 

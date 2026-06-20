@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Square, Download, Upload, Trash2, ZoomIn, ZoomOut, Send, Save } from 'lucide-react';
+import { Play, Square, Download, Trash2, ZoomIn, ZoomOut, Send, Save } from 'lucide-react';
 import { usePianoRollStore, pianoNotesToMidiNotes, type PianoNote } from '../../state/pianoRollStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
@@ -8,7 +8,10 @@ import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
-import { triggerSynthVoice, renderStepNotesToBlob } from '../../lib/midiSynth';
+import { triggerActiveVoice, renderStepNotesToBlob } from '../../lib/midiSynth';
+import { isSoundfontActive, previewNoteSF } from '../../lib/soundfontEngine';
+import { InstrumentPicker } from './InstrumentPicker';
+import { MidiImportPopover } from './MidiImportPopover';
 
 const NOTE_HEIGHT = 12;
 const HEADER_HEIGHT = 22;
@@ -24,7 +27,14 @@ const noteLabel = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi /
 const triggerPianoNote = (midi: number, velocity: number, when: number, duration: number, master: number) => {
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume();
-  triggerSynthVoice(ctx, getMasterGain(), midi, velocity, when, duration, master);
+  if (isSoundfontActive()) {
+    // The soundfont voice plays immediately, so approximate the scheduled
+    // `when` with a timer relative to now (fine for preview + playback).
+    const delayMs = Math.max(0, (when - ctx.currentTime) * 1000);
+    window.setTimeout(() => void previewNoteSF(midi, velocity, duration), delayMs);
+    return;
+  }
+  triggerActiveVoice(ctx, getMasterGain(), midi, velocity, when, duration, master);
 };
 
 /**
@@ -75,6 +85,7 @@ export const PianoRoll: React.FC = () => {
   const setSelectedNote = usePianoRollStore((s) => s.setSelectedNote);
   const setPlaying = usePianoRollStore((s) => s.setPlaying);
   const setCurrentStep = usePianoRollStore((s) => s.setCurrentStep);
+  const importNotes = usePianoRollStore((s) => s.importNotes);
   const replaceAll = usePianoRollStore((s) => s.replaceAll);
   const clear = usePianoRollStore((s) => s.clear);
   const noteMenu = useContextMenu<PianoNote>();
@@ -88,11 +99,15 @@ export const PianoRoll: React.FC = () => {
   useEffect(() => { masterRef.current = masterGain; }, [masterGain]);
 
   const [stepPx, setStepPx] = useState(16);
+  const [quantizePct, setQuantizePct] = useState(100);
+  const [swingPct, setSwingPct] = useState(0);
 
   const noteCount = highestNote - lowestNote + 1;
   const gridHeight = noteCount * NOTE_HEIGHT;
   const gridWidth = totalSteps * stepPx;
   const gridRef = useRef<HTMLDivElement | null>(null);
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const keyboardRowsRef = useRef<HTMLDivElement | null>(null);
 
   // Map y-pixel inside the grid to a MIDI note. Top row = highestNote.
   const yToNote = useCallback(
@@ -317,7 +332,6 @@ export const PianoRoll: React.FC = () => {
     file.arrayBuffer().then((buf) => {
       try {
         const data = parseMidi(new Uint8Array(buf));
-        setBpm(Math.round(data.bpm));
         // Flatten all tracks' notes into a single piano-roll layer.
         const stepTicks = data.ppq / 4;
         const flat: PianoNote[] = [];
@@ -332,16 +346,64 @@ export const PianoRoll: React.FC = () => {
             });
           }
         }
+        if (flat.length === 0) {
+          logError('piano-roll', `No notes found in "${file.name}"`);
+          return;
+        }
         flat.sort((a, b) => a.step - b.step);
-        // Expand grid if necessary.
-        const maxEnd = flat.reduce((acc, n) => Math.max(acc, n.step + n.length), 0);
-        if (maxEnd > totalSteps) setTotalSteps(Math.max(totalSteps, maxEnd + 4));
-        replaceAll(flat);
+        // importNotes auto-fits the grid length AND pitch range to the import.
+        importNotes(flat, data.bpm);
         logInfo('piano-roll', `Imported ${flat.length} notes from "${file.name}" at ${Math.round(data.bpm)} BPM`);
       } catch (e) {
         logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }).catch((e) => logError('piano-roll', `Could not read file: ${e instanceof Error ? e.message : String(e)}`));
+  };
+
+  const handleGridScroll = () => {
+    if (keyboardRowsRef.current && gridScrollRef.current) {
+      keyboardRowsRef.current.scrollTop = gridScrollRef.current.scrollTop;
+    }
+  };
+
+  const handleGridWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left + el.scrollLeft;
+      const oldStepPx = stepPx;
+      const nextStepPx = Math.max(6, Math.min(64, oldStepPx * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+      setStepPx(nextStepPx);
+      requestAnimationFrame(() => {
+        el.scrollLeft = cursorX * (nextStepPx / oldStepPx) - (e.clientX - rect.left);
+      });
+      return;
+    }
+    if (e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    }
+  };
+
+  const applyTimingFeel = () => {
+    if (notes.length === 0) return;
+    const q = Math.max(0, Math.min(1, quantizePct / 100));
+    const swing = Math.max(-0.49, Math.min(0.49, swingPct / 100));
+    const adjusted = notes.map((note) => {
+      const quantizedStep = Math.round(note.step);
+      const quantizedLength = Math.max(1, Math.round(note.length));
+      let step = note.step + (quantizedStep - note.step) * q;
+      const length = Math.max(1, note.length + (quantizedLength - note.length) * q);
+      const gridStep = Math.round(step);
+      // Delay or pull back the off-16ths in each beat. Positive = swing/rag lag;
+      // negative = push/syncopate ahead. Keep step >= 0 so the phrase stays valid.
+      if (gridStep % 2 === 1) step = Math.max(0, step + swing);
+      return { ...note, step, length };
+    });
+    replaceAll(adjusted);
+    logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% · swing/rag ${swingPct}%`);
   };
 
   // Build keyboard rows + grid rows for rendering.
@@ -395,7 +457,7 @@ export const PianoRoll: React.FC = () => {
               type="number"
               name="piano-roll-total-steps"
               min={16}
-              max={256}
+              max={4096}
               step={16}
               value={totalSteps}
               onChange={(e) => setTotalSteps(parseInt(e.target.value) || 32)}
@@ -406,31 +468,48 @@ export const PianoRoll: React.FC = () => {
             <button onClick={() => setStepPx(Math.max(6, stepPx - 2))} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom out">
               <ZoomOut className="w-3 h-3" />
             </button>
-            <span className="text-[8px] font-mono text-zinc-400 w-8 text-center">{stepPx}px</span>
+            <span className="text-[8px] font-mono text-zinc-400 w-8 text-center">{Math.round(stepPx)}px</span>
             <button onClick={() => setStepPx(Math.min(48, stepPx + 2))} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom in">
               <ZoomIn className="w-3 h-3" />
             </button>
           </div>
+          <div className="flex items-center gap-1 px-1.5 py-0.5 bg-black/40 border border-white/5 rounded" title="Timing feel: quantize pulls notes to the grid; swing/rag delays or pushes off-16ths.">
+            <span className="text-[7px] font-mono text-zinc-600 uppercase">Q</span>
+            <input
+              type="range"
+              name="piano-roll-quantize"
+              min={0}
+              max={100}
+              value={quantizePct}
+              onChange={(e) => setQuantizePct(parseInt(e.target.value) || 0)}
+              className="w-14 accent-cyan-400"
+            />
+            <span className="text-[8px] font-mono text-cyan-300 w-7 text-right">{quantizePct}%</span>
+            <span className="text-[7px] font-mono text-zinc-600 uppercase ml-1">Rag</span>
+            <input
+              type="range"
+              name="piano-roll-swing-rag"
+              min={-50}
+              max={50}
+              value={swingPct}
+              onChange={(e) => setSwingPct(parseInt(e.target.value) || 0)}
+              className="w-14 accent-purple-400"
+            />
+            <span className="text-[8px] font-mono text-purple-300 w-8 text-right">{swingPct > 0 ? '+' : ''}{swingPct}%</span>
+            <button
+              type="button"
+              onClick={applyTimingFeel}
+              disabled={notes.length === 0}
+              className="px-1.5 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 text-[7px] font-black uppercase tracking-widest text-cyan-200 disabled:opacity-40 disabled:pointer-events-none"
+            >
+              Apply
+            </button>
+          </div>
+          <InstrumentPicker />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono text-zinc-500">{notes.length} note{notes.length === 1 ? '' : 's'}</span>
-          <label className="relative">
-            <input
-              type="file"
-              name="piano-roll-import-midi"
-              accept=".mid,.midi,audio/midi"
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleImportMidi(f);
-                e.target.value = '';
-              }}
-              title="Import MIDI file"
-            />
-            <span className="btn-ghost text-[9px] py-1 flex items-center gap-1.5 pointer-events-none">
-              <Upload className="w-3 h-3 text-purple-300" /> IMPORT MIDI
-            </span>
-          </label>
+          <MidiImportPopover onImportFile={handleImportMidi} />
           <button
             onClick={handleExportMidi}
             className="btn-ghost text-[9px] py-1 flex items-center gap-1.5"
@@ -473,27 +552,36 @@ export const PianoRoll: React.FC = () => {
         {/* Keyboard column */}
         <div className="shrink-0 overflow-hidden bg-[#0c0a12] border-r border-white/5" style={{ width: KEYBOARD_WIDTH }}>
           <div className="bg-black/40" style={{ height: HEADER_HEIGHT }} />
-          <div className="overflow-hidden" style={{ height: gridHeight }}>
-            {rows.map((midi) => {
-              const black = isBlackKey(midi);
-              const isC = midi % 12 === 0;
-              return (
-                <div
-                  key={midi}
-                  onClick={() => triggerPianoNote(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current)}
-                  className={`flex items-center justify-end pr-1 text-[8px] font-mono cursor-pointer transition-colors border-b border-black/40 ${black ? 'bg-zinc-900 text-zinc-600 hover:bg-purple-900/30' : isC ? 'bg-zinc-200 text-zinc-700 hover:bg-purple-300' : 'bg-zinc-300 text-zinc-700 hover:bg-purple-200'}`}
-                  style={{ height: NOTE_HEIGHT }}
-                  title={`Preview ${noteLabel(midi)}`}
-                >
-                  {isC ? noteLabel(midi) : ''}
-                </div>
-              );
-            })}
+          <div ref={keyboardRowsRef} className="overflow-hidden" style={{ height: `calc(100% - ${HEADER_HEIGHT}px)` }}>
+            <div style={{ height: gridHeight }}>
+              {rows.map((midi) => {
+                const black = isBlackKey(midi);
+                const isC = midi % 12 === 0;
+                return (
+                  <div
+                    key={midi}
+                    onClick={() => triggerPianoNote(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current)}
+                    className={`flex items-center justify-end pr-1 text-[8px] font-mono cursor-pointer transition-colors border-b border-black/40 ${black ? 'bg-zinc-900 text-zinc-600 hover:bg-purple-900/30' : isC ? 'bg-zinc-200 text-zinc-700 hover:bg-purple-300' : 'bg-zinc-300 text-zinc-700 hover:bg-purple-200'}`}
+                    style={{ height: NOTE_HEIGHT }}
+                    title={`Preview ${noteLabel(midi)}`}
+                  >
+                    {isC ? noteLabel(midi) : ''}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 
         {/* Grid column */}
-        <div className="flex-1 overflow-auto" onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
+        <div
+          ref={gridScrollRef}
+          className="flex-1 overflow-auto"
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onScroll={handleGridScroll}
+          onWheel={handleGridWheel}
+        >
           {/* Ruler */}
           <div className="sticky top-0 z-20 bg-black/60 border-b border-white/5 flex" style={{ height: HEADER_HEIGHT, width: gridWidth, minWidth: '100%' }}>
             {Array.from({ length: Math.ceil(totalSteps / 4) }).map((_, beat) => (

@@ -109,6 +109,14 @@ class BackgroundQueue:
         *args: Any,
         **kwargs: Any,
     ) -> BackgroundJob:
+        for existing in self._jobs.values():
+            if existing.name == name and existing.status in {"queued", "running"}:
+                log.info(
+                    "background_workers: skipping duplicate active job %s (%s)",
+                    name,
+                    existing.id,
+                )
+                return existing
         job = BackgroundJob(
             id=str(uuid.uuid4()),
             name=name,

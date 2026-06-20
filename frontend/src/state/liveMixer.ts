@@ -37,6 +37,14 @@ import {
   setLiveTransport,
 } from './playerStore';
 import { logError } from './logStore';
+import {
+  ensureSoundfontReady,
+  isLiveSynthReady,
+  liveNoteOn,
+  liveNoteOff,
+  liveAllNotesOff,
+  useSoundfontStore,
+} from '../lib/soundfontEngine';
 
 const DECODE_TIMEOUT_MS = 15000;
 const EDITOR_ENTRY_ID = 'editor-timeline'; // reuse so existing footer/playhead wiring keeps working
@@ -63,6 +71,8 @@ let playToken = 0; // guards against overlapping async play() calls
 let unsubEditor: (() => void) | null = null;
 let lastMixSig = '';
 let lastTimePush = 0; // throttle playerStore.currentTime writes
+let midiTimers: number[] = []; // setTimeout handles for scheduled MIDI note on/off
+let liveMidiActive = false; // true while MIDI clips play via the live synth (vs their bounce)
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
@@ -127,12 +137,20 @@ function buildTrackNodes(tracks: EditorTrack[]): void {
   }
 }
 
+/** A MIDI clip = a piano-roll clip carrying its editable notes. */
+function isMidiClip(clip: AudioClip): boolean {
+  return clip.sourceKind === 'piano-roll' && !!clip.sourcePianoRoll && clip.sourcePianoRoll.length > 0;
+}
+
 /** Schedule every clip that is at or after `fromSec` (or straddling it). */
 function scheduleClips(clips: AudioClip[], fromSec: number): void {
   const ctx = getEngineCtx();
   const now = ctx.currentTime;
   sources = [];
   for (const clip of clips) {
+    // When the live synth drives MIDI, skip the clip's bounced audio so we don't
+    // double up; scheduleMidiClips plays its notes instead.
+    if (liveMidiActive && isMidiClip(clip)) continue;
     const nodes = trackNodes.get(clip.trackId);
     if (!nodes) continue;
     const buf = decodeCache.get(clip.audioBlob);
@@ -185,12 +203,66 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
   }
 }
 
+/**
+ * Schedule live-synth note on/off for every MIDI clip at or after `fromSec`.
+ * Notes fire via timers aligned to the transport (preview-accurate); the offline
+ * export keeps using the sample-accurate render path. One synth channel per track
+ * (16-channel cap); per-track volume/pan are not yet applied to MIDI, but mute and
+ * solo are honored by skipping the track.
+ */
+function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
+  const ed = useEditorStore.getState();
+  const tracks = ed.tracks;
+  const anySolo = tracks.some((t) => t.solo);
+  const trackById = new Map<string, EditorTrack>(tracks.map((t): [string, EditorTrack] => [t.id, t]));
+  const globalProgram = useSoundfontStore.getState().activeProgram;
+
+  // One synth channel per track that has MIDI clips (16-channel cap).
+  const channelOf = new Map<string, number>();
+  let nextCh = 0;
+  for (const clip of clips) {
+    if (!isMidiClip(clip) || channelOf.has(clip.trackId)) continue;
+    if (nextCh > 15) break;
+    channelOf.set(clip.trackId, nextCh++);
+  }
+
+  for (const clip of clips) {
+    if (!isMidiClip(clip)) continue;
+    const track = trackById.get(clip.trackId);
+    if (!track || effectiveVol(track, anySolo) <= 0) continue; // honor mute/solo
+    const channel = channelOf.get(clip.trackId);
+    if (channel === undefined) continue; // beyond the 16-instrument cap
+    const program = clip.instrumentProgram ?? track.instrumentProgram ?? globalProgram;
+    const bpm = clip.sourceBpm ?? ed.bpm ?? 120;
+    const stepSec = 60 / Math.max(40, bpm) / 4;
+    for (const n of clip.sourcePianoRoll ?? []) {
+      const onSec = clip.startSec + n.step * stepSec;
+      const offSec = onSec + Math.max(1, n.length) * stepSec;
+      if (offSec <= fromSec || onSec < fromSec) continue; // finished, or already sounding
+      const onDelay = Math.max(0, (onSec - fromSec) * 1000);
+      const offDelay = Math.max(onDelay + 10, (offSec - fromSec) * 1000);
+      const midi = n.note;
+      const vel = n.velocity;
+      midiTimers.push(window.setTimeout(() => liveNoteOn(channel, program, midi, vel), onDelay));
+      midiTimers.push(window.setTimeout(() => liveNoteOff(channel, midi), offDelay));
+    }
+  }
+}
+
+/** Cancel pending MIDI note timers and silence the synth. */
+function clearMidiTimers(): void {
+  for (const id of midiTimers) clearTimeout(id);
+  midiTimers = [];
+  liveAllNotesOff();
+}
+
 /** Stop + disconnect every scheduled source (does not tear down track nodes). */
 function clearSources(): void {
   for (const s of sources) {
     try { s.onended = null; s.stop(); s.disconnect(); } catch { /* already stopped */ }
   }
   sources = [];
+  clearMidiTimers();
 }
 
 function stopClock(): void {
@@ -258,6 +330,22 @@ async function start(fromSec: number): Promise<void> {
   }
   if (token !== playToken) return; // superseded by a newer start()
 
+  // Decide MIDI playback mode. Drive notes through the live synth only when the
+  // user opted into a soundfont (global picker) or assigned an instrument to a
+  // clip/track; otherwise keep playing the clip's bounced audio, so users who
+  // never touch soundfonts see no behavior change or surprise soundfont load.
+  const wantLiveMidi =
+    clips.some(isMidiClip) &&
+    (useSoundfontStore.getState().useSoundfont ||
+      clips.some((c) => isMidiClip(c) && c.instrumentProgram !== undefined) ||
+      ed.tracks.some((t) => t.instrumentProgram !== undefined));
+  if (wantLiveMidi) {
+    liveMidiActive = isLiveSynthReady() ? true : await ensureSoundfontReady();
+    if (token !== playToken) return;
+  } else {
+    liveMidiActive = false;
+  }
+
   // (Re)assert ourselves as the live transport — a library track played in the
   // meantime may have cleared it via playerStore.load().
   setLiveTransport({ play, pause, stop, seek });
@@ -268,6 +356,7 @@ async function start(fromSec: number): Promise<void> {
   lastTimePush = 0;
   lastMixSig = mixSignature(ed.tracks);
   scheduleClips(clips, begin);
+  if (liveMidiActive) scheduleMidiClips(clips, begin);
 
   playing = true;
   usePlayerStore.setState({

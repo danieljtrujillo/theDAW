@@ -269,26 +269,116 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
 
 
 def _ensure_librosa_core_audio_shim() -> None:
-    """piano_transcription_inference's ``load_audio`` calls the pre-0.10
-    ``librosa.core.audio.{to_mono,resample}`` / ``librosa.core.audio.util``
-    API, which librosa >= 0.10 removed (it lives at ``librosa.to_mono`` /
-    ``librosa.resample`` / ``librosa.util`` now). Re-expose a ``librosa.core.audio``
-    module pointing at the moved functions so transcription works without
-    downgrading librosa.
+    """piano_transcription_inference's ``load_audio`` calls, at runtime,
+    ``librosa.core.audio.resample(y, sr_native, sr, res_type=...)`` (utilities.py).
+    librosa >= 0.10 kept that submodule but made ``resample``'s ``orig_sr`` /
+    ``target_sr`` keyword-only, so the positional call raises "resample() takes 1
+    positional argument but 3 positional arguments ... were given". Override the
+    submodule's ``resample`` with a wrapper that accepts the legacy positional
+    signature (and provide a minimal ``librosa.core.audio`` if it is ever missing).
+
+    Not guarded by an early return: the submodule is usually already imported by
+    startup, and we must patch ``resample`` regardless of whether it exists yet.
     """
+    import sys
     import types
 
     import librosa
     import librosa.core
     import librosa.util
 
-    if hasattr(librosa.core, "audio"):
-        return
-    shim = types.ModuleType("librosa.core.audio")
-    shim.to_mono = librosa.to_mono  # type: ignore[attr-defined]
-    shim.resample = librosa.resample  # type: ignore[attr-defined]
-    shim.util = librosa.util  # type: ignore[attr-defined]
-    librosa.core.audio = shim  # type: ignore[attr-defined]
+    orig_resample = librosa.resample
+
+    def _resample_compat(y, *args, **kwargs):
+        if len(args) >= 1:
+            kwargs.setdefault("orig_sr", args[0])
+        if len(args) >= 2:
+            kwargs.setdefault("target_sr", args[1])
+        return orig_resample(y, **kwargs)
+
+    try:
+        import librosa.core.audio as core_audio  # the real submodule (librosa >= 0.10)
+    except Exception:
+        core_audio = types.ModuleType("librosa.core.audio")
+        librosa.core.audio = core_audio  # type: ignore[attr-defined]
+        sys.modules["librosa.core.audio"] = core_audio
+
+    core_audio.resample = _resample_compat  # type: ignore[attr-defined]
+    if not hasattr(core_audio, "to_mono"):
+        core_audio.to_mono = librosa.to_mono  # type: ignore[attr-defined]
+    if not hasattr(core_audio, "util"):
+        core_audio.util = librosa.util  # type: ignore[attr-defined]
+
+
+# Bytedance piano-transcription checkpoint (~165 MB), the same artifact the
+# library auto-fetches — but it shells out to ``wget``, which is absent on
+# Windows, so the download silently no-ops and torch.load then raises
+# FileNotFoundError. We fetch it in Python to the path the library expects.
+PIANO_CKPT_URL = (
+    "https://zenodo.org/record/4034264/files/"
+    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
+)
+PIANO_CKPT_MIN_BYTES = 160_000_000  # library treats < 1.6e8 as incomplete
+
+
+def _piano_checkpoint_path() -> Path:
+    return (
+        Path.home()
+        / "piano_transcription_inference_data"
+        / "note_F1=0.9677_pedal_F1=0.9186.pth"
+    )
+
+
+def _piano_checkpoint_ready(dest: Path) -> bool:
+    return dest.is_file() and dest.stat().st_size >= PIANO_CKPT_MIN_BYTES
+
+
+def _ensure_piano_checkpoint() -> Path:
+    """Download the piano-transcription checkpoint if missing, cross-platform.
+
+    Returns the local checkpoint path; raises on a failed/incomplete download.
+    Uses a process-unique temp file so concurrent callers never fight over one
+    ``.partial``, and retries the final rename to ride out a transient Windows
+    lock (antivirus scanning a freshly written 165 MB file).
+    """
+    import os
+    import time
+    import urllib.request
+
+    dest = _piano_checkpoint_path()
+    if _piano_checkpoint_ready(dest):
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f"{dest.name}.{os.getpid()}.partial"
+    log.info("midi.engine: downloading piano-transcription checkpoint (~165 MB)…")
+    req = urllib.request.Request(PIANO_CKPT_URL, headers={"User-Agent": "theDAW/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as f:
+            shutil.copyfileobj(resp, f, length=1024 * 256)
+        size = tmp.stat().st_size
+        if size < PIANO_CKPT_MIN_BYTES:
+            raise RuntimeError(
+                f"piano checkpoint download incomplete ({size} bytes; expected ~165 MB)"
+            )
+        last_err: Exception | None = None
+        for _ in range(6):
+            if _piano_checkpoint_ready(dest):  # another caller won the race
+                break
+            try:
+                os.replace(tmp, dest)
+                break
+            except PermissionError as e:  # transient lock (AV) — back off and retry
+                last_err = e
+                time.sleep(1.0)
+        else:
+            if not _piano_checkpoint_ready(dest):
+                raise last_err or RuntimeError("could not finalize piano checkpoint")
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp.exists():
+                tmp.unlink()
+    log.info("midi.engine: piano-transcription checkpoint ready at %s", dest)
+    return dest
 
 
 def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
@@ -299,8 +389,11 @@ def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
         load_audio,
     )
 
+    checkpoint_path = _ensure_piano_checkpoint()
     audio, _ = load_audio(str(audio_path), sr=sample_rate, mono=True)
-    transcriptor = PianoTranscription(device="cpu", checkpoint_path=None)
+    transcriptor = PianoTranscription(
+        device="cpu", checkpoint_path=str(checkpoint_path)
+    )
     transcriptor.transcribe(audio, str(output_path))
 
     notes_count = _count_midi_notes(output_path)

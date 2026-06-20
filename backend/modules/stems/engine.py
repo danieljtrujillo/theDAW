@@ -42,6 +42,7 @@ _PROGRESS: dict[str, dict[str, Any]] = {}
 # entry_ids the user has asked to abort. ``separate_entry`` checks this
 # on every poll iteration and raises if its id is in the set.
 _ABORT_REQUESTS: set[str] = set()
+_IN_FLIGHT: set[str] = set()
 
 
 def request_abort(entry_id: str) -> bool:
@@ -107,6 +108,16 @@ async def separate_entry(
     running and surface what's happening in the ProcessingLog.
     """
     sc = sidecar or get_sidecar()
+
+    with _PROGRESS_LOCK:
+        if entry_id in _IN_FLIGHT:
+            snap = _PROGRESS.get(entry_id) or {}
+            phase = snap.get("phase") or "running"
+            message = snap.get("message") or "Stem separation already running"
+            raise RuntimeError(
+                f"stem separation already running for {entry_id}: {phase} — {message}"
+            )
+        _IN_FLIGHT.add(entry_id)
 
     _set_status(db, entry_id, "running")
     device_label = device or "auto (sidecar picks)"
@@ -263,6 +274,12 @@ async def separate_entry(
         )
         _clear_abort(entry_id)
         raise
+    finally:
+        # Always release the in-flight marker so a completed or failed run can
+        # be retried. The primary duplicate-submit guard is the background queue
+        # (one active job per ``stems:{id}`` name); this set is the second layer.
+        with _PROGRESS_LOCK:
+            _IN_FLIGHT.discard(entry_id)
 
 
 def _set_status(db: LibraryDB, entry_id: str, status: str) -> None:
