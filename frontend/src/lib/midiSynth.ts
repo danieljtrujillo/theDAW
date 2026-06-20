@@ -11,6 +11,8 @@
  * this module existed, so previews and bounces stay consistent.
  */
 import { parseMidi } from './midi';
+import { isSoundfontActive, getActiveSynthVoice, renderNotesToBlobSF, renderMidiBufferToBlobSF } from './soundfontEngine';
+import { getSynthVoice } from './synthVoices';
 
 /** One note in absolute seconds — the engine-neutral render unit. */
 export interface RenderNote {
@@ -63,6 +65,25 @@ export const triggerSynthVoice = (
   osc.stop(when + duration + 0.2);
 };
 
+/**
+ * Trigger the currently-selected built-in voice: a procedural synth voice if one
+ * is active (EDM bank), else the basic sawtooth. Soundfont selection is handled
+ * separately (callers check `isSoundfontActive()` first). Same signature as
+ * `triggerSynthVoice` so it's a drop-in for preview + render.
+ */
+export const triggerActiveVoice: typeof triggerSynthVoice = (
+  ctx,
+  dest,
+  midi,
+  velocity,
+  when,
+  duration,
+  master,
+) => {
+  const voice = getSynthVoice(getActiveSynthVoice());
+  (voice ? voice.trigger : triggerSynthVoice)(ctx, dest, midi, velocity, when, duration, master);
+};
+
 /** Encode an AudioBuffer to a 16-bit PCM WAV Blob. */
 export const encodeWavBlob = (audioBuf: AudioBuffer): Blob => {
   const numCh = audioBuf.numberOfChannels;
@@ -99,8 +120,28 @@ export const encodeWavBlob = (audioBuf: AudioBuffer): Blob => {
   return new Blob([buffer], { type: 'audio/wav' });
 };
 
-/** Render absolute-seconds notes to a WAV Blob via the built-in synth. */
+/**
+ * Render absolute-seconds notes to a WAV Blob. Uses the active soundfont
+ * instrument when one is selected, falling back to the built-in sawtooth voice
+ * if soundfonts are off or fail to render.
+ */
 export const renderNotesToBlob = async (
+  notes: RenderNote[],
+  opts: RenderOptions = {},
+): Promise<{ blob: Blob; duration: number }> => {
+  if (isSoundfontActive()) {
+    try {
+      return await renderNotesToBlobSF(notes, opts);
+    } catch {
+      /* fall back to the built-in voice below */
+    }
+  }
+  return renderNotesBuiltin(notes, opts);
+};
+
+/** The built-in render path: routes through the active synth voice (EDM bank)
+ *  or the basic sawtooth. Used when no soundfont is selected. */
+const renderNotesBuiltin = async (
   notes: RenderNote[],
   opts: RenderOptions = {},
 ): Promise<{ blob: Blob; duration: number }> => {
@@ -114,7 +155,7 @@ export const renderNotesToBlob = async (
   const totalSec = Math.max(0.1, maxEnd + tail);
   const offline = new OfflineAudioContext(2, Math.ceil(totalSec * sr), sr);
   for (const n of notes) {
-    triggerSynthVoice(offline, offline.destination, n.midi, n.velocity, n.startSec, n.durationSec, 1);
+    triggerActiveVoice(offline, offline.destination, n.midi, n.velocity, n.startSec, n.durationSec, 1);
   }
   const rendered = await offline.startRendering();
   return { blob: encodeWavBlob(rendered), duration: rendered.duration };
@@ -139,10 +180,21 @@ export const renderStepNotesToBlob = async (
   return { blob: result.blob, duration: Math.max(result.duration, nominal) };
 };
 
-/** Parse a Standard MIDI File buffer and render it to a WAV Blob. */
+/**
+ * Parse a Standard MIDI File buffer and render it to a WAV Blob. Uses the active
+ * soundfont (honoring the file's own program changes) when one is selected,
+ * falling back to the built-in sawtooth voice otherwise.
+ */
 export const renderMidiBufferToBlob = async (
   buf: ArrayBuffer | Uint8Array,
 ): Promise<{ blob: Blob; duration: number }> => {
+  if (isSoundfontActive()) {
+    try {
+      return await renderMidiBufferToBlobSF(buf);
+    } catch {
+      /* fall back to the built-in voice below */
+    }
+  }
   const midi = parseMidi(buf);
   const ppq = midi.ppq || 480;
   const bpm = midi.bpm || 120;
@@ -156,5 +208,5 @@ export const renderMidiBufferToBlob = async (
     })),
   );
   if (notes.length === 0) throw new Error('MIDI has no playable notes');
-  return renderNotesToBlob(notes);
+  return renderNotesBuiltin(notes);
 };

@@ -22,6 +22,7 @@ import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
 import { renderMidiBufferToBlob } from './midiSynth';
+import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
 import { logError, logInfo } from '../state/logStore';
 
 /** Default mime for stems / mic recordings when none provided. */
@@ -173,13 +174,10 @@ export function loadMidiIntoPianoRoll(
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
     }
-    const lastStep = Math.max(...notes.map((p) => p.step + p.length));
-    const totalSteps = Math.max(16, Math.min(256, lastStep + 16));
     const piano = usePianoRollStore.getState();
-    piano.setBpm(midi.bpm || piano.bpm);
-    piano.setTotalSteps(totalSteps);
-    piano.replaceAll(notes);
+    piano.importNotes(notes, midi.bpm); // auto-fits length + pitch range to the import
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'piano-roll' : 'step-seq');
+    const totalSteps = usePianoRollStore.getState().totalSteps;
     logInfo(
       'send-to',
       `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps)`,
@@ -194,12 +192,7 @@ export function loadMidiIntoPianoRoll(
 /** Fetch a midi file from the backend by id, then load it into the piano roll. */
 export async function sendMidiIdToTarget(midiId: string, target: MidiSendTarget): Promise<void> {
   try {
-    const res = await fetch(`/api/midi/file/${midiId}`);
-    if (!res.ok) {
-      logError('send-to', `MIDI fetch failed for ${midiId}: HTTP ${res.status}`);
-      return;
-    }
-    const buf = await res.arrayBuffer();
+    const buf = await fetchMidiBytesWithRetry(`/api/midi/file/${midiId}`, { label: midiId });
     loadMidiIntoPianoRoll(buf, target, midiId);
   } catch (e) {
     logError('send-to', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -217,9 +210,7 @@ export function midiIdToSendable(midiId: string, label = 'midi'): SendableAudio 
     label,
     mimeType: 'audio/wav',
     fetcher: async () => {
-      const res = await fetch(`/api/midi/file/${midiId}`);
-      if (!res.ok) throw new Error(`midi ${midiId} fetch HTTP ${res.status}`);
-      const buf = await res.arrayBuffer();
+      const buf = await fetchMidiBytesWithRetry(`/api/midi/file/${midiId}`, { label });
       const { blob } = await renderMidiBufferToBlob(buf);
       return blob;
     },
@@ -235,11 +226,7 @@ export function stemRowToSendable(row: Record<string, unknown>): SendableAudio {
   return {
     label,
     mimeType: 'audio/wav',
-    fetcher: async () => {
-      const res = await fetch(`/api/library/stems/${stemId}/audio`);
-      if (!res.ok) throw new Error(`stem ${stemId} fetch HTTP ${res.status}`);
-      return res.blob();
-    },
+    fetcher: () => fetchBlobWithRetry(`/api/library/stems/${stemId}/audio`, { label }),
   };
 }
 

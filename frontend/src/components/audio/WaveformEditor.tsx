@@ -7,11 +7,17 @@ import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, computePeaks, type AudioClip, type SnapDivision } from '../../state/editorStore';
+import { useEditorStore, computePeaks, type AudioClip, type EditorTrack, type SnapDivision } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
+import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
+import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram } from '../../lib/soundfontEngine';
+import { renderStepNotesToBlob } from '../../lib/midiSynth';
+import { parseMidi } from '../../utils/midi';
+import type { PianoNote } from '../../state/pianoRollStore';
+import { LibraryMidiPicker } from './LibraryMidiPicker';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
@@ -20,7 +26,7 @@ import * as liveMixer from '../../state/liveMixer';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const TRACK_HEADER_PX = 180;
-const TRACK_HEIGHT = 88;
+const TRACK_HEIGHT = 104;
 const DECODE_TIMEOUT_MS = 15000;
 
 const formatTimecode = (sec: number): string => {
@@ -77,6 +83,38 @@ const encodeWav = (audioBuf: AudioBuffer): Blob => {
 };
 
 /**
+ * Tiny silent WAV placeholder used when creating large MIDI clips. The real
+ * bounced audio is rendered asynchronously after the editable MIDI clip appears,
+ * so users are not stuck waiting on an OfflineAudioContext + peak extraction.
+ */
+const silentWavBlob = (): Blob => {
+  const sampleRate = 44100;
+  const channels = 1;
+  const samples = Math.ceil(sampleRate * 0.1);
+  const bytesPerSample = 2;
+  const dataBytes = samples * channels * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channels * bytesPerSample, true);
+  view.setUint16(32, channels * bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataBytes, true);
+  return new Blob([buffer], { type: 'audio/wav' });
+};
+
+/**
  * Decode an audio Blob, extract the portion [offsetSec, offsetSec+durationSec],
  * and return it as a fresh WAV Blob. Used so inpaint submissions always receive
  * exactly the visible clip region, with mask coords relative to its start.
@@ -107,6 +145,107 @@ const cropAudioBlob = async (
   } finally {
     tmpCtx.close().catch(() => {});
   }
+};
+
+/**
+ * Draw a MIDI clip's notes inside the clip body (FL-style playlist preview).
+ * X maps note time (relative to the clip's source offset) to pixels via `zoom`;
+ * Y stacks pitches lowest-to-highest across the body. Velocity sets brightness.
+ * Read-only — editing happens in the Piano Roll (double-click / context menu).
+ */
+const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean }> = ({ clip, zoom, selected }) => {
+  const notes = clip.sourcePianoRoll;
+  if (!notes || notes.length === 0) return null;
+  const bpm = clip.sourceBpm ?? 120;
+  const stepSec = 60 / Math.max(40, bpm) / 4;
+  const offset = clip.offsetIntoSource ?? 0;
+  const clipDur = clip.durationSec;
+
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const n of notes) {
+    if (n.note < lo) lo = n.note;
+    if (n.note > hi) hi = n.note;
+  }
+  if (!Number.isFinite(lo)) return null;
+  // One row per semitone in the used range, with a little headroom top/bottom.
+  lo -= 1;
+  hi += 1;
+  const rows = Math.max(1, hi - lo);
+  const rowPct = 100 / (rows + 1);
+
+  return (
+    <div className="absolute inset-x-0 bottom-0 top-3.5 overflow-hidden pointer-events-none">
+      {notes.map((n) => {
+        const relStart = n.step * stepSec - offset;
+        const relEnd = relStart + Math.max(1, n.length) * stepSec;
+        if (relEnd <= 0 || relStart >= clipDur) return null; // outside the visible window
+        const vStart = Math.max(0, relStart);
+        const vEnd = Math.min(clipDur, relEnd);
+        const x = vStart * zoom;
+        const w = Math.max(1.5, (vEnd - vStart) * zoom);
+        const topPct = (hi - n.note) * rowPct;
+        const hPct = Math.max(rowPct - 0.5, 2);
+        const vel = Math.max(1, Math.min(127, n.velocity));
+        return (
+          <div
+            key={n.id}
+            className="absolute rounded-[1px]"
+            style={{
+              left: x,
+              width: w,
+              top: `${topPct}%`,
+              height: `${hPct}%`,
+              backgroundColor: clip.color,
+              opacity: (selected ? 0.6 : 0.42) + (vel / 127) * 0.4,
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+};
+
+/**
+ * Compact per-track instrument selector (channel-rack style). "Default" leaves
+ * the track on the global Piano Roll instrument; picking a GM program assigns it
+ * to the track, which makes its MIDI clips play that voice live on the timeline.
+ */
+const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
+  const updateTrack = useEditorStore((s) => s.updateTrack);
+  const globalProgram = useSoundfontStore((s) => s.activeProgram);
+  const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
+  const value = track.instrumentProgram === undefined ? 'default' : String(track.instrumentProgram);
+  const defaultLabel = globalSoundfont ? `Default (${gmShortName(globalProgram)})` : 'Default (Basic)';
+
+  const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    if (v === 'default') {
+      updateTrack(track.id, { instrumentProgram: undefined });
+      return;
+    }
+    updateTrack(track.id, { instrumentProgram: Number(v) });
+    void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Piano className="w-2.5 h-2.5 text-emerald-400/70 shrink-0" />
+      <select
+        id={`editor-track-instrument-${track.id}`}
+        name={`editor-track-instrument-${track.id}`}
+        aria-label={`Track ${track.name} instrument`}
+        value={value}
+        onChange={onChange}
+        className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-[8px] text-white/75 outline-none focus:border-purple-500/50"
+      >
+        <option value="default">{defaultLabel}</option>
+        {GM_NAMES.map((nm, i) => (
+          <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>
+        ))}
+      </select>
+    </div>
+  );
 };
 
 interface PointerOp {
@@ -181,6 +320,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     | { kind: 'generating'; jobId: string }
     | { kind: 'review'; blob: Blob; blobUrl: string };
   const [inpaintPanel, setInpaintPanel] = useState<InpaintPhase | null>(null);
+  // When set, the LibraryMidiPicker is open; `sec` is the drop time, x/y anchor the panel.
+  const [midiDrop, setMidiDrop] = useState<{ sec: number; x: number; y: number } | null>(null);
   const [inpaintPrompt, setInpaintPrompt] = useState('');
   const [inpaintSteps, setInpaintSteps] = useState(8);
   const [inpaintSeed, setInpaintSeed] = useState(-1);
@@ -1090,6 +1231,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   };
 
   const onTimelineClick = (e: React.MouseEvent) => {
+    if (e.button === 2) return; // right-click is the add-MIDI menu, not a playhead move
     if (!timelineRef.current) return;
     if (opRef.current) return;
     // Only react to direct clicks on the timeline gutter (not on a clip).
@@ -1112,6 +1254,102 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const sec = pxToSec(x);
     splitClipAt(clipId, sec);
   };
+
+  /** Bind a MIDI clip to the Piano Roll and reveal it (FL: double-click a clip). */
+  const editClipInPianoRoll = useCallback((clip: AudioClip) => {
+    if (!clip.sourcePianoRoll) return;
+    usePianoRollStore.getState().loadFromClip(
+      clip.id,
+      clip.sourcePianoRoll,
+      clip.sourceBpm ?? 120,
+      clip.sourceTotalSteps ?? 32,
+    );
+    useBottomPanelStore.getState().showTab('piano-roll');
+    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in Piano Roll (${clip.sourcePianoRoll.length} notes)`);
+  }, []);
+
+  const onClipDoubleClick = (clip: AudioClip) => {
+    if (clip.sourcePianoRoll) editClipInPianoRoll(clip);
+  };
+
+  /** Right-click an empty part of the timeline → open the MIDI picker there. */
+  const onLanesContextMenu = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-clip="1"]')) return; // a clip's own menu handles it
+    e.preventDefault();
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    setMidiDrop({ sec: Math.max(0, snapSec(pxToSec(e.clientX - rect.left))), x: e.clientX, y: e.clientY });
+  };
+
+  /** Turn picked MIDI bytes into a piano-roll clip on a new track at `startSec`,
+   *  using the currently selected instrument (live-playable + editable). */
+  const addMidiClipFromBytes = useCallback(async (bytes: ArrayBuffer, label: string, startSec: number) => {
+    try {
+      const data = parseMidi(new Uint8Array(bytes));
+      const stepTicks = (data.ppq || 480) / 4;
+      const notes: PianoNote[] = [];
+      for (const tr of data.tracks) {
+        for (const n of tr.notes) {
+          notes.push({
+            id: `imp-${Math.random().toString(36).slice(2)}-${notes.length}`,
+            note: n.note,
+            step: Math.round(n.tick / stepTicks),
+            length: Math.max(1, Math.round(n.durationTicks / stepTicks)),
+            velocity: n.velocity,
+          });
+        }
+      }
+      if (notes.length === 0) {
+        logError('editor', `No notes in "${label}"`);
+        return;
+      }
+      const bpm = Math.round(data.bpm) || 120;
+      const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+      const totalSteps = Math.max(16, Math.ceil(lastStep / 16) * 16);
+      const program = isSoundfontActive() ? getActiveProgram() : undefined;
+      const nominalDuration = totalSteps * (60 / Math.max(40, bpm) / 4);
+      const blob = silentWavBlob();
+      const trackId = addTrack({ name: label, instrumentProgram: program });
+      const color = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
+      const clipId = addClipToTrack({
+        trackId,
+        label,
+        audioBlob: blob,
+        mimeType: 'audio/wav',
+        sourceDuration: nominalDuration,
+        offsetIntoSource: 0,
+        durationSec: nominalDuration,
+        startSec: Math.max(0, startSec),
+        color,
+        sourceKind: 'piano-roll',
+        sourcePianoRoll: notes,
+        sourceBpm: bpm,
+        sourceTotalSteps: totalSteps,
+        instrumentProgram: program,
+      });
+      logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) at ${startSec.toFixed(2)}s; rendering audio in background…`);
+      void (async () => {
+        const started = performance.now();
+        try {
+          const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps);
+          const { peaks } = await computePeaks(rendered.blob, 240);
+          updateClip(clipId, {
+            audioBlob: rendered.blob,
+            mimeType: 'audio/wav',
+            sourceDuration: rendered.duration,
+            durationSec: rendered.duration,
+          });
+          cachePeaks(clipId, peaks);
+          logInfo('editor', `MIDI audio ready for "${label}" in ${(performance.now() - started).toFixed(0)}ms`);
+        } catch (renderErr) {
+          logError('editor', `MIDI audio render failed for "${label}": ${renderErr instanceof Error ? renderErr.message : String(renderErr)}`);
+        }
+      })();
+    } catch (err) {
+      logError('editor', `Add MIDI failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [addTrack, addClipToTrack, cachePeaks, updateClip]);
 
   // --- Renderers ---
   const renderRuler = useMemo(() => {
@@ -1313,6 +1551,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
                   </span>
                 </div>
+                {clips.some((c) => c.trackId === t.id && c.sourceKind === 'piano-roll' && !!c.sourcePianoRoll && c.sourcePianoRoll.length > 0) && (
+                  <TrackInstrumentSelect track={t} />
+                )}
               </div>
             ))}
           </div>
@@ -1374,6 +1615,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             className={`relative ${tool === 'cut' ? 'cursor-crosshair' : 'cursor-default'}`}
             style={{ width: timelineWidthPx, height: tracks.length * TRACK_HEIGHT + 34 }}
             onMouseDown={onTimelineClick}
+            onContextMenu={onLanesContextMenu}
             onDragOver={onTimelineDragOver}
             onDrop={onTimelineDrop}
           >
@@ -1395,12 +1637,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               const height = TRACK_HEIGHT - 12;
               const selected = selectedClipIdSet.has(clip.id) || clip.id === selectedClipId;
               const peaks = clip.peaks;
+              const isMidi = clip.sourceKind === 'piano-roll' && !!clip.sourcePianoRoll && clip.sourcePianoRoll.length > 0;
               return (
                 <div
                   key={clip.id}
                   data-clip="1"
                   onPointerDown={(e) => onClipPointerDown(e, clip.id, 'move')}
                   onClick={(e) => onClipClick(e, clip.id)}
+                  onDoubleClick={() => onClipDoubleClick(clip)}
                   onContextMenu={(e) => openContextMenu(e, clip.id)}
                   className={`absolute rounded border overflow-hidden transition-shadow ${selected ? 'border-white shadow-[0_0_18px_rgba(255,255,255,0.18)] z-10' : 'border-white/15 hover:border-white/40'}`}
                   style={{
@@ -1419,28 +1663,36 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     </span>
                     <span className="text-zinc-300">{clip.durationSec.toFixed(2)}s</span>
                   </div>
-                  {/* Waveform peaks */}
-                  <div className="absolute inset-x-0 bottom-0 top-3.5 flex items-center gap-[0.5px] px-1">
-                    {peaks ? (
-                      Array.from(peaks).map((v, i) => (
-                        <div
-                          key={i}
-                          className="flex-1 rounded-sm"
-                          style={{ height: `${Math.max(2, v * 90)}%`, backgroundColor: clip.color, opacity: selected ? 0.95 : 0.7 }}
-                        />
-                      ))
-                    ) : (
-                      <span className="text-[8px] font-mono text-zinc-600 italic">decoding…</span>
-                    )}
-                  </div>
-                  {/* Inpaint drag target — covers waveform body below header */}
-                  <div
-                    className="absolute inset-x-0 bottom-0 z-10 cursor-crosshair"
-                    style={{ top: 14 }}
-                    onPointerDown={(e) => handleInpaintDragStart(e, clip)}
-                    onPointerMove={handleInpaintDragMove}
-                    onPointerUp={handleInpaintDragEnd}
-                  />
+                  {/* Body: MIDI clips show their notes (FL-style); audio clips show peaks */}
+                  {isMidi ? (
+                    <MidiClipNotes clip={clip} zoom={zoom} selected={selected} />
+                  ) : (
+                    <div className="absolute inset-x-0 bottom-0 top-3.5 flex items-center gap-[0.5px] px-1">
+                      {peaks ? (
+                        Array.from(peaks).map((v, i) => (
+                          <div
+                            key={i}
+                            className="flex-1 rounded-sm"
+                            style={{ height: `${Math.max(2, v * 90)}%`, backgroundColor: clip.color, opacity: selected ? 0.95 : 0.7 }}
+                          />
+                        ))
+                      ) : (
+                        <span className="text-[8px] font-mono text-zinc-600 italic">decoding…</span>
+                      )}
+                    </div>
+                  )}
+                  {/* Inpaint drag target — covers waveform body below header.
+                      MIDI clips skip it so double-click / right-click reach the
+                      clip (inpaint generates audio into a region, meaningless for notes). */}
+                  {!isMidi && (
+                    <div
+                      className="absolute inset-x-0 bottom-0 z-10 cursor-crosshair"
+                      style={{ top: 14 }}
+                      onPointerDown={(e) => handleInpaintDragStart(e, clip)}
+                      onPointerMove={handleInpaintDragMove}
+                      onPointerUp={handleInpaintDragEnd}
+                    />
+                  )}
                   {/* Inpaint selection overlay */}
                   {inpaintSelection?.clipId === clip.id && (
                     <div
@@ -1623,16 +1875,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             label: 'Edit in Piano Roll',
             icon: <Piano className="w-3 h-3" />,
             hint: `${noteCount} notes`,
-            onSelect: () => {
-              usePianoRollStore.getState().loadFromClip(
-                clip.id,
-                clip.sourcePianoRoll ?? [],
-                clip.sourceBpm ?? 120,
-                clip.sourceTotalSteps ?? 32,
-              );
-              useBottomPanelStore.getState().showTab('piano-roll');
-              logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in Piano Roll (${noteCount} notes)`);
-            },
+            onSelect: () => editClipInPianoRoll(clip),
           });
         }
         items.push({ type: 'separator' });
@@ -1652,6 +1895,19 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           />
         );
       })()}
+
+      {/* MIDI picker — opened by right-clicking an empty part of the timeline. */}
+      <LibraryMidiPicker
+        open={midiDrop !== null}
+        anchor={midiDrop ? { x: midiDrop.x, y: midiDrop.y } : null}
+        title="Add MIDI to timeline"
+        onClose={() => setMidiDrop(null)}
+        onPick={(bytes, label) => {
+          const at = midiDrop?.sec ?? 0;
+          setMidiDrop(null);
+          void addMidiClipFromBytes(bytes, label, at);
+        }}
+      />
 
       {/* Floating inpaint panel */}
       {inpaintPanel && (

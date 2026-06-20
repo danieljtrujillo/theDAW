@@ -12,6 +12,8 @@ import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
 import { WaveformPreview } from '../components/audio/WaveformPreview';
 import { FooterScrubWave } from '../components/audio/FooterScrubWave';
+import { LibraryMidiPicker, type PickerAnchor } from '../components/audio/LibraryMidiPicker';
+import { renderMidiBufferToBlob } from '../lib/midiSynth';
 import { uuid } from '../orb-kit/utils';
 import { InfoTip } from '../components/ui/Tooltip';
 import { RICH_TOOLTIPS } from '../components/ui/tooltips';
@@ -416,7 +418,22 @@ export const AdvancedGenPanel: React.FC<{
   // Shared player-engine master gain → live audio-reactive visualizers.
   const masterAudio = useMemo<AudioNode | null>(() => { try { return getMasterGain(); } catch { return null; } }, []);
 
+  const [initMidiPicker, setInitMidiPicker] = useState<PickerAnchor | null>(null);
   const initAudioUrl = useMemo(() => p.initAudioFile ? URL.createObjectURL(p.initAudioFile) : null, [p.initAudioFile]);
+
+  /** Render picked MIDI bytes to audio (through the chosen instrument) and load
+   *  it into the Init slot. */
+  const addMidiToInit = useCallback(async (bytes: ArrayBuffer, label: string) => {
+    try {
+      const { blob } = await renderMidiBufferToBlob(bytes);
+      patch({
+        initAudioFile: new File([blob], `${label}.wav`, { type: 'audio/wav' }),
+        initAudioEnabled: true,
+      });
+    } catch (e) {
+      logError('generate', `Add MIDI to init failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [patch]);
   const inpaintAudioUrl = useMemo(() => p.inpaintAudioFile ? URL.createObjectURL(p.inpaintAudioFile) : null, [p.inpaintAudioFile]);
   useEffect(() => () => { if (initAudioUrl) URL.revokeObjectURL(initAudioUrl); }, [initAudioUrl]);
   useEffect(() => () => { if (inpaintAudioUrl) URL.revokeObjectURL(inpaintAudioUrl); }, [inpaintAudioUrl]);
@@ -487,11 +504,25 @@ export const AdvancedGenPanel: React.FC<{
   return (
     <div className="h-full w-full overflow-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
 
+      {/* MIDI picker — right-click the INIT box to render a MIDI into the init slot. */}
+      <LibraryMidiPicker
+        open={initMidiPicker !== null}
+        anchor={initMidiPicker}
+        title="Add MIDI to Init audio"
+        onClose={() => setInitMidiPicker(null)}
+        onPick={(bytes, label) => {
+          setInitMidiPicker(null);
+          void addMidiToInit(bytes, label);
+        }}
+      />
+
       {/* ═══ TOP: input waveforms (INIT | INPAINT) ═══ */}
       <div className="shrink-0 grid grid-cols-2 gap-1.5" style={{ height: 128 }}>
         {/* INIT */}
         <div className={`${accentBox} flex flex-col px-2 py-1.5 min-w-0`}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+          onContextMenu={(e) => { e.preventDefault(); setInitMidiPicker({ x: e.clientX, y: e.clientY }); }}
+          title="Right-click to add a MIDI (rendered through the chosen instrument)"
           onDrop={async (e) => { e.preventDefault(); const f = await fileFromDrop(e); if (f) patch({ initAudioFile: f, initAudioEnabled: true }); }}>
           <div className="flex items-center gap-1.5 mb-1 shrink-0">
             <Mic2 className="w-3 h-3 text-purple-400 shrink-0" />

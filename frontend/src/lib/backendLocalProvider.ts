@@ -14,6 +14,7 @@ import type {
   LibraryEntryPatch,
 } from '../state/libraryEntry';
 import type { StorageProvider } from './storageProvider';
+import { fetchBlobWithRetry } from './fetchRetry';
 
 const DEFAULT_BASE = '/api/library';
 
@@ -168,11 +169,10 @@ export class BackendLocalProvider implements StorageProvider {
   async fetchAudioBlob(entry: LibraryEntry): Promise<Blob> {
     const cached = this.blobCache.get(entry.id);
     if (cached) return cached;
-    const promise = (async () => {
-      const r = await fetch(entry.audioUrl);
-      if (!r.ok) throw new Error(`fetchAudioBlob(${entry.id}): ${r.status} ${r.statusText}`);
-      return await r.blob();
-    })();
+    // Resilient fetch: the single-worker backend can stall mid-stream while it
+    // loads a model, dropping a large audio response even after a 200. Short
+    // retries ride over that window instead of surfacing "Failed to fetch".
+    const promise = fetchBlobWithRetry(entry.audioUrl, { label: entry.title || entry.id });
     this.blobCache.set(entry.id, promise);
     try {
       return await promise;
