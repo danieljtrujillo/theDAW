@@ -448,29 +448,40 @@ function scheduleAutomation(fromSec: number): void {
 }
 
 /** One lookahead frame: write each enabled FX lane's current value into its live
- *  effect param (merged over the entry's static params). */
+ *  effect param. Values are grouped per effect entry first, so a multi-param
+ *  effect (e.g. KAOSS x + y) gets ONE merged update instead of competing
+ *  single-key updates that would each reset the other key to its static value. */
 function applyFxAutomationFrame(): void {
   if (!playing) return;
   const ctx = getEngineCtx();
   const t = clamp(startOffsetSec + (ctx.currentTime - startCtxTime), 0, totalDur);
   const ed = useEditorStore.getState();
+
+  const byEntry = new Map<string, { master: boolean; trackId?: string; entryId: string; values: Record<string, number> }>();
   for (const lane of ed.automationLanes) {
     if (!lane.enabled || lane.points.length === 0) continue;
     const { kind, trackId, entryId, paramKey } = lane.target;
     if ((kind !== 'trackFx' && kind !== 'masterFx') || !entryId || !paramKey) continue;
     const v = sampleLane(lane, t);
     if (v == null) continue;
-    if (kind === 'masterFx') {
+    const mapKey = `${kind}|${trackId ?? ''}|${entryId}`;
+    let acc = byEntry.get(mapKey);
+    if (!acc) { acc = { master: kind === 'masterFx', trackId, entryId, values: {} }; byEntry.set(mapKey, acc); }
+    acc.values[paramKey] = v;
+  }
+
+  for (const acc of byEntry.values()) {
+    if (acc.master) {
       if (!masterChain) continue;
-      const entry = ed.masterFxChain.find((e) => e.id === entryId);
+      const entry = ed.masterFxChain.find((e) => e.id === acc.entryId);
       if (!entry || !entry.enabled) continue;
-      masterChain.updateParams(entryId, { ...entry.params, [paramKey]: v });
+      masterChain.updateParams(acc.entryId, { ...entry.params, ...acc.values });
     } else {
-      if (!trackId) continue;
-      const n = trackNodes.get(trackId);
-      const entry = ed.tracks.find((tr) => tr.id === trackId)?.fxChain?.find((e) => e.id === entryId);
+      if (!acc.trackId) continue;
+      const n = trackNodes.get(acc.trackId);
+      const entry = ed.tracks.find((tr) => tr.id === acc.trackId)?.fxChain?.find((e) => e.id === acc.entryId);
       if (!n || !entry || !entry.enabled) continue;
-      n.fx.updateParams(entryId, { ...entry.params, [paramKey]: v });
+      n.fx.updateParams(acc.entryId, { ...entry.params, ...acc.values });
     }
   }
 }

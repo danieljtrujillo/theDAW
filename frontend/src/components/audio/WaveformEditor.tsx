@@ -8,12 +8,12 @@ import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import { FxRack } from './FxRack';
 import { MetamorphPanel } from './MetamorphPanel';
-import { RACK_EFFECTS, buildEffectChain, ensureChopModule, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
+import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
 import { sliceChunks } from '../../lib/audioAnalysis';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, computePeaks, type AudioClip, type EditorTrack, type SnapDivision } from '../../state/editorStore';
+import { useEditorStore, computePeaks, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
@@ -325,6 +325,32 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const target = { kind, trackId };
       recordAutomationPoint(target, liveMixer.currentTransportSec(), v);
       liveMixer.automationTouchNative(target, v);
+    }
+  };
+
+  // Apply an FX param change, and while writing + playing, record each param key
+  // that actually changed into its own lane (a KAOSS drag moves x and y at once,
+  // so both are captured). Playback is driven by the FX lookahead writer.
+  const writeFxParams = (
+    scope: { kind: 'master' } | { kind: 'track'; trackId: string },
+    entryId: string,
+    p: Record<string, number>,
+  ) => {
+    const prev =
+      scope.kind === 'master'
+        ? masterFxChain.find((e) => e.id === entryId)?.params
+        : tracks.find((t) => t.id === scope.trackId)?.fxChain?.find((e) => e.id === entryId)?.params;
+    if (scope.kind === 'master') updateMasterEffectParams(entryId, p);
+    else updateTrackEffectParams(scope.trackId, entryId, p);
+    if (!automationWrite || !liveMixer.isPlaying() || !prev) return;
+    const t = liveMixer.currentTransportSec();
+    for (const key of Object.keys(p)) {
+      if (prev[key] === p[key]) continue;
+      const target: AutomationTarget =
+        scope.kind === 'master'
+          ? { kind: 'masterFx', entryId, paramKey: key }
+          : { kind: 'trackFx', trackId: scope.trackId, entryId, paramKey: key };
+      recordAutomationPoint(target, t, p[key]);
     }
   };
   const addMasterEffect = useEditorStore((s) => s.addMasterEffect);
@@ -1698,7 +1724,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 onRemove={removeMasterEffect}
                 onReorder={reorderMasterEffect}
                 onToggle={toggleMasterEffect}
-                onUpdateParams={updateMasterEffectParams}
+                onUpdateParams={(id, p) => writeFxParams({ kind: 'master' }, id, p)}
               />
             </section>
           )}
@@ -1748,7 +1774,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onRemove={(id) => removeTrackEffect(t.id, id)}
               onReorder={(from, to) => reorderTrackEffect(t.id, from, to)}
               onToggle={(id) => toggleTrackEffect(t.id, id)}
-              onUpdateParams={(id, p) => updateTrackEffectParams(t.id, id, p)}
+              onUpdateParams={(id, p) => writeFxParams({ kind: 'track', trackId: t.id }, id, p)}
             />
           </div>
         );
@@ -2070,16 +2096,28 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               );
             })}
 
-            {/* Automation lanes (read-only curve over each track; volume green, pan blue) */}
+            {/* Automation lanes (read-only curve per track: volume green, pan blue, FX amber).
+                Master-FX lanes still record and play; they are not drawn on a track row. */}
             {automationLanes.map((lane) => {
               if (lane.points.length === 0) return null;
-              if (lane.target.kind !== 'trackVolume' && lane.target.kind !== 'trackPan') return null;
+              const tk = lane.target.kind;
+              if (tk !== 'trackVolume' && tk !== 'trackPan' && tk !== 'trackFx') return null;
               const trackIdx = tracks.findIndex((t) => t.id === lane.target.trackId);
               if (trackIdx < 0) return null;
-              const isPan = lane.target.kind === 'trackPan';
-              const color = isPan ? '#60a5fa' : '#34d399';
-              const norm = (v: number) => (isPan ? (Math.max(-1, Math.min(1, v)) + 1) / 2 : Math.max(0, Math.min(1, v)));
-              const yOf = (v: number) => (1 - norm(v)) * TRACK_HEIGHT;
+              let color = '#34d399';
+              let toNorm = (v: number) => Math.max(0, Math.min(1, v));
+              if (tk === 'trackPan') {
+                color = '#60a5fa';
+                toNorm = (v: number) => (Math.max(-1, Math.min(1, v)) + 1) / 2;
+              } else if (tk === 'trackFx') {
+                const entry = tracks[trackIdx]?.fxChain?.find((e) => e.id === lane.target.entryId);
+                const desc = entry ? getRackEffect(entry.effect)?.params.find((pp) => pp.key === lane.target.paramKey) : undefined;
+                if (!desc) return null;
+                const span = Math.max(1e-6, desc.max - desc.min);
+                color = '#f59e0b';
+                toNorm = (v: number) => Math.max(0, Math.min(1, (v - desc.min) / span));
+              }
+              const yOf = (v: number) => (1 - toNorm(v)) * TRACK_HEIGHT;
               const pts = lane.points.map((p) => `${(p.t * zoom).toFixed(1)},${yOf(p.v).toFixed(1)}`).join(' ');
               return (
                 <svg
