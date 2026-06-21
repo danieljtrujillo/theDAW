@@ -1582,6 +1582,8 @@ stable-audio-3/
 
 The subfolder name is what matters; inside it, `stable-audio-3-medium-RF.safetensors` + `stable-audio-3-medium-RF.json`, or `model.safetensors` + `model_config.json`, both resolve.
 
+The specialized post-trained and base variants follow the same convention: a subfolder named after the repo (`stable-audio-3-small-music`, `stable-audio-3-small-sfx`, `stable-audio-3-medium-base`, and the matching `-music-base` / `-sfx-base` repos) holding `model_config.json` + `model.safetensors`.
+
 **Which to download.** A CUDA GPU runs `medium` (the higher-quality path, roughly 17 GB). CPU-only machines run `small`. The `-rf` checkpoints are for LoRA training, not normal generation. **SAME-S and SAME-L are optional**: the ARC and RF checkpoints already bundle the autoencoder, and a standalone SAME reuses that bundled copy, so download SAME only for standalone encode/decode without a DiT.
 
 **The T5Gemma text encoder** ([google/t5gemma-b-b-ul2](https://huggingface.co/google/t5gemma-b-b-ul2)) is always required for text conditioning. It does NOT go in the `models/` folder; it loads from the Hugging Face cache under `%USERPROFILE%\.cache\huggingface\hub\`. Let the app fetch it on the first generation, or pre-fetch it with `hf download google/t5gemma-b-b-ul2`. Set `HF_HOME` before launching to relocate the cache.
