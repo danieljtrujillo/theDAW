@@ -8,7 +8,7 @@ import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import { FxRack } from './FxRack';
 import { MetamorphPanel } from './MetamorphPanel';
-import { RACK_EFFECTS, buildEffectChain, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
+import { RACK_EFFECTS, buildEffectChain, ensureChopModule, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
 import { sliceChunks } from '../../lib/audioAnalysis';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
@@ -387,6 +387,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const [inpaintPrompt, setInpaintPrompt] = useState('');
   const [inpaintSteps, setInpaintSteps] = useState(8);
   const [inpaintSeed, setInpaintSeed] = useState(-1);
+
+  // Preload the chop worklet on the live engine context so a Chop insert builds
+  // its real worklet node the first time playback starts (instead of one silent
+  // passthrough play while the module loads).
+  useEffect(() => {
+    void ensureChopModule(getEngineCtx()).catch(() => {});
+  }, []);
 
   // Revoke the object URL when the review phase ends or the panel closes.
   useEffect(() => {
@@ -928,6 +935,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       } finally {
         decodeCtx.close().catch(() => {});
       }
+      // If any enabled insert chain uses the chop worklet, register it on the
+      // offline context first so the bounce builds the real node (the factory
+      // would otherwise fall back to passthrough and the chop would not bake in).
+      const usesChop = [masterFxChain, ...tracks.map((t) => t.fxChain ?? [])]
+        .some((ch) => ch.some((e) => e.effect === 'chop' && e.enabled));
+      if (usesChop) {
+        try { await ensureChopModule(offline); } catch { /* falls back to passthrough */ }
+      }
+
       // Master bus + insert rack -> destination, mirroring liveMixer's routing so
       // the bounce carries the SAME psychoacoustic FX the user hears in preview.
       const masterBus = offline.createGain();
