@@ -758,6 +758,226 @@ const makeLoudnessContour: RackEffectFactory = (ctx, params) => {
   };
 };
 
+/* ── 7. Kaoss Pad (XY performance effect) ──────────────────────────────────────
+   An assignable XY surface. The program picks a filter type and whether a
+   feedback delay is engaged; X and Y then sweep two parameters live as the user
+   drags. Built as a superset graph (filter + feedback delay always wired, then
+   neutralized per program), so switching programs never rebuilds the chain. The
+   pad UI lives in KaossPad and writes x/y/active straight into these params. */
+export const KAOSS_PROGRAMS = [
+  'LPF Sweep',
+  'HPF Sweep',
+  'BPF Sweep',
+  'Delay',
+  'Filter + Delay',
+] as const;
+
+interface KaossTargets {
+  filterType: BiquadFilterType;
+  freq: number;
+  q: number;
+  delayTime: number;
+  feedback: number;
+  fwet: number; // level of the filtered-direct path
+  dwet: number; // level of the delayed path
+}
+
+/** Map (program, x, y) onto concrete node targets. X sweeps a log frequency or a
+ *  delay time; Y sweeps resonance or feedback, depending on the program. */
+const kaossTargets = (program: number, x: number, y: number): KaossTargets => {
+  const xx = clamp(x, 0, 1);
+  const yy = clamp(y, 0, 1);
+  const freq = 200 * Math.pow(18000 / 200, xx); // log sweep 200..18000 Hz
+  const q = 0.5 + yy * 17.5;
+  switch (Math.round(program)) {
+    case 1:
+      return { filterType: 'highpass', freq, q, delayTime: 0, feedback: 0, fwet: 1, dwet: 0 };
+    case 2:
+      return { filterType: 'bandpass', freq, q, delayTime: 0, feedback: 0, fwet: 1, dwet: 0 };
+    case 3:
+      return { filterType: 'lowpass', freq: 18000, q: 0.7, delayTime: 0.02 + xx * 0.58, feedback: yy * 0.85, fwet: 0.4, dwet: 0.9 };
+    case 4:
+      return { filterType: 'lowpass', freq, q: 0.9, delayTime: 0.18, feedback: yy * 0.85, fwet: 0.8, dwet: 0.7 };
+    default:
+      return { filterType: 'lowpass', freq, q, delayTime: 0, feedback: 0, fwet: 1, dwet: 0 };
+  }
+};
+
+const makeKaoss: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+
+  const dry = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  const delayIn = ctx.createGain();
+  const delay = ctx.createDelay(1.0);
+  const feedback = ctx.createGain();
+  const fwet = ctx.createGain(); // filtered direct
+  const dwet = ctx.createGain(); // delayed repeats
+
+  input.connect(dry).connect(output);
+  input.connect(filter);
+  filter.connect(fwet).connect(output);
+  filter.connect(delayIn);
+  delayIn.connect(delay);
+  delay.connect(feedback).connect(delayIn); // feedback loop (delay node breaks the cycle)
+  delay.connect(dwet).connect(output);
+
+  // Mirror setParams at make time so the offline bounce starts in the live state.
+  const apply = (p: Record<string, number>) => {
+    const t = kaossTargets(p.program ?? 0, p.x ?? 0.5, p.y ?? 0.3);
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    const engaged = (p.active ?? 1) >= 0.5;
+    const w = engaged ? mix : 0;
+    filter.type = t.filterType;
+    ramp(filter.frequency, t.freq, ctx);
+    ramp(filter.Q, t.q, ctx);
+    delay.delayTime.setTargetAtTime(Math.max(0, t.delayTime), ctx.currentTime, 0.05);
+    ramp(feedback.gain, engaged ? t.feedback : 0, ctx);
+    ramp(fwet.gain, w * t.fwet, ctx);
+    ramp(dwet.gain, w * t.dwet, ctx);
+    ramp(dry.gain, engaged ? 1 - mix : 1, ctx);
+  };
+  apply(params);
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try {
+        input.disconnect();
+        output.disconnect();
+        filter.disconnect();
+        delay.disconnect();
+        feedback.disconnect();
+      } catch { /* gone */ }
+    },
+  };
+};
+
+/* ── 8. Gater (rhythmic tremolo gate) ──────────────────────────────────────────
+   An LFO chops the level between full and (1 - depth) at the set rate. The shape
+   selects the LFO wave: sine = smooth tremolo, square = hard gate, saw = ramp.
+   The gate gain is driven by a constant-source bias plus the scaled LFO, so it
+   oscillates between `low` and `high` with no per-sample callback. */
+const makeGater: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const gate = ctx.createGain();
+  gate.gain.value = 0; // intrinsic 0; bias + lfo drive the computed value
+  input.connect(gate).connect(output);
+
+  const lfo = ctx.createOscillator();
+  const amp = ctx.createGain();
+  const bias = ctx.createConstantSource();
+  bias.connect(gate.gain);
+  lfo.connect(amp).connect(gate.gain);
+
+  const apply = (p: Record<string, number>) => {
+    const rate = clamp(p.rate ?? 6, 0.1, 30);
+    const depth = clamp(p.depth ?? 0.8, 0, 1);
+    const low = 1 - depth;
+    const center = (1 + low) / 2;
+    const a = (1 - low) / 2;
+    const shape = Math.round(p.shape ?? 1);
+    lfo.type = shape >= 2 ? 'sawtooth' : shape >= 1 ? 'square' : 'sine';
+    lfo.frequency.setTargetAtTime(rate, ctx.currentTime, 0.02);
+    bias.offset.setTargetAtTime(center, ctx.currentTime, 0.02);
+    amp.gain.setTargetAtTime(a, ctx.currentTime, 0.02);
+  };
+  apply(params);
+  lfo.start();
+  bias.start();
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { lfo.stop(); bias.stop(); input.disconnect(); output.disconnect(); gate.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
+/* ── 9. Bitcrush (bit-depth reduction) ──────────────────────────────────────────
+   A stepped waveshaper quantizes the signal to 2^bits levels for lo-fi crunch,
+   blended against the dry signal. (Sample-rate reduction, the other half of a
+   classic crusher, needs a per-sample worklet and lands with the chop suite.) */
+const bitcrushCurve = (bits: number): Float32Array => {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const levels = Math.pow(2, clamp(bits, 1, 16));
+  const half = levels / 2;
+  for (let i = 0; i < n; i += 1) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.round(x * half) / half;
+  }
+  return curve;
+};
+const makeBitcrush: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  const shaper = ctx.createWaveShaper();
+  shaper.curve = bitcrushCurve(Math.round(params.bits ?? 8));
+  input.connect(dry).connect(output);
+  input.connect(shaper).connect(wet).connect(output);
+
+  const apply = (p: Record<string, number>) => {
+    shaper.curve = bitcrushCurve(Math.round(clamp(p.bits ?? 8, 1, 16)));
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
+  };
+  apply(params);
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { input.disconnect(); output.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
+/* ── 10. Ring Modulator ─────────────────────────────────────────────────────────
+   Multiply the signal by a sine carrier for metallic / robotic sidebands. The
+   carrier drives a gain node's value, so the node output is signal x carrier. */
+const makeRingMod: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  const ring = ctx.createGain();
+  ring.gain.value = 0; // intrinsic 0; the carrier drives the computed value
+  const carrier = ctx.createOscillator();
+  carrier.connect(ring.gain);
+
+  input.connect(dry).connect(output);
+  input.connect(ring).connect(wet).connect(output);
+
+  const apply = (p: Record<string, number>) => {
+    carrier.frequency.setTargetAtTime(clamp(p.frequency ?? 200, 1, 4000), ctx.currentTime, 0.02);
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
+  };
+  apply(params);
+  carrier.start();
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { carrier.stop(); input.disconnect(); output.disconnect(); ring.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
 /* ── registry ──────────────────────────────────────────────────────────────── */
 
 export const RACK_EFFECTS: readonly RackEffectDef[] = [
@@ -832,6 +1052,55 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'amount', label: 'Amount', min: 0, max: 1, step: 0.01, default: 0.5 },
     ],
     make: makeLoudnessContour,
+  },
+  {
+    id: 'kaoss',
+    label: 'Kaoss Pad',
+    group: 'Performance',
+    description: 'An XY performance pad: pick a program, then sweep two params by dragging.',
+    params: [
+      { key: 'program', label: 'Program', min: 0, max: 4, step: 1, default: 0 },
+      { key: 'x', label: 'X', min: 0, max: 1, step: 0.001, default: 0.5 },
+      { key: 'y', label: 'Y', min: 0, max: 1, step: 0.001, default: 0.3 },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+      { key: 'hold', label: 'Hold', min: 0, max: 1, step: 1, default: 1 },
+      { key: 'active', label: 'Active', min: 0, max: 1, step: 1, default: 1 },
+    ],
+    make: makeKaoss,
+  },
+  {
+    id: 'gater',
+    label: 'Gater',
+    group: 'Performance',
+    description: 'Rhythmic tremolo gate: chop the level with an LFO (sine/square/saw).',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz' },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8 },
+      { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1 },
+    ],
+    make: makeGater,
+  },
+  {
+    id: 'bitcrush',
+    label: 'Bitcrush',
+    group: 'Performance',
+    description: 'Lo-fi bit-depth reduction (stepped quantization), blended with dry.',
+    params: [
+      { key: 'bits', label: 'Bits', min: 1, max: 16, step: 1, default: 8 },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+    ],
+    make: makeBitcrush,
+  },
+  {
+    id: 'ringmod',
+    label: 'Ring Mod',
+    group: 'Performance',
+    description: 'Multiply by a sine carrier for metallic / robotic sidebands.',
+    params: [
+      { key: 'frequency', label: 'Freq', min: 1, max: 4000, step: 1, default: 200, unit: 'Hz' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+    ],
+    make: makeRingMod,
   },
 ];
 

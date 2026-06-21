@@ -14,6 +14,7 @@ import type { SynthVoice, VoiceTrigger } from './synthVoiceKit';
 import { mtof, distCurve, ampEnv } from './synthVoiceKit';
 import { PSYCHOACOUSTIC_VOICES } from './psychoacousticVoices';
 import { FORMANT_VOICES } from './formantVoices';
+import { GLITCH_VOICES } from './glitchVoices';
 
 export type { SynthVoice, VoiceTrigger } from './synthVoiceKit';
 
@@ -240,6 +241,7 @@ export const SYNTH_VOICES: readonly SynthVoice[] = [
   // modules; appended here so the picker and `getSynthVoice` see one registry.
   ...PSYCHOACOUSTIC_VOICES,
   ...FORMANT_VOICES,
+  ...GLITCH_VOICES,
 ];
 
 const VOICE_BY_ID = new Map<string, SynthVoice>(SYNTH_VOICES.map((v) => [v.id, v]));
