@@ -90,9 +90,16 @@ export async function fetchBlobWithRetry(url: string, opts: RetryOpts = {}): Pro
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
       const res = await fetchOk(url);
-      const blob = await res.blob();
-      if (blob.size === 0) throw new Error('empty response body');
-      return blob;
+      // Build the Blob from an ArrayBuffer (kept in RAM) instead of res.blob().
+      // On a large body Chrome materializes res.blob() into its DISK-BACKED Blob
+      // store; when the disk is constrained that write fails and the whole fetch
+      // rejects with net::ERR_FAILED *after* a 200, which surfaces here as
+      // "Failed to fetch". arrayBuffer() stays in memory and is reliable.
+      // Verified live: res.blob() fails every time on a 66 MB WAV while
+      // new Blob([arrayBuffer]) succeeds every time.
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength === 0) throw new Error('empty response body');
+      return new Blob([buf], { type: res.headers.get('content-type') ?? '' });
     } catch (e) {
       lastErr = e;
       if (attempt < retries) {
