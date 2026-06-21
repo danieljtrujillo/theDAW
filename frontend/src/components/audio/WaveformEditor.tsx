@@ -202,6 +202,7 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
   return (
     <div className="flex items-center gap-1.5">
       <Piano className="w-2.5 h-2.5 text-emerald-400/70 shrink-0" />
+      <label htmlFor={`editor-track-instrument-${track.id}`} className="sr-only">{`Track ${track.name} instrument`}</label>
       <select
         id={`editor-track-instrument-${track.id}`}
         name={`editor-track-instrument-${track.id}`}
@@ -209,6 +210,52 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
         value={value}
         onChange={onChange}
         className="flex-1 min-w-0 bg-zinc-900 border border-white/20 rounded px-1 py-0.5 text-[9px] text-zinc-100 outline-none focus:border-purple-500/60"
+        style={{ colorScheme: 'dark' }}
+      >
+        <option value="default">{defaultLabel}</option>
+        {GM_NAMES.map((nm, i) => (
+          <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>
+        ))}
+      </select>
+    </div>
+  );
+};
+
+/**
+ * Per-clip instrument override. "Track default" leaves the clip on its track's
+ * instrument (or the global one); picking a GM program assigns it to this clip
+ * only, so its MIDI notes play that voice live regardless of the track default.
+ */
+const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
+  const updateClip = useEditorStore((s) => s.updateClip);
+  const track = useEditorStore((s) => s.tracks.find((t) => t.id === clip.trackId));
+  const globalProgram = useSoundfontStore((s) => s.activeProgram);
+  const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
+  const value = clip.instrumentProgram === undefined ? 'default' : String(clip.instrumentProgram);
+  const effective = track?.instrumentProgram ?? (globalSoundfont ? globalProgram : undefined);
+  const defaultLabel = effective === undefined ? 'Track default (Basic)' : `Track default (${gmShortName(effective)})`;
+
+  const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    if (v === 'default') {
+      updateClip(clip.id, { instrumentProgram: undefined });
+      return;
+    }
+    updateClip(clip.id, { instrumentProgram: Number(v) });
+    void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Piano className="w-3 h-3 text-emerald-400/70 shrink-0" />
+      <label htmlFor={`editor-clip-instrument-${clip.id}`} className="sr-only">{`Clip ${clip.label} instrument`}</label>
+      <select
+        id={`editor-clip-instrument-${clip.id}`}
+        name={`editor-clip-instrument-${clip.id}`}
+        aria-label={`Clip ${clip.label} instrument`}
+        value={value}
+        onChange={onChange}
+        className="flex-1 min-w-0 bg-zinc-900 border border-white/20 rounded px-1.5 py-1 text-[10px] text-zinc-100 outline-none focus:border-purple-500/60"
         style={{ colorScheme: 'dark' }}
       >
         <option value="default">{defaultLabel}</option>
@@ -297,6 +344,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const [showMasterFx, setShowMasterFx] = useState(false);
   const [showMetamorph, setShowMetamorph] = useState(false);
   const [fxPanelTrackId, setFxPanelTrackId] = useState<string | null>(null);
+  const [instrPanel, setInstrPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
@@ -1635,6 +1683,35 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
+      {/* Per-clip instrument override (floating; MIDI clips only) */}
+      {instrPanel && (() => {
+        const clip = clips.find((c) => c.id === instrPanel.clipId);
+        if (!clip) return null;
+        const left = Math.max(8, Math.min(instrPanel.x, window.innerWidth - 280));
+        const top = Math.max(8, Math.min(instrPanel.y, window.innerHeight - 96));
+        return (
+          <div
+            className="fixed z-50 w-66 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
+            style={{ left, top }}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+                Clip instrument — <span style={{ color: clip.color }}>{clip.label}</span>
+              </span>
+              <button
+                onClick={() => setInstrPanel(null)}
+                aria-label="Close clip instrument picker"
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <ClipInstrumentSelect clip={clip} />
+          </div>
+        );
+      })()}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
@@ -2032,6 +2109,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             icon: <Piano className="w-3 h-3" />,
             hint: `${noteCount} notes`,
             onSelect: () => editClipInPianoRoll(clip),
+          });
+          items.push({
+            type: 'item',
+            label: 'Instrument',
+            icon: <Piano className="w-3 h-3" />,
+            hint: clip.instrumentProgram === undefined ? 'track default' : gmShortName(clip.instrumentProgram),
+            onSelect: () => {
+              const pos = clipMenu.position;
+              setInstrPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
+            },
           });
         }
         items.push({ type: 'separator' });
