@@ -856,6 +856,128 @@ const makeKaoss: RackEffectFactory = (ctx, params) => {
   };
 };
 
+/* ── 8. Gater (rhythmic tremolo gate) ──────────────────────────────────────────
+   An LFO chops the level between full and (1 - depth) at the set rate. The shape
+   selects the LFO wave: sine = smooth tremolo, square = hard gate, saw = ramp.
+   The gate gain is driven by a constant-source bias plus the scaled LFO, so it
+   oscillates between `low` and `high` with no per-sample callback. */
+const makeGater: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const gate = ctx.createGain();
+  gate.gain.value = 0; // intrinsic 0; bias + lfo drive the computed value
+  input.connect(gate).connect(output);
+
+  const lfo = ctx.createOscillator();
+  const amp = ctx.createGain();
+  const bias = ctx.createConstantSource();
+  bias.connect(gate.gain);
+  lfo.connect(amp).connect(gate.gain);
+
+  const apply = (p: Record<string, number>) => {
+    const rate = clamp(p.rate ?? 6, 0.1, 30);
+    const depth = clamp(p.depth ?? 0.8, 0, 1);
+    const low = 1 - depth;
+    const center = (1 + low) / 2;
+    const a = (1 - low) / 2;
+    const shape = Math.round(p.shape ?? 1);
+    lfo.type = shape >= 2 ? 'sawtooth' : shape >= 1 ? 'square' : 'sine';
+    lfo.frequency.setTargetAtTime(rate, ctx.currentTime, 0.02);
+    bias.offset.setTargetAtTime(center, ctx.currentTime, 0.02);
+    amp.gain.setTargetAtTime(a, ctx.currentTime, 0.02);
+  };
+  apply(params);
+  lfo.start();
+  bias.start();
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { lfo.stop(); bias.stop(); input.disconnect(); output.disconnect(); gate.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
+/* ── 9. Bitcrush (bit-depth reduction) ──────────────────────────────────────────
+   A stepped waveshaper quantizes the signal to 2^bits levels for lo-fi crunch,
+   blended against the dry signal. (Sample-rate reduction, the other half of a
+   classic crusher, needs a per-sample worklet and lands with the chop suite.) */
+const bitcrushCurve = (bits: number): Float32Array => {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const levels = Math.pow(2, clamp(bits, 1, 16));
+  const half = levels / 2;
+  for (let i = 0; i < n; i += 1) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.round(x * half) / half;
+  }
+  return curve;
+};
+const makeBitcrush: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  const shaper = ctx.createWaveShaper();
+  shaper.curve = bitcrushCurve(Math.round(params.bits ?? 8));
+  input.connect(dry).connect(output);
+  input.connect(shaper).connect(wet).connect(output);
+
+  const apply = (p: Record<string, number>) => {
+    shaper.curve = bitcrushCurve(Math.round(clamp(p.bits ?? 8, 1, 16)));
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
+  };
+  apply(params);
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { input.disconnect(); output.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
+/* ── 10. Ring Modulator ─────────────────────────────────────────────────────────
+   Multiply the signal by a sine carrier for metallic / robotic sidebands. The
+   carrier drives a gain node's value, so the node output is signal x carrier. */
+const makeRingMod: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  const ring = ctx.createGain();
+  ring.gain.value = 0; // intrinsic 0; the carrier drives the computed value
+  const carrier = ctx.createOscillator();
+  carrier.connect(ring.gain);
+
+  input.connect(dry).connect(output);
+  input.connect(ring).connect(wet).connect(output);
+
+  const apply = (p: Record<string, number>) => {
+    carrier.frequency.setTargetAtTime(clamp(p.frequency ?? 200, 1, 4000), ctx.currentTime, 0.02);
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
+  };
+  apply(params);
+  carrier.start();
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { carrier.stop(); input.disconnect(); output.disconnect(); ring.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
 /* ── registry ──────────────────────────────────────────────────────────────── */
 
 export const RACK_EFFECTS: readonly RackEffectDef[] = [
@@ -945,6 +1067,40 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'active', label: 'Active', min: 0, max: 1, step: 1, default: 1 },
     ],
     make: makeKaoss,
+  },
+  {
+    id: 'gater',
+    label: 'Gater',
+    group: 'Performance',
+    description: 'Rhythmic tremolo gate: chop the level with an LFO (sine/square/saw).',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz' },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8 },
+      { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1 },
+    ],
+    make: makeGater,
+  },
+  {
+    id: 'bitcrush',
+    label: 'Bitcrush',
+    group: 'Performance',
+    description: 'Lo-fi bit-depth reduction (stepped quantization), blended with dry.',
+    params: [
+      { key: 'bits', label: 'Bits', min: 1, max: 16, step: 1, default: 8 },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+    ],
+    make: makeBitcrush,
+  },
+  {
+    id: 'ringmod',
+    label: 'Ring Mod',
+    group: 'Performance',
+    description: 'Multiply by a sine carrier for metallic / robotic sidebands.',
+    params: [
+      { key: 'frequency', label: 'Freq', min: 1, max: 4000, step: 1, default: 200, unit: 'Hz' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+    ],
+    make: makeRingMod,
   },
 ];
 
