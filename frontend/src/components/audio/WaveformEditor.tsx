@@ -345,6 +345,34 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const [showMetamorph, setShowMetamorph] = useState(false);
   const [fxPanelTrackId, setFxPanelTrackId] = useState<string | null>(null);
   const [instrPanel, setInstrPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  const instrPanelRef = useRef<HTMLDivElement>(null);
+  // Outside-click / Escape dismiss the clip-instrument popover. Deferred a
+  // macrotask so the context-menu click that opens it does not immediately
+  // bubble to window and close it (same race the ContextMenu primitive handles).
+  useEffect(() => {
+    if (!instrPanel) return;
+    const onDown = (e: MouseEvent) => {
+      if (instrPanelRef.current?.contains(e.target as Node)) return;
+      setInstrPanel(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setInstrPanel(null);
+    };
+    let attached = false;
+    const attach = () => {
+      attached = true;
+      window.addEventListener('mousedown', onDown);
+      window.addEventListener('keydown', onKey);
+    };
+    const timer = window.setTimeout(attach, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) {
+        window.removeEventListener('mousedown', onDown);
+        window.removeEventListener('keydown', onKey);
+      }
+    };
+  }, [instrPanel]);
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
@@ -1691,6 +1719,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         const top = Math.max(8, Math.min(instrPanel.y, window.innerHeight - 96));
         return (
           <div
+            ref={instrPanelRef}
             className="fixed z-50 w-66 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
             style={{ left, top }}
           >
