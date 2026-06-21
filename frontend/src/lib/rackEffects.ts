@@ -978,6 +978,76 @@ const makeRingMod: RackEffectFactory = (ctx, params) => {
   };
 };
 
+/* ── 11. Chop (MPC-style buffer chop, worklet) ─────────────────────────────────
+   Stutter / beat-repeat / shuffle by re-looping a rolling buffer. The DSP lives
+   in a worklet (public/chop.worklet.js), so the module must be registered on the
+   context before the node is built; ensureChopModule caches that per context
+   (the editor preloads it on the live context, and commitEdit awaits it on the
+   offline context). If the module is not ready yet, the factory degrades to a
+   clean passthrough and kicks off the load so the next build gets the real node. */
+const chopModuleByCtx = new WeakMap<BaseAudioContext, Promise<void>>();
+export const ensureChopModule = (ctx: BaseAudioContext): Promise<void> => {
+  let p = chopModuleByCtx.get(ctx);
+  if (!p) {
+    p = ctx.audioWorklet.addModule('/chop.worklet.js').catch((e) => {
+      chopModuleByCtx.delete(ctx);
+      throw e;
+    });
+    chopModuleByCtx.set(ctx, p);
+  }
+  return p;
+};
+
+const makeChop: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  let node: AudioWorkletNode | null = null;
+  try {
+    node = new AudioWorkletNode(ctx, 'chop-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+  } catch {
+    node = null; // module not registered on this context yet
+  }
+
+  if (!node) {
+    input.connect(output); // passthrough; load the module for the next build
+    void ensureChopModule(ctx).catch(() => {});
+    return {
+      input,
+      output,
+      setParams: () => {},
+      dispose: () => { try { input.disconnect(); output.disconnect(); } catch { /* gone */ } },
+    };
+  }
+
+  const chop = node;
+  input.connect(chop).connect(output);
+  const apply = (p: Record<string, number>) => {
+    const prog = chop.parameters.get('program');
+    if (prog) prog.setValueAtTime(Math.round(clamp(p.program ?? 0, 0, 2)), ctx.currentTime);
+    const set = (key: string, v: number) => {
+      const ap = chop.parameters.get(key);
+      if (ap) ap.setTargetAtTime(v, ctx.currentTime, 0.01);
+    };
+    set('rate', clamp(p.rate ?? 8, 0.5, 32));
+    set('slice', clamp(p.slice ?? 0.5, 0.05, 1));
+    set('mix', clamp(p.mix ?? 1, 0, 1));
+  };
+  apply(params);
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try { input.disconnect(); output.disconnect(); chop.disconnect(); } catch { /* gone */ }
+    },
+  };
+};
+
 /* ── registry ──────────────────────────────────────────────────────────────── */
 
 export const RACK_EFFECTS: readonly RackEffectDef[] = [
@@ -1101,6 +1171,19 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
     ],
     make: makeRingMod,
+  },
+  {
+    id: 'chop',
+    label: 'Chop',
+    group: 'Performance',
+    description: 'MPC-style buffer chop: stutter (0), beat-repeat (1), shuffle (2).',
+    params: [
+      { key: 'program', label: 'Program', min: 0, max: 2, step: 1, default: 0 },
+      { key: 'rate', label: 'Rate', min: 0.5, max: 32, step: 0.5, default: 8, unit: 'Hz' },
+      { key: 'slice', label: 'Slice', min: 0.05, max: 1, step: 0.01, default: 0.5 },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+    ],
+    make: makeChop,
   },
 ];
 
