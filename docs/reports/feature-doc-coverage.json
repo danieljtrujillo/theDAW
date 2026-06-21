@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-21T10:46:36.882Z",
-  "repoRevision": "ecb094f59138",
+  "generatedAt": "2026-06-21T11:17:19.056Z",
+  "repoRevision": "ac45c7630901",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -589,6 +589,138 @@
         "ytimport",
         "imported nodes"
       ]
+    },
+    {
+      "id": "edit-insert-fx-rack",
+      "name": "EDIT real-time psychoacoustic insert-FX rack on the master bus and per track, baked into COMMIT EDIT",
+      "domain": "edit",
+      "sourcePaths": [
+        "frontend/src/lib/rackEffects.ts",
+        "frontend/src/components/audio/FxRack.tsx",
+        "frontend/src/state/liveMixer.ts",
+        "frontend/src/state/editorStore.ts"
+      ],
+      "evidence": [
+        "RACK_EFFECTS catalog",
+        "buildEffectChain factory (live + offline)",
+        "masterFxChain + per-track fxChain",
+        "chain topology-signature reconcile"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "MASTER FX",
+        "Headphone Crossfeed",
+        "Phantom Bass",
+        "Loudness Contour",
+        "psychoacoustic",
+        "insert-effect rack"
+      ]
+    },
+    {
+      "id": "edit-spatializer-teleport-autopilot",
+      "name": "EDIT HRTF spatializer with 12 motion modes including onset-driven Teleport and the live Autopilot choreographer",
+      "domain": "edit",
+      "sourcePaths": [
+        "frontend/src/lib/rackEffects.ts",
+        "frontend/src/lib/audioAnalysis.ts",
+        "frontend/src/components/audio/SpatializerPad.tsx"
+      ],
+      "evidence": [
+        "SPATIAL_MOTIONS",
+        "SPATIAL_TELEPORT",
+        "SPATIAL_AUTOPILOT",
+        "teleportXYZ",
+        "sliceChunks onset analysis",
+        "autopilotTick"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "HRTF Spatializer",
+        "Teleport",
+        "Autopilot",
+        "spatial choreographer",
+        "Orbit Frontal",
+        "Expand / Collapse"
+      ]
+    },
+    {
+      "id": "edit-metamorph-granular-morph",
+      "name": "Metamorph granular identity-bleed morph: rebuild a host sound out of a donor sound, live and to a clip",
+      "domain": "edit",
+      "sourcePaths": [
+        "frontend/src/components/audio/MetamorphPanel.tsx",
+        "frontend/src/state/morphEngine.ts",
+        "frontend/public/granular-morph.worklet.js",
+        "frontend/src/lib/morphCorpus.ts"
+      ],
+      "evidence": [
+        "useMorphStore",
+        "granular-morph AudioWorklet",
+        "buildCorpus/buildTarget",
+        "bleed/match/grain/sync/favor params",
+        "Send to editor renders one pass"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "Metamorph",
+        "granular identity-bleed",
+        "Donor A",
+        "Host B",
+        "Bleed",
+        "Send to editor"
+      ]
+    },
+    {
+      "id": "edit-timeline-live-midi-soundfont",
+      "name": "Live MIDI timeline playback through the SpessaSynth soundfont engine with a GM and synth-voice instrument picker",
+      "domain": "daw",
+      "sourcePaths": [
+        "frontend/src/lib/soundfontEngine.ts",
+        "frontend/src/components/audio/InstrumentPicker.tsx",
+        "frontend/src/state/liveMixer.ts",
+        "frontend/src/lib/formantVoices.ts",
+        "frontend/src/lib/psychoacousticVoices.ts"
+      ],
+      "evidence": [
+        "SpessaSynth WorkletSynthesizer",
+        "/soundfonts/gm.sf3",
+        "liveNoteOn/liveNoteOff",
+        "scheduleMidiClips gated on soundfont intent",
+        "instrumentProgram on clip + track",
+        "formant Talk-Box voices"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "Live MIDI",
+        "soundfont",
+        "SpessaSynth",
+        "gm.sf3",
+        "Talk-Box",
+        "General MIDI"
+      ]
+    },
+    {
+      "id": "library-stems-midi-first-class",
+      "name": "Stems and MIDI as first-class library rows: play, favorite, delete, and route, in their own sub-tabs",
+      "domain": "library",
+      "sourcePaths": [
+        "frontend/src/views/LibraryView.tsx",
+        "frontend/src/state/libraryStore.ts"
+      ],
+      "evidence": [
+        "Tracks/Stems/MIDI/Video sub-tabs",
+        "stem row play/favorite/delete",
+        "midi row send to piano-roll/step-seq/editor",
+        "independent of parent entry"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "first-class items",
+        "Stems",
+        "sub-tabs",
+        "favorited",
+        "Send to the Piano Roll"
+      ]
     }
   ],
   "coverage": [
@@ -642,6 +774,7 @@
         "#12-3-how-the-visualizations-are-rendered",
         "#13-1-automatic-entry-creation",
         "#13-5-bundle-downloads-and-lineage",
+        "#13-12-stems-and-midi-as-first-class-items",
         "#19-14-chimera",
         "#25-3-current-feature-to-screenshot-map",
         "#27-1-the-sidecar-and-conditioning",
@@ -792,10 +925,11 @@
         "#6-3-1-chimera-fusion-stack",
         "#8-4-source-output-and-routing",
         "#13-4-per-entry-controls",
+        "#13-12-stems-and-midi-as-first-class-items",
         "#16-5-media"
       ],
       "coverage": "documented",
-      "notes": "Matched 3/4 guide terms."
+      "notes": "Matched 4/4 guide terms."
     },
     {
       "featureId": "vj-sidecar-tab-mobile-share",
@@ -852,6 +986,7 @@
         "#6-2-generation-parameters",
         "#21-models",
         "#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee",
+        "#21-2-manual-model-placement-download-links-and-folder-tree",
         "#27-magenta-realtime-2",
         "#27-1-the-sidecar-and-conditioning",
         "#27-2-first-non-mac-port-of-magenta-realtime-2",
@@ -900,6 +1035,71 @@
       ],
       "coverage": "documented",
       "notes": "Matched 4/4 guide terms."
+    },
+    {
+      "featureId": "edit-insert-fx-rack",
+      "docAnchors": [
+        "#7-6-commit-edit",
+        "#7-7-insert-fx-rack-psychoacoustic",
+        "#15-8-instrument-soundfont-and-synth-voices"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 6/6 guide terms."
+    },
+    {
+      "featureId": "edit-spatializer-teleport-autopilot",
+      "docAnchors": [
+        "#7-6-commit-edit",
+        "#7-7-insert-fx-rack-psychoacoustic",
+        "#7-8-spatializer-teleport-and-autopilot"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 6/6 guide terms."
+    },
+    {
+      "featureId": "edit-metamorph-granular-morph",
+      "docAnchors": [
+        "#7-9-metamorph-granular-identity-bleed-morph",
+        "#14-4-send-to-editor",
+        "#15-6-send-to-editor",
+        "#16-4-details",
+        "#16-5-media"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 6/6 guide terms."
+    },
+    {
+      "featureId": "edit-timeline-live-midi-soundfont",
+      "docAnchors": [
+        "#7-10-live-midi-playback-in-the-timeline",
+        "#15-8-instrument-soundfont-and-synth-voices"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 6/6 guide terms."
+    },
+    {
+      "featureId": "library-stems-midi-first-class",
+      "docAnchors": [
+        "#1-repository-anatomy",
+        "#6-4-1-microphone-recorder",
+        "#purpose",
+        "#9-4-live-stems-and-fx",
+        "#12-1-views",
+        "#13-3-search-filter-sort",
+        "#13-4-per-entry-controls",
+        "#13-5-bundle-downloads-and-lineage",
+        "#13-6-stem-separation",
+        "#13-7-midi-conversion",
+        "#13-8-video-and-image-media",
+        "#13-12-stems-and-midi-as-first-class-items",
+        "#19-13-disk-backed-library",
+        "#19-15-stems",
+        "#19-16-midi",
+        "#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee",
+        "#25-3-current-feature-to-screenshot-map"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 4/5 guide terms."
     }
   ],
   "missingFeatureIds": [],
