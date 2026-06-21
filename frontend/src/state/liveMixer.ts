@@ -29,7 +29,14 @@
  * Structural clip edits (add/remove/split/move) made WHILE playing take effect
  * on the next play, same as a hardware mixer wouldn't re-cut tape mid-take.
  */
-import { useEditorStore, type AudioClip, type EditorTrack } from './editorStore';
+import {
+  useEditorStore,
+  sampleLane,
+  automationTargetKey,
+  type AudioClip,
+  type EditorTrack,
+  type AutomationTarget,
+} from './editorStore';
 import {
   usePlayerStore,
   getEngineCtx,
@@ -62,9 +69,13 @@ const decodeCache = new WeakMap<Blob, AudioBuffer>();
 const analysisCache = new WeakMap<Blob, AudioChunk[]>();
 
 interface TrackNodes {
+  /** Volume fader (manual OR automated). Split from mute/solo so a volume
+   *  automation lane can own this param while mute/solo stay live. */
   gain: GainNode;
+  /** Mute/solo factor (0 or 1), always driven live (never automated). */
+  muteGain: GainNode;
   panner: StereoPannerNode;
-  /** Per-track insert FX, spliced gain -> [fx] -> panner. */
+  /** Per-track insert FX, spliced gain -> muteGain -> [fx] -> panner. */
   fx: ChainHandle;
   fxFullSig: string; // topology + params (skip no-op reconciles)
   fxTopoSig: string; // topology only (rebuild trigger)
@@ -84,6 +95,7 @@ let lastMixSig = '';
 let lastTimePush = 0; // throttle playerStore.currentTime writes
 let midiTimers: number[] = []; // setTimeout handles for scheduled MIDI note on/off
 let liveMidiActive = false; // true while MIDI clips play via the live synth (vs their bounce)
+let autoFxTimer = 0; // setInterval handle for the FX-param automation lookahead
 
 // Session-local master bus + psychoacoustic insert rack. Every track's panner
 // feeds masterBus; masterBus -> masterChain -> the shared engine master, so the
@@ -96,11 +108,33 @@ let lastMasterFullSig = ''; // topology + params (skip no-op ticks)
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
-/** Effective track gain honoring mute + (exclusive) solo. */
-function effectiveVol(t: EditorTrack, anySolo: boolean): number {
+/** Clamped manual fader value (the volume automation lane overrides this live). */
+function volumeOf(t: EditorTrack): number {
+  return clamp(t.volume, 0, 1);
+}
+
+/** Mute/solo gate: 0 when muted or hidden by an active solo, else 1. */
+function muteSoloFactor(t: EditorTrack, anySolo: boolean): number {
   if (t.mute) return 0;
   if (anySolo && !t.solo) return 0;
-  return clamp(t.volume, 0, 1);
+  return 1;
+}
+
+/** Effective track gain honoring mute + (exclusive) solo (volume x gate). */
+function effectiveVol(t: EditorTrack, anySolo: boolean): number {
+  return volumeOf(t) * muteSoloFactor(t, anySolo);
+}
+
+/** Keys of native (vol/pan) targets that have an enabled automation lane, so the
+ *  manual reconcile leaves those params to the scheduled envelope while playing. */
+function automatedNativeKeys(): Set<string> {
+  const keys = new Set<string>();
+  for (const lane of useEditorStore.getState().automationLanes) {
+    if (!lane.enabled) continue;
+    const k = lane.target.kind;
+    if (k === 'trackVolume' || k === 'trackPan') keys.add(automationTargetKey(lane.target));
+  }
+  return keys;
 }
 
 /** A short signature of just the mixer-relevant fields, so the editorStore
@@ -112,16 +146,22 @@ function mixSignature(tracks: EditorTrack[]): string {
   return s;
 }
 
-/** Push current track volume/pan/mute/solo onto the live nodes (click-free). */
+/** Push current track volume/pan/mute/solo onto the live nodes (click-free).
+ *  Volume and pan are left to their scheduled envelope when an enabled lane owns
+ *  them; the mute/solo gate is always applied live. */
 function applyMixLive(): void {
   const ctx = getEngineCtx();
   const tracks = useEditorStore.getState().tracks;
   const anySolo = tracks.some((t) => t.solo);
+  const automated = automatedNativeKeys();
   for (const t of tracks) {
     const n = trackNodes.get(t.id);
     if (!n) continue;
-    n.gain.gain.setTargetAtTime(effectiveVol(t, anySolo), ctx.currentTime, RAMP_TC);
-    n.panner.pan.setTargetAtTime(clamp(t.pan, -1, 1), ctx.currentTime, RAMP_TC);
+    const volKey = automationTargetKey({ kind: 'trackVolume', trackId: t.id });
+    const panKey = automationTargetKey({ kind: 'trackPan', trackId: t.id });
+    if (!automated.has(volKey)) n.gain.gain.setTargetAtTime(volumeOf(t), ctx.currentTime, RAMP_TC);
+    n.muteGain.gain.setTargetAtTime(muteSoloFactor(t, anySolo), ctx.currentTime, RAMP_TC);
+    if (!automated.has(panKey)) n.panner.pan.setTargetAtTime(clamp(t.pan, -1, 1), ctx.currentTime, RAMP_TC);
   }
 }
 
@@ -201,7 +241,7 @@ function applyTrackChainsLive(): void {
  *  stopped explicitly). Leaves the trackNodes map for the caller to replace. */
 function disposeTrackNodes(): void {
   for (const n of trackNodes.values()) {
-    try { n.fx.dispose(); n.gain.disconnect(); n.panner.disconnect(); } catch { /* gone */ }
+    try { n.fx.dispose(); n.gain.disconnect(); n.muteGain.disconnect(); n.panner.disconnect(); } catch { /* gone */ }
   }
 }
 
@@ -215,14 +255,18 @@ function buildTrackNodes(tracks: EditorTrack[]): void {
   const anySolo = tracks.some((t) => t.solo);
   for (const t of tracks) {
     const gain = ctx.createGain();
-    gain.gain.value = effectiveVol(t, anySolo);
+    gain.gain.value = volumeOf(t);
+    const muteGain = ctx.createGain();
+    muteGain.gain.value = muteSoloFactor(t, anySolo);
     const panner = ctx.createStereoPanner();
     panner.pan.value = clamp(t.pan, -1, 1);
     const chain = t.fxChain ?? [];
-    const fx = buildEffectChain(ctx, gain, panner, chain); // wires gain -> [fx] -> panner
+    gain.connect(muteGain);
+    const fx = buildEffectChain(ctx, muteGain, panner, chain); // gain -> muteGain -> [fx] -> panner
     panner.connect(dest);
     trackNodes.set(t.id, {
       gain,
+      muteGain,
       panner,
       fx,
       fxFullSig: JSON.stringify(chain),
@@ -367,6 +411,112 @@ function scheduleTeleports(clips: AudioClip[], fromSec: number): void {
   }
 }
 
+/* ── Automation (Phase E) ─────────────────────────────────────────────────────
+   Native vol/pan lanes schedule their whole breakpoint envelope onto the real
+   AudioParam at play/seek (sample-accurate, zero ongoing cost). FX-param lanes
+   ride a ~40 Hz lookahead writer because they sit behind the rack's setParams. */
+
+/** Resolve a native (vol/pan) automation target to its live AudioParam. */
+function nativeParamFor(target: AutomationTarget): AudioParam | null {
+  if (!target.trackId) return null;
+  const n = trackNodes.get(target.trackId);
+  if (!n) return null;
+  if (target.kind === 'trackVolume') return n.gain.gain;
+  if (target.kind === 'trackPan') return n.panner.pan;
+  return null;
+}
+
+/** Schedule each enabled native lane's envelope onto its AudioParam from `fromSec`:
+ *  anchor the value at the playhead, then ramp through every later breakpoint. */
+function scheduleAutomation(fromSec: number): void {
+  const ctx = getEngineCtx();
+  const now = ctx.currentTime;
+  for (const lane of useEditorStore.getState().automationLanes) {
+    if (!lane.enabled || lane.points.length === 0) continue;
+    if (lane.target.kind !== 'trackVolume' && lane.target.kind !== 'trackPan') continue;
+    const param = nativeParamFor(lane.target);
+    if (!param) continue;
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(sampleLane(lane, fromSec) ?? param.value, now);
+    for (const p of lane.points) {
+      if (p.t <= fromSec) continue;
+      const whenCtx = startCtxTime + (p.t - startOffsetSec);
+      if (whenCtx <= now) param.setValueAtTime(p.v, now);
+      else param.linearRampToValueAtTime(p.v, whenCtx);
+    }
+  }
+}
+
+/** One lookahead frame: write each enabled FX lane's current value into its live
+ *  effect param. Values are grouped per effect entry first, so a multi-param
+ *  effect (e.g. KAOSS x + y) gets ONE merged update instead of competing
+ *  single-key updates that would each reset the other key to its static value. */
+function applyFxAutomationFrame(): void {
+  if (!playing) return;
+  const ctx = getEngineCtx();
+  const t = clamp(startOffsetSec + (ctx.currentTime - startCtxTime), 0, totalDur);
+  const ed = useEditorStore.getState();
+
+  const byEntry = new Map<string, { master: boolean; trackId?: string; entryId: string; values: Record<string, number> }>();
+  for (const lane of ed.automationLanes) {
+    if (!lane.enabled || lane.points.length === 0) continue;
+    const { kind, trackId, entryId, paramKey } = lane.target;
+    if ((kind !== 'trackFx' && kind !== 'masterFx') || !entryId || !paramKey) continue;
+    const v = sampleLane(lane, t);
+    if (v == null) continue;
+    const mapKey = `${kind}|${trackId ?? ''}|${entryId}`;
+    let acc = byEntry.get(mapKey);
+    if (!acc) { acc = { master: kind === 'masterFx', trackId, entryId, values: {} }; byEntry.set(mapKey, acc); }
+    acc.values[paramKey] = v;
+  }
+
+  for (const acc of byEntry.values()) {
+    if (acc.master) {
+      if (!masterChain) continue;
+      const entry = ed.masterFxChain.find((e) => e.id === acc.entryId);
+      if (!entry || !entry.enabled) continue;
+      masterChain.updateParams(acc.entryId, { ...entry.params, ...acc.values });
+    } else {
+      if (!acc.trackId) continue;
+      const n = trackNodes.get(acc.trackId);
+      const entry = ed.tracks.find((tr) => tr.id === acc.trackId)?.fxChain?.find((e) => e.id === acc.entryId);
+      if (!n || !entry || !entry.enabled) continue;
+      n.fx.updateParams(acc.entryId, { ...entry.params, ...acc.values });
+    }
+  }
+}
+
+function startFxAutomation(): void {
+  stopFxAutomation();
+  const hasFxLane = useEditorStore.getState().automationLanes.some(
+    (l) => l.enabled && (l.target.kind === 'trackFx' || l.target.kind === 'masterFx'),
+  );
+  if (hasFxLane) autoFxTimer = window.setInterval(applyFxAutomationFrame, 25); // ~40 Hz
+}
+
+function stopFxAutomation(): void {
+  if (autoFxTimer) { clearInterval(autoFxTimer); autoFxTimer = 0; }
+}
+
+/** Current transport position in timeline seconds (for recording timestamps). */
+export function currentTransportSec(): number {
+  if (!playing) return useEditorStore.getState().playheadSec;
+  const ctx = getEngineCtx();
+  return clamp(startOffsetSec + (ctx.currentTime - startCtxTime), 0, totalDur);
+}
+
+/** Drive a native param live while recording, so the move is heard immediately;
+ *  cancels the scheduled envelope for the rest of this pass (latch behavior). The
+ *  caller records the point into the lane, which is re-scheduled on the next play. */
+export function automationTouchNative(target: AutomationTarget, value: number): void {
+  if (!playing) return;
+  const param = nativeParamFor(target);
+  if (!param) return;
+  const ctx = getEngineCtx();
+  param.cancelScheduledValues(ctx.currentTime);
+  param.setTargetAtTime(value, ctx.currentTime, RAMP_TC);
+}
+
 /**
  * Schedule live-synth note on/off for every MIDI clip at or after `fromSec`.
  * Notes fire via timers aligned to the transport (preview-accurate); the offline
@@ -427,6 +577,7 @@ function clearSources(): void {
   }
   sources = [];
   clearMidiTimers();
+  stopFxAutomation();
 }
 
 function stopClock(): void {
@@ -522,6 +673,8 @@ async function start(fromSec: number): Promise<void> {
   lastMixSig = mixSignature(ed.tracks);
   scheduleClips(clips, begin);
   scheduleTeleports(clips, begin);
+  scheduleAutomation(begin); // native vol/pan envelopes onto their AudioParams
+  startFxAutomation();        // ~40 Hz lookahead writer for FX-param lanes
   if (liveMidiActive) scheduleMidiClips(clips, begin);
 
   playing = true;
