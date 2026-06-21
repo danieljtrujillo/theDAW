@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { logError, logInfo } from './logStore';
 import type { PianoNote } from './pianoRollStore';
+import type { ChainEntry } from './effectChainStore';
+import { rackEffectDefaults } from '../lib/rackEffects';
 
 export type ToolMode = 'move' | 'cut' | 'split';
 export type SnapDivision = 'off' | '1/4' | '1/8' | '1/16';
@@ -62,6 +64,9 @@ export interface EditorTrack {
   color: string;
   /** Default GM program (0-127) for MIDI clips on this track; undefined = global default. */
   instrumentProgram?: number;
+  /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between
+   *  the track fader and its panner during live playback and offline bounce. */
+  fxChain?: ChainEntry[];
 }
 
 interface EditorStoreState {
@@ -76,6 +81,9 @@ interface EditorStoreState {
   snap: SnapDivision;
   bpm: number;              // for snap math
   inpaintSelection: InpaintSelection | null;
+  /** Master-bus insert FX chain (real-time psychoacoustic rack). Session-local —
+   *  liveMixer routes the editor mix through it before the shared engine master. */
+  masterFxChain: ChainEntry[];
 
   // Mutations
   addTrack: (overrides?: Partial<EditorTrack>) => string;
@@ -99,6 +107,20 @@ interface EditorStoreState {
   setBpm: (b: number) => void;
   setInpaintSelection: (sel: InpaintSelection | null) => void;
   clearInpaintSelection: () => void;
+
+  // Master FX rack
+  addMasterEffect: (effectId: string) => void;
+  removeMasterEffect: (entryId: string) => void;
+  reorderMasterEffect: (from: number, to: number) => void;
+  toggleMasterEffect: (entryId: string) => void;
+  updateMasterEffectParams: (entryId: string, params: Record<string, number>) => void;
+
+  // Per-track FX rack
+  addTrackEffect: (trackId: string, effectId: string) => void;
+  removeTrackEffect: (trackId: string, entryId: string) => void;
+  reorderTrackEffect: (trackId: string, from: number, to: number) => void;
+  toggleTrackEffect: (trackId: string, entryId: string) => void;
+  updateTrackEffectParams: (trackId: string, entryId: string, params: Record<string, number>) => void;
 
   // Selectors
   getTotalDurationSec: () => number;
@@ -133,6 +155,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   snap: '1/16',
   bpm: 120,
   inpaintSelection: null,
+  masterFxChain: [],
 
   addTrack: (overrides) => {
     const id = `track-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -262,6 +285,85 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   setBpm: (b) => set({ bpm: Math.max(40, Math.min(240, b)) }),
   setInpaintSelection: (sel) => set({ inpaintSelection: sel }),
   clearInpaintSelection: () => set({ inpaintSelection: null }),
+
+  addMasterEffect: (effectId) =>
+    set((s) => ({
+      masterFxChain: [
+        ...s.masterFxChain,
+        { id: uid(), effect: effectId, params: rackEffectDefaults(effectId), enabled: true },
+      ],
+    })),
+
+  removeMasterEffect: (entryId) =>
+    set((s) => ({ masterFxChain: s.masterFxChain.filter((e) => e.id !== entryId) })),
+
+  reorderMasterEffect: (from, to) =>
+    set((s) => {
+      if (from === to || from < 0 || to < 0 || from >= s.masterFxChain.length || to >= s.masterFxChain.length) {
+        return {};
+      }
+      const next = [...s.masterFxChain];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return { masterFxChain: next };
+    }),
+
+  toggleMasterEffect: (entryId) =>
+    set((s) => ({
+      masterFxChain: s.masterFxChain.map((e) => (e.id === entryId ? { ...e, enabled: !e.enabled } : e)),
+    })),
+
+  updateMasterEffectParams: (entryId, params) =>
+    set((s) => ({
+      masterFxChain: s.masterFxChain.map((e) => (e.id === entryId ? { ...e, params } : e)),
+    })),
+
+  addTrackEffect: (trackId, effectId) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? { ...t, fxChain: [...(t.fxChain ?? []), { id: uid(), effect: effectId, params: rackEffectDefaults(effectId), enabled: true }] }
+          : t,
+      ),
+    })),
+
+  removeTrackEffect: (trackId, entryId) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId ? { ...t, fxChain: (t.fxChain ?? []).filter((e) => e.id !== entryId) } : t,
+      ),
+    })),
+
+  reorderTrackEffect: (trackId, from, to) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) => {
+        if (t.id !== trackId) return t;
+        const chain = t.fxChain ?? [];
+        if (from === to || from < 0 || to < 0 || from >= chain.length || to >= chain.length) return t;
+        const next = [...chain];
+        const [item] = next.splice(from, 1);
+        next.splice(to, 0, item);
+        return { ...t, fxChain: next };
+      }),
+    })),
+
+  toggleTrackEffect: (trackId, entryId) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? { ...t, fxChain: (t.fxChain ?? []).map((e) => (e.id === entryId ? { ...e, enabled: !e.enabled } : e)) }
+          : t,
+      ),
+    })),
+
+  updateTrackEffectParams: (trackId, entryId, params) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? { ...t, fxChain: (t.fxChain ?? []).map((e) => (e.id === entryId ? { ...e, params } : e)) }
+          : t,
+      ),
+    })),
 
   getTotalDurationSec: () => {
     const { clips } = get();
