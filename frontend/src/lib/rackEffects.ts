@@ -758,6 +758,104 @@ const makeLoudnessContour: RackEffectFactory = (ctx, params) => {
   };
 };
 
+/* ── 7. Kaoss Pad (XY performance effect) ──────────────────────────────────────
+   An assignable XY surface. The program picks a filter type and whether a
+   feedback delay is engaged; X and Y then sweep two parameters live as the user
+   drags. Built as a superset graph (filter + feedback delay always wired, then
+   neutralized per program), so switching programs never rebuilds the chain. The
+   pad UI lives in KaossPad and writes x/y/active straight into these params. */
+export const KAOSS_PROGRAMS = [
+  'LPF Sweep',
+  'HPF Sweep',
+  'BPF Sweep',
+  'Delay',
+  'Filter + Delay',
+] as const;
+
+interface KaossTargets {
+  filterType: BiquadFilterType;
+  freq: number;
+  q: number;
+  delayTime: number;
+  feedback: number;
+  fwet: number; // level of the filtered-direct path
+  dwet: number; // level of the delayed path
+}
+
+/** Map (program, x, y) onto concrete node targets. X sweeps a log frequency or a
+ *  delay time; Y sweeps resonance or feedback, depending on the program. */
+const kaossTargets = (program: number, x: number, y: number): KaossTargets => {
+  const xx = clamp(x, 0, 1);
+  const yy = clamp(y, 0, 1);
+  const freq = 200 * Math.pow(18000 / 200, xx); // log sweep 200..18000 Hz
+  const q = 0.5 + yy * 17.5;
+  switch (Math.round(program)) {
+    case 1:
+      return { filterType: 'highpass', freq, q, delayTime: 0, feedback: 0, fwet: 1, dwet: 0 };
+    case 2:
+      return { filterType: 'bandpass', freq, q, delayTime: 0, feedback: 0, fwet: 1, dwet: 0 };
+    case 3:
+      return { filterType: 'lowpass', freq: 18000, q: 0.7, delayTime: 0.02 + xx * 0.58, feedback: yy * 0.85, fwet: 0.4, dwet: 0.9 };
+    case 4:
+      return { filterType: 'lowpass', freq, q: 0.9, delayTime: 0.18, feedback: yy * 0.85, fwet: 0.8, dwet: 0.7 };
+    default:
+      return { filterType: 'lowpass', freq, q, delayTime: 0, feedback: 0, fwet: 1, dwet: 0 };
+  }
+};
+
+const makeKaoss: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+
+  const dry = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  const delayIn = ctx.createGain();
+  const delay = ctx.createDelay(1.0);
+  const feedback = ctx.createGain();
+  const fwet = ctx.createGain(); // filtered direct
+  const dwet = ctx.createGain(); // delayed repeats
+
+  input.connect(dry).connect(output);
+  input.connect(filter);
+  filter.connect(fwet).connect(output);
+  filter.connect(delayIn);
+  delayIn.connect(delay);
+  delay.connect(feedback).connect(delayIn); // feedback loop (delay node breaks the cycle)
+  delay.connect(dwet).connect(output);
+
+  // Mirror setParams at make time so the offline bounce starts in the live state.
+  const apply = (p: Record<string, number>) => {
+    const t = kaossTargets(p.program ?? 0, p.x ?? 0.5, p.y ?? 0.3);
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    const engaged = (p.active ?? 1) >= 0.5;
+    const w = engaged ? mix : 0;
+    filter.type = t.filterType;
+    ramp(filter.frequency, t.freq, ctx);
+    ramp(filter.Q, t.q, ctx);
+    delay.delayTime.setTargetAtTime(Math.max(0, t.delayTime), ctx.currentTime, 0.05);
+    ramp(feedback.gain, engaged ? t.feedback : 0, ctx);
+    ramp(fwet.gain, w * t.fwet, ctx);
+    ramp(dwet.gain, w * t.dwet, ctx);
+    ramp(dry.gain, engaged ? 1 - mix : 1, ctx);
+  };
+  apply(params);
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try {
+        input.disconnect();
+        output.disconnect();
+        filter.disconnect();
+        delay.disconnect();
+        feedback.disconnect();
+      } catch { /* gone */ }
+    },
+  };
+};
+
 /* ── registry ──────────────────────────────────────────────────────────────── */
 
 export const RACK_EFFECTS: readonly RackEffectDef[] = [
@@ -832,6 +930,21 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'amount', label: 'Amount', min: 0, max: 1, step: 0.01, default: 0.5 },
     ],
     make: makeLoudnessContour,
+  },
+  {
+    id: 'kaoss',
+    label: 'Kaoss Pad',
+    group: 'Performance',
+    description: 'An XY performance pad: pick a program, then sweep two params by dragging.',
+    params: [
+      { key: 'program', label: 'Program', min: 0, max: 4, step: 1, default: 0 },
+      { key: 'x', label: 'X', min: 0, max: 1, step: 0.001, default: 0.5 },
+      { key: 'y', label: 'Y', min: 0, max: 1, step: 0.001, default: 0.3 },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+      { key: 'hold', label: 'Hold', min: 0, max: 1, step: 1, default: 1 },
+      { key: 'active', label: 'Active', min: 0, max: 1, step: 1, default: 1 },
+    ],
+    make: makeKaoss,
   },
 ];
 

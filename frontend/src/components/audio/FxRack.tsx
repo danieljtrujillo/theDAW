@@ -12,6 +12,7 @@ import { RACK_EFFECTS, getRackEffect } from '../../lib/rackEffects';
 import type { ChainEntry } from '../../state/effectChainStore';
 import { SlideTrack } from './SlideTrack';
 import { SpatializerPad } from './SpatializerPad';
+import { KaossPad } from './KaossPad';
 
 interface FxRackProps {
   chain: ChainEntry[];
@@ -119,6 +120,14 @@ export function FxRack({
             {entry.effect === 'spatializer' ? (
               <div className="pl-4">
                 <SpatializerPad
+                  params={entry.params}
+                  idPrefix={`${idPrefix}-${entry.id}`}
+                  onChange={(p) => onUpdateParams(entry.id, p)}
+                />
+              </div>
+            ) : entry.effect === 'kaoss' ? (
+              <div className="pl-4">
+                <KaossPad
                   params={entry.params}
                   idPrefix={`${idPrefix}-${entry.id}`}
                   onChange={(p) => onUpdateParams(entry.id, p)}
