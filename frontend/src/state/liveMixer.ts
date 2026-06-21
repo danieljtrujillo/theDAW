@@ -45,6 +45,9 @@ import {
   liveAllNotesOff,
   useSoundfontStore,
 } from '../lib/soundfontEngine';
+import { buildEffectChain, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../lib/rackEffects';
+import { sliceChunks, type AudioChunk } from '../lib/audioAnalysis';
+import type { ChainEntry } from './effectChainStore';
 
 const DECODE_TIMEOUT_MS = 15000;
 const EDITOR_ENTRY_ID = 'editor-timeline'; // reuse so existing footer/playhead wiring keeps working
@@ -54,9 +57,17 @@ const RAMP_TC = 0.015; // setTargetAtTime time-constant for click-free param mov
 // reclaimed once its Blob is gone, and an edited clip (new Blob) re-decodes.
 const decodeCache = new WeakMap<Blob, AudioBuffer>();
 
+// Onset-sliced chunks cached by Blob identity (for the spatializer Teleport mode),
+// so the (cheap but non-trivial) analysis runs once per clip, not per play/seek.
+const analysisCache = new WeakMap<Blob, AudioChunk[]>();
+
 interface TrackNodes {
   gain: GainNode;
   panner: StereoPannerNode;
+  /** Per-track insert FX, spliced gain -> [fx] -> panner. */
+  fx: ChainHandle;
+  fxFullSig: string; // topology + params (skip no-op reconciles)
+  fxTopoSig: string; // topology only (rebuild trigger)
 }
 
 // ---- live session state (module singletons; one editor timeline at a time) --
@@ -73,6 +84,15 @@ let lastMixSig = '';
 let lastTimePush = 0; // throttle playerStore.currentTime writes
 let midiTimers: number[] = []; // setTimeout handles for scheduled MIDI note on/off
 let liveMidiActive = false; // true while MIDI clips play via the live synth (vs their bounce)
+
+// Session-local master bus + psychoacoustic insert rack. Every track's panner
+// feeds masterBus; masterBus -> masterChain -> the shared engine master, so the
+// EDIT rack processes ONLY the editor mix and never the library/DJ/sequencer
+// audio that also routes through getMasterGain().
+let masterBus: GainNode | null = null;
+let masterChain: ChainHandle | null = null;
+let lastMasterSig = '';     // topology only (rebuild trigger)
+let lastMasterFullSig = ''; // topology + params (skip no-op ticks)
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
@@ -121,10 +141,76 @@ async function ensureDecoded(clips: AudioClip[]): Promise<void> {
   }
 }
 
-/** Build (or rebuild) one shared gain+panner per track that has clips. */
+/** Topology signature of an FX chain (order + effect + enabled), so the store
+ *  subscription rebuilds the node graph only when the topology changes, and
+ *  pushes param-only edits without a rebuild. */
+function chainTopoSig(chain: ChainEntry[]): string {
+  let s = '';
+  for (const e of chain) s += `${e.id}:${e.effect}:${e.enabled ? 1 : 0}|`;
+  return s;
+}
+
+/** (Re)build the session-local master bus + insert rack and route it into the
+ *  shared engine master. Safe to call repeatedly (tears down the prior one). */
+function buildMasterBus(): void {
+  const ctx = getEngineCtx();
+  if (masterChain) { masterChain.dispose(); masterChain = null; }
+  if (masterBus) { try { masterBus.disconnect(); } catch { /* gone */ } masterBus = null; }
+  masterBus = ctx.createGain();
+  const chain = useEditorStore.getState().masterFxChain;
+  masterChain = buildEffectChain(ctx, masterBus, getMasterGain(), chain);
+  lastMasterSig = chainTopoSig(chain);
+  lastMasterFullSig = JSON.stringify(chain);
+}
+
+/** Reconcile the live master rack with the store: rebuild on topology change,
+ *  otherwise push each entry's params live. Cheap no-op when nothing changed
+ *  (this runs on every store tick, including the 60 Hz playhead). */
+function applyMasterChainLive(): void {
+  if (!masterChain) return;
+  const chain = useEditorStore.getState().masterFxChain;
+  const full = JSON.stringify(chain);
+  if (full === lastMasterFullSig) return;
+  lastMasterFullSig = full;
+  const sig = chainTopoSig(chain);
+  if (sig !== lastMasterSig) {
+    lastMasterSig = sig;
+    masterChain.rebuild(chain);
+  } else {
+    for (const e of chain) masterChain.updateParams(e.id, e.params);
+  }
+}
+
+/** Reconcile each track's live insert chain with the store (rebuild on topology
+ *  change, push params otherwise). Runs on every store tick while playing. */
+function applyTrackChainsLive(): void {
+  const tracks = useEditorStore.getState().tracks;
+  const byId = new Map<string, EditorTrack>(tracks.map((t): [string, EditorTrack] => [t.id, t]));
+  for (const [id, n] of trackNodes) {
+    const chain = byId.get(id)?.fxChain ?? [];
+    const full = JSON.stringify(chain);
+    if (full === n.fxFullSig) continue;
+    n.fxFullSig = full;
+    const topo = chainTopoSig(chain);
+    if (topo !== n.fxTopoSig) { n.fxTopoSig = topo; n.fx.rebuild(chain); }
+    else for (const e of chain) n.fx.updateParams(e.id, e.params);
+  }
+}
+
+/** Dispose every track's FX handle + nodes (oscillators in some effects must be
+ *  stopped explicitly). Leaves the trackNodes map for the caller to replace. */
+function disposeTrackNodes(): void {
+  for (const n of trackNodes.values()) {
+    try { n.fx.dispose(); n.gain.disconnect(); n.panner.disconnect(); } catch { /* gone */ }
+  }
+}
+
+/** Build (or rebuild) per track: gain -> [insert FX] -> panner -> master bus.
+ *  Panners feed the session master bus (built first), not the engine master. */
 function buildTrackNodes(tracks: EditorTrack[]): void {
   const ctx = getEngineCtx();
-  const master = getMasterGain();
+  const dest: AudioNode = masterBus ?? getMasterGain();
+  disposeTrackNodes();
   trackNodes = new Map();
   const anySolo = tracks.some((t) => t.solo);
   for (const t of tracks) {
@@ -132,8 +218,16 @@ function buildTrackNodes(tracks: EditorTrack[]): void {
     gain.gain.value = effectiveVol(t, anySolo);
     const panner = ctx.createStereoPanner();
     panner.pan.value = clamp(t.pan, -1, 1);
-    gain.connect(panner).connect(master);
-    trackNodes.set(t.id, { gain, panner });
+    const chain = t.fxChain ?? [];
+    const fx = buildEffectChain(ctx, gain, panner, chain); // wires gain -> [fx] -> panner
+    panner.connect(dest);
+    trackNodes.set(t.id, {
+      gain,
+      panner,
+      fx,
+      fxFullSig: JSON.stringify(chain),
+      fxTopoSig: chainTopoSig(chain),
+    });
   }
 }
 
@@ -200,6 +294,76 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
       try { src.disconnect(); clipGain.disconnect(); } catch { /* already gone */ }
     };
     sources.push(src);
+  }
+}
+
+/** Onset-sliced chunks for a clip's decoded buffer (cached by Blob identity). */
+function chunksFor(clip: AudioClip): AudioChunk[] {
+  const buf = decodeCache.get(clip.audioBlob);
+  if (!buf) return [];
+  let chunks = analysisCache.get(clip.audioBlob);
+  if (!chunks) {
+    chunks = sliceChunks(buf);
+    analysisCache.set(clip.audioBlob, chunks);
+  }
+  return chunks;
+}
+
+/**
+ * For every track whose spatializer is in Teleport mode, slice that track's clips
+ * on their onsets and schedule one panner jump per chunk — the position comes from
+ * the chunk's loudness (closer when louder) and brightness (higher when brighter),
+ * spread by the effect's Depth. Runs after scheduleClips, on every (re)start; the
+ * golden-angle index advances across passed chunks too, so a mid-timeline start
+ * lands the same positions a from-zero play would.
+ */
+function scheduleTeleports(clips: AudioClip[], fromSec: number): void {
+  const ctx = getEngineCtx();
+  const now = ctx.currentTime;
+  const tracks = useEditorStore.getState().tracks;
+  for (const t of tracks) {
+    const chain = t.fxChain ?? [];
+    const teleEntries = chain.filter(
+      (e) =>
+        e.enabled &&
+        e.effect === 'spatializer' &&
+        Math.round(e.params?.motion ?? 0) === SPATIAL_TELEPORT,
+    );
+    if (teleEntries.length === 0) continue;
+    const nodes = trackNodes.get(t.id);
+    if (!nodes) continue;
+    const insts = nodes.fx.instances();
+    const trackClips = clips.filter(
+      (c) => c.trackId === t.id && !(liveMidiActive && isMidiClip(c)),
+    );
+
+    for (const entry of teleEntries) {
+      const li = insts.find((x) => x.id === entry.id);
+      if (!li?.inst.scheduleTeleport) continue;
+      const spread = entry.params?.motionDepth ?? 5;
+      const events: { when: number; x: number; y: number; z: number }[] = [];
+      let idx = 0;
+      for (const clip of trackClips) {
+        const buf = decodeCache.get(clip.audioBlob);
+        if (!buf) continue;
+        const offset = Math.min(clip.offsetIntoSource, Math.max(0, buf.duration - 0.01));
+        const dur = Math.min(clip.durationSec, buf.duration - offset);
+        if (dur <= 0) continue;
+        for (const chunk of chunksFor(clip)) {
+          if (chunk.tSec < offset || chunk.tSec >= offset + dur) continue;
+          const timelineSec = clip.startSec + (chunk.tSec - offset);
+          if (timelineSec < fromSec - 0.001) { idx += 1; continue; } // already passed
+          const pos = teleportXYZ(idx, chunk.loudness, chunk.brightness, spread);
+          const whenCtx = startCtxTime + (timelineSec - startOffsetSec);
+          events.push({ when: Math.max(whenCtx, now), x: pos.x, y: pos.y, z: pos.z });
+          idx += 1;
+        }
+      }
+      if (events.length > 0) {
+        events.sort((a, b) => a.when - b.when);
+        li.inst.scheduleTeleport(events);
+      }
+    }
   }
 }
 
@@ -350,12 +514,14 @@ async function start(fromSec: number): Promise<void> {
   // meantime may have cleared it via playerStore.load().
   setLiveTransport({ play, pause, stop, seek });
 
+  buildMasterBus();
   buildTrackNodes(ed.tracks);
   startCtxTime = ctx.currentTime;
   startOffsetSec = begin;
   lastTimePush = 0;
   lastMixSig = mixSignature(ed.tracks);
   scheduleClips(clips, begin);
+  scheduleTeleports(clips, begin);
   if (liveMidiActive) scheduleMidiClips(clips, begin);
 
   playing = true;
@@ -374,9 +540,12 @@ async function start(fromSec: number): Promise<void> {
     unsubEditor = useEditorStore.subscribe(() => {
       if (!playing) return;
       const sig = mixSignature(useEditorStore.getState().tracks);
-      if (sig === lastMixSig) return;
-      lastMixSig = sig;
-      applyMixLive();
+      if (sig !== lastMixSig) {
+        lastMixSig = sig;
+        applyMixLive();
+      }
+      applyMasterChainLive(); // live master rack edits (add/remove/reorder/param)
+      applyTrackChainsLive(); // live per-track rack edits
     });
   }
 
@@ -445,9 +614,11 @@ export function dispose(): void {
   stopClock();
   playing = false;
   if (unsubEditor) { unsubEditor(); unsubEditor = null; }
-  for (const n of trackNodes.values()) {
-    try { n.gain.disconnect(); n.panner.disconnect(); } catch { /* gone */ }
-  }
+  disposeTrackNodes();
   trackNodes = new Map();
+  if (masterChain) { masterChain.dispose(); masterChain = null; }
+  if (masterBus) { try { masterBus.disconnect(); } catch { /* gone */ } masterBus = null; }
+  lastMasterSig = '';
+  lastMasterFullSig = '';
   setLiveTransport(null);
 }

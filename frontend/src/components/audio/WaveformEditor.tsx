@@ -2,9 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
+import { FxRack } from './FxRack';
+import { MetamorphPanel } from './MetamorphPanel';
+import { RACK_EFFECTS, buildEffectChain, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
+import { sliceChunks } from '../../lib/audioAnalysis';
+import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, type AudioClip, type EditorTrack, type SnapDivision } from '../../state/editorStore';
@@ -46,41 +52,6 @@ const isEditorTimelinePlaying = (): boolean => {
 // Preview routes through the shared engine context so the visualizer sees it too.
 
 // --- WAV encoder for the offline mixdown output. ---
-const encodeWav = (audioBuf: AudioBuffer): Blob => {
-  const numCh = audioBuf.numberOfChannels;
-  const sr = audioBuf.sampleRate;
-  const len = audioBuf.length;
-  const buffer = new ArrayBuffer(44 + len * numCh * 2);
-  const view = new DataView(buffer);
-  const writeStr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + len * numCh * 2, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);          // PCM
-  view.setUint16(22, numCh, true);
-  view.setUint32(24, sr, true);
-  view.setUint32(28, sr * numCh * 2, true);
-  view.setUint16(32, numCh * 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, len * numCh * 2, true);
-  // Interleave + 16-bit PCM.
-  const channels: Float32Array[] = [];
-  for (let c = 0; c < numCh; c += 1) channels.push(audioBuf.getChannelData(c));
-  let offset = 44;
-  for (let i = 0; i < len; i += 1) {
-    for (let c = 0; c < numCh; c += 1) {
-      const sample = Math.max(-1, Math.min(1, channels[c][i]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-      offset += 2;
-    }
-  }
-  return new Blob([buffer], { type: 'audio/wav' });
-};
 
 /**
  * Tiny silent WAV placeholder used when creating large MIDI clips. The real
@@ -237,7 +208,8 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
         aria-label={`Track ${track.name} instrument`}
         value={value}
         onChange={onChange}
-        className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-[8px] text-white/75 outline-none focus:border-purple-500/50"
+        className="flex-1 min-w-0 bg-zinc-900 border border-white/20 rounded px-1 py-0.5 text-[9px] text-zinc-100 outline-none focus:border-purple-500/60"
+        style={{ colorScheme: 'dark' }}
       >
         <option value="default">{defaultLabel}</option>
         {GM_NAMES.map((nm, i) => (
@@ -291,6 +263,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const inpaintSelection = useEditorStore((s) => s.inpaintSelection);
   const setInpaintSelection = useEditorStore((s) => s.setInpaintSelection);
   const clearInpaintSelection = useEditorStore((s) => s.clearInpaintSelection);
+  const masterFxChain = useEditorStore((s) => s.masterFxChain);
+  const addMasterEffect = useEditorStore((s) => s.addMasterEffect);
+  const removeMasterEffect = useEditorStore((s) => s.removeMasterEffect);
+  const reorderMasterEffect = useEditorStore((s) => s.reorderMasterEffect);
+  const toggleMasterEffect = useEditorStore((s) => s.toggleMasterEffect);
+  const updateMasterEffectParams = useEditorStore((s) => s.updateMasterEffectParams);
+  const addTrackEffect = useEditorStore((s) => s.addTrackEffect);
+  const removeTrackEffect = useEditorStore((s) => s.removeTrackEffect);
+  const reorderTrackEffect = useEditorStore((s) => s.reorderTrackEffect);
+  const toggleTrackEffect = useEditorStore((s) => s.toggleTrackEffect);
+  const updateTrackEffectParams = useEditorStore((s) => s.updateTrackEffectParams);
   // Footer player — the live engine mirrors its own playhead; we just read
   // entry id + playing state to drive the editor's local transport button.
   const playerEntryId = usePlayerStore((s) => s.currentEntryId);
@@ -311,6 +294,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const [isCommitting, setIsCommitting] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [mixdownName, setMixdownName] = useState('');
+  const [showMasterFx, setShowMasterFx] = useState(false);
+  const [showMetamorph, setShowMetamorph] = useState(false);
+  const [fxPanelTrackId, setFxPanelTrackId] = useState<string | null>(null);
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
@@ -822,6 +808,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // --- Right-click context menu (uses shared ContextMenu primitive) ---
   const clipMenu = useContextMenu<{ clipId: string; atSec: number }>();
+  const trackMenu = useContextMenu<{ trackId: string }>();
 
   const openContextMenu = (e: React.MouseEvent, clipId: string) => {
     e.stopPropagation();
@@ -865,39 +852,96 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       } finally {
         decodeCtx.close().catch(() => {});
       }
-      for (const c of clips) {
-        const track = tracks.find((t) => t.id === c.trackId);
-        if (!track) continue;
+      // Master bus + insert rack -> destination, mirroring liveMixer's routing so
+      // the bounce carries the SAME psychoacoustic FX the user hears in preview.
+      const masterBus = offline.createGain();
+      buildEffectChain(offline, masterBus, offline.destination, masterFxChain);
+
+      // One gain + insert chain + panner per audible track; panners feed the bus.
+      const trackNodeById = new Map<string, { gain: GainNode; panner: StereoPannerNode; fx: ChainHandle }>();
+      for (const track of tracks) {
         if (track.mute) continue;
         if (anySolo && !track.solo) continue;
-        const buf = blobCache.get(c.audioBlob);
-        if (!buf) continue;
-        const src = offline.createBufferSource();
-        src.buffer = buf;
-        const gain = offline.createGain();
+        const tgain = offline.createGain();
+        tgain.gain.value = track.volume;
         const panner = offline.createStereoPanner();
         panner.pan.value = Math.max(-1, Math.min(1, track.pan));
-        src.connect(gain).connect(panner).connect(offline.destination);
+        const fx = buildEffectChain(offline, tgain, panner, track.fxChain ?? []); // tgain -> [fx] -> panner
+        panner.connect(masterBus);
+        trackNodeById.set(track.id, { gain: tgain, panner, fx });
+      }
 
-        const vol = track.volume;
-        const fadeIn = c.fadeInSec ?? 0;
-        const fadeOut = c.fadeOutSec ?? 0;
+      for (const c of clips) {
+        const tn = trackNodeById.get(c.trackId);
+        if (!tn) continue; // track muted or hidden by an active solo
+        const buf = blobCache.get(c.audioBlob);
+        if (!buf) continue;
         const safeOffset = Math.min(c.offsetIntoSource, Math.max(0, buf.duration - 0.01));
         const safeDur = Math.min(c.durationSec, buf.duration - safeOffset);
         if (safeDur <= 0) continue;
 
-        gain.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, c.startSec);
+        // Per-clip gain carries ONLY the fade envelope (peak 1). Track volume lives
+        // on the track gain so per-track FX process the post-fade signal exactly as
+        // they do live.
+        const src = offline.createBufferSource();
+        src.buffer = buf;
+        const clipGain = offline.createGain();
+        const fadeIn = c.fadeInSec ?? 0;
+        const fadeOut = c.fadeOutSec ?? 0;
+        clipGain.gain.setValueAtTime(fadeIn > 0 ? 0 : 1, c.startSec);
         if (fadeIn > 0) {
-          gain.gain.linearRampToValueAtTime(vol, c.startSec + Math.min(fadeIn, safeDur));
+          clipGain.gain.linearRampToValueAtTime(1, c.startSec + Math.min(fadeIn, safeDur));
         }
         if (fadeOut > 0) {
           const foStart = c.startSec + safeDur - Math.min(fadeOut, safeDur);
-          gain.gain.setValueAtTime(vol, foStart);
-          gain.gain.linearRampToValueAtTime(0, c.startSec + safeDur);
+          clipGain.gain.setValueAtTime(1, foStart);
+          clipGain.gain.linearRampToValueAtTime(0, c.startSec + safeDur);
         }
-
+        src.connect(clipGain).connect(tn.gain);
         src.start(c.startSec, safeOffset, safeDur);
       }
+
+      // Spatializer Teleport: schedule the same onset-driven panner jumps the live
+      // preview makes, so the bounce matches. The offline ctx renders from t=0, so
+      // each event's `when` is simply its timeline time.
+      const chunkCache = new Map<Blob, ReturnType<typeof sliceChunks>>();
+      for (const track of tracks) {
+        const tn = trackNodeById.get(track.id);
+        if (!tn) continue;
+        const teleEntries = (track.fxChain ?? []).filter(
+          (e) => e.enabled && e.effect === 'spatializer' && Math.round(e.params?.motion ?? 0) === SPATIAL_TELEPORT,
+        );
+        if (teleEntries.length === 0) continue;
+        const insts = tn.fx.instances();
+        const trackClips = clips.filter((c) => c.trackId === track.id);
+        for (const entry of teleEntries) {
+          const li = insts.find((x) => x.id === entry.id);
+          if (!li?.inst.scheduleTeleport) continue;
+          const spread = entry.params?.motionDepth ?? 5;
+          const events: { when: number; x: number; y: number; z: number }[] = [];
+          let idx = 0;
+          for (const c of trackClips) {
+            const buf = blobCache.get(c.audioBlob);
+            if (!buf) continue;
+            const offset = Math.min(c.offsetIntoSource, Math.max(0, buf.duration - 0.01));
+            const cdur = Math.min(c.durationSec, buf.duration - offset);
+            if (cdur <= 0) continue;
+            let chunks = chunkCache.get(c.audioBlob);
+            if (!chunks) { chunks = sliceChunks(buf); chunkCache.set(c.audioBlob, chunks); }
+            for (const chunk of chunks) {
+              if (chunk.tSec < offset || chunk.tSec >= offset + cdur) continue;
+              const pos = teleportXYZ(idx, chunk.loudness, chunk.brightness, spread);
+              events.push({ when: c.startSec + (chunk.tSec - offset), x: pos.x, y: pos.y, z: pos.z });
+              idx += 1;
+            }
+          }
+          if (events.length > 0) {
+            events.sort((a, b) => a.when - b.when);
+            li.inst.scheduleTeleport(events);
+          }
+        }
+      }
+
       const rendered = await offline.startRendering();
       const wavBlob = encodeWav(rendered);
       const id = `mix-${Date.now()}`;
@@ -935,7 +979,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     } finally {
       setIsCommitting(false);
     }
-  }, [clips, tracks, getTotalDurationSec, mixdownName]);
+  }, [clips, tracks, getTotalDurationSec, mixdownName, masterFxChain]);
 
   // --- Pointer math helpers. ---
   const pxToSec = useCallback((px: number) => px / zoom, [zoom]);
@@ -1374,16 +1418,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       {/* Editor Toolbar */}
       <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => addTrack()}
-            className="btn-primary flex items-center gap-1.5 bg-purple-600/20! border-purple-500/30! text-purple-300! px-2! py-0.5! text-[9px]"
-            title="Add a new empty track"
-          >
-            <Plus className="w-3 h-3" /> ADD TRACK
-          </button>
-
-          <div className="h-4 w-px bg-white/10" />
-
           <div className="flex bg-black/40 p-0.5 rounded border border-white/5 gap-0.5">
             <button
               onClick={() => setTool('move')}
@@ -1418,7 +1452,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               name="editor-snap-division"
               value={snap}
               onChange={(e) => setSnap(e.target.value as SnapDivision)}
-              className="bg-transparent border-none outline-none text-[9px] font-mono uppercase text-zinc-300 cursor-pointer"
+              className="bg-transparent border-none outline-none text-[9px] font-mono uppercase text-zinc-100 cursor-pointer"
+              style={{ colorScheme: 'dark' }}
               title="Snap divisions are relative to the editor BPM"
             >
               <option value="off">Snap off</option>
@@ -1448,6 +1483,30 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
+
+          <div className="h-4 w-px bg-white/10" />
+
+          <button
+            onClick={() => setShowMasterFx((v) => !v)}
+            aria-pressed={showMasterFx}
+            aria-label="Master FX rack"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${showMasterFx || masterFxChain.length > 0 ? 'bg-purple-600/20 border-purple-500/40 text-purple-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+            title="Master psychoacoustic insert rack (applies to the whole editor mix)"
+          >
+            <SlidersHorizontal className="w-3 h-3" /> MASTER FX
+          </button>
+
+          <button
+            onClick={() => setShowMetamorph((v) => !v)}
+            aria-pressed={showMetamorph}
+            aria-label="Metamorph granular identity-bleed panel"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${showMetamorph ? 'bg-purple-600/20 border-purple-500/40 text-purple-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+            title="Granular identity bleed: rebuild one sound out of another's grains, live"
+          >
+            <Wand2 className="w-3 h-3" /> METAMORPH
+          </button>
         </div>
 
         <div className="flex items-center gap-3">
@@ -1474,6 +1533,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           >
             <Square className="w-3.5 h-3.5 fill-current" />
           </button>
+          <label htmlFor="editor-mixdown-name" className="sr-only">Mixdown filename</label>
           <input
             id="editor-mixdown-name"
             name="editor-mixdown-name"
@@ -1496,6 +1556,85 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       </div>
 
+      {/* MASTER FX + METAMORPH float as popups (like the per-track FX rack) so they
+          never shove the timeline down; close with the X. */}
+      {(showMasterFx || showMetamorph) && (
+        <div className="fixed top-28 left-4 z-50 flex items-start gap-3 max-w-[calc(100%-2rem)]">
+          {showMasterFx && (
+            <section aria-label="Master FX rack" className="w-90 max-h-[70vh] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-purple-300">Master FX</span>
+                <button
+                  onClick={() => setShowMasterFx(false)}
+                  aria-label="Close master FX rack"
+                  className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <FxRack
+                chain={masterFxChain}
+                idPrefix="master-fx"
+                onAdd={addMasterEffect}
+                onRemove={removeMasterEffect}
+                onReorder={reorderMasterEffect}
+                onToggle={toggleMasterEffect}
+                onUpdateParams={updateMasterEffectParams}
+              />
+            </section>
+          )}
+          {showMetamorph && (
+            <section aria-label="Metamorph" className="w-90 max-h-[70vh] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-purple-300">
+                  Metamorph <span className="text-zinc-600 normal-case tracking-normal">granular identity bleed</span>
+                </span>
+                <button
+                  onClick={() => setShowMetamorph(false)}
+                  aria-label="Close Metamorph panel"
+                  className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <MetamorphPanel />
+            </section>
+          )}
+        </div>
+      )}
+
+      {/* Per-track FX rack (floating; fixed so it escapes the card's overflow clip) */}
+      {fxPanelTrackId && (() => {
+        const t = tracks.find((tr) => tr.id === fxPanelTrackId);
+        if (!t) return null;
+        return (
+          <div className="fixed right-4 top-28 z-50 w-90 max-h-[70vh] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+                Track FX — <span style={{ color: t.color }}>{t.name}</span>
+              </span>
+              <button
+                onClick={() => setFxPanelTrackId(null)}
+                aria-label="Close track FX rack"
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <FxRack
+              chain={t.fxChain ?? []}
+              idPrefix={`track-fx-${t.id}`}
+              onAdd={(eid) => addTrackEffect(t.id, eid)}
+              onRemove={(id) => removeTrackEffect(t.id, id)}
+              onReorder={(from, to) => reorderTrackEffect(t.id, from, to)}
+              onToggle={(id) => toggleTrackEffect(t.id, id)}
+              onUpdateParams={(id, p) => updateTrackEffectParams(t.id, id, p)}
+            />
+          </div>
+        );
+      })()}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
@@ -1507,9 +1646,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <div
                 key={t.id}
                 onPointerDown={(e) => handleTrackHeaderPointerDown(e, t.id)}
+                onContextMenu={(e) => { selectTrackSingle(t.id); trackMenu.open(e, { trackId: t.id }); }}
                 className={`border-b border-[#1a1528] p-2 flex flex-col gap-1.5 transition-colors ${selectedTrackIds.includes(t.id) ? 'bg-purple-500/10 ring-1 ring-inset ring-purple-500/35' : ''}`}
                 style={{ height: TRACK_HEIGHT }}
-                title="Click to select track. Ctrl/Cmd-click to multi-select tracks."
+                title="Click to select track. Ctrl/Cmd-click to multi-select tracks. Right-click for track FX."
               >
                 <div className="flex justify-between items-center gap-1">
                   <input
@@ -1531,6 +1671,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       onClick={() => toggleSolo(t.id)}
                       className={`w-4 h-4 rounded text-[8px] font-bold flex items-center justify-center ${t.solo ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'bg-black/40 text-zinc-500 border border-white/5 hover:text-white'}`}
                     >S</button>
+                    <button
+                      onClick={() => setFxPanelTrackId((cur) => (cur === t.id ? null : t.id))}
+                      aria-label={`Track ${t.name} insert FX`}
+                      aria-pressed={fxPanelTrackId === t.id}
+                      title="Track insert FX rack"
+                      className={`w-4 h-4 rounded text-[8px] font-bold flex items-center justify-center ${(t.fxChain?.length ?? 0) > 0 || fxPanelTrackId === t.id ? 'bg-purple-500/20 text-purple-300 border border-purple-500/50' : 'bg-black/40 text-zinc-500 border border-white/5 hover:text-white'}`}
+                    >F</button>
                     <button
                       onClick={() => removeTrack(t.id)}
                       className="w-4 h-4 rounded text-[8px] flex items-center justify-center bg-black/40 text-zinc-600 border border-white/5 hover:text-red-400"
@@ -1556,6 +1703,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 )}
               </div>
             ))}
+            {/* Add-track affordance sits directly below the lowest (newest) track. */}
+            <button
+              onClick={() => addTrack()}
+              aria-label="Add track"
+              title="Add a new empty track"
+              className="w-full h-7 flex items-center justify-center text-zinc-500 hover:text-purple-300 hover:bg-purple-500/10 border-b border-[#1a1528] transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -1892,6 +2048,46 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             onClose={clipMenu.close}
             items={items}
             minWidth="10rem"
+          />
+        );
+      })()}
+
+      {/* Track context menu — insert FX, opened by right-clicking a track header. */}
+      {trackMenu.position && (() => {
+        const t = tracks.find((tr) => tr.id === trackMenu.payload?.trackId);
+        if (!t) return null;
+        const hasFx = (t.fxChain?.length ?? 0) > 0;
+        const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            icon: <SlidersHorizontal className="w-3 h-3" />,
+            label: 'Open FX rack',
+            onSelect: () => setFxPanelTrackId(t.id),
+          },
+          { type: 'separator' },
+          { type: 'header', label: 'Add insert' },
+          ...RACK_EFFECTS.map((def): ContextMenuItem => ({
+            type: 'item',
+            label: def.label,
+            onSelect: () => addTrackEffect(t.id, def.id),
+          })),
+        ];
+        if (hasFx) {
+          items.push({ type: 'separator' });
+          items.push({
+            type: 'item',
+            label: 'Clear track FX',
+            danger: true,
+            onSelect: () => updateTrack(t.id, { fxChain: [] }),
+          });
+        }
+        return (
+          <ContextMenu
+            position={trackMenu.position}
+            onClose={trackMenu.close}
+            items={items}
+            title={`Track · ${t.name}`}
+            minWidth="11rem"
           />
         );
       })()}
