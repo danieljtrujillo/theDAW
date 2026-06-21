@@ -311,6 +311,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const setInpaintSelection = useEditorStore((s) => s.setInpaintSelection);
   const clearInpaintSelection = useEditorStore((s) => s.clearInpaintSelection);
   const masterFxChain = useEditorStore((s) => s.masterFxChain);
+  const automationWrite = useEditorStore((s) => s.automationWrite);
+  const setAutomationWrite = useEditorStore((s) => s.setAutomationWrite);
+  const recordAutomationPoint = useEditorStore((s) => s.recordAutomationPoint);
+  const automationLanes = useEditorStore((s) => s.automationLanes);
+
+  // Move a track fader. While automation write is on and the transport is rolling,
+  // the move records a breakpoint (timestamped off the audio clock) and is driven
+  // onto the live param so it is heard as it is recorded.
+  const writeFader = (kind: 'trackVolume' | 'trackPan', trackId: string, v: number) => {
+    updateTrack(trackId, kind === 'trackVolume' ? { volume: v } : { pan: v });
+    if (automationWrite && liveMixer.isPlaying()) {
+      const target = { kind, trackId };
+      recordAutomationPoint(target, liveMixer.currentTransportSec(), v);
+      liveMixer.automationTouchNative(target, v);
+    }
+  };
   const addMasterEffect = useEditorStore((s) => s.addMasterEffect);
   const removeMasterEffect = useEditorStore((s) => s.removeMasterEffect);
   const reorderMasterEffect = useEditorStore((s) => s.reorderMasterEffect);
@@ -1590,6 +1606,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           </button>
 
           <button
+            onClick={() => setAutomationWrite(!automationWrite)}
+            aria-pressed={automationWrite}
+            aria-label="Automation write"
+            title="Automation write: while playing, ride a track's volume or pan fader to record it; turn off to play it back"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${automationWrite ? 'bg-red-600/20 border-red-500/50 text-red-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+          >
+            <span className={`w-2 h-2 rounded-full ${automationWrite ? 'bg-red-500 animate-pulse' : 'bg-zinc-600'}`} /> WRITE
+          </button>
+
+          <button
             onClick={() => setShowMetamorph((v) => !v)}
             aria-pressed={showMetamorph}
             aria-label="Metamorph granular identity-bleed panel"
@@ -1810,12 +1837,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 <div className="flex items-center gap-1.5">
                   <Volume2 className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
                   <SlideTrack min={0} max={1} step={0.01} value={t.volume}
-                    onChange={(v) => updateTrack(t.id, { volume: v })} className="flex-1" ariaLabel="Track volume" />
+                    onChange={(v) => writeFader('trackVolume', t.id, v)} className="flex-1" ariaLabel="Track volume" />
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[7px] font-mono text-zinc-600 uppercase w-3">P</span>
                   <SlideTrack min={-1} max={1} step={0.01} value={t.pan}
-                    onChange={(v) => updateTrack(t.id, { pan: v })} className="flex-1" ariaLabel="Track pan" />
+                    onChange={(v) => writeFader('trackPan', t.id, v)} className="flex-1" ariaLabel="Track pan" />
                   <span className="text-[7px] font-mono text-zinc-600 text-right w-5">
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
                   </span>
@@ -2040,6 +2067,33 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     <div className="absolute bottom-2 w-2 h-2 rounded-full bg-white/30 group-hover/fh:bg-white/70 transition-colors border border-white/40" />
                   </div>
                 </div>
+              );
+            })}
+
+            {/* Automation lanes (read-only curve over each track; volume green, pan blue) */}
+            {automationLanes.map((lane) => {
+              if (lane.points.length === 0) return null;
+              if (lane.target.kind !== 'trackVolume' && lane.target.kind !== 'trackPan') return null;
+              const trackIdx = tracks.findIndex((t) => t.id === lane.target.trackId);
+              if (trackIdx < 0) return null;
+              const isPan = lane.target.kind === 'trackPan';
+              const color = isPan ? '#60a5fa' : '#34d399';
+              const norm = (v: number) => (isPan ? (Math.max(-1, Math.min(1, v)) + 1) / 2 : Math.max(0, Math.min(1, v)));
+              const yOf = (v: number) => (1 - norm(v)) * TRACK_HEIGHT;
+              const pts = lane.points.map((p) => `${(p.t * zoom).toFixed(1)},${yOf(p.v).toFixed(1)}`).join(' ');
+              return (
+                <svg
+                  key={lane.id}
+                  className="absolute left-0 pointer-events-none"
+                  style={{ top: trackIdx * TRACK_HEIGHT, width: timelineWidthPx, height: TRACK_HEIGHT }}
+                  width={timelineWidthPx}
+                  height={TRACK_HEIGHT}
+                >
+                  <polyline points={pts} fill="none" stroke={color} strokeOpacity={0.7} strokeWidth={1.5} />
+                  {lane.points.map((p, i) => (
+                    <circle key={`${lane.id}-${i}`} cx={p.t * zoom} cy={yOf(p.v)} r={2} fill={color} fillOpacity={0.85} />
+                  ))}
+                </svg>
               );
             })}
 

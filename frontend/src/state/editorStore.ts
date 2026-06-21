@@ -69,6 +69,86 @@ export interface EditorTrack {
   fxChain?: ChainEntry[];
 }
 
+/* ── Automation (Phase E) ─────────────────────────────────────────────────────
+   A lane records a parameter's value over timeline time as breakpoints. Playback
+   schedules them ahead of the playhead: native AudioParam envelope for vol/pan
+   (sample-accurate), a lookahead writer for FX params. */
+export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx';
+
+export interface AutomationTarget {
+  kind: AutomationTargetKind;
+  /** Set for trackVolume / trackPan / trackFx. */
+  trackId?: string;
+  /** ChainEntry id, set for trackFx / masterFx. */
+  entryId?: string;
+  /** Effect param key, set for trackFx / masterFx. */
+  paramKey?: string;
+}
+
+/** One breakpoint: timeline seconds -> value (in the param's natural units). */
+export interface AutomationPoint {
+  t: number;
+  v: number;
+}
+
+export interface AutomationLane {
+  id: string;
+  target: AutomationTarget;
+  points: AutomationPoint[]; // kept sorted ascending by t
+  enabled: boolean;
+}
+
+/** Stable identity for a target, so a control resolves to its one lane. */
+export const automationTargetKey = (target: AutomationTarget): string =>
+  `${target.kind}|${target.trackId ?? ''}|${target.entryId ?? ''}|${target.paramKey ?? ''}`;
+
+/** Linear-interpolated lane value at time `t`; null when the lane has no points.
+ *  Holds the first/last value outside the breakpoint range. */
+export const sampleLane = (lane: AutomationLane, t: number): number | null => {
+  const pts = lane.points;
+  if (pts.length === 0) return null;
+  if (t <= pts[0].t) return pts[0].v;
+  const last = pts[pts.length - 1];
+  if (t >= last.t) return last.v;
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].t <= t) lo = mid;
+    else hi = mid;
+  }
+  const a = pts[lo];
+  const b = pts[hi];
+  const f = (t - a.t) / Math.max(1e-6, b.t - a.t);
+  return a.v + (b.v - a.v) * f;
+};
+
+/** Minimum spacing between recorded breakpoints (thins ~50 Hz gestures). */
+const MIN_POINT_DT = 0.02;
+
+/** Insert (or replace a near neighbor's value) keeping `points` sorted + thinned. */
+const upsertPoint = (points: AutomationPoint[], t: number, v: number): AutomationPoint[] => {
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].t < t) lo = mid + 1;
+    else hi = mid;
+  }
+  const idx = lo;
+  const left = idx > 0 ? points[idx - 1] : null;
+  const right = idx < points.length ? points[idx] : null;
+  const next = points.slice();
+  if (left && t - left.t < MIN_POINT_DT) {
+    next[idx - 1] = { t: left.t, v };
+  } else if (right && right.t - t < MIN_POINT_DT) {
+    next[idx] = { t: right.t, v };
+  } else {
+    next.splice(idx, 0, { t, v });
+  }
+  return next;
+};
+
 interface EditorStoreState {
   tracks: EditorTrack[];
   clips: AudioClip[];
@@ -84,6 +164,10 @@ interface EditorStoreState {
   /** Master-bus insert FX chain (real-time psychoacoustic rack). Session-local —
    *  liveMixer routes the editor mix through it before the shared engine master. */
   masterFxChain: ChainEntry[];
+  /** Automation lanes (Phase E): one per automated parameter. */
+  automationLanes: AutomationLane[];
+  /** Write/arm mode: while on, moving an armed control during playback records. */
+  automationWrite: boolean;
 
   // Mutations
   addTrack: (overrides?: Partial<EditorTrack>) => string;
@@ -122,6 +206,17 @@ interface EditorStoreState {
   toggleTrackEffect: (trackId: string, entryId: string) => void;
   updateTrackEffectParams: (trackId: string, entryId: string, params: Record<string, number>) => void;
 
+  // Automation (Phase E)
+  setAutomationWrite: (on: boolean) => void;
+  recordAutomationPoint: (target: AutomationTarget, t: number, v: number) => void;
+  addAutomationPoint: (laneId: string, t: number, v: number) => void;
+  updateAutomationPoint: (laneId: string, index: number, t: number, v: number) => void;
+  removeAutomationPoint: (laneId: string, index: number) => void;
+  toggleAutomationLane: (laneId: string) => void;
+  clearAutomationLane: (laneId: string) => void;
+  removeAutomationLane: (laneId: string) => void;
+  getLaneForTarget: (target: AutomationTarget) => AutomationLane | undefined;
+
   // Selectors
   getTotalDurationSec: () => number;
   snapSec: (s: number) => number;
@@ -156,6 +251,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   bpm: 120,
   inpaintSelection: null,
   masterFxChain: [],
+  automationLanes: [],
+  automationWrite: false,
 
   addTrack: (overrides) => {
     const id = `track-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -183,6 +280,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set((s) => ({
       tracks: s.tracks.filter((t) => t.id !== id),
       clips: s.clips.filter((c) => c.trackId !== id),
+      automationLanes: s.automationLanes.filter((l) => l.target.trackId !== id),
       selectedClipId: s.clips.some((c) => c.id === s.selectedClipId && c.trackId === id) ? null : s.selectedClipId,
     }));
     logInfo('editor', `Removed track: ${id}`);
@@ -295,7 +393,10 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     })),
 
   removeMasterEffect: (entryId) =>
-    set((s) => ({ masterFxChain: s.masterFxChain.filter((e) => e.id !== entryId) })),
+    set((s) => ({
+      masterFxChain: s.masterFxChain.filter((e) => e.id !== entryId),
+      automationLanes: s.automationLanes.filter((l) => l.target.entryId !== entryId),
+    })),
 
   reorderMasterEffect: (from, to) =>
     set((s) => {
@@ -332,6 +433,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       tracks: s.tracks.map((t) =>
         t.id === trackId ? { ...t, fxChain: (t.fxChain ?? []).filter((e) => e.id !== entryId) } : t,
       ),
+      automationLanes: s.automationLanes.filter((l) => l.target.entryId !== entryId),
     })),
 
   reorderTrackEffect: (trackId, from, to) =>
@@ -364,6 +466,72 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
           : t,
       ),
     })),
+
+  setAutomationWrite: (on) => set({ automationWrite: on }),
+
+  recordAutomationPoint: (target, t, v) =>
+    set((s) => {
+      const key = automationTargetKey(target);
+      const existing = s.automationLanes.find((l) => automationTargetKey(l.target) === key);
+      if (existing) {
+        return {
+          automationLanes: s.automationLanes.map((l) =>
+            l.id === existing.id ? { ...l, points: upsertPoint(l.points, t, v) } : l,
+          ),
+        };
+      }
+      return {
+        automationLanes: [
+          ...s.automationLanes,
+          { id: uid(), target, points: [{ t, v }], enabled: true },
+        ],
+      };
+    }),
+
+  addAutomationPoint: (laneId, t, v) =>
+    set((s) => ({
+      automationLanes: s.automationLanes.map((l) =>
+        l.id === laneId ? { ...l, points: upsertPoint(l.points, t, v) } : l,
+      ),
+    })),
+
+  updateAutomationPoint: (laneId, index, t, v) =>
+    set((s) => ({
+      automationLanes: s.automationLanes.map((l) => {
+        if (l.id !== laneId || index < 0 || index >= l.points.length) return l;
+        const without = l.points.filter((_, i) => i !== index);
+        return { ...l, points: upsertPoint(without, t, v) };
+      }),
+    })),
+
+  removeAutomationPoint: (laneId, index) =>
+    set((s) => ({
+      automationLanes: s.automationLanes.map((l) =>
+        l.id === laneId ? { ...l, points: l.points.filter((_, i) => i !== index) } : l,
+      ),
+    })),
+
+  toggleAutomationLane: (laneId) =>
+    set((s) => ({
+      automationLanes: s.automationLanes.map((l) =>
+        l.id === laneId ? { ...l, enabled: !l.enabled } : l,
+      ),
+    })),
+
+  clearAutomationLane: (laneId) =>
+    set((s) => ({
+      automationLanes: s.automationLanes.map((l) =>
+        l.id === laneId ? { ...l, points: [] } : l,
+      ),
+    })),
+
+  removeAutomationLane: (laneId) =>
+    set((s) => ({ automationLanes: s.automationLanes.filter((l) => l.id !== laneId) })),
+
+  getLaneForTarget: (target) => {
+    const key = automationTargetKey(target);
+    return get().automationLanes.find((l) => automationTargetKey(l.target) === key);
+  },
 
   getTotalDurationSec: () => {
     const { clips } = get();
