@@ -110,6 +110,8 @@ For continuation, `inpaint_mask_start_seconds` takes the source length and `dura
 
 ARC checkpoints are post-trained for 8-step inference at `cfg_scale=1`. RF checkpoints are rectified-flow bases for LoRA training at `cfg_scale=7` and roughly 50 steps. ARC and RF checkpoints bundle the autoencoder, and standalone SAME checkpoints reuse the cached full checkpoint when one is available.
 
+Nothing downloads at startup; a model loads on the first generation that needs it, and the in-app **Settings → Models** panel can register checkpoints you already have. To place files by hand (which model, which files, and the exact folder tree with download links, plus where the T5Gemma text encoder lives), see [User Guide §21.2 "Manual model placement"](docs/USER_GUIDE.md#212-manual-model-placement-download-links-and-folder-tree).
+
 ---
 
 ## Feature Summary

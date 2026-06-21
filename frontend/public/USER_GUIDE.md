@@ -389,13 +389,54 @@ Render process:
 1. All non-muted (or exclusively soloed) tracks are collected.
 2. Clip source Blobs are decoded in a temporary `AudioContext` (one decode per unique Blob, cached for clips sharing a source). A 15-second timeout guards against stalled decode operations.
 3. An `OfflineAudioContext` is initialized at 44.1 kHz stereo with a duration equal to the total timeline length.
-4. Each clip is scheduled through `BufferSourceNode.start(clipStartSec, offsetIntoSource, durationSec)`. Per-track volume and stereo pan are applied. Fade-in and fade-out gain envelopes are automated with `linearRampToValueAtTime`.
+4. Each clip is scheduled through `BufferSourceNode.start(clipStartSec, offsetIntoSource, durationSec)`. Per-track volume and stereo pan are applied. Fade-in and fade-out gain envelopes are automated with `linearRampToValueAtTime`. Each track's insert FX chain and the master FX chain are rebuilt in the offline context with the same factories used in preview, so the psychoacoustic rack (§7.7) and any Spatializer Teleport motion (§7.8) bake into the file.
 5. `OfflineAudioContext.startRendering()` produces the final `AudioBuffer`.
 6. A WAV Blob is encoded as 16-bit PCM (`encodeWav`).
 7. The Blob is saved to the Library (`source: 'editor-mixdown'`).
 8. A browser file download is triggered automatically.
 
 During the render, the COMMIT EDIT button shows an animated spinner and is disabled.
+
+### 7.7 Insert FX Rack (Psychoacoustic)
+
+EDIT carries a real-time insert-effect rack that processes audio during preview and bakes into COMMIT EDIT through the same node graph. Two scopes exist: a **master** rack on the editor mix, and a per-track rack on each track. The master rack processes only the EDIT mix, so library, DJ, and sequencer playback stay untouched.
+
+Open the master rack from the **MASTER FX** toolbar toggle. Open a track's rack from the **F** button on its header, or right-click a track header and choose **Open FX rack**. The right-click menu also offers **Add insert** for every effect and **Clear track FX**.
+
+Each rack is an ordered chain. The **+ Add effect…** dropdown appends an effect; per-effect controls bypass it, move it earlier or later in the chain, and remove it. Parameters are SLIDE sliders that update the running audio without a rebuild.
+
+Six psychoacoustic processors are available:
+
+| Effect | Group | What it does |
+|---|---|---|
+| **Headphone Crossfeed** | Spatial | Relieves hard-panned headphone "in-head" stereo (Bauer/BS2B). Params: Amount, Cut (Hz). |
+| **Phantom Bass** | Low end | Implies the missing fundamental through synthesized harmonics, so small speakers read deep bass. Params: Drive, Blend, Crossover (Hz). |
+| **Stereo Widener** | Spatial | True mid/side widening with a mono-safe low end. Params: Width, Bass mono (Hz). |
+| **Aural Exciter** | Tone | Adds harmonic air and presence the ear reads as detail. Params: Freq (Hz), Amount, Mix. |
+| **HRTF Spatializer** | Spatial | Positions the track in 3D around the head with motion presets (see §7.8). |
+| **Loudness Contour** | Tone | Equal-loudness tilt so the balance holds at low volume. Params: Level (phon), Amount. |
+
+### 7.8 Spatializer, Teleport, and Autopilot
+
+The **HRTF Spatializer** effect places a track in 3D space around the listener through a `PannerNode`, with a visual placement pad and motion presets. Azimuth, Elevation, and Distance set a static position; the **Motion** control adds movement, and Rate and Depth shape it.
+
+Twelve motion modes are available: Static, Orbit H CW, Orbit H CCW, Orbit Frontal, Orbit Sagittal, Spherical, Ping-Pong, Up / Down, Figure-8, Expand / Collapse, Teleport, and Autopilot.
+
+**Teleport** jumps the track between positions in step with the audio. The clip is sliced on its onsets through a time-domain, FFT-free analysis, and each slice is placed by its character: louder slices sit closer and quieter ones further away, brighter slices ride higher, and a golden-angle scatter spreads them around the head. The Depth parameter widens or narrows that scatter. The same deterministic slicing runs in the offline bounce, so the export matches the preview.
+
+**Autopilot** is a live spatial choreographer. A real-time analyser reads level, brightness, and onset timing, then steers a beat-aware orbit, an elevation follower tied to brightness, a distance follower tied to bass, a mood-weighted motion layer, and onset-fired accent jumps. Autopilot runs during live preview; the offline bounce falls back to the Spherical orbit.
+
+### 7.9 Metamorph: Granular Identity-Bleed Morph
+
+Open **Metamorph** from its toolbar toggle to morph one sound into another in real time. Pick a **Donor A (identity)** and a **Host B (structure)** from either the current timeline clips or the library. Metamorph rebuilds Host B out of grains taken from Donor A, so the output keeps B's structure in A's voice.
+
+Eight sliders shape the result: **Bleed** (dry host through to full mosaic), **Grain** (grain size in seconds), **Rate** (grains per second), **Spray** (start and timing jitter), **Match** (selection strictness), **Sync** (lock grains to the host's beat grid), **Favor** (bias toward punchy donor grains), and **Gain** (output trim). **Play** auditions the morph live; **Send to editor** renders one pass and drops it on a new track as an ordinary clip, ready to trim, FX, and export.
+
+### 7.10 Live MIDI Playback in the Timeline
+
+A clip whose source is a piano-roll part plays its notes live through the soundfont engine during transport, not only as a pre-rendered bounce. Each track maps to one synth channel (up to sixteen), and notes are scheduled against the editor clock at the clip's BPM.
+
+Live MIDI is opt-in: it activates only when the soundfont is in use, or a per-clip or per-track instrument is set, so projects that never touch instruments keep playing their bounced audio unchanged. A clip's instrument falls back to its track's instrument, then to the globally selected program. Mute and solo are honored by skipping a track's notes. If the synth is not ready, the clip's bounced audio plays instead. The offline export still renders from each clip's last bounce. Choose an instrument as described in §15.8.
 
 ---
 
@@ -777,6 +818,12 @@ Suggestions are strongest when the library is analyzed. Unanalyzed tracks still 
 
 Shown until the first generation. It contains a **Go generate something** button that switches the active workspace to MAKE.
 
+### 13.12 Stems and MIDI as First-Class Items
+
+The library splits its contents into four sub-tabs: **Tracks**, **Stems**, **MIDI**, and **Video**. Stems and MIDI are first-class items rather than attachments to a parent track. Each row plays through the shared engine, can be favorited, and can be deleted on its own without touching the source track.
+
+A stem row plays its separated audio and shows the separation model. Its right-click menu sends the stem to a new editor track, to the tail of the first track, to Init audio, to Inpaint, or to the Chimera stack, and offers a `.wav` download. A MIDI row plays through the synth and can be sent to the Piano Roll, the Step Sequencer, or (rendered to audio) to the editor, Init audio, Inpaint, or Chimera, with a `.mid` download. Favoriting or deleting a stem or MIDI row affects only that row, never its parent entry.
+
 ---
 
 ## 14. Step Sequencer
@@ -878,6 +925,12 @@ Renders the current note pattern to a 44.1 kHz stereo WAV through `OfflineAudioC
 ### 15.7 Edit in Piano Roll
 
 Clips in the waveform editor whose `sourceKind` is `'piano-roll'` display an **Edit in Piano Roll** action. Triggering it loads the clip's stored note list and BPM into the piano roll store and switches the bottom panel to the Piano tab.
+
+### 15.8 Instrument: Soundfont and Synth Voices
+
+The **Instrument** picker chooses how the Piano Roll's notes sound, both for preview and for the soundfont-backed render. The default is **Basic (sawtooth)**, the lightweight built-in synth. The **General MIDI** group selects any of the 128 GM programs, played through a bundled SoundFont (`gm.sf3`) on the SpessaSynth engine; the soundfont warms up on first use and falls back to the sawtooth if it cannot load.
+
+The picker also lists procedural synth voices grouped as **Bass**, **Lead / Chord**, **FX**, **Psychoacoustic** (phantom-sub, binaural, Shepard, difference-tone, and related voices), and **Talk-Box** (formant-filtered vowel voices in Bass, Tenor, Countertenor, Alto, and Soprano ranges, each with five sung vowels). A Talk-Box voice runs a sawtooth glottal source through a bank of formant filters, so each vowel reads as a sung "ah/eh/ee/oh/oo." The selected instrument also drives live MIDI playback in the timeline (see §7.10).
 
 ---
 
@@ -1497,6 +1550,48 @@ The **Models** section sits directly below the pinned Restart/Shutdown controls 
 
 Every load also narrates itself. The backend console prints one `model resolve:` line per file with the exact path it used, and a WARNING before anything downloads (including the T5Gemma text encoder's one-time fetch). The MAKE LOAD button echoes the same trail into the in-app LOG: where each file resolved from, a loud line when a download is about to happen, and a block notice when local-only mode stops one.
 
+### 21.2 Manual model placement (download links and folder tree)
+
+The **Settings → Models** panel in §21.1 is the easiest route, but checkpoints can also be placed by hand. The backend searches three locations in order: every directory in the `SA3_LOCAL_MODELS_DIR` environment variable (paths separated by `;` on Windows), every path listed one-per-line in `local_models.txt` at the repo root, and a `models/` folder in the repo root if it exists. Creating that `models/` folder is the simplest setup.
+
+Inside a search folder, each model lives in a **subfolder named after its Hugging Face repo** (the part after `stabilityai/`). The config JSON and the `.safetensors` go in that subfolder. The original Hugging Face filenames work unchanged, and so do the generic `model_config.json` + `model.safetensors` names.
+
+Download table (each links to its Hugging Face repo):
+
+| Key | Use | Hugging Face repo | Files to place in the subfolder |
+|---|---|---|---|
+| `small` | Primary inference, CPU-capable | [stable-audio-3-small](https://huggingface.co/stabilityai/stable-audio-3-small) | `stable-audio-3-small-ARC.json`, `stable-audio-3-small-ARC.safetensors` |
+| `medium` | Primary inference, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `stable-audio-3-medium-ARC.json`, `stable-audio-3-medium-ARC.safetensors` |
+| `small-rf` | LoRA training base, CPU | [stable-audio-3-small](https://huggingface.co/stabilityai/stable-audio-3-small) | `stable-audio-3-small-RF.json`, `stable-audio-3-small-RF.safetensors` |
+| `medium-rf` | LoRA training base, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `stable-audio-3-medium-RF.json`, `stable-audio-3-medium-RF.safetensors` |
+| `same-s` | Standalone autoencoder (optional) | [SAME-S](https://huggingface.co/stabilityai/SAME-S) | `SAME-S.json`, `SAME-S.safetensors` |
+| `same-l` | Standalone autoencoder (optional) | [SAME-L](https://huggingface.co/stabilityai/SAME-L) | `SAME-L.json`, `SAME-L.safetensors` |
+
+A typical Small + Medium install under the repo-root `models/` folder looks like this:
+
+```
+stable-audio-3/
+└── models/
+    ├── stable-audio-3-small/
+    │   ├── stable-audio-3-small-ARC.json
+    │   └── stable-audio-3-small-ARC.safetensors
+    └── stable-audio-3-medium/
+        ├── stable-audio-3-medium-ARC.json
+        └── stable-audio-3-medium-ARC.safetensors
+```
+
+The subfolder name is what matters; inside it, `stable-audio-3-medium-RF.safetensors` + `stable-audio-3-medium-RF.json`, or `model.safetensors` + `model_config.json`, both resolve.
+
+The specialized post-trained and base variants follow the same convention: a subfolder named after the repo (`stable-audio-3-small-music`, `stable-audio-3-small-sfx`, `stable-audio-3-medium-base`, and the matching `-music-base` / `-sfx-base` repos) holding `model_config.json` + `model.safetensors`.
+
+**Which to download.** A CUDA GPU runs `medium` (the higher-quality path, roughly 17 GB). CPU-only machines run `small`. The `-rf` checkpoints are for LoRA training, not normal generation. **SAME-S and SAME-L are optional**: the ARC and RF checkpoints already bundle the autoencoder, and a standalone SAME reuses that bundled copy, so download SAME only for standalone encode/decode without a DiT.
+
+**The T5Gemma text encoder** ([google/t5gemma-b-b-ul2](https://huggingface.co/google/t5gemma-b-b-ul2)) is always required for text conditioning. It does NOT go in the `models/` folder; it loads from the Hugging Face cache under `%USERPROFILE%\.cache\huggingface\hub\`. Let the app fetch it on the first generation, or pre-fetch it with `hf download google/t5gemma-b-b-ul2`. Set `HF_HOME` before launching to relocate the cache.
+
+**Already have a checkpoint elsewhere?** Skip the folder convention entirely: open **Settings → Models → Add a checkpoint you already have**, click **Browse**, and point it at the folder (or the `.safetensors` file) directly.
+
+**Magenta RealTime 2 (optional)** is not a Stable Audio checkpoint and is not placed this way. Its one-time installer is `sidecars/magenta-rt2-nvidia/Setup-MRT2.bat`, which sets up the WSL2 engine and its assets (§27).
+
 ---
 
 ## 22. LoRA Adapter Types
@@ -1778,7 +1873,7 @@ Two offline helpers under `scripts/` bulk-import an existing SunoHarvester cache
 
 ## 27. Magenta RealTime 2
 
-The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. **"Magenta RT2 (text→music)"** is always present in the Model dropdown, and selecting it runs the GPU swap automatically: the Stable Audio model parks in CPU RAM (`POST /api/model/offload`), any other MRT2 engine is stopped, and the extended sidecar starts inside WSL2. A status pill beside the dropdown tracks the engine (amber **LOADING** during the one-time model load and compile, green **READY**, red **ERROR**). On a machine where the WSL engine was never installed, the swap stops before touching the GPU and the pill shows amber **SETUP** instead; its tooltip points at `Setup-MRT2.bat`, the one-time consent-based installer. Selecting any Stable Audio model reverses the swap: the engine stops and the Stable Audio model returns to the GPU. No terminal is involved at any point.
+The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2)** real-time music model into the Generate workspace as a text→music option. **"Magenta RT2 (text→music)"** is always present in the Model dropdown, and selecting it runs the GPU swap automatically: the Stable Audio model parks in CPU RAM (`POST /api/model/offload`), any other MRT2 engine is stopped, and the extended sidecar starts inside WSL2. A status pill beside the dropdown tracks the engine (amber **LOADING** during the one-time model load and compile, green **READY**, red **ERROR**). On a machine where the WSL engine was never installed, the swap stops before touching the GPU and the pill shows amber **SETUP** instead; its tooltip points at `Setup-MRT2.bat` (in `sidecars/magenta-rt2-nvidia/`), the one-time consent-based installer. Selecting any Stable Audio model reverses the swap: the engine stops and the Stable Audio model returns to the GPU. No terminal is involved at any point.
 
 ![Magenta RealTime 2 text→music panel in the Generate workspace, the first non-Mac MRT2 port](screenshots/make-magenta-rt2.png)
 

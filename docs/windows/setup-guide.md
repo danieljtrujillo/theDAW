@@ -134,6 +134,12 @@ hf download stabilityai/stable-audio-3-medium
 If the repo requires authentication, run `hf auth login` first. The Medium model
 is roughly 17 GB.
 
+To place model files by hand instead (offline installs, or putting them on
+another drive), see the User Guide section 21.2, "Manual model placement," for
+the exact folder tree, the per-model download links and filenames, and where the
+T5Gemma text encoder belongs. The in-app **Settings -> Models** panel can also
+register a checkpoint you already have through its **Browse** button.
+
 ---
 
 ## Hardware notes
