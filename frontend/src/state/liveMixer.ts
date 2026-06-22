@@ -449,7 +449,7 @@ function scheduleAutomation(fromSec: number): void {
 
 /** One lookahead frame: write each enabled FX lane's current value into its live
  *  effect param. Values are grouped per effect entry first, so a multi-param
- *  effect (e.g. KAOSS x + y) gets ONE merged update instead of competing
+ *  effect (e.g. OWL-Pad x + y) gets ONE merged update instead of competing
  *  single-key updates that would each reset the other key to its static value. */
 function applyFxAutomationFrame(): void {
   if (!playing) return;

@@ -39,7 +39,7 @@ export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadPro
   const dragging = useRef(false);
   const def = getRackEffect('spatializer');
 
-  const azimuth = params.azimuth ?? -30;
+  const azimuth = params.azimuth ?? 0;
   const elevation = params.elevation ?? 0;
   const distance = params.distance ?? 1.5;
   const motion = Math.round(params.motion ?? 0);

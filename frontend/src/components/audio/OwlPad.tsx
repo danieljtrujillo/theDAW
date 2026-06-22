@@ -1,19 +1,19 @@
 /**
- * KaossPad — XY performance surface for the Kaoss rack effect. Dragging sets the
+ * OwlPad — XY performance surface for the OWL-Pad rack effect. Dragging sets the
  * effect's x/y params live (and engages it); a program selector picks what the
  * two axes do, and HOLD latches the last position instead of gating back to dry
  * when the pointer is released.
  *
- * Rendered by FxRack in place of the generic sliders when the effect is 'kaoss'.
+ * Rendered by FxRack in place of the generic sliders when the effect is 'owlpad'.
  * Values round-trip through the same ChainEntry.params the audio factory reads,
  * so the pad and the sound stay in sync (and the offline bounce uses them too).
  */
 
 import { useRef } from 'react';
 import { SlideTrack } from './SlideTrack';
-import { KAOSS_PROGRAMS } from '../../lib/rackEffects';
+import { OWLPAD_PROGRAMS } from '../../lib/rackEffects';
 
-interface KaossPadProps {
+interface OwlPadProps {
   params: Record<string, number>;
   onChange: (params: Record<string, number>) => void;
   idPrefix: string;
@@ -31,7 +31,7 @@ const axisLabels = (program: number): { x: string; y: string } => {
   }
 };
 
-export function KaossPad({ params, onChange, idPrefix }: KaossPadProps) {
+export function OwlPad({ params, onChange, idPrefix }: OwlPadProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragging = useRef(false);
 
@@ -71,8 +71,8 @@ export function KaossPad({ params, onChange, idPrefix }: KaossPadProps) {
     if (!hold) onChange({ ...params, active: 0 }); // gate back to dry on release
   };
 
-  const programId = `${idPrefix}-kaoss-program`;
-  const mixId = `${idPrefix}-kaoss-mix-label`;
+  const programId = `${idPrefix}-owlpad-program`;
+  const mixId = `${idPrefix}-owlpad-mix-label`;
 
   return (
     <div className="flex flex-col gap-2">
@@ -83,7 +83,7 @@ export function KaossPad({ params, onChange, idPrefix }: KaossPadProps) {
           height={PAD}
           viewBox={`0 0 ${PAD} ${PAD}`}
           role="application"
-          aria-label={`Kaoss XY pad. Drag to sweep ${labels.x} on the X axis and ${labels.y} on the Y axis.`}
+          aria-label={`OWL-Pad XY pad. Drag to sweep ${labels.x} on the X axis and ${labels.y} on the Y axis.`}
           className="shrink-0 rounded bg-black/50 border border-white/10 cursor-crosshair touch-none"
           onPointerDown={onDown}
           onPointerMove={onMove}
@@ -107,7 +107,7 @@ export function KaossPad({ params, onChange, idPrefix }: KaossPadProps) {
         </svg>
 
         <div className="flex-1 flex flex-col gap-1.5 min-w-0">
-          <label htmlFor={programId} className="sr-only">Kaoss program</label>
+          <label htmlFor={programId} className="sr-only">OWL-Pad program</label>
           <select
             id={programId}
             name={programId}
@@ -116,7 +116,7 @@ export function KaossPad({ params, onChange, idPrefix }: KaossPadProps) {
             className="bg-zinc-900 border border-white/20 rounded px-2 py-1 text-[11px] font-mono text-zinc-100 outline-none focus:border-purple-500/60 cursor-pointer"
             style={{ colorScheme: 'dark' }}
           >
-            {KAOSS_PROGRAMS.map((label, i) => (
+            {OWLPAD_PROGRAMS.map((label, i) => (
               <option key={label} value={i}>{label}</option>
             ))}
           </select>
