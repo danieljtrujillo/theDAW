@@ -339,6 +339,33 @@ export const FEATURE_DESCRIPTORS: FeatureDescriptor[] = [
     status: 'implemented',
     docSearchTerms: ['first-class items', 'Stems', 'sub-tabs', 'favorited', 'Send to the Piano Roll'],
   },
+  {
+    id: 'xr-quest-integrations',
+    name: 'Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, and the GANTASMO Visor, without Quest Link or MQDH',
+    domain: 'vj',
+    sourcePaths: ['backend/modules/questcast/router.py', 'backend/modules/queststitch/bridge.py', 'backend/modules/questmidi/router.py'],
+    evidence: ['scrcpy relay over ADB (no Quest Link / no MQDH)', 'GantasmoStitchStreamer MediaCodec H.264 -> TCP -> WS bridge', 'QuestMidiBridge two-way MIDI + loopMIDI return', 'GANTASMO Visor reacts to return-circuit MIDI'],
+    status: 'implemented',
+    docSearchTerms: ['delinQuest', 'queststitch', 'Quest MIDI bridge', 'GANTASMO Visor', 'Quest Link', 'Meta Quest Developer Hub'],
+  },
+  {
+    id: 'vj-camera-sources',
+    name: 'VJ dedicated sources: delinQuest, STITCH passthrough, procedural cymatics, and screen/window capture, alongside webcam/phone/Quest-browser inputs',
+    domain: 'vj',
+    sourcePaths: ['frontend/src/views/VJView.tsx', 'backend/modules/questcast/router.py', 'backend/modules/queststitch/bridge.py'],
+    evidence: ['delinQuest + STITCH source buttons', 'cymatics render-as-source', 'getDisplayMedia screen/window capture', 'browser-camera path for phone/Quest-browser'],
+    status: 'implemented',
+    docSearchTerms: ['delinQuest', 'STITCH', 'Cymatics', 'screen or window capture', 'getDisplayMedia'],
+  },
+  {
+    id: 'vj-broadcast-watch-link',
+    name: 'VJ broadcast watch-link: WebRTC signaling for a live peer-to-peer viewer URL of the VJ output',
+    domain: 'vj',
+    sourcePaths: ['backend/modules/broadcast/router.py'],
+    evidence: ['/api/broadcast WebRTC signaling', 'LAN watch-link', 'GO-LIVE + TURN still in progress'],
+    status: 'experimental',
+    docSearchTerms: ['watch-link', 'Broadcast', 'WebRTC', '/api/broadcast'],
+  },
 ];
 
 export const SCREENSHOT_SPECS: ScreenshotSpec[] = [

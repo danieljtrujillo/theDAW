@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-21T14:40:09.880Z",
-  "repoRevision": "62edab5b45f3",
+  "generatedAt": "2026-06-22T01:18:50.116Z",
+  "repoRevision": "50a44d90f570",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -721,6 +721,75 @@
         "favorited",
         "Send to the Piano Roll"
       ]
+    },
+    {
+      "id": "xr-quest-integrations",
+      "name": "Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, and the GANTASMO Visor, without Quest Link or MQDH",
+      "domain": "vj",
+      "sourcePaths": [
+        "backend/modules/questcast/router.py",
+        "backend/modules/queststitch/bridge.py",
+        "backend/modules/questmidi/router.py"
+      ],
+      "evidence": [
+        "scrcpy relay over ADB (no Quest Link / no MQDH)",
+        "GantasmoStitchStreamer MediaCodec H.264 -> TCP -> WS bridge",
+        "QuestMidiBridge two-way MIDI + loopMIDI return",
+        "GANTASMO Visor reacts to return-circuit MIDI"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "delinQuest",
+        "queststitch",
+        "Quest MIDI bridge",
+        "GANTASMO Visor",
+        "Quest Link",
+        "Meta Quest Developer Hub"
+      ]
+    },
+    {
+      "id": "vj-camera-sources",
+      "name": "VJ dedicated sources: delinQuest, STITCH passthrough, procedural cymatics, and screen/window capture, alongside webcam/phone/Quest-browser inputs",
+      "domain": "vj",
+      "sourcePaths": [
+        "frontend/src/views/VJView.tsx",
+        "backend/modules/questcast/router.py",
+        "backend/modules/queststitch/bridge.py"
+      ],
+      "evidence": [
+        "delinQuest + STITCH source buttons",
+        "cymatics render-as-source",
+        "getDisplayMedia screen/window capture",
+        "browser-camera path for phone/Quest-browser"
+      ],
+      "status": "implemented",
+      "docSearchTerms": [
+        "delinQuest",
+        "STITCH",
+        "Cymatics",
+        "screen or window capture",
+        "getDisplayMedia"
+      ]
+    },
+    {
+      "id": "vj-broadcast-watch-link",
+      "name": "VJ broadcast watch-link: WebRTC signaling for a live peer-to-peer viewer URL of the VJ output",
+      "domain": "vj",
+      "sourcePaths": [
+        "backend/modules/broadcast/router.py"
+      ],
+      "evidence": [
+        "/api/broadcast WebRTC signaling",
+        "LAN watch-link",
+        "GO-LIVE + TURN still in progress"
+      ],
+      "status": "experimental",
+      "docSearchTerms": [
+        "watch-link",
+        "Broadcast",
+        "WebRTC",
+        "/api/broadcast"
+      ]
     }
   ],
   "coverage": [
@@ -939,7 +1008,7 @@
         "#10-vj-tab",
         "#purpose",
         "#10-3-bridges",
-        "#10-4-export",
+        "#10-6-autopilot-visual-effects",
         "#13-8-video-and-image-media",
         "#19-17-vj"
       ],
@@ -1051,7 +1120,8 @@
       "docAnchors": [
         "#7-6-commit-edit",
         "#7-7-insert-fx-rack-psychoacoustic",
-        "#7-8-spatializer-teleport-and-autopilot"
+        "#7-8-spatializer-teleport-and-autopilot",
+        "#10-6-autopilot-visual-effects"
       ],
       "coverage": "documented",
       "notes": "Matched 6/6 guide terms."
@@ -1100,6 +1170,42 @@
       ],
       "coverage": "documented",
       "notes": "Matched 4/5 guide terms."
+    },
+    {
+      "featureId": "xr-quest-integrations",
+      "docAnchors": [
+        "#dedicated-in-app-sources-delinquest-stitch-cymatics-and-screen-capture",
+        "#34-quest-and-xr-integrations",
+        "#34-1-delinquest-quest-video-into-the-vj",
+        "#34-2-stitch-clean-passthrough-into-the-vj",
+        "#34-3-quest-midi-bridge",
+        "#34-4-gantasmo-visor",
+        "#34-5-setup-notes"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 6/6 guide terms."
+    },
+    {
+      "featureId": "vj-camera-sources",
+      "docAnchors": [
+        "#8-1-layout",
+        "#dedicated-in-app-sources-delinquest-stitch-cymatics-and-screen-capture",
+        "#12-3-how-the-visualizations-are-rendered",
+        "#25-5-promo-video-capture",
+        "#34-1-delinquest-quest-video-into-the-vj",
+        "#34-2-stitch-clean-passthrough-into-the-vj",
+        "#34-5-setup-notes"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 5/5 guide terms."
+    },
+    {
+      "featureId": "vj-broadcast-watch-link",
+      "docAnchors": [
+        "#10-5-broadcast-and-watch-link"
+      ],
+      "coverage": "documented",
+      "notes": "Matched 4/4 guide terms."
     }
   ],
   "missingFeatureIds": [],

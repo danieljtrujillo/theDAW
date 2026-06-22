@@ -51,6 +51,7 @@ The **Docs** button in the top bar opens this guide as a modal with a filterable
 31. [Controller Vision](#31-controller-vision)
 32. [Admin, Module, and Assistant-Key APIs](#32-admin-module-and-assistant-key-apis)
 33. [Notation, Score, Tabs, and Arrangements](#33-notation-score-tabs-and-arrangements)
+34. [Quest and XR Integrations](#34-quest-and-xr-integrations)
 
 ---
 
@@ -591,6 +592,15 @@ The camera input extends past a webcam on the host machine. Any device that open
 
 A master MIDI gate turns Web MIDI on or off for the whole app. When off, the app never requests Web MIDI access, so no browser permission prompt appears.
 
+#### Dedicated in-app sources: delinQuest, STITCH, cymatics, and screen capture
+
+Beyond the browser-camera path above, the VJ source selector offers sources the app drives directly:
+
+- **delinQuest** streams a connected Meta Quest's video into the VJ over ADB (USB or wireless), decoded in the browser, with a choice of 16:9 or side-by-side 3D. It needs neither Quest Link nor Meta Quest Developer Hub. See §34.1.
+- **STITCH** streams only the Quest's clean stitched passthrough (the real-world composite, without the performer's overlay) as a separate source. See §34.2.
+- **Cymatics** renders a procedural, audio-reactive cymatics scene as the source, with plate, orb, landscape, sphere, and plasma modes, mixable against the other sources on the source crossfader.
+- **Screen or window capture** picks a monitor or an application window through the browser's `getDisplayMedia` and feeds it as the source.
+
 ### 10.2 Pop-out and Mobile
 
 - **Pop out** opens the visuals in a separate window. Drag it onto a second monitor for live performance while theDAW keeps running on the main display. **Pop back in** returns it to the tab. Closing the window manually snaps back automatically.
@@ -608,6 +618,14 @@ The tab wires several bridges to the engine through `postMessage`:
 ### 10.4 Export
 
 The visual engine records performances and the backend transcodes the recording to the chosen codec. The saved path is reported back and surfaced in the Processing Log. Exports are written to the local `exports/` folder and are never committed to the repository.
+
+### 10.5 Broadcast and watch-link
+
+A WebRTC signaling module (`/api/broadcast`) backs a live watch-link of the VJ output, so a viewer on the venue LAN can open a URL and watch the visuals peer-to-peer, with no media passing through the server. The GO-LIVE broadcaster front end, a DJ-audio host hop, and a TURN relay for public links are still in progress.
+
+### 10.6 Autopilot visual effects
+
+The VJ engine includes an Autopilot that layers audio-reactive visual effects, such as feedback wash, glitch, and waveform warp, each with its own probability, under a single Autopilot toggle. Turning it on lets the visuals evolve hands-free in time with the audio.
 
 ![VJ tab panel loading state](screenshots/08-vj-tab-loading__vj-panel.png)
 
@@ -2049,6 +2067,34 @@ GET  /api/analysis/{entry_id}/prompt
 ```
 
 `GET /api/notation` reports capabilities (music21 and MuseScore availability, supported formats, tab tunings, arrangement styles). `from-midi` converts a MIDI to MusicXML; `export` takes `{source_artifact_id, format}` with format musicxml/abc/pdf/svg; `tabs` takes `{source_artifact_id | midi_id, instrument, tuning_name, capo, difficulty}` and returns alphaTex; `arrange` takes `{style, source_artifact_id | source_artifact_ids | midi_id}` and returns MusicXML. `GET /api/analysis/{entry_id}/prompt` returns `{prompt_guess, prompt_confidence, semantic_tags}` regenerated from the stored analysis.
+
+---
+
+## 34. Quest and XR Integrations
+
+theDAW drives a Meta Quest headset for live performance without Quest Link (PC tethering) or Meta Quest Developer Hub casting. Each integration rides plain ADB over USB or a wireless pairing, and the backend starts the relay it needs on demand. The headset-side components live in the GANTASMO-MIDI Unity project.
+
+### 34.1 delinQuest: Quest video into the VJ
+
+delinQuest streams the headset's video into the VJ as a live source. The backend `questcast` module starts a Node relay that speaks the scrcpy protocol to the headset over ADB and pushes H.264 over a WebSocket; the VJ decodes it in the browser with WebCodecs and binds it to a camera stream. The VJ source button is labelled **delinQuest** and offers a full side-by-side 3D frame or a single eye cropped to 16:9. Selecting it auto-starts the relay (it verifies ADB and Node, installs the relay's dependency once, then connects), so there is no manual casting step. It requires USB debugging or a wireless ADB pairing on the headset.
+
+This is distinct from pointing the headset's own browser at a tunnel URL (§10.1): delinQuest pulls the headset's rendered video directly over ADB, with no in-headset browser and no public tunnel.
+
+### 34.2 STITCH: clean passthrough into the VJ
+
+queststitch streams only the Quest's stitched passthrough, the clean real-world composite without the performer's overlaid surface, as a separate **STITCH** source. A Unity component on the headset (`GantasmoStitchStreamer`) encodes the stitch render texture to H.264 with Android MediaCodec and sends it over an ADB-reversed TCP socket; the backend `queststitch` bridge re-frames it onto a WebSocket the VJ decodes the same way as delinQuest.
+
+### 34.3 Quest MIDI bridge
+
+QuestMidiBridge carries MIDI both ways between the headset and the DAW over an ADB-reversed TCP socket. The headset sends control and note MIDI, including 14-bit high-resolution CC for hand tracking, into the DAW; the DAW sends MIDI back to the headset through a loopMIDI return port. A hand gesture in-headset can drive the mix, and the mix can drive something in-headset.
+
+### 34.4 GANTASMO Visor
+
+The GANTASMO Visor is a procedural chrome visor rendered in-headset that reacts to the MIDI arriving on the return circuit: control changes drive its glow, hue, and warp, and note velocity flashes it. It mounts to the headset camera and needs no external assets.
+
+### 34.5 Setup notes
+
+Each integration needs USB debugging enabled on the Quest, or a wireless ADB pairing. The backend auto-detects ADB and starts the relay when the source is selected; the relay ports are configurable through environment variables (`theDAW_QUESTCAST_PORT`, `theDAW_QUESTSTITCH_PORT`). No Quest Link session and no Meta Quest Developer Hub are required at any point.
 
 ---
 
