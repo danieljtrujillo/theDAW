@@ -1,15 +1,15 @@
 # Feature Documentation Coverage Report
 
 > [!NOTE]
-> Generated: 2026-06-21T14:40:09.880Z · Git revision: `62edab5b45f3` · Repomix tracked: **no**
+> Generated: 2026-06-22T01:18:50.116Z · Git revision: `50a44d90f570` · Repomix tracked: **no**
 
 ## Audit Dashboard
 
 | Metric | Value |
 |---|---:|
 | Documentation coverage | **100%** |
-| Features inventoried | **29** |
-| Documented features | **29** |
+| Features inventoried | **32** |
+| Documented features | **32** |
 | Missing docs | **0** |
 | Partial docs | **0** |
 | Full screenshot scenes | **9** |
@@ -38,7 +38,7 @@
 | `sequencer-midi-export-render` | Step sequencer Standard MIDI export plus single-track/multi-track render-to-editor flows | daw | implemented | **documented** | #13-7-midi-conversion<br>#14-5-midi-export<br>#15-5-midi-import-and-export | Matched 2/4 guide terms. |
 | `piano-roll-linked-clip-editing` | Piano roll MIDI import/export, render-to-editor, and linked clip re-editing | daw | implemented | **documented** | #15-5-midi-import-and-export<br>#15-7-edit-in-piano-roll<br>#16-6-slide | Matched 4/4 guide terms. |
 | `media-bucket-routing` | Media Bucket send targets for editor, library, init audio, and Chimera stack | daw | implemented | **documented** | #6-3-1-chimera-fusion-stack<br>#8-4-source-output-and-routing<br>#13-4-per-entry-controls<br>#13-12-stems-and-midi-as-first-class-items<br>#16-5-media | Matched 4/4 guide terms. |
-| `vj-sidecar-tab-mobile-share` | VJ tab and mobile share link for iframe/tunnel-backed performance access | vj | experimental | **documented** | #table-of-contents<br>#5-ui-shell<br>#10-vj-tab<br>#purpose<br>#10-3-bridges<br>#10-4-export<br>#13-8-video-and-image-media<br>#19-17-vj | Matched 3/4 guide terms. |
+| `vj-sidecar-tab-mobile-share` | VJ tab and mobile share link for iframe/tunnel-backed performance access | vj | experimental | **documented** | #table-of-contents<br>#5-ui-shell<br>#10-vj-tab<br>#purpose<br>#10-3-bridges<br>#10-6-autopilot-visual-effects<br>#13-8-video-and-image-media<br>#19-17-vj | Matched 3/4 guide terms. |
 | `backend-module-loader-settings` | Backend module loader with module manifests and runtime enable/disable settings | backend-module | implemented | **documented** | #1-repository-anatomy<br>#19-12-module-loader<br>#adding-a-backend-module<br>#zustand-store-architecture<br>#32-admin-module-and-assistant-key-apis | Matched 4/4 guide terms. |
 | `suno-cloud-generation` | Suno cloud generation (Aurora Cloud Console) with simple/custom/cover/mashup, server-side key, and library lineage | create | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#6-2-generation-parameters<br>#6-3-1-chimera-fusion-stack<br>#12-3-how-the-visualizations-are-rendered<br>#19-14-chimera<br>#21-models<br>#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee<br>#26-cloud-generation-suno<br>#26-1-modes<br>#26-2-flow-and-library-integration<br>#26-3-endpoints<br>#29-catalogue<br>#credits | Matched 5/5 guide terms. |
 | `magenta-rt2-generate` | Magenta RealTime 2 generation (text/notes/audio-style) via the WSL2 NVIDIA sidecar, the first non-Mac MRT2 port | create | experimental | **documented** | #table-of-contents<br>#6-2-generation-parameters<br>#21-models<br>#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee<br>#21-2-manual-model-placement-download-links-and-folder-tree<br>#27-magenta-realtime-2<br>#27-1-the-sidecar-and-conditioning<br>#27-2-first-non-mac-port-of-magenta-realtime-2<br>#33-6-prompt-inference | Matched 5/5 guide terms. |
@@ -47,10 +47,13 @@
 | `controller-vision-detect-identify` | Controller Vision: detect/identify a MIDI controller from a photo (OpenCV + vision-LLM) with LAN phone pairing | daw | implemented | **documented** | #table-of-contents<br>#31-controller-vision | Matched 5/5 guide terms. |
 | `ytimport-youtube-import` | YouTube import: fetch audio from a URL into the Library as a first-class, lineage-tracked entry | library | implemented | **documented** | #table-of-contents<br>#1-repository-anatomy<br>#prerequisites<br>#30-youtube-import | Matched 4/4 guide terms. |
 | `edit-insert-fx-rack` | EDIT real-time psychoacoustic insert-FX rack on the master bus and per track, baked into COMMIT EDIT | edit | implemented | **documented** | #7-6-commit-edit<br>#7-7-insert-fx-rack-psychoacoustic<br>#15-8-instrument-soundfont-and-synth-voices | Matched 6/6 guide terms. |
-| `edit-spatializer-teleport-autopilot` | EDIT HRTF spatializer with 12 motion modes including onset-driven Teleport and the live Autopilot choreographer | edit | implemented | **documented** | #7-6-commit-edit<br>#7-7-insert-fx-rack-psychoacoustic<br>#7-8-spatializer-teleport-and-autopilot | Matched 6/6 guide terms. |
+| `edit-spatializer-teleport-autopilot` | EDIT HRTF spatializer with 12 motion modes including onset-driven Teleport and the live Autopilot choreographer | edit | implemented | **documented** | #7-6-commit-edit<br>#7-7-insert-fx-rack-psychoacoustic<br>#7-8-spatializer-teleport-and-autopilot<br>#10-6-autopilot-visual-effects | Matched 6/6 guide terms. |
 | `edit-metamorph-granular-morph` | Metamorph granular identity-bleed morph: rebuild a host sound out of a donor sound, live and to a clip | edit | implemented | **documented** | #7-9-metamorph-granular-identity-bleed-morph<br>#14-4-send-to-editor<br>#15-6-send-to-editor<br>#16-4-details<br>#16-5-media | Matched 6/6 guide terms. |
 | `edit-timeline-live-midi-soundfont` | Live MIDI timeline playback through the SpessaSynth soundfont engine with a GM and synth-voice instrument picker | daw | implemented | **documented** | #7-10-live-midi-playback-in-the-timeline<br>#15-8-instrument-soundfont-and-synth-voices | Matched 6/6 guide terms. |
 | `library-stems-midi-first-class` | Stems and MIDI as first-class library rows: play, favorite, delete, and route, in their own sub-tabs | library | implemented | **documented** | #1-repository-anatomy<br>#6-4-1-microphone-recorder<br>#purpose<br>#9-4-live-stems-and-fx<br>#12-1-views<br>#13-3-search-filter-sort<br>#13-4-per-entry-controls<br>#13-5-bundle-downloads-and-lineage<br>#13-6-stem-separation<br>#13-7-midi-conversion<br>#13-8-video-and-image-media<br>#13-12-stems-and-midi-as-first-class-items<br>#19-13-disk-backed-library<br>#19-15-stems<br>#19-16-midi<br>#21-1-settings-models-local-checkpoints-and-the-no-download-guarantee<br>#25-3-current-feature-to-screenshot-map | Matched 4/5 guide terms. |
+| `xr-quest-integrations` | Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, and the GANTASMO Visor, without Quest Link or MQDH | vj | implemented | **documented** | #dedicated-in-app-sources-delinquest-stitch-cymatics-and-screen-capture<br>#34-quest-and-xr-integrations<br>#34-1-delinquest-quest-video-into-the-vj<br>#34-2-stitch-clean-passthrough-into-the-vj<br>#34-3-quest-midi-bridge<br>#34-4-gantasmo-visor<br>#34-5-setup-notes | Matched 6/6 guide terms. |
+| `vj-camera-sources` | VJ dedicated sources: delinQuest, STITCH passthrough, procedural cymatics, and screen/window capture, alongside webcam/phone/Quest-browser inputs | vj | implemented | **documented** | #8-1-layout<br>#dedicated-in-app-sources-delinquest-stitch-cymatics-and-screen-capture<br>#12-3-how-the-visualizations-are-rendered<br>#25-5-promo-video-capture<br>#34-1-delinquest-quest-video-into-the-vj<br>#34-2-stitch-clean-passthrough-into-the-vj<br>#34-5-setup-notes | Matched 5/5 guide terms. |
+| `vj-broadcast-watch-link` | VJ broadcast watch-link: WebRTC signaling for a live peer-to-peer viewer URL of the VJ output | vj | experimental | **documented** | #10-5-broadcast-and-watch-link | Matched 4/4 guide terms. |
 
 ## Screenshot Mapping
 
