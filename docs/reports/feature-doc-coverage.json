@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-22T01:18:50.116Z",
-  "repoRevision": "50a44d90f570",
+  "generatedAt": "2026-06-22T14:03:51.530Z",
+  "repoRevision": "fc42edf17e9f",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": false,
@@ -724,7 +724,7 @@
     },
     {
       "id": "xr-quest-integrations",
-      "name": "Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, and the GANTASMO Visor, without Quest Link or MQDH",
+      "name": "Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, hand-tracked control of theDAW, and Quest colocation, without Quest Link or MQDH",
       "domain": "vj",
       "sourcePaths": [
         "backend/modules/questcast/router.py",
@@ -734,15 +734,16 @@
       "evidence": [
         "scrcpy relay over ADB (no Quest Link / no MQDH)",
         "GantasmoStitchStreamer MediaCodec H.264 -> TCP -> WS bridge",
-        "QuestMidiBridge two-way MIDI + loopMIDI return",
-        "GANTASMO Visor reacts to return-circuit MIDI"
+        "questmidi module republishes two-way Quest MIDI on the global MIDI bus",
+        "hand-tracked MIDI surface + microgestures, MIDI-learnable across DJ/VJ/MAKE/EDIT"
       ],
       "status": "implemented",
       "docSearchTerms": [
         "delinQuest",
         "queststitch",
         "Quest MIDI bridge",
-        "GANTASMO Visor",
+        "Hand-tracked control",
+        "Quest colocation",
         "Quest Link",
         "Meta Quest Developer Hub"
       ]
@@ -1179,11 +1180,12 @@
         "#34-1-delinquest-quest-video-into-the-vj",
         "#34-2-stitch-clean-passthrough-into-the-vj",
         "#34-3-quest-midi-bridge",
-        "#34-4-gantasmo-visor",
-        "#34-5-setup-notes"
+        "#34-4-hand-tracked-control-of-thedaw",
+        "#34-5-quest-colocation",
+        "#34-6-setup-notes"
       ],
       "coverage": "documented",
-      "notes": "Matched 6/6 guide terms."
+      "notes": "Matched 7/7 guide terms."
     },
     {
       "featureId": "vj-camera-sources",
@@ -1194,7 +1196,7 @@
         "#25-5-promo-video-capture",
         "#34-1-delinquest-quest-video-into-the-vj",
         "#34-2-stitch-clean-passthrough-into-the-vj",
-        "#34-5-setup-notes"
+        "#34-6-setup-notes"
       ],
       "coverage": "documented",
       "notes": "Matched 5/5 guide terms."

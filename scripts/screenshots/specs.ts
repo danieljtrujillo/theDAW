@@ -341,12 +341,12 @@ export const FEATURE_DESCRIPTORS: FeatureDescriptor[] = [
   },
   {
     id: 'xr-quest-integrations',
-    name: 'Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, and the GANTASMO Visor, without Quest Link or MQDH',
+    name: 'Quest / XR integrations: delinQuest video, queststitch passthrough, two-way Quest MIDI bridge, hand-tracked control of theDAW, and Quest colocation, without Quest Link or MQDH',
     domain: 'vj',
     sourcePaths: ['backend/modules/questcast/router.py', 'backend/modules/queststitch/bridge.py', 'backend/modules/questmidi/router.py'],
-    evidence: ['scrcpy relay over ADB (no Quest Link / no MQDH)', 'GantasmoStitchStreamer MediaCodec H.264 -> TCP -> WS bridge', 'QuestMidiBridge two-way MIDI + loopMIDI return', 'GANTASMO Visor reacts to return-circuit MIDI'],
+    evidence: ['scrcpy relay over ADB (no Quest Link / no MQDH)', 'GantasmoStitchStreamer MediaCodec H.264 -> TCP -> WS bridge', 'questmidi module republishes two-way Quest MIDI on the global MIDI bus', 'hand-tracked MIDI surface + microgestures, MIDI-learnable across DJ/VJ/MAKE/EDIT'],
     status: 'implemented',
-    docSearchTerms: ['delinQuest', 'queststitch', 'Quest MIDI bridge', 'GANTASMO Visor', 'Quest Link', 'Meta Quest Developer Hub'],
+    docSearchTerms: ['delinQuest', 'queststitch', 'Quest MIDI bridge', 'Hand-tracked control', 'Quest colocation', 'Quest Link', 'Meta Quest Developer Hub'],
   },
   {
     id: 'vj-camera-sources',

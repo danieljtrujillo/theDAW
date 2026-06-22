@@ -2086,13 +2086,17 @@ queststitch streams only the Quest's stitched passthrough, the clean real-world 
 
 ### 34.3 Quest MIDI bridge
 
-QuestMidiBridge carries MIDI both ways between the headset and the DAW over an ADB-reversed TCP socket. The headset sends control and note MIDI, including 14-bit high-resolution CC for hand tracking, into the DAW; the DAW sends MIDI back to the headset through a loopMIDI return port. A hand gesture in-headset can drive the mix, and the mix can drive something in-headset.
+QuestMidiBridge carries MIDI both ways between the headset and the DAW over an ADB-reversed TCP socket. The simplest route uses no extra desktop software: theDAW's `questmidi` backend module listens on the tunneled socket and republishes the headset's MIDI onto the browser's global MIDI bus. A second route relays the same frames into a loopMIDI virtual port for any other WebMIDI DAW. The headset sends control and note MIDI, including 14-bit high-resolution CC for smooth hand motion, and the bridge is two-way, so the DAW can send MIDI back to the headset.
 
-### 34.4 GANTASMO Visor
+### 34.4 Hand-tracked control of theDAW
 
-The GANTASMO Visor is a procedural chrome visor rendered in-headset that reacts to the MIDI arriving on the return circuit: control changes drive its glow, hue, and warp, and note velocity flashes it. It mounts to the headset camera and needs no external assets.
+The headset works as a hands-only controller for theDAW. A floating 3D control surface (faders, knobs, buttons, and a crossfader) sits in front of the performer, and grabbing or poking a control sends its MIDI over the bridge. Hand microgestures (swipes and a thumb tap) send their own momentary MIDI alongside the surface. Every message lands on theDAW's global MIDI bus, so MIDI-learn maps any of it to DJ, VJ, MAKE, or EDIT controls, the same as a hardware controller. The surface layout is data-driven and editable in VR, so the performer can move, scale, and rearrange it on the headset.
 
-### 34.5 Setup notes
+### 34.5 Quest colocation
+
+Several headsets in one room can share a single world frame, so the control surface and visuals lock to the same physical spot for everyone and each performer sees the others as lightweight head-and-hands presence. A one-click setup wizard in the GANTASMO-MIDI project installs and wires the pieces: shared spatial anchors, Meta Colocation Discovery for alignment, and Netcode for GameObjects over a LAN-direct transport with no cloud relay. The only manual steps are the Meta platform gates, which are Enhanced Spatial Services on each headset, a verified developer account, and all headsets on the same Wi-Fi.
+
+### 34.6 Setup notes
 
 Each integration needs USB debugging enabled on the Quest, or a wireless ADB pairing. The backend auto-detects ADB and starts the relay when the source is selected; the relay ports are configurable through environment variables (`theDAW_QUESTCAST_PORT`, `theDAW_QUESTSTITCH_PORT`). No Quest Link session and no Meta Quest Developer Hub are required at any point.
 
