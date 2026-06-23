@@ -72,9 +72,9 @@ export const SunoKeySettings: React.FC = () => {
   const configured = status?.configured;
 
   return (
-    <div className="mb-4">
+    <div className="mb-3">
       {/* Section header + status pill */}
-      <div className="flex items-center gap-1.5 mb-2">
+      <div className="flex items-center gap-1.5 mb-1.5">
         <Cloud className="w-3 h-3 text-purple-400" />
         <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300 flex items-center gap-1">
           Suno API <InfoTip {...KEY_SECTION_TIP} />
@@ -93,12 +93,7 @@ export const SunoKeySettings: React.FC = () => {
         )}
       </div>
 
-      <div className="px-3 py-2.5 bg-white/3 border border-white/8 rounded flex flex-col gap-2">
-        <p className="text-[9px] text-zinc-500 leading-relaxed">
-          Paste your secret key (<span className="font-mono text-purple-300">sk_live_…</span>) from the Suno
-          platform console. It's stored on the backend — never in the browser — and used for cloud generation.
-        </p>
-
+      <div className="px-2 py-2 bg-white/3 border border-white/8 rounded flex flex-col gap-1.5">
         {/* Wrapped in a <form> so the password field has a containing form
             (silences the Chrome "password field is not contained in a form"
             warning) and Enter submits via the form, not an ad-hoc keydown. */}

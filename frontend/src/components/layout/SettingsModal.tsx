@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid, HardDrive } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid, HardDrive, Heart, ExternalLink } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import {
   addCheckpoint, fetchCheckpoints, fetchHfCache, fetchLocations, fetchModelStatus, formatBytes,
@@ -10,6 +10,7 @@ import {
 import { useLayoutPrefs, UI_SCALE_MIN, UI_SCALE_MAX } from '../../state/layoutPrefsStore';
 import { SlideTrack } from '../audio/SlideTrack';
 import { PathInput } from '../ui/PathInput';
+import { InfoTip } from '../ui/Tooltip';
 // CHANGED: Suno cloud-generation API key section (surfaced in Settings).
 import { SunoKeySettings } from '../../suno/SunoKeySettings';
 import { useModuleStore, type ModuleConfig } from '../../state/moduleStore';
@@ -74,38 +75,27 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-120 max-h-[75vh] flex flex-col shadow-2xl">
 
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
-          <div className="flex items-center gap-2">
-            <Settings className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">Settings</span>
-          </div>
-          <button onClick={onClose} className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        {/* Pinned Admin — always at the top, never scrolls away */}
-        <div className="shrink-0 border-b border-white/5 bg-[#0a080f] px-4 py-3 flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <Power className="w-3 h-3 text-purple-400" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Admin</span>
-            <span className="text-[8px] font-mono text-zinc-600 ml-auto">supervisor required</span>
-          </div>
-          <div className="flex gap-2">
-            <RestartServerButton />
-            <ShutdownServerButton />
+        {/* Header — title + admin controls (restart/shutdown) + close */}
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/5 shrink-0">
+          <Settings className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 shrink-0">Settings</span>
+          <div className="flex items-center gap-1.5 ml-auto">
+            <RestartServerButton compact />
+            <ShutdownServerButton compact />
+            <button onClick={onClose} aria-label="Close settings" className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5">
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 py-3">
+        <div className="flex-1 overflow-y-auto px-4 py-2">
 
           <StorageSettingsSection />
           <LayoutSettingsSection />
 
           {/* Section: Modules */}
-          <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
+          <div className="flex items-center gap-1 mb-1 pt-1 border-t border-white/5">
             <Package className="w-3 h-3 text-purple-400" />
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Backend Modules</span>
             <span className="text-[8px] font-mono text-zinc-600 ml-auto">restart required for changes</span>
@@ -142,16 +132,14 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
           )}
 
           {/* Section: Background features (auto-analysis / stems / midi) */}
-          <div className="flex items-center gap-1.5 mb-2 pt-4 border-t border-white/5 mt-4">
+          <div className="flex items-center gap-1 mb-1 pt-1 border-t border-white/5">
             <Activity className="w-3 h-3 text-purple-400" />
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Background features</span>
+            <InfoTip title="Background features" body="Opt-in enrichment runs in the background when the app is idle. Toggles default OFF and persist across reloads." />
             <span className="text-[8px] font-mono text-zinc-600 ml-auto">runs during idle</span>
           </div>
-          <p className="text-[9px] text-zinc-500 mb-3 leading-relaxed">
-            Opt-in enrichment runs in the background when the app is idle. Toggles default OFF and persist across reloads.
-          </p>
 
-          <div className="flex flex-col gap-1.5 mb-4">
+          <div className="grid grid-cols-2 grid-flow-row-dense gap-1.5 mb-4">
             <FeatureToggleGroup
               icon={<Activity className="w-3 h-3 text-purple-400" />}
               title="Auto-analysis"
@@ -162,6 +150,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               onPatchGenerate={(v) => void patchFeatures({ analysis: { auto_on_generate: v } })}
             />
             <FeatureToggleGroup
+              className="col-span-2"
               icon={<Scissors className="w-3 h-3 text-purple-400" />}
               title="Auto-stems"
               desc="Separate tracks into stems via Demucs sidecar. Requires the stems module + LARSNET weights for 12-stem."
@@ -273,12 +262,13 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
           </div>
 
           {/* Section: VJ recording */}
-          <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
+          <div className="flex items-center gap-1 mb-1 pt-1 border-t border-white/5">
             <Activity className="w-3 h-3 text-purple-400" />
             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">VJ Recording</span>
           </div>
           <div className="mb-3">
             <PathInput
+              inline
               id="settings-vj-export-root"
               name="settings-vj-export-root"
               label="Export root folder"
@@ -292,6 +282,22 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             />
           </div>
 
+        </div>
+
+        {/* Pinned Support — centered, prominent, always visible at the bottom */}
+        <div className="shrink-0 border-t border-purple-500/20 bg-[#0a080f] px-4 py-2.5 flex flex-col items-center gap-1 text-center">
+          <a
+            href="https://github.com/sponsors/gantasmo"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="theDAW is independent and self-funded. A sponsorship keeps development going (food, coffee, and compute) and flows straight back into the software."
+            className="group inline-flex items-center gap-2 rounded-md border border-purple-400/50 bg-purple-500/20 px-5 py-2 text-[10px] font-black uppercase tracking-widest text-purple-100 shadow-lg shadow-purple-900/30 hover:bg-purple-500/30 hover:border-purple-300/70 hover:text-white transition-colors"
+          >
+            <Heart className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+            Sponsor theDAW
+            <ExternalLink className="w-3 h-3 opacity-70" />
+          </a>
+          <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">independent &amp; self-funded</span>
         </div>
       </div>
     </div>
@@ -420,11 +426,9 @@ const StorageSettingsSection: React.FC = () => {
       <div className="flex items-center gap-1.5 mb-2 pt-2 border-t border-white/5">
         <HardDrive className="w-3 h-3 text-purple-400" />
         <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Models</span>
+        <InfoTip title="Models" body="Models load on demand at the first CREATE. Safe default: theDAW will not download model weights until you explicitly allow it. Register checkpoints you already have, connect cloud APIs, or later turn off local-only for a one-time Stable Audio download." />
         <span className="text-[8px] font-mono text-zinc-600 ml-auto">safe local-first setup</span>
       </div>
-      <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">
-        Models load on demand at the first CREATE. Safe default: theDAW will not download model weights until you explicitly allow it. Register checkpoints you already have, connect cloud APIs, or later turn off local-only for a one-time Stable Audio download.
-      </p>
 
       {/* Local-only switch */}
       <button
@@ -495,6 +499,7 @@ const StorageSettingsSection: React.FC = () => {
       {/* Add a checkpoint */}
       <div className="flex flex-col gap-1 mb-2">
         <PathInput
+          descriptionHover
           id="settings-ckpt-path"
           name="settings-ckpt-path"
           label="Add a checkpoint you already have"
@@ -671,8 +676,8 @@ const ModelReadinessCards: React.FC<{
   localOnly: boolean;
   onRefresh: () => void;
 }> = ({ providers, loading, error, localOnly, onRefresh }) => (
-  <div className="mb-3 rounded border border-white/5 bg-black/15 p-2">
-    <div className="flex items-center gap-2 mb-2">
+  <div className="mb-3 rounded border border-white/5 bg-black/15 p-1.5">
+    <div className="flex items-center gap-2 mb-1.5">
       <span className="text-[8px] font-black uppercase tracking-widest text-zinc-400">Installed / Connected</span>
       <span className={`text-[7px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border ${localOnly ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/30 bg-amber-500/10 text-amber-200'}`}>
         {localOnly ? 'Local only on' : 'Downloads allowed'}
@@ -692,7 +697,7 @@ const ModelReadinessCards: React.FC<{
         <RefreshCw className="w-3 h-3 animate-spin" /> Checking local models and APIs…
       </div>
     ) : (
-      <div className="grid grid-cols-2 gap-1.5">
+      <div className="grid grid-cols-2 gap-1">
         {providers.map((provider) => (
           <ModelProviderCard key={provider.id} provider={provider} />
         ))}
@@ -707,8 +712,8 @@ const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provid
   const visibleModels = orderedModels.slice(0, 4);
   const hiddenCount = Math.max(0, orderedModels.length - visibleModels.length);
   return (
-    <article className="min-w-0 rounded border border-white/8 bg-white/3 p-2">
-      <div className="flex items-start gap-2 mb-1">
+    <article className="min-w-0 rounded border border-white/8 bg-white/3 p-1.5" title={provider.summary}>
+      <div className="flex items-start gap-2 mb-1.5">
         <div className="min-w-0 flex-1">
           <div className="text-[10px] font-bold text-zinc-100 truncate">{provider.label}</div>
           {provider.location && <div className="text-[7px] font-mono text-zinc-600 truncate" title={provider.location}>{provider.location}</div>}
@@ -717,7 +722,6 @@ const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provid
           {MODEL_STATE_LABELS[provider.state] ?? provider.state}
         </span>
       </div>
-      <p className="mb-1.5 min-h-7 text-[8px] leading-snug text-zinc-500" title={provider.summary}>{provider.summary}</p>
       {visibleModels.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {visibleModels.map((model) => (
@@ -758,12 +762,13 @@ const LayoutSettingsSection: React.FC = () => {
       <div className="flex items-center gap-1.5 mb-2">
         <LayoutGrid className="w-3 h-3 text-purple-400" />
         <span className="text-[9px] font-black uppercase tracking-widest text-zinc-300">Edit Layout Settings</span>
+        <InfoTip title="Edit Layout Settings" body="Scale grows controls to fill empty space; Compact keeps them at a natural size. Gap sets the spacing between panels. Snap sets the drag increment when adjusting margins. Per-panel padding, mirror, and control placement are edited inside each workspace's Edit Layout mode." />
         <span className="text-[8px] font-mono text-zinc-600 ml-auto">applies to every workspace</span>
       </div>
-      <div className="border border-white/5 rounded px-3 py-2.5 bg-white/3 mb-4 flex flex-col gap-3">
+      <div className="border border-white/5 rounded px-2 py-2 bg-white/3 mb-4 flex flex-col gap-2">
         {/* App-wide text/UI size — a clamped page-zoom so nothing gets too big or small. */}
         <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Text size:</span>
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-10 shrink-0">Text:</span>
           <SlideTrack
             min={Math.round(UI_SCALE_MIN * 100)}
             max={Math.round(UI_SCALE_MAX * 100)}
@@ -774,19 +779,27 @@ const LayoutSettingsSection: React.FC = () => {
             ariaLabel="App-wide text and UI size"
           />
           <span className="text-[8px] font-mono text-zinc-400 w-9 text-right tabular-nums">{scalePct}%</span>
-          <button
-            onClick={() => setUiScale(1)}
-            disabled={scalePct === 100}
-            className="text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 disabled:opacity-40 disabled:cursor-default transition-colors"
-            title="Reset text size to 100%"
-          >
-            Reset
-          </button>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Fill:</span>
-          <div className="flex items-center gap-1">
-            {([['scale', 'Scale controls'], ['natural', 'Compact']] as const).map(([v, lbl]) => (
+        {/* Gap + Snap — two sliders side by side */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">Gap:</span>
+            <SlideTrack min={0} max={24} step={1} value={gapPx}
+              onChange={(v) => setGapPx(v)} className="flex-1" ariaLabel="Gap between panels" />
+            <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{gapPx}px</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">Snap:</span>
+            <SlideTrack min={0} max={24} step={1} value={snapPx}
+              onChange={(v) => setSnapPx(v)} className="flex-1" ariaLabel="Snap step when dragging margins" />
+            <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{snapPx === 0 ? 'off' : `${snapPx}px`}</span>
+          </div>
+        </div>
+        {/* Fill / Guides / Match / Reset — one button row */}
+        <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400">Fill:</span>
+            {([['scale', 'Scale'], ['natural', 'Compact']] as const).map(([v, lbl]) => (
               <button
                 key={v}
                 onClick={() => setFillMode(v)}
@@ -799,46 +812,39 @@ const LayoutSettingsSection: React.FC = () => {
               </button>
             ))}
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Gap:</span>
-          <SlideTrack min={0} max={24} step={1} value={gapPx}
-            onChange={(v) => setGapPx(v)} className="flex-1" ariaLabel="Gap between panels" />
-          <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{gapPx}px</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Snap:</span>
-          <SlideTrack min={0} max={24} step={1} value={snapPx}
-            onChange={(v) => setSnapPx(v)} className="flex-1" ariaLabel="Snap step when dragging margins" />
-          <span className="text-[8px] font-mono text-zinc-400 w-8 text-right tabular-nums">{snapPx === 0 ? 'off' : `${snapPx}px`}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Guides:</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400">Guides:</span>
+            <button
+              onClick={() => setShowGuides(!showGuides)}
+              className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                showGuides ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+              }`}
+              title="Show centre + increment alignment guides while editing a layout"
+            >
+              {showGuides ? 'On' : 'Off'}
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400">Match:</span>
+            <button
+              onClick={() => setMatchSizes(!matchSizes)}
+              className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+                matchSizes ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+              }`}
+              title="Match same-kind control sizes — equal height across a row, equal width down a column"
+            >
+              {matchSizes ? 'On' : 'Off'}
+            </button>
+          </div>
           <button
-            onClick={() => setShowGuides(!showGuides)}
-            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
-              showGuides ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
-            }`}
-            title="Show centre + increment alignment guides while editing a layout"
+            onClick={() => setUiScale(1)}
+            disabled={scalePct === 100}
+            className="ml-auto text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 disabled:opacity-40 disabled:cursor-default transition-colors"
+            title="Reset text size to 100%"
           >
-            {showGuides ? 'On' : 'Off'}
+            Reset size
           </button>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400 w-16 shrink-0">Match:</span>
-          <button
-            onClick={() => setMatchSizes(!matchSizes)}
-            className={`text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
-              matchSizes ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
-            }`}
-            title="Match same-kind control sizes — equal height across a row, equal width down a column"
-          >
-            {matchSizes ? 'On' : 'Off'}
-          </button>
-        </div>
-        <p className="text-[8px] text-zinc-600 leading-relaxed">
-          Scale grows controls to fill empty space; Compact keeps them at a natural size. Gap sets the spacing between panels. Per-panel padding, mirror, and control placement are edited inside each workspace's Edit Layout mode.
-        </p>
       </div>
     </>
   );
@@ -867,17 +873,20 @@ const ModuleTree: React.FC<{
   }
   const names = GROUP_ORDER.filter((g) => groups[g]?.length);
   return (
-    <div className="flex flex-col gap-2 mb-4">
+    // Dense 2-col grid: single-tile groups (e.g. System, Generation) take one
+    // column and pack side by side; multi-tile groups span the full width.
+    <div className="grid grid-cols-2 grid-flow-row-dense gap-1.5 mb-3">
       {names.map((name) => {
         const mods = groups[name];
         const onCount = mods.filter((m) => m.enabled).length;
+        const wide = mods.length > 1;
         return (
-          <section key={name} className="rounded border border-white/5 bg-white/3 p-2">
-            <div className="flex items-center gap-2 mb-2">
+          <section key={name} className={`rounded border border-white/5 bg-white/3 px-2 py-1.5 ${wide ? 'col-span-2' : ''}`}>
+            <div className="flex items-center gap-2 mb-1">
               <span className="text-[8px] font-black uppercase tracking-widest text-purple-300">{name}</span>
               <span className="text-[8px] font-mono text-zinc-600 ml-auto">{onCount}/{mods.length} enabled</span>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className={`grid ${wide ? 'grid-cols-2' : 'grid-cols-1'} gap-1`}>
           {mods.map((mod) => (
                 <ModuleTile
                   key={mod._dir || mod.name}
@@ -903,40 +912,33 @@ const ModuleTile: React.FC<{
 }> = ({ mod, toggling, changed, onToggle }) => {
   const key = mod._dir || mod.name;
   const isToggling = toggling === key;
+  // Description + api prefix live in the hover tooltip now, so each module is a
+  // single dense row (name + state + toggle side by side) instead of a stack.
+  const hoverInfo = [mod.description, mod.api_prefix].filter(Boolean).join('  ·  ');
   return (
-    <article className={`min-w-0 rounded border p-2 transition-colors ${mod.enabled ? 'bg-black/25 border-white/10' : 'bg-black/15 border-white/5 opacity-65'}`}>
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 mb-1 min-w-0">
-            <span className="text-[10px] font-bold text-zinc-100 truncate">{mod.label || mod.name}</span>
-            {mod.version && <span className="text-[7px] font-mono text-zinc-600 shrink-0">v{mod.version}</span>}
-          </div>
-          <div className="flex items-center gap-1 flex-wrap mb-1">
-            <span className={`text-[7px] font-mono uppercase tracking-widest px-1 py-0.5 rounded border ${mod.enabled ? 'text-purple-200 bg-purple-500/10 border-purple-500/25' : 'text-zinc-500 bg-white/3 border-white/10'}`}>
-              {mod.enabled ? 'Enabled' : 'Off'}
-            </span>
-            {mod._loaded && <span className="text-[7px] font-mono uppercase tracking-widest text-green-300 bg-green-500/10 border border-green-500/20 px-1 py-0.5 rounded">Running</span>}
-            {changed && <span className="text-[7px] font-mono uppercase tracking-widest text-amber-300 bg-amber-500/10 border border-amber-500/20 px-1 py-0.5 rounded">Restart</span>}
-          </div>
-        </div>
-        <button
-          onClick={() => onToggle(key, !mod.enabled)}
-          disabled={isToggling}
-          className="shrink-0 transition-opacity disabled:opacity-50"
-          title={mod.enabled ? 'Disable module' : 'Enable module'}
-          aria-label={`${mod.enabled ? 'Disable' : 'Enable'} ${mod.label || mod.name}`}
-        >
-          {isToggling ? (
-            <RefreshCw className="w-4 h-4 text-zinc-500 animate-spin" />
-          ) : mod.enabled ? (
-            <ToggleRight className="w-6 h-6 text-purple-400" />
-          ) : (
-            <ToggleLeft className="w-6 h-6 text-zinc-600" />
-          )}
-        </button>
-      </div>
-      {mod.description && <p className="text-[8px] text-zinc-500 leading-snug line-clamp-2 min-h-8" title={mod.description}>{mod.description}</p>}
-      {mod.api_prefix && <div className="text-[8px] font-mono text-zinc-700 truncate mt-1" title={mod.api_prefix}>{mod.api_prefix}</div>}
+    <article
+      title={hoverInfo || undefined}
+      className={`min-w-0 rounded border px-2 py-1 flex items-center gap-1.5 transition-colors ${mod.enabled ? 'bg-black/25 border-white/10' : 'bg-black/15 border-white/5 opacity-65'}`}
+    >
+      <span className="text-[10px] font-bold text-zinc-100 truncate min-w-0 flex-1">{mod.label || mod.name}</span>
+      {mod.version && <span className="text-[7px] font-mono text-zinc-600 shrink-0">v{mod.version}</span>}
+      {mod._loaded && <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-green-400" title="Running" aria-label="Running" />}
+      {changed && <span className="text-[7px] font-mono uppercase tracking-widest text-amber-300 bg-amber-500/10 border border-amber-500/20 px-1 py-0.5 rounded shrink-0">Restart</span>}
+      <button
+        onClick={() => onToggle(key, !mod.enabled)}
+        disabled={isToggling}
+        className="shrink-0 transition-opacity disabled:opacity-50"
+        title={mod.enabled ? 'Disable module' : 'Enable module'}
+        aria-label={`${mod.enabled ? 'Disable' : 'Enable'} ${mod.label || mod.name}`}
+      >
+        {isToggling ? (
+          <RefreshCw className="w-4 h-4 text-zinc-500 animate-spin" />
+        ) : mod.enabled ? (
+          <ToggleRight className="w-5 h-5 text-purple-400" />
+        ) : (
+          <ToggleLeft className="w-5 h-5 text-zinc-600" />
+        )}
+      </button>
     </article>
   );
 };
@@ -951,7 +953,7 @@ const ModuleTile: React.FC<{
  *  push past a tighter window. We flash success as soon as /api/health
  *  returns 200 (which is decoupled from model loading on the backend
  *  side — health responds the moment uvicorn is up). */
-const RestartServerButton: React.FC = () => {
+const RestartServerButton: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
   type Status = 'idle' | 'restarting' | 'success' | 'error';
   const [status, setStatus] = useState<Status>('idle');
   const [detail, setDetail] = useState<string>('');
@@ -1011,8 +1013,9 @@ const RestartServerButton: React.FC = () => {
     }
   };
 
-  const baseCls =
-    'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+  const baseCls = compact
+    ? 'flex items-center justify-center gap-1 px-2 py-1 rounded border text-[8px] font-black uppercase tracking-widest transition-colors'
+    : 'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
   const stateCls: Record<Status, string> = {
     idle: 'border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/60',
     restarting: 'border-amber-500/40 bg-amber-500/10 text-amber-200 cursor-wait',
@@ -1059,7 +1062,7 @@ const RestartServerButton: React.FC = () => {
  *  console closes and the user has to relaunch via theDAW.bat to
  *  bring it back up. Confirms before sending the shutdown signal
  *  because this can't be reversed from the browser side once fired. */
-const ShutdownServerButton: React.FC = () => {
+const ShutdownServerButton: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
 
@@ -1082,8 +1085,9 @@ const ShutdownServerButton: React.FC = () => {
     }
   };
 
-  const baseCls =
-    'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
+  const baseCls = compact
+    ? 'flex items-center justify-center gap-1 px-2 py-1 rounded border text-[8px] font-black uppercase tracking-widest transition-colors'
+    : 'flex items-center justify-center gap-2 flex-1 px-3 py-2 rounded border text-[10px] font-black uppercase tracking-widest transition-colors';
   const cls = done
     ? 'border-rose-500/50 bg-rose-500/15 text-rose-200 cursor-default'
     : pending
@@ -1125,17 +1129,19 @@ interface FeatureToggleGroupProps {
   /** Optional extra controls rendered below the on-import/on-generate
    *  toggles — e.g. the stems device picker. */
   extra?: React.ReactNode;
+  /** Extra classes on the card wrapper (e.g. col-span-2 in the grid). */
+  className?: string;
 }
 
 const FeatureToggleGroup: React.FC<FeatureToggleGroupProps> = ({
-  icon, title, desc, onImport, onGenerate, onPatchImport, onPatchGenerate, extra,
+  icon, title, desc, onImport, onGenerate, onPatchImport, onPatchGenerate, extra, className = '',
 }) => (
-  <div className="border border-white/5 rounded px-3 py-2.5 bg-white/3">
-    <div className="flex items-center gap-2 mb-1.5">
+  <div className={`border border-white/5 rounded px-2 py-2 bg-white/3 ${className}`}>
+    <div className="flex items-center gap-1.5 mb-1.5">
       {icon}
       <span className="text-[10px] font-bold text-zinc-100">{title}</span>
+      <InfoTip title={title} body={desc} />
     </div>
-    <p className="text-[9px] text-zinc-500 mb-2 leading-relaxed">{desc}</p>
     <div className="flex items-center gap-4">
       <ToggleRow label="on import" enabled={onImport} onToggle={() => onPatchImport(!onImport)} />
       <ToggleRow label="on generate" enabled={onGenerate} onToggle={() => onPatchGenerate(!onGenerate)} />

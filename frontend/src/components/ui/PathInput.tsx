@@ -15,6 +15,10 @@ interface PathInputProps {
   onBlur?: () => void;
   onEnter?: () => void;
   className?: string;
+  /** Render label + input on one row (compact). Implies descriptionHover. */
+  inline?: boolean;
+  /** Move the description into a hover tooltip instead of a visible paragraph. */
+  descriptionHover?: boolean;
 }
 
 export const PathInput: React.FC<PathInputProps> = ({
@@ -30,6 +34,8 @@ export const PathInput: React.FC<PathInputProps> = ({
   onBlur,
   onEnter,
   className = '',
+  inline = false,
+  descriptionHover = false,
 }) => {
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,18 +55,27 @@ export const PathInput: React.FC<PathInputProps> = ({
   };
 
   const buttonLabel = kind === 'folder' ? `Browse for ${label} folder` : `Browse for ${label} file`;
+  // Inline implies the description lives in a hover tooltip rather than a
+  // visible paragraph, so the field reclaims its horizontal/vertical space.
+  const descAsHover = inline || descriptionHover;
+  const hoverTitle = descAsHover ? description : undefined;
 
   return (
-    <div className={`flex flex-col gap-1 ${className}`}>
-      <label htmlFor={id} className="text-[9px] font-mono uppercase tracking-wider text-zinc-400">
+    <div className={`${inline ? 'flex flex-wrap items-center gap-x-2 gap-y-1' : 'flex flex-col gap-1'} ${className}`}>
+      <label
+        htmlFor={id}
+        title={hoverTitle}
+        className={`text-[9px] font-mono uppercase tracking-wider text-zinc-400 ${inline ? 'shrink-0' : ''} ${descAsHover && description ? 'cursor-help' : ''}`}
+      >
         {label}
       </label>
-      <div className="flex gap-1.5">
+      <div className={`flex gap-1.5 ${inline ? 'flex-1 min-w-0' : ''}`}>
         <input
           id={id}
           name={name}
           type="text"
           value={value}
+          title={hoverTitle}
           onChange={(e) => onChange(e.target.value)}
           onBlur={onBlur}
           onKeyDown={(e) => {
@@ -86,8 +101,8 @@ export const PathInput: React.FC<PathInputProps> = ({
           Browse
         </button>
       </div>
-      {description && <p className="text-[8px] text-zinc-600 leading-relaxed">{description}</p>}
-      {error && <p className="text-[8px] text-red-300 leading-relaxed">{error}</p>}
+      {description && !descAsHover && <p className="text-[8px] text-zinc-600 leading-relaxed">{description}</p>}
+      {error && <p className="w-full text-[8px] text-red-300 leading-relaxed">{error}</p>}
     </div>
   );
 };
