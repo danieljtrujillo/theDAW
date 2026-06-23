@@ -118,10 +118,12 @@ _SETUP_CACHE_SECONDS = 30.0
 
 
 def setup_state(refresh: bool = False) -> dict:
-    """Is the WSL side actually installed? Probes the venv python and the
+    """Is the WSL side actually installed? Probes the venv python, the
+    extended server's web deps (fastapi/uvicorn/python-multipart), and the
     model checkpoints so the UI can say 'setup required' instead of a bare
-    error when Setup-MRT2 never ran. Cached for 30 s (the wsl spawn is
-    ~a second); pass ``refresh=True`` after a setup run."""
+    error when Setup-MRT2 never ran (or the venv predates the web deps).
+    Cached for 30 s (the wsl spawn is ~a second); pass ``refresh=True``
+    after a setup run."""
     now = time.monotonic()
     if (
         not refresh
@@ -130,7 +132,13 @@ def setup_state(refresh: bool = False) -> dict:
     ):
         return _setup_cache["state"]
 
-    state = {"wsl": False, "venv": False, "checkpoint": False, "ready": False}
+    state = {
+        "wsl": False,
+        "venv": False,
+        "deps": False,
+        "checkpoint": False,
+        "ready": False,
+    }
     try:
         py = _WSL_PYTHON.replace("'", "")
         result = subprocess.run(
@@ -142,6 +150,8 @@ def setup_state(refresh: bool = False) -> dict:
                 "bash",
                 "-lc",
                 f"echo WSL_OK; test -x {py} && echo VENV_OK; "
+                f"{py} -c 'import numpy,soundfile,fastapi,uvicorn,multipart' "
+                "2>/dev/null && echo DEPS_OK; "
                 "ls ~/Documents/Magenta/magenta-rt-v2/checkpoints/*.safetensors "
                 ">/dev/null 2>&1 && echo CKPT_OK",
             ],
@@ -154,10 +164,11 @@ def setup_state(refresh: bool = False) -> dict:
         out = result.stdout
         state["wsl"] = "WSL_OK" in out
         state["venv"] = "VENV_OK" in out
+        state["deps"] = "DEPS_OK" in out
         state["checkpoint"] = "CKPT_OK" in out
     except (OSError, subprocess.TimeoutExpired) as e:
         log.debug("magenta.engine: setup probe failed: %s", e)
-    state["ready"] = state["venv"] and state["checkpoint"]
+    state["ready"] = state["venv"] and state["deps"] and state["checkpoint"]
     _setup_cache["t"] = now
     _setup_cache["state"] = state
     return state
@@ -180,14 +191,20 @@ def start_engine() -> dict:
         )
         cmd = ["wsl.exe", "-d", distro, "--", "bash", "-lc", bash_cmd]
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        log.info("magenta.engine: spawning %s", " ".join(cmd))
-        _engine_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-            shell=False,
-        )
+        # Capture the sidecar's output to a logfile instead of DEVNULL — a
+        # spawn that dies on a missing dep (e.g. ModuleNotFoundError) would
+        # otherwise vanish and surface only as a vague 503 downstream.
+        log_path = _REPO_ROOT / "logs" / "magenta-sidecar.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log.info("magenta.engine: spawning %s (log: %s)", " ".join(cmd), log_path)
+        with open(log_path, "ab") as log_fh:
+            _engine_proc = subprocess.Popen(
+                cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+                shell=False,
+            )
         return {"spawned": True, "distro": distro, "model": _ENGINE_MODEL, "port": port}
 
 
