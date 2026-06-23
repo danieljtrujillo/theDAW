@@ -46,32 +46,8 @@ export const ScoreView: React.FC = () => {
   const [tabDifficulty, setTabDifficulty] = useState('medium');
   const [arrangeStyle, setArrangeStyle] = useState('piano-reduction');
   const [arranging, setArranging] = useState(false);
-  // Global artist/composer name — saved to Settings (notation.artist) and
-  // stamped onto every generated sheet as the composer credit.
-  const [artist, setArtist] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetch('/api/settings')
-      .then((r) => r.json())
-      .then((s) => {
-        if (!cancelled) setArtist(String(s?.notation?.artist ?? ''));
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  const saveArtist = async (value: string) => {
-    try {
-      await fetch('/api/settings', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notation: { artist: value } }),
-      });
-    } catch (e) {
-      logError('score', `Could not save artist name: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
+  // The global artist/composer name now lives in Settings (notation.artist); the
+  // sheet preview reads it directly when rendering.
 
   const selectedArtifact = artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
   const musicXmlArtifacts = artifacts.filter((artifact) => artifact.kind === 'musicxml');
@@ -228,24 +204,6 @@ export const ScoreView: React.FC = () => {
           >
             {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
           </button>
-        </div>
-
-        <div className="p-2 border-b border-white/5">
-          <label htmlFor="score-artist" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500 block mb-1">
-            Artist
-          </label>
-          <input
-            id="score-artist"
-            name="score-artist"
-            type="text"
-            className="compact-input w-full"
-            placeholder="Your artist name (e.g. GANTASMO)"
-            value={artist}
-            onChange={(e) => setArtist(e.target.value)}
-            onBlur={(e) => void saveArtist(e.target.value.trim())}
-            aria-label="Artist name credited on every sheet"
-            title="Credited as the composer on every generated sheet, and saved with your songs."
-          />
         </div>
 
         <div className="p-2 border-b border-white/5 flex gap-1">
@@ -632,7 +590,9 @@ const applySheetEngraving = (rules: any): void => {
     rules.PageLeftMargin = 4.0;
     rules.PageRightMargin = 4.0;
     rules.PageTopMargin = 5.5;
-    rules.PageBottomMargin = 7.0;
+    // Tall bottom margin: the music must clear the injected running footer +
+    // page number that live in the bottom margin (see decoratePages).
+    rules.PageBottomMargin = 14.0;
     rules.MinimumDistanceBetweenSystems = 4.0;
     rules.MinSkyBottomDistBetweenSystems = 2.0;
     rules.StaffDistance = 4.0;

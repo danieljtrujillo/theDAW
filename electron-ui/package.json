@@ -11,11 +11,11 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "electron": "^35.0.0",
-    "electron-vite": "^3.1.0",
-    "electron-builder": "^26.0.0",
-    "@electron-toolkit/preload": "^3.0.0",
+    "electron": "^42.4.1",
+    "electron-vite": "^5.0.0",
+    "electron-builder": "^26.15.3",
     "@vitejs/plugin-react": "^5.0.4",
-    "@tailwindcss/vite": "^4.1.14"
+    "@tailwindcss/vite": "^4.3.1",
+    "vite": "^7.3.5"
   }
 }
