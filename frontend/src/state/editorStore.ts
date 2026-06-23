@@ -98,6 +98,13 @@ export interface AutomationLane {
   enabled: boolean;
 }
 
+/** A named position flag on the timeline (Phase F). */
+export interface TimelineMarker {
+  id: string;
+  t: number;     // timeline seconds
+  label: string;
+}
+
 /** Stable identity for a target, so a control resolves to its one lane. */
 export const automationTargetKey = (target: AutomationTarget): string =>
   `${target.kind}|${target.trackId ?? ''}|${target.entryId ?? ''}|${target.paramKey ?? ''}`;
@@ -217,6 +224,21 @@ interface EditorStoreState {
   removeAutomationLane: (laneId: string) => void;
   getLaneForTarget: (target: AutomationTarget) => AutomationLane | undefined;
 
+  // Loop region + markers (Phase F). The loop region, when enabled and valid,
+  // makes the transport cycle within [loopStart, loopEnd] instead of the whole
+  // timeline. Markers are named position flags.
+  loopEnabled: boolean;
+  loopStart: number;
+  loopEnd: number;
+  markers: TimelineMarker[];
+  setLoopEnabled: (on: boolean) => void;
+  setLoopRegion: (start: number, end: number) => void;
+  clearLoop: () => void;
+  addMarker: (t: number, label?: string) => void;
+  removeMarker: (id: string) => void;
+  renameMarker: (id: string, label: string) => void;
+  moveMarker: (id: string, t: number) => void;
+
   // Undo / redo (Phase D). Snapshots capture the document slices below; because
   // every mutation replaces arrays immutably, a snapshot just references the prior
   // arrays (no cloning, audio blobs/peaks stay shared). Rapid bursts (a drag, a
@@ -284,6 +306,10 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   masterFxChain: [],
   automationLanes: [],
   automationWrite: false,
+  loopEnabled: false,
+  loopStart: 0,
+  loopEnd: 0,
+  markers: [],
   _undo: [],
   _redo: [],
 
@@ -565,6 +591,25 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     const key = automationTargetKey(target);
     return get().automationLanes.find((l) => automationTargetKey(l.target) === key);
   },
+
+  setLoopEnabled: (on) => set({ loopEnabled: on }),
+  setLoopRegion: (start, end) =>
+    set(() => {
+      const a = Math.max(0, Math.min(start, end));
+      const b = Math.max(start, end);
+      return { loopStart: a, loopEnd: b, loopEnabled: b - a > 0.05 };
+    }),
+  clearLoop: () => set({ loopEnabled: false, loopStart: 0, loopEnd: 0 }),
+  addMarker: (t, label) =>
+    set((s) => ({
+      markers: [...s.markers, { id: uid(), t: Math.max(0, t), label: label ?? String(s.markers.length + 1) }].sort((x, y) => x.t - y.t),
+    })),
+  removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id) })),
+  renameMarker: (id, label) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, label } : m)) })),
+  moveMarker: (id, t) =>
+    set((s) => ({
+      markers: s.markers.map((m) => (m.id === id ? { ...m, t: Math.max(0, t) } : m)).sort((x, y) => x.t - y.t),
+    })),
 
   undo: () => {
     const s = get();

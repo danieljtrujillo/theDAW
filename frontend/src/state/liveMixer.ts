@@ -591,7 +591,19 @@ function tick(): void {
   const ctx = getEngineCtx();
   const elapsed = startOffsetSec + (ctx.currentTime - startCtxTime);
 
+  // Loop region (Phase F): cycle within [loopStart, loopEnd] when enabled + valid.
+  const ed = useEditorStore.getState();
+  const loopRegion = ed.loopEnabled && ed.loopEnd - ed.loopStart > 0.05;
+  if (loopRegion && elapsed >= ed.loopEnd) {
+    void start(ed.loopStart);
+    return;
+  }
+
   if (elapsed >= totalDur) {
+    if (loopRegion) {
+      void start(ed.loopStart); // region loop also catches the timeline end
+      return;
+    }
     if (usePlayerStore.getState().isLooping) {
       void start(0); // seamless-ish loop from the top
       return;

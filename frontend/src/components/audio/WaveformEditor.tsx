@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
-  SlidersHorizontal, Undo2, Redo2,
+  SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag,
 } from 'lucide-react';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
@@ -14,7 +14,7 @@ import { sliceChunks } from '../../lib/audioAnalysis';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, computePeaks, sampleLane, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT } from '../../state/editorStore';
+import { useEditorStore, computePeaks, sampleLane, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
@@ -283,6 +283,74 @@ interface PointerOp {
 
 const CTRL_DRAG_MOVE_THRESHOLD_PX = 4;
 
+/** Tempo + pitch controls for the per-clip Time/Pitch popover. Tempo time-stretches
+ *  (pitch preserved); pitch transposes in semitones (length preserved). */
+const TimePitchControls: React.FC<{ busy: boolean; onApply: (tempo: number, semitones: number) => void }> = ({ busy, onApply }) => {
+  const [tempo, setTempo] = useState(1);
+  const [semitones, setSemitones] = useState(0);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Tempo</span>
+        <SlideTrack value={tempo} min={0.25} max={4} step={0.01} defaultValue={1} ariaLabel="Tempo (time-stretch)" className="flex-1" onChange={setTempo} />
+        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">{tempo.toFixed(2)}x</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Pitch</span>
+        <SlideTrack value={semitones} min={-12} max={12} step={1} defaultValue={0} ariaLabel="Pitch (semitones)" className="flex-1" onChange={(v) => setSemitones(Math.round(v))} />
+        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">{semitones >= 0 ? '+' : ''}{semitones} st</span>
+      </div>
+      <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+        Tempo keeps pitch; pitch keeps length. Rendered on the backend and baked into the clip.
+      </p>
+      <button
+        onClick={() => onApply(tempo, Math.round(semitones))}
+        disabled={busy || (tempo === 1 && semitones === 0)}
+        className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+      >
+        {busy ? 'Rendering…' : 'Apply'}
+      </button>
+    </div>
+  );
+};
+
+/** A draggable-free timeline marker flag: click to seek, double-click to rename,
+ *  Alt-click or right-click to delete. */
+const MarkerFlag: React.FC<{
+  marker: TimelineMarker; zoom: number;
+  onSeek: () => void; onRename: (label: string) => void; onDelete: () => void;
+}> = ({ marker, zoom, onSeek, onRename, onDelete }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(marker.label);
+  const commit = () => { onRename(draft.trim() || marker.label); setEditing(false); };
+  return (
+    <div className="absolute top-0 bottom-0 z-30" style={{ left: marker.t * zoom }} onMouseDown={(e) => e.stopPropagation()}>
+      <div className="absolute top-3.5 bottom-0 w-px bg-cyan-400/50 pointer-events-none" />
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+          aria-label="Marker name"
+          className="absolute top-0 left-0 w-20 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-[8px] font-mono text-cyan-100 outline-none"
+        />
+      ) : (
+        <button
+          onClick={(e) => { if (e.altKey) onDelete(); else onSeek(); }}
+          onDoubleClick={() => { setDraft(marker.label); setEditing(true); }}
+          onContextMenu={(e) => { e.preventDefault(); onDelete(); }}
+          title={`${marker.label} — click to seek, double-click to rename, Alt or right-click to delete`}
+          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-3.5 bg-cyan-500/20 border border-cyan-400/40 rounded-br text-[8px] font-mono text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-24"
+        >
+          <Flag className="w-2 h-2 shrink-0" /> <span className="truncate">{marker.label}</span>
+        </button>
+      )}
+    </div>
+  );
+};
+
 export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const tracks = useEditorStore((s) => s.tracks);
   const clips = useEditorStore((s) => s.clips);
@@ -323,6 +391,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const clearAutomationLane = useEditorStore((s) => s.clearAutomationLane);
   const removeAutomationLane = useEditorStore((s) => s.removeAutomationLane);
   const projectBpm = useEditorStore((s) => s.bpm);
+  const loopEnabled = useEditorStore((s) => s.loopEnabled);
+  const loopStart = useEditorStore((s) => s.loopStart);
+  const loopEnd = useEditorStore((s) => s.loopEnd);
+  const markers = useEditorStore((s) => s.markers);
+  const setLoopEnabled = useEditorStore((s) => s.setLoopEnabled);
+  const setLoopRegion = useEditorStore((s) => s.setLoopRegion);
+  const clearLoop = useEditorStore((s) => s.clearLoop);
+  const addMarker = useEditorStore((s) => s.addMarker);
+  const removeMarker = useEditorStore((s) => s.removeMarker);
+  const renameMarker = useEditorStore((s) => s.renameMarker);
   const undo = useEditorStore((s) => s.undo);
   const redo = useEditorStore((s) => s.redo);
   const canUndo = useEditorStore((s) => s._undo.length > 0);
@@ -503,6 +581,77 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       }
     };
   }, [instrPanel]);
+
+  // Time/Pitch popover (per-clip stretch + transpose, baked via the FFmpeg backend).
+  const [timePitchPanel, setTimePitchPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  const timePitchRef = useRef<HTMLDivElement>(null);
+  const [timePitchBusy, setTimePitchBusy] = useState(false);
+  useEffect(() => {
+    if (!timePitchPanel) return;
+    const onDown = (e: MouseEvent) => {
+      if (timePitchRef.current?.contains(e.target as Node)) return;
+      setTimePitchPanel(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTimePitchPanel(null); };
+    let attached = false;
+    const attach = () => { attached = true; window.addEventListener('mousedown', onDown); window.addEventListener('keydown', onKey); };
+    const timer = window.setTimeout(attach, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); }
+    };
+  }, [timePitchPanel]);
+
+  // Render the clip's current region (offset..offset+duration) to a WAV File so the
+  // backend stretches only what the clip actually plays, not the whole source.
+  const extractRegionWav = useCallback(async (clip: AudioClip): Promise<File> => {
+    const ac = new AudioContext({ sampleRate: 44100 });
+    try {
+      const ab = await clip.audioBlob.arrayBuffer();
+      const buf = await ac.decodeAudioData(ab.slice(0));
+      const sr = buf.sampleRate;
+      const start = Math.max(0, Math.floor((clip.offsetIntoSource ?? 0) * sr));
+      const len = Math.max(1, Math.min(buf.length - start, Math.ceil(clip.durationSec * sr)));
+      const seg = ac.createBuffer(buf.numberOfChannels, len, sr);
+      for (let ch = 0; ch < buf.numberOfChannels; ch += 1) {
+        seg.copyToChannel(buf.getChannelData(ch).subarray(start, start + len), ch);
+      }
+      return new File([encodeWav(seg)], 'clip.wav', { type: 'audio/wav' });
+    } finally {
+      ac.close().catch(() => {});
+    }
+  }, []);
+
+  // Time-stretch (tempo, pitch preserved) + transpose (semitones, tempo preserved)
+  // through the FFmpeg backend (rubberband when available), then replace the clip's
+  // audio with the result. tempo > 1 shortens the clip; pitch leaves length alone.
+  const applyTimePitch = useCallback(async (clipId: string, tempo: number, semitones: number) => {
+    const clip = useEditorStore.getState().clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    setTimePitchBusy(true);
+    try {
+      const file = await extractRegionWav(clip);
+      const fd = new FormData();
+      fd.append('audio', file);
+      fd.append('effect', 'time_pitch');
+      fd.append('params', JSON.stringify({ tempo, semitones }));
+      fd.append('output_format', 'wav');
+      const res = await fetch('/api/studio/process', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(`process ${res.status}`);
+      // arrayBuffer (not res.blob) keeps the body in RAM — disk-backed blobs fail on a full drive.
+      const blob = new Blob([await res.arrayBuffer()], { type: 'audio/wav' });
+      const { peaks, duration } = await computePeaks(blob, 240);
+      updateClip(clipId, {
+        audioBlob: blob, mimeType: 'audio/wav', offsetIntoSource: 0, durationSec: duration, peaks,
+      });
+      logInfo('editor', `Time/Pitch: ${tempo.toFixed(2)}x, ${semitones >= 0 ? '+' : ''}${semitones} st -> ${duration.toFixed(2)}s`);
+    } catch (e) {
+      logError('editor', `Time/Pitch failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setTimePitchBusy(false);
+    }
+  }, [extractRegionWav, updateClip]);
+
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
@@ -1583,6 +1732,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // Ruler click sets playhead immediately (same coord math as track lanes).
   const onRulerMouseDown = (e: React.MouseEvent) => {
+    // Shift-drag on the ruler draws the loop region; a plain click sets the playhead.
+    if (e.shiftKey) {
+      const anchor = Math.max(0, secFromClientX(e.clientX));
+      setLoopRegion(anchor, anchor);
+      const move = (ev: MouseEvent) => {
+        const cur = Math.max(0, secFromClientX(ev.clientX));
+        setLoopRegion(Math.min(anchor, cur), Math.max(anchor, cur));
+      };
+      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+      e.preventDefault();
+      return;
+    }
     seekEditorTo(secFromClientX(e.clientX));
   };
 
@@ -1859,6 +2022,27 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           </button>
 
           <button
+            onClick={() => setLoopEnabled(!loopEnabled)}
+            onContextMenu={(e) => { e.preventDefault(); clearLoop(); }}
+            aria-pressed={loopEnabled}
+            aria-label="Loop region"
+            title="Loop: shift-drag the ruler to set the region, click to toggle, right-click to clear"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${loopEnabled ? 'bg-amber-600/20 border-amber-500/50 text-amber-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+          >
+            <Repeat className="w-3 h-3" /> LOOP
+          </button>
+
+          <button
+            onClick={() => addMarker(playheadSec)}
+            aria-label="Add marker at playhead"
+            title="Add a marker at the playhead (double-click a flag to rename, Alt-click to delete)"
+            className="flex items-center gap-1.5 p-1 px-2 rounded border border-white/5 text-zinc-500 hover:text-white hover:bg-white/5 transition-colors text-[9px] font-mono uppercase tracking-wider"
+          >
+            <Flag className="w-3 h-3" /> MARK
+          </button>
+
+          <button
             onClick={() => setShowMetamorph((v) => !v)}
             aria-pressed={showMetamorph}
             aria-label="Metamorph granular identity-bleed panel"
@@ -2101,6 +2285,39 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
+      {/* Per-clip Time / Pitch popover (audio clips) */}
+      {timePitchPanel && (() => {
+        const clip = clips.find((c) => c.id === timePitchPanel.clipId);
+        if (!clip) return null;
+        const left = Math.max(8, Math.min(timePitchPanel.x, window.innerWidth - 300));
+        const top = Math.max(8, Math.min(timePitchPanel.y, window.innerHeight - 170));
+        return (
+          <div
+            ref={timePitchRef}
+            className="fixed z-50 w-72 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
+            style={{ left, top }}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+                Time / Pitch — <span style={{ color: clip.color }}>{clip.label}</span>
+              </span>
+              <button
+                onClick={() => setTimePitchPanel(null)}
+                aria-label="Close time and pitch panel"
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <TimePitchControls
+              busy={timePitchBusy}
+              onApply={(tempo, semitones) => { void applyTimePitch(timePitchPanel.clipId, tempo, semitones).then(() => setTimePitchPanel(null)); }}
+            />
+          </div>
+        );
+      })()}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
@@ -2205,6 +2422,24 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   {formatTimecode(tick.sec).replace(/\.00$/, '')}
                 </span>
               </div>
+            ))}
+            {/* Loop region (shift-drag the ruler to set; LOOP toggles it) */}
+            {loopEnd > loopStart && (
+              <div
+                className={`absolute top-0 bottom-0 z-10 pointer-events-none ${loopEnabled ? 'bg-amber-400/25 border-x border-amber-400/70' : 'bg-white/5 border-x border-white/25'}`}
+                style={{ left: loopStart * zoom, width: (loopEnd - loopStart) * zoom }}
+              />
+            )}
+            {/* Marker flags */}
+            {markers.map((m) => (
+              <MarkerFlag
+                key={m.id}
+                marker={m}
+                zoom={zoom}
+                onSeek={() => seekEditorTo(m.t)}
+                onRename={(label) => renameMarker(m.id, label)}
+                onDelete={() => removeMarker(m.id)}
+              />
             ))}
             {/* Playhead in ruler: line + draggable triangle handle */}
             <div
@@ -2445,6 +2680,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               );
             })}
 
+            {/* Loop region band down the lanes (when set) */}
+            {loopEnd > loopStart && (
+              <div
+                className={`absolute top-0 bottom-0 pointer-events-none ${loopEnabled ? 'bg-amber-400/8 border-x border-amber-400/30' : 'bg-white/2 border-x border-white/10'}`}
+                style={{ left: loopStart * zoom, width: (loopEnd - loopStart) * zoom }}
+              />
+            )}
+
             {/* Playhead line in track lanes */}
             <div
               className="absolute top-0 bottom-0 w-px bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)] z-30 pointer-events-none"
@@ -2548,6 +2791,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             onSwitchTab?.('create');
           },
         });
+        if (clip && !clip.sourcePianoRoll) {
+          items.push({
+            type: 'item',
+            label: 'Time / Pitch…',
+            icon: <Gauge className="w-3 h-3" />,
+            hint: 'stretch',
+            onSelect: () => {
+              const pos = clipMenu.position;
+              setTimePitchPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
+            },
+          });
+        }
         if (clip?.sourcePianoRoll) {
           const noteCount = clip.sourcePianoRoll.length;
           items.push({
