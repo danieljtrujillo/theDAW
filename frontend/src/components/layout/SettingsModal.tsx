@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid, HardDrive, Heart, ExternalLink, Monitor, Globe, UserCircle, Plus, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Settings, X, Package, RefreshCw, AlertTriangle, ToggleLeft, ToggleRight, Activity, Scissors, Music, Power, CheckCircle2, AlertCircle, PowerOff, ChevronRight, LayoutGrid, HardDrive, Heart, ExternalLink, Monitor, Globe, UserCircle, Plus, Eye, EyeOff, Download, Loader2 } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import {
   addCheckpoint, fetchCheckpoints, fetchHfCache, fetchLocations, fetchModelStatus, formatBytes,
@@ -13,6 +13,7 @@ import { PathInput } from '../ui/PathInput';
 import { InfoTip } from '../ui/Tooltip';
 import { useSunoStore } from '../../suno/sunoStore';
 import { useModuleStore, type ModuleConfig } from '../../state/moduleStore';
+import { useDownloadStore } from '../../state/downloadStore';
 
 /* Shared type scale — kept legible (nothing below 9px) and a touch brighter than
  * the old zinc-600/700 greys, which read as background noise. */
@@ -699,6 +700,11 @@ const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provid
   const ordered = [...models].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)));
   const visible = ordered.slice(0, 3);
   const hidden = Math.max(0, ordered.length - visible.length);
+  // Stable Audio "download" chips become live download triggers. The dock owns
+  // all progress/error state — these chips only fire the request and read job
+  // status for a compact in-place indicator.
+  const downloadJobs = useDownloadStore((s) => s.jobs);
+  const startDownload = useDownloadStore((s) => s.startDownload);
   return (
     <article className={`min-w-0 rounded border border-white/8 bg-white/3 px-1.5 py-1 ${isSuno ? 'col-span-2' : ''}`} title={provider.summary}>
       <div className="flex items-center gap-1.5">
@@ -711,15 +717,36 @@ const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provid
         <div className="mt-1"><SunoKeyInput /></div>
       ) : visible.length > 0 ? (
         <div className="mt-1 flex flex-wrap gap-1">
-          {visible.map((model) => (
-            <span
-              key={model.id}
-              title={modelTooltip(model)}
-              className={`max-w-full truncate rounded border px-1 py-px text-[9px] font-mono ${modelSourceClass(model.source)}`}
-            >
-              {model.recommended ? '★ ' : ''}{model.label}
-            </span>
-          ))}
+          {visible.map((model) => {
+            const isDownloadable = provider.id === 'stable' && model.source === 'download';
+            if (isDownloadable) {
+              const job = downloadJobs.find((j) => j.name === model.id);
+              const downloading = job?.status === 'downloading' || job?.status === 'queued';
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={() => void startDownload(model.id)}
+                  disabled={downloading}
+                  aria-label={`Download ${model.label} model`}
+                  title={modelTooltip(model)}
+                  className={`inline-flex items-center gap-1 max-w-full truncate rounded border px-1 py-px text-[9px] font-mono transition-colors ${modelSourceClass(model.source)} hover:bg-purple-500/15 hover:border-purple-400/50 hover:text-purple-100 disabled:cursor-default disabled:opacity-80`}
+                >
+                  {downloading ? <Loader2 className="w-2 h-2 animate-spin shrink-0" /> : <Download className="w-2 h-2 shrink-0" />}
+                  <span className="truncate">{model.recommended ? '★ ' : ''}{model.label}</span>
+                </button>
+              );
+            }
+            return (
+              <span
+                key={model.id}
+                title={modelTooltip(model)}
+                className={`max-w-full truncate rounded border px-1 py-px text-[9px] font-mono ${modelSourceClass(model.source)}`}
+              >
+                {model.recommended ? '★ ' : ''}{model.label}
+              </span>
+            );
+          })}
           {hidden > 0 && <span className="rounded border border-white/10 px-1 py-px text-[9px] font-mono text-zinc-400">+{hidden}</span>}
         </div>
       ) : null}
