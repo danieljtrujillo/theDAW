@@ -414,11 +414,18 @@ def download_bundle(entry_id: str) -> Response:
     analysis: Optional[dict[str, Any]] = None
     stems: list[dict[str, Any]] = []
     midis: list[dict[str, Any]] = []
+    scores: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     if store.db is not None:
         analysis = store.db.get_analysis(entry_id)
         stems = store.db.list_stems(entry_id)
         midis = store.db.list_midis(entry_id)
+        # Notation artifacts minus raw midi (already bundled under midi/).
+        scores = [
+            a
+            for a in store.db.list_notation_artifacts(entry_id)
+            if a.get("kind") != "midi"
+        ]
         # Edges where entry is either parent or child.
         edges = store.db.list_relations(from_id=entry_id) + store.db.list_relations(
             to_id=entry_id
@@ -432,6 +439,7 @@ def download_bundle(entry_id: str) -> Response:
         analysis=analysis,
         stems=stems,
         midis=midis,
+        scores=scores,
         lineage_edges=edges,
     )
 
@@ -543,6 +551,26 @@ def list_all_midi() -> dict[str, Any]:
             midi_payload["parent_id"] = entry["id"]
             out.append(midi_payload)
     return {"midis": out, "count": len(out)}
+
+
+@router.get("/_all/scores")
+def list_all_scores() -> dict[str, Any]:
+    """Return every notation/score artifact across every entry, joined to the
+    parent entry's title. Excludes raw ``midi`` artifacts (those live in the
+    MIDI tab); keeps sheets, tabs, arrangements, and exports."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    out: list[dict[str, Any]] = []
+    for entry in store.db.list_entries():
+        for art in store.db.list_notation_artifacts(entry["id"]):
+            if art.get("kind") == "midi":
+                continue
+            payload = dict(art)
+            payload["parent_title"] = entry.get("title")
+            payload["parent_id"] = entry["id"]
+            out.append(payload)
+    return {"scores": out, "count": len(out)}
 
 
 @router.get("/_graph/all")

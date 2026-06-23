@@ -23,11 +23,17 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
+    "app": {
+        # How theDAW opens on the next launch (read by theDAW.bat before it
+        # starts anything): "web" = backend + Vite + browser (current default),
+        # "desktop" = the Electron shell. Both share the same backend + DB.
+        "launch_mode": "web",
+    },
     "analysis": {
         # Analysis is cheap (local librosa + aubio), so it's default-ON
         # — every imported / generated track gets its bpm/key/pitch/bars
@@ -69,6 +75,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Each take also lands in a per-export subfolder named in the VJ
         # record bar, so the final file is <export_root>/<subfolder>/…
         "export_root": "exports/vj",
+    },
+    "notation": {
+        # Global artist/composer name. Stamped as the composer credit on every
+        # generated sheet (and appended to song titles). Defaults to GANTASMO;
+        # editable in Settings. The engine falls back to GANTASMO even if this
+        # is blanked, so a sheet is never credited to "Music21".
+        "artist": "GANTASMO",
     },
 }
 
@@ -133,6 +146,15 @@ def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         # section, so it's already filled from DEFAULT_SETTINGS above;
         # this branch only exists to re-persist the bumped schema.
         merged.setdefault("vj", deepcopy(DEFAULT_SETTINGS["vj"]))
+    if old_version < 6:
+        # Migration v5 → v6: add the `app` section (launch_mode). New
+        # section, already filled from DEFAULT_SETTINGS above; this branch
+        # re-persists the bumped schema with the field present.
+        merged.setdefault("app", deepcopy(DEFAULT_SETTINGS["app"]))
+    if old_version < 7:
+        # Migration v6 → v7: add the `notation` section (artist). New section,
+        # already filled from DEFAULT_SETTINGS above; re-persist the bump.
+        merged.setdefault("notation", deepcopy(DEFAULT_SETTINGS["notation"]))
 
     merged["schema_version"] = SCHEMA_VERSION
     return merged

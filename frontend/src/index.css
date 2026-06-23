@@ -115,6 +115,24 @@
   .btn-ghost {
     @apply bg-white/5 hover:bg-white/10 text-zinc-300 border border-white/5 py-1 px-2 rounded text-[10px] transition-all;
   }
+
+  /* High-contrast <select> matching .compact-input. Carries no padding /
+     text-size so it composes with each control's own sizing classes
+     (px/py/text-*). color-scheme keeps the native option popup dark. */
+  .form-select {
+    @apply bg-black/40 border border-(--panel-border) rounded text-white outline-none focus:border-purple-500 cursor-pointer transition-colors;
+    color-scheme: dark;
+  }
+}
+
+/* Native <select> popups render dark + legible everywhere (the browser
+   default is a white option list that clashes with theDAW's dark panels);
+   option rows take the panel palette so the open list matches the app. */
+select { color-scheme: dark; }
+select option,
+select optgroup {
+  background-color: var(--panel);
+  color: var(--text-primary);
 }
 
 @theme {

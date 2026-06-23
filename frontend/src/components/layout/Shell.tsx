@@ -365,8 +365,15 @@ const ShellBottomDock: React.FC = () => {
   const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
 
   // Dock-body height — shared by the multi-tab panel (in-flow) and the floating
-  // LOG overlay. Maximized fills the work area.
-  const bodyHeight = multiMaximized ? 'calc(100vh - 7rem)' : `${multiHeight}px`;
+  // LOG overlay. Maximized fills the work area. The height MUST be computed in
+  // the same zoom-aware space as the .dense-layout root (height =
+  // calc((100vh - 5rem) / var(--layout-zoom))); a raw `100vh` calc here ignores
+  // --layout-zoom and, at zoom > 1, overflows the root's overflow-hidden so the
+  // dock's own bottom (e.g. the Score viewer's page/zoom controls) is clipped.
+  // Reserve 5rem inside the root for the header (h-11) + the always-on strip.
+  const bodyHeight = multiMaximized
+    ? 'calc((100vh - 5rem) / var(--layout-zoom) - 5rem)'
+    : `${multiHeight}px`;
   // The LOG strip section auto-fits its content (the telemetry readouts + the
   // fixed action button). Mirror its measured width into logWidth so the LOG
   // body directly below it stays column-aligned (opens to the same left edge).
