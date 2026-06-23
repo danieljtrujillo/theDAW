@@ -1,5 +1,5 @@
-appId: com.gantasmo.stabledaw
-productName: StableDAW
+appId: com.gantasmo.thedaw
+productName: theDAW
 directories:
   output: release
   buildResources: resources

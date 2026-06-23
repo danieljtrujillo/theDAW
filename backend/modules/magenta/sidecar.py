@@ -14,8 +14,7 @@ Conditioning is combinable per the model: a **text** prompt (default), a list of
 128-pitch state windows), and/or an **audio-style** reference clip (``audio``,
 embedded via the model's style encoder; overrides the prompt). The response
 ``X-Conditioning`` header reports which mode(s) were used. Override the URL with
-``THEDAW_MAGENTA_URL`` (default ``http://localhost:8777``; legacy
-``STABLEDAW_MAGENTA_URL`` is still honored as a fallback).
+``THEDAW_MAGENTA_URL`` (default ``http://localhost:8777``).
 """
 
 from __future__ import annotations
@@ -33,10 +32,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-SIDECAR_URL = os.getenv(
-    "THEDAW_MAGENTA_URL",
-    os.getenv("STABLEDAW_MAGENTA_URL", "http://localhost:8777"),
-).rstrip("/")
+SIDECAR_URL = os.getenv("THEDAW_MAGENTA_URL", "http://localhost:8777").rstrip("/")
 
 # The identity the EXTENDED sidecar reports in /health. The bundled Studio server
 # answers ``ready: true`` too but speaks an incompatible JSON protocol and reports
@@ -86,13 +82,8 @@ async def health() -> dict:
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENGINE_SCRIPT = _REPO_ROOT / "sidecars" / "magenta" / "server.py"
 _DISTRO_FILE = _REPO_ROOT / "sidecars" / "magenta-rt2-nvidia" / "app" / ".wsl_distro"
-_ENGINE_MODEL = os.getenv(
-    "THEDAW_MAGENTA_MODEL", os.getenv("STABLEDAW_MAGENTA_MODEL", "mrt2_small")
-)
-_WSL_PYTHON = os.getenv(
-    "THEDAW_MAGENTA_WSL_PY",
-    os.getenv("STABLEDAW_MAGENTA_WSL_PY", "~/mrt2/.venv/bin/python"),
-)
+_ENGINE_MODEL = os.getenv("THEDAW_MAGENTA_MODEL", "mrt2_small")
+_WSL_PYTHON = os.getenv("THEDAW_MAGENTA_WSL_PY", "~/mrt2/.venv/bin/python")
 # pkill pattern matching BOTH magenta engines (extended + bundled Studio).
 _ENGINE_PKILL_PATTERN = "sidecars/magenta/server.py|studio_server.py"
 

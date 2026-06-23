@@ -259,7 +259,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 960,
     minHeight: 640,
-    title: 'StableDAW',
+    title: 'theDAW',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -323,7 +323,7 @@ function loadingHTML(): string {
 </head>
 <body>
   <div class="spinner"></div>
-  <h2>StableDAW</h2>
+  <h2>theDAW</h2>
   <p id="status">Starting backend...</p>
   <div id="log"></div>
   <script>
@@ -505,7 +505,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  // Quit on all platforms — StableDAW is a DAW, not a utility app
+  // Quit on all platforms — theDAW is a DAW, not a utility app
   app.quit()
 })
 
