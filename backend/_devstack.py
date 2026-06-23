@@ -232,7 +232,7 @@ def main() -> int:
 
     # Tunnel (optional) — only if localtunnel is installed.
     if shutil.which("lt"):
-        tunnel = _spawn("lt --port 5173 --subdomain stabledaw --print-requests")
+        tunnel = _spawn("lt --port 5173 --subdomain thedaw --print-requests")
         children.append(tunnel)
         threading.Thread(target=_pump, args=("tunnel", tunnel), daemon=True).start()
     else:

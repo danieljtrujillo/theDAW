@@ -108,7 +108,7 @@ export const useEffectChainStore = create<EffectChainState>()(
       clearChain: () => set({ chain: [] }),
     }),
     {
-      name: 'stabledaw-effect-chain',
+      name: 'thedaw-effect-chain',
       partialize: (s) => ({ chain: s.chain }),
     },
   ),

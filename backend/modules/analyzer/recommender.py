@@ -3,7 +3,7 @@
 Flow:
   1. Run rules.evaluate_rules(descriptors, target) to get candidate cards
   2. Sort by priority x confidence
-  3. Optionally call the StableDAW LLM assistant for ranking/explanation
+  3. Optionally call the theDAW LLM assistant for ranking/explanation
   4. Return the cards + summary
 
 The LLM call enriches but never replaces the rules. If the backend is
@@ -23,9 +23,12 @@ from . import rules
 
 log = logging.getLogger(__name__)
 
-# The StableDAW main backend assistant endpoint.
+# The theDAW main backend assistant endpoint.
 # Default assumes the main backend runs on localhost:8600.
-_ASSISTANT_BASE = os.environ.get("STABLEDAW_BACKEND_URL", "http://127.0.0.1:8600")
+_ASSISTANT_BASE = os.environ.get(
+    "THEDAW_BACKEND_URL",
+    os.environ.get("STABLEDAW_BACKEND_URL", "http://127.0.0.1:8600"),
+)
 _ASSISTANT_CHAT_URL = f"{_ASSISTANT_BASE}/api/assistant/chat"
 
 # Provider/model to use for LLM enrichment (configurable via env).

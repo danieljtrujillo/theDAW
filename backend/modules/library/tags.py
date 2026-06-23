@@ -117,7 +117,7 @@ GENERATOR_SIGNATURES: dict[str, str] = {
     "musicgen": "musicgen",
     "stable_audio": "stable-audio",
     "stable-audio": "stable-audio",
-    "stabledaw": "stable-audio",
+    "thedaw": "stable-audio",
     "audacity": "audacity",
     "logic pro": "logic-pro",
     "ableton": "ableton-live",

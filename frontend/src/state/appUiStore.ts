@@ -103,7 +103,7 @@ export const useAppUiStore = create<AppUiState>()(
       setDocsOpen: (open) => set({ docsOpen: open }),
     }),
     {
-      name: 'stabledaw-app-ui',
+      name: 'thedaw-app-ui',
       partialize: (s) => ({
         centerTab: s.centerTab,
         isLeftPanelOpen: s.isLeftPanelOpen,

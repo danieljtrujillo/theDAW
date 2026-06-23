@@ -388,7 +388,7 @@ def _make_generation_filename(
             basename += f".neg-{_condense_filename_text(negative_prompt)}"
         basename += f".{seed}"
     else:
-        basename = f"stabledaw_{_condense_filename_text(job_id[:8], 'job')}"
+        basename = f"thedaw_{_condense_filename_text(job_id[:8], 'job')}"
 
     return f"{basename}_{index}.{fmt}"
 
@@ -470,7 +470,7 @@ async def _persist_lora_uploads(
     if not slots:
         return [], [], None
 
-    temp_dir = Path(tempfile.mkdtemp(prefix=f"stabledaw_lora_{job_id[:8]}_"))
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"thedaw_lora_{job_id[:8]}_"))
     paths: list[str] = []
     weights: list[float] = []
     for slot in slots:

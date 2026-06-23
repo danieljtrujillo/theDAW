@@ -1702,7 +1702,7 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         if provider_id in ("openrouter", "openrouter-free"):
-            headers["HTTP-Referer"] = "https://stabledaw.local"
+            headers["HTTP-Referer"] = "https://thedaw.local"
             headers["X-Title"] = "theDAW Assistant"
 
         if key_attempt == 0:

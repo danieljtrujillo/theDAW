@@ -104,17 +104,17 @@ const DEFAULT_PROVIDERS: ProviderInfo[] = [
 
 function readInitialAssistantSelection() {
     try {
-        if (localStorage.getItem('stabledaw:assistantDefaultsVersion') !== ASSISTANT_DEFAULTS_VERSION) {
-            localStorage.setItem('stabledaw:provider', DEFAULT_ASSISTANT_PROVIDER);
-            localStorage.setItem('stabledaw:model', DEFAULT_ASSISTANT_MODEL);
-            localStorage.setItem('stabledaw:claudeMode', DEFAULT_CLAUDE_MODE);
-            localStorage.setItem('stabledaw:assistantDefaultsVersion', ASSISTANT_DEFAULTS_VERSION);
+        if (localStorage.getItem('thedaw:assistantDefaultsVersion') !== ASSISTANT_DEFAULTS_VERSION) {
+            localStorage.setItem('thedaw:provider', DEFAULT_ASSISTANT_PROVIDER);
+            localStorage.setItem('thedaw:model', DEFAULT_ASSISTANT_MODEL);
+            localStorage.setItem('thedaw:claudeMode', DEFAULT_CLAUDE_MODE);
+            localStorage.setItem('thedaw:assistantDefaultsVersion', ASSISTANT_DEFAULTS_VERSION);
         }
 
         return {
-            provider: localStorage.getItem('stabledaw:provider') || DEFAULT_ASSISTANT_PROVIDER,
-            model: localStorage.getItem('stabledaw:model') || DEFAULT_ASSISTANT_MODEL,
-            claudeMode: localStorage.getItem('stabledaw:claudeMode') || DEFAULT_CLAUDE_MODE,
+            provider: localStorage.getItem('thedaw:provider') || DEFAULT_ASSISTANT_PROVIDER,
+            model: localStorage.getItem('thedaw:model') || DEFAULT_ASSISTANT_MODEL,
+            claudeMode: localStorage.getItem('thedaw:claudeMode') || DEFAULT_CLAUDE_MODE,
         };
     } catch {
         return {
@@ -146,7 +146,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
     const [selectedModel, setSelectedModel] = useState<string>(initialAssistantSelection.model);
     const [claudeMode, setClaudeMode] = useState<string>(initialAssistantSelection.claudeMode);
     const conversationIdRef = useRef<string | null>(
-        (() => { try { return sessionStorage.getItem('stabledaw:conversationId'); } catch { return null; } })()
+        (() => { try { return sessionStorage.getItem('thedaw:conversationId'); } catch { return null; } })()
     );
     const abortRef = useRef<AbortController | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -396,9 +396,9 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
           setSelectedModel(firstModelId);
                  }
     };
-    useEffect(() => { localStorage.setItem('stabledaw:provider', selectedProvider); }, [selectedProvider]);
-    useEffect(() => { localStorage.setItem('stabledaw:model', selectedModel); }, [selectedModel]);
-    useEffect(() => { localStorage.setItem('stabledaw:claudeMode', claudeMode); }, [claudeMode]);
+    useEffect(() => { localStorage.setItem('thedaw:provider', selectedProvider); }, [selectedProvider]);
+    useEffect(() => { localStorage.setItem('thedaw:model', selectedModel); }, [selectedModel]);
+    useEffect(() => { localStorage.setItem('thedaw:claudeMode', claudeMode); }, [claudeMode]);
      useEffect(() => {
          if (selectedProvider === 'claude') setClaudeMode(resolveClaudeMode(selectedModel));
      }, [selectedProvider, selectedModel]);
@@ -577,7 +577,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             const event = JSON.parse(dataLine.slice(6));
                             if (event.session_id) {
                                 conversationIdRef.current = event.session_id;
-                                try { sessionStorage.setItem('stabledaw:conversationId', event.session_id); } catch {}
+                                try { sessionStorage.setItem('thedaw:conversationId', event.session_id); } catch {}
                             }
 
                             const executableAction = actionFromAssistantEvent(event);

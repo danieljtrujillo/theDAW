@@ -234,7 +234,7 @@ export const useSlideStore = create<SlideState>()(
       resetAssignments: () => set({ assignments: emptyAssign() }),
     }),
     {
-      name: 'stabledaw-slide-v1',
+      name: 'thedaw-slide-v1',
       partialize: (s) => ({
         content: s.content,
         view: s.view,

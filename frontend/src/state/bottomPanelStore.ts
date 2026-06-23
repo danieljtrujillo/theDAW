@@ -68,7 +68,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         })),
     }),
     {
-      name: 'stabledaw-bottom-panel-v4',
+      name: 'thedaw-bottom-panel-v4',
       partialize: (s) => ({
         activeTab: s.activeTab,
         isOpen: s.isOpen,

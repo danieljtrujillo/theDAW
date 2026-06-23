@@ -18,14 +18,14 @@ function getStoredProviderSelection(): ProviderSelection {
         return { provider: 'gemini', model: 'gemini-flash-recent' };
     }
 
-    const provider = localStorage.getItem('stabledaw:provider') || 'gemini';
-    const model = localStorage.getItem('stabledaw:model') || 'gemini-flash-recent';
+    const provider = localStorage.getItem('thedaw:provider') || 'gemini';
+    const model = localStorage.getItem('thedaw:model') || 'gemini-flash-recent';
     return { provider, model };
 }
 
 function resolveClaudeMode(model: string): string {
     if (model.startsWith('claude-code-')) return model.replace('claude-code-', '');
-    return localStorage.getItem('stabledaw:claudeMode') || 'interactive';
+    return localStorage.getItem('thedaw:claudeMode') || 'interactive';
 }
 
 function stripCodeFence(text: string): string {
@@ -102,7 +102,7 @@ export async function enhanceStableAudioPrompt(request: PromptEnhancementRequest
     if (provider === 'claude') {
         body.claudeMode = resolveClaudeMode(model);
         try {
-            const sessionId = sessionStorage.getItem('stabledaw:conversationId');
+            const sessionId = sessionStorage.getItem('thedaw:conversationId');
             if (sessionId) {
                 body.conversationId = sessionId;
                 body.claudeSessionId = sessionId;
@@ -144,7 +144,7 @@ export async function enhanceStableAudioPrompt(request: PromptEnhancementRequest
             try {
                 const event = JSON.parse(dataLine.slice(6));
                 if (event.session_id) {
-                    try { sessionStorage.setItem('stabledaw:conversationId', event.session_id); } catch {}
+                    try { sessionStorage.setItem('thedaw:conversationId', event.session_id); } catch {}
                 }
                 if (event.type === 'text_delta') rawText += event.delta || '';
                 if (event.type === 'error') errorText = event.error || 'Prompt enhancement failed.';

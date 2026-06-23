@@ -305,7 +305,7 @@ const SCENES: Scene[] = [
         // right-click uses.
         await page.evaluate((id: string) => {
           window.dispatchEvent(
-            new CustomEvent('stabledaw:reveal-library-entry', {
+            new CustomEvent('thedaw:reveal-library-entry', {
               detail: { entryId: id },
             }),
           );

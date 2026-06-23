@@ -6,7 +6,7 @@ export interface PersistedBucketMeta {
   addedAt: number;
 }
 
-const META_KEY = 'stabledaw.mediaBucket.meta.v1';
+const META_KEY = 'thedaw.mediaBucket.meta.v1';
 const DB_NAME = 'stabledaw-media-bucket';
 const DB_VERSION = 1;
 const BLOB_STORE = 'bucketBlobs';

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Enhance — StableDAW</title>
+<title>Enhance — theDAW</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -524,7 +524,7 @@ draw();
 
 // ── Receive audio from parent page ──
 window.addEventListener('message', async (e) => {
-  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+  if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
       const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });

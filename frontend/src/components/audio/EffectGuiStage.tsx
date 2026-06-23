@@ -10,7 +10,7 @@ import type { StudioModule } from '../../lib/moduleCatalog';
    is natively responsive (its canvases redraw to the new size via their own rAF
    loops), so a wider stage reads a longer waveform / wider spectrum, exactly as
    each effect intends. The instrument keeps its own header — this host adds none.
-   Audio is fed over the postMessage('stabledaw-audio') protocol every module
+   Audio is fed over the postMessage('thedaw-audio') protocol every module
    listens for, so the live Web-Audio preview tracks the MIX source. */
 
 const FILL_CSS = `
@@ -32,7 +32,7 @@ export const EffectGuiStage: React.FC<{
     if (!win || !sourceFile) return;
     try {
       const buffer = await sourceFile.arrayBuffer();
-      win.postMessage({ type: 'stabledaw-audio', buffer, name: sourceFile.name }, '*');
+      win.postMessage({ type: 'thedaw-audio', buffer, name: sourceFile.name }, '*');
     } catch { /* non-fatal — the instrument has its own Load Audio button */ }
   }, [sourceFile]);
 
@@ -40,9 +40,9 @@ export const EffectGuiStage: React.FC<{
     // Make the instrument fill the stage (responsive), then feed audio.
     try {
       const doc = iframeRef.current?.contentDocument;
-      if (doc && !doc.querySelector('style[data-stabledaw="fill"]')) {
+      if (doc && !doc.querySelector('style[data-thedaw="fill"]')) {
         const style = doc.createElement('style');
-        style.setAttribute('data-stabledaw', 'fill');
+        style.setAttribute('data-thedaw', 'fill');
         style.textContent = FILL_CSS;
         doc.head?.appendChild(style);
         // nudge a resize so canvas draw loops re-measure immediately

@@ -92,24 +92,24 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
         case 'navigate':
         case 'navigate_to': {
             const tab = String(payload?.tab || payload?.view || 'create');
-            window.dispatchEvent(new CustomEvent('stabledaw:navigate', { detail: { tab } }));
+            window.dispatchEvent(new CustomEvent('thedaw:navigate', { detail: { tab } }));
             return `Navigated to ${tab}`;
         }
 
         case 'open_docs':
-            window.dispatchEvent(new CustomEvent('stabledaw:open-docs'));
+            window.dispatchEvent(new CustomEvent('thedaw:open-docs'));
             return 'Opened docs';
 
         case 'close_docs':
-            window.dispatchEvent(new CustomEvent('stabledaw:close-docs'));
+            window.dispatchEvent(new CustomEvent('thedaw:close-docs'));
             return 'Closed docs';
 
         case 'open_left_panel':
-            window.dispatchEvent(new CustomEvent('stabledaw:set-left-panel', { detail: { open: true } }));
+            window.dispatchEvent(new CustomEvent('thedaw:set-left-panel', { detail: { open: true } }));
             return 'Opened left panel';
 
         case 'close_left_panel':
-            window.dispatchEvent(new CustomEvent('stabledaw:set-left-panel', { detail: { open: false } }));
+            window.dispatchEvent(new CustomEvent('thedaw:set-left-panel', { detail: { open: false } }));
             return 'Closed left panel';
 
         // --- Generation Parameters ---

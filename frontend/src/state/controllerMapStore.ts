@@ -84,7 +84,7 @@ export const useControllerMapStore = create<ControllerMapState>()(
         set((s) => ({ bindings: { ...s.bindings, [profileId]: {} } })),
     }),
     {
-      name: 'stabledaw-controller-map-v1',
+      name: 'thedaw-controller-map-v1',
       // Only the learned bindings persist; map-mode/learn state is per session.
       partialize: (s) => ({ bindings: s.bindings }),
     },

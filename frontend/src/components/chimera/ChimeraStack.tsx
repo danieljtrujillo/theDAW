@@ -132,7 +132,7 @@ export const ChimeraStack: React.FC = () => {
                 e.dataTransfer.effectAllowed = 'move';
                 // Use a custom MIME so the cross-component external-drag
                 // bus doesn't pick this up as an audio drop.
-                e.dataTransfer.setData('application/x-stabledaw-chimera-row', clip.id);
+                e.dataTransfer.setData('application/x-thedaw-chimera-row', clip.id);
               }}
               onDragOver={(e) => {
                 if (!dragSrc || dragSrc === clip.id) return;

@@ -233,7 +233,7 @@ def _record_from_metadata(
     # ── Suno API-compatible format normalization ─────────────────────
     # If metadata came from a Suno External API cache (has "inferred" dict),
     # flatten inferred fields to top-level so downstream field reads work.
-    # No-op on normal StableDAW metadata (no "inferred" key exists).
+    # No-op on normal theDAW metadata (no "inferred" key exists).
     # Shallow-copy to avoid mutating the caller's dict (preserves DB fidelity).
     inferred = meta.get("inferred")
     if isinstance(inferred, dict):
