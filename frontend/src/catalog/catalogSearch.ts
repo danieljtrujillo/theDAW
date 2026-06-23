@@ -3,7 +3,7 @@
  *
  * Pure functions over `LibraryEntry[]`, mirroring SunoHarvester's Library
  * search UX (a `searchTarget` field selector + multiple match `mode`s) adapted
- * to StableDAW's `LibraryEntry`. Everything here is in-memory and side-effect
+ * to theDAW's `LibraryEntry`. Everything here is in-memory and side-effect
  * free — the existing library store is the single source of truth; this is just
  * a rich VIEW over its `entries`.
  *

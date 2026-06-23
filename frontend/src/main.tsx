@@ -1,7 +1,12 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import {migrateBrandKeys} from './lib/migrateBrandKeys';
 import './index.css';
+
+// Carry any legacy persisted storage over to the current key namespace before
+// any store hydrates, so no local user data is lost.
+migrateBrandKeys();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

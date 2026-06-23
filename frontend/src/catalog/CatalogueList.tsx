@@ -65,7 +65,7 @@ function Row({
       <div
         draggable
         onDragStart={(e) => {
-          e.dataTransfer.setData('application/x-stabledaw-library-id', entry.id);
+          e.dataTransfer.setData('application/x-thedaw-library-id', entry.id);
           e.dataTransfer.setData('text/plain', entry.title);
           e.dataTransfer.effectAllowed = 'copy';
         }}

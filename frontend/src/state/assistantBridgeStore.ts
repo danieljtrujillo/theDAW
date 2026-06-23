@@ -100,7 +100,7 @@ function runAction(action: AssistantAction): string {
 
         case 'navigate': {
             const tab = String(params.tab || 'create');
-            window.dispatchEvent(new CustomEvent('stabledaw:navigate', { detail: { tab } }));
+            window.dispatchEvent(new CustomEvent('thedaw:navigate', { detail: { tab } }));
             return `Navigated to: ${tab}`;
         }
 

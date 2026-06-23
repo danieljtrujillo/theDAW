@@ -672,7 +672,7 @@ Subtasks:
 
 - Before LOAD / CREATE, fetch model readiness.
 - If selected model is `download` while local-only is on, block with a friendly warning.
-- Dispatch `stabledaw:open-settings` with a section target.
+- Dispatch `thedaw:open-settings` with a section target.
 - Message:
 
 ```text

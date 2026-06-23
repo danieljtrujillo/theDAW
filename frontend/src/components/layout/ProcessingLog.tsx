@@ -63,7 +63,7 @@ const downloadLog = (entries: LogEntry[]) => {
   if (!entries.length) return;
   const blob = new Blob([entries.map(entryToLine).join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement('a'), { href: url, download: `stabledaw-log-${fmtTs()}.txt` });
+  const a = Object.assign(document.createElement('a'), { href: url, download: `thedaw-log-${fmtTs()}.txt` });
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };

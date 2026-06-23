@@ -1,7 +1,7 @@
 """
 Suno public-API proxy module (Berklee Hackathon API).
 
-A self-contained layer that proxies StableDAW's frontend to the Suno public
+A self-contained layer that proxies theDAW's frontend to the Suno public
 API at ``https://api.suno.com`` so the secret API key NEVER reaches the
 browser. Adapted from SunoHarvester's proven Suno-proxy pattern.
 
@@ -53,7 +53,7 @@ _ALLOWED_AUDIO_HOSTS = frozenset(
 )
 log = logging.getLogger(__name__)
 
-# backend/modules/suno/router.py -> parents[3] == StableDAW repo root
+# backend/modules/suno/router.py -> parents[3] == theDAW repo root
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_BASE = "https://api.suno.com"
 

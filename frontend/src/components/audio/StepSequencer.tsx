@@ -282,7 +282,7 @@ const downloadMidi = (tracks: Track[], bpm: number, mode: 'single' | 'multi'): v
   const a = document.createElement('a');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   a.href = url;
-  a.download = `stabledaw-pattern-${stamp}-${mode}.mid`;
+  a.download = `thedaw-pattern-${stamp}-${mode}.mid`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

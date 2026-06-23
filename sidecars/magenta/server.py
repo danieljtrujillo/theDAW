@@ -28,7 +28,7 @@ Run (inside WSL2, with magenta-rt + jax[cuda] installed and weights downloaded):
     MRT2_MODEL=mrt2_small python server.py    # serves http://0.0.0.0:8777
 
 theDAW's backend reaches it at http://localhost:8777 (WSL2 forwards localhost);
-override with STABLEDAW_MAGENTA_URL.
+override with THEDAW_MAGENTA_URL.
 """
 
 from __future__ import annotations

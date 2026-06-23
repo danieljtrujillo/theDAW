@@ -1,7 +1,7 @@
 /* ── Studio Module catalog (Edit Tool Stack hero GUIs) ───────────────────────
    The 14 self-contained module GUIs that ship in frontend/public/edit-modules/.
    Each is a pixel-perfect 780×504 instrument with a live Web-Audio preview and a
-   postMessage('stabledaw-audio') receiver, so the app embeds them verbatim in the
+   postMessage('thedaw-audio') receiver, so the app embeds them verbatim in the
    MIX effect stage (see EffectGuiStage) — the EXACT GUI, no port. Mirrors the
    MODULES manifest from the scaffold's static/modules/index.html.
 

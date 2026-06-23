@@ -70,7 +70,7 @@ aubio>=0.4.9
 #   pip install crepe
 
 # ── LLM integration (no new deps) ──────────────────────────────────────
-# Uses the existing /api/assistant/chat endpoint in StableDAW backend.
+# Uses the existing /api/assistant/chat endpoint in theDAW backend.
 # Gemini / Claude / GPT / Grok already key-pooled in assistant_routes.py.
 # The recommender.py calls this via httpx, passing the descriptor bundle
 # as structured JSON. No raw audio is sent to any LLM.

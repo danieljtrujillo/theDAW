@@ -380,14 +380,14 @@
         "Send to INIT (Chimera stack)",
         "Send to a new editor track",
         "Save to library",
-        "application/x-stabledaw-library-id"
+        "application/x-thedaw-library-id"
       ],
       "status": "implemented",
       "docSearchTerms": [
         "Media Bucket",
         "Send to INIT",
         "Chimera stack",
-        "application/x-stabledaw-library-id"
+        "application/x-thedaw-library-id"
       ]
     },
     {

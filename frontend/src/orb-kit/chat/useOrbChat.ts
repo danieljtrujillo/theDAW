@@ -113,7 +113,7 @@ export interface OrbChatState {
 // Constants
 // ---------------------------------------------------------------------------
 
-const KEYS_STORAGE_KEY = 'stabledaw_orb_api_keys';
+const KEYS_STORAGE_KEY = 'thedaw_orb_api_keys';
 const FALLBACK_PROVIDERS: OrbProvider[] = [
     { id: 'gemini', label: 'Google Gemini', default_model: 'gemini-flash-recent', has_key: false, is_local: false },
     { id: 'openai', label: 'OpenAI', default_model: '', has_key: false, is_local: false },

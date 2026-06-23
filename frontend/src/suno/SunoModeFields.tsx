@@ -49,7 +49,7 @@ const Label: React.FC<{ text: string; optional?: boolean; hint?: string; tip?: s
   </div>
 );
 
-/** StyleInput — a style text field with a presets popover, themed to StableDAW. */
+/** StyleInput — a style text field with a presets popover, themed to theDAW. */
 const StyleInput: React.FC<{ optional?: boolean }> = ({ optional }) => {
   const style = useSunoStore((s) => s.style);
   const patch = useSunoStore((s) => s.patch);

@@ -2,7 +2,7 @@
  * catalogProviders — provider/platform registry for the cross-platform
  * Catalogue.
  *
- * A "provider" is the engine that produced a track: Stable Audio (StableDAW's
+ * A "provider" is the engine that produced a track: Stable Audio (theDAW's
  * native generations), Suno, Magenta, Udio, an external import, etc. The
  * library `LibraryEntry` has NO `provider` field — it only carries `model` and
  * `source`. So provider is always DERIVED via `inferProvider()`:
@@ -86,7 +86,7 @@ export const inferProvider = (e: {
   if (hay.includes('udio')) return 'udio';
   if (hay.includes('riffusion')) return 'riffusion';
   if (e.source === 'import') return 'import';
-  // StableDAW's native generations + studio renders are all Stable Audio.
+  // theDAW's native generations + studio renders are all Stable Audio.
   return 'stable-audio';
 };
 

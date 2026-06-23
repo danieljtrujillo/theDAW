@@ -102,7 +102,7 @@ const KeyNotice: React.FC = () => (
     </div>
     <HoverTip text="Open Settings → Suno API to paste your sk_live_… key (stored server-side).">
       <button
-        onClick={() => window.dispatchEvent(new CustomEvent('stabledaw:open-settings'))}
+        onClick={() => window.dispatchEvent(new CustomEvent('thedaw:open-settings'))}
         className="shrink-0 mono-tag bg-amber-500/20! text-amber-200! border-amber-500/40! hover:bg-amber-500/30! flex items-center gap-1"
       >
         <Settings className="w-3 h-3" /> Open Settings

@@ -218,9 +218,9 @@ export const FEATURE_DESCRIPTORS: FeatureDescriptor[] = [
     name: 'Media Bucket send targets for editor, library, init audio, and Chimera stack',
     domain: 'daw',
     sourcePaths: ['frontend/src/components/layout/MediaBucketView.tsx', 'frontend/src/lib/sendToTargets.ts', 'frontend/src/lib/audioDnD.ts'],
-    evidence: ['Send to INIT (Chimera stack)', 'Send to a new editor track', 'Save to library', 'application/x-stabledaw-library-id'],
+    evidence: ['Send to INIT (Chimera stack)', 'Send to a new editor track', 'Save to library', 'application/x-thedaw-library-id'],
     status: 'implemented',
-    docSearchTerms: ['Media Bucket', 'Send to INIT', 'Chimera stack', 'application/x-stabledaw-library-id'],
+    docSearchTerms: ['Media Bucket', 'Send to INIT', 'Chimera stack', 'application/x-thedaw-library-id'],
   },
   {
     id: 'vj-sidecar-tab-mobile-share',
