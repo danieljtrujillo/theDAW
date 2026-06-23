@@ -291,7 +291,7 @@ function computeLineage(
  *  rest is heavily dimmed (no per-generation falloff). */
 const lineageOpacity = (onPath: boolean): number => (onPath ? 1 : 0.12);
 
-const LINEAGE_HOVER_INTENT_MS = 1000;
+const LINEAGE_HOVER_INTENT_MS = 200;
 const LINEAGE_FADE_MS = 3000;
 
 const EDGE_COLOR_BY_KIND: Record<string, string> = {
@@ -625,6 +625,85 @@ const Column: React.FC<{ title: string; nodes: GraphNode[]; accent: string; high
  *     the child end.
  *  5. Pan via mouse drag, zoom via wheel, Reset View button.
  */
+/** A single genealogy node's inner SVG body (card chrome + 5 text rows).
+ *  Memoized at module scope so hovering one node doesn't re-render every other
+ *  node's ~13 SVG elements — only nodes whose `strong` (hovered/selected) state
+ *  flips re-render. This is what kills the per-hover lag and flash; the outer
+ *  <g> (opacity/transform/handlers) stays in the parent and is cheap to diff. */
+const GenNodeBody = React.memo(function GenNodeBody({
+  n, sourceColor, strong, w, h,
+}: {
+  n: GraphNode;
+  sourceColor: string;
+  strong: boolean;
+  w: number;
+  h: number;
+}) {
+  return (
+    <>
+      <rect
+        width={w}
+        height={h}
+        rx={6}
+        ry={6}
+        fill="#0c0a14"
+        stroke={sourceColor}
+        strokeWidth={strong ? 3 : 1.5}
+        style={{ transition: 'stroke-width 320ms ease' }}
+      />
+      <rect width={w} height={4} rx={2} ry={2} fill={sourceColor} opacity={0.85} />
+      <text x={10} y={24} fill="#f4f4f5" fontSize={12} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace" fontWeight={700}>
+        {truncate(n.title ?? n.id, 21)}
+      </text>
+      <line x1={10} y1={31} x2={w - 10} y2={31} stroke="#ffffff" strokeOpacity={0.08} />
+      {(
+        [
+          ['SRC', n.source ?? '—'],
+          ['KIND', n.kind ?? 'entry'],
+          ['MODEL', n.model ?? '—'],
+          ['DUR', typeof n.duration_sec === 'number' && n.duration_sec > 0 ? `${n.duration_sec.toFixed(1)}s` : '—'],
+          ['ID', n.id],
+        ] as const
+      ).map(([k, v], i) => (
+        <text key={k} x={10} y={48 + i * 15} fontSize={8.5} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace">
+          <tspan fill="#6b7280">{k} </tspan>
+          <tspan fill="#cbd5e1">{truncate(String(v), 19)}</tspan>
+        </text>
+      ))}
+    </>
+  );
+});
+
+/** A single genealogy edge's inner SVG body (curve + arrowhead). Memoized so a
+ *  hover only re-renders the bodies of edges whose `strong` state changed. */
+const GenEdgeBody = React.memo(function GenEdgeBody({
+  d, color, x2, y2, strong,
+}: {
+  d: string;
+  color: string;
+  x2: number;
+  y2: number;
+  strong: boolean;
+}) {
+  return (
+    <>
+      <path
+        d={d}
+        stroke={color}
+        strokeWidth={strong ? 2.5 : 1.5}
+        fill="none"
+        opacity={0.7}
+        style={{ transition: 'stroke-width 320ms ease' }}
+      />
+      <polygon
+        points={`${x2 - 7},${y2 - 4} ${x2 - 7},${y2 + 4} ${x2},${y2}`}
+        fill={color}
+        opacity={0.9}
+      />
+    </>
+  );
+});
+
 const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearance }> = ({ payload, appearance }) => {
   // Hover lights up a node's full lineage (uniform brightness both ways).
   const [hovered, setHovered] = useState<string | null>(null);
@@ -1090,19 +1169,7 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
             const eOp = !hovered ? 1 : onPath ? 1 : 0.06;
             return (
               <g key={i} opacity={eOp} style={{ transition: `opacity ${LINEAGE_FADE_MS}ms cubic-bezier(0.4, 0, 0.2, 1)` }}>
-                <path
-                  d={d}
-                  stroke={color}
-                  strokeWidth={hovered && onPath ? 2.5 : 1.5}
-                  fill="none"
-                  opacity={0.7}
-                  style={{ transition: 'stroke-width 320ms ease' }}
-                />
-                <polygon
-                  points={`${x2 - 7},${y2 - 4} ${x2 - 7},${y2 + 4} ${x2},${y2}`}
-                  fill={color}
-                  opacity={0.9}
-                />
+                <GenEdgeBody d={d} color={color} x2={x2} y2={y2} strong={!!hovered && onPath} />
               </g>
             );
           })}
@@ -1131,42 +1198,7 @@ const GenealogyView: React.FC<{ payload: GraphPayload; appearance: GraphAppearan
                   setSelectedId((cur) => (cur === n.id ? null : n.id));
                 }}
               >
-                <rect
-                  width={NODE_W}
-                  height={NODE_H}
-                  rx={6}
-                  ry={6}
-                  fill="#0c0a14"
-                  stroke={sourceColor}
-                  strokeWidth={isHovered || isSelected ? 3 : 1.5}
-                  style={{ transition: 'stroke-width 320ms ease' }}
-                />
-                <rect
-                  width={NODE_W}
-                  height={4}
-                  rx={2}
-                  ry={2}
-                  fill={sourceColor}
-                  opacity={0.85}
-                />
-                <text x={10} y={24} fill="#f4f4f5" fontSize={12} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace" fontWeight={700}>
-                  {truncate(n.title ?? n.id, 21)}
-                </text>
-                <line x1={10} y1={31} x2={NODE_W - 10} y2={31} stroke="#ffffff" strokeOpacity={0.08} />
-                {(
-                  [
-                    ['SRC', n.source ?? '—'],
-                    ['KIND', n.kind ?? 'entry'],
-                    ['MODEL', n.model ?? '—'],
-                    ['DUR', typeof n.duration_sec === 'number' && n.duration_sec > 0 ? `${n.duration_sec.toFixed(1)}s` : '—'],
-                    ['ID', n.id],
-                  ] as const
-                ).map(([k, v], i) => (
-                  <text key={k} x={10} y={48 + i * 15} fontSize={8.5} fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace">
-                    <tspan fill="#6b7280">{k} </tspan>
-                    <tspan fill="#cbd5e1">{truncate(String(v), 19)}</tspan>
-                  </text>
-                ))}
+                <GenNodeBody n={n} sourceColor={sourceColor} strong={isHovered || isSelected} w={NODE_W} h={NODE_H} />
               </g>
             );
           })}
@@ -2082,6 +2114,15 @@ const Graph3DView: React.FC<{
       raf = requestAnimationFrame(loop);
       const dt = last ? Math.min(0.05, (t - last) / 1000) : 0.016;
       last = t;
+      // Idle-gate: when there's no flight input, residual motion, or warp active
+      // (and the cluster centroid is already known), skip the entire per-frame
+      // flight/centroid/warp computation. The rAF is already re-queued above, so
+      // an idle graph costs ~nothing instead of walking every node + running
+      // camera math each frame — the main continuous CPU cost of the 3D view.
+      const moving =
+        keys.size > 0 || ftlHeld || t < ftlPulseUntil || !!homeTween ||
+        Math.hypot(vx, vy, vz) >= 0.06 || ftlVis >= 0.01;
+      if (!moving && centroidRef.current) return;
       const ctx = getCtx();
       if (!ctx) return;
       const { THREE, cam, controls, scene } = ctx;
@@ -2557,7 +2598,7 @@ const Graph3DView: React.FC<{
         edgeColor={(k) => EDGE_COLOR_BY_KIND[k] ?? '#71717a'}
         onClose={() => setSelectedId(null)}
       />
-      <div className="absolute bottom-0 left-0 right-0 z-10 px-3 py-1 text-[9px] font-mono text-zinc-500 bg-linear-to-t from-black/70 to-transparent pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 z-10 px-3 pt-1 pb-px text-[9px] font-mono text-zinc-500 bg-linear-to-t from-black/70 to-transparent pointer-events-none">
         {appearance.renderMode === '3d'
           ? 'click-drag rotate · wheel zoom · WASD/arrows fly — hold to accelerate, release to coast (Q/E up-down, ⇧ afterburner) · F = FTL jump · Home button warps back · click node for details'
           : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
