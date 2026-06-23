@@ -40,11 +40,63 @@ const formatSpeed = (bytesPerSec: number): string => {
 const isActive = (job: DownloadJob): boolean =>
   job.status === 'queued' || job.status === 'downloading';
 
+// Default resting spot: bottom-right, but lifted high enough (bottom-28 = 7rem)
+// to clear the collapsed ShellBottomDock strip so the dock isn't clipped.
+const DEFAULT_POS_CLASS = 'bottom-28 right-4';
+
 export const DownloadDock: React.FC = () => {
   const jobs = useDownloadStore((s) => s.jobs);
   const expanded = useDownloadStore((s) => s.expanded);
   const setExpanded = useDownloadStore((s) => s.setExpanded);
   const clear = useDownloadStore((s) => s.clear);
+
+  // Manual position once the user drags. null = default anchored (bottom-right).
+  const [pos, setPos] = React.useState<{ x: number; y: number } | null>(null);
+  const dragRef = React.useRef<{
+    dx: number;
+    dy: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+
+  // Drag from any handle; clamps the dock inside the viewport. A move under
+  // 3px is treated as a click (so the collapsed pill still expands on tap).
+  const startDrag = React.useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const root = (e.currentTarget as HTMLElement).closest('[data-dock-root]') as HTMLElement | null;
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    dragRef.current = {
+      dx: e.clientX - rect.left,
+      dy: e.clientY - rect.top,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+    };
+    const onMove = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (!d.moved) {
+        if (Math.abs(ev.clientX - d.startX) < 3 && Math.abs(ev.clientY - d.startY) < 3) return;
+        d.moved = true;
+      }
+      const w = root.offsetWidth;
+      const h = root.offsetHeight;
+      const x = Math.max(4, Math.min(ev.clientX - d.dx, window.innerWidth - w - 4));
+      const y = Math.max(4, Math.min(ev.clientY - d.dy, window.innerHeight - h - 4));
+      setPos({ x, y });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.setTimeout(() => {
+        dragRef.current = null;
+      }, 0);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, []);
 
   if (jobs.length === 0) return null;
 
@@ -54,36 +106,49 @@ export const DownloadDock: React.FC = () => {
     return sum + (file?.speed ?? 0);
   }, 0);
 
-  // ── Collapsed: a single pill. ───────────────────────────────────────────
+  const posClass = pos ? 'fixed z-50' : `fixed z-50 ${DEFAULT_POS_CLASS}`;
+  const posStyle = pos ? { left: pos.x, top: pos.y } : undefined;
+
+  // ── Collapsed: a single draggable pill. ─────────────────────────────────
   if (!expanded) {
     const label =
       activeJobs.length > 0
         ? `${activeJobs.length} downloading · ${formatSpeed(totalSpeed)}`
         : 'Downloads';
     return (
-      <div className="fixed bottom-4 right-4 z-50 w-96 max-w-[92vw] flex justify-end pointer-events-none">
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          aria-label="Expand downloads"
-          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] backdrop-blur-md hover:bg-purple-500/15 hover:text-white transition-colors"
-        >
-          {activeJobs.length > 0 ? (
-            <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-          ) : (
-            <CheckCircle2 className="w-3 h-3 text-emerald-300 shrink-0" />
-          )}
-          <span className="truncate">{label}</span>
-          {activeJobs.length === 0 && <span className="text-emerald-300">✓</span>}
-        </button>
-      </div>
+      <button
+        type="button"
+        data-dock-root
+        onPointerDown={startDrag}
+        onClick={() => {
+          if (!dragRef.current?.moved) setExpanded(true);
+        }}
+        aria-label="Expand downloads (drag to move)"
+        style={posStyle}
+        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] backdrop-blur-md hover:bg-purple-500/15 hover:text-white transition-colors cursor-grab active:cursor-grabbing touch-none select-none`}
+      >
+        {activeJobs.length > 0 ? (
+          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+        ) : (
+          <CheckCircle2 className="w-3 h-3 text-emerald-300 shrink-0" />
+        )}
+        <span className="truncate">{label}</span>
+        {activeJobs.length === 0 && <span className="text-emerald-300">✓</span>}
+      </button>
     );
   }
 
-  // ── Expanded: header + scrollable job stack. ────────────────────────────
+  // ── Expanded: draggable header + scrollable job stack. ──────────────────
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-96 max-w-[92vw] rounded-lg border border-purple-500/30 bg-[#0a080f]/95 shadow-[0_0_24px_rgba(0,0,0,0.6)] backdrop-blur-md overflow-hidden">
-      <div className="flex items-center gap-2 px-2.5 py-2 border-b border-white/5 bg-linear-to-r from-purple-900/25 to-purple-900/10">
+    <div
+      data-dock-root
+      style={posStyle}
+      className={`${posClass} w-96 max-w-[92vw] rounded-lg border border-purple-500/30 bg-[#0a080f]/95 shadow-[0_0_24px_rgba(0,0,0,0.6)] backdrop-blur-md overflow-hidden`}
+    >
+      <div
+        onPointerDown={startDrag}
+        className="flex items-center gap-2 px-2.5 py-2 border-b border-white/5 bg-linear-to-r from-purple-900/25 to-purple-900/10 cursor-grab active:cursor-grabbing touch-none select-none"
+      >
         <Download className="w-3.5 h-3.5 text-purple-300 shrink-0" />
         <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">Downloads</span>
         <span className="text-[8px] font-mono text-zinc-500">
@@ -92,6 +157,7 @@ export const DownloadDock: React.FC = () => {
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={() => void clear()}
             aria-label="Clear finished downloads"
             title="Clear finished / errored downloads"
@@ -102,6 +168,7 @@ export const DownloadDock: React.FC = () => {
           </button>
           <button
             type="button"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={() => setExpanded(false)}
             aria-label="Collapse downloads"
             title="Collapse"
