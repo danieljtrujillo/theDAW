@@ -253,3 +253,8 @@ docs/*.pdf
 # Local audit artifacts: vulnerability details stay off the remote.
 /CODEBASE_AUDIT_*.md
 /audit-reports/
+
+# Electron desktop shell — build artifacts + runtime logs (deps via node_modules/ above)
+electron-ui/out/
+electron-ui/release/
+logs/

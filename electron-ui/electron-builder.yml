@@ -1,0 +1,14 @@
+appId: com.gantasmo.stabledaw
+productName: StableDAW
+directories:
+  output: release
+  buildResources: resources
+win:
+  target: nsis
+mac:
+  target: dmg
+linux:
+  target: AppImage
+files:
+  - out/**/*
+  - "!node_modules"
