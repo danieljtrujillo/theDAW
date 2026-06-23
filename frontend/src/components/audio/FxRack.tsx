@@ -62,7 +62,7 @@ export function FxRack({
           onChange={(e) => {
             if (e.target.value) onAdd(e.target.value);
           }}
-          className="bg-zinc-900 border border-white/20 rounded px-2 py-1 text-[11px] font-mono text-zinc-100 outline-none focus:border-purple-500/60 transition-colors cursor-pointer"
+          className="form-select px-2 py-1 text-[11px] font-mono"
           style={{ colorScheme: 'dark' }}
           title="Add a psychoacoustic insert effect to this chain"
         >

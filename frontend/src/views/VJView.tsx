@@ -22,7 +22,7 @@ import { useLibraryStore } from '../state/libraryStore';
 import { subscribeToMidi } from '../state/midiBus';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 import { getVjPlaybackState, registerVjPlaybackHandler, reportVjPlaybackState } from '../state/vjPlaybackBus';
-import { registerVjSetHandler } from '../state/vjSetBus';
+import { registerVjSetHandler, sendTrackToVj } from '../state/vjSetBus';
 import { ingestManifest, applyFromVj, registerControlSink } from '../state/controlSyncBus';
 import type { VisualControl } from '../state/slideStore';
 import { useAppUiStore } from '../state/appUiStore';
@@ -88,6 +88,11 @@ export const VJView: React.FC = () => {
   // when the source is changed from inside the VJ app.
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  // True while a library media card is being dragged anywhere in the app. We
+  // flip a transparent drop layer over the iframe so the drop lands on US (the
+  // iframe would otherwise swallow the drag). Detected on the parent window
+  // while the cursor is still over parent content, before it reaches the iframe.
+  const [mediaDragActive, setMediaDragActive] = useState(false);
   const [questStatus, setQuestStatus] = useState<QuestCastStatus | null>(null);
   const [questBusy, setQuestBusy] = useState(false);
   const [questDetail, setQuestDetail] = useState('delinQuest status not loaded yet.');
@@ -222,6 +227,43 @@ export const VJView: React.FC = () => {
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
+
+  // Detect a library media drag anywhere in the app so we can raise a drop
+  // layer over the iframe BEFORE the cursor reaches it (the iframe would
+  // otherwise swallow the drag and the parent never sees the drop).
+  useEffect(() => {
+    const hasMedia = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes('application/x-thedaw-media');
+    const onDragOver = (e: DragEvent) => { if (hasMedia(e)) setMediaDragActive(true); };
+    const clear = () => setMediaDragActive(false);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', clear);
+    window.addEventListener('dragend', clear);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', clear);
+      window.removeEventListener('dragend', clear);
+    };
+  }, []);
+
+  const handleMediaDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setMediaDragActive(false);
+    const raw = e.dataTransfer.getData('application/x-thedaw-media');
+    if (!raw) return;
+    try {
+      const m = JSON.parse(raw) as { id?: string; url?: string; kind?: string; name?: string };
+      sendTrackToVj({
+        entryId: m.id ?? null,
+        label: m.name ?? 'media',
+        url: m.url,
+        kind: m.kind === 'image' ? 'image' : 'video',
+      });
+      logInfo('vj', `Added "${m.name ?? 'media'}" to the VJ from a drag-and-drop.`);
+    } catch {
+      logError('vj', 'Could not read the dropped media.');
+    }
+  };
 
   // Fetch the VJ URL on mount. The backend will spawn the dev server
   // if it isn't already running — this can take ~30s on first launch
@@ -952,6 +994,23 @@ export const VJView: React.FC = () => {
             reusing the in-VJ decoded stream — so we no longer decode a second
             copy here (kills the double HW-decode of the 60fps feed). The host
             toolbar still controls the relay (start/stop/refresh). */}
+
+        {/* Media drop zone — appears while a library media card is being
+            dragged, so the user can drop a clip/image straight onto the VJ to
+            add it to the performance bucket (sendTrackToVj). It sits above the
+            iframe so the drop lands here instead of being swallowed. */}
+        {mediaDragActive && (
+          <div
+            className="absolute inset-0 z-30 flex items-center justify-center bg-fuchsia-500/10 border-2 border-dashed border-fuchsia-400/60 backdrop-blur-[1px]"
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+            onDrop={handleMediaDrop}
+            onDragLeave={(e) => { if (e.currentTarget === e.target) setMediaDragActive(false); }}
+          >
+            <div className="px-4 py-2 rounded-lg border border-fuchsia-400/60 bg-[#0a080f]/90 text-fuchsia-100 text-[11px] font-black uppercase tracking-widest flex items-center gap-2 pointer-events-none">
+              <Tv2 className="w-4 h-4" /> Drop to add to the VJ
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

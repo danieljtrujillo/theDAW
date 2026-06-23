@@ -146,13 +146,15 @@ def convert_score(
     output_path: Path,
     source_ref: Optional[str] = None,
     artifact_id: Optional[str] = None,
+    title: str = "",
 ) -> dict[str, Any]:
     """Convert a symbolic source (MIDI or MusicXML) to another notation format
     and register the result as a notation artifact.
 
     ``music21`` handles ``musicxml`` and ``abc`` directly. ``pdf`` and ``svg``
     are engraved by the MuseScore CLI when installed; without it they return
-    ``ok=False`` with an install hint.
+    ``ok=False`` with an install hint. When ``title`` is given it is stamped on
+    the score so the rendered sheet shows the originating song's name.
     """
     fmt = fmt.lower().strip()
     if not source_path.is_file():
@@ -166,6 +168,7 @@ def convert_score(
             output_path=output_path,
             source_ref=source_ref,
             artifact_id=artifact_id,
+            title=title,
         )
     if fmt in _MUSESCORE_FORMATS:
         return _convert_with_musescore(
@@ -189,6 +192,7 @@ def _convert_with_music21(
     output_path: Path,
     source_ref: Optional[str],
     artifact_id: Optional[str],
+    title: str = "",
 ) -> dict[str, Any]:
     try:
         from music21 import converter  # type: ignore[import]
@@ -208,6 +212,18 @@ def _convert_with_music21(
             score = score.quantize((4, 3), inPlace=False, recurse=True)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
             log.debug("notation: music21 quantize skipped for %s: %s", source_path, exc)
+        # Stamp the originating song's name so the engraved sheet is titled
+        # (raw MIDI usually carries no title -> blank sheets without this).
+        if title:
+            try:
+                from music21.metadata import Metadata  # type: ignore[import]
+
+                if score.metadata is None:
+                    score.insert(0, Metadata())
+                score.metadata.title = title
+                score.metadata.movementName = title
+            except Exception as exc:  # noqa: BLE001 - titling is best-effort
+                log.debug("notation: could not set title on %s: %s", output_path, exc)
         written = score.write(fmt, fp=str(output_path))
     except Exception as exc:  # noqa: BLE001
         log.warning("notation: %s export failed for %s: %s", fmt, source_path, exc)
@@ -327,6 +343,7 @@ def midi_to_musicxml(
     output_path: Path,
     source_ref: Optional[str] = None,
     artifact_id: Optional[str] = None,
+    title: str = "",
 ) -> dict[str, Any]:
     """Convert a MIDI file to MusicXML and register the artifact.
 
@@ -344,6 +361,7 @@ def midi_to_musicxml(
         output_path=output_path,
         source_ref=source_ref,
         artifact_id=artifact_id,
+        title=title,
     )
 
 

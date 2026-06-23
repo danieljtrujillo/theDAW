@@ -23,11 +23,17 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
+    "app": {
+        # How theDAW opens on the next launch (read by theDAW.bat before it
+        # starts anything): "web" = backend + Vite + browser (current default),
+        # "desktop" = the Electron shell. Both share the same backend + DB.
+        "launch_mode": "web",
+    },
     "analysis": {
         # Analysis is cheap (local librosa + aubio), so it's default-ON
         # — every imported / generated track gets its bpm/key/pitch/bars
@@ -133,6 +139,11 @@ def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         # section, so it's already filled from DEFAULT_SETTINGS above;
         # this branch only exists to re-persist the bumped schema.
         merged.setdefault("vj", deepcopy(DEFAULT_SETTINGS["vj"]))
+    if old_version < 6:
+        # Migration v5 → v6: add the `app` section (launch_mode). New
+        # section, already filled from DEFAULT_SETTINGS above; this branch
+        # re-persists the bumped schema with the field present.
+        merged.setdefault("app", deepcopy(DEFAULT_SETTINGS["app"]))
 
     merged["schema_version"] = SCHEMA_VERSION
     return merged

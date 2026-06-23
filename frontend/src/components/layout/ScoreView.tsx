@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, FileMusic, Guitar, LayoutGrid, Loader2, Music2, RefreshCw } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, FileMusic, Guitar, LayoutGrid, Loader2, Maximize2, Minus, Music2, Plus, RefreshCw } from 'lucide-react';
 import { useLibraryStore } from '../../state/libraryStore';
 import { logError, logInfo } from '../../state/logStore';
 import {
@@ -225,7 +225,7 @@ export const ScoreView: React.FC = () => {
               id="score-tab-instrument"
               name="score-tab-instrument"
               aria-label="Tab instrument"
-              className="bg-black/40 border border-white/10 rounded text-[8px] text-zinc-200 px-1 py-1"
+              className="form-select text-[8px] px-1 py-1"
               value={tabInstrument}
               onChange={(e) => onInstrumentChange(e.target.value)}
             >
@@ -236,7 +236,7 @@ export const ScoreView: React.FC = () => {
               id="score-tab-difficulty"
               name="score-tab-difficulty"
               aria-label="Tab difficulty"
-              className="bg-black/40 border border-white/10 rounded text-[8px] text-zinc-200 px-1 py-1"
+              className="form-select text-[8px] px-1 py-1"
               value={tabDifficulty}
               onChange={(e) => setTabDifficulty(e.target.value)}
             >
@@ -250,7 +250,7 @@ export const ScoreView: React.FC = () => {
               id="score-tab-tuning"
               name="score-tab-tuning"
               aria-label="Tab tuning"
-              className="bg-black/40 border border-white/10 rounded text-[8px] text-zinc-200 px-1 py-1"
+              className="form-select text-[8px] px-1 py-1"
               value={tabTuning}
               onChange={(e) => setTabTuning(e.target.value)}
             >
@@ -267,7 +267,7 @@ export const ScoreView: React.FC = () => {
                 min={0}
                 max={12}
                 aria-label="Capo fret"
-                className="w-full bg-black/40 border border-white/10 rounded text-[8px] text-zinc-200 px-1 py-1"
+                className="w-full form-select text-[8px] px-1 py-1"
                 value={tabCapo}
                 onChange={(e) => setTabCapo(Math.max(0, Math.min(12, Number(e.target.value) || 0)))}
               />
@@ -293,7 +293,7 @@ export const ScoreView: React.FC = () => {
             id="score-arrange-style"
             name="score-arrange-style"
             aria-label="Arrangement style"
-            className="w-full bg-black/40 border border-white/10 rounded text-[8px] text-zinc-200 px-1 py-1"
+            className="w-full form-select text-[8px] px-1 py-1"
             value={arrangeStyle}
             onChange={(e) => setArrangeStyle(e.target.value)}
           >
@@ -387,9 +387,102 @@ export const ScoreView: React.FC = () => {
   );
 };
 
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 1.12;
+const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+
+/** Ctrl/Cmd + scrollwheel zoom on the sheet. A native non-passive listener
+ *  is required so the gesture can preventDefault (React's onWheel is passive).
+ *  Plain wheel keeps scrolling the page so long scores stay navigable. */
+function useWheelZoom(
+  scrollRef: React.RefObject<HTMLDivElement | null>,
+  onZoomDelta: (factor: number) => void,
+) {
+  const cb = useRef(onZoomDelta);
+  cb.current = onZoomDelta;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      cb.current(e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [scrollRef]);
+}
+
+const ZoomControls: React.FC<{
+  zoom: number;
+  onIn: () => void;
+  onOut: () => void;
+  onReset: () => void;
+}> = ({ zoom, onIn, onOut, onReset }) => (
+  <div className="absolute bottom-2 right-2 z-10 flex items-center gap-0.5 rounded-md border border-purple-500/40 bg-[#0a080f]/95 px-1 py-0.5 shadow-lg backdrop-blur-sm">
+    <button
+      className="p-1 rounded text-purple-200 hover:bg-purple-500/20 disabled:opacity-40"
+      onClick={onOut}
+      disabled={zoom <= ZOOM_MIN + 0.001}
+      title="Zoom out (Ctrl + scroll)"
+      aria-label="Zoom out"
+    >
+      <Minus className="w-3 h-3" />
+    </button>
+    <button
+      className="min-w-9 text-center text-[9px] font-mono text-purple-200 hover:text-white px-0.5"
+      onClick={onReset}
+      title="Reset zoom"
+      aria-label="Reset zoom to 100%"
+    >
+      {Math.round(zoom * 100)}%
+    </button>
+    <button
+      className="p-1 rounded text-purple-200 hover:bg-purple-500/20 disabled:opacity-40"
+      onClick={onIn}
+      disabled={zoom >= ZOOM_MAX - 0.001}
+      title="Zoom in (Ctrl + scroll)"
+      aria-label="Zoom in"
+    >
+      <Plus className="w-3 h-3" />
+    </button>
+    <button
+      className="p-1 rounded text-purple-200 hover:bg-purple-500/20"
+      onClick={onReset}
+      title="Fit / reset zoom"
+      aria-label="Fit to width"
+    >
+      <Maximize2 className="w-3 h-3" />
+    </button>
+  </div>
+);
+
 const MusicXmlPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const osmdRef = useRef<any>(null);
+  const zoomRef = useRef(1);
+  const [zoom, setZoom] = useState(1);
   const [status, setStatus] = useState('Loading MusicXML renderer…');
+
+  const applyZoom = useCallback((next: number) => {
+    const z = clampZoom(next);
+    zoomRef.current = z;
+    setZoom(z);
+    const osmd = osmdRef.current;
+    if (osmd) {
+      try {
+        osmd.Zoom = z;
+        osmd.render();
+      } catch {
+        /* render races with reload — ignore */
+      }
+    }
+  }, []);
+
+  useWheelZoom(scrollRef, (factor) => applyZoom(zoomRef.current * factor));
 
   useEffect(() => {
     let cancelled = false;
@@ -413,7 +506,9 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact })
         });
         await osmd.load(xml);
         if (cancelled) return;
+        osmd.Zoom = zoomRef.current;
         osmd.render();
+        osmdRef.current = osmd;
         setStatus('');
       } catch (e) {
         if (cancelled) return;
@@ -423,20 +518,51 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact })
     void run();
     return () => {
       cancelled = true;
+      osmdRef.current = null;
     };
   }, [artifact.id]);
 
   return (
-    <div className="h-full overflow-auto bg-white text-black">
-      {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
-      <div ref={containerRef} className="min-h-full p-4" />
+    <div className="relative h-full">
+      <div ref={scrollRef} className="h-full overflow-auto bg-white text-black">
+        {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
+        <div ref={containerRef} className="min-h-full p-4" />
+      </div>
+      <ZoomControls
+        zoom={zoom}
+        onIn={() => applyZoom(zoomRef.current * ZOOM_STEP)}
+        onOut={() => applyZoom(zoomRef.current / ZOOM_STEP)}
+        onReset={() => applyZoom(1)}
+      />
     </div>
   );
 };
 
 const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const apiRef = useRef<AlphaTabApi | null>(null);
+  const zoomRef = useRef(1);
+  const [zoom, setZoom] = useState(1);
   const [status, setStatus] = useState('Loading tab renderer…');
+
+  const applyZoom = useCallback((next: number) => {
+    const z = clampZoom(next);
+    zoomRef.current = z;
+    setZoom(z);
+    const api = apiRef.current;
+    if (api) {
+      try {
+        api.settings.display.scale = z;
+        api.updateSettings();
+        api.render();
+      } catch {
+        /* render races with reload — ignore */
+      }
+    }
+  }, []);
+
+  useWheelZoom(scrollRef, (factor) => applyZoom(zoomRef.current * factor));
 
   useEffect(() => {
     let cancelled = false;
@@ -454,7 +580,9 @@ const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
         if (cancelled) return;
         api = new alphaTab.AlphaTabApi(container, {
           player: { enablePlayer: false },
+          display: { scale: zoomRef.current },
         });
+        apiRef.current = api;
         api.error.on((err) => {
           if (!cancelled) setStatus(`Tab render error: ${err instanceof Error ? err.message : String(err)}`);
         });
@@ -470,6 +598,7 @@ const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
     void run();
     return () => {
       cancelled = true;
+      apiRef.current = null;
       try {
         api?.destroy();
       } catch {
@@ -479,9 +608,17 @@ const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
   }, [artifact.id]);
 
   return (
-    <div className="h-full overflow-auto bg-white text-black">
-      {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
-      <div ref={containerRef} className="min-h-full" />
+    <div className="relative h-full">
+      <div ref={scrollRef} className="h-full overflow-auto bg-white text-black">
+        {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
+        <div ref={containerRef} className="min-h-full" />
+      </div>
+      <ZoomControls
+        zoom={zoom}
+        onIn={() => applyZoom(zoomRef.current * ZOOM_STEP)}
+        onOut={() => applyZoom(zoomRef.current / ZOOM_STEP)}
+        onReset={() => applyZoom(1)}
+      />
     </div>
   );
 };

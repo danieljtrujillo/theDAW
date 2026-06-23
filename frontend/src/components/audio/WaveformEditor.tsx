@@ -210,7 +210,7 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
         aria-label={`Track ${track.name} instrument`}
         value={value}
         onChange={onChange}
-        className="flex-1 min-w-0 bg-zinc-900 border border-white/20 rounded px-1 py-0.5 text-[9px] text-zinc-100 outline-none focus:border-purple-500/60"
+        className="flex-1 min-w-0 form-select px-1 py-0.5 text-[9px]"
         style={{ colorScheme: 'dark' }}
       >
         <option value="default">{defaultLabel}</option>
@@ -256,7 +256,7 @@ const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
         aria-label={`Clip ${clip.label} instrument`}
         value={value}
         onChange={onChange}
-        className="flex-1 min-w-0 bg-zinc-900 border border-white/20 rounded px-1.5 py-1 text-[10px] text-zinc-100 outline-none focus:border-purple-500/60"
+        className="flex-1 min-w-0 form-select px-1.5 py-1 text-[10px]"
         style={{ colorScheme: 'dark' }}
       >
         <option value="default">{defaultLabel}</option>

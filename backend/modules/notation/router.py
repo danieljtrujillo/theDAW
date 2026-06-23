@@ -34,6 +34,27 @@ _EXT_FOR_FORMAT = {
 }
 
 
+def _song_slug(title: str, fallback: str = "score") -> str:
+    """Filesystem-safe, readable slug of a song title for score filenames."""
+    cleaned = "".join(c if (c.isalnum() or c in " -_") else "_" for c in (title or ""))
+    cleaned = "_".join(cleaned.split())  # collapse whitespace runs to one "_"
+    cleaned = cleaned.strip("_-")
+    return cleaned[:60] or fallback
+
+
+def _entry_title(store: Any, entry_id: str) -> str:
+    entry = store.get_entry(entry_id)
+    return str(getattr(entry, "title", "") or "") if entry is not None else ""
+
+
+def _scored_name(slug: str, base: str) -> str:
+    """Prefix ``base`` with the song slug unless it already leads with it,
+    so the file (and its download name) carries the originating song."""
+    if slug and not base.lower().startswith(slug.lower()):
+        return f"{slug}__{base}"
+    return base
+
+
 class ExportRequest(BaseModel):
     source_artifact_id: str
     format: str
@@ -93,8 +114,11 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
-    if store.get_entry(entry_id) is None:
+    entry = store.get_entry(entry_id)
+    if entry is None:
         raise HTTPException(404, f"entry {entry_id!r} not found")
+    title = str(getattr(entry, "title", "") or "")
+    slug = _song_slug(title)
     midi_row = None
     for row in store.db.list_midis(entry_id):
         if row.get("id") == midi_id:
@@ -105,7 +129,7 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
     entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
     if entry_dir is None:
         raise HTTPException(500, f"entry directory missing for {entry_id!r}")
-    output = entry_dir / "notation" / f"{midi_id}.musicxml"
+    output = entry_dir / "notation" / _scored_name(slug, f"{midi_id}.musicxml")
     result = midi_to_musicxml(
         store.db,
         entry_id=entry_id,
@@ -113,6 +137,7 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
         output_path=output,
         source_ref=midi_id,
         artifact_id=f"{midi_id}__musicxml",
+        title=title,
     )
     if not result.get("ok"):
         raise HTTPException(501, result)
@@ -147,7 +172,9 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
     if entry_dir is None:
         raise HTTPException(500, f"entry directory missing for {entry_id!r}")
-    output = entry_dir / "notation" / f"{source_path.stem}{ext}"
+    title = _entry_title(store, entry_id)
+    slug = _song_slug(title)
+    output = entry_dir / "notation" / _scored_name(slug, f"{source_path.stem}{ext}")
     result = convert_score(
         store.db,
         entry_id=entry_id,
@@ -156,6 +183,7 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
         output_path=output,
         source_ref=body.source_artifact_id,
         artifact_id=f"{body.source_artifact_id}__{fmt}",
+        title=title,
     )
     if not result.get("ok"):
         raise HTTPException(501, result)
@@ -211,7 +239,12 @@ def make_tabs(entry_id: str, body: TabsRequest) -> dict[str, Any]:
     entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
     if entry_dir is None:
         raise HTTPException(500, f"entry directory missing for {entry_id!r}")
-    output = entry_dir / "notation" / f"{stem}__{body.instrument}.alphatex"
+    slug = _song_slug(str(getattr(entry, "title", "") or ""))
+    output = (
+        entry_dir
+        / "notation"
+        / _scored_name(slug, f"{stem}__{body.instrument}.alphatex")
+    )
     result = midi_to_tabs(
         store.db,
         entry_id=entry_id,
@@ -279,7 +312,12 @@ def make_arrangement(entry_id: str, body: ArrangeRequest) -> dict[str, Any]:
     entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
     if entry_dir is None:
         raise HTTPException(500, f"entry directory missing for {entry_id!r}")
-    output = entry_dir / "notation" / f"{sources[0].stem}__{style}.musicxml"
+    slug = _song_slug(str(getattr(entry, "title", "") or ""))
+    output = (
+        entry_dir
+        / "notation"
+        / _scored_name(slug, f"{sources[0].stem}__{style}.musicxml")
+    )
     result = midi_to_arrangement(
         store.db,
         entry_id=entry_id,
@@ -312,8 +350,12 @@ def get_artifact_file(artifact_id: str) -> FileResponse:
         mime = "application/vnd.recordare.musicxml+xml"
     elif kind in ("abc", "alphatex"):
         mime = "text/plain; charset=utf-8"
+    # Name the download after the originating song so saved sheets are
+    # identifiable even for artifacts created before song-prefixed filenames.
+    slug = _song_slug(_entry_title(store, str(artifact.get("entry_id") or "")))
+    download_name = _scored_name(slug, path.name)
     return FileResponse(
         path=str(path),
         media_type=mime or "application/octet-stream",
-        filename=path.name,
+        filename=download_name,
     )
