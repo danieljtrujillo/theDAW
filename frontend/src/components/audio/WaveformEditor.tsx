@@ -1607,14 +1607,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // --- Drag-and-drop from Library ---
   const onTimelineDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/x-stabledaw-library-id')) {
+    if (e.dataTransfer.types.includes('application/x-thedaw-library-id')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   };
 
   const onTimelineDrop = async (e: React.DragEvent) => {
-    const entryId = e.dataTransfer.getData('application/x-stabledaw-library-id');
+    const entryId = e.dataTransfer.getData('application/x-thedaw-library-id');
     if (!entryId) return;
     e.preventDefault();
     if (!timelineRef.current) return;

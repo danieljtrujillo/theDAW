@@ -80,7 +80,7 @@ function analyzeAudio(source: File | string): Promise<AudioStats> {
 }
 
 async function fileFromDrop(e: React.DragEvent): Promise<File | null> {
-  const libId = e.dataTransfer.getData('application/x-stabledaw-library-id');
+  const libId = e.dataTransfer.getData('application/x-thedaw-library-id');
   if (libId) {
     const entry = useLibraryStore.getState().entries.find((en) => en.id === libId);
     if (entry) {

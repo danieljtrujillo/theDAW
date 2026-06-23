@@ -1,7 +1,7 @@
 /**
  * sunoStore — state for the Suno generation panel.
  *
- * Integration model (CHANGED from the old StableDAW): the BACKEND owns
+ * Integration model (CHANGED from the old theDAW): the BACKEND owns
  * persistence. When a Suno job completes, the backend has ALREADY registered
  * it into the library on disk. The frontend's only job on completion is to
  * call `useLibraryStore.getState().refresh()` so the new track shows up

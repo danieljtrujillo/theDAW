@@ -2632,12 +2632,12 @@ const Graph3DView: React.FC<{
               // the named entry. Falls back to opening the panel only
               // if the listener isn't installed.
               window.dispatchEvent(
-                new CustomEvent('stabledaw:set-left-panel', {
+                new CustomEvent('thedaw:set-left-panel', {
                   detail: { open: false },
                 }),
               );
               window.dispatchEvent(
-                new CustomEvent('stabledaw:reveal-library-entry', {
+                new CustomEvent('thedaw:reveal-library-entry', {
                   detail: { entryId: payload.nodeId },
                 }),
               );
@@ -2668,7 +2668,7 @@ const Graph3DView: React.FC<{
               // contained so this Graph3DView doesn't need a setter
               // prop threaded down.
               window.dispatchEvent(
-                new CustomEvent('stabledaw:open-lineage', {
+                new CustomEvent('thedaw:open-lineage', {
                   detail: { entryId: payload.nodeId },
                 }),
               );

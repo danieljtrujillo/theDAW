@@ -439,11 +439,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         }
       });
     };
-    window.addEventListener('stabledaw:open-lineage', onOpenLineage);
-    window.addEventListener('stabledaw:reveal-library-entry', onReveal);
+    window.addEventListener('thedaw:open-lineage', onOpenLineage);
+    window.addEventListener('thedaw:reveal-library-entry', onReveal);
     return () => {
-      window.removeEventListener('stabledaw:open-lineage', onOpenLineage);
-      window.removeEventListener('stabledaw:reveal-library-entry', onReveal);
+      window.removeEventListener('thedaw:open-lineage', onOpenLineage);
+      window.removeEventListener('thedaw:reveal-library-entry', onReveal);
     };
   }, [setSelectedEntry, showBottomTab]);
 
@@ -906,7 +906,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
               data-library-entry-id={entry.id}
               draggable
               onDragStart={(e) => {
-                e.dataTransfer.setData('application/x-stabledaw-library-id', entry.id);
+                e.dataTransfer.setData('application/x-thedaw-library-id', entry.id);
                 e.dataTransfer.setData('text/plain', entry.title);
                 e.dataTransfer.effectAllowed = 'copyMove';
                 const dragItems = selectedEntryIds.includes(entry.id) && selectedEntries.length > 1

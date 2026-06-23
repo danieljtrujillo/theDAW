@@ -157,7 +157,7 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
       },
     }),
     {
-      name: 'stabledaw-feature-settings',
+      name: 'thedaw-feature-settings',
       partialize: (s) => ({ settings: s.settings }),
     },
   ),

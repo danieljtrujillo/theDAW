@@ -14,7 +14,7 @@
  *     auto-expire after REGISTRY_TTL_MS so we don't leak Blobs forever.
  */
 
-export const AUDIO_REF_MIME = 'application/x-stabledaw-audio-ref';
+export const AUDIO_REF_MIME = 'application/x-thedaw-audio-ref';
 
 export interface AudioDragItem {
   blob: Blob;

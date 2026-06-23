@@ -75,7 +75,7 @@ function SavedPromptsDropdown({ type, value, onChange }: {
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const storageKey = `stabledaw.savedPrompts.${type}`;
+  const storageKey = `thedaw.savedPrompts.${type}`;
   const [saved, setSaved] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem(storageKey) || '[]'); } catch { return []; }
   });
@@ -126,10 +126,10 @@ interface Template { id: string; name: string; createdAt: string; params: Partia
 function TemplatesPanel() {
   const p = useGenerateParamsStore();
   const [templates, setTemplates] = useState<Template[]>(() => {
-    try { return JSON.parse(localStorage.getItem('stabledaw.templates') || '[]'); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem('thedaw.templates') || '[]'); } catch { return []; }
   });
   const [searchQuery, setSearchQuery] = useState('');
-  useEffect(() => { localStorage.setItem('stabledaw.templates', JSON.stringify(templates)); }, [templates]);
+  useEffect(() => { localStorage.setItem('thedaw.templates', JSON.stringify(templates)); }, [templates]);
   const handleSave = () => {
     const name = window.prompt('Template name:');
     if (!name?.trim()) return;
@@ -296,7 +296,7 @@ export const AdvancedGenPanel: React.FC<{
         if (cat?.source === 'download' && data?.local_only) {
           // Local-only would just block this server-side; route to the fix.
           logWarn('model', `${model}: not on this machine, and local-only blocks downloads. Pick an installed model or allow the download in Settings → Models.`);
-          window.dispatchEvent(new CustomEvent('stabledaw:open-settings', { detail: { section: 'models' } }));
+          window.dispatchEvent(new CustomEvent('thedaw:open-settings', { detail: { section: 'models' } }));
           setModelLoadState('idle');
           return;
         }
@@ -404,7 +404,7 @@ export const AdvancedGenPanel: React.FC<{
   }, [lastAudioUrl]);
 
   const fileFromDrop = useCallback(async (e: React.DragEvent): Promise<File | null> => {
-    const libId = e.dataTransfer.getData('application/x-stabledaw-library-id');
+    const libId = e.dataTransfer.getData('application/x-thedaw-library-id');
     if (libId) {
       const entry = libraryEntries.find((en) => en.id === libId);
       if (entry) {

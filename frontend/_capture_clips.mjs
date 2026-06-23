@@ -361,7 +361,7 @@ async function applyScene(spec) {
   // Global chrome: LOG dock, DOCS modal, SETTINGS modal.
   try { bp.setState({ isLogOpen: !!spec.logPanel }); } catch (e) {}
   try { appUi.getState().setDocsOpen(!!spec.docsModal); } catch (e) {}
-  if (spec.settingsModal) { try { window.dispatchEvent(new Event('stabledaw:open-settings')); } catch (e) {} }
+  if (spec.settingsModal) { try { window.dispatchEvent(new Event('thedaw:open-settings')); } catch (e) {} }
 
   // EDIT cut/razor: switch to the cut tool and make SEVERAL real splits across stems so
   // it reads as a track actively being chopped up.

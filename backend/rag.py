@@ -185,12 +185,12 @@ def initialize_rag(force: bool = False) -> int:
     client = chromadb.PersistentClient(path=str(RAG_INDEX_DIR))
 
     try:
-        client.delete_collection("stabledaw_docs")
+        client.delete_collection("thedaw_docs")
     except Exception:
         pass
 
     _collection = client.get_or_create_collection(
-        name="stabledaw_docs",
+        name="thedaw_docs",
         embedding_function=ef,
         metadata={"hnsw:space": "cosine"},
     )

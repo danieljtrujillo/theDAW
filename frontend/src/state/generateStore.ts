@@ -474,7 +474,7 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
         logError('generate', msg);
         useStatusBarStore.getState().setText('NO USABLE MODEL — see Settings → Models');
         set({ error: msg, isGenerating: false, jobStatus: 'idle', statusLabel: 'IDLE' });
-        window.dispatchEvent(new CustomEvent('stabledaw:open-settings', { detail: { section: 'models' } }));
+        window.dispatchEvent(new CustomEvent('thedaw:open-settings', { detail: { section: 'models' } }));
         return;
       }
     } catch {

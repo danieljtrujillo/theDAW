@@ -31,7 +31,7 @@ export const Shell: React.FC = () => {
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {
     if (typeof window === 'undefined') return '';
-    return window.localStorage.getItem('stabledaw.shareUrlOverride') ?? '';
+    return window.localStorage.getItem('thedaw.shareUrlOverride') ?? '';
   });
   const [copiedShareUrl, setCopiedShareUrl] = React.useState(false);
 
@@ -68,8 +68,8 @@ export const Shell: React.FC = () => {
   const updateShareUrlOverride = (value: string) => {
     setShareUrlOverride(value);
     if (typeof window === 'undefined') return;
-    if (value.trim()) window.localStorage.setItem('stabledaw.shareUrlOverride', value);
-    else window.localStorage.removeItem('stabledaw.shareUrlOverride');
+    if (value.trim()) window.localStorage.setItem('thedaw.shareUrlOverride', value);
+    else window.localStorage.removeItem('thedaw.shareUrlOverride');
   };
 
   const copyShareUrl = async () => {
@@ -91,15 +91,15 @@ export const Shell: React.FC = () => {
     const closeDocsHandler = () => setDocsOpen(false);
     // CHANGED: let the Suno panel's "Open Settings" prompt open the modal.
     const openSettingsHandler = () => setSettingsOpen(true);
-    window.addEventListener('stabledaw:navigate', handler);
-    window.addEventListener('stabledaw:open-docs', openDocsHandler);
-    window.addEventListener('stabledaw:close-docs', closeDocsHandler);
-    window.addEventListener('stabledaw:open-settings', openSettingsHandler);
+    window.addEventListener('thedaw:navigate', handler);
+    window.addEventListener('thedaw:open-docs', openDocsHandler);
+    window.addEventListener('thedaw:close-docs', closeDocsHandler);
+    window.addEventListener('thedaw:open-settings', openSettingsHandler);
     return () => {
-      window.removeEventListener('stabledaw:navigate', handler);
-      window.removeEventListener('stabledaw:open-docs', openDocsHandler);
-      window.removeEventListener('stabledaw:close-docs', closeDocsHandler);
-      window.removeEventListener('stabledaw:open-settings', openSettingsHandler);
+      window.removeEventListener('thedaw:navigate', handler);
+      window.removeEventListener('thedaw:open-docs', openDocsHandler);
+      window.removeEventListener('thedaw:close-docs', closeDocsHandler);
+      window.removeEventListener('thedaw:open-settings', openSettingsHandler);
     };
   }, [setActiveView, setDocsOpen]);
 

@@ -32,8 +32,8 @@ uv pip install -r /mnt/<drive>/.../stable-audio-3/sidecars/magenta/requirements.
 Model dropdown calls `POST /api/magenta/engine/start`, which parks the Stable
 Audio model in CPU RAM, stops any other MRT2 engine, and spawns this server in
 WSL2 (distro from `../magenta-rt2-nvidia/app/.wsl_distro`, venv
-`~/mrt2/.venv`, both overridable with `STABLEDAW_MAGENTA_WSL_PY` /
-`STABLEDAW_MAGENTA_MODEL`). A pill beside the dropdown tracks LOADING → READY.
+`~/mrt2/.venv`, both overridable with `THEDAW_MAGENTA_WSL_PY` /
+`THEDAW_MAGENTA_MODEL`). A pill beside the dropdown tracks LOADING → READY.
 Picking a Stable Audio model calls `POST /api/magenta/engine/stop` and restores
 Stable Audio to the GPU.
 
@@ -47,7 +47,7 @@ MRT2_MODEL=mrt2_small python /mnt/<drive>/.../stable-audio-3/sidecars/magenta/se
 `GET /health` reports `{app: "mrt2-extended", ready, model, device}`. theDAW's
 probe checks the `app` identity so the bundle's JSON-protocol `studio_server.py`
 is never mistaken for this server. Override the URL the backend uses with
-`STABLEDAW_MAGENTA_URL`.
+`THEDAW_MAGENTA_URL`.
 
 `mrt2_base` needs more VRAM than a single consumer GPU — run it on a cloud GPU and
-point `STABLEDAW_MAGENTA_URL` at it.
+point `THEDAW_MAGENTA_URL` at it.

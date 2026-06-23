@@ -502,7 +502,7 @@ All effects are dispatched to `ffmpeg` through `subprocess.run`. Server-side bou
 
 ### 8.4 Source, Output, and Routing
 
-- **Source** loads through the top field by click, drop, or a Library drag using the `application/x-stabledaw-library-id` transfer protocol, so a persisted track becomes the source without a manual download.
+- **Source** loads through the top field by click, drop, or a Library drag using the `application/x-thedaw-library-id` transfer protocol, so a persisted track becomes the source without a manual download.
 - **Output format selector**: `wav`, `flac`, `ogg`, `mp3`, `aac`, or `opus`.
 - **Process** submits to `POST /api/studio/process`. The binary audio response is wrapped in a Blob URL for inline playback.
 - The output result can be downloaded, sent to the EDIT timeline, or sent to Inpaint Audio in MAKE.
@@ -1019,7 +1019,7 @@ Displays full metadata for the currently selected library entry.
 
 A session-scoped file holding area for arbitrary audio files. Contents are cleared on page reload.
 
-- **Dropzone** accepts drag-and-drop or click-to-upload. Supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus. Library entries can be dragged in directly using the `application/x-stabledaw-library-id` transfer protocol to locate the source file from the backend store.
+- **Dropzone** accepts drag-and-drop or click-to-upload. Supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus. Library entries can be dragged in directly using the `application/x-thedaw-library-id` transfer protocol to locate the source file from the backend store.
 - **Per-item display**: filename, MIME type, file size.
 - **Send to Editor** decodes peaks and appends the item to the waveform editor as a new clip on a new track. Non-audio files are rejected with a log entry.
 - **Send to Library** decodes the audio, measures its duration, and creates a persistent entry with `source: 'bucket'`.
@@ -1102,7 +1102,7 @@ Each entry carries a severity level shown as a colored left-border indicator:
 
 - **Ring buffer capacity:** 500 entries. The oldest entries are discarded when the cap is reached.
 - **Auto-scroll:** the log panel scrolls to the most recent entry automatically.
-- **Download:** exports the full buffer as `stabledaw-log-YYYYMMDD-HHMMSS.txt`. Each line contains an ISO timestamp, level, source, and message.
+- **Download:** exports the full buffer as `thedaw-log-YYYYMMDD-HHMMSS.txt`. Each line contains an ISO timestamp, level, source, and message.
 - **Clear:** wipes the ring buffer.
 - **Collapse/expand:** click anywhere on the header bar. The collapsed state shows the entry count and a "click to expand" hint.
 
@@ -1897,7 +1897,7 @@ The `magenta` module (`/api/magenta`) brings Google's **Magenta RealTime 2 (MRT2
 
 ### 27.1 The sidecar and conditioning
 
-MRT2 runs as a sidecar (default `http://localhost:8777`, override with `STABLEDAW_MAGENTA_URL`) that loads `MagentaRT2Jax` once on the GPU. theDAW ships an **extended** sidecar (`sidecars/magenta/server.py`) that supersedes the upstream text-only studio server and exposes all three conditioning modes over one `POST /generate`:
+MRT2 runs as a sidecar (default `http://localhost:8777`, override with `THEDAW_MAGENTA_URL`) that loads `MagentaRT2Jax` once on the GPU. theDAW ships an **extended** sidecar (`sidecars/magenta/server.py`) that supersedes the upstream text-only studio server and exposes all three conditioning modes over one `POST /generate`:
 
 - **Text**: a natural-language prompt, used by default.
 - **Notes**: a MIDI note list (`[{pitch:0-127, start, end}]`) encoded to the model's 128-pitch state windows.

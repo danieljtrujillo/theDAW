@@ -7,13 +7,13 @@
  * direction and is handled by the normal library "send" buttons (there a Suno
  * track is just audio).
  *
- * CHANGED from the old StableDAW:
+ * CHANGED from the old theDAW:
  *   - Source check is `entry.model === 'suno'` (LibraryEntry has no `provider`).
  *   - The "Suno clip id" for a library entry is stored in its tags as
  *     `sunoid:<id>`; we parse that, falling back to `entry.id`.
  *   - Revealing the panel uses the center-tab nav (`setCenterTab('make')`) +
  *     `generateParamsStore.patch({ model: 'suno' })`. There is no
- *     `stabledaw:open-suno` event and no GlobalGenerateBar anymore.
+ *     `thedaw:open-suno` event and no GlobalGenerateBar anymore.
  */
 
 import { useSunoStore } from './sunoStore';

@@ -216,7 +216,7 @@ export const useLearnedProfilesStore = create<LearnedProfilesState>()(
       },
     }),
     {
-      name: 'stabledaw-learned-profiles-v1',
+      name: 'thedaw-learned-profiles-v1',
       partialize: (s) => ({ profiles: s.profiles }),
       // On rehydrate, push learned profiles into the catalog + re-seed their maps.
       onRehydrateStorage: () => (state) => {

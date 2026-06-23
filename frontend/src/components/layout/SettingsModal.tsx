@@ -340,8 +340,8 @@ const StorageSettingsSection: React.FC = () => {
       setTimeout(() => sectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
       setTimeout(() => setHighlight(false), 2600);
     };
-    window.addEventListener('stabledaw:open-settings', onFocusModels);
-    return () => window.removeEventListener('stabledaw:open-settings', onFocusModels);
+    window.addEventListener('thedaw:open-settings', onFocusModels);
+    return () => window.removeEventListener('thedaw:open-settings', onFocusModels);
   }, []);
 
   const reload = React.useCallback(() => {

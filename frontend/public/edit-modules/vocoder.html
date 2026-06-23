@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Vocoder — StableDAW</title>
+<title>Vocoder — theDAW</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
@@ -497,7 +497,7 @@ draw();
 
 // ── Receive audio from parent page ──
 window.addEventListener('message', async (e) => {
-  if (e.data && e.data.type === 'stabledaw-audio' && e.data.buffer) {
+  if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
       const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
