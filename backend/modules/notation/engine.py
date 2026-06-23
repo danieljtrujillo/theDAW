@@ -27,6 +27,75 @@ from backend.modules.library.db import LibraryDB
 
 log = logging.getLogger(__name__)
 
+# The user is GANTASMO; sheets always carry a composer credit, so this is the
+# floor when no artist is configured (Settings -> notation.artist).
+DEFAULT_ARTIST = "GANTASMO"
+
+# Media file extensions that must never appear in a sheet title (e.g. an
+# imported track called "Foo.wav" should be titled "Foo"). Symbolic source
+# extensions are included too so a MIDI-derived title is never "...mid".
+_MEDIA_EXTENSIONS = (
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".oga",
+    ".m4a",
+    ".aac",
+    ".aif",
+    ".aiff",
+    ".opus",
+    ".wma",
+    ".alac",
+    ".mp4",
+    ".mov",
+    ".webm",
+    ".mkv",
+    ".m4v",
+    ".avi",
+    ".mid",
+    ".midi",
+    ".musicxml",
+    ".xml",
+)
+
+# music21's placeholders for an untitled fragment / unset composer.
+_PLACEHOLDER_TITLES = frozenset({"music21 fragment", "music21"})
+
+
+def clean_title(title: str) -> str:
+    """Sanitize a song title for display + engraving.
+
+    Drops a trailing media file extension (the user never wants ``.wav`` /
+    ``.mp3`` on a sheet) and treats music21's ``Music21 Fragment`` placeholder
+    as empty. Returns ``""`` when nothing meaningful remains.
+    """
+    t = (title or "").strip()
+    if not t:
+        return ""
+    low = t.lower()
+    for ext in _MEDIA_EXTENSIONS:
+        if low.endswith(ext):
+            t = t[: -len(ext)].rstrip()
+            break
+    if t.strip().lower() in _PLACEHOLDER_TITLES:
+        return ""
+    return t.strip()
+
+
+def artist_name() -> str:
+    """The global artist/composer name (Settings -> notation.artist), stamped
+    onto every generated sheet as the composer credit. Falls back to
+    :data:`DEFAULT_ARTIST` so a sheet is never credited to "Music21"."""
+    try:
+        from backend.modules.settings.router import get_store as get_settings_store
+
+        section = get_settings_store().get_section("notation")
+        name = str((section or {}).get("artist", "") or "").strip()
+    except Exception:
+        name = ""
+    return name or DEFAULT_ARTIST
+
 
 # Targets music21 can write directly from a parsed score.
 _MUSIC21_FORMATS = frozenset({"musicxml", "abc"})
@@ -212,18 +281,29 @@ def _convert_with_music21(
             score = score.quantize((4, 3), inPlace=False, recurse=True)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
             log.debug("notation: music21 quantize skipped for %s: %s", source_path, exc)
-        # Stamp the originating song's name so the engraved sheet is titled
-        # (raw MIDI usually carries no title -> blank sheets without this).
-        if title:
-            try:
-                from music21.metadata import Metadata  # type: ignore[import]
+        # Stamp the originating song's name (and the artist as composer) so the
+        # engraved sheet is titled + credited — raw MIDI carries neither, which
+        # is why untitled sheets showed music21's "Music21 Fragment" placeholder
+        # and a "Music21" composer. The composer is ALWAYS overwritten (never
+        # left as music21's default); the title drops any media extension.
+        clean = clean_title(title)
+        composer = artist_name()
+        try:
+            from music21.metadata import Metadata  # type: ignore[import]
 
-                if score.metadata is None:
-                    score.insert(0, Metadata())
-                score.metadata.title = title
-                score.metadata.movementName = title
-            except Exception as exc:  # noqa: BLE001 - titling is best-effort
-                log.debug("notation: could not set title on %s: %s", output_path, exc)
+            if score.metadata is None:
+                score.insert(0, Metadata())
+            # Only the work title (song name); deliberately NOT movementName.
+            # music21 writes title -> <work-title> AND movementName ->
+            # <movement-title>; OSMD (and MuseScore) render work-title as the
+            # Title and movement-title as the Subtitle, so setting both to the
+            # song name prints the title twice. The artist is the composer; the
+            # viewer places it under the title via the subtitle slot.
+            if clean:
+                score.metadata.title = clean
+            score.metadata.composer = composer
+        except Exception as exc:  # noqa: BLE001 - titling is best-effort
+            log.debug("notation: could not set title on %s: %s", output_path, exc)
         written = score.write(fmt, fp=str(output_path))
     except Exception as exc:  # noqa: BLE001
         log.warning("notation: %s export failed for %s: %s", fmt, source_path, exc)
@@ -458,6 +538,25 @@ def midi_to_arrangement(
         import music21  # type: ignore[import]
     except ImportError:
         return {"ok": False, "error": "music21 is not installed."}
+
+    # Credit the artist as composer on the arrangement too, and re-stamp a
+    # cleaned title (the arranger sets it from the song name, which may carry a
+    # media extension).
+    clean = clean_title(title)
+    composer = artist_name()
+    try:
+        from music21.metadata import Metadata  # type: ignore[import]
+
+        sc = result["score"]
+        if sc.metadata is None:
+            sc.insert(0, Metadata())
+        # Title only (not movementName) so the song name isn't printed twice; see
+        # the note in _convert_with_music21. Artist is the composer credit.
+        if clean:
+            sc.metadata.title = clean
+        sc.metadata.composer = composer
+    except Exception as exc:  # noqa: BLE001 - crediting is best-effort
+        log.debug("notation: could not set composer on arrangement: %s", exc)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:

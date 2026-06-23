@@ -26,7 +26,7 @@ import { listMedia, importMedia, deleteMedia, MEDIA_ACCEPT } from '../lib/mediaL
 import { setAudioDragData } from '../lib/audioDnD';
 import { renderMidiBufferToBlob } from '../lib/midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from '../lib/fetchRetry';
-import { notationArtifactUrl } from '../lib/notationClient';
+import { notationArtifactUrl, notationPackUrl } from '../lib/notationClient';
 import { sendTrackToVj } from '../state/vjSetBus';
 import {
   loadMidiIntoPianoRoll,
@@ -2146,9 +2146,10 @@ const ScoreList: React.FC<{
 }> = ({ byParent, parentTitles, placeholder, onOpen, onRefresh }) => {
   const parentIds = Object.keys(byParent);
 
-  const downloadScore = (id: string) => {
+  const downloadScore = (id: string, kind: string) => {
     const a = document.createElement('a');
-    a.href = notationArtifactUrl(id);
+    // Sheets come down as a MusicXML + PDF zip; tabs/others as the raw file.
+    a.href = kind === 'musicxml' ? notationPackUrl(id) : notationArtifactUrl(id);
     a.download = '';
     document.body.appendChild(a);
     a.click();
@@ -2205,8 +2206,8 @@ const ScoreList: React.FC<{
                   <button
                     type="button"
                     className="shrink-0 p-0.5 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => { e.stopPropagation(); downloadScore(id); }}
-                    title="Download score"
+                    onClick={(e) => { e.stopPropagation(); downloadScore(id, kind); }}
+                    title={kind === 'musicxml' ? 'Download MusicXML + PDF' : 'Download score'}
                     aria-label={`Download ${label} score`}
                   >
                     <Download className="w-2.5 h-2.5 text-zinc-500 hover:text-white" />

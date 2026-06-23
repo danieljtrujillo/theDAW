@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import mimetypes
+import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from backend.modules.library.router import get_store as get_library_store
@@ -331,6 +333,84 @@ def make_arrangement(entry_id: str, body: ArrangeRequest) -> dict[str, Any]:
     if not result.get("ok"):
         raise HTTPException(501, result)
     return result
+
+
+@router.post("/backfill")
+def backfill() -> dict[str, Any]:
+    """Ensure every entry with MIDI has a titled sheet, and fix the placeholder
+    title on existing sheets. Enqueued on the idle-gated background queue so a
+    large library never blocks; falls back to running inline if the queue is
+    unavailable."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    from .backfill import backfill_scores
+
+    try:
+        from backend.core.background_workers import get_background_queue
+
+        async def _run() -> None:
+            import asyncio
+
+            await asyncio.to_thread(backfill_scores, store)
+
+        get_background_queue().enqueue("notation:backfill", _run)
+        return {"queued": True}
+    except Exception:
+        # No queue available — run synchronously and return the tallies.
+        return {"queued": False, **backfill_scores(store)}
+
+
+@router.get("/pack/{artifact_id}")
+def download_score_pack(artifact_id: str) -> Response:
+    """Download a score as a zip of the source plus a PDF. The PDF is engraved
+    by the MuseScore CLI when available; without it the zip still carries the
+    MusicXML so the download never fails."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    artifact = store.db.get_notation_artifact(artifact_id)
+    if artifact is None:
+        raise HTTPException(404, f"artifact {artifact_id!r} not found")
+    src = Path(artifact.get("path") or "")
+    if not src.is_file():
+        raise HTTPException(404, f"artifact file missing on disk: {src}")
+
+    entry_id = str(artifact.get("entry_id") or "")
+    slug = _song_slug(_entry_title(store, entry_id)) or src.stem
+    members: list[tuple[Path, str]] = [(src, f"{slug}{src.suffix}")]
+
+    # Engrave a PDF from a MusicXML sheet when MuseScore is installed.
+    if artifact.get("kind") == "musicxml":
+        entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - module convention
+        if entry_dir is not None:
+            pdf_out = entry_dir / "notation" / f"{src.stem}.pdf"
+            result = convert_score(
+                store.db,
+                entry_id=entry_id,
+                source_path=src,
+                fmt="pdf",
+                output_path=pdf_out,
+                source_ref=artifact_id,
+                artifact_id=f"{artifact_id}__pdf",
+                title=_entry_title(store, entry_id),
+            )
+            if result.get("ok"):
+                pdf_path = Path(result.get("path") or pdf_out)
+                if pdf_path.is_file():
+                    members.append((pdf_path, f"{slug}.pdf"))
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path, arcname in members:
+            if path.is_file():
+                zf.write(path, arcname=arcname)
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{slug}_score.zip"'},
+    )
 
 
 @router.get("/file/{artifact_id}")
