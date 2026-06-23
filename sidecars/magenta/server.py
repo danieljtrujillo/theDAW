@@ -42,9 +42,23 @@ import threading
 import time
 import traceback
 
-# Allocate GPU memory on demand (must be set before jax is imported).
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+# GPU allocator (must be set before jax is imported). Default to the FAST path
+# (BFC + preallocation): the engine has the card to itself while it runs (the
+# backend parks Stable Audio to CPU before bringing this up), and JAX's
+# "platform" allocator — the previous default — is documented as "very slow, not
+# recommended for general use" because it allocates/frees per op, which taxes the
+# per-frame streaming loop heavily. Set THEDAW_MAGENTA_LOWMEM=1 to fall back to
+# the low-memory platform allocator.
+if os.environ.get("THEDAW_MAGENTA_LOWMEM", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+else:
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 import numpy as np
@@ -56,6 +70,11 @@ from fastapi.responses import JSONResponse, Response
 FPS = 25  # model emits 25 frames/s (40 ms each)
 PORT = int(os.environ.get("MRT2_PORT", "8777"))
 MODEL = os.environ.get("MRT2_MODEL", "mrt2_small")
+# Frames per generate() call on the NO-NOTES path. Chunk size there is pure
+# output segmentation (state threads across calls, so the audio is identical
+# regardless), so a big chunk cuts host<->device round-trips ~10x vs the old 25
+# (1s). The MIDI/notes path keeps the caller's fine chunk_frames for note timing.
+NO_NOTES_CHUNK = max(1, int(os.environ.get("THEDAW_MAGENTA_NO_NOTES_CHUNK", "250")))
 
 
 class Engine:
@@ -77,6 +96,25 @@ class Engine:
         try:
             self.status = "importing jax + magenta_rt"
             import jax
+
+            # Persistent XLA compilation cache. MRT2's one-time XLA compile
+            # dominates cold-start (and recurs on every re-spin after an
+            # SA3<->Magenta GPU swap). Caching compiled executables to disk makes
+            # every start after the first skip that recompile, which is the single
+            # biggest lever for "spin up a faster one". Best-effort: wrapped so a
+            # JAX version that renamed a config key can never block model load.
+            # Override the dir with THEDAW_MAGENTA_JAX_CACHE.
+            try:
+                cache_dir = os.environ.get(
+                    "THEDAW_MAGENTA_JAX_CACHE",
+                    os.path.expanduser("~/.cache/thedaw-mrt2-jax"),
+                )
+                jax.config.update("jax_compilation_cache_dir", cache_dir)
+                jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+                jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+                print(f"[magenta] JAX compile cache -> {cache_dir}", flush=True)
+            except Exception as e:  # noqa: BLE001 — cache is an optimization only
+                print(f"[magenta] JAX compile cache unavailable: {e}", flush=True)
 
             # magenta-rt 2.x exposes the JAX system as ``MagentaRT2Jax`` (the
             # pre-2.0 name ``MagentaRT2System`` is no longer re-exported at the
@@ -281,9 +319,12 @@ async def generate(
             state = prev["state"] if prev is not None else None
             parts = []
             if not timeline:
+                # No note timing to honor, so use a big chunk to minimize
+                # host<->device round-trips (the audio is identical regardless).
+                nn_chunk = max(chunk, NO_NOTES_CHUNK)
                 done = 0
                 while done < total:
-                    n = min(chunk, total - done)
+                    n = min(nn_chunk, total - done)
                     wav, state = ENGINE.mrt.generate(frames=n, state=state, **common)
                     parts.append(np.asarray(wav.samples, dtype=np.float32))
                     done += n

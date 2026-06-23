@@ -9,6 +9,7 @@ Retrieves top-5 chunks per query with source citations.
 import hashlib
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,9 @@ DOC_PATHS = [
 
 _collection = None
 _last_indexed_hash: Optional[str] = None
+# Serializes lazy first-use init so concurrent assistant queries don't each build
+# the index / load the embedding model.
+_init_lock = threading.Lock()
 
 
 _INDEX_VERSION = 2  # bump to force re-index after chunking logic changes
@@ -225,6 +229,16 @@ def initialize_rag(force: bool = False) -> int:
 
 
 def retrieve(query: str, n_results: int = 5) -> list[dict]:
+    if _collection is None:
+        # Lazy first-use init: the ~all-MiniLM embedding model + chroma client are
+        # only loaded when the assistant actually needs RAG context, not at
+        # startup, so a session that never asks the assistant pays nothing.
+        with _init_lock:
+            if _collection is None:
+                try:
+                    initialize_rag()
+                except Exception as e:  # noqa: BLE001 — retrieval is best-effort
+                    logger.warning("[RAG] lazy init failed: %s", e)
     if _collection is None:
         return []
 

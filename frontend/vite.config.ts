@@ -50,10 +50,13 @@ export default defineConfig(({mode}) => {
         output: {
           // Split the big, stable leaf vendors into their own long-cached
           // chunks so an app-code edit doesn't bust them, and the main chunk
-          // shrinks. (three + react-force-graph are already code-split via
-          // dynamic import in CymaticsVisualizer's lazy wrapper + LineageModal.)
+          // shrinks. `three` is loaded both eagerly (the boot cinematic,
+          // LiquidChromeTitle) and lazily (the visualizer), so giving it a
+          // dedicated chunk keeps exactly one cached copy and pulls ~600KB out of
+          // the entry chunk. (react-force-graph stays code-split via LineageModal.)
           manualChunks: {
             'react-vendor': ['react', 'react-dom'],
+            three: ['three'],
             wavesurfer: ['wavesurfer.js', '@wavesurfer/react'],
             icons: ['lucide-react'],
           },

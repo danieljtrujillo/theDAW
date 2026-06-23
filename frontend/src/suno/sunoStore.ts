@@ -11,7 +11,11 @@
  * pendingParent lineage hand-off here anymore — all of that moved server-side.
  *
  * This store holds: the form state per mode, the job list, api-config status,
- * usage, and a submitting flag. It polls each non-terminal job every 3s.
+ * usage, and a submitting flag. It polls each non-terminal job on an ADAPTIVE
+ * cadence: fast (~1.8s) while waiting for the first audio so the progressive
+ * `streaming` URL becomes playable as soon as possible, then easing to ~3s once
+ * streaming (the clip already plays; we're only waiting for the final CDN URL).
+ * Suno's floor is 1 req/s, so the fast tier stays comfortably above it.
  */
 
 import { create } from 'zustand';
@@ -45,7 +49,7 @@ const EMPTY_FORM: Omit<SunoFormState, 'mode'> = {
 };
 
 // Active poll timers, keyed by job id (module-level so they survive re-renders).
-const _timers = new Map<string, ReturnType<typeof setInterval>>();
+const _timers = new Map<string, ReturnType<typeof setTimeout>>();
 // Jobs whose completion we've already handled (dedupe the library.refresh()).
 const _refreshed = new Set<string>();
 
@@ -55,7 +59,7 @@ const _refreshed = new Set<string>();
   const hot = (import.meta as unknown as { hot?: { dispose: (cb: () => void) => void } }).hot;
   if (hot) {
     hot.dispose(() => {
-      _timers.forEach((t) => clearInterval(t));
+      _timers.forEach((t) => clearTimeout(t));
       _timers.clear();
       _refreshed.clear();
     });
@@ -218,7 +222,21 @@ export const useSunoStore = create<SunoState>()((set, get) => ({
 
   startPolling: (id) => {
     if (_timers.has(id)) return;
-    const timer = setInterval(async () => {
+
+    const stop = () => {
+      const t = _timers.get(id);
+      if (t !== undefined) clearTimeout(t);
+      _timers.delete(id);
+    };
+
+    // Adaptive cadence: poll quickly until the clip is audible (its progressive
+    // `streaming` URL appears), then ease off once it is — at that point the clip
+    // already plays and we're only waiting for the final CDN swap. Stays >= 1.8s
+    // to honor Suno's 1 req/s floor with margin.
+    const nextDelay = (status: string | undefined): number =>
+      status === 'streaming' ? 3000 : 1800;
+
+    const tick = async () => {
       try {
         const updated = await sunoApi.poll(id);
         set((st) => {
@@ -229,8 +247,7 @@ export const useSunoStore = create<SunoState>()((set, get) => ({
           return { jobs: next };
         });
         if (updated.status === 'complete') {
-          clearInterval(timer);
-          _timers.delete(id);
+          stop();
           // The backend already registered this clip in the library — just
           // refresh the library store so it appears everywhere.
           if (!_refreshed.has(id)) {
@@ -243,16 +260,23 @@ export const useSunoStore = create<SunoState>()((set, get) => ({
               )
               .catch(() => _refreshed.delete(id)); // allow a retry on next poll
           }
-        } else if (updated.status === 'error') {
-          clearInterval(timer);
-          _timers.delete(id);
-          logError('suno', `Job ${id.slice(0, 8)} failed: ${updated.error || 'unknown'}`);
+          return;
         }
+        if (updated.status === 'error') {
+          stop();
+          logError('suno', `Job ${id.slice(0, 8)} failed: ${updated.error || 'unknown'}`);
+          return;
+        }
+        _timers.set(id, setTimeout(tick, nextDelay(updated.status)));
       } catch {
-        /* transient — keep polling */
+        // transient — keep polling on the slower cadence so a flaky network
+        // doesn't hammer the proxy.
+        _timers.set(id, setTimeout(tick, 3000));
       }
-    }, 3000);
-    _timers.set(id, timer);
+    };
+
+    // First check soon after submit (jobs often start streaming within seconds).
+    _timers.set(id, setTimeout(tick, 1200));
   },
 
   prefillCover: (sourceId) => set({ ...EMPTY_FORM, mode: 'cover', sourceId }),

@@ -35,6 +35,66 @@ MAGENTA_JOBS: dict[str, dict] = {}
 _bringup_lock = asyncio.Lock()
 
 
+def _normalize_style_audio(audio_bytes: bytes) -> bytes:
+    """Auto-format an uploaded style clip ("clone its vibe") to canonical PCM16
+    WAV so the sidecar can always read it.
+
+    The sidecar decodes style clips with libsndfile inside WSL, whose build may be
+    older or lack codecs (MP3, M4A, Opus, some WAV variants) that the Windows-side
+    backend handles fine — that mismatch is what surfaces as the sidecar's
+    "Format not recognised". Re-encoding here means the sidecar always receives a
+    universally-readable WAV regardless of the source format. Tries soundfile
+    first, then ffmpeg for anything soundfile can't decode."""
+    try:
+        import soundfile as sf
+
+        data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
+        out = io.BytesIO()
+        sf.write(out, data, sr, format="WAV", subtype="PCM_16")
+        return out.getvalue()
+    except Exception as e_sf:
+        log.info(
+            "magenta: soundfile couldn't decode style clip (%s); trying ffmpeg", e_sf
+        )
+
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("ffmpeg"):
+        raise ValueError("style clip format not recognised and ffmpeg is unavailable")
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        out_path = tf.name
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                "pipe:0",
+                "-acodec",
+                "pcm_s16le",
+                out_path,
+            ],
+            input=audio_bytes,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.decode("utf-8", "replace")[:200] if proc.stderr else "?"
+            raise ValueError(f"style clip could not be decoded: {err}")
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 async def _bring_up_sidecar(timeout: float = 240.0) -> None:
     """Ensure the extended sidecar is up and ready, starting it on demand.
 
@@ -208,12 +268,25 @@ async def generate(
                 },
             )
 
-    # Read the optional style clip now (the UploadFile is tied to this request).
+    # Read the optional style clip now (the UploadFile is tied to this request)
+    # and auto-format it to a canonical WAV the sidecar can always decode.
     audio_bytes = None
     audio_mime = "audio/wav"
     if audio_file is not None and audio_file.filename:
-        audio_bytes = await audio_file.read()
-        audio_mime = audio_file.content_type or "audio/wav"
+        raw = await audio_file.read()
+        try:
+            audio_bytes = await asyncio.get_event_loop().run_in_executor(
+                None, _normalize_style_audio, raw
+            )
+        except Exception as e:
+            raise HTTPException(
+                422,
+                {
+                    "message": (
+                        f"Couldn't read the style clip {audio_file.filename!r}: {e}"
+                    )
+                },
+            ) from e
 
     job_id = uuid.uuid4().hex[:8]
     cond = "audio" if audio_bytes else ("notes" if notes.strip() else "text")

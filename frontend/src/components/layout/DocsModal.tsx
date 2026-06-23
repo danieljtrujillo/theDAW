@@ -139,10 +139,15 @@ const PRINT_THEMES: Record<'paper' | 'studio' | 'carbon', PrintTheme> = {
 };
 type ThemeKey = keyof typeof PRINT_THEMES;
 
+// Module-level cache: the 137KB guide is fetched + parsed at most once per app
+// lifetime (survives modal remounts and StrictMode's double-effect), so the Docs
+// panel opens instantly after the first time instead of re-running marked.
+let _docCache: { markdown: string; html: string; headings: Heading[] } | null = null;
+
 export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
-  const [markdown, setMarkdown] = useState<string>('');
-  const [html, setHtml] = useState<string>('');
-  const [headings, setHeadings] = useState<Heading[]>([]);
+  const [markdown, setMarkdown] = useState<string>(_docCache?.markdown ?? '');
+  const [html, setHtml] = useState<string>(_docCache?.html ?? '');
+  const [headings, setHeadings] = useState<Heading[]>(_docCache?.headings ?? []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -171,6 +176,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
 
   useEffect(() => {
     if (!markdown) return;
+    if (_docCache && _docCache.markdown === markdown) return; // already parsed
     // Parse markdown → HTML and extract h1/h2/h3 for TOC.
     const renderer = new marked.Renderer();
     const collected: Heading[] = [];
@@ -217,6 +223,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
       return `<img src="${src}" alt="${text || ''}"${titleAttr} style="max-width:${maxW}" loading="lazy" />`;
     };
     const parsed = marked.parse(markdown, { renderer, gfm: true, breaks: false }) as string;
+    _docCache = { markdown, html: parsed, headings: collected };
     setHtml(parsed);
     setHeadings(collected);
   }, [markdown]);
