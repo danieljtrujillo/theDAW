@@ -98,6 +98,13 @@ export interface AutomationLane {
   enabled: boolean;
 }
 
+/** A named position flag on the timeline (Phase F). */
+export interface TimelineMarker {
+  id: string;
+  t: number;     // timeline seconds
+  label: string;
+}
+
 /** Stable identity for a target, so a control resolves to its one lane. */
 export const automationTargetKey = (target: AutomationTarget): string =>
   `${target.kind}|${target.trackId ?? ''}|${target.entryId ?? ''}|${target.paramKey ?? ''}`;
@@ -217,15 +224,61 @@ interface EditorStoreState {
   removeAutomationLane: (laneId: string) => void;
   getLaneForTarget: (target: AutomationTarget) => AutomationLane | undefined;
 
+  // Loop region + markers (Phase F). The loop region, when enabled and valid,
+  // makes the transport cycle within [loopStart, loopEnd] instead of the whole
+  // timeline. Markers are named position flags.
+  loopEnabled: boolean;
+  loopStart: number;
+  loopEnd: number;
+  markers: TimelineMarker[];
+  setLoopEnabled: (on: boolean) => void;
+  setLoopRegion: (start: number, end: number) => void;
+  clearLoop: () => void;
+  addMarker: (t: number, label?: string) => void;
+  removeMarker: (id: string) => void;
+  renameMarker: (id: string, label: string) => void;
+  moveMarker: (id: string, t: number) => void;
+
+  // Undo / redo (Phase D). Snapshots capture the document slices below; because
+  // every mutation replaces arrays immutably, a snapshot just references the prior
+  // arrays (no cloning, audio blobs/peaks stay shared). Rapid bursts (a drag, a
+  // WRITE-record pass) coalesce into one step. _undo/_redo are exposed so the UI
+  // can reflect availability.
+  _undo: EditorHistorySnapshot[];
+  _redo: EditorHistorySnapshot[];
+  undo: () => void;
+  redo: () => void;
+
   // Selectors
   getTotalDurationSec: () => number;
   snapSec: (s: number) => number;
+}
+
+/** The document slices tracked by undo / redo. */
+interface EditorHistorySnapshot {
+  tracks: EditorTrack[];
+  clips: AudioClip[];
+  masterFxChain: ChainEntry[];
+  automationLanes: AutomationLane[];
 }
 
 const DEFAULT_COLORS = ['#8b5cf6', '#a855f7', '#ec4899', '#06b6d4', '#10b981', '#facc15', '#f97316', '#ef4444'];
 
 const uid = (): string =>
   typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+
+// ── Undo / redo plumbing (module-scoped) ─────────────────────────────────────
+const HISTORY_LIMIT = 100;
+const HISTORY_COALESCE_MS = 300; // changes closer than this fold into one undo step
+let historyApplying = false;     // true while undo/redo writes, so it doesn't self-record
+let lastDocChangeAt = -Infinity;
+
+const docSnapshot = (s: EditorStoreState): EditorHistorySnapshot => ({
+  tracks: s.tracks,
+  clips: s.clips,
+  masterFxChain: s.masterFxChain,
+  automationLanes: s.automationLanes,
+});
 
 export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   tracks: [
@@ -253,6 +306,12 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   masterFxChain: [],
   automationLanes: [],
   automationWrite: false,
+  loopEnabled: false,
+  loopStart: 0,
+  loopEnd: 0,
+  markers: [],
+  _undo: [],
+  _redo: [],
 
   addTrack: (overrides) => {
     const id = `track-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -533,6 +592,61 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     return get().automationLanes.find((l) => automationTargetKey(l.target) === key);
   },
 
+  setLoopEnabled: (on) => set({ loopEnabled: on }),
+  setLoopRegion: (start, end) =>
+    set(() => {
+      const a = Math.max(0, Math.min(start, end));
+      const b = Math.max(start, end);
+      return { loopStart: a, loopEnd: b, loopEnabled: b - a > 0.05 };
+    }),
+  clearLoop: () => set({ loopEnabled: false, loopStart: 0, loopEnd: 0 }),
+  addMarker: (t, label) =>
+    set((s) => ({
+      markers: [...s.markers, { id: uid(), t: Math.max(0, t), label: label ?? String(s.markers.length + 1) }].sort((x, y) => x.t - y.t),
+    })),
+  removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id) })),
+  renameMarker: (id, label) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, label } : m)) })),
+  moveMarker: (id, t) =>
+    set((s) => ({
+      markers: s.markers.map((m) => (m.id === id ? { ...m, t: Math.max(0, t) } : m)).sort((x, y) => x.t - y.t),
+    })),
+
+  undo: () => {
+    const s = get();
+    if (s._undo.length === 0) return;
+    const prev = s._undo[s._undo.length - 1];
+    const current = docSnapshot(s);
+    historyApplying = true;
+    set({
+      tracks: prev.tracks,
+      clips: prev.clips,
+      masterFxChain: prev.masterFxChain,
+      automationLanes: prev.automationLanes,
+      _undo: s._undo.slice(0, -1),
+      _redo: [...s._redo, current],
+    });
+    historyApplying = false;
+    lastDocChangeAt = -Infinity; // the next real edit starts a fresh undo step
+  },
+
+  redo: () => {
+    const s = get();
+    if (s._redo.length === 0) return;
+    const next = s._redo[s._redo.length - 1];
+    const current = docSnapshot(s);
+    historyApplying = true;
+    set({
+      tracks: next.tracks,
+      clips: next.clips,
+      masterFxChain: next.masterFxChain,
+      automationLanes: next.automationLanes,
+      _undo: [...s._undo, current],
+      _redo: s._redo.slice(0, -1),
+    });
+    historyApplying = false;
+    lastDocChangeAt = -Infinity;
+  },
+
   getTotalDurationSec: () => {
     const { clips } = get();
     if (clips.length === 0) return 60; // default empty timeline shows 60s
@@ -548,6 +662,32 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     return Math.max(0, Math.round(s / step) * step);
   },
 }));
+
+// Record undo history whenever a tracked document slice changes. Only the FIRST
+// change of a burst captures the pre-change snapshot, so a continuous gesture (clip
+// drag, fader ride, WRITE-record pass) collapses into a single undo step. Playhead,
+// zoom, selection, and transport changes don't touch these slices, so they never
+// pollute history. undo/redo set historyApplying so their own writes aren't recorded.
+useEditorStore.subscribe((state, prev) => {
+  if (historyApplying) return;
+  if (
+    state.tracks === prev.tracks &&
+    state.clips === prev.clips &&
+    state.masterFxChain === prev.masterFxChain &&
+    state.automationLanes === prev.automationLanes
+  ) return;
+  const now = performance.now();
+  const coalesce = now - lastDocChangeAt < HISTORY_COALESCE_MS;
+  lastDocChangeAt = now;
+  if (coalesce) return; // mid-burst; the burst start already captured the undo point
+  historyApplying = true;
+  useEditorStore.setState((s) => {
+    const undo = [...s._undo, docSnapshot(prev)];
+    if (undo.length > HISTORY_LIMIT) undo.shift();
+    return { _undo: undo, _redo: [] };
+  });
+  historyApplying = false;
+});
 
 /**
  * Decode an audio Blob and produce a downsampled peak array suitable for

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
+import json
 import logging
 import time
 import uuid
@@ -27,6 +29,55 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 MAGENTA_JOBS: dict[str, dict] = {}
+
+# Serializes on-demand engine bring-up so concurrent CREATE presses don't each
+# park SA3 + spawn WSL; the first wins, the rest see it ready inside the lock.
+_bringup_lock = asyncio.Lock()
+
+
+async def _bring_up_sidecar(timeout: float = 240.0) -> None:
+    """Ensure the extended sidecar is up and ready, starting it on demand.
+
+    No-op when it is already available. Otherwise: refuse with an actionable
+    message if the WSL side was never installed; else park SA3 to free the GPU,
+    stop any stray engine, spawn ours, and wait for /health to report ready.
+    Raises RuntimeError (carried into the job's error) on setup-missing or timeout.
+    """
+    if (await sidecar.health()).get("available"):
+        return
+    loop = asyncio.get_event_loop()
+    async with _bringup_lock:
+        h = await sidecar.health()
+        if h.get("available"):
+            return
+        setup = await loop.run_in_executor(None, sidecar.setup_state)
+        if not setup.get("ready"):
+            raise RuntimeError(
+                "Magenta RT2 is not installed. Run Setup-MRT2.bat "
+                "(sidecars/magenta-rt2-nvidia) once to install it, then try again."
+            )
+        # Park SA3 so the engine's JAX runtime finds a free GPU, then (re)spawn.
+        if not (h.get("reachable") and h.get("protocol_ok")):
+            try:
+                from backend import server as srv
+
+                await srv.offload_model()
+            except Exception:
+                log.debug(
+                    "magenta: SA3 offload before engine start failed", exc_info=True
+                )
+            await loop.run_in_executor(None, sidecar.stop_engine)
+            await loop.run_in_executor(None, sidecar.start_engine)
+        # Model load can take a while on a cold start; poll until ready.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2.0)
+            if (await sidecar.health()).get("available"):
+                return
+        raise RuntimeError(
+            "The Magenta RT2 engine started but did not become ready in time. "
+            "Check the WSL sidecar, then try again."
+        )
 
 
 @router.get("/probe")
@@ -136,9 +187,26 @@ async def generate(
     model_size: str = Form("small"),
     audio_file: UploadFile | None = File(None),
 ):
+    # The engine is brought up on demand inside the job (it can take a while to
+    # load). Only fail fast here when the WSL side was never installed, so the
+    # user gets an actionable setup prompt instead of a stuck job.
     h = await sidecar.health()
     if not h.get("available"):
-        raise HTTPException(503, f"Magenta sidecar not available at {h.get('url')}")
+        setup = await asyncio.get_event_loop().run_in_executor(
+            None, sidecar.setup_state
+        )
+        if not setup.get("ready"):
+            raise HTTPException(
+                412,
+                {
+                    "setup_required": True,
+                    **setup,
+                    "message": (
+                        "Magenta RT2 is not installed. Run Setup-MRT2.bat "
+                        "(sidecars/magenta-rt2-nvidia) once to install it."
+                    ),
+                },
+            )
 
     # Read the optional style clip now (the UploadFile is tied to this request).
     audio_bytes = None
@@ -184,6 +252,76 @@ async def generate(
     return {"ok": True, "job": {"id": job_id}}
 
 
+def _save_magenta_to_library(
+    job_id: str,
+    wav_bytes: bytes,
+    *,
+    prompt: str,
+    duration: float,
+    model_name: str,
+    conditioning: str,
+    seed: int,
+) -> None:
+    """Persist a magenta generation as a first-class library entry (``{job_id}_00``),
+    mirroring the SA3 generate flow (artifacts on disk + DB sync + analysis), so it
+    shows up in the library exactly like an SA3 output. Without this the frontend's
+    post-generation lookup for ``{job_id}_00`` never resolves and the user sees
+    "Could not find freshly-saved entry". Blocking — call via run_in_executor.
+    """
+    from backend.server import _save_generation_artifacts_sync, _generate_spectrograms
+
+    spectrograms: dict[str, str] = {}
+    try:
+        import torchaudio
+
+        waveform, sr = torchaudio.load(io.BytesIO(wav_bytes))
+        spectrograms = _generate_spectrograms(waveform, sr)
+    except Exception as e:  # spectrograms are a nicety, not required for the entry
+        log.debug("magenta: spectrogram generation skipped: %s", e)
+
+    _save_generation_artifacts_sync(
+        job_id=job_id,
+        index=0,
+        audio_bytes=wav_bytes,
+        audio_filename=f"magenta-{job_id}.wav",
+        mime_type="audio/wav",
+        spectrograms=spectrograms,
+        metadata={
+            "model_name": model_name,
+            "prompt": prompt,
+            "duration": duration,
+            "seed": seed,
+            "conditioning": conditioning,
+        },
+    )
+
+    # Mirror into SQLite + enqueue analysis/stems/midi, same as the SA3 path.
+    try:
+        from backend.modules.library.router import get_store as _get_library_store
+        from backend.modules.library.store import (
+            _maybe_enqueue_analysis,
+            _maybe_enqueue_midi,
+            _maybe_enqueue_stems,
+        )
+
+        store = _get_library_store()
+        entry_id = f"{job_id}_00"
+        record = store.get_entry(entry_id)
+        if record is not None and store.db is not None:
+            entry_dir = store._dir_for(entry_id)  # noqa: SLF001
+            meta: dict = {}
+            if entry_dir and (entry_dir / "metadata.json").is_file():
+                meta = json.loads(
+                    (entry_dir / "metadata.json").read_text(encoding="utf-8")
+                )
+            store._sync_record_to_db(record, meta)  # noqa: SLF001
+            _maybe_enqueue_analysis(store, entry_id, source="generate")
+            _maybe_enqueue_stems(store, entry_id, source="generate")
+            _maybe_enqueue_midi(store, entry_id, source="generate")
+    except Exception as e:
+        log.debug("magenta: post-save library sync failed for %s_00: %s", job_id, e)
+
+
 async def _run_generate(
     job_id,
     *,
@@ -206,6 +344,9 @@ async def _run_generate(
     job = MAGENTA_JOBS[job_id]
     job["status"] = "running"
     try:
+        # Bring the engine up if it isn't already (parks SA3, spawns WSL, waits
+        # for the model to load). No-op when the sidecar is already serving.
+        await _bring_up_sidecar()
         wav_bytes, meta = await sidecar.generate(
             prompt=prompt,
             duration=duration,
@@ -223,6 +364,23 @@ async def _run_generate(
             audio_bytes=audio_bytes,
             audio_mime=audio_mime,
         )
+        # Persist as a library entry ({job_id}_00) before reporting completion, so
+        # the frontend's post-generation refresh finds it (mirrors the SA3 flow).
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: _save_magenta_to_library(
+                    job_id,
+                    wav_bytes,
+                    prompt=prompt,
+                    duration=duration,
+                    model_name=str(job.get("model_name") or "magenta-small"),
+                    conditioning=str(job.get("conditioning") or "text"),
+                    seed=int(seed),
+                ),
+            )
+        except Exception as e:
+            log.warning("magenta: could not save generation to library: %s", e)
         job["status"] = "completed"
         job["progress"] = {"step": 1, "steps": 1}
         job["result"] = {

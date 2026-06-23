@@ -449,7 +449,7 @@ function scheduleAutomation(fromSec: number): void {
 
 /** One lookahead frame: write each enabled FX lane's current value into its live
  *  effect param. Values are grouped per effect entry first, so a multi-param
- *  effect (e.g. KAOSS x + y) gets ONE merged update instead of competing
+ *  effect (e.g. OWL-Pad x + y) gets ONE merged update instead of competing
  *  single-key updates that would each reset the other key to its static value. */
 function applyFxAutomationFrame(): void {
   if (!playing) return;
@@ -591,7 +591,19 @@ function tick(): void {
   const ctx = getEngineCtx();
   const elapsed = startOffsetSec + (ctx.currentTime - startCtxTime);
 
+  // Loop region (Phase F): cycle within [loopStart, loopEnd] when enabled + valid.
+  const ed = useEditorStore.getState();
+  const loopRegion = ed.loopEnabled && ed.loopEnd - ed.loopStart > 0.05;
+  if (loopRegion && elapsed >= ed.loopEnd) {
+    void start(ed.loopStart);
+    return;
+  }
+
   if (elapsed >= totalDur) {
+    if (loopRegion) {
+      void start(ed.loopStart); // region loop also catches the timeline end
+      return;
+    }
     if (usePlayerStore.getState().isLooping) {
       void start(0); // seamless-ish loop from the top
       return;

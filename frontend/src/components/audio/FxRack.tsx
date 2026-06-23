@@ -12,7 +12,9 @@ import { RACK_EFFECTS, getRackEffect } from '../../lib/rackEffects';
 import type { ChainEntry } from '../../state/effectChainStore';
 import { SlideTrack } from './SlideTrack';
 import { SpatializerPad } from './SpatializerPad';
-import { KaossPad } from './KaossPad';
+import { OwlPad } from './OwlPad';
+import { ChopControls } from './ChopControls';
+import { GaterControls } from './GaterControls';
 
 interface FxRackProps {
   chain: ChainEntry[];
@@ -23,6 +25,12 @@ interface FxRackProps {
   onReorder: (from: number, to: number) => void;
   onToggle: (entryId: string) => void;
   onUpdateParams: (entryId: string, params: Record<string, number>) => void;
+  /** Project tempo, forwarded to the Gater's tempo-sync controls. */
+  projectBpm?: number;
+  /** During playback, returns the automation-sampled param overrides for an entry
+   *  at the current playhead, so a control's displayed value follows its lane.
+   *  Display-only: edits still write the stored params. */
+  displayParams?: (entryId: string) => Record<string, number> | undefined;
 }
 
 const fmtValue = (v: number, step: number, unit?: string): string => {
@@ -38,6 +46,8 @@ export function FxRack({
   onReorder,
   onToggle,
   onUpdateParams,
+  projectBpm,
+  displayParams,
 }: FxRackProps) {
   const addId = `${idPrefix}-add`;
 
@@ -72,6 +82,9 @@ export function FxRack({
       {chain.map((entry, i) => {
         const def = getRackEffect(entry.effect);
         if (!def) return null;
+        // While a lane plays back, show the sampled value so the control follows
+        // the automation; edits still write the stored params (onUpdateParams).
+        const shown = displayParams ? { ...entry.params, ...(displayParams(entry.id) ?? {}) } : entry.params;
         const sizing = entry.effect === 'spatializer' ? 'grow basis-80 max-w-sm' : 'grow basis-60 max-w-xs';
         return (
           <div
@@ -120,23 +133,40 @@ export function FxRack({
             {entry.effect === 'spatializer' ? (
               <div className="pl-4">
                 <SpatializerPad
-                  params={entry.params}
+                  params={shown}
                   idPrefix={`${idPrefix}-${entry.id}`}
                   onChange={(p) => onUpdateParams(entry.id, p)}
                 />
               </div>
-            ) : entry.effect === 'kaoss' ? (
+            ) : entry.effect === 'owlpad' ? (
               <div className="pl-4">
-                <KaossPad
-                  params={entry.params}
+                <OwlPad
+                  params={shown}
                   idPrefix={`${idPrefix}-${entry.id}`}
+                  onChange={(p) => onUpdateParams(entry.id, p)}
+                />
+              </div>
+            ) : entry.effect === 'chop' ? (
+              <div className="pl-4">
+                <ChopControls
+                  params={shown}
+                  idPrefix={`${idPrefix}-${entry.id}`}
+                  onChange={(p) => onUpdateParams(entry.id, p)}
+                />
+              </div>
+            ) : entry.effect === 'gater' ? (
+              <div className="pl-4">
+                <GaterControls
+                  params={shown}
+                  idPrefix={`${idPrefix}-${entry.id}`}
+                  projectBpm={projectBpm}
                   onChange={(p) => onUpdateParams(entry.id, p)}
                 />
               </div>
             ) : (
             <div className="flex flex-col gap-1 pl-4">
               {def.params.map((p) => {
-                const value = entry.params[p.key] ?? p.default;
+                const value = shown[p.key] ?? p.default;
                 const labelId = `${idPrefix}-${entry.id}-${p.key}-label`;
                 return (
                   <div key={p.key} className="flex items-center gap-2">

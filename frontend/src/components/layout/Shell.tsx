@@ -230,10 +230,10 @@ export const Shell: React.FC = () => {
         onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
         title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
         aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
-        className="absolute right-0 top-1/2 -translate-y-1/2 z-40 group flex flex-col items-center justify-center gap-1 h-14 w-4 rounded-l-md border border-r-0 border-purple-500/15 bg-[#0a080f]/70 text-zinc-600 hover:w-5 hover:text-purple-200 hover:border-purple-500/40 hover:bg-purple-500/10 hover:shadow-[0_0_10px_rgba(168,85,247,0.25)] transition-all"
+        className="absolute right-0 top-1/2 -translate-y-1/2 z-40 group flex flex-col items-center justify-center gap-1.5 h-24 w-7 rounded-l-lg border border-r-0 border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/35 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all"
       >
-        <Library className="w-3 h-3" />
-        {isRightPanelOpen ? <ChevronRight className="w-3 h-3 opacity-60 group-hover:opacity-90" /> : <ChevronLeft className="w-3 h-3 opacity-60 group-hover:opacity-90" />}
+        <Library className="w-4 h-4" />
+        {isRightPanelOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
       </button>
       </div>
 

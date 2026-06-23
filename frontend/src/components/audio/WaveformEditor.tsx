@@ -2,18 +2,19 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
-  SlidersHorizontal,
+  SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag,
 } from 'lucide-react';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import { FxRack } from './FxRack';
 import { MetamorphPanel } from './MetamorphPanel';
+import { AutomationLane } from './AutomationLane';
 import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
 import { sliceChunks } from '../../lib/audioAnalysis';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, computePeaks, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget } from '../../state/editorStore';
+import { useEditorStore, computePeaks, sampleLane, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
@@ -282,6 +283,74 @@ interface PointerOp {
 
 const CTRL_DRAG_MOVE_THRESHOLD_PX = 4;
 
+/** Tempo + pitch controls for the per-clip Time/Pitch popover. Tempo time-stretches
+ *  (pitch preserved); pitch transposes in semitones (length preserved). */
+const TimePitchControls: React.FC<{ busy: boolean; onApply: (tempo: number, semitones: number) => void }> = ({ busy, onApply }) => {
+  const [tempo, setTempo] = useState(1);
+  const [semitones, setSemitones] = useState(0);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Tempo</span>
+        <SlideTrack value={tempo} min={0.25} max={4} step={0.01} defaultValue={1} ariaLabel="Tempo (time-stretch)" className="flex-1" onChange={setTempo} />
+        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">{tempo.toFixed(2)}x</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Pitch</span>
+        <SlideTrack value={semitones} min={-12} max={12} step={1} defaultValue={0} ariaLabel="Pitch (semitones)" className="flex-1" onChange={(v) => setSemitones(Math.round(v))} />
+        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">{semitones >= 0 ? '+' : ''}{semitones} st</span>
+      </div>
+      <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+        Tempo keeps pitch; pitch keeps length. Rendered on the backend and baked into the clip.
+      </p>
+      <button
+        onClick={() => onApply(tempo, Math.round(semitones))}
+        disabled={busy || (tempo === 1 && semitones === 0)}
+        className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+      >
+        {busy ? 'Rendering…' : 'Apply'}
+      </button>
+    </div>
+  );
+};
+
+/** A draggable-free timeline marker flag: click to seek, double-click to rename,
+ *  Alt-click or right-click to delete. */
+const MarkerFlag: React.FC<{
+  marker: TimelineMarker; zoom: number;
+  onSeek: () => void; onRename: (label: string) => void; onDelete: () => void;
+}> = ({ marker, zoom, onSeek, onRename, onDelete }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(marker.label);
+  const commit = () => { onRename(draft.trim() || marker.label); setEditing(false); };
+  return (
+    <div className="absolute top-0 bottom-0 z-30" style={{ left: marker.t * zoom }} onMouseDown={(e) => e.stopPropagation()}>
+      <div className="absolute top-3.5 bottom-0 w-px bg-cyan-400/50 pointer-events-none" />
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+          aria-label="Marker name"
+          className="absolute top-0 left-0 w-20 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-[8px] font-mono text-cyan-100 outline-none"
+        />
+      ) : (
+        <button
+          onClick={(e) => { if (e.altKey) onDelete(); else onSeek(); }}
+          onDoubleClick={() => { setDraft(marker.label); setEditing(true); }}
+          onContextMenu={(e) => { e.preventDefault(); onDelete(); }}
+          title={`${marker.label} — click to seek, double-click to rename, Alt or right-click to delete`}
+          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-3.5 bg-cyan-500/20 border border-cyan-400/40 rounded-br text-[8px] font-mono text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-24"
+        >
+          <Flag className="w-2 h-2 shrink-0" /> <span className="truncate">{marker.label}</span>
+        </button>
+      )}
+    </div>
+  );
+};
+
 export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const tracks = useEditorStore((s) => s.tracks);
   const clips = useEditorStore((s) => s.clips);
@@ -315,6 +384,31 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const setAutomationWrite = useEditorStore((s) => s.setAutomationWrite);
   const recordAutomationPoint = useEditorStore((s) => s.recordAutomationPoint);
   const automationLanes = useEditorStore((s) => s.automationLanes);
+  const addAutomationPoint = useEditorStore((s) => s.addAutomationPoint);
+  const updateAutomationPoint = useEditorStore((s) => s.updateAutomationPoint);
+  const removeAutomationPoint = useEditorStore((s) => s.removeAutomationPoint);
+  const toggleAutomationLane = useEditorStore((s) => s.toggleAutomationLane);
+  const clearAutomationLane = useEditorStore((s) => s.clearAutomationLane);
+  const removeAutomationLane = useEditorStore((s) => s.removeAutomationLane);
+  const projectBpm = useEditorStore((s) => s.bpm);
+  const loopEnabled = useEditorStore((s) => s.loopEnabled);
+  const loopStart = useEditorStore((s) => s.loopStart);
+  const loopEnd = useEditorStore((s) => s.loopEnd);
+  const markers = useEditorStore((s) => s.markers);
+  const setLoopEnabled = useEditorStore((s) => s.setLoopEnabled);
+  const setLoopRegion = useEditorStore((s) => s.setLoopRegion);
+  const clearLoop = useEditorStore((s) => s.clearLoop);
+  const addMarker = useEditorStore((s) => s.addMarker);
+  const removeMarker = useEditorStore((s) => s.removeMarker);
+  const renameMarker = useEditorStore((s) => s.renameMarker);
+  const undo = useEditorStore((s) => s.undo);
+  const redo = useEditorStore((s) => s.redo);
+  const canUndo = useEditorStore((s) => s._undo.length > 0);
+  const canRedo = useEditorStore((s) => s._redo.length > 0);
+  // Automation edit mode: when on, the selected lane's curve becomes editable
+  // (add / drag / delete breakpoints) and the lane panel is shown.
+  const [automationEdit, setAutomationEdit] = useState(false);
+  const [activeLaneId, setActiveLaneId] = useState<string | null>(null);
 
   // Move a track fader. While automation write is on and the transport is rolling,
   // the move records a breakpoint (timestamped off the audio clock) and is driven
@@ -329,7 +423,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   };
 
   // Apply an FX param change, and while writing + playing, record each param key
-  // that actually changed into its own lane (a KAOSS drag moves x and y at once,
+  // that actually changed into its own lane (an OWL-Pad drag moves x and y at once,
   // so both are captured). Playback is driven by the FX lookahead writer.
   const writeFxParams = (
     scope: { kind: 'master' } | { kind: 'track'; trackId: string },
@@ -369,6 +463,78 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const playerIsPlaying = usePlayerStore((s) => s.isPlaying);
   // Derived: are we currently playing the editor's rendered timeline?
   const isEditorPlaying = playerIsPlaying && playerEntryId === 'editor-timeline';
+
+  // Sampled FX-param overrides for a rack entry at the current playhead, so its
+  // controls visually follow automation during playback (display only; edits still
+  // write the stored params).
+  const fxDisplayParams = useCallback(
+    (scope: { kind: 'master' } | { kind: 'track'; trackId: string }, entryId: string): Record<string, number> | undefined => {
+      if (!isEditorPlaying || automationWrite) return undefined; // read mode follows; write mode shows your hands
+      const out: Record<string, number> = {};
+      for (const lane of automationLanes) {
+        if (!lane.enabled || lane.points.length === 0) continue;
+        const tgt = lane.target;
+        if (!tgt.paramKey || tgt.entryId !== entryId) continue;
+        if (scope.kind === 'master') {
+          if (tgt.kind !== 'masterFx') continue;
+        } else if (tgt.kind !== 'trackFx' || tgt.trackId !== scope.trackId) {
+          continue;
+        }
+        const v = sampleLane(lane, playheadSec);
+        if (v != null) out[tgt.paramKey] = v;
+      }
+      return Object.keys(out).length ? out : undefined;
+    },
+    [isEditorPlaying, automationWrite, automationLanes, playheadSec],
+  );
+
+  // Displayed value for a native (volume/pan) track fader: follows its lane during
+  // playback, otherwise shows the stored value.
+  const faderDisplay = (kind: 'trackVolume' | 'trackPan', trackId: string, stored: number): number => {
+    if (!isEditorPlaying || automationWrite) return stored; // read mode follows; write mode shows your hands
+    const lane = automationLanes.find(
+      (l) => l.enabled && l.points.length > 0 && l.target.kind === kind && l.target.trackId === trackId,
+    );
+    if (!lane) return stored;
+    const v = sampleLane(lane, playheadSec);
+    return v == null ? stored : v;
+  };
+
+  // Color + value<->normalized mapping for a lane, used by both the overlay and the
+  // breakpoint editor. Returns null when the lane's effect/param no longer exists.
+  const laneVisual = (
+    lane: AutomationLaneT,
+  ): { color: string; toNorm: (v: number) => number; fromNorm: (n: number) => number } | null => {
+    const c01 = (x: number) => Math.max(0, Math.min(1, x));
+    const k = lane.target.kind;
+    if (k === 'trackVolume') return { color: '#34d399', toNorm: (v) => c01(v), fromNorm: (n) => c01(n) };
+    if (k === 'trackPan') return { color: '#60a5fa', toNorm: (v) => (Math.max(-1, Math.min(1, v)) + 1) / 2, fromNorm: (n) => c01(n) * 2 - 1 };
+    const entry =
+      k === 'trackFx'
+        ? tracks.find((t) => t.id === lane.target.trackId)?.fxChain?.find((e) => e.id === lane.target.entryId)
+        : masterFxChain.find((e) => e.id === lane.target.entryId);
+    if (!entry) return null;
+    const desc = getRackEffect(entry.effect)?.params.find((p) => p.key === lane.target.paramKey);
+    if (!desc) return null;
+    const span = Math.max(1e-6, desc.max - desc.min);
+    return { color: '#f59e0b', toNorm: (v) => c01((v - desc.min) / span), fromNorm: (n) => desc.min + c01(n) * span };
+  };
+
+  // Human label for the lane panel.
+  const laneLabel = (lane: AutomationLaneT): string => {
+    const k = lane.target.kind;
+    const trackName = tracks.find((t) => t.id === lane.target.trackId)?.name ?? 'Track';
+    if (k === 'trackVolume') return `${trackName} · Volume`;
+    if (k === 'trackPan') return `${trackName} · Pan`;
+    const chain = k === 'trackFx' ? tracks.find((t) => t.id === lane.target.trackId)?.fxChain ?? [] : masterFxChain;
+    const entry = chain.find((e) => e.id === lane.target.entryId);
+    const effLabel = entry ? getRackEffect(entry.effect)?.label ?? entry.effect : '?';
+    const paramLabel = entry ? getRackEffect(entry.effect)?.params.find((p) => p.key === lane.target.paramKey)?.label ?? lane.target.paramKey : lane.target.paramKey;
+    return `${k === 'masterFx' ? 'Master' : trackName} · ${effLabel} ${paramLabel ?? ''}`.trim();
+  };
+
+  const MASTER_STRIP_H = 80;
+  const masterLanes = automationLanes.filter((l) => l.target.kind === 'masterFx');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -415,6 +581,77 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       }
     };
   }, [instrPanel]);
+
+  // Time/Pitch popover (per-clip stretch + transpose, baked via the FFmpeg backend).
+  const [timePitchPanel, setTimePitchPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  const timePitchRef = useRef<HTMLDivElement>(null);
+  const [timePitchBusy, setTimePitchBusy] = useState(false);
+  useEffect(() => {
+    if (!timePitchPanel) return;
+    const onDown = (e: MouseEvent) => {
+      if (timePitchRef.current?.contains(e.target as Node)) return;
+      setTimePitchPanel(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTimePitchPanel(null); };
+    let attached = false;
+    const attach = () => { attached = true; window.addEventListener('mousedown', onDown); window.addEventListener('keydown', onKey); };
+    const timer = window.setTimeout(attach, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); }
+    };
+  }, [timePitchPanel]);
+
+  // Render the clip's current region (offset..offset+duration) to a WAV File so the
+  // backend stretches only what the clip actually plays, not the whole source.
+  const extractRegionWav = useCallback(async (clip: AudioClip): Promise<File> => {
+    const ac = new AudioContext({ sampleRate: 44100 });
+    try {
+      const ab = await clip.audioBlob.arrayBuffer();
+      const buf = await ac.decodeAudioData(ab.slice(0));
+      const sr = buf.sampleRate;
+      const start = Math.max(0, Math.floor((clip.offsetIntoSource ?? 0) * sr));
+      const len = Math.max(1, Math.min(buf.length - start, Math.ceil(clip.durationSec * sr)));
+      const seg = ac.createBuffer(buf.numberOfChannels, len, sr);
+      for (let ch = 0; ch < buf.numberOfChannels; ch += 1) {
+        seg.copyToChannel(buf.getChannelData(ch).subarray(start, start + len), ch);
+      }
+      return new File([encodeWav(seg)], 'clip.wav', { type: 'audio/wav' });
+    } finally {
+      ac.close().catch(() => {});
+    }
+  }, []);
+
+  // Time-stretch (tempo, pitch preserved) + transpose (semitones, tempo preserved)
+  // through the FFmpeg backend (rubberband when available), then replace the clip's
+  // audio with the result. tempo > 1 shortens the clip; pitch leaves length alone.
+  const applyTimePitch = useCallback(async (clipId: string, tempo: number, semitones: number) => {
+    const clip = useEditorStore.getState().clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    setTimePitchBusy(true);
+    try {
+      const file = await extractRegionWav(clip);
+      const fd = new FormData();
+      fd.append('audio', file);
+      fd.append('effect', 'time_pitch');
+      fd.append('params', JSON.stringify({ tempo, semitones }));
+      fd.append('output_format', 'wav');
+      const res = await fetch('/api/studio/process', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(`process ${res.status}`);
+      // arrayBuffer (not res.blob) keeps the body in RAM — disk-backed blobs fail on a full drive.
+      const blob = new Blob([await res.arrayBuffer()], { type: 'audio/wav' });
+      const { peaks, duration } = await computePeaks(blob, 240);
+      updateClip(clipId, {
+        audioBlob: blob, mimeType: 'audio/wav', offsetIntoSource: 0, durationSec: duration, peaks,
+      });
+      logInfo('editor', `Time/Pitch: ${tempo.toFixed(2)}x, ${semitones >= 0 ? '+' : ''}${semitones} st -> ${duration.toFixed(2)}s`);
+    } catch (e) {
+      logError('editor', `Time/Pitch failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setTimePitchBusy(false);
+    }
+  }, [extractRegionWav, updateClip]);
+
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
@@ -436,6 +673,24 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   useEffect(() => {
     void ensureChopModule(getEngineCtx()).catch(() => {});
   }, []);
+
+  // Undo / redo keyboard shortcuts, scoped to when the EDIT view is visible and not
+  // typing in a field. Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k !== 'z' && k !== 'y') return;
+      if (!containerRef.current?.offsetParent) return; // EDIT tab hidden -> ignore
+      const tgt = e.target as HTMLElement | null;
+      if (tgt?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+      e.preventDefault();
+      if (k === 'y' || e.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
 
   // Revoke the object URL when the review phase ends or the panel closes.
   useEffect(() => {
@@ -989,7 +1244,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // Master bus + insert rack -> destination, mirroring liveMixer's routing so
       // the bounce carries the SAME psychoacoustic FX the user hears in preview.
       const masterBus = offline.createGain();
-      buildEffectChain(offline, masterBus, offline.destination, masterFxChain);
+      const masterFx = buildEffectChain(offline, masterBus, offline.destination, masterFxChain);
+
+      // Automation (Phase E5): bake the recorded lanes into the offline render. The
+      // offline context renders from t=0, so a breakpoint's timeline time IS its
+      // offline time. Native vol/pan ride an AudioParam timeline; FX params step at
+      // each breakpoint via suspend/resume (no real-time loop runs offline).
+      const lanes = useEditorStore.getState().automationLanes.filter((l) => l.enabled && l.points.length > 0);
+      const scheduleParamLane = (param: AudioParam, lane: AutomationLaneT, clampFn: (v: number) => number) => {
+        const pts = lane.points;
+        param.setValueAtTime(clampFn(pts[0].v), 0);
+        if (pts[0].t > 0) param.setValueAtTime(clampFn(pts[0].v), pts[0].t); // hold first value, then ramp
+        for (let i = 1; i < pts.length; i += 1) {
+          param.linearRampToValueAtTime(clampFn(pts[i].v), Math.max(pts[i].t, pts[i - 1].t + 1e-4));
+        }
+      };
 
       // One gain + insert chain + panner per audible track; panners feed the bus.
       const trackNodeById = new Map<string, { gain: GainNode; panner: StereoPannerNode; fx: ChainHandle }>();
@@ -997,9 +1266,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         if (track.mute) continue;
         if (anySolo && !track.solo) continue;
         const tgain = offline.createGain();
-        tgain.gain.value = track.volume;
+        const volLane = lanes.find((l) => l.target.kind === 'trackVolume' && l.target.trackId === track.id);
+        if (volLane) scheduleParamLane(tgain.gain, volLane, (v) => Math.max(0, v));
+        else tgain.gain.value = track.volume;
         const panner = offline.createStereoPanner();
-        panner.pan.value = Math.max(-1, Math.min(1, track.pan));
+        const panLane = lanes.find((l) => l.target.kind === 'trackPan' && l.target.trackId === track.id);
+        if (panLane) scheduleParamLane(panner.pan, panLane, (v) => Math.max(-1, Math.min(1, v)));
+        else panner.pan.value = Math.max(-1, Math.min(1, track.pan));
         const fx = buildEffectChain(offline, tgain, panner, track.fxChain ?? []); // tgain -> [fx] -> panner
         panner.connect(masterBus);
         trackNodeById.set(track.id, { gain: tgain, panner, fx });
@@ -1073,6 +1346,60 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             events.sort((a, b) => a.when - b.when);
             li.inst.scheduleTeleport(events);
           }
+        }
+      }
+
+      // FX-param automation bake: group the FX lanes by their effect entry, then
+      // step the params at each breakpoint via suspend/resume (the live lookahead
+      // writer does not run offline). Native vol/pan were already scheduled above.
+      const fxTargets: { handle: ChainHandle; entryId: string; baseParams: Record<string, number>; lanes: AutomationLaneT[] }[] = [];
+      const groupFx = (
+        kind: 'trackFx' | 'masterFx',
+        handle: ChainHandle,
+        chain: { id: string; enabled: boolean; params: Record<string, number> }[],
+        trackId?: string,
+      ) => {
+        for (const entry of chain) {
+          if (!entry.enabled) continue;
+          const entryLanes = lanes.filter(
+            (l) => l.target.kind === kind && l.target.entryId === entry.id && (kind === 'masterFx' || l.target.trackId === trackId),
+          );
+          if (entryLanes.length > 0) fxTargets.push({ handle, entryId: entry.id, baseParams: entry.params, lanes: entryLanes });
+        }
+      };
+      groupFx('masterFx', masterFx, masterFxChain);
+      for (const track of tracks) {
+        const tn = trackNodeById.get(track.id);
+        if (!tn) continue;
+        groupFx('trackFx', tn.fx, track.fxChain ?? [], track.id);
+      }
+
+      if (fxTargets.length > 0) {
+        const applyFxAt = (t: number) => {
+          for (const tgt of fxTargets) {
+            const merged: Record<string, number> = { ...tgt.baseParams };
+            for (const lane of tgt.lanes) {
+              const v = sampleLane(lane, t);
+              if (v != null && lane.target.paramKey) merged[lane.target.paramKey] = v;
+            }
+            tgt.handle.updateParams(tgt.entryId, merged);
+          }
+        };
+        applyFxAt(0); // initial state at the top of the render
+        // Union of breakpoint times, quantized to the render quantum, in (0, dur).
+        const q = 128 / sr;
+        const times = new Set<number>();
+        for (const tgt of fxTargets) {
+          for (const lane of tgt.lanes) {
+            for (const p of lane.points) {
+              if (p.t <= 0 || p.t >= dur) continue;
+              times.add(Math.min(dur - q, Math.ceil(p.t / q) * q));
+            }
+          }
+        }
+        for (const tq of [...times].sort((a, b) => a - b)) {
+          if (tq <= 0 || tq >= dur) continue;
+          offline.suspend(tq).then(() => { applyFxAt(tq); offline.resume(); }).catch(() => {});
         }
       }
 
@@ -1405,10 +1732,25 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // Ruler click sets playhead immediately (same coord math as track lanes).
   const onRulerMouseDown = (e: React.MouseEvent) => {
+    // Shift-drag on the ruler draws the loop region; a plain click sets the playhead.
+    if (e.shiftKey) {
+      const anchor = Math.max(0, secFromClientX(e.clientX));
+      setLoopRegion(anchor, anchor);
+      const move = (ev: MouseEvent) => {
+        const cur = Math.max(0, secFromClientX(ev.clientX));
+        setLoopRegion(Math.min(anchor, cur), Math.max(anchor, cur));
+      };
+      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+      e.preventDefault();
+      return;
+    }
     seekEditorTo(secFromClientX(e.clientX));
   };
 
   const onTimelineClick = (e: React.MouseEvent) => {
+    if (automationEdit) return; // automation edit mode owns the lanes; ruler still moves the playhead
     if (e.button === 2) return; // right-click is the add-MIDI menu, not a playhead move
     if (!timelineRef.current) return;
     if (opRef.current) return;
@@ -1452,6 +1794,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   /** Right-click an empty part of the timeline → open the MIDI picker there. */
   const onLanesContextMenu = (e: React.MouseEvent) => {
+    if (automationEdit) return; // right-click deletes automation points in edit mode
     const target = e.target as HTMLElement;
     if (target.closest('[data-clip="1"]')) return; // a clip's own menu handles it
     e.preventDefault();
@@ -1569,6 +1912,27 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </button>
           </div>
 
+          <div className="flex bg-black/40 p-0.5 rounded border border-white/5 gap-0.5">
+            <button
+              onClick={() => undo()}
+              disabled={!canUndo}
+              aria-label="Undo"
+              title="Undo (Ctrl+Z)"
+              className="p-1 px-2 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
+            >
+              <Undo2 className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => redo()}
+              disabled={!canRedo}
+              aria-label="Redo"
+              title="Redo (Ctrl+Shift+Z)"
+              className="p-1 px-2 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
+            >
+              <Redo2 className="w-3 h-3" />
+            </button>
+          </div>
+
           <button
             onClick={openInpaintPanel}
             disabled={!inpaintSelection}
@@ -1640,6 +2004,42 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               ${automationWrite ? 'bg-red-600/20 border-red-500/50 text-red-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
           >
             <span className={`w-2 h-2 rounded-full ${automationWrite ? 'bg-red-500 animate-pulse' : 'bg-zinc-600'}`} /> WRITE
+          </button>
+
+          <button
+            onClick={() => setAutomationEdit((v) => {
+              const next = !v;
+              if (next && !activeLaneId && automationLanes.length > 0) setActiveLaneId(automationLanes[0].id);
+              return next;
+            })}
+            aria-pressed={automationEdit}
+            aria-label="Edit automation lanes"
+            title="Edit automation: draw, drag, and delete breakpoints on the selected lane"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${automationEdit ? 'bg-amber-600/20 border-amber-500/50 text-amber-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+          >
+            <span className={`w-2 h-2 rounded-full ${automationEdit ? 'bg-amber-400' : 'bg-zinc-600'}`} /> AUTO
+          </button>
+
+          <button
+            onClick={() => setLoopEnabled(!loopEnabled)}
+            onContextMenu={(e) => { e.preventDefault(); clearLoop(); }}
+            aria-pressed={loopEnabled}
+            aria-label="Loop region"
+            title="Loop: shift-drag the ruler to set the region, click to toggle, right-click to clear"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${loopEnabled ? 'bg-amber-600/20 border-amber-500/50 text-amber-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+          >
+            <Repeat className="w-3 h-3" /> LOOP
+          </button>
+
+          <button
+            onClick={() => addMarker(playheadSec)}
+            aria-label="Add marker at playhead"
+            title="Add a marker at the playhead (double-click a flag to rename, Alt-click to delete)"
+            className="flex items-center gap-1.5 p-1 px-2 rounded border border-white/5 text-zinc-500 hover:text-white hover:bg-white/5 transition-colors text-[9px] font-mono uppercase tracking-wider"
+          >
+            <Flag className="w-3 h-3" /> MARK
           </button>
 
           <button
@@ -1725,6 +2125,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 onReorder={reorderMasterEffect}
                 onToggle={toggleMasterEffect}
                 onUpdateParams={(id, p) => writeFxParams({ kind: 'master' }, id, p)}
+                projectBpm={projectBpm}
+                displayParams={(id) => fxDisplayParams({ kind: 'master' }, id)}
               />
             </section>
           )}
@@ -1775,10 +2177,83 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onReorder={(from, to) => reorderTrackEffect(t.id, from, to)}
               onToggle={(id) => toggleTrackEffect(t.id, id)}
               onUpdateParams={(id, p) => writeFxParams({ kind: 'track', trackId: t.id }, id, p)}
+              projectBpm={projectBpm}
+              displayParams={(id) => fxDisplayParams({ kind: 'track', trackId: t.id }, id)}
             />
           </div>
         );
       })()}
+
+      {/* Automation lane panel (floating; while automation edit mode is on) */}
+      {automationEdit && (
+        <div className="fixed left-4 top-28 z-50 w-72 max-h-[70vh] overflow-y-auto hardware-card bg-black/90 border border-amber-500/30 rounded-lg shadow-2xl shadow-amber-900/30 p-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300">Automation Lanes</span>
+            <button
+              onClick={() => setAutomationEdit(false)}
+              aria-label="Close automation editor"
+              className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {automationLanes.length === 0 ? (
+            <span className="text-[9px] font-mono text-zinc-600 leading-relaxed">
+              No lanes yet. Turn on WRITE and ride a fader or FX control while playing to record one.
+            </span>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {automationLanes.map((lane) => {
+                const vis = laneVisual(lane);
+                const active = lane.id === activeLaneId;
+                return (
+                  <div
+                    key={lane.id}
+                    className={`flex items-center gap-1.5 rounded px-1.5 py-1 border ${active ? 'border-amber-500/50 bg-amber-500/10' : 'border-white/5 bg-black/30'}`}
+                  >
+                    <button
+                      onClick={() => toggleAutomationLane(lane.id)}
+                      aria-pressed={lane.enabled}
+                      aria-label={`${laneLabel(lane)} ${lane.enabled ? 'enabled' : 'disabled'}`}
+                      title={lane.enabled ? 'Lane on (records + plays back)' : 'Lane off (ignored)'}
+                      className={`w-2.5 h-2.5 rounded-full shrink-0 ${lane.enabled ? '' : 'opacity-40'}`}
+                      style={{ backgroundColor: vis?.color ?? '#a1a1aa' }}
+                    />
+                    <button
+                      onClick={() => setActiveLaneId(lane.id)}
+                      className={`flex-1 text-left text-[9px] font-mono truncate ${active ? 'text-amber-100' : 'text-zinc-300 hover:text-white'}`}
+                      title="Select this lane to edit its breakpoints"
+                    >
+                      {laneLabel(lane)} <span className="text-zinc-600">({lane.points.length})</span>
+                    </button>
+                    <button
+                      onClick={() => clearAutomationLane(lane.id)}
+                      aria-label={`Clear ${laneLabel(lane)}`}
+                      title="Clear all breakpoints in this lane"
+                      className="px-1 py-0.5 rounded text-[8px] font-mono text-zinc-500 hover:text-amber-300 hover:bg-white/5 shrink-0"
+                    >
+                      CLR
+                    </button>
+                    <button
+                      onClick={() => { if (activeLaneId === lane.id) setActiveLaneId(null); removeAutomationLane(lane.id); }}
+                      aria-label={`Delete ${laneLabel(lane)}`}
+                      title="Delete this lane"
+                      className="p-0.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/10 shrink-0"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {activeLaneId && (
+            <p className="text-[8px] font-mono text-zinc-500 leading-relaxed border-t border-white/5 pt-2">
+              Editing the highlighted lane: click the curve to add a point, drag a point to move it, Alt-click or right-click a point to delete it.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Per-clip instrument override (floating; MIDI clips only) */}
       {instrPanel && (() => {
@@ -1806,6 +2281,39 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               </button>
             </div>
             <ClipInstrumentSelect clip={clip} />
+          </div>
+        );
+      })()}
+
+      {/* Per-clip Time / Pitch popover (audio clips) */}
+      {timePitchPanel && (() => {
+        const clip = clips.find((c) => c.id === timePitchPanel.clipId);
+        if (!clip) return null;
+        const left = Math.max(8, Math.min(timePitchPanel.x, window.innerWidth - 300));
+        const top = Math.max(8, Math.min(timePitchPanel.y, window.innerHeight - 170));
+        return (
+          <div
+            ref={timePitchRef}
+            className="fixed z-50 w-72 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
+            style={{ left, top }}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+                Time / Pitch — <span style={{ color: clip.color }}>{clip.label}</span>
+              </span>
+              <button
+                onClick={() => setTimePitchPanel(null)}
+                aria-label="Close time and pitch panel"
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <TimePitchControls
+              busy={timePitchBusy}
+              onApply={(tempo, semitones) => { void applyTimePitch(timePitchPanel.clipId, tempo, semitones).then(() => setTimePitchPanel(null)); }}
+            />
           </div>
         );
       })()}
@@ -1862,12 +2370,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Volume2 className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
-                  <SlideTrack min={0} max={1} step={0.01} value={t.volume}
+                  <SlideTrack min={0} max={1} step={0.01} value={faderDisplay('trackVolume', t.id, t.volume)}
                     onChange={(v) => writeFader('trackVolume', t.id, v)} className="flex-1" ariaLabel="Track volume" />
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[7px] font-mono text-zinc-600 uppercase w-3">P</span>
-                  <SlideTrack min={-1} max={1} step={0.01} value={t.pan}
+                  <SlideTrack min={-1} max={1} step={0.01} value={faderDisplay('trackPan', t.id, t.pan)}
                     onChange={(v) => writeFader('trackPan', t.id, v)} className="flex-1" ariaLabel="Track pan" />
                   <span className="text-[7px] font-mono text-zinc-600 text-right w-5">
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
@@ -1915,6 +2423,24 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 </span>
               </div>
             ))}
+            {/* Loop region (shift-drag the ruler to set; LOOP toggles it) */}
+            {loopEnd > loopStart && (
+              <div
+                className={`absolute top-0 bottom-0 z-10 pointer-events-none ${loopEnabled ? 'bg-amber-400/25 border-x border-amber-400/70' : 'bg-white/5 border-x border-white/25'}`}
+                style={{ left: loopStart * zoom, width: (loopEnd - loopStart) * zoom }}
+              />
+            )}
+            {/* Marker flags */}
+            {markers.map((m) => (
+              <MarkerFlag
+                key={m.id}
+                marker={m}
+                zoom={zoom}
+                onSeek={() => seekEditorTo(m.t)}
+                onRename={(label) => renameMarker(m.id, label)}
+                onDelete={() => removeMarker(m.id)}
+              />
+            ))}
             {/* Playhead in ruler: line + draggable triangle handle */}
             <div
               className="absolute top-0 bottom-0 w-px bg-red-500/60 pointer-events-none z-20"
@@ -1944,7 +2470,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <div
             ref={timelineRef}
             className={`relative ${tool === 'cut' ? 'cursor-crosshair' : 'cursor-default'}`}
-            style={{ width: timelineWidthPx, height: tracks.length * TRACK_HEIGHT + 34 }}
+            style={{ width: timelineWidthPx, height: tracks.length * TRACK_HEIGHT + 34 + (automationEdit ? MASTER_STRIP_H : 0) }}
             onMouseDown={onTimelineClick}
             onContextMenu={onLanesContextMenu}
             onDragOver={onTimelineDragOver}
@@ -2096,44 +2622,71 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               );
             })}
 
-            {/* Automation lanes (read-only curve per track: volume green, pan blue, FX amber).
-                Master-FX lanes still record and play; they are not drawn on a track row. */}
+            {/* Automation lanes: read-only curve per track (volume green, pan blue, FX
+                amber), or editable when automation edit mode targets that lane. */}
             {automationLanes.map((lane) => {
-              if (lane.points.length === 0) return null;
               const tk = lane.target.kind;
               if (tk !== 'trackVolume' && tk !== 'trackPan' && tk !== 'trackFx') return null;
+              const editable = automationEdit && lane.id === activeLaneId;
+              if (lane.points.length === 0 && !editable) return null;
               const trackIdx = tracks.findIndex((t) => t.id === lane.target.trackId);
               if (trackIdx < 0) return null;
-              let color = '#34d399';
-              let toNorm = (v: number) => Math.max(0, Math.min(1, v));
-              if (tk === 'trackPan') {
-                color = '#60a5fa';
-                toNorm = (v: number) => (Math.max(-1, Math.min(1, v)) + 1) / 2;
-              } else if (tk === 'trackFx') {
-                const entry = tracks[trackIdx]?.fxChain?.find((e) => e.id === lane.target.entryId);
-                const desc = entry ? getRackEffect(entry.effect)?.params.find((pp) => pp.key === lane.target.paramKey) : undefined;
-                if (!desc) return null;
-                const span = Math.max(1e-6, desc.max - desc.min);
-                color = '#f59e0b';
-                toNorm = (v: number) => Math.max(0, Math.min(1, (v - desc.min) / span));
-              }
-              const yOf = (v: number) => (1 - toNorm(v)) * TRACK_HEIGHT;
-              const pts = lane.points.map((p) => `${(p.t * zoom).toFixed(1)},${yOf(p.v).toFixed(1)}`).join(' ');
+              const vis = laneVisual(lane);
+              if (!vis) return null;
               return (
-                <svg
+                <AutomationLane
                   key={lane.id}
-                  className="absolute left-0 pointer-events-none"
-                  style={{ top: trackIdx * TRACK_HEIGHT, width: timelineWidthPx, height: TRACK_HEIGHT }}
+                  lane={lane}
+                  zoom={zoom}
                   width={timelineWidthPx}
                   height={TRACK_HEIGHT}
-                >
-                  <polyline points={pts} fill="none" stroke={color} strokeOpacity={0.7} strokeWidth={1.5} />
-                  {lane.points.map((p, i) => (
-                    <circle key={`${lane.id}-${i}`} cx={p.t * zoom} cy={yOf(p.v)} r={2} fill={color} fillOpacity={0.85} />
-                  ))}
-                </svg>
+                  top={trackIdx * TRACK_HEIGHT}
+                  color={vis.color}
+                  toNorm={vis.toNorm}
+                  fromNorm={vis.fromNorm}
+                  editable={editable}
+                />
               );
             })}
+
+            {/* Master-FX automation strip (only while editing automation; master
+                lanes have no track row of their own). */}
+            {automationEdit && (
+              <div
+                className="absolute left-0 border-t border-amber-500/30 bg-amber-500/4 pointer-events-none"
+                style={{ top: tracks.length * TRACK_HEIGHT + 34, width: timelineWidthPx, height: MASTER_STRIP_H }}
+              >
+                <span className="absolute top-1 left-2 text-[8px] font-mono uppercase tracking-widest text-amber-400/70">Master FX</span>
+              </div>
+            )}
+            {automationEdit && masterLanes.map((lane) => {
+              const editable = lane.id === activeLaneId;
+              if (lane.points.length === 0 && !editable) return null;
+              const vis = laneVisual(lane);
+              if (!vis) return null;
+              return (
+                <AutomationLane
+                  key={lane.id}
+                  lane={lane}
+                  zoom={zoom}
+                  width={timelineWidthPx}
+                  height={MASTER_STRIP_H}
+                  top={tracks.length * TRACK_HEIGHT + 34}
+                  color={vis.color}
+                  toNorm={vis.toNorm}
+                  fromNorm={vis.fromNorm}
+                  editable={editable}
+                />
+              );
+            })}
+
+            {/* Loop region band down the lanes (when set) */}
+            {loopEnd > loopStart && (
+              <div
+                className={`absolute top-0 bottom-0 pointer-events-none ${loopEnabled ? 'bg-amber-400/8 border-x border-amber-400/30' : 'bg-white/2 border-x border-white/10'}`}
+                style={{ left: loopStart * zoom, width: (loopEnd - loopStart) * zoom }}
+              />
+            )}
 
             {/* Playhead line in track lanes */}
             <div
@@ -2238,6 +2791,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             onSwitchTab?.('create');
           },
         });
+        if (clip && !clip.sourcePianoRoll) {
+          items.push({
+            type: 'item',
+            label: 'Time / Pitch…',
+            icon: <Gauge className="w-3 h-3" />,
+            hint: 'stretch',
+            onSelect: () => {
+              const pos = clipMenu.position;
+              setTimePitchPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
+            },
+          });
+        }
         if (clip?.sourcePianoRoll) {
           const noteCount = clip.sourcePianoRoll.length;
           items.push({

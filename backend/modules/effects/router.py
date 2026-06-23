@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -68,6 +69,12 @@ EFFECT_PARAM_BOUNDS = {
     "pitch_shift": {
         "shift": (-4800.0, 4800.0),
     },
+    "time_pitch": {
+        # Independent time-stretch (tempo, pitch preserved) + pitch-shift
+        # (semitones, tempo preserved). tempo 1.0 = unchanged; 2.0 = twice as fast.
+        "tempo": (0.25, 4.0),
+        "semitones": (-12.0, 12.0),
+    },
     "delay": {
         "leftMs": (0.0, 2000.0),
         "rightMs": (0.0, 2000.0),
@@ -102,6 +109,44 @@ EFFECT_PARAM_BOUNDS = {
         "bitrate": (64.0, 256.0),
     },
 }
+
+
+_librubberband: bool | None = None
+
+
+def _has_librubberband() -> bool:
+    """Whether the FFmpeg on PATH was built with the (GPL) rubberband filter.
+    Cached after the first probe. Rubberband gives high-quality independent
+    time/pitch; without it we fall back to built-in atempo + resample tricks."""
+    global _librubberband
+    if _librubberband is None:
+        try:
+            out = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-filters"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            _librubberband = out.returncode == 0 and "rubberband" in out.stdout.lower()
+        except Exception:
+            _librubberband = False
+    return _librubberband
+
+
+def _atempo_chain(factor: float) -> str:
+    """Express an arbitrary positive tempo factor as a chain of atempo filters,
+    each within FFmpeg's supported [0.5, 2.0] per-stage range."""
+    factor = max(0.03125, min(32.0, factor))
+    parts: list[str] = []
+    f = factor
+    while f > 2.0:
+        parts.append("atempo=2.0")
+        f /= 2.0
+    while f < 0.5:
+        parts.append("atempo=0.5")
+        f *= 2.0
+    parts.append(f"atempo={f:.6f}")
+    return ",".join(parts)
 
 
 def _validate_param(value: float, bounds: tuple[float, float], name: str) -> float:
@@ -225,6 +270,26 @@ def _build_filter(
     elif effect == "pitch_shift":
         shift = params["shift"]
         return ["-af", f"afreqshift=shift={shift}"]
+
+    elif effect == "time_pitch":
+        tempo = params["tempo"]
+        semitones = params["semitones"]
+        pitch_scale = 2.0 ** (semitones / 12.0)
+        if _has_librubberband():
+            # One high-quality pass: independent tempo + pitch (pitch as a scale).
+            return ["-af", f"rubberband=tempo={tempo:.6f}:pitch={pitch_scale:.6f}"]
+        # Built-in fallback. Force 44.1 kHz so asetrate math is well-defined, then:
+        #   asetrate*pitch_scale  -> pitch +semitones AND tempo *pitch_scale
+        #   atempo(tempo/scale)   -> net tempo back to `tempo`, pitch unchanged
+        #   aresample 44100       -> restore the real sample rate
+        base = 44100
+        af = (
+            f"aresample={base},"
+            f"asetrate={int(round(base * pitch_scale))},"
+            f"{_atempo_chain(tempo / pitch_scale)},"
+            f"aresample={base}"
+        )
+        return ["-af", af]
 
     elif effect == "delay":
         left = params["leftMs"]

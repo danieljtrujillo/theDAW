@@ -25,13 +25,13 @@ the following is **SHIPPED** (merged via PRs #38-#42):
   and the live **Autopilot** choreographer (analysis-driven 3D motion).
 - **Metamorph** granular identity-bleed morph (donor A rebuilt out of host B's
   grains), live and render-to-clip.
-- **Performance FX**: KAOSS XY pad, Gater, Bitcrush, Ring Mod, and the MPC-style
+- **Performance FX**: OWL-Pad XY pad, Gater, Bitcrush, Ring Mod, and the MPC-style
   **Chop** (stutter / beat-repeat / shuffle, AudioWorklet).
 - **Instruments**: per-clip and per-track GM instrument override, live MIDI
   timeline playback through the SpessaSynth soundfont engine (bundled `gm.sf3`),
   and the procedural voice banks (psychoacoustic, formant Talk-Box, glitch-hop).
 - **Automation (Phase E, slices 1-2)**: lane model + WRITE mode; recording track
-  volume/pan and any FX param (KAOSS, spatializer, filters) by riding the control
+  volume/pan and any FX param (OWL-Pad, spatializer, filters) by riding the control
   while playing; sample-accurate native vol/pan envelope scheduling plus a ~40 Hz
   FX-param lookahead writer; read-only lane curves drawn over each track.
 
@@ -99,16 +99,22 @@ they ride plain ADB (USB or wireless) with auto-started relays.
   composite) into the VJ as a separate "STITCH" source, via a Unity MediaCodec
   H.264 encoder and a backend TCP-to-WebSocket bridge.
 - **Quest MIDI bridge** (QuestMidiBridge): two-way MIDI between the headset and
-  the DAW over an ADB-reversed TCP socket, with a loopMIDI return circuit.
-- **GANTASMO Visor**: a procedural chrome visor in-headset that reacts to MIDI
-  arriving on the return circuit.
+  the DAW over an ADB-reversed TCP socket. The `questmidi` backend module
+  republishes it on the global MIDI bus with no loopMIDI needed; loopMIDI is the
+  fallback for a non-theDAW WebMIDI DAW.
+- **Hand-tracked control of theDAW**: a floating 3D MIDI surface (faders, knobs,
+  buttons, crossfader) plus hand microgestures emit MIDI over the bridge onto the
+  global MIDI bus, MIDI-learnable across DJ / VJ / MAKE / EDIT. The surface layout
+  is data-driven and editable in VR.
 - Documented in USER_GUIDE section 34.
 
 - **OPEN BUG**: delinQuest is flaky on the main stream.
 - **PENDING / BLOCKED (Quest colocation)**: co-located multiplayer for the
-  QuestMIDI scene is built and wired in the editor but not headset-verified
-  (BLOCKED on charging the second headset; needs Enhanced Spatial Services and a
-  verified dev account). Plan: `docs/plans/2026-06-18-quest-colocation-plan.md`.
+  QuestMIDI scene, driven by a one-click setup wizard (shared anchors + Meta
+  Colocation Discovery + NGO over a LAN-direct transport), is built and wired in
+  the editor but not headset-verified (BLOCKED on charging the second headset;
+  needs Enhanced Spatial Services and a verified dev account). Plan:
+  `docs/plans/2026-06-18-quest-colocation-plan.md`.
 - **PENDING (Quest/Unity)**: MR free-roam (suppress Guardian + scene-mesh
   collider), hand-pose-to-MIDI (only microgestures exist today), an in-VR
   "add source" menu, and a scene optimization wizard.
@@ -157,7 +163,7 @@ they ride plain ADB (USB or wireless) with auto-started relays.
 
 `main` holds everything shipped. Recent feature branches (merged): 
 `feat/library-stems-midi-first-class` (#38), `feat/edit-clip-instrument` (#39),
-`feat/edit-kaoss-pad` (#40, #41, the KAOSS / glitch / chop / voices stack), and
+`feat/edit-kaoss-pad` (#40, #41, the OWL-Pad / glitch / chop / voices stack), and
 `feat/edit-automation` (#42, automation slices 1-2). Older merged work covers the
 VJ build, the model/storage panel, the MIX overhaul, the playlist suggester, the
 Magenta RT2 integration, the SLIDE controller, and the Quest MIDI bridge.

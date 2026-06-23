@@ -381,7 +381,7 @@ const motionConfig = (p: Record<string, number>) => {
     case 7: dy = depth; break;                                       // up / down (Y only)
     case 8: dx = depth; dz = depth; fz = rate * 2; break;            // figure-8 (Z sine at 2x)
     case 9: {                                                        // expand / collapse (radial breathing)
-      const u = azElToXYZ(p.azimuth ?? -30, p.elevation ?? 0, 1);    // unit vector toward the source
+      const u = azElToXYZ(p.azimuth ?? 0, p.elevation ?? 0, 1);    // unit vector toward the source
       dx = depth * u.x; dy = depth * u.y; dz = depth * u.z; break;
     }
     default: break;                                                  // static
@@ -403,7 +403,7 @@ const makeSpatializer: RackEffectFactory = (ctx, params) => {
   // loop, so Autopilot falls back to a bake-correct Spherical motion there.
   const isOffline = 'startRendering' in ctx;
 
-  const pos = azElToXYZ(params.azimuth ?? -30, params.elevation ?? 0, params.distance ?? 1.5);
+  const pos = azElToXYZ(params.azimuth ?? 0, params.elevation ?? 0, params.distance ?? 1.5);
   panner.positionX.value = pos.x;
   panner.positionY.value = pos.y;
   panner.positionZ.value = pos.z;
@@ -456,7 +456,7 @@ const makeSpatializer: RackEffectFactory = (ctx, params) => {
   let rafId = 0;
   let lastNow = 0;
   let binHz = 0;
-  const baseAz = () => params.azimuth ?? -30;
+  const baseAz = () => params.azimuth ?? 0;
 
   // One place to tune the whole brain.
   const AP = {
@@ -692,7 +692,7 @@ const makeSpatializer: RackEffectFactory = (ctx, params) => {
       }
       stopAutopilot();
       // Teleport owns position via its schedule; don't ramp it back to the base.
-      if (motion !== SPATIAL_TELEPORT) applyPosition(p.azimuth ?? -30, p.elevation ?? 0, p.distance ?? 1.5);
+      if (motion !== SPATIAL_TELEPORT) applyPosition(p.azimuth ?? 0, p.elevation ?? 0, p.distance ?? 1.5);
       applyMotion(motionConfig(p));
     },
     scheduleTeleport: (events) => {
@@ -758,13 +758,13 @@ const makeLoudnessContour: RackEffectFactory = (ctx, params) => {
   };
 };
 
-/* ── 7. Kaoss Pad (XY performance effect) ──────────────────────────────────────
+/* ── 7. OWL-Pad (XY performance effect) ────────────────────────────────────────
    An assignable XY surface. The program picks a filter type and whether a
    feedback delay is engaged; X and Y then sweep two parameters live as the user
    drags. Built as a superset graph (filter + feedback delay always wired, then
    neutralized per program), so switching programs never rebuilds the chain. The
-   pad UI lives in KaossPad and writes x/y/active straight into these params. */
-export const KAOSS_PROGRAMS = [
+   pad UI lives in OwlPad and writes x/y/active straight into these params. */
+export const OWLPAD_PROGRAMS = [
   'LPF Sweep',
   'HPF Sweep',
   'BPF Sweep',
@@ -772,7 +772,7 @@ export const KAOSS_PROGRAMS = [
   'Filter + Delay',
 ] as const;
 
-interface KaossTargets {
+interface OwlPadTargets {
   filterType: BiquadFilterType;
   freq: number;
   q: number;
@@ -784,7 +784,7 @@ interface KaossTargets {
 
 /** Map (program, x, y) onto concrete node targets. X sweeps a log frequency or a
  *  delay time; Y sweeps resonance or feedback, depending on the program. */
-const kaossTargets = (program: number, x: number, y: number): KaossTargets => {
+const owlPadTargets = (program: number, x: number, y: number): OwlPadTargets => {
   const xx = clamp(x, 0, 1);
   const yy = clamp(y, 0, 1);
   const freq = 200 * Math.pow(18000 / 200, xx); // log sweep 200..18000 Hz
@@ -803,7 +803,7 @@ const kaossTargets = (program: number, x: number, y: number): KaossTargets => {
   }
 };
 
-const makeKaoss: RackEffectFactory = (ctx, params) => {
+const makeOwlPad: RackEffectFactory = (ctx, params) => {
   const input = ctx.createGain();
   const output = ctx.createGain();
 
@@ -825,7 +825,7 @@ const makeKaoss: RackEffectFactory = (ctx, params) => {
 
   // Mirror setParams at make time so the offline bounce starts in the live state.
   const apply = (p: Record<string, number>) => {
-    const t = kaossTargets(p.program ?? 0, p.x ?? 0.5, p.y ?? 0.3);
+    const t = owlPadTargets(p.program ?? 0, p.x ?? 0.5, p.y ?? 0.3);
     const mix = clamp(p.mix ?? 1, 0, 1);
     const engaged = (p.active ?? 1) >= 0.5;
     const w = engaged ? mix : 0;
@@ -860,7 +860,14 @@ const makeKaoss: RackEffectFactory = (ctx, params) => {
    An LFO chops the level between full and (1 - depth) at the set rate. The shape
    selects the LFO wave: sine = smooth tremolo, square = hard gate, saw = ramp.
    The gate gain is driven by a constant-source bias plus the scaled LFO, so it
-   oscillates between `low` and `high` with no per-sample callback. */
+   oscillates between `low` and `high` with no per-sample callback.
+
+   Tempo-sync (sync = 1): the rate is derived from `bpm` + `div` instead of the
+   free Hz knob. `div` indexes GATER_DIVISIONS; the value is cycles-per-beat, so
+   1/4 = 1 cycle/beat (one gate per quarter note), 1/8 = 2, 1/8T = 3, etc. The
+   bpm rides in as a param so the factory stays pure and bakes identically. */
+export const GATER_DIVISIONS = ['1/1', '1/2', '1/4', '1/8', '1/16', '1/4T', '1/8T', '1/16T'] as const;
+const GATER_DIV_CYCLES = [0.25, 0.5, 1, 2, 4, 1.5, 3, 6]; // cycles per beat, parallel to GATER_DIVISIONS
 const makeGater: RackEffectFactory = (ctx, params) => {
   const input = ctx.createGain();
   const output = ctx.createGain();
@@ -875,7 +882,10 @@ const makeGater: RackEffectFactory = (ctx, params) => {
   lfo.connect(amp).connect(gate.gain);
 
   const apply = (p: Record<string, number>) => {
-    const rate = clamp(p.rate ?? 6, 0.1, 30);
+    const synced = (p.sync ?? 0) >= 0.5;
+    const bpm = clamp(p.bpm ?? 120, 40, 240);
+    const div = Math.round(clamp(p.div ?? 3, 0, GATER_DIV_CYCLES.length - 1));
+    const rate = synced ? (bpm / 60) * GATER_DIV_CYCLES[div] : clamp(p.rate ?? 6, 0.1, 30);
     const depth = clamp(p.depth ?? 0.8, 0, 1);
     const low = 1 - depth;
     const center = (1 + low) / 2;
@@ -1034,7 +1044,10 @@ const makeChop: RackEffectFactory = (ctx, params) => {
     };
     set('rate', clamp(p.rate ?? 8, 0.5, 32));
     set('slice', clamp(p.slice ?? 0.5, 0.05, 1));
-    set('mix', clamp(p.mix ?? 1, 0, 1));
+    // Engagement gate: latched on by default (continuous chop), or driven
+    // momentarily by `gate` (the hold-to-chop trigger). Dry when neither is set.
+    const engaged = (p.latch ?? 1) >= 0.5 || (p.gate ?? 0) >= 0.5;
+    set('mix', engaged ? clamp(p.mix ?? 1, 0, 1) : 0);
   };
   apply(params);
 
@@ -1103,7 +1116,7 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Spatial',
     description: 'Positions the track in 3D around the head, with motion presets.',
     params: [
-      { key: 'azimuth', label: 'Azimuth', min: -180, max: 180, step: 1, default: -30, unit: 'deg' },
+      { key: 'azimuth', label: 'Azimuth', min: -180, max: 180, step: 1, default: 0, unit: 'deg' },
       { key: 'elevation', label: 'Elevation', min: -90, max: 90, step: 1, default: 0, unit: 'deg' },
       { key: 'distance', label: 'Distance', min: 0.5, max: 10, step: 0.1, default: 1.5 },
       { key: 'motion', label: 'Motion', min: 0, max: 11, step: 1, default: 0 },
@@ -1124,8 +1137,8 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     make: makeLoudnessContour,
   },
   {
-    id: 'kaoss',
-    label: 'Kaoss Pad',
+    id: 'owlpad',
+    label: 'OWL-Pad',
     group: 'Performance',
     description: 'An XY performance pad: pick a program, then sweep two params by dragging.',
     params: [
@@ -1136,17 +1149,20 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'hold', label: 'Hold', min: 0, max: 1, step: 1, default: 1 },
       { key: 'active', label: 'Active', min: 0, max: 1, step: 1, default: 1 },
     ],
-    make: makeKaoss,
+    make: makeOwlPad,
   },
   {
     id: 'gater',
     label: 'Gater',
     group: 'Performance',
-    description: 'Rhythmic tremolo gate: chop the level with an LFO (sine/square/saw).',
+    description: 'Rhythmic tremolo gate: chop the level with an LFO (sine/square/saw), free-run or tempo-synced.',
     params: [
       { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz' },
       { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8 },
       { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1 },
+      { key: 'sync', label: 'Sync', min: 0, max: 1, step: 1, default: 0 },
+      { key: 'div', label: 'Division', min: 0, max: 7, step: 1, default: 3 },
+      { key: 'bpm', label: 'BPM', min: 40, max: 240, step: 1, default: 120 },
     ],
     make: makeGater,
   },
@@ -1176,12 +1192,14 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     id: 'chop',
     label: 'Chop',
     group: 'Performance',
-    description: 'MPC-style buffer chop: stutter (0), beat-repeat (1), shuffle (2).',
+    description: 'MPC-style buffer chop: stutter, beat-repeat, or shuffle. Latch for continuous, or hold to chop.',
     params: [
       { key: 'program', label: 'Program', min: 0, max: 2, step: 1, default: 0 },
       { key: 'rate', label: 'Rate', min: 0.5, max: 32, step: 0.5, default: 8, unit: 'Hz' },
       { key: 'slice', label: 'Slice', min: 0.05, max: 1, step: 0.01, default: 0.5 },
       { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+      { key: 'latch', label: 'Latch', min: 0, max: 1, step: 1, default: 1 },
+      { key: 'gate', label: 'Gate', min: 0, max: 1, step: 1, default: 0 },
     ],
     make: makeChop,
   },
