@@ -62,6 +62,9 @@ export interface EditorTrack {
   mute: boolean;
   solo: boolean;
   color: string;
+  /** Record-armed: target for mic/vocal recording. Shown as a red dot in the
+   *  track header. */
+  armed?: boolean;
   /** Default GM program (0-127) for MIDI clips on this track; undefined = global default. */
   instrumentProgram?: number;
   /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between

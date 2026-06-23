@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
-  SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag,
+  SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy,
 } from 'lucide-react';
+import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import { FxRack } from './FxRack';
@@ -2347,6 +2348,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   />
                   <div className="flex gap-1 shrink-0">
                     <button
+                      onClick={() => updateTrack(t.id, { armed: !t.armed })}
+                      aria-label={`Arm track ${t.name} for recording`}
+                      aria-pressed={!!t.armed}
+                      title="Arm for recording"
+                      className={`w-4 h-4 rounded-full flex items-center justify-center border ${t.armed ? 'bg-red-500/30 text-red-400 border-red-500/60' : 'bg-black/40 text-zinc-500 border-white/10 hover:text-white'}`}
+                    >
+                      <Circle className={`w-2 h-2 ${t.armed ? 'fill-red-500' : ''}`} />
+                    </button>
+                    <button
                       onClick={() => updateTrack(t.id, { mute: !t.mute })}
                       className={`w-4 h-4 rounded text-[8px] font-bold flex items-center justify-center ${t.mute ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-black/40 text-zinc-500 border border-white/5 hover:text-white'}`}
                     >M</button>
@@ -2846,7 +2856,30 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         const t = tracks.find((tr) => tr.id === trackMenu.payload?.trackId);
         if (!t) return null;
         const hasFx = (t.fxChain?.length ?? 0) > 0;
+        // Style prompt + lyrics come from the originating library entry of any
+        // clip on this track (Suno tracks carry them; derived best-effort).
+        const clipWithEntry = clips.find((c) => c.trackId === t.id && c.libraryEntryId);
+        const srcEntry = clipWithEntry?.libraryEntryId
+          ? useLibraryStore.getState().entries.find((e) => e.id === clipWithEntry.libraryEntryId)
+          : null;
+        const styleText = srcEntry ? deriveStyle(srcEntry).trim() : '';
+        const lyricsText = srcEntry ? deriveLyrics(srcEntry).trim() : '';
         const items: ContextMenuItem[] = [
+          {
+            type: 'item',
+            icon: <Copy className="w-3 h-3" />,
+            label: 'Copy style prompt',
+            disabled: !styleText,
+            onSelect: () => { if (styleText) void navigator.clipboard.writeText(styleText); },
+          },
+          {
+            type: 'item',
+            icon: <Copy className="w-3 h-3" />,
+            label: 'Copy lyrics',
+            disabled: !lyricsText,
+            onSelect: () => { if (lyricsText) void navigator.clipboard.writeText(lyricsText); },
+          },
+          { type: 'separator' },
           {
             type: 'item',
             icon: <SlidersHorizontal className="w-3 h-3" />,

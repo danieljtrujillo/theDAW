@@ -127,7 +127,7 @@ export const Shell: React.FC = () => {
 
   return (
     <div
-      className="flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
+      className="relative flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
       style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))' }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
@@ -222,19 +222,6 @@ export const Shell: React.FC = () => {
         </aside>
       )}
 
-      {/* Library pull handle — compact, vertically-centered tab on the right
-          edge of the work area, global across every workspace. Click toggles
-          the library panel; resize stays on the panel's inner edge. */}
-      <button
-        type="button"
-        onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-        title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
-        aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
-        className="absolute right-0 top-1/2 -translate-y-1/2 z-40 group flex flex-col items-center justify-center gap-1.5 h-24 w-7 rounded-l-lg border border-r-0 border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/35 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all"
-      >
-        <Library className="w-4 h-4" />
-        {isRightPanelOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-      </button>
       </div>
 
       {/* Global bottom dock — BottomMultiTabPanel (left, flex-1) and
@@ -245,6 +232,21 @@ export const Shell: React.FC = () => {
           bottomPanelStore) — expanding or resizing one does NOT
           affect the other. */}
       <ShellBottomDock />
+
+      {/* Library pull handle — root-level so it floats ABOVE every panel (bottom
+          dock, log, maximized panels) and is never clipped by the work area's
+          overflow. Vertically centered on the right edge. Click toggles the
+          library; resize stays on the panel's inner edge. */}
+      <button
+        type="button"
+        onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
+        title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
+        aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
+        className="absolute right-0 top-1/2 -translate-y-1/2 z-50 group flex flex-col items-center justify-center gap-1.5 h-24 w-7 rounded-l-lg border border-r-0 border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/35 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all"
+      >
+        <Library className="w-4 h-4" />
+        {isRightPanelOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+      </button>
       <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
       {shareOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center">
