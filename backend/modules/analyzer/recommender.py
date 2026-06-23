@@ -25,10 +25,7 @@ log = logging.getLogger(__name__)
 
 # The theDAW main backend assistant endpoint.
 # Default assumes the main backend runs on localhost:8600.
-_ASSISTANT_BASE = os.environ.get(
-    "THEDAW_BACKEND_URL",
-    os.environ.get("STABLEDAW_BACKEND_URL", "http://127.0.0.1:8600"),
-)
+_ASSISTANT_BASE = os.environ.get("THEDAW_BACKEND_URL", "http://127.0.0.1:8600")
 _ASSISTANT_CHAT_URL = f"{_ASSISTANT_BASE}/api/assistant/chat"
 
 # Provider/model to use for LLM enrichment (configurable via env).
