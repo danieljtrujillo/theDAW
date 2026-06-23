@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import sys
 import threading
@@ -20,32 +22,26 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
-import torch
-import torchaudio
 from fastapi import Body, FastAPI, Form, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-# MUST set non-interactive backend BEFORE any other matplotlib imports
-import matplotlib
-
-matplotlib.use("Agg")
-
-from matplotlib.figure import Figure
 from backend.admin_routes import router as admin_router
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
 
-from stable_audio_3.inference.distribution_shift import (
-    DistributionShift,
-    FluxDistributionShift,
-    LogSNRShift,
-)
-from stable_audio_3.model_configs import arc_models, rf_models
-from stable_audio_3.models.lora import remove_lora
+# Heavy imports (torch, torchaudio, matplotlib, and the stable_audio_3 model
+# graph) total ~9.6s and are deliberately kept OFF module scope so uvicorn binds
+# :8600 in ~1s instead of after the whole torch/XLA stack loads. Each is imported
+# lazily inside the functions that use it (cheap once cached) and warmed in a
+# background thread by the startup event (`_warm_heavy`). TYPE_CHECKING keeps the
+# annotations resolvable for type checkers at zero runtime cost.
+if TYPE_CHECKING:
+    import torch
+    from matplotlib.figure import Figure
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +62,7 @@ MODULES_DIR = Path(__file__).parent / "modules"
 
 app.state.loaded_modules = load_modules(app, MODULES_DIR)
 DEFAULT_GENERATION_MODEL = "medium"
-GENERATION_MODELS = {**arc_models, **rf_models}
+_GENERATION_MODELS_CACHE: dict[str, Any] | None = None
 SPECTROGRAM_TYPES = ("mel", "stft", "chromagram", "cqt")
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]+")
 _DASH_RUN = re.compile(r"-{2,}")
@@ -101,6 +97,55 @@ def _add_to_spec_cache(key: str, value: dict[str, str]):
         _spec_cache.popitem(last=False)
 
 
+def _generation_models() -> dict[str, Any]:
+    """Lazy ``{**arc_models, **rf_models}``. Importing ``model_configs`` pulls the
+    stable_audio_3 package ``__init__`` (the full model graph, ~4s), so it is
+    deferred off the startup path and cached after the first call."""
+    global _GENERATION_MODELS_CACHE
+    if _GENERATION_MODELS_CACHE is None:
+        from stable_audio_3.model_configs import arc_models, rf_models
+
+        _GENERATION_MODELS_CACHE = {**arc_models, **rf_models}
+    return _GENERATION_MODELS_CACHE
+
+
+def _warm_heavy() -> None:
+    """Pre-import the heavy stack (torch, torchaudio, the stable_audio_3 model
+    graph) so the first generation is not cold. Runs in a background thread from
+    the startup event AFTER uvicorn has bound the port, so it never delays
+    server-ready. Each import here is the one that pays the cost; the lazy
+    ``import torch`` calls scattered through the request handlers are then instant
+    (already in ``sys.modules``)."""
+    try:
+        import platform
+
+        import torch
+        import torch.version  # submodule; explicit so type checkers resolve .cuda
+        import torchaudio  # noqa: F401
+
+        gpu_info = "no CUDA"
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            gpu_info = (
+                f"{props.name} "
+                f"({round(props.total_memory / 1024**3, 1)} GB VRAM, "
+                f"cuda={torch.version.cuda})"
+            )
+        logger.info(
+            "startup: torch=%s (python=%s) gpu=%s",
+            torch.__version__,
+            platform.python_version(),
+            gpu_info,
+        )
+
+        _generation_models()
+        from stable_audio_3.inference import distribution_shift  # noqa: F401
+
+        logger.info("startup: heavy imports warmed (torch + stable_audio_3 ready)")
+    except Exception as e:  # noqa: BLE001 — warming is best-effort
+        logger.warning("startup: heavy-import warm failed: %s", e)
+
+
 @dataclass(frozen=True)
 class LoraFormSlot:
     index: int
@@ -123,7 +168,7 @@ def _registered_local_models() -> list[str]:
 def _normalize_generation_model(model_name: str | None) -> str:
     """Return a supported DiT generation model, falling back away from AE-only names."""
     normalized = (model_name or "").strip().lower()
-    if normalized in GENERATION_MODELS:
+    if normalized in _generation_models():
         return normalized
     if normalized.startswith("local:"):
         # User-registered local checkpoint (Models & Storage). Honor it only
@@ -147,6 +192,8 @@ def _park_or_evict_other_generation_pipelines(keep: str) -> None:
     (bit-identical, swaps back in seconds — no disk reload) when free RAM
     allows; otherwise it is evicted entirely.
     """
+    import torch
+
     global pipeline
     others = [k for k in list(_generation_pipelines) if k != keep]
     if not others:
@@ -226,6 +273,8 @@ def _ensure_gpu_clear_of_magenta() -> None:
 
 def _get_or_load_generation_pipeline(model_name: str):
     """Load and cache the selected DiT generation pipeline."""
+    import torch
+
     global pipeline, sample_rate, _active_model_name, _sa3_offloaded
 
     normalized = _normalize_generation_model(model_name)
@@ -490,6 +539,8 @@ async def _persist_lora_uploads(
 
 def _clear_generation_loras(generation_pipeline) -> None:
     """Remove request-scoped LoRA parametrizations from a cached pipeline."""
+    from stable_audio_3.models.lora import remove_lora
+
     remove_lora(generation_pipeline.model)
     generation_pipeline.model.use_lora = False
     generation_pipeline.model.lora_names = []
@@ -584,6 +635,8 @@ async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
         buf.seek(0)
 
     # Fallback: torchaudio via temp file
+    import torchaudio
+
     fd, fname = tempfile.mkstemp(suffix=".wav")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -608,6 +661,10 @@ def _generate_mel(waveform: np.ndarray, sr: int) -> str:
     try:
         import librosa
         import librosa.display
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
 
         mono = waveform[0] if waveform.ndim > 1 else waveform
         S = librosa.feature.melspectrogram(
@@ -634,6 +691,10 @@ def _generate_stft(waveform: np.ndarray, sr: int) -> str:
     try:
         import librosa
         import librosa.display
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
 
         mono = waveform[0] if waveform.ndim > 1 else waveform
         D = librosa.amplitude_to_db(np.abs(librosa.stft(mono)), ref=np.max)
@@ -657,6 +718,10 @@ def _generate_chromagram(waveform: np.ndarray, sr: int) -> str:
     try:
         import librosa
         import librosa.display
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
 
         mono = waveform[0] if waveform.ndim > 1 else waveform
         chroma = librosa.feature.chroma_stft(y=mono, sr=sr)
@@ -680,6 +745,10 @@ def _generate_cqt(waveform: np.ndarray, sr: int) -> str:
     try:
         import librosa
         import librosa.display
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
 
         mono = waveform[0] if waveform.ndim > 1 else waveform
         C = np.abs(librosa.cqt(mono, sr=sr))
@@ -729,41 +798,30 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
 
 @app.on_event("startup")
 async def load_model():
-    loop = asyncio.get_event_loop()
     startup_t0 = time.perf_counter()
 
-    # System stats so the user can correlate "model loaded slowly" with hardware.
+    # System stats (kept torch-free so server-ready never waits on the ~9.6s
+    # torch/stable_audio_3 import; the GPU/torch line is logged by _warm_heavy
+    # once the background warm finishes).
     try:
         import platform
 
-        import torch.version  # submodule; explicit import so type checkers resolve .cuda
-
-        gpu_info = "no CUDA"
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            gpu_info = (
-                f"{props.name} "
-                f"({round(props.total_memory / 1024**3, 1)} GB VRAM, "
-                f"cuda={torch.version.cuda})"
-            )
-        logger.info(
-            "startup: python=%s torch=%s os=%s gpu=%s",
-            platform.python_version(),
-            torch.__version__,
-            f"{platform.system()} {platform.release()}",
-            gpu_info,
-        )
         loaded_module_names = [m.get("name") for m in (app.state.loaded_modules or [])]
         logger.info(
-            "startup: loaded backend modules: %s",
+            "startup: python=%s os=%s modules=%s",
+            platform.python_version(),
+            f"{platform.system()} {platform.release()}",
             ", ".join(loaded_module_names) if loaded_module_names else "(none)",
         )
     except Exception as e:
         logger.warning("startup: system-stat probe failed: %s", e)
 
-    # Models load ON DEMAND (first generation / explicit selection), never at
-    # startup: the server must come up independently of any checkpoint, and
-    # switching models evicts the previous one (single-resident-model policy).
+    # Warm the heavy stack (torch + stable_audio_3) in the background AFTER the
+    # port is bound, so the first generation is not cold while server-ready stays
+    # fast. Models THEMSELVES still load on demand (single-resident policy): the
+    # server must come up independently of any checkpoint.
+    threading.Thread(target=_warm_heavy, name="warm-heavy", daemon=True).start()
+
     logger.info(
         "startup: server ready in %.2fs — generation models load on demand "
         "(default %r loads on first use)",
@@ -771,16 +829,9 @@ async def load_model():
         DEFAULT_GENERATION_MODEL,
     )
 
-    import logging as _logging
-
-    _logger = _logging.getLogger(__name__)
-    try:
-        from backend.rag import initialize_rag
-
-        n_chunks = await loop.run_in_executor(None, initialize_rag)
-        _logger.info("RAG indexed %d chunks", n_chunks)
-    except Exception as e:
-        _logger.warning("RAG initialization failed (non-fatal): %s", e)
+    # RAG indexing is LAZY: the embedding model + chroma client load on the first
+    # assistant query (backend/rag.py retrieve()), not at startup, so a session
+    # that never asks the assistant keeps that memory free.
 
     # Spin up the idle-gated background worker queue. It stays empty
     # until a feature (analysis / stems / midi) enqueues work.
@@ -788,9 +839,9 @@ async def load_model():
         from backend.core.background_workers import get_background_queue
 
         get_background_queue().start()
-        _logger.info("startup: background worker queue started")
+        logger.info("startup: background worker queue started")
     except Exception as e:
-        _logger.warning("startup: background worker queue failed to start: %s", e)
+        logger.warning("startup: background worker queue failed to start: %s", e)
 
 
 @app.on_event("shutdown")
@@ -842,6 +893,8 @@ async def set_module_enabled(module_name: str, enabled: bool = Body(..., embed=T
 
 @app.get("/api/system-stats")
 async def system_stats():
+    import torch
+
     stats: dict = {}
     if torch.cuda.is_available():
         stats["vram_used_gb"] = round(torch.cuda.memory_allocated() / 1024**3, 2)
@@ -897,10 +950,12 @@ async def health():
 async def model_info():
     # Lazy loading: the server runs model-free until first use, so this
     # endpoint reports metadata instead of erroring when nothing is loaded.
+    import torch
+
     return {
         "model_loaded": pipeline is not None,
         "active_model": _active_model_name,
-        "available_models": sorted(GENERATION_MODELS) + _registered_local_models(),
+        "available_models": sorted(_generation_models()) + _registered_local_models(),
         "loaded_models": sorted(_generation_pipelines),
         "sample_rate": sample_rate,
         "diffusion_objective": (
@@ -922,6 +977,8 @@ async def model_info():
 
 
 def _vram_used_gb() -> float:
+    import torch
+
     return (
         round(torch.cuda.memory_allocated() / 1024**3, 2)
         if torch.cuda.is_available()
@@ -936,6 +993,8 @@ def _move_pipelines(device: str) -> int:
     transfer (no dtype change, bit-identical weights), so an offload/onload
     round-trip restores the exact loaded state with no disk read.
     """
+    import torch
+
     moved = 0
     with _model_move_lock:
         for pl in list(_generation_pipelines.values()):
@@ -990,6 +1049,8 @@ async def offload_model():
 @app.post("/api/model/onload")
 async def onload_model():
     """Swap the SA3 model(s) back from CPU RAM to VRAM (reverse of /offload)."""
+    import torch
+
     global _sa3_offloaded
     if _generation_job_lock.locked():
         raise HTTPException(
@@ -1078,6 +1139,8 @@ async def generate_spectrogram(
     Accepts either audio_base64 (string) OR audio_file (UploadFile).
     Returns JSON with base64 PNG strings for each spectrogram type.
     """
+    import torch
+
     # Validate input
     if audio_base64 is None and audio_file is None:
         raise HTTPException(
@@ -1158,6 +1221,8 @@ async def get_cached_spectrogram_item(job_id: str, index: int):
 
 async def _load_audio_upload(upload: UploadFile):
     """Read an uploaded audio file and return (sample_rate, tensor) tuple."""
+    import torchaudio
+
     data = await upload.read()
     buf = io.BytesIO(data)
     waveform, sr = torchaudio.load(buf)
@@ -1210,6 +1275,14 @@ async def generate(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
+    import torch
+    import torchaudio
+    from stable_audio_3.inference.distribution_shift import (
+        DistributionShift,
+        FluxDistributionShift,
+        LogSNRShift,
+    )
+
     # lazy: load (or wake) the active model on first use; clear any resident
     # MRT2 engine first so SA3 never stacks on top of it (commit-limit crash)
     await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
@@ -1335,6 +1408,9 @@ JOBS: dict[str, dict] = {}
 def _generate_to_bytes(
     generation_pipeline, generate_args: dict, file_format: str, callback=None
 ) -> tuple[bytes, str]:
+    import torch
+    import torchaudio
+
     if callback:
         generate_args["callback"] = callback
     audio = generation_pipeline.generate(**generate_args)
@@ -1366,6 +1442,8 @@ async def _run_generate_job(
     lora_weights: list[float],
     lora_temp_dir: Path | None,
 ):
+    import torchaudio
+
     JOBS[job_id]["status"] = "running"
     loop = asyncio.get_event_loop()
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
@@ -1574,6 +1652,12 @@ async def generate_jobs(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
+    from stable_audio_3.inference.distribution_shift import (
+        DistributionShift,
+        FluxDistributionShift,
+        LogSNRShift,
+    )
+
     # Models load lazily — the loader below brings the requested model up
     # (waking a parked one or loading from disk) on first use.
 

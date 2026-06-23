@@ -182,10 +182,27 @@ def _wait_then_open_browser() -> None:
 
 
 def _warm_sidecars() -> None:
-    """Pre-spawn the lazily-started sidecars once the backend is up, so they are
-    ready before the user needs them instead of cold-starting on first use. The
-    VJ dev server (port 5187) is the important one: a GET to /api/vj/url makes the
-    backend ``vj`` module spawn it, so the VJ tab is already warm when opened."""
+    """Optionally pre-spawn the VJ dev server (:5187) once the backend is up.
+
+    OFF by default. Pre-warming spawns a SECOND full Vite/node process that then
+    stays resident for the whole session even if the VJ tab is never opened.
+    Opening the VJ tab calls /api/vj/url, which spawns it on demand anyway, so the
+    only cost of deferring is a few seconds on first VJ open. Set
+    ``THEDAW_PREWARM_VJ=1`` to restore eager warming (e.g. a VJ-first / live
+    performance launch)."""
+    prewarm = os.environ.get("THEDAW_PREWARM_VJ", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not prewarm:
+        _emit(
+            "stack",
+            "VJ sidecar: lazy (spawns on first VJ-tab open; "
+            "set THEDAW_PREWARM_VJ=1 to pre-warm)",
+        )
+        return
     base = "http://127.0.0.1:8600"
     deadline = time.time() + 120.0
     while not _shutdown.is_set() and time.time() < deadline:
