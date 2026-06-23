@@ -17,6 +17,10 @@ import { EffectsVizPanel } from './EffectsVizPanel';
 import { EffectGuiStage } from '../components/audio/EffectGuiStage';
 import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
+import { FxRack } from '../components/audio/FxRack';
+import { useMixRackStore } from '../state/mixRackStore';
+import { buildEffectChain, ensureChopModule } from '../lib/rackEffects';
+import { encodeWav } from '../lib/wavEncode';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory } from '../lib/effectCatalog';
@@ -114,7 +118,7 @@ function StatRow({ stats }: { stats: AudioStats }) {
      middle — Effects rail · [ Chain over Effect Stage ] · Library
    Version is bumped past any previously-persisted MIX layout so this default
    takes over cleanly. */
-const MIX_LAYOUT_VERSION = 3;
+const MIX_LAYOUT_VERSION = 4;
 const defaultMixLayout: SurfaceLayout = {
   version: MIX_LAYOUT_VERSION,
   root: 'root',
@@ -123,11 +127,12 @@ const defaultMixLayout: SurfaceLayout = {
     topViz: { id: 'topViz', type: 'container', axis: 'column', children: ['inputVizP', 'outputVizP'], fr: { inputVizP: 1, outputVizP: 1 } },
     inputVizP: { id: 'inputVizP', type: 'panel', title: 'Input', flow: 'row', widgets: [], pinned: 'inputViz' },
     outputVizP: { id: 'outputVizP', type: 'panel', title: 'Output', flow: 'row', widgets: [], pinned: 'outputViz' },
-    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'cont-3-b45ab2a0'], fr: { railP: 0.7625161264148641, 'cont-3-b45ab2a0': 3.652897886323994 } },
+    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'cont-3-b45ab2a0', 'rackP'], fr: { railP: 0.7625161264148641, 'cont-3-b45ab2a0': 3.652897886323994, rackP: 1.4 } },
     railP: { id: 'railP', type: 'panel', title: 'Effects', flow: 'row', widgets: [], pinned: 'effectRail' },
     libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library' },
     chainP: { id: 'chainP', type: 'panel', title: 'Chain', flow: 'row', widgets: [], pinned: 'chain' },
     stageP: { id: 'stageP', type: 'panel', title: 'Effect Stage', flow: 'row', widgets: [], pinned: 'effectStage' },
+    rackP: { id: 'rackP', type: 'panel', title: 'Rack', flow: 'row', widgets: [], pinned: 'mixRack' },
     'cont-3-b45ab2a0': { id: 'cont-3-b45ab2a0', type: 'container', axis: 'row', children: ['cont-4-4768bad0', 'libraryP'], fr: { libraryP: 0.45836297448789, 'cont-4-4768bad0': 1.5416370255121108 } },
     'cont-4-4768bad0': { id: 'cont-4-4768bad0', type: 'container', axis: 'column', children: ['chainP', 'stageP'], fr: { chainP: 0.6536796536796542, stageP: 1.3463203463203457 } },
   },
@@ -166,6 +171,13 @@ interface MixRegArgs {
   showHistory: boolean; setShowHistory: (v: boolean) => void;
   processHistory: Array<{ id: string; effect: string; createdAt: number }>;
   selectedEntry: ChainEntry | null;
+  // psychoacoustic rack — the EDIT FX engine, applied to the MIX source and baked
+  // into the output (separate from the backend effect chain above)
+  rackChain: ChainEntry[];
+  rackAdd: (id: string) => void; rackRemove: (id: string) => void;
+  rackReorder: (from: number, to: number) => void; rackToggle: (id: string) => void;
+  rackUpdateParams: (id: string, params: Record<string, number>) => void; rackClear: () => void;
+  applyRack: () => void; applyingRack: boolean; hasSource: boolean;
 }
 
 function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
@@ -410,6 +422,39 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         : <EffectGuiStage module={null} sourceFile={p.sourceFile} />
   ));
 
+  /* ── psychoacoustic rack — EDIT's real-time FX engine, applied to the MIX
+     source and baked offline into the output (distinct from the backend chain) ── */
+  pinned('mixRack', 'Rack', (
+    <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-2 gap-2">
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={sectionTitle}>Psychoacoustic Rack</span>
+        <span className="text-[8px] font-mono text-zinc-600">live FX, baked to output</span>
+        {p.rackChain.length > 0 && (
+          <button onClick={p.rackClear} title="Clear rack" className="ml-auto text-zinc-600 hover:text-red-400 transition-colors shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
+        )}
+      </div>
+      <div className="flex-1 overflow-y-auto min-h-0">
+        <FxRack
+          chain={p.rackChain}
+          idPrefix="mix-rack"
+          onAdd={p.rackAdd}
+          onRemove={p.rackRemove}
+          onReorder={p.rackReorder}
+          onToggle={p.rackToggle}
+          onUpdateParams={p.rackUpdateParams}
+        />
+      </div>
+      <button
+        onClick={p.applyRack}
+        disabled={!p.hasSource || p.rackChain.length === 0 || p.applyingRack}
+        title={!p.hasSource ? 'Load a source first' : 'Render the source through the rack into the output'}
+        className="shrink-0 w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+      >
+        {p.applyingRack ? 'Rendering…' : 'Apply rack to output'}
+      </button>
+    </div>
+  ));
+
   return reg;
 }
 
@@ -419,6 +464,17 @@ export const MixView: React.FC = () => {
   const sourceFile = useAdvancedEditorSourceStore((s) => s.sourceFile);
   const outputUrl = useAdvancedEditorSourceStore((s) => s.outputUrl);
   const setSource = useAdvancedEditorSourceStore((s) => s.setSource);
+  const setOutputUrl = useAdvancedEditorSourceStore((s) => s.setOutputUrl);
+
+  // Psychoacoustic rack (EDIT's Web-Audio FX engine) applied to the MIX source.
+  const rackChain = useMixRackStore((s) => s.chain);
+  const rackAdd = useMixRackStore((s) => s.add);
+  const rackRemove = useMixRackStore((s) => s.remove);
+  const rackReorder = useMixRackStore((s) => s.reorder);
+  const rackToggle = useMixRackStore((s) => s.toggle);
+  const rackUpdateParams = useMixRackStore((s) => s.updateParams);
+  const rackClear = useMixRackStore((s) => s.clear);
+  const [applyingRack, setApplyingRack] = useState(false);
 
   const chain = useEffectChainStore((s) => s.chain) as ChainEntry[];
   const addEffect = useEffectChainStore((s) => s.addEffect);
@@ -495,6 +551,35 @@ export const MixView: React.FC = () => {
     }
   };
 
+  // Render the source through the psychoacoustic rack in an OfflineAudioContext and
+  // set it as the MIX output (mirrors EDIT's offline bounce; chop worklet preloaded).
+  const applyRack = async () => {
+    const file = useAdvancedEditorSourceStore.getState().sourceFile;
+    const chainNow = useMixRackStore.getState().chain;
+    if (!file || chainNow.length === 0 || applyingRack) return;
+    setApplyingRack(true);
+    const decodeCtx = new AudioContext({ sampleRate: 44100 });
+    try {
+      const ab = await file.arrayBuffer();
+      const buf = await decodeCtx.decodeAudioData(ab.slice(0));
+      const offline = new OfflineAudioContext(2, buf.length, buf.sampleRate);
+      if (chainNow.some((e) => e.effect === 'chop' && e.enabled)) {
+        try { await ensureChopModule(offline); } catch { /* falls back to passthrough */ }
+      }
+      const inGain = offline.createGain();
+      buildEffectChain(offline, inGain, offline.destination, chainNow);
+      const src = offline.createBufferSource();
+      src.buffer = buf;
+      src.connect(inGain);
+      src.start(0);
+      const rendered = await offline.startRendering();
+      setOutputUrl(URL.createObjectURL(encodeWav(rendered)));
+    } catch { /* non-fatal: leave the prior output in place */ } finally {
+      decodeCtx.close().catch(() => {});
+      setApplyingRack(false);
+    }
+  };
+
   const handleDownload = () => {
     if (!outputUrl) return;
     const a = document.createElement('a');
@@ -556,6 +641,8 @@ export const MixView: React.FC = () => {
     removeEffect, updateParams, toggleEnabled, reorder, clearChain,
     outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
     selectedEntry,
+    rackChain, rackAdd, rackRemove, rackReorder, rackToggle, rackUpdateParams, rackClear,
+    applyRack: () => void applyRack(), applyingRack, hasSource: !!sourceFile,
   });
 
   return (
