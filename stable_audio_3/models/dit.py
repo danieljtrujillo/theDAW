@@ -319,11 +319,15 @@ class DiffusionTransformer(nn.Module):
                           If provided, only valid positions contribute to the projection.
         """
         dtype = v0.dtype
-        v0, v1 = v0.double(), v1.double()
+        # MPS (Apple Silicon Metal) has no float64 dtype: `.double()` there raises
+        # "Cannot convert a MPS Tensor to float64". Run the projection in float32 on
+        # MPS and keep float64 on CUDA/CPU so existing output is unchanged.
+        proj_dtype = torch.float32 if v0.device.type == "mps" else torch.float64
+        v0, v1 = v0.to(proj_dtype), v1.to(proj_dtype)
 
         if padding_mask is not None:
             # Expand mask to match tensor shape: (B, T) -> (B, 1, T)
-            mask = padding_mask.unsqueeze(1).double()
+            mask = padding_mask.unsqueeze(1).to(proj_dtype)
             # Zero out padding positions for projection computation
             v0_masked = v0 * mask
             v1_masked = v1 * mask
