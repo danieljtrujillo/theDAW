@@ -515,12 +515,6 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-// Some Windows GPU drivers crash Electron's GPU process (exit_code=34), which
-// leaves the window unable to composite — a black screen. Disabling hardware
-// acceleration forces software compositing so the renderer always paints.
-// Must be called before the app is ready.
-app.disableHardwareAcceleration()
-
 app.whenReady().then(async () => {
   registerIpcHandlers()
 
