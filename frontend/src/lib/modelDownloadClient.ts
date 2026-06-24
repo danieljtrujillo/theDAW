@@ -84,11 +84,16 @@ export async function clearDownloads(): Promise<void> {
   }
 }
 
+export interface DownloadErrorLink {
+  label: string;
+  url: string;
+}
+
 export interface ClassifiedDownloadError {
   kind: 'network' | 'disk' | 'rate_limit' | 'not_found' | 'gated' | 'unknown';
   headline: string;
   fix: string;
-  repoUrl?: string;
+  links?: DownloadErrorLink[];
 }
 
 /**
@@ -141,7 +146,7 @@ export function classifyDownloadError(detail: string, repoId?: string): Classifi
       kind: 'not_found',
       headline: "That file isn't in this repo",
       fix: 'The checkpoint may be published under a different name or not released yet — open the repo to check its files.',
-      repoUrl,
+      links: repoUrl ? [{ label: 'Open repo', url: repoUrl }] : undefined,
     };
   }
 
@@ -154,8 +159,11 @@ export function classifyDownloadError(detail: string, repoId?: string): Classifi
     return {
       kind: 'gated',
       headline: 'Access not granted (gated model)',
-      fix: 'Sign in to Hugging Face, open the model page and click “Agree and access”, then set an HF_TOKEN for that account and retry. If you already have access, double-check the repo name.',
-      repoUrl,
+      fix: 'You need access first: sign in to Hugging Face, request access on the model page (click "Agree and access"), then create a token and set it as HF_TOKEN. Retry once approved.',
+      links: [
+        ...(repoUrl ? [{ label: 'Request access', url: repoUrl }] : []),
+        { label: 'Create HF token', url: 'https://huggingface.co/settings/tokens' },
+      ],
     };
   }
 
@@ -165,6 +173,6 @@ export function classifyDownloadError(detail: string, repoId?: string): Classifi
     kind: 'unknown',
     headline: 'Download failed',
     fix: firstLine || 'Unknown error — retry, or check the backend log for details.',
-    repoUrl,
+    links: repoUrl ? [{ label: 'Open repo', url: repoUrl }] : undefined,
   };
 }

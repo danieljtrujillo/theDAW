@@ -259,15 +259,20 @@ const DownloadError: React.FC<{ detail: string; repoId?: string }> = ({ detail, 
     <div className="rounded border border-rose-500/30 bg-rose-500/5 px-2 py-1.5">
       <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">{info.headline}</div>
       <p className="mt-0.5 text-[8px] leading-relaxed text-rose-200/80">{info.fix}</p>
-      {info.repoUrl && (
-        <a
-          href={info.repoUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-1 inline-flex items-center gap-1 text-[8px] font-mono text-rose-300 hover:text-rose-100 transition-colors"
-        >
-          <ExternalLink className="w-2.5 h-2.5" /> Open model page
-        </a>
+      {info.links && info.links.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          {info.links.map((link) => (
+            <a
+              key={link.url}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[8px] font-mono text-rose-300 hover:text-rose-100 transition-colors"
+            >
+              <ExternalLink className="w-2.5 h-2.5" /> {link.label}
+            </a>
+          ))}
+        </div>
       )}
     </div>
   );
