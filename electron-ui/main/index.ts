@@ -367,8 +367,8 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     title: 'theDAW',
-    // Open full screen, per spec.
-    fullscreen: true,
+    // Open windowed at the default size (reverted from forced fullscreen).
+    fullscreen: false,
     // Paint solid black immediately so there's no white window flash before
     // content loads — one continuous black background from the first frame to
     // the app (matches index.html's <body> + the boot splash).
