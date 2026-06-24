@@ -65,6 +65,122 @@ def _attach_play_counts(store: LibraryStore, entries: list[dict[str, Any]]) -> N
         e["last_played_at"] = row.get("last_played_at")
 
 
+# Scalar analysis columns that are safe to expose on the entry verbatim. The
+# `*_json` columns (embedded_tags_json / ffprobe_json / semantic_tags_json) are
+# parsed separately below so the frontend never receives raw JSON strings.
+_ANALYSIS_SCALAR_KEYS = (
+    "bpm",
+    "key",
+    "key_confidence",
+    "scale",
+    "pitch_mean_hz",
+    "pitch_std_hz",
+    "loudness_lufs",
+    "rms_db",
+    "bars_estimated",
+    "genre",
+    "genre_confidence",
+    "prompt_guess",
+    "prompt_confidence",
+    "analyzed_at",
+)
+
+# Selected file-technical keys pulled out of the ffprobe `_summary` blob so the
+# inspector can show them as plain rows (sample rate, codec, …) without dumping
+# the whole ffprobe payload.
+_FFPROBE_SUMMARY_KEYS = (
+    "sample_rate",
+    "channels",
+    "bit_depth",
+    "codec",
+    "container",
+    "duration_sec",
+)
+
+
+def _loose_json(text: Optional[str]) -> Any:
+    """Tolerant JSON parse for the stored `*_json` analysis columns. Returns the
+    decoded value for objects/arrays, or ``None`` for empty/invalid input — so a
+    malformed column degrades to "absent" instead of raising mid-request."""
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, (dict, list)) else None
+
+
+# WHY THIS ENRICHMENT EXISTS:
+# The frontend was built to read ``entry.analysis`` (the Catalogue inspector's
+# ANALYSIS section + library search by bpm/key/genre) and ``entry.embedded_tags``
+# (the EMBEDDED TAGS section), but the entry payload never carried them — so
+# those sections rendered empty and the stored analytics were effectively
+# invisible. The two helpers below light them up. Both are additive + defensive:
+# an entry with no analysis row is left exactly as-is.
+
+
+def _analysis_payload(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Turn one stored analysis row into the ``(analysis, embedded_tags)`` pair
+    the frontend consumes.
+
+    ``analysis`` is a FLAT scalar dict with NULL columns dropped (so the UI only
+    shows real data); ``embedded_tags`` is the parsed ID3/Vorbis/iTunes dict
+    (empty when the file carried none). The stored ``*_json`` columns are parsed
+    here so callers never receive raw JSON strings.
+    """
+    analysis: dict[str, Any] = {
+        k: row[k] for k in _ANALYSIS_SCALAR_KEYS if row.get(k) is not None
+    }
+    semantic = _loose_json(row.get("semantic_tags_json"))
+    if semantic:
+        analysis["semantic_tags"] = semantic
+    # File technicals live inside the ffprobe summary blob; surface a few.
+    summary = _loose_json(row.get("ffprobe_json")) or {}
+    summary = summary.get("_summary") if isinstance(summary, dict) else None
+    if isinstance(summary, dict):
+        for k in _FFPROBE_SUMMARY_KEYS:
+            if summary.get(k) is not None:
+                analysis.setdefault(k, summary[k])
+    embedded = _loose_json(row.get("embedded_tags_json"))
+    if not (isinstance(embedded, dict) and embedded):
+        embedded = {}
+    return analysis, embedded
+
+
+def _apply_analysis(entry: dict[str, Any], row: Optional[dict[str, Any]]) -> None:
+    """Merge one analysis ``row`` onto one ``entry`` dict in place. No-op when
+    ``row`` is ``None`` (entry not analyzed) or yields nothing renderable."""
+    if not row:
+        return
+    analysis, embedded = _analysis_payload(row)
+    if analysis:
+        entry["analysis"] = analysis
+    if embedded:
+        entry["embedded_tags"] = embedded
+
+
+def _attach_analysis(store: LibraryStore, entries: list[dict[str, Any]]) -> None:
+    """Bulk-enrich a LIST of entries with their analysis. One ``get_all_analysis``
+    query for the whole page (no N+1), then an in-memory join by id."""
+    if store.db is None:
+        return
+    rows = store.db.get_all_analysis()
+    if not rows:
+        return
+    for e in entries:
+        _apply_analysis(e, rows.get(e["id"]))
+
+
+def _attach_analysis_one(store: LibraryStore, entry: dict[str, Any]) -> None:
+    """Enrich a SINGLE entry via a targeted ``get_analysis(id)`` lookup — so a
+    single-entry GET never loads the entire analysis table (which the bulk
+    helper would). Used by the per-id endpoint that inspectors hit on select."""
+    if store.db is None:
+        return
+    _apply_analysis(entry, store.db.get_analysis(entry["id"]))
+
+
 _KIND_FILTERS: dict[str, Optional[set[str]]] = {
     "audio": {"audio"},
     "video": {"video"},
@@ -86,6 +202,7 @@ def list_entries(kind: str = "audio") -> dict[str, Any]:
     store = get_store()
     entries = [r.to_dict() for r in store.list_entries(kinds=_KIND_FILTERS[kind])]
     _attach_play_counts(store, entries)
+    _attach_analysis(store, entries)
     return {
         "entries": entries,
         "count": len(entries),
@@ -102,6 +219,7 @@ def get_entry(entry_id: str) -> dict[str, Any]:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
     data = record.to_dict()
     _attach_play_counts(store, [data])
+    _attach_analysis_one(store, data)
     return data
 
 
