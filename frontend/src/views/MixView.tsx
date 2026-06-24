@@ -118,7 +118,7 @@ function StatRow({ stats }: { stats: AudioStats }) {
      middle — Effects rail · [ Chain over Effect Stage ] · Library
    Version is bumped past any previously-persisted MIX layout so this default
    takes over cleanly. */
-const MIX_LAYOUT_VERSION = 4;
+const MIX_LAYOUT_VERSION = 5;
 const defaultMixLayout: SurfaceLayout = {
   version: MIX_LAYOUT_VERSION,
   root: 'root',
@@ -127,14 +127,14 @@ const defaultMixLayout: SurfaceLayout = {
     topViz: { id: 'topViz', type: 'container', axis: 'column', children: ['inputVizP', 'outputVizP'], fr: { inputVizP: 1, outputVizP: 1 } },
     inputVizP: { id: 'inputVizP', type: 'panel', title: 'Input', flow: 'row', widgets: [], pinned: 'inputViz' },
     outputVizP: { id: 'outputVizP', type: 'panel', title: 'Output', flow: 'row', widgets: [], pinned: 'outputViz' },
-    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'cont-3-b45ab2a0', 'rackP'], fr: { railP: 0.7625161264148641, 'cont-3-b45ab2a0': 3.652897886323994, rackP: 1.4 } },
+    mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'cont-3-b45ab2a0', 'rackP'], fr: { railP: 0.7625161264148641, 'cont-3-b45ab2a0': 3.652897886323994, rackP: 1.4 }, framed: true },
     railP: { id: 'railP', type: 'panel', title: 'Effects', flow: 'row', widgets: [], pinned: 'effectRail' },
     libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library' },
     chainP: { id: 'chainP', type: 'panel', title: 'Chain', flow: 'row', widgets: [], pinned: 'chain' },
     stageP: { id: 'stageP', type: 'panel', title: 'Effect Stage', flow: 'row', widgets: [], pinned: 'effectStage' },
     rackP: { id: 'rackP', type: 'panel', title: 'Rack', flow: 'row', widgets: [], pinned: 'mixRack' },
-    'cont-3-b45ab2a0': { id: 'cont-3-b45ab2a0', type: 'container', axis: 'row', children: ['cont-4-4768bad0', 'libraryP'], fr: { libraryP: 0.45836297448789, 'cont-4-4768bad0': 1.5416370255121108 } },
-    'cont-4-4768bad0': { id: 'cont-4-4768bad0', type: 'container', axis: 'column', children: ['chainP', 'stageP'], fr: { chainP: 0.6536796536796542, stageP: 1.3463203463203457 } },
+    'cont-3-b45ab2a0': { id: 'cont-3-b45ab2a0', type: 'container', axis: 'row', children: ['cont-4-4768bad0', 'libraryP'], fr: { libraryP: 0.45836297448789, 'cont-4-4768bad0': 1.5416370255121108 }, framed: true },
+    'cont-4-4768bad0': { id: 'cont-4-4768bad0', type: 'container', axis: 'column', children: ['chainP', 'stageP'], fr: { chainP: 0.6536796536796542, stageP: 1.3463203463203457 }, framed: true },
   },
 };
 
