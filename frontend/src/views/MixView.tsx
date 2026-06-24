@@ -25,7 +25,9 @@ import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory } from '../lib/effectCatalog';
 import { STUDIO_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
-import { Boxes, Headphones } from 'lucide-react';
+import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../lib/magentaToolCatalog';
+import { MagentaToolStage } from '../components/audio/MagentaToolStage';
+import { Boxes, Headphones, Music } from 'lucide-react';
 import '../components/layout/track-controls.css';
 
 /* ── Psychoacoustic effects shown as Studio-style tiles ──────────────────────
@@ -184,6 +186,8 @@ interface MixRegArgs {
   // studio modules (exact-GUI instruments)
   onPickModule: (id: string) => void; activeModuleId: string | null; activeModule: StudioModule | null;
   onPickPsycho: (id: string) => void; activePsychoId: string | null;
+  // magenta RT2 tools (Collider / Jam / MRT2 — generative instruments)
+  onPickMagenta: (id: string) => void; activeMagentaId: string | null; activeMagentaTool: MagentaTool | null;
   // chain
   chain: ChainEntry[]; selectedId: string | null; setSelectedId: (id: string) => void;
   removeEffect: (id: string) => void; updateParams: (id: string, p: Record<string, number>) => void;
@@ -284,6 +288,13 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           <span className="text-[10px] font-bold flex-1 truncate">Psychoacoustics</span>
           <span className="text-[8px] font-mono text-fuchsia-600 shrink-0">{PSYCHO_MODULES.length}</span>
         </button>
+        <button onClick={() => p.setActiveCategory('magenta')}
+          title="Magenta RealTime 2 — generative instruments (Collider · Jam · MRT2)"
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'magenta' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
+          <Music className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[10px] font-bold flex-1 truncate">Magenta</span>
+          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{MAGENTA_TOOLS.length}</span>
+        </button>
         {CATEGORY_META.map((cat) => {
           const Icon = cat.icon;
           const active = p.activeCategory === cat.id;
@@ -316,15 +327,35 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   pinned('library', 'Library', (
     <div className="h-full w-full flex flex-col min-h-0 min-w-0 overflow-hidden p-2">
       <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
-        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && (
+        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
+        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && p.activeCategory !== 'magenta' && (
           <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
             <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
             <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
           </div>
         )}
       </div>
-      {p.activeCategory === 'studio' ? (
+      {p.activeCategory === 'magenta' ? (
+        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
+          {MAGENTA_TOOLS.map((m) => {
+            const active = p.activeMagentaTool?.id === m.id;
+            return (
+              <button key={m.id} onClick={() => p.onPickMagenta(m.id)} title={m.desc}
+                className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-cyan-400/60 ring-1 ring-cyan-400/40 bg-cyan-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                style={{ width: 132 }}>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
+                  <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                </div>
+                <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
+                  <ModuleThumb preview={m.preview} className="w-full h-full" />
+                </div>
+                <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+              </button>
+            );
+          })}
+        </div></div>
+      ) : p.activeCategory === 'studio' ? (
         <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
           {STUDIO_MODULES.map((m) => {
             const active = p.activeModule?.id === m.id;
@@ -498,7 +529,9 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   // chain entry takes priority; otherwise a populated rack still shows here so it
   // can never be orphaned (and the Apply button stays reachable).
   pinned('effectStage', 'Effect Stage', (
-    p.activePsychoId
+    p.activeMagentaTool
+      ? <MagentaToolStage tool={p.activeMagentaTool} />
+    : p.activePsychoId
       ? psychoRackStage
       : p.activeModule
         ? <EffectGuiStage module={p.activeModule} sourceFile={p.sourceFile} />
@@ -549,6 +582,8 @@ export const MixView: React.FC = () => {
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   // The psychoacoustic effect focused in the Effect Stage (opens the rack there).
   const [activePsychoId, setActivePsychoId] = useState<string | null>(null);
+  // The Magenta RT2 tool focused in the Effect Stage (Collider / Jam / MRT2).
+  const [activeMagentaId, setActiveMagentaId] = useState<string | null>(null);
   const [srcStats, setSrcStats] = useState<AudioStats | null>(null);
   const [outStats, setOutStats] = useState<AudioStats | null>(null);
   const [dragOverSource, setDragOverSource] = useState(false);
@@ -672,16 +707,24 @@ export const MixView: React.FC = () => {
     ?? (mappedModuleId ? moduleById[mappedModuleId] ?? null : null);
 
   // Picking a module from the library toggles its instrument open/closed.
-  const handlePickModule = (id: string) => { setActivePsychoId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
+  const handlePickModule = (id: string) => { setActivePsychoId(null); setActiveMagentaId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
   // Selecting a chain entry hands the stage back to the effect→module mapping.
-  const selectChain = (id: string) => { setActivePsychoId(null); setSelectedChainId(id); setActiveModuleId(null); };
+  const selectChain = (id: string) => { setActivePsychoId(null); setActiveMagentaId(null); setSelectedChainId(id); setActiveModuleId(null); };
   // Picking a psychoacoustic tile adds it to the rack engine (once) and opens the
   // rack in the Effect Stage; clicking the focused one again closes the stage.
   const handlePickPsycho = (id: string) => {
     if (activePsychoId === id) { setActivePsychoId(null); return; }
     if (!rackChain.some((e) => e.effect === id)) rackAdd(id);
     setActiveModuleId(null);
+    setActiveMagentaId(null);
     setActivePsychoId(id);
+  };
+  // Picking a Magenta tool opens its generative instrument in the Effect Stage;
+  // clicking the focused one again closes it. Mutually exclusive with the above.
+  const activeMagentaTool: MagentaTool | null = activeMagentaId ? magentaToolById[activeMagentaId] ?? null : null;
+  const handlePickMagenta = (id: string) => {
+    setActivePsychoId(null); setActiveModuleId(null);
+    setActiveMagentaId((cur) => (cur === id ? null : id));
   };
 
   const registry = buildMixRegistry({
@@ -702,6 +745,7 @@ export const MixView: React.FC = () => {
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
     onPickModule: handlePickModule, activeModuleId, activeModule,
     onPickPsycho: handlePickPsycho, activePsychoId,
+    onPickMagenta: handlePickMagenta, activeMagentaId, activeMagentaTool,
     chain, selectedId: selectedChainId, setSelectedId: selectChain,
     removeEffect, updateParams, toggleEnabled, reorder, clearChain,
     outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
