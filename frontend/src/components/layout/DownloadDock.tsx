@@ -90,12 +90,14 @@ export const DownloadDock: React.FC = () => {
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
       window.setTimeout(() => {
         dragRef.current = null;
       }, 0);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   }, []);
 
   if (jobs.length === 0) return null;

@@ -24,7 +24,7 @@ worker threads and read from the request handlers.
 
 from __future__ import annotations
 
-import contextvars
+import atexit
 import logging
 import os
 import threading
@@ -52,26 +52,31 @@ _LOCK = threading.Lock()
 
 # A dedicated pool keeps long downloads off asyncio's shared default executor.
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="modeldl")
-
-# The worker thread stamps its job id here so _JobTqdm (constructed inside
-# huggingface_hub, out of our control) can find the job it is reporting on.
-_CURRENT_JOB: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "modeldl_current_job", default=None
-)
+# Tear the pool down on process exit / dev-server reload so it isn't leaked.
+atexit.register(lambda: _EXECUTOR.shutdown(wait=False))
 
 _LIVE_STATUSES = frozenset({"queued", "downloading"})
 _FINISHED_STATUSES = frozenset({"done", "error"})
+
+# Cap retained finished/errored jobs so a long session can't grow unbounded.
+_MAX_TERMINAL_JOBS = 25
 
 
 class _JobTqdm(tqdm):
     """tqdm subclass that mirrors transfer progress into the active job entry.
 
-    Every progress write is wrapped in try/except: a bookkeeping error must
-    never abort an in-flight download.
+    The job id is bound to the (sub)class via ``_bound_tqdm`` rather than a
+    contextvar: huggingface_hub's Xet backend drives ``update()`` from a native
+    worker thread where a contextvar set on our Python thread is invisible.
+    Reading ``self._job_id`` works no matter which thread fires the update.
+    Every write is wrapped in try/except so a bookkeeping error can never abort
+    an in-flight download.
     """
 
+    _job_id: str | None = None
+
     def _publish(self) -> None:
-        job_id = _CURRENT_JOB.get()
+        job_id = self._job_id
         if not job_id:
             return
         try:
@@ -99,6 +104,12 @@ class _JobTqdm(tqdm):
         # Flush a final reading (e.g. the closing 100% tick) before teardown.
         self._publish()
         super().close()
+
+
+def _bound_tqdm(job_id: str) -> type[_JobTqdm]:
+    """A ``_JobTqdm`` subclass pinned to ``job_id`` — used as ``tqdm_class`` so
+    the progress callback finds its job from any thread (incl. Xet's native one)."""
+    return type(f"_JobTqdm_{job_id[:8]}", (_JobTqdm,), {"_job_id": job_id})
 
 
 def _config_files(cfg: ModelConfig | AutoencoderModelConfig) -> list[str]:
@@ -137,7 +148,6 @@ def _run_job(job_id: str) -> None:
     Any failure flips the job to ``error`` with the raw exception text so the
     frontend can classify and surface it; success flips it to ``done``.
     """
-    _CURRENT_JOB.set(job_id)
     with _LOCK:
         job = _REGISTRY.get(job_id)
         if job is None:
@@ -145,6 +155,8 @@ def _run_job(job_id: str) -> None:
         job["status"] = "downloading"
         repo_id = job["repo_id"]
         filenames = list(job["_filenames"])
+
+    bound_tqdm = _bound_tqdm(job_id)
 
     try:
         for filename in filenames:
@@ -164,7 +176,7 @@ def _run_job(job_id: str) -> None:
                 job["current_file"] = len(job["files"]) - 1
 
             path = hf_hub_download(
-                repo_id=repo_id, filename=filename, tqdm_class=_JobTqdm
+                repo_id=repo_id, filename=filename, tqdm_class=bound_tqdm
             )
 
             with _LOCK:
@@ -221,6 +233,13 @@ def start_download(name: str) -> dict:
         _REGISTRY[job["id"]] = job
         job_id = job["id"]
         status = job["status"]
+
+        # Bound growth: evict the oldest terminal jobs beyond the cap.
+        terminal = [
+            jid for jid, j in _REGISTRY.items() if j["status"] in _FINISHED_STATUSES
+        ]
+        for jid in terminal[: max(0, len(terminal) - _MAX_TERMINAL_JOBS)]:
+            del _REGISTRY[jid]
 
     _EXECUTOR.submit(_run_job, job_id)
     return {"job_id": job_id, "name": name, "status": status}

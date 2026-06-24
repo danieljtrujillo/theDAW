@@ -8,6 +8,7 @@ deterministic without sleeping on a fixed delay.
 
 from __future__ import annotations
 
+import io
 import threading
 import time
 
@@ -68,8 +69,9 @@ def test_download_valid_name_reaches_done(client, monkeypatch):
 
     def fake_download(*, repo_id, filename, **kwargs):
         calls.append((repo_id, filename))
-        # tqdm_class must be forwarded so live progress works in production.
-        assert kwargs.get("tqdm_class") is modeldl._JobTqdm
+        # A job-bound _JobTqdm subclass must be forwarded so live progress works.
+        tqdm_class = kwargs.get("tqdm_class")
+        assert tqdm_class is not None and issubclass(tqdm_class, modeldl._JobTqdm)
         return f"/fake/cache/{repo_id}/{filename}"
 
     monkeypatch.setattr(modeldl, "hf_hub_download", fake_download)
@@ -153,3 +155,47 @@ def test_clear_removes_finished_jobs(client, monkeypatch):
 
     jobs = client.get("/api/models/downloads").json()["jobs"]
     assert all(j["id"] != job_id for j in jobs)
+
+
+def test_jobtqdm_publishes_from_foreign_thread():
+    """Live progress must update even when tqdm.update() runs on a different
+    thread than the worker — as huggingface_hub's Xet backend does. This fails
+    with a contextvar-based binding and passes with the job-bound subclass.
+    """
+    job_id = "foreign-thread-job"
+    with modeldl._LOCK:
+        modeldl._REGISTRY[job_id] = {
+            "id": job_id,
+            "name": "x",
+            "repo_id": "x/x",
+            "label": "X",
+            "status": "downloading",
+            "files": [
+                {
+                    "filename": "f",
+                    "bytes_done": 0,
+                    "bytes_total": 0,
+                    "speed": 0.0,
+                    "done": False,
+                }
+            ],
+            "current_file": 0,
+            "dest_dir": "",
+            "error_detail": None,
+            "error_repo_id": None,
+        }
+    try:
+        bar = modeldl._bound_tqdm(job_id)(total=100, file=io.StringIO())
+        # Drive update() from a foreign thread; a contextvar would not carry here.
+        worker = threading.Thread(target=lambda: bar.update(40))
+        worker.start()
+        worker.join()
+        bar.close()
+
+        with modeldl._LOCK:
+            entry = modeldl._REGISTRY[job_id]["files"][0]
+        assert entry["bytes_done"] == 40
+        assert entry["bytes_total"] == 100
+    finally:
+        with modeldl._LOCK:
+            modeldl._REGISTRY.pop(job_id, None)
