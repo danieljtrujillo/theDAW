@@ -58,6 +58,123 @@ const BACKEND_BASE = 'http://localhost:8600'
 const HEALTH_URL = `${BACKEND_BASE}/api/health`
 const SHUTDOWN_URL = `${BACKEND_BASE}/api/admin/shutdown`
 
+// ---------------------------------------------------------------------------
+// Packaged-app paths + first-run bootstrap
+//
+// In a packaged build the Python project, a bundled uv.exe, and ffmpeg.exe ship
+// under process.resourcesPath (see electron-builder.yml -> extraResources). The
+// per-user install directory is writable, so uv creates the venv next to the
+// bundled pyproject.toml on first launch and the backend writes its data/ tree
+// there. In dev none of this applies: the backend runs from the repo via uv on
+// PATH exactly as before.
+// ---------------------------------------------------------------------------
+
+function getPythonDir(): string {
+  return app.isPackaged ? path.join(process.resourcesPath, 'python') : repoRoot
+}
+
+function getToolsDir(): string {
+  return path.join(process.resourcesPath, 'tools')
+}
+
+function getUvCommand(): string {
+  return app.isPackaged ? path.join(getToolsDir(), 'uv.exe') : 'uv'
+}
+
+function venvPython(pyDir: string): string {
+  return process.platform === 'win32'
+    ? path.join(pyDir, '.venv', 'Scripts', 'python.exe')
+    : path.join(pyDir, '.venv', 'bin', 'python')
+}
+
+// Environment for the backend + the uv sync step. Packaged builds prepend the
+// bundled tools dir (uv.exe, ffmpeg.exe, ffprobe.exe) to PATH so the backend's
+// audio I/O resolves ffmpeg without a system install. The PATH key is matched
+// case-insensitively because Windows exposes it as "Path".
+function buildBackendEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, SA3_SUPERVISOR_PRESENT: '1' }
+  if (app.isPackaged) {
+    const toolsDir = getToolsDir()
+    const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH'
+    env[key] = `${toolsDir}${path.delimiter}${env[key] ?? ''}`
+  }
+  return env
+}
+
+function coreImportsOk(py: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const proc = spawn(py, ['-c', 'import uvicorn, fastapi'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      proc.on('exit', (code) => resolve(code === 0))
+      proc.on('error', () => resolve(false))
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
+function runUvSync(uvCmd: string, cwd: string): Promise<void> {
+  return new Promise((resolve) => {
+    log(`Running ${uvCmd} sync --group dev in ${cwd}`)
+    const proc = spawn(uvCmd, ['sync', '--group', 'dev'], {
+      cwd,
+      env: buildBackendEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    const emit = (data: Buffer): void => {
+      for (const raw of data.toString().split('\n')) {
+        const text = raw.replace(/\r$/, '').trimEnd()
+        if (!text.trim()) continue
+        log(`[uv] ${text}`)
+        sendLoadingLog(text, '')
+      }
+    }
+    proc.stdout?.on('data', emit)
+    proc.stderr?.on('data', emit)
+    proc.on('exit', (code) => {
+      if (code === 0) {
+        sendLoadingLog('Dependencies installed.', 'load')
+      } else {
+        sendLoadingLog(
+          `Setup step exited with code ${code}. The app may not start until this is resolved.`,
+          'err',
+        )
+      }
+      resolve()
+    })
+    proc.on('error', (err) => {
+      sendLoadingLog(`Setup failed to start: ${err.message}`, 'err')
+      resolve()
+    })
+  })
+}
+
+// First-run bootstrap: build the venv when it is missing or a core import fails
+// (a uv sync interrupted after the venv is created but before packages install
+// leaves a half-built env). Streams progress into the boot cinematic. No-op in
+// dev, where the repo venv is managed by theDAW.bat / uv on PATH.
+async function ensurePythonEnv(): Promise<void> {
+  if (!app.isPackaged) return
+  const pyDir = getPythonDir()
+  const py = venvPython(pyDir)
+  let ok = fs.existsSync(py)
+  if (ok) ok = await coreImportsOk(py)
+  if (ok) {
+    log('Python env present and complete — skipping sync.')
+    return
+  }
+  sendLoadingStatus('First run: setting up the audio engine')
+  sendLoadingLog(
+    'Installing the Python runtime and dependencies. The first run downloads several GB and can take several minutes.',
+    'load',
+  )
+  await runUvSync(getUvCommand(), pyDir)
+}
+
 async function isBackendRunning(): Promise<boolean> {
   try {
     const res = await globalThis.fetch(HEALTH_URL, {
@@ -73,10 +190,23 @@ function spawnBackend(): void {
   log('Spawning backend process...')
 
   const isWindows = process.platform === 'win32'
-  const cwd = repoRoot
-  const env = { ...process.env, SA3_SUPERVISOR_PRESENT: '1' }
+  const cwd = getPythonDir()
+  const env = buildBackendEnv()
 
-  if (isWindows) {
+  if (app.isPackaged) {
+    // The bundled uv is an absolute path, so it is invoked directly (no shell).
+    backendProcess = spawn(
+      getUvCommand(),
+      ['run', 'python', '-m', 'backend._supervisor'],
+      {
+        cwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        detached: !isWindows,
+      },
+    )
+  } else if (isWindows) {
     backendProcess = spawn(
       'cmd',
       ['/c', 'uv run python -m backend._supervisor'],
@@ -401,6 +531,9 @@ app.whenReady().then(async () => {
   // up, the app surfaces its "continue without backend" escape — same as web.
   const alreadyRunning = await isBackendRunning()
   if (!alreadyRunning) {
+    // Packaged builds bootstrap the Python env on first launch before the
+    // backend can start; dev builds no-op here.
+    await ensurePythonEnv()
     spawnBackend()
   } else {
     log('Backend already running — skipping spawn.')

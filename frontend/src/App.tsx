@@ -19,6 +19,10 @@ import { useLayoutPrefs } from './state/layoutPrefsStore';
 import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
 import { publishMidi } from './state/midiBus';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
+import { startXrControl, stopXrControl, registerXrControlSource } from './state/xrControlClient';
+import { djControlSource } from './state/xrControlDjSource';
+import { startXrViz, stopXrViz } from './state/xrViz';
+import { XrBusTester } from './components/dev/XrBusTester';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
 
@@ -213,7 +217,20 @@ export default function App() {
   useEffect(() => {
     if (!midiEnabled) return;
     startQuestMidi();
-    return () => stopQuestMidi();
+    // XR control bus (spatialization P0/P1): publish theDAW's control manifest
+    // to a theDAW-XR headset and apply inbound control-sets. The DJ source maps
+    // DJ_TARGETS to spatial controls with no per-control wiring; it lazy-loads
+    // the DJ engine so registering it here does not pull djEngine into boot.
+    registerXrControlSource(djControlSource);
+    startXrControl();
+    // Stream the visualization feed (waveform pack) over the same bridge so a
+    // theDAW-XR headset can render theDAW's live audio natively.
+    startXrViz();
+    return () => {
+      stopQuestMidi();
+      stopXrControl();
+      stopXrViz();
+    };
   }, [midiEnabled]);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {
@@ -246,6 +263,10 @@ export default function App() {
         onExecuteAction={handleAssistantAction}
         orbPosition={orbPosition}
       />
+
+      {/* Dev-only: simulated XR controller to drive the control bus without a
+          headset. Stripped from production builds. */}
+      {import.meta.env.DEV && <XrBusTester />}
 
       {/* Loading screen overlays everything until backend is ready */}
       <AnimatePresence>

@@ -2,12 +2,16 @@
   "name": "thedaw-desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "theDAW desktop shell: an Electron front end that bootstraps and supervises the Python audio backend.",
+  "author": "GANTASMO",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package": "electron-vite build && electron-builder"
+    "fetch:tools": "node scripts/fetch-runtime-tools.mjs",
+    "package": "electron-vite build && electron-builder",
+    "dist:win": "npm run fetch:tools && electron-vite build && electron-builder --win"
   },
   "dependencies": {},
   "devDependencies": {

@@ -68,14 +68,14 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         })),
     }),
     {
-      name: 'thedaw-bottom-panel-v4',
+      name: 'thedaw-bottom-panel-v5',
+      // Open/maximized state is intentionally NOT persisted so the bottom dock
+      // and the log start collapsed on every app open. The active tab and the
+      // sizes are remembered.
       partialize: (s) => ({
         activeTab: s.activeTab,
-        isOpen: s.isOpen,
-        isLogOpen: s.isLogOpen,
         multiHeight: s.multiHeight,
         logWidth: s.logWidth,
-        multiMaximized: s.multiMaximized,
       }),
     },
   ),
