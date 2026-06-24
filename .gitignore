@@ -257,4 +257,7 @@ docs/*.pdf
 # Electron desktop shell — build artifacts + runtime logs (deps via node_modules/ above)
 electron-ui/out/
 electron-ui/release/
+# Bundled runtime binaries fetched at build time (uv.exe, ffmpeg.exe) — large,
+# downloaded from official sources by scripts/fetch-runtime-tools.mjs.
+electron-ui/resources/tools/
 logs/

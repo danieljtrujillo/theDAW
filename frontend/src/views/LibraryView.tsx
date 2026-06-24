@@ -5,9 +5,10 @@ import {
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
-  Film, Image as ImageIcon, Upload, RefreshCw, Tv2,
+  Film, Image as ImageIcon, Upload, RefreshCw, Tv2, Repeat,
 } from 'lucide-react';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
+import { useConvertMenu } from '../convert/ConvertMenu';
 import { LineageModal } from '../components/library/LineageModal';
 import { SuggestPlaylistModal } from '../components/library/SuggestPlaylistModal';
 import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
@@ -83,6 +84,12 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   // automatically). Payload carries the entryId of the right-clicked
   // row so the menu's items can read it without re-finding the row.
   const entryMenu = useContextMenu<{ entryId: string }>();
+  // Second-stage "Convert to..." format picker (FFmpeg). Shared by the audio
+  // context menu below; opened at the same spot the parent menu was.
+  const convertMenu = useConvertMenu({
+    onStart: (m) => logInfo('library', m),
+    onError: (m) => logError('library', m),
+  });
   const [allStems, setAllStems] = useState<Array<Record<string, unknown>> | null>(null);
   const [allMidis, setAllMidis] = useState<Array<Record<string, unknown>> | null>(null);
   // SCORE library tab: every notation/sheet artifact across all entries,
@@ -1126,6 +1133,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       {(() => {
         const ctxEntryId = entryMenu.payload?.entryId;
         if (!ctxEntryId) return null;
+        // Captured while the parent menu is open; the convert picker reopens here
+        // (onSelect runs after the parent menu has already closed itself).
+        const ctxPos = entryMenu.position;
         const isRunning = (k: 'analysis' | 'stems' | 'midi') =>
           runningKind?.id === ctxEntryId && runningKind?.kind === k;
         const items: ContextMenuItem[] = [
@@ -1196,6 +1206,16 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           },
           {
             type: 'item',
+            label: 'Convert to…',
+            icon: <Repeat className="w-3 h-3" />,
+            hint: 'ffmpeg',
+            onSelect: () => {
+              const title = entries.find((e) => e.id === ctxEntryId)?.title ?? ctxEntryId;
+              if (ctxPos) convertMenu.openAt(ctxPos, { entryId: ctxEntryId, title, kind: 'audio' });
+            },
+          },
+          {
+            type: 'item',
             label: 'Download bundle',
             icon: <Package className="w-3 h-3" />,
             hint: '.zip+scores',
@@ -1226,6 +1246,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           />
         );
       })()}
+
+      {convertMenu.element}
 
       <LineageModal
         open={lineageOpen !== null}
