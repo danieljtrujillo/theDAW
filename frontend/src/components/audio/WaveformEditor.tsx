@@ -2,13 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
-  SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy,
+  SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
 } from 'lucide-react';
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import { FxRack } from './FxRack';
 import { MetamorphPanel } from './MetamorphPanel';
+import { MagentaToolStage } from './MagentaToolStage';
+import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../../lib/magentaToolCatalog';
 import { AutomationLane } from './AutomationLane';
 import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
 import { sliceChunks } from '../../lib/audioAnalysis';
@@ -551,6 +553,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const [isRendering, setIsRendering] = useState(false);
   const [mixdownName, setMixdownName] = useState('');
   const [showMasterFx, setShowMasterFx] = useState(false);
+  // Magenta RT2 generative tool open in the floating panel (Collider/Jam/MRT2), or null.
+  const [magentaToolId, setMagentaToolId] = useState<string | null>(null);
+  const magentaTool: MagentaTool | null = magentaToolId ? magentaToolById[magentaToolId] ?? null : null;
   const [showMetamorph, setShowMetamorph] = useState(false);
   const [fxPanelTrackId, setFxPanelTrackId] = useState<string | null>(null);
   const [instrPanel, setInstrPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
@@ -1997,6 +2002,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           </button>
 
           <button
+            onClick={() => setMagentaToolId((cur) => (cur ? null : MAGENTA_TOOLS[0].id))}
+            aria-pressed={!!magentaTool}
+            aria-label="Magenta RT2 generative tools"
+            title="Magenta RealTime 2 — generate audio (Collider · Jam · MRT2) via the Windows sidecar"
+            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors text-[9px] font-mono uppercase tracking-wider
+              ${magentaTool ? 'bg-cyan-600/20 border-cyan-500/40 text-cyan-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+          >
+            <Music className="w-3 h-3" /> MAGENTA
+          </button>
+
+          <button
             onClick={() => setAutomationWrite(!automationWrite)}
             aria-pressed={automationWrite}
             aria-label="Automation write"
@@ -2148,6 +2164,46 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <MetamorphPanel />
             </section>
           )}
+        </div>
+      )}
+
+      {/* Magenta RT2 generative tools (floating; large enough for the 780×504
+          instrument). The picked tool's EXACT Google UI is embedded via
+          MagentaToolStage and driven by the bridge shim → /api/magenta. */}
+      {magentaTool && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" role="dialog" aria-label="Magenta RT2 tools" onMouseDown={() => setMagentaToolId(null)}>
+          <section
+            className="hardware-card bg-black/95 border border-cyan-500/30 rounded-lg shadow-2xl shadow-cyan-900/40 flex flex-col overflow-hidden"
+            style={{ width: 'min(900px, 92vw)', height: 'min(620px, 88vh)' }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2 shrink-0">
+              <Music className="w-3.5 h-3.5 text-cyan-300" />
+              <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-300">Magenta RT2</span>
+              <div className="flex items-center gap-1 ml-2">
+                {MAGENTA_TOOLS.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setMagentaToolId(t.id)}
+                    title={t.desc}
+                    className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors ${magentaTool.id === t.id ? 'bg-cyan-600/20 border-cyan-500/40 text-cyan-200' : 'border-white/8 text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => setMagentaToolId(null)}
+                aria-label="Close Magenta tools"
+                className="ml-auto p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0">
+              <MagentaToolStage tool={magentaTool} />
+            </div>
+          </section>
         </div>
       )}
 
