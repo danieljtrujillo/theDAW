@@ -367,8 +367,8 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     title: 'theDAW',
-    // Open full screen, per spec.
-    fullscreen: true,
+    // Open windowed at the default size (reverted from forced fullscreen).
+    fullscreen: false,
     // Paint solid black immediately so there's no white window flash before
     // content loads — one continuous black background from the first frame to
     // the app (matches index.html's <body> + the boot splash).
@@ -514,6 +514,12 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ])
+
+// Some Windows GPU drivers crash Electron's GPU process (exit_code=34), which
+// leaves the window unable to composite — a black screen. Disabling hardware
+// acceleration forces software compositing so the renderer always paints.
+// Must be called before the app is ready.
+app.disableHardwareAcceleration()
 
 app.whenReady().then(async () => {
   registerIpcHandlers()
