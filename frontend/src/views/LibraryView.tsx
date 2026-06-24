@@ -1549,6 +1549,10 @@ const MediaGrid: React.FC<{
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const mediaMenu = useContextMenu<LibraryEntry>();
+  const convertMenu = useConvertMenu({
+    onStart: (m) => logInfo('library', m),
+    onError: (m) => logError('library', m),
+  });
 
   const onPick = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -1589,6 +1593,7 @@ const MediaGrid: React.FC<{
   };
 
   const ctxEntry = mediaMenu.payload;
+  const ctxPos = mediaMenu.position;
   const menuItems: ContextMenuItem[] = ctxEntry
     ? [
         {
@@ -1610,6 +1615,21 @@ const MediaGrid: React.FC<{
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+          },
+        },
+        {
+          type: 'item',
+          label: 'Convert to…',
+          icon: <Repeat className="w-3 h-3" />,
+          hint: 'ffmpeg',
+          onSelect: () => {
+            if (ctxPos) {
+              convertMenu.openAt(ctxPos, {
+                entryId: ctxEntry.id,
+                title: ctxEntry.title,
+                kind: ctxEntry.kind ?? 'video',
+              });
+            }
           },
         },
         {
@@ -1689,6 +1709,7 @@ const MediaGrid: React.FC<{
         items={menuItems}
         title={ctxEntry ? ctxEntry.title : ''}
       />
+      {convertMenu.element}
     </div>
   );
 };

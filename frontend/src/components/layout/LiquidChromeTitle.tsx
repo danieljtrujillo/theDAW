@@ -175,8 +175,10 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
       const fbox = new THREE.Box3().setFromObject(dawGroup);
       const size = new THREE.Vector3();
       fbox.getSize(size);
-      // Fill the canvas box, ~20% larger.
-      const scale = 4.0 / Math.max(size.x, 0.001);
+      // 2x size: the theDAW logo is doubled vs the prior fill (was 4.0). The
+      // "by GANTASMO" text/image live outside this canvas (LoadingScreen DOM
+      // siblings), so enlarging the model here does not move them.
+      const scale = 8.0 / Math.max(size.x, 0.001);
       dawGroup.scale.setScalar(scale);
       modelReady = true;
     });
