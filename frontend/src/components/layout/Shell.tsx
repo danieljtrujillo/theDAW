@@ -9,6 +9,7 @@ import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel } from './BottomMultiTabPanel';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
+import { DownloadDock } from './DownloadDock';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 
@@ -316,6 +317,10 @@ export const Shell: React.FC = () => {
         </div>
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {/* Floating model-download manager — fixed bottom-right, self-hiding when
+          there are no downloads. Mounted once at the app root so it floats over
+          every view. */}
+      <DownloadDock />
     </div>
   );
 };
