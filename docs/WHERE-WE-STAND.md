@@ -89,7 +89,7 @@ the following is **SHIPPED** (merged via PRs #38-#42):
 ## 5. XR / Quest integrations
 
 These are the headset features. All **SHIPPED** to `main`, with the headset-side
-pieces living in the GANTASMO-MIDI Unity project. The point of the design is that
+pieces living in theDAW XR (the GANTASMO-MIDI Unity project). The point of the design is that
 none of them need Quest Link (PC tethering) or Meta Quest Developer Hub casting;
 they ride plain ADB (USB or wireless) with auto-started relays.
 

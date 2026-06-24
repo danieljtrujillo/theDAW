@@ -31,8 +31,21 @@ where node >nul 2>&1 || goto :needtools
 where npm  >nul 2>&1 || goto :needtools
 where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
 
-:: -- Bootstrap dependencies if this is a fresh / incomplete tree --------
-if not exist ".venv\Scripts\activate" (
+:: -- Bootstrap Python deps if the venv is missing OR incomplete --------
+:: A previous `uv sync` can be interrupted AFTER uv creates the venv but
+:: BEFORE it installs packages, leaving .venv\Scripts\activate present while
+:: uvicorn / fastapi and the other declared deps are absent. The old
+:: "venv exists -> skip sync" check then launched the backend against a
+:: half-built env and crashed on `import uvicorn`. So sync when a core import
+:: fails too, not only when the venv is missing entirely.
+set "NEED_SYNC=0"
+if not exist ".venv\Scripts\activate" set "NEED_SYNC=1"
+if not exist ".venv\Scripts\python.exe" set "NEED_SYNC=1"
+if "%NEED_SYNC%"=="0" (
+    .venv\Scripts\python.exe -c "import uvicorn, fastapi" >nul 2>&1
+    if errorlevel 1 set "NEED_SYNC=1"
+)
+if "%NEED_SYNC%"=="1" (
     echo Bootstrapping Python env: uv sync --group dev
     echo   First run downloads torch + CUDA wheels and can take several minutes...
     call uv sync --group dev

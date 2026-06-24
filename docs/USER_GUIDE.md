@@ -2072,7 +2072,7 @@ GET  /api/analysis/{entry_id}/prompt
 
 ## 34. Quest and XR Integrations
 
-theDAW drives a Meta Quest headset for live performance without Quest Link (PC tethering) or Meta Quest Developer Hub casting. Each integration rides plain ADB over USB or a wireless pairing, and the backend starts the relay it needs on demand. The headset-side components live in the GANTASMO-MIDI Unity project.
+theDAW drives a Meta Quest headset for live performance without Quest Link (PC tethering) or Meta Quest Developer Hub casting. Each integration rides plain ADB over USB or a wireless pairing, and the backend starts the relay it needs on demand. The headset-side app is theDAW XR, a standalone Quest 3 build (the GANTASMO-MIDI Unity project).
 
 ### 34.1 delinQuest: Quest video into the VJ
 
@@ -2094,7 +2094,7 @@ The headset works as a hands-only controller for theDAW. A floating 3D control s
 
 ### 34.5 Quest colocation
 
-Several headsets in one room can share a single world frame, so the control surface and visuals lock to the same physical spot for everyone and each performer sees the others as lightweight head-and-hands presence. A one-click setup wizard in the GANTASMO-MIDI project installs and wires the pieces: shared spatial anchors, Meta Colocation Discovery for alignment, and Netcode for GameObjects over a LAN-direct transport with no cloud relay. The only manual steps are the Meta platform gates, which are Enhanced Spatial Services on each headset, a verified developer account, and all headsets on the same Wi-Fi.
+Several headsets in one room can share a single world frame, so the control surface and visuals lock to the same physical spot for everyone and each performer sees the others as lightweight head-and-hands presence. A one-click setup wizard in theDAW XR installs and wires the pieces: shared spatial anchors, Meta Colocation Discovery for alignment, and Netcode for GameObjects over a LAN-direct transport with no cloud relay. The only manual steps are the Meta platform gates, which are Enhanced Spatial Services on each headset, a verified developer account, and all headsets on the same Wi-Fi.
 
 ### 34.6 Setup notes
 
