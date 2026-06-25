@@ -51,6 +51,11 @@ extraResources:
     to: tools
     filter:
       - "**/*"
+  # Explorer right-click "Convert with theDAW" helper (registered by
+  # resources/installer.nsh). Lands at <install>\resources\convert-with-thedaw.ps1
+  # and resolves the bundled ffmpeg at .\tools\ffmpeg.exe.
+  - from: resources/convert-with-thedaw.ps1
+    to: convert-with-thedaw.ps1
 
 win:
   target:

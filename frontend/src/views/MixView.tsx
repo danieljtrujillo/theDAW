@@ -19,6 +19,7 @@ import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
 import { FxRack } from '../components/audio/FxRack';
 import { useMixRackStore } from '../state/mixRackStore';
+import { attachMixLiveRack } from '../state/mixLiveRack';
 import { buildEffectChain, ensureChopModule, RACK_EFFECTS } from '../lib/rackEffects';
 import { encodeWav } from '../lib/wavEncode';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
@@ -564,6 +565,11 @@ export const MixView: React.FC = () => {
   const sourceUrl = useMemo(() => (sourceFile ? URL.createObjectURL(sourceFile) : null), [sourceFile]);
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
+  // Wire the psychoacoustic rack onto the footer's master insert so it is heard
+  // LIVE on the transport and is never rebuilt when a new clip is applied. Attached
+  // once for the session; an empty rack is a clean passthrough (see mixLiveRack).
+  useEffect(() => { attachMixLiveRack(); }, []);
+
   useEffect(() => {
     if (!sourceFile) { setSrcStats(null); return; }
     analyzeAudio(sourceFile).then(setSrcStats).catch(() => setSrcStats(null));
@@ -576,6 +582,10 @@ export const MixView: React.FC = () => {
   const setSourceBoth = (file: File | null) => {
     setSource(file);
     useStudioStore.getState().setSourceFile(file);
+    // Bind the MIX working file to the footer transport so pressing Play auditions
+    // it LIVE through the master rack. The rack stays put across source swaps, so a
+    // new clip starts cleanly without tearing down or restarting the effects.
+    if (file) void usePlayerStore.getState().load(file, { label: file.name });
   };
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault(); setDragOverSource(false);
