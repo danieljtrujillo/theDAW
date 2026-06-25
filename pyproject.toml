@@ -68,6 +68,13 @@ dependencies = [
     # and updated often as site extractors change; keep a generous floor and let
     # `uv sync` pull the newest so YouTube/SoundCloud keep working.
     "yt-dlp>=2025.1.1",
+    # akvj native Kinect point cloud (backend/modules/akvj/kinect_sidecar.py).
+    # pyk4a-bundle ships its OWN matched k4a.dll + depthengine, so no separate
+    # Azure Kinect SDK install is needed; the sidecar just works. Windows x64 +
+    # Linux x64 only (no macOS wheel), gated so `uv sync` skips it elsewhere.
+    # websockets is the sidecar's WebSocket client to the relay.
+    "pyk4a-bundle ; (sys_platform == 'win32') or (sys_platform == 'linux' and platform_machine == 'x86_64')",
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]

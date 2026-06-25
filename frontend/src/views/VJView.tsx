@@ -14,6 +14,8 @@ import {
   Check,
   Camera,
   CameraOff,
+  Sliders,
+  Glasses,
 } from 'lucide-react';
 
 import { getAnalyser } from '../state/playerStore';
@@ -692,8 +694,8 @@ export const VJView: React.FC = () => {
           <InputChip
             active={vjInputs.mic}
             onToggle={() => toggleVjInput('mic')}
-            label="Mic"
-            icon={<Mic className="w-2.5 h-2.5" />}
+            name="Microphone input"
+            icon={<Mic className="w-3 h-3" />}
             activeLabel="Microphone capture is enabled — VJ iframe will request browser permission on first use."
             inactiveLabel="Microphone input is muted. Click to enable."
             disabled={vjInputs.mic && !vjInputs.audio && !vjInputs.midi}
@@ -701,8 +703,8 @@ export const VJView: React.FC = () => {
           <InputChip
             active={vjInputs.audio}
             onToggle={() => toggleVjInput('audio')}
-            label={bridgeFps > 0 ? `Audio ${bridgeFps}` : 'Audio'}
-            icon={<MusicIcon className="w-2.5 h-2.5" />}
+            name="Audio bridge"
+            icon={<MusicIcon className="w-3 h-3" />}
             activeLabel={
               bridgeFps > 0
                 ? `Audio bridge live — forwarding SA3 player levels @ ${bridgeFps}fps`
@@ -715,8 +717,8 @@ export const VJView: React.FC = () => {
           <InputChip
             active={vjInputs.midi}
             onToggle={() => toggleVjInput('midi')}
-            label="MIDI"
-            icon={<Piano className="w-2.5 h-2.5" />}
+            name="MIDI forwarding"
+            icon={<Piano className="w-3 h-3" />}
             activeLabel="MIDI events from your controller are forwarded into the VJ iframe."
             inactiveLabel="MIDI forwarding is off. Click to enable."
             disabled={vjInputs.midi && !vjInputs.mic && !vjInputs.audio}
@@ -743,9 +745,9 @@ export const VJView: React.FC = () => {
                 : 'Camera OFF — click to use the live webcam as the VJ source.'
             }
             aria-pressed={cameraOn}
+            aria-label="Camera source"
           >
-            {cameraOn ? <Camera className="w-2.5 h-2.5" /> : <CameraOff className="w-2.5 h-2.5" />}
-            Cam
+            {cameraOn ? <Camera className="w-3 h-3" /> : <CameraOff className="w-3 h-3" />}
           </button>
           <div className="flex items-center gap-0.5">
             <button
@@ -761,20 +763,17 @@ export const VJView: React.FC = () => {
                   ? 'border-sky-500/50 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20'
                   : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/20 hover:bg-white/5'
               }`}
-              title={`${questRunning ? 'Click to stop' : 'Click to start'} direct delinQuest ADB/scrcpy relay. This does not use the browser window picker. ${questDetail}`}
-              aria-label="Toggle delinQuest ADB video relay"
+              title={`delinQuest (Quest video relay) — ${questLabel}. ${questRunning ? 'Click to stop' : 'Click to start'} the direct ADB/scrcpy relay (no browser window picker). ${questDetail}`}
+              aria-label={`delinQuest Quest video relay — ${questLabel}`}
               aria-pressed={questRunning}
             >
               {questBusy ? (
-                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                <Loader2 className="w-3 h-3 animate-spin" />
               ) : questErrored ? (
-                <AlertCircle className="w-2.5 h-2.5" />
-              ) : questReady ? (
-                <Check className="w-2.5 h-2.5" />
+                <AlertCircle className="w-3 h-3" />
               ) : (
-                <Tv2 className="w-2.5 h-2.5" />
+                <Glasses className="w-3 h-3" />
               )}
-              delinQuest {questLabel}
             </button>
             <button
               type="button"
@@ -809,6 +808,19 @@ export const VJView: React.FC = () => {
           >
             <Piano className="w-2.5 h-2.5" />
             MIDI
+          </button>
+          {/* MIDI MAP — opens the VJ engine's controller-mapping panel (MIDI map
+              + audio-react routing) right inside the iframe. The mapper used to
+              live as a floating pill on the VJ canvas; it now opens from here. */}
+          <button
+            type="button"
+            onClick={() => postToIframe({ type: 'sa3-vj/open-midi-map' })}
+            disabled={status !== 'ready'}
+            className="p-1.5 rounded border border-white/5 hover:bg-white/5 text-zinc-400 hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none"
+            title="Open the VJ MIDI mapping + audio-react panel"
+            aria-label="Open VJ MIDI mapping panel"
+          >
+            <Sliders className="w-3.5 h-3.5" />
           </button>
           {/* Mobile link — exposes the LAN-reachable URL so a phone on
               the same Wi-Fi can open the VJ output. The Vite server is
@@ -1017,26 +1029,29 @@ export const VJView: React.FC = () => {
 };
 
 /**
- * Tiny toggle chip for the VJ input row (Mic / Audio / MIDI). Lit
- * emerald when active; faded zinc when disabled. `disabled` true
- * means the chip can't be turned off because it's the last
- * remaining active input (min-1 invariant).
+ * Tiny icon-only toggle for the VJ input row (Mic / Audio / MIDI). Lit emerald /
+ * cyan when active; faded zinc when off. `disabled` true means the chip can't be
+ * turned off because it's the last remaining active input (min-1 invariant). The
+ * label moved to `aria-label` + `title`; a live dot rides the Audio chip when the
+ * bridge is streaming.
  */
 const InputChip: React.FC<{
   active: boolean;
   onToggle: () => void;
-  label: string;
+  name: string;
   icon: React.ReactNode;
   activeLabel: string;
   inactiveLabel: string;
   disabled?: boolean;
   indicator?: 'live' | null;
-}> = ({ active, onToggle, label, icon, activeLabel, inactiveLabel, disabled, indicator }) => (
+}> = ({ active, onToggle, name, icon, activeLabel, inactiveLabel, disabled, indicator }) => (
   <button
     type="button"
     onClick={onToggle}
     disabled={!!disabled && active}
-    className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors ${
+    aria-pressed={active}
+    aria-label={name}
+    className={`relative px-1.5 py-1 rounded border flex items-center justify-center transition-colors ${
       active
         ? indicator === 'live'
           ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
@@ -1045,13 +1060,19 @@ const InputChip: React.FC<{
     } disabled:cursor-not-allowed disabled:opacity-100`}
     title={
       disabled && active
-        ? `${activeLabel} — at least one input must stay enabled.`
+        ? `${name}: ${activeLabel} — at least one input must stay enabled.`
         : active
-        ? `${activeLabel} (click to mute)`
-        : inactiveLabel
+        ? `${name}: ${activeLabel} (click to mute)`
+        : `${name}: ${inactiveLabel}`
     }
   >
-    {icon} {label}
+    {icon}
+    {indicator === 'live' && active && (
+      <span
+        className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.9)]"
+        aria-hidden="true"
+      />
+    )}
   </button>
 );
 
