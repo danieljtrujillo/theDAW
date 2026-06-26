@@ -348,6 +348,10 @@ export const VJView: React.FC = () => {
     const lowEnd = Math.floor(buf.length * 0.05);
     const midEnd = Math.floor(buf.length * 0.30);
     const highEnd = buf.length;
+    // 256-bin spectrogram column for the SPECTRA VJ source (downsampled FFT).
+    const SPEC_BINS = 256;
+    const specBlock = Math.max(1, Math.floor(buf.length / SPEC_BINS));
+    const spec = new Array<number>(SPEC_BINS);
 
     const tick = () => {
       // Hold off until the iframe has loaded the VJ app (avoid posting to about:blank).
@@ -367,8 +371,14 @@ export const VJView: React.FC = () => {
         const mid = midEnd - lowEnd > 0 ? (midSum / (midEnd - lowEnd)) / 255 : 0;
         const high = highEnd - midEnd > 0 ? (highSum / (highEnd - midEnd)) / 255 : 0;
         const volume = (bassSum + midSum + highSum) / (buf.length * 255);
+        for (let i = 0; i < SPEC_BINS; i++) {
+          let s = 0;
+          const start = i * specBlock;
+          for (let j = 0; j < specBlock; j++) s += buf[start + j] || 0;
+          spec[i] = Math.round(s / specBlock);
+        }
         try {
-          targetWin()?.postMessage({ type: 'sa3-vj/audio-levels', bass, mid, high, volume, t: now }, vjOrigin);
+          targetWin()?.postMessage({ type: 'sa3-vj/audio-levels', bass, mid, high, volume, spectrum: spec, t: now }, vjOrigin);
         } catch { /* target unavailable this frame — retry next tick */ }
         frameCount += 1;
         if (now - fpsTick > 1000) {

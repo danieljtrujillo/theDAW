@@ -21,6 +21,11 @@ import { publishMidi } from './state/midiBus';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
 import { startXrControl, stopXrControl, registerXrControlSource } from './state/xrControlClient';
 import { djControlSource } from './state/xrControlDjSource';
+import { swayControlSource, startSwayXrMirror } from './state/swayControlSource';
+import { startSwayBus } from './state/swayBus';
+import { startSwayRouting } from './state/swayRouting';
+import { poseControlSource, startPoseXrMirror } from './state/poseControlSource';
+import { startPoseRouting } from './state/poseRouting';
 import { startXrViz, stopXrViz } from './state/xrViz';
 import { XrBusTester } from './components/dev/XrBusTester';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
@@ -222,16 +227,38 @@ export default function App() {
     // DJ_TARGETS to spatial controls with no per-control wiring; it lazy-loads
     // the DJ engine so registering it here does not pull djEngine into boot.
     registerXrControlSource(djControlSource);
+    // Sway (Audima): the six expressive dimensions become named 0..1 signals on
+    // the same control bus, learned from the device's CCs. Target-agnostic, so
+    // they can drive VFX, 3D audio, and MAKE/voice targets once those subscribe.
+    registerXrControlSource(swayControlSource);
+    const stopSway = startSwayBus();
+    const stopSwayMirror = startSwayXrMirror();
+    const stopSwayRoute = startSwayRouting();
+    // Body-pose source (camera, forwarded from the VJ). Publish its channels on
+    // the same bus; the pose values themselves arrive via poseBus regardless of MIDI.
+    registerXrControlSource(poseControlSource);
+    const stopPoseMirror = startPoseXrMirror();
     startXrControl();
     // Stream the visualization feed (waveform pack) over the same bridge so a
     // theDAW-XR headset can render theDAW's live audio natively.
     startXrViz();
     return () => {
       stopQuestMidi();
+      stopSway();
+      stopSwayMirror();
+      stopSwayRoute();
+      stopPoseMirror();
       stopXrControl();
       stopXrViz();
     };
   }, [midiEnabled]);
+
+  // Pose routing is camera-driven (forwarded from the VJ), independent of the
+  // Web MIDI gate, so it runs for the app's lifetime.
+  useEffect(() => {
+    const stop = startPoseRouting();
+    return stop;
+  }, []);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {
     const result = handletheDAWAction(action);

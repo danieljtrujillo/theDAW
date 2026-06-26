@@ -20,7 +20,8 @@ export type BottomPanelTab =
   | 'piano-roll'
   | 'step-seq'
   | 'bucket'
-  | 'slide';
+  | 'slide'
+  | 'sway';
 
 interface BottomPanelState {
   activeTab: BottomPanelTab;

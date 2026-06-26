@@ -9,7 +9,7 @@
 import React, { useState } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic,
+  FileMusic, Waves,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { PianoRoll } from '../audio/PianoRoll';
@@ -18,6 +18,7 @@ import { DetailsView } from './DetailsView';
 import { ScoreView } from './ScoreView';
 import { MediaBucketView } from './MediaBucketView';
 import { SlidePanel } from './SlidePanel';
+import { SwayPanel } from './SwayPanel';
 import { DetachableWindow } from './DetachableWindow';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 import { useSlideStore } from '../../state/slideStore';
@@ -30,6 +31,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'details',    label: 'Details',      icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'bucket',     label: 'Media',        icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
   { id: 'slide',      label: 'SLIDE',        icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
+  { id: 'sway',       label: 'SWAY',         icon: Waves,      colorActive: 'border-fuchsia-500 text-fuchsia-300' },
 ];
 
 export const BottomMultiTabPanel: React.FC = () => {
@@ -148,6 +150,11 @@ export const BottomMultiTabPanel: React.FC = () => {
         {activeTab === 'bucket' && (
           <div className="absolute inset-0">
             <MediaBucketView />
+          </div>
+        )}
+        {activeTab === 'sway' && (
+          <div className="absolute inset-0">
+            <SwayPanel />
           </div>
         )}
         {activeTab === 'slide' && (
