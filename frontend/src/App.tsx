@@ -21,6 +21,8 @@ import { publishMidi } from './state/midiBus';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
 import { startXrControl, stopXrControl, registerXrControlSource } from './state/xrControlClient';
 import { djControlSource } from './state/xrControlDjSource';
+import { makeControlSource } from './state/makeControlSource';
+import { processControlSource } from './state/processControlSource';
 import { swayControlSource, startSwayXrMirror } from './state/swayControlSource';
 import { startSwayBus } from './state/swayBus';
 import { startSwayRouting } from './state/swayRouting';
@@ -238,6 +240,12 @@ export default function App() {
     // the same bus; the pose values themselves arrive via poseBus regardless of MIDI.
     registerXrControlSource(poseControlSource);
     const stopPoseMirror = startPoseXrMirror();
+    // MAKE (Magenta RT2): live generation params as bindable targets, so SWAY and
+    // an XR headset can drive generation. Bidirectional like DJ; lazy-loaded.
+    registerXrControlSource(makeControlSource);
+    // PROCESS (MIX effect chain): drive effect params on the next offline render,
+    // including the vocal_processing path. Bidirectional like DJ; lazy-loaded.
+    registerXrControlSource(processControlSource);
     startXrControl();
     // Stream the visualization feed (waveform pack) over the same bridge so a
     // theDAW-XR headset can render theDAW's live audio natively.

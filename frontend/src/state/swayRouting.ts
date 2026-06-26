@@ -22,8 +22,12 @@ let targetLoad: Promise<BindableTarget[]> | null = null;
 function loadTargets(): Promise<BindableTarget[]> {
   if (targetCache) return Promise.resolve(targetCache);
   if (!targetLoad) {
-    targetLoad = import('./bindableTargets').then((m) => {
-      targetCache = m.DJ_TARGETS;
+    targetLoad = Promise.all([
+      import('./bindableTargets'),
+      import('./makeTargets'),
+      import('./processTargets'),
+    ]).then(([dj, make, proc]) => {
+      targetCache = [...dj.DJ_TARGETS, ...make.MAKE_TARGETS, ...proc.PROCESS_TARGETS];
       return targetCache;
     });
   }
@@ -57,6 +61,18 @@ export const useSwayRoutingStore = create<SwayRoutingState>()(
   ),
 );
 
+/** First-run defaults: the six dims to live Magenta make-targets, so SWAY drives
+ *  generation out of the box. Seeded only when no routes exist at all, so a
+ *  returning user's saved DJ/MAKE bindings are never overwritten. */
+const DEFAULT_MAKE_ROUTES: Partial<Record<SwayDim, string>> = {
+  strike: 'make.cfgDrums',
+  sway: 'make.cfgMusic',
+  pulse: 'make.temperature',
+  glide: 'make.cfgNotes',
+  press: 'make.volume',
+  sculpt: 'make.topK',
+};
+
 const prev: Record<SwayDim, number> = {
   strike: 0,
   sway: 0,
@@ -88,6 +104,11 @@ let unsub: (() => void) | null = null;
  *  App in the midiEnabled effect; returns a stop function. */
 export function startSwayRouting(): () => void {
   if (unsub) return () => {};
+  // Seed the MAKE defaults non-destructively: only when the user has no routes,
+  // so existing bindings (DJ or MAKE) are never clobbered.
+  if (Object.keys(useSwayRoutingStore.getState().routes).length === 0) {
+    useSwayRoutingStore.setState({ routes: { ...DEFAULT_MAKE_ROUTES } });
+  }
   void loadTargets(); // warm so the first move routes without a stall
   unsub = subscribeSwayValue((dim, value) => {
     const previous = prev[dim];

@@ -333,6 +333,11 @@ export const CONTROLLER_PROFILES: ControllerProfile[] = ROWS.map(([id, name, ven
 /** The on-screen GANTASMO XR twin surface (see WorldsCollidePanel). */
 export const GANTASMO_WORLDS_COLLIDE_ID = 'gantasmo-worlds-collide';
 
+/** The Audima Sway expressive-motion controller — pinned second in the SLIDE
+ *  picker (right below the GANTASMO twin) so the 6-dimension surface is one
+ *  click away. Its dims bind by learn via swayBus. */
+export const AUDIMA_SWAY_ID = 'audima-sway';
+
 // Default to the on-screen GANTASMO surface so it is front-and-centre with no
 // hardware connected. Auto-detect still switches to a real controller when one
 // is connected.

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Music } from 'lucide-react';
 import type { MagentaTool } from '../../lib/magentaToolCatalog';
+import { registerMakeInstrument } from '../../state/makeBridge';
 
 /* ── MagentaToolStage ────────────────────────────────────────────────────────
    Mounts a Magenta RealTime 2 instrument (Collider / Jam / MRT2 standalone) in
@@ -36,10 +37,17 @@ export const MagentaToolStage: React.FC<{
         try { doc.defaultView?.dispatchEvent(new Event('resize')); } catch { /* ignore */ }
       }
     } catch { /* cross-origin guard — same-origin in practice */ }
+    // Hand the instrument's window to the MAKE bridge so SWAY and an XR headset
+    // can drive its live generation params. Cleared when the tool changes or the
+    // stage unmounts (the effect cleanup below).
+    try { registerMakeInstrument(iframeRef.current?.contentWindow ?? null); } catch { /* ignore */ }
     setLoaded(true);
   };
 
-  useEffect(() => { setLoaded(false); }, [tool?.id]);
+  useEffect(() => {
+    setLoaded(false);
+    return () => { registerMakeInstrument(null); };
+  }, [tool?.id]);
 
   if (!tool) {
     return (
