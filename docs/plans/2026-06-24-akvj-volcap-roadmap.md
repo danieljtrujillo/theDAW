@@ -107,6 +107,45 @@ rotation.
   source over AKV1 (ARKit/ARCore or on-device monocular) with intrinsics added to the header.
 - P6 Splat fidelity tier + WebGPU/TSL compute port of `AkvjCloudRenderer` (toward ~1M points).
 
+## Coming up (kinda soon) — priority queue
+
+The running upcoming-features queue layered on top of the P-phases above. ASCII keeps
+its slot; everything else is sequenced smallest-valuable-first, with one hard dependency
+(the Show Designer mapping matrix lands before or with FaceViz/Sway so those plug in as
+sources rather than needing a retrofit).
+
+1. ASCII source (P4 above): ASCILINE GPU glyph source, depth-driven glyph density,
+   dynamic font size, audio-reactive.
+2. SPECTRA-RIDER VJ cameraSource: port the 3D audio spectrogram-terrain visualizer in as a
+   framework-free three.js source like cymatics, plus the `getAudioSpectrum` 128-bin audio
+   seam it needs. Lowest dependency, immediate visible win. See the Show Designer plan.
+3. VSTs (re-added after the earlier deferral): host VST/CLAP audio plugins in the MIX /
+   FX chain. A licensing and hosting-approach pass is needed before building.
+4. Show Designer mapping matrix (foundation): one source-to-target grid that subsumes the
+   separate DJ and VJ MIDI mapping. Lands before FaceViz/Sway. See the Show Designer plan.
+5. Skeletal tracking with segmentation and AR: MediaPipe pose plus body segmentation /
+   masking to cut the performer out of the webcam, then composite AR layers and drive
+   particles and clouds from the skeleton. Delivered together with the FaceViz module.
+6. FaceViz module integration: fold the gantasmo INFINIGHTCapture / FaceViz gesture-mocap
+   app into theDAW (absorb, in-process). Now consumes the matrix as a control source.
+7. Sway controller integration: ingest the Audima Sway expressive motion MIDI controller
+   as a control source on the matrix and route its six dimensions across DJ, VJ, akvj, FX, XR.
+8. Presets + per-song bindings + pads: genre presets, bindings saved per song and recalled
+   on load, and FX-rack/toggle pads for mid-song changes, layered over the matrix.
+9. Vocal suite (capture + MIDI home): absorb vocal2midi-architect as one in-browser YIN
+   capture engine landing in the piano roll / channel rack / SpessaSynth.
+10. Vocal suite (generation): Gemini metadata/cleanup server-side, the Architect agent onto
+    the control bus, and vocal-to-inpainting through the already-wired inpaint contract.
+11. Vocal suite (performance): vocalize-an-effect (beatbox timbre drives an FX) and
+    beat-for-a-section. The trickiest, genuinely new code, last of the vocal items.
+12. SPECTRA VR (Route A, in-VJ WebXR), gated on item 2 being confirmed live. Route B
+    (theDAW-XR Unity HLSL) held as the polished-show follow-up.
+13. SoulX singer sidecar: the singing-voice endpoint of the vocal suite, its own multi-phase
+    build (see `docs/guides/theDAW_SoulX_Singer_Integration_Guide.md`).
+
+Design for items 4-8 + 9-12 is in `docs/plans/2026-06-24-show-matrix-vocal-spectra.md`;
+items 5-7 also in `docs/plans/2026-06-24-faceviz-sway-skeletal-integration.md`.
+
 ## Risks (honest)
 
 - Monocular depth is relative/affine + flickery; needs EMA + near/far remap; stylized look only.
