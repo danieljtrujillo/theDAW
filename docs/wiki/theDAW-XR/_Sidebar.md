@@ -1,4 +1,4 @@
-### theDAW XR
+### theDAW-XR
 
 - [Home](Home)
 - [README](https://github.com/gantasmo/theDAW-XR/blob/main/README.md)

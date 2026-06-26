@@ -1,8 +1,8 @@
-# theDAW XR Wiki
+# theDAW-XR Wiki
 
-theDAW XR is the spatial companion app for [theDAW](https://github.com/gantasmo/theDAW) by [GANTASMO](https://github.com/gantasmo). It turns a Meta Quest 3 into a hands-only control and capture surface for the desktop workstation, with hand-tracked MIDI, passthrough video streaming, co-located multiplayer, and reactive head-mounted visuals, all over ADB.
+theDAW-XR is the spatial companion app for [theDAW](https://github.com/gantasmo/theDAW) by [GANTASMO](https://gantasmo.com). It turns a Meta Quest 3 into a hands-only control and capture surface for the desktop workstation: hand-tracked MIDI, passthrough video streaming, co-located multiplayer, and reactive head-mounted visuals, all over ADB.
 
-## What it does
+## Integrations
 
 | Integration | Function |
 |---|---|
@@ -30,7 +30,7 @@ Each feature installs as an embedded Unity package through Window, then Package 
 - adb for the USB or wireless tunnel.
 - theDAW running with the `questmidi`, `questcast`, and `queststitch` modules.
 
-## Quick start
+## Quickstart
 
 1. Open the project and load `Assets/Scenes/QuestMIDI.unity`.
 2. Run GANTASMO, then MIDI Bridge, then Setup Wizard.
@@ -38,4 +38,4 @@ Each feature installs as an embedded Unity package through Window, then Package 
 4. Build and deploy to the Quest, or press Play to test MIDI on the desktop.
 5. Select delinQuest or STITCH in the VJ source list.
 
-See the [README](https://github.com/gantasmo/theDAW-XR/blob/main/README.md) for the full install table and editor menu.
+The [README](https://github.com/gantasmo/theDAW-XR/blob/main/README.md) has the full install table and editor menu.

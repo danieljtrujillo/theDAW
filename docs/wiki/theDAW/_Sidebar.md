@@ -3,6 +3,7 @@
 - [Home](Home)
 - [Getting Started](Getting-Started)
 - [Architecture](Architecture)
+- [Dataflow](Dataflow)
 - [Workspaces](Workspaces)
 - [Models](Models)
 - [Modules and Sidecars](Modules-and-Sidecars)
@@ -13,7 +14,7 @@
 - [User Guide](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md)
 - [README](https://github.com/gantasmo/theDAW/blob/main/README.md)
 
-### Connected repos
+### Ecosystem
 
 - [VJ-9000](https://github.com/gantasmo/VJ-9000)
 - [magenta-rt2-nvidia](https://github.com/gantasmo/magenta-rt2-nvidia)

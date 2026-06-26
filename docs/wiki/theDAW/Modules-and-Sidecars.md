@@ -1,12 +1,12 @@
 # Modules and Sidecars
 
-## Plugin modules
+## Modules
 
-The backend mounts a plugin system from `backend/modules/`. Each subdirectory provides a `module.json` and a `router.py`, and the loader mounts every enabled module and isolates failures so one broken module does not take down the server. Settings can enable or disable each module, and a restart applies the change.
+The backend mounts a plugin system from `backend/modules/`. Each subdirectory provides a `module.json` and a `router.py`, and the loader mounts every enabled module while isolating failures, so one broken module never takes down the server. Settings enable or disable each module, and a restart applies the change.
 
 | Module | Area |
 |---|---|
-| `analysis`, `analyzer` | Track analysis, loudness, and key and tempo detection. |
+| `analysis`, `analyzer` | Track analysis, loudness, key, and tempo detection. |
 | `chimera` | The fusion engine that blends and beat-aligns several clips into one generation. |
 | `effects` (at `/api/studio`) | The MIX effects and mastering chain. |
 | `mastering`, `restoration`, `enhance`, `delivery`, `creative_fx`, `creative_neural` | The six-family Edit Tool Stack under `/api/edit/*`. |
@@ -20,9 +20,9 @@ The backend mounts a plugin system from `backend/modules/`. Each subdirectory pr
 | `controllervision` | Controller identification from a photo. |
 | `convert`, `ytimport`, `settings` | Format conversion, URL import, and app settings. |
 
-See [User Guide §19 Backend API Reference](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#19-backend-api-reference) for the endpoints each module exposes.
+[User Guide §19](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#19-backend-api-reference) lists the endpoints each module exposes.
 
-## Sidecars and companions
+## Sidecars
 
 The backend spawns or embeds several processes and pairs with companion repositories.
 
@@ -34,3 +34,7 @@ The backend spawns or embeds several processes and pairs with companion reposito
 | `questcast`, `queststitch`, `magenta` | `sidecars/` | The Quest video and stitch bridges and the studio sidecar. |
 
 Each connected repo has its own README, badges, and wiki Home.
+
+---
+
+<p align="center"><a href="Models">&lt; Previous: Models</a> &nbsp; | &nbsp; <a href="Troubleshooting">Next: Troubleshooting &gt;</a></p>

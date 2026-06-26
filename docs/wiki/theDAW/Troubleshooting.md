@@ -10,4 +10,8 @@
 
 **Magenta sidecar shows empty `port_src/`.** The upstream engine source is a git submodule. Clone theDAW with `--recurse-submodules`, or for the standalone studio use the [release ZIP](https://github.com/gantasmo/magenta-rt2-nvidia/releases/latest).
 
-The full matrix is in [User Guide §23](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#23-troubleshooting).
+[User Guide §23](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#23-troubleshooting) has the full matrix.
+
+---
+
+<p align="center"><a href="Modules-and-Sidecars">&lt; Previous: Modules and Sidecars</a></p>

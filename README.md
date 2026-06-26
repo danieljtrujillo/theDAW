@@ -1,6 +1,6 @@
 <h1 align="center">theDAW</h1>
 
-<p align="center"><strong>by <a href="https://github.com/gantasmo">GANTASMO</a></strong></p>
+<p align="center"><strong>by <a href="https://gantasmo.com">GANTASMO</a></strong></p>
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white" alt="Python 3.10"></a>
@@ -44,7 +44,7 @@ theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, vendore
 
 ---
 
-## Start Here
+## Quickstart
 
 **Double-click `theDAW.bat`. That is the entire setup.** It checks the machine, installs anything missing after one quick confirmation, and opens theDAW in the browser. The Stable Audio model downloads on its own the first time a track is generated.
 
@@ -75,74 +75,91 @@ cd frontend && npm run dev                                              # fronte
 
 ---
 
-## How theDAW Fits Together
+## Architecture
 
-theDAW is a React frontend over a FastAPI backend that wraps the Stable Audio 3 pipeline, a plugin module system, and a set of spawned sidecars and companion apps.
+theDAW is a React frontend over a FastAPI backend that wraps the Stable Audio 3 pipeline, a plugin module system, and spawned sidecars. The frontend proxies `/api/*` to the backend on port 8600. The wiki [Dataflow](https://github.com/gantasmo/theDAW/wiki/Dataflow) page maps every input and output in one chart.
+
+**System.**
 
 ```mermaid
-flowchart LR
-  subgraph Client["Browser or Electron desktop"]
-    UI["theDAW UI, React 19 and Vite 7<br/>MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN"]
-  end
-  subgraph Server["FastAPI backend on port 8600"]
-    API["Job queue, FFmpeg, model introspection"]
-    SA3["Stable Audio 3<br/>DiT plus SAME autoencoder"]
-    MODS["Plugin modules<br/>chimera, stems, notation, vj, suno, magenta, xr, ..."]
-  end
-  subgraph Sidecars["Spawned sidecars and companions"]
-    MRT2["magenta-rt2-nvidia<br/>WSL2 plus JAX"]
-    VJ["VJ-9000<br/>WebGL visual engine"]
-    XR["theDAW-XR<br/>Meta Quest 3"]
-  end
-  UI -->|"/api/*"| API
+flowchart TD
+  UI["theDAW UI<br/>MAKE EDIT MIX DJ VJ TRAIN LEARN"]:::in
+  API["FastAPI backend :8600<br/>job queue, FFmpeg, introspection"]:::proc
+  SA3["Stable Audio 3<br/>DiT + SAME AE"]:::eng
+  MODS["Plugin modules"]:::proc
+  MRT2["magenta-rt2-nvidia<br/>WSL2 + JAX"]:::side
+  VJ["VJ-9000<br/>WebGL engine"]:::side
+  XR["theDAW-XR<br/>Quest 3"]:::side
+  UI -->|/api/*| API
   API --> SA3
   API --> MODS
   MODS -. spawn .-> MRT2
   MODS -. iframe .-> VJ
-  XR <-->|"ADB, MIDI, video"| MODS
+  XR <-->|ADB, MIDI, video| MODS
+  classDef in fill:#0f3d57,stroke:#3aa0db,color:#eaf6ff;
+  classDef eng fill:#3a2356,stroke:#a877e0,color:#f3ecff;
+  classDef proc fill:#0e3b3b,stroke:#2bb3a3,color:#e6fffb;
+  classDef side fill:#4a3115,stroke:#e09a3a,color:#fff4e3;
 ```
 
-**Generation pipeline.** Several inputs condition one generation. A DiT diffusion transformer renders SAME latents, the SAME autoencoder decodes them to audio, every render saves to the library, and LEARN draws the lineage between pieces.
+**Generation.** Several inputs condition one generation; the DiT renders latents, the autoencoder decodes them, every render saves to the library, and LEARN draws the lineage.
 
 ```mermaid
-flowchart LR
-  P["Text prompt"] --> GEN
-  INIT["Init audio<br/>voice, file, library, pattern"] --> GEN
-  MASK["Painted inpaint region"] --> GEN
-  CHI["Chimera fusion<br/>blend and beat-align clips"] --> GEN
-  GEN["DiT diffusion transformer"] --> LAT["SAME latents"]
-  LAT --> DEC["SAME autoencoder decode"]
-  DEC --> WAV["44.1 kHz stereo audio"]
-  WAV --> LIB["Library, auto-saved"]
-  LIB --> LRN["LEARN lineage graph"]
+flowchart TD
+  P["Text prompt"]:::in
+  INIT["Init audio<br/>voice, file, library, pattern"]:::in
+  MASK["Inpaint region"]:::in
+  CHI["Chimera fusion"]:::in
+  P --> GEN
+  INIT --> GEN
+  MASK --> GEN
+  CHI --> GEN
+  GEN["DiT transformer"]:::eng --> LAT["SAME latents"]:::eng
+  LAT --> DEC["SAME decode"]:::eng
+  DEC --> WAV["44.1 kHz stereo"]:::out
+  WAV --> LIB["Library"]:::out
+  LIB --> LRN["LEARN lineage"]:::out
+  classDef in fill:#0f3d57,stroke:#3aa0db,color:#eaf6ff;
+  classDef eng fill:#3a2356,stroke:#a877e0,color:#f3ecff;
+  classDef out fill:#13402a,stroke:#46c47a,color:#e7ffee;
 ```
 
-**Live rig signal flow.** Player audio, a microphone, MIDI, and the SLIDE surface drive the VJ engine and the DJ console, and theDAW-XR feeds hand-tracked MIDI and passthrough video into the same buses.
+**Routing.** Player audio, a microphone, MIDI, and SLIDE drive the VJ engine and the DJ console, and theDAW-XR feeds hand-tracked MIDI and passthrough video into the same buses.
 
 ```mermaid
-flowchart LR
-  DJ["DJ console<br/>2 decks, FX, live stems"] --> AUD
-  AUD["Master player audio levels, ~30 fps"] --> VJ
-  MIC["Microphone"] --> VJ
-  MIDI["MIDI controller<br/>~110 profiles, learn-by-capture"] --> VJ
+flowchart TD
+  DJ["DJ console<br/>2 decks, FX, stems"]:::live
+  MIC["Microphone"]:::in
+  MIDI["MIDI<br/>~110 profiles, learn"]:::in
+  SLIDE["SLIDE surface"]:::in
+  XR["theDAW-XR<br/>hand MIDI, passthrough"]:::side
+  DJ --> AUD["Player audio ~30 fps"]:::proc
+  AUD --> VJ
+  MIC --> VJ
+  MIDI --> VJ
   MIDI --> DJ
-  SLIDE["SLIDE control surface"] <-->|two-way sync| VJ
-  XR["theDAW-XR<br/>hand-tracked MIDI, passthrough"] --> MIDI
-  XR -->|passthrough video| VJ
-  VJ["VJ-9000<br/>sources, GPU effects, shaders"] --> OUT["Live output, second screen"]
-  VJ -->|WebRTC watch-link| WEB["Remote viewers"]
+  SLIDE <-->|sync| VJ
+  XR --> MIDI
+  XR -->|video| VJ
+  VJ["VJ-9000<br/>sources, FX, shaders"]:::live --> OUT["Live output"]:::out
+  VJ -->|watch-link| WEB["Remote viewers"]:::out
+  classDef in fill:#0f3d57,stroke:#3aa0db,color:#eaf6ff;
+  classDef proc fill:#0e3b3b,stroke:#2bb3a3,color:#e6fffb;
+  classDef live fill:#4a1530,stroke:#e85a8a,color:#ffe9f1;
+  classDef out fill:#13402a,stroke:#46c47a,color:#e7ffee;
+  classDef side fill:#4a3115,stroke:#e09a3a,color:#fff4e3;
 ```
 
 ---
 
-## Feature Index
+## Features
 
-Every feature has a full reference in the [User Guide](docs/USER_GUIDE.md). This index links each one to its detail. Workspace names jump to the section below; subfeatures jump to the User Guide.
+Every feature has a full reference in the [User Guide](docs/USER_GUIDE.md). Names link to the section below or the relevant guide.
 
 ### Studio
 
 - **[MAKE](#make)** generates audio from one form. [Text-to-audio](docs/USER_GUIDE.md#6-make-tab), [audio-to-audio](docs/USER_GUIDE.md#6-make-tab), [inpainting](docs/USER_GUIDE.md#6-make-tab), and [continuation](docs/USER_GUIDE.md#6-make-tab) all condition the same generation, alongside the [microphone recorder](docs/USER_GUIDE.md#6-make-tab), [Chimera fusion](docs/USER_GUIDE.md#6-make-tab), the [Spectrogram viewer](docs/USER_GUIDE.md#6-make-tab), [templates and saved prompts](docs/USER_GUIDE.md#6-make-tab), and the [async job queue](docs/USER_GUIDE.md#19-backend-api-reference).
-- **[Generate](#generate-cloud-and-real-time)** adds cloud and real-time engines: [Suno](docs/USER_GUIDE.md#26-cloud-generation-suno) in simple, custom, cover, and mashup modes, and [Magenta RealTime 2](docs/USER_GUIDE.md#27-magenta-realtime-2) text-to-music with MIDI-note and audio-style conditioning.
+- **[Generate](#generate)** adds cloud and real-time engines: [Suno](docs/USER_GUIDE.md#26-cloud-generation-suno) in simple, custom, cover, and mashup modes, and [Magenta RealTime 2](docs/USER_GUIDE.md#27-magenta-realtime-2) text-to-music with MIDI-note and audio-style conditioning.
 - **[EDIT](#edit)** is the multi-track timeline: [per-clip waveforms](docs/USER_GUIDE.md#7-edit-tab), [move and cut](docs/USER_GUIDE.md#7-edit-tab), a [snap grid](docs/USER_GUIDE.md#7-edit-tab), a [live per-track mixer](docs/USER_GUIDE.md#7-edit-tab), [trim and fade handles](docs/USER_GUIDE.md#7-edit-tab), [inpaint from editor](docs/USER_GUIDE.md#7-edit-tab), and [commit to one stereo WAV](docs/USER_GUIDE.md#7-edit-tab).
 - **[MIX](#mix)** is the effects and mastering stage: a [24-effect FFmpeg chain](docs/USER_GUIDE.md#8-mix-tab), [Quick Master macros](docs/USER_GUIDE.md#8-mix-tab), [process history](docs/USER_GUIDE.md#8-mix-tab), and the six-family [Edit Tool Stack](docs/USER_GUIDE.md#28-edit-tool-stack).
 - **[TRAIN](#train)** fits [LoRA adapters](docs/USER_GUIDE.md#22-lora-adapter-types): eight [adapter types](docs/USER_GUIDE.md#22-lora-adapter-types), [layer filtering](docs/workflows/lora.md), [interval gating](docs/workflows/lora.md), [SVD bases](docs/workflows/lora.md), and [autoencoder round-trips](docs/workflows/autoencoder.md).
@@ -172,7 +189,7 @@ Every feature has a full reference in the [User Guide](docs/USER_GUIDE.md). This
 
 One form drives text-to-audio, audio-to-audio, inpainting, and continuation. Supplied init audio, a text prompt, a painted inpaint region, and a Chimera stack all condition the same generation, and the init noise level sets how far the result departs from the source. Chimera blends several clips into one generation and beat-aligns them under Start, Downbeat, or Phrase Weave alignment. Templates store full parameter sets, Saved Prompts keep a history, and the async job queue saves every render to the library. Full reference: [User Guide §6](docs/USER_GUIDE.md#6-make-tab).
 
-### Generate, cloud and real-time
+### Generate
 
 <p align="center"><img src="docs/readme/magenta.png" alt="Magenta RealTime 2 text-to-music panel, the first non-Mac MRT2 port" width="820"></p>
 
@@ -254,9 +271,9 @@ The footer stays across every tab with the current title, a status chip, transpo
 
 ---
 
-## Connected Projects and Sidecars
+## Ecosystem
 
-theDAW is the hub of a small constellation of repositories. The backend spawns or embeds these, and each has its own README and badges.
+theDAW is the hub of a small constellation of repositories, each with its own README and badges.
 
 | Project | Repo | Role |
 |---|---|---|
@@ -268,7 +285,7 @@ In-tree sidecars under `sidecars/` (`questcast`, `queststitch`, `magenta`) and t
 
 ---
 
-## Repository Structure
+## Structure
 
 | Component | Location | Description |
 |---|---|---|
@@ -289,7 +306,7 @@ In-tree sidecars under `sidecars/` (`questcast`, `queststitch`, `magenta`) and t
 | `small-rf` / `medium-rf` | RF | 433 M / 1.4 B | SAME-S / SAME-L | CPU / GPU | 120 / 380 s |
 | `same-s` / `same-l` | Autoencoder | 266 M / 1.7 B | n/a | CPU / GPU | n/a |
 
-ARC checkpoints are post-trained for 8-step inference at `cfg_scale=1`. RF checkpoints are rectified-flow bases for LoRA training at `cfg_scale=7` and roughly 50 steps. Nothing downloads at startup; a model loads on the first generation that needs it, and the in-app **Settings, then Models** panel can register checkpoints already on disk. For manual placement, see [User Guide §21.2](docs/USER_GUIDE.md#212-manual-model-placement-download-links-and-folder-tree).
+ARC checkpoints are post-trained for 8-step inference at `cfg_scale=1`. RF checkpoints are rectified-flow bases for LoRA training at `cfg_scale=7` and roughly 50 steps. This table lists the primary keys; the specialized release checkpoints (`small-music`, `small-sfx`, and the `medium-base` / `music-base` / `sfx-base` variants) and their exact folders are catalogued in [User Guide §21.2](docs/USER_GUIDE.md#212-manual-model-placement-download-links-and-folder-tree). Nothing downloads at startup; a model loads on the first generation that needs it, and the in-app **Settings, then Models** panel can register checkpoints already on disk.
 
 ---
 
@@ -320,7 +337,7 @@ audio = pipe.generate(
 
 ---
 
-## Documentation Index
+## Documentation
 
 | Document | Contents |
 |---|---|
@@ -337,7 +354,7 @@ The GitHub **[Wiki](https://github.com/gantasmo/theDAW/wiki)** mirrors this inde
 
 ---
 
-## Self-documenting
+## Automation
 
 theDAW generates its own documentation and promo material from the live app. `scripts/screenshots/` drives a real session to capture feature screenshots and a coverage report, and `frontend/_capture_clips.mjs` is a Playwright harness that records the running app into the feature-tour video. The in-app assistant answers from these same documents through a ChromaDB RAG index, so the docs, the video, and the assistant stay sourced from one place.
 

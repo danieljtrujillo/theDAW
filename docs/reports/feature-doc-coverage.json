@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-26T10:47:18.787Z",
-  "repoRevision": "6467c4eb3d3c",
+  "generatedAt": "2026-06-26T12:08:10.437Z",
+  "repoRevision": "f92b145fcdf8",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": true,
@@ -925,6 +925,7 @@
         "#6-4-1-microphone-recorder",
         "#13-4-per-entry-controls",
         "#13-7-midi-conversion",
+        "#13-9-format-conversion",
         "#19-16-midi",
         "#33-notation-score-tabs-and-arrangements"
       ],
@@ -1009,7 +1010,7 @@
         "#10-vj-tab",
         "#purpose",
         "#10-3-bridges",
-        "#10-6-autopilot-visual-effects",
+        "#10-9-bpm-sync-and-pose-control",
         "#13-8-video-and-image-media",
         "#19-17-vj"
       ],
@@ -1122,7 +1123,9 @@
         "#7-6-commit-edit",
         "#7-7-insert-fx-rack-psychoacoustic",
         "#7-8-spatializer-teleport-and-autopilot",
-        "#10-6-autopilot-visual-effects"
+        "#10-6-autopilot-visual-effects",
+        "#10-8-effect-chain",
+        "#10-9-bpm-sync-and-pose-control"
       ],
       "coverage": "documented",
       "notes": "Matched 6/6 guide terms."
