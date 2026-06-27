@@ -1790,8 +1790,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       clip.sourceBpm ?? 120,
       clip.sourceTotalSteps ?? 32,
     );
-    useBottomPanelStore.getState().showTab('piano-roll');
-    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in Piano Roll (${clip.sourcePianoRoll.length} notes)`);
+    useBottomPanelStore.getState().showTab('midi');
+    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in MIDI (${clip.sourcePianoRoll.length} notes)`);
   }, []);
 
   const onClipDoubleClick = (clip: AudioClip) => {

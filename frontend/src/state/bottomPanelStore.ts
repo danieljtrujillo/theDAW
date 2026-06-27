@@ -17,8 +17,9 @@ export type BottomPanelTab =
   | 'spectral'
   | 'details'
   | 'score'
-  | 'piano-roll'
+  | 'midi'
   | 'step-seq'
+  | 'draw'
   | 'bucket'
   | 'slide'
   | 'sway';
@@ -70,6 +71,16 @@ export const useBottomPanelStore = create<BottomPanelState>()(
     }),
     {
       name: 'thedaw-bottom-panel-v5',
+      version: 1,
+      // The old 'piano-roll' and 'vocal' tabs merged into one 'midi' tab; map a
+      // persisted active tab forward so a returning user lands somewhere valid.
+      migrate: (persisted, _version) => {
+        const p = (persisted ?? {}) as { activeTab?: string };
+        if (p.activeTab === 'piano-roll' || p.activeTab === 'vocal') {
+          p.activeTab = 'midi';
+        }
+        return p as unknown as BottomPanelState;
+      },
       // Open/maximized state is intentionally NOT persisted so the bottom dock
       // and the log start collapsed on every app open. The active tab and the
       // sizes are remembered.

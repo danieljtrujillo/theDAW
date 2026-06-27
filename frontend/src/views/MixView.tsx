@@ -24,7 +24,7 @@ import { buildEffectChain, ensureChopModule, RACK_EFFECTS } from '../lib/rackEff
 import { encodeWav } from '../lib/wavEncode';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
-import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory } from '../lib/effectCatalog';
+import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory, type CategoryMeta } from '../lib/effectCatalog';
 import { STUDIO_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
 import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../lib/magentaToolCatalog';
 import { MagentaToolStage } from '../components/audio/MagentaToolStage';
@@ -51,6 +51,54 @@ if (import.meta.env.DEV) {
   const uncovered = [...new Set(RACK_EFFECTS.map((fx) => fx.group))].filter((g) => !(g in PSYCHO_GROUP_STYLE));
   if (uncovered.length) console.warn('[MixView] psychoacoustic groups with no tile style (fallback used):', uncovered);
 }
+
+/* ── "All" browser cells — shared by the list and tile (icon) views ──────────── */
+const AllHeader: React.FC<{ icon: React.ComponentType<{ className?: string }>; color: string; label: string; count: number }> = ({ icon: Icon, color, label, count }) => (
+  <div className="flex items-center gap-1.5 px-1 pt-0.5">
+    <Icon className={`w-3 h-3 shrink-0 ${color}`} />
+    <span className={`text-[9px] font-black uppercase tracking-widest ${color}`}>{label}</span>
+    <span className="text-[8px] font-mono text-zinc-600">{count}</span>
+  </div>
+);
+// A Studio module / psychoacoustic effect cell (color is a hex accent).
+const ModuleRow: React.FC<{ name: string; desc: string; color: string; marked: boolean; onClick: () => void }> = ({ name, desc, color, marked, onClick }) => (
+  <div onClick={onClick} className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${marked ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
+    <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+    <div className="flex-1 min-w-0">
+      <span className="text-[11px] font-medium block truncate" style={{ color }}>{name}</span>
+      <p className="text-[9px] text-zinc-500 truncate mt-0.5">{desc}</p>
+    </div>
+    {marked && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />}
+  </div>
+);
+const ModuleTile: React.FC<{ name: string; color: string; marked: boolean; onClick: () => void }> = ({ name, color, marked, onClick }) => (
+  <div onClick={onClick} style={{ width: 90, height: 98 }} className={`relative flex flex-col items-center justify-center gap-2 rounded border cursor-pointer transition-all overflow-hidden p-2 ${marked ? 'border-white/30 bg-white/5' : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}>
+    <span className="w-7 h-7 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 10px ${color}80` }} />
+    <span className="text-[10px] font-medium text-center leading-tight line-clamp-2" style={{ color }}>{name}</span>
+  </div>
+);
+// A backend effect cell (color comes from its category classes).
+const FxRow: React.FC<{ name: string; desc: string; cat: CategoryMeta; inChain: boolean; onClick: () => void }> = ({ name, desc, cat, inChain, onClick }) => (
+  <div onClick={onClick} className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${inChain ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
+    <span aria-hidden="true" className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />
+    <div className="flex-1 min-w-0">
+      <span className={`text-[11px] font-medium block truncate ${cat.tile.text}`}>{name}</span>
+      <p className="text-[9px] text-zinc-500 truncate mt-0.5">{desc}</p>
+    </div>
+    {inChain && <span className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />}
+  </div>
+);
+const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onClick: () => void }> = ({ name, cat, inChain, onClick }) => {
+  const Icon = cat.icon;
+  return (
+    <div onClick={onClick} style={{ width: 90, height: 98 }} className={`relative flex flex-col items-center justify-start gap-1.5 rounded border cursor-pointer transition-all overflow-hidden p-2 ${cat.tile.bg} ${inChain ? `${cat.tile.border} ring-2 ${cat.tile.ring}` : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}>
+      <div className={`absolute inset-0 ${cat.tile.glow} blur-xl pointer-events-none opacity-70`} />
+      <div className="relative z-10 flex items-center justify-center w-10 h-10 mt-1.5"><Icon className={`w-7 h-7 ${cat.tile.text}`} /></div>
+      <span className={`text-[10px] font-medium text-center leading-tight relative z-10 ${cat.tile.text} px-0.5 line-clamp-2`}>{name}</span>
+      {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
+    </div>
+  );
+};
 
 /* ═══ MIX (PROCESS) tab — now on the Control-Surface editor ═══════════════════
    Layout (drag-arrangeable in Design Mode, like DJ):
@@ -270,17 +318,18 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-1.5 gap-1.5">
       <span className={sectionTitle}>Effects</span>
       <div className="flex flex-col gap-0.5 overflow-y-auto min-h-0">
+        <button onClick={() => p.setActiveCategory('all')}
+          title="Every effect in MIX, grouped by category"
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'all' ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-300 hover:text-zinc-100 hover:bg-white/5'}`}>
+          <Library className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[10px] font-bold flex-1 truncate">All</span>
+          <span className="text-[8px] font-mono text-zinc-500 shrink-0">{p.allEffectCount}</span>
+        </button>
         <button onClick={() => p.setActiveCategory('studio')}
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'studio' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
           <Boxes className="w-3.5 h-3.5 shrink-0" />
           <span className="text-[10px] font-bold flex-1 truncate">Studio</span>
           <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length}</span>
-        </button>
-        <button onClick={() => p.setActiveCategory('all')}
-          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'all' ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}>
-          <Library className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[10px] font-semibold flex-1 truncate">All</span>
-          <span className="text-[8px] font-mono text-zinc-600 shrink-0">{p.allEffectCount}</span>
         </button>
         <button onClick={() => p.setActiveCategory('psychoacoustics')}
           title="Psychoacoustic effects — pick one to open the rack in the Effect Stage"
@@ -291,17 +340,17 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         </button>
         <button onClick={() => p.setActiveCategory('magenta')}
           title="Magenta RealTime 2 — generative instruments (Collider · Jam · MRT2)"
-          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'magenta' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'magenta' ? 'border-sky-400 text-sky-200 bg-sky-500/10' : 'border-transparent text-sky-400/80 hover:text-sky-200 hover:bg-sky-500/5'}`}>
           <Music className="w-3.5 h-3.5 shrink-0" />
           <span className="text-[10px] font-bold flex-1 truncate">Magenta</span>
-          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{MAGENTA_TOOLS.length}</span>
+          <span className="text-[8px] font-mono text-sky-600 shrink-0">{MAGENTA_TOOLS.length}</span>
         </button>
         {CATEGORY_META.map((cat) => {
           const Icon = cat.icon;
           const active = p.activeCategory === cat.id;
           return (
             <button key={cat.id} onClick={() => p.setActiveCategory(cat.id)}
-              className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${active ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}>
+              className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${active ? cat.rail.active : cat.rail.idle}`}>
               <Icon className="w-3.5 h-3.5 shrink-0" />
               <span className="text-[10px] font-semibold flex-1 truncate">{cat.label}</span>
               <span className="text-[8px] font-mono text-zinc-600 shrink-0">{cat.count}</span>
@@ -398,18 +447,66 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
             );
           })}
         </div></div>
-      ) : p.viewMode === 'list' ? (
+      ) : p.activeCategory === 'all' ? (() => {
+        // Everything in MIX, in either list or icon view. Order: Studio +
+        // Psychoacoustics first, then the backend effect categories.
+        const tile = p.viewMode === 'tile';
+        const boxCls = tile ? 'flex flex-wrap gap-3 content-start justify-center p-1' : 'flex flex-col gap-1';
+        return (
+          <div className="flex-1 overflow-y-auto"><div className="flex flex-col gap-2 content-start">
+            <div className="flex flex-col gap-1">
+              <AllHeader icon={Boxes} color="text-cyan-300" label="Studio" count={STUDIO_MODULES.length} />
+              <div className={boxCls}>
+                {STUDIO_MODULES.map((m) => (tile
+                  ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
+                  : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <AllHeader icon={Headphones} color="text-fuchsia-300" label="Psychoacoustics" count={PSYCHO_MODULES.length} />
+              <div className={boxCls}>
+                {PSYCHO_MODULES.map((m) => {
+                  const marked = p.activePsychoId === m.id || p.rackChain.some((e) => e.effect === m.id);
+                  return tile
+                    ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} />
+                    : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} />;
+                })}
+              </div>
+            </div>
+            {CATEGORY_META.map((cat) => {
+              const fxs = EFFECT_CATALOG[cat.id] || [];
+              if (!fxs.length) return null;
+              return (
+                <div key={cat.id} className="flex flex-col gap-1">
+                  <AllHeader icon={cat.icon} color={cat.tile.text} label={cat.label} count={fxs.length} />
+                  <div className={boxCls}>
+                    {fxs.map((fx) => {
+                      const inChain = p.chainEffectIds.has(fx.id);
+                      return tile
+                        ? <FxTile key={fx.id} name={fx.name} cat={cat} inChain={inChain} onClick={() => p.addEffect(fx.id)} />
+                        : <FxRow key={fx.id} name={fx.name} desc={fx.desc} cat={cat} inChain={inChain} onClick={() => p.addEffect(fx.id)} />;
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div></div>
+        );
+      })() : p.viewMode === 'list' ? (
         <div className="flex-1 overflow-y-auto"><div className="flex flex-col gap-1 content-start">
           {p.activeEffects.map((fx) => {
+            const cat = fxToCategory[fx.id] ?? CATEGORY_META[0];
             const inChain = p.chainEffectIds.has(fx.id);
             return (
               <div key={fx.id} onClick={() => p.addEffect(fx.id)}
-                className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${inChain ? 'border-purple-400/40 bg-purple-500/5' : 'border-zinc-800 hover:border-purple-500/30 hover:bg-white/5'}`}>
+                className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${inChain ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
+                <span aria-hidden="true" className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />
                 <div className="flex-1 min-w-0">
-                  <span className="text-[11px] font-medium text-zinc-100 block truncate">{fx.name}</span>
+                  <span className={`text-[11px] font-medium block truncate ${cat.tile.text}`}>{fx.name}</span>
                   <p className="text-[9px] text-zinc-500 truncate mt-0.5">{fx.desc}</p>
                 </div>
-                {inChain && <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0" />}
+                {inChain && <span className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />}
               </div>
             );
           })}
@@ -750,7 +847,7 @@ export const MixView: React.FC = () => {
     onClearSource: () => setSourceBoth(null),
     isChainProcessing,
     onDownload: handleDownload, onSendToDAW: () => void handleSendToDAW(), onSendToInpaint: () => void handleSendToInpaint(),
-    activeCategory, setActiveCategory, allEffectCount: allEffects.length,
+    activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
     onPickModule: handlePickModule, activeModuleId, activeModule,

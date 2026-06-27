@@ -5,6 +5,7 @@ import {
   dialog,
   protocol,
   net,
+  session,
 } from 'electron'
 import { ChildProcess, spawn, execFile } from 'child_process'
 import * as fs from 'fs'
@@ -516,6 +517,20 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 app.whenReady().then(async () => {
+  // Identify as theDAW, not "Electron": names the process / menu / userData dir
+  // and, via the AppUserModelID, the Windows taskbar grouping + shortcut binding.
+  app.setName('theDAW')
+  app.setAppUserModelId('com.gantasmo.thedaw')
+
+  // Grant media (microphone / camera) capture to the renderer. Electron layers
+  // its own permission gate on top of the OS; with no handler a getUserMedia
+  // track can return MUTED — the OS opens the device but the renderer receives
+  // silence. The renderer only ever loads our own local content, so granting is
+  // safe. Mic capture (vocal record) and camera (VJ) both depend on this.
+  const ses = session.defaultSession
+  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(true))
+  ses.setPermissionCheckHandler(() => true)
+
   registerIpcHandlers()
 
   // In production, register our custom protocol
