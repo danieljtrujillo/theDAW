@@ -153,4 +153,6 @@ exclude = [
     "stable_audio_3/training",
     # Vendored git submodule (third-party MRT2 port); not linted by the parent project.
     "sidecars/magenta-rt2-nvidia",
+    # Runtime-created isolated venv for the faster-whisper transcription sidecar.
+    "backend/modules/vocal/transcription/.whisper_venv",
 ]

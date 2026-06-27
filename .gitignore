@@ -152,6 +152,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Isolated runtime venv + filtered reqs for the faster-whisper transcription sidecar
+backend/modules/vocal/transcription/.whisper_venv/
+
 # Spyder project settings
 .spyderproject
 .spyproject

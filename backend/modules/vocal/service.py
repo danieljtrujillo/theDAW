@@ -25,7 +25,7 @@ from backend.core.jobs import Job
 from .preprocess import f0_curve, isolation
 from .preprocess import notes as notes_step
 from .preprocess import segments as segments_step
-from .schema import Lyrics, Source, Timing, VocalArtifact
+from .schema import Lyrics, Phrase, Source, Timing, VocalArtifact, Word
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +42,25 @@ def health() -> dict[str, Any]:
 
 
 def transcription_available() -> bool:
-    # Wired in Phase 2b (the faster-whisper sidecar). Until then lyrics are
-    # hand-entered in the review step.
-    return False
+    """True once the isolated faster-whisper venv exists and imports. Probing is
+    a cheap subprocess and never raises into the request path."""
+    try:
+        from .transcription import available
+
+        return available()
+    except Exception as e:
+        log.info("vocal: transcription probe failed: %s", e)
+        return False
+
+
+def transcription_probe() -> dict:
+    """Full sidecar status for the UI (venv built? deps importable? model?)."""
+    try:
+        from .transcription import probe
+
+        return probe()
+    except Exception as e:
+        return {"ok": False, "error": repr(e)}
 
 
 def load_artifact(asset_id: str) -> Optional[dict]:
@@ -64,6 +80,67 @@ def load_artifact(asset_id: str) -> Optional[dict]:
     except Exception as e:
         log.info("vocal: artifact load failed for %s: %s", asset_id, e)
     return None
+
+
+def _artifact_obj(asset_id: str) -> Optional[VocalArtifact]:
+    """Load the persisted artifact dict and parse it back into a VocalArtifact."""
+    art_dict = load_artifact(asset_id)
+    if art_dict is None:
+        return None
+    try:
+        return VocalArtifact(**art_dict)
+    except Exception as e:
+        log.info("vocal: artifact parse failed for %s: %s", asset_id, e)
+        return None
+
+
+def export_midi(asset_id: str) -> Optional[Path]:
+    """meta2midi: render the artifact's notes to a .mid beside the audio and
+    return its path. None when there is no artifact / no notes / no mido."""
+    art = _artifact_obj(asset_id)
+    if art is None or not art.notes:
+        return None
+    src = _resolve_path(asset_id)
+    if src is None:
+        return None
+    from .convert import notes_to_midi
+
+    out = src.parent / "vocal_notes.mid"
+    res = notes_to_midi(art.notes, out, tempo_bpm=art.timing.tempo_bpm)
+    return out if res.get("ok") else None
+
+
+def validate_roundtrip(asset_id: str) -> dict:
+    """notes -> SMF -> notes drift report for the review surface."""
+    art = _artifact_obj(asset_id)
+    if art is None:
+        return {"ok": False, "error": "no artifact for asset"}
+    from .convert import roundtrip_check
+
+    return roundtrip_check(art.notes)
+
+
+def set_review(asset_id: str, reviewed: bool, notes_text: str) -> dict:
+    """Update the artifact's review gate in place (rewrite vocal_metadata.json and
+    the in-process cache) without adding another Library artifact row."""
+    art = _artifact_obj(asset_id)
+    if art is None:
+        return {"ok": False, "error": "no artifact for asset"}
+    art.review.reviewed = bool(reviewed)
+    art.review.notes = str(notes_text or "")
+    payload = art.model_dump()
+    src = _resolve_path(asset_id)
+    if src is not None:
+        try:
+            import json
+
+            (src.parent / "vocal_metadata.json").write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            log.info("vocal: review persist failed for %s: %s", asset_id, e)
+    _artifacts[asset_id] = payload
+    return {"ok": True, "review": payload["review"]}
 
 
 def _resolve_path(asset_id: str) -> Optional[Path]:
@@ -137,9 +214,80 @@ def _context(audio_path: Path) -> Timing:
     return Timing(tempo_bpm=_tempo_bpm(audio_path))
 
 
-async def _transcribe(path: Path, language: str) -> Lyrics:
-    """Phase 2b: faster-whisper sidecar (lazy). Until then, empty lyrics."""
-    return Lyrics(language=language)
+def _sec_ms(sec: float) -> int:
+    return int(round(float(sec) * 1000.0))
+
+
+def _lyrics_from_transcription(res: dict, language: str) -> Lyrics:
+    """Map the worker's seconds-based {language, text, segments[...]} onto the
+    artifact Lyrics in project-relative milliseconds. Segments become phrases;
+    word timestamps become Words."""
+    words: list[Word] = []
+    phrases: list[Phrase] = []
+    for seg in res.get("segments", []):
+        seg_text = (seg.get("text") or "").strip()
+        s_start, s_end = seg.get("start"), seg.get("end")
+        if seg_text and s_start is not None and s_end is not None:
+            phrases.append(
+                Phrase(text=seg_text, start_ms=_sec_ms(s_start), end_ms=_sec_ms(s_end))
+            )
+        for w in seg.get("words", []):
+            wt = (w.get("word") or "").strip()
+            ws, we = w.get("start"), w.get("end")
+            if wt and ws is not None and we is not None:
+                words.append(Word(text=wt, start_ms=_sec_ms(ws), end_ms=_sec_ms(we)))
+    return Lyrics(
+        language=res.get("language") or language,
+        text=(res.get("text") or "").strip(),
+        words=words,
+        phrases=phrases,
+        source="transcribed",
+    )
+
+
+async def audio_to_notes(upload: Any) -> list:
+    """Recorded/uploaded audio -> notes via the SAME offline basic-pitch path as
+    Analyze (much better than live YIN). Transcodes to wav first for decoder
+    robustness, then reuses extract_notes. Returns list[Note]; [] on failure."""
+    import tempfile
+
+    suffix = Path(getattr(upload, "filename", "") or "rec.webm").suffix or ".webm"
+    with tempfile.TemporaryDirectory() as td:
+        raw = Path(td) / f"rec{suffix}"
+        try:
+            raw.write_bytes(await upload.read())
+        except Exception as e:
+            log.info("vocal.audio_to_notes: read failed: %s", e)
+            return []
+        src = raw
+        try:
+            from backend.lib import ffmpeg
+
+            wav = Path(td) / "rec.wav"
+            await ffmpeg.render(raw, wav, [], ["-ac", "1", "-ar", "22050"])
+            src = wav
+        except Exception as e:
+            log.info("vocal.audio_to_notes: transcode failed, using raw: %s", e)
+        return notes_step.extract_notes(src)
+
+
+async def _transcribe(path: Path, language: str, job: Optional[Job] = None) -> Lyrics:
+    """Transcribe via the isolated faster-whisper sidecar and map to Lyrics.
+    Never raises: returns empty Lyrics when transcription is unavailable, so a
+    missing optional sidecar never fails the prepare pipeline."""
+    from .transcription import transcribe as run_transcribe
+
+    if job is not None:
+        job.update(message="transcribing (first run installs whisper)")
+    try:
+        res = await run_transcribe(path, language)
+    except Exception as e:
+        log.info("vocal: transcription failed: %s", e)
+        return Lyrics(language=language)
+    if not res.get("ok"):
+        log.info("vocal: transcription unavailable: %s", res.get("error"))
+        return Lyrics(language=language)
+    return _lyrics_from_transcription(res, language)
 
 
 def start_prepare(job: Job, req: dict[str, Any]) -> None:
@@ -147,6 +295,32 @@ def start_prepare(job: Job, req: dict[str, Any]) -> None:
     task = asyncio.create_task(run_prepare(job, req))
     _running.add(task)
     task.add_done_callback(_running.discard)
+
+
+def start_install_transcription(job: Job) -> None:
+    """Spawn the faster-whisper install as a tracked background job so the UI can
+    pre-provision the sidecar (zero-terminal) and poll progress."""
+    task = asyncio.create_task(_run_install_transcription(job))
+    _running.add(task)
+    task.add_done_callback(_running.discard)
+
+
+async def _run_install_transcription(job: Job) -> None:
+    try:
+        job.update(status="running", progress=0.05, message="creating isolated venv")
+        from .transcription import install_dependencies
+
+        result = await asyncio.to_thread(install_dependencies)
+        if result.get("ok"):
+            job.result = {"ok": True, "mode": result.get("install_mode")}
+            job.update(status="done", progress=1.0, message="faster-whisper installed")
+        else:
+            job.error = result.get("error") or (result.get("stderr") or "")[:600]
+            job.update(status="failed", message="transcription install failed")
+    except Exception as e:
+        log.exception("vocal transcription install failed")
+        job.error = repr(e)
+        job.update(status="failed", message=str(e))
 
 
 async def run_prepare(job: Job, req: dict[str, Any]) -> None:
@@ -188,7 +362,7 @@ async def run_prepare(job: Job, req: dict[str, Any]) -> None:
             job.update(progress=0.85, message="segments")
 
             if bool(req.get("transcribe", False)):
-                art.lyrics = await _transcribe(cur, str(req.get("language", "en")))
+                art.lyrics = await _transcribe(cur, str(req.get("language", "en")), job)
             job.update(progress=0.95, message="lyrics")
 
         payload = art.model_dump()
