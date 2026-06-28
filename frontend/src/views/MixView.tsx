@@ -10,6 +10,7 @@ import { useLibraryStore } from '../state/libraryStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useAppUiStore } from '../state/appUiStore';
+import { logError } from '../state/logStore';
 import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideRow } from '../components/audio/SlideRow';
 import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
@@ -771,7 +772,23 @@ export const MixView: React.FC = () => {
       src.connect(inGain);
       src.start(0);
       const rendered = await offline.startRendering();
-      setOutputUrl(URL.createObjectURL(encodeWav(rendered)));
+      const wav = encodeWav(rendered);
+      setOutputUrl(URL.createObjectURL(wav));
+      // Persist the rendered result to the library (mirrors the backend chain's
+      // save). Without this the rack output only appears in the Output viz and
+      // is never saved.
+      const label = chainNow.filter((e) => e.enabled).map((e) => e.effect).join(' + ') || 'rack';
+      const title = `rack-${label.slice(0, 40)}.wav`;
+      try {
+        await useLibraryStore.getState().importEntry({
+          blob: wav,
+          filename: title,
+          mimeType: 'audio/wav',
+          metadata: { title, prompt: `Psychoacoustic rack: ${label}`, source: 'studio', tags: ['psychoacoustic-rack'] },
+        });
+      } catch (e) {
+        logError('studio', `Rack library save failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } catch { /* non-fatal: leave the prior output in place */ } finally {
       decodeCtx.close().catch(() => {});
       setApplyingRack(false);
