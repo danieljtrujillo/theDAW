@@ -12,6 +12,10 @@ data/library.db-*
 # Suno cloud-gen key/jobs + local session change logs (never committed)
 data/suno_api_key.json
 data/suno_jobs.json
+# Installed/built .gan plugins + their extracted runtime (regenerated on demand)
+data/plugins/
+# Machine-specific VST3 scan cache (regenerated on scan)
+backend/modules/vst/vst3_scan_cache.json
 CHANGES-LOGS/
 backend/rag_index/
 archive/
@@ -19,6 +23,8 @@ archive/
 !docs/UI/**/*.png
 !docs/guides/**/*.png
 !docs/readme/**/*.png
+# Bundled .gan plugin artwork (The Owl) — a required runtime asset, not a capture still
+!frontend/public/owl/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

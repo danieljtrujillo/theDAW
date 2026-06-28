@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library } from 'lucide-react';
+import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library, FolderInput, Package, LayoutGrid } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 
@@ -9,9 +9,14 @@ import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel } from './BottomMultiTabPanel';
 import { DocsModal } from './DocsModal';
 import { SettingsModal } from './SettingsModal';
+import { DawImportModal } from './DawImportModal';
+import { ProjectModal } from './ProjectModal';
 import { DownloadDock } from './DownloadDock';
 import { useAppUiStore } from '../../state/appUiStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
+import { useDawImportStore } from '../../state/dawImportStore';
+import { useProjectStore } from '../../state/projectStore';
+import { useEditLayoutStore } from '../../state/editLayoutStore';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -28,6 +33,10 @@ export const Shell: React.FC = () => {
   const setLibraryExpanded = useAppUiStore((state) => state.setLibraryExpanded);
   const docsOpen = useAppUiStore((state) => state.docsOpen);
   const setDocsOpen = useAppUiStore((state) => state.setDocsOpen);
+  const openDawImport = useDawImportStore((state) => state.open);
+  const openProject = useProjectStore((state) => state.open);
+  const editLayoutActive = useEditLayoutStore((state) => state.active);
+  const toggleEditLayout = useEditLayoutStore((state) => state.toggle);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {
@@ -160,6 +169,25 @@ export const Shell: React.FC = () => {
           {/* Icon-only — the hover tooltip (title) names each one. The library
               toggle is the right-edge pull handle (below), not a cluster icon.
               All three carry the colored accent glow. */}
+          <TopBarButton
+            onClick={toggleEditLayout}
+            icon={<LayoutGrid className="w-3.5 h-3.5" />}
+            title="Edit Layout — drag controls and panels to move them, drag borders to resize"
+            accent="purple"
+            active={editLayoutActive}
+          />
+          <TopBarButton
+            onClick={() => openDawImport()}
+            icon={<FolderInput className="w-3.5 h-3.5" />}
+            title="Import a DAW project (.als / .RPP / .flp / …)"
+            accent="sky"
+          />
+          <TopBarButton
+            onClick={() => openProject('save')}
+            icon={<Package className="w-3.5 h-3.5" />}
+            title="Save or open a .tasmo project"
+            accent="sky"
+          />
           <TopBarButton
             onClick={() => setDocsOpen(true)}
             icon={<BookOpen className="w-3.5 h-3.5" />}
@@ -317,6 +345,8 @@ export const Shell: React.FC = () => {
         </div>
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <DawImportModal />
+      <ProjectModal />
       {/* Floating model-download manager — fixed bottom-right, self-hiding when
           there are no downloads. Mounted once at the app root so it floats over
           every view. */}

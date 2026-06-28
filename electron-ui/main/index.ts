@@ -193,6 +193,8 @@ function spawnBackend(): void {
   const isWindows = process.platform === 'win32'
   const cwd = getPythonDir()
   const env = buildBackendEnv()
+  const devVenvPy = venvPython(cwd)
+  const useDevVenv = !app.isPackaged && fs.existsSync(devVenvPy)
 
   if (app.isPackaged) {
     // The bundled uv is an absolute path, so it is invoked directly (no shell).
@@ -204,6 +206,24 @@ function spawnBackend(): void {
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        detached: !isWindows,
+      },
+    )
+  } else if (useDevVenv) {
+    // Dev: launch with the project venv's Python directly. `uv run` can fail when
+    // uv's cache is unavailable, which silently leaves no backend on :8600 — the
+    // frontend then shows 500s for every /api call (Vite's proxy returns 500 on
+    // ECONNREFUSED). theDAW.bat already provisions the venv, so this is the
+    // reliable dev path; the uv branches below remain the fallback.
+    log(`Spawning backend via venv Python: ${devVenvPy}`)
+    backendProcess = spawn(
+      devVenvPy,
+      ['-m', 'backend._supervisor'],
+      {
+        cwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: isWindows,
         detached: !isWindows,
       },
     )
