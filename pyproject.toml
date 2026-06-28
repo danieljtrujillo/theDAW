@@ -75,6 +75,20 @@ dependencies = [
     # websockets is the sidecar's WebSocket client to the relay.
     "pyk4a-bundle ; (sys_platform == 'win32') or (sys_platform == 'linux' and platform_machine == 'x86_64')",
     "websockets>=12.0",
+    # --- VST / DAW import / .tasmo project format (June 2026) ---
+    # VST3 plugin hosting via pedalboard (Spotify). JUCE-based, VST3+AudioUnit,
+    # GPL-3.0 (compatible with open-source theDAW). Windows/macOS/Linux.
+    "pedalboard>=0.9.23",
+    # Reaper .RPP project file parsing. MIT licensed.
+    "reaproj>=0.1.0",
+    # Binary serialization for .tasmo project files (MsgPack + ZIP).
+    "msgpack>=1.2.1",
+    # FL Studio .flp project parsing (Image-Line NEM binary format). PyPI.
+    "pyflp>=2.0.0",
+    # Audacity .aup3 project parsing. py-aup3 is GitHub-only (not on PyPI).
+    # The PyPI "aup-parser" package requires Python >=3.11 (we're on 3.10).
+    # Install manually: pip install git+https://github.com/mildsunrise/py-aup3.git
+    # The parser handles ImportError gracefully at runtime if not installed.
 ]
 
 [project.optional-dependencies]

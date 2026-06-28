@@ -2,8 +2,11 @@ import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, Trash2,
   Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
+  Plug, RefreshCw, Loader2, Play, Pause, Square,
 } from 'lucide-react';
 import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS } from '../state/effectChainStore';
+import { useVstStore } from '../state/vstStore';
+import type { Vst3PluginInfo } from '../lib/vstClient';
 import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
 import { useStudioStore } from '../state/studioStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -16,6 +19,7 @@ import { SlideRow } from '../components/audio/SlideRow';
 import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
 import { EffectsVizPanel } from './EffectsVizPanel';
 import { EffectGuiStage } from '../components/audio/EffectGuiStage';
+import { TheOwl } from '../components/audio/TheOwl';
 import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
 import { FxRack } from '../components/audio/FxRack';
@@ -109,6 +113,51 @@ const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onCl
    The footer is the PROCESS-CHAIN transport. */
 
 const sectionTitle = 'text-[10px] font-black uppercase tracking-widest text-purple-300';
+
+/* ── MIX transport — play / pause / stop for a row's audio (input source or
+   processed output). Drives the global player engine; the row whose label is
+   currently loaded shows the live play/pause state so either can be auditioned
+   at any time. ── */
+const MixTransport: React.FC<{ url: string | null; label: string }> = ({ url, label }) => {
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const currentLabel = usePlayerStore((s) => s.currentLabel);
+  const isActive = currentLabel === label;
+  const playing = isActive && isPlaying;
+
+  const toggle = async () => {
+    if (!url) return;
+    if (isActive) { usePlayerStore.getState().toggle(); return; }
+    try {
+      const blob = await fetch(url).then((r) => r.blob());
+      await usePlayerStore.getState().load(blob, { label });
+      usePlayerStore.getState().play();
+    } catch { /* non-fatal — load/play errors surface in the player log */ }
+  };
+  const stop = () => { if (isActive) usePlayerStore.getState().stop(); };
+
+  return (
+    <>
+      <button
+        onClick={() => void toggle()}
+        disabled={!url}
+        title={playing ? 'Pause' : 'Play'}
+        aria-label={playing ? 'Pause' : 'Play'}
+        className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        {playing ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+      </button>
+      <button
+        onClick={stop}
+        disabled={!url || !isActive}
+        title="Stop"
+        aria-label="Stop"
+        className="p-1 rounded text-zinc-400 hover:text-red-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <Square className="w-3 h-3" />
+      </button>
+    </>
+  );
+};
 
 const PARAM_LABELS: Record<string, string> = {
   lowBoost: 'Low', highBoost: 'High', limiterCeiling: 'Ceil', targetLUFS: 'LUFS',
@@ -210,7 +259,7 @@ const defaultMixLayout: SurfaceLayout = {
   },
 };
 
-interface ChainEntry { id: string; effect: string; enabled: boolean; params: Record<string, number>; }
+interface ChainEntry { id: string; effect: string; enabled: boolean; params: Record<string, number>; vst?: { plugin_path: string; plugin_name: string }; }
 
 interface MixRegArgs {
   // input/output viz
@@ -233,6 +282,10 @@ interface MixRegArgs {
   // library
   activeEffects: Array<{ id: string; name: string; desc: string }>; viewMode: 'list' | 'tile';
   setViewMode: (m: 'list' | 'tile') => void; addEffect: (id: string) => void; chainEffectIds: Set<string>;
+  // VST3 plugins (hosted via pedalboard) — shown in the effects browser and
+  // added to the chain as 'vst3' nodes.
+  vstPlugins: Vst3PluginInfo[]; vstScanning: boolean; rescanVst: () => void;
+  addVstToChain: (p: Vst3PluginInfo) => void; vstInChain: Set<string>;
   // studio modules (exact-GUI instruments)
   onPickModule: (id: string) => void; activeModuleId: string | null; activeModule: StudioModule | null;
   onPickPsycho: (id: string) => void; activePsychoId: string | null;
@@ -276,6 +329,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         headerExtra={
           <>
             {p.srcStats && <StatRow stats={p.srcStats} />}
+            <MixTransport url={p.sourceUrl} label="MIX Input" />
             <button onClick={p.onClickUpload} title={p.sourceFile ? 'Replace source' : 'Load source'} className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5">
               <Upload className="w-3 h-3" />
             </button>
@@ -300,6 +354,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         headerExtra={
           <>
             {p.outStats && <StatRow stats={p.outStats} />}
+            <MixTransport url={p.outputUrl} label="MIX Output" />
             <button onClick={p.onDownload} disabled={!p.outputUrl} title="Save" className="p-1 rounded text-zinc-400 hover:text-green-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Download className="w-3 h-3" /></button>
             <button onClick={p.onSendToDAW} disabled={!p.outputUrl} title="Send to Edit" className="p-1 rounded text-zinc-400 hover:text-emerald-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Send className="w-3 h-3" /></button>
             <button onClick={p.onSendToInpaint} disabled={!p.outputUrl} title="Send to Inpaint" className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Sparkles className="w-3 h-3" /></button>
@@ -346,6 +401,13 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           <span className="text-[10px] font-bold flex-1 truncate">Magenta</span>
           <span className="text-[8px] font-mono text-sky-600 shrink-0">{MAGENTA_TOOLS.length}</span>
         </button>
+        <button onClick={() => p.setActiveCategory('vst')}
+          title="VST3 plugins hosted via pedalboard — add them to the chain like any effect"
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'vst' ? 'border-teal-400 text-teal-200 bg-teal-500/10' : 'border-transparent text-teal-400/80 hover:text-teal-200 hover:bg-teal-500/5'}`}>
+          <Plug className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[10px] font-bold flex-1 truncate">VST</span>
+          <span className="text-[8px] font-mono text-teal-600 shrink-0">{p.vstPlugins.length}</span>
+        </button>
         {CATEGORY_META.map((cat) => {
           const Icon = cat.icon;
           const active = p.activeCategory === cat.id;
@@ -378,8 +440,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   pinned('library', 'Library', (
     <div className="h-full w-full flex flex-col min-h-0 min-w-0 overflow-hidden p-2">
       <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
-        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && p.activeCategory !== 'magenta' && (
+        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'vst' ? 'VST3 Plugins' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
+        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && p.activeCategory !== 'magenta' && p.activeCategory !== 'vst' && (
           <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
             <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
             <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
@@ -448,6 +510,39 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
             );
           })}
         </div></div>
+      ) : p.activeCategory === 'vst' ? (
+        <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+          <div className="flex items-center gap-2 px-1.5 pb-1.5 shrink-0">
+            <button onClick={p.rescanVst} disabled={p.vstScanning} className="btn-ghost inline-flex items-center gap-1 disabled:opacity-40" title="Rescan the standard VST3 folders">
+              {p.vstScanning ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Rescan
+            </button>
+            <span className="text-[8px] font-mono text-zinc-600">host: pedalboard</span>
+          </div>
+          {p.vstPlugins.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-30 italic gap-2 py-8">
+              <Plug className="w-7 h-7" />
+              <span className="text-[10px]">{p.vstScanning ? 'Scanning…' : 'No VST3 plugins found. Click Rescan.'}</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
+              {p.vstPlugins.map((pl) => {
+                const inChain = p.vstInChain.has(pl.path);
+                return (
+                  <button key={pl.path} onClick={() => p.addVstToChain(pl)} title={pl.path}
+                    className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${inChain ? 'border-teal-400/60 ring-1 ring-teal-400/40 bg-teal-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                    style={{ width: 132 }}>
+                    <div className="flex items-center gap-1.5">
+                      <Plug className="w-3 h-3 text-teal-300 shrink-0" />
+                      <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{pl.name}</span>
+                      {inChain && <span aria-label="In chain" className="w-1.5 h-1.5 rounded-full bg-teal-400 shrink-0" />}
+                    </div>
+                    <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{[pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       ) : p.activeCategory === 'all' ? (() => {
         // Everything in MIX, in either list or icon view. Order: Studio +
         // Psychoacoustics first, then the backend effect categories.
@@ -475,6 +570,20 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 })}
               </div>
             </div>
+            {p.vstPlugins.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <AllHeader icon={Plug} color="text-teal-300" label="VST3" count={p.vstPlugins.length} />
+                <div className={boxCls}>
+                  {p.vstPlugins.map((pl) => {
+                    const inChain = p.vstInChain.has(pl.path);
+                    const desc = [pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category;
+                    return tile
+                      ? <ModuleTile key={pl.path} name={pl.name} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} />
+                      : <ModuleRow key={pl.path} name={pl.name} desc={desc} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} />;
+                  })}
+                </div>
+              </div>
+            )}
             {CATEGORY_META.map((cat) => {
               const fxs = EFFECT_CATALOG[cat.id] || [];
               if (!fxs.length) return null;
@@ -569,7 +678,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 className={`rounded p-1.5 border transition-all cursor-pointer shrink-0 w-40 flex flex-col ${p.selectedEntry?.id === entry.id ? 'border-purple-500/60 bg-purple-500/5' : 'border-zinc-800 hover:border-white/10'} ${!entry.enabled ? 'opacity-40' : ''}`}>
                 <div className="flex items-center gap-1 shrink-0">
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === 0} title="Move earlier" onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronLeft className="w-3 h-3" /></button>
-                  <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{EFFECT_LABELS[entry.effect] || entry.effect}</span>
+                  <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{entry.vst ? entry.vst.plugin_name : (EFFECT_LABELS[entry.effect] || entry.effect)}</span>
                   <button className="text-zinc-500 hover:text-purple-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.toggleEnabled(entry.id); }}>{entry.enabled ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}</button>
                   <button className="text-zinc-600 hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.removeEffect(entry.id); }}><X className="w-3 h-3" /></button>
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === p.chain.length - 1} title="Move later" onClick={(e) => { e.stopPropagation(); p.reorder(index, index + 1); }}><ChevronRight className="w-3 h-3" /></button>
@@ -624,12 +733,25 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
       </button>
     </div>
   );
+  // "The Owl" (the spatializer) gets its dedicated front-end in the Effect Stage
+  // footprint — the same spot Studio Modules land. It drives the live rack entry's
+  // params directly. Falls back to the rack view if the entry isn't present yet.
+  const owlEntry = p.rackChain.find((e) => e.effect === 'spatializer');
+  const owlStage = owlEntry ? (
+    <TheOwl
+      params={owlEntry.params}
+      idPrefix={`mix-owl-${owlEntry.id}`}
+      onChange={(np) => p.rackUpdateParams(owlEntry.id, np)}
+    />
+  ) : psychoRackStage;
   // A focused psycho tile shows the rack; an explicit Studio module or selected
   // chain entry takes priority; otherwise a populated rack still shows here so it
   // can never be orphaned (and the Apply button stays reachable).
   pinned('effectStage', 'Effect Stage', (
     p.activeMagentaTool
       ? <MagentaToolStage tool={p.activeMagentaTool} />
+    : p.activePsychoId === 'spatializer'
+      ? owlStage
     : p.activePsychoId
       ? psychoRackStage
       : p.activeModule
@@ -664,6 +786,11 @@ export const MixView: React.FC = () => {
 
   const chain = useEffectChainStore((s) => s.chain) as ChainEntry[];
   const addEffect = useEffectChainStore((s) => s.addEffect);
+  const addVst = useEffectChainStore((s) => s.addVst);
+  // VST3 plugins for the effects browser (hosted via pedalboard).
+  const vstPlugins = useVstStore((s) => s.plugins);
+  const vstScanning = useVstStore((s) => s.scanning);
+  const scanVst = useVstStore((s) => s.scan);
   const removeEffect = useEffectChainStore((s) => s.removeEffect);
   const updateParams = useEffectChainStore((s) => s.updateParams);
   const toggleEnabled = useEffectChainStore((s) => s.toggleEnabled);
@@ -702,6 +829,9 @@ export const MixView: React.FC = () => {
   // LIVE on the transport and is never rebuilt when a new clip is applied. Attached
   // once for the session; an empty rack is a clean passthrough (see mixLiveRack).
   useEffect(() => { attachMixLiveRack(); }, []);
+
+  // Populate the VST3 browser on first open (cached scan — cheap).
+  useEffect(() => { void scanVst(false); }, [scanVst]);
 
   useEffect(() => {
     if (!sourceFile) { setSrcStats(null); return; }
@@ -821,6 +951,8 @@ export const MixView: React.FC = () => {
   const allEffects = Object.values(EFFECT_CATALOG).flat();
   const activeEffects = activeCategory === 'all' ? allEffects : (EFFECT_CATALOG[activeCategory] || []);
   const chainEffectIds = new Set(chain.map((e) => e.effect));
+  const vstInChain = new Set(chain.filter((e) => e.vst).map((e) => e.vst!.plugin_path));
+  const addVstToChain = (pl: Vst3PluginInfo) => addVst({ plugin_path: pl.path, plugin_name: pl.name });
   const selectedEntry = chain.find((e) => e.id === selectedChainId) ?? chain[0] ?? null;
 
   // The instrument shown in the effect stage: an explicitly-picked Studio Module
@@ -864,9 +996,10 @@ export const MixView: React.FC = () => {
     onClearSource: () => setSourceBoth(null),
     isChainProcessing,
     onDownload: handleDownload, onSendToDAW: () => void handleSendToDAW(), onSendToInpaint: () => void handleSendToInpaint(),
-    activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length,
+    activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length + vstPlugins.length,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
+    vstPlugins, vstScanning, rescanVst: () => void scanVst(true), addVstToChain, vstInChain,
     onPickModule: handlePickModule, activeModuleId, activeModule,
     onPickPsycho: handlePickPsycho, activePsychoId,
     onPickMagenta: handlePickMagenta, activeMagentaId, activeMagentaTool,

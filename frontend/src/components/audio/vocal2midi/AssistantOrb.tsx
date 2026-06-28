@@ -151,7 +151,7 @@ export const AssistantOrb: React.FC<AssistantOrbProps> = ({
 
             {/* Chat Interface */}
             <div
-                className={`fixed bottom-8 right-8 w-80 md:w-96 h-[550px] bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl z-50 flex flex-col transition-all duration-300 origin-bottom-right ${isOpen ? 'scale-100 opacity-100' : 'scale-90 opacity-0 pointer-events-none'
+                className={`fixed bottom-8 right-8 w-80 md:w-96 h-137.5 bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl z-50 flex flex-col transition-all duration-300 origin-bottom-right ${isOpen ? 'scale-100 opacity-100' : 'scale-90 opacity-0 pointer-events-none'
                     }`}
             >
                 {/* Header */}
