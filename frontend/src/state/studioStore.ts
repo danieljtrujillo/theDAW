@@ -255,14 +255,18 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
           metadata: { title, prompt: chainLabel, source: 'studio', tags: ['effects-chain'] },
         });
         await usePlayerStore.getState().load(finalBlob, { label: title, entryId: entry.id });
+        useStatusBarStore.getState().setText(`MIX CHAIN COMPLETE: ${chainLabel}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         logError('studio', `Chain library save failed: ${msg}`);
+        set({ error: `Library save failed: ${msg}` });
+        useStatusBarStore
+          .getState()
+          .setText(`MIX CHAIN LIBRARY SAVE FAILED — check Processing Log: ${msg}`);
         try {
           await usePlayerStore.getState().load(finalBlob, { label: title, entryId: `chain-fail-${Date.now()}` });
         } catch { /* swallow */ }
       }
-      useStatusBarStore.getState().setText(`MIX CHAIN COMPLETE: ${chainLabel}`);
     } finally {
       set({ isChainProcessing: false });
     }

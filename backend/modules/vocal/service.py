@@ -70,11 +70,9 @@ def load_artifact(asset_id: str) -> Optional[dict]:
     try:
         import json
 
-        from backend.modules.library.router import get_store
-
-        audio = get_store().get_audio_path(asset_id)
+        audio = _resolve_path(asset_id)
         if audio:
-            f = Path(audio).parent / "vocal_metadata.json"
+            f = audio.parent / "vocal_metadata.json"
             if f.is_file():
                 return json.loads(f.read_text(encoding="utf-8"))
     except Exception as e:
@@ -143,12 +141,38 @@ def set_review(asset_id: str, reviewed: bool, notes_text: str) -> dict:
     return {"ok": True, "review": payload["review"]}
 
 
-def _resolve_path(asset_id: str) -> Optional[Path]:
-    """Resolve a Library asset id to its audio file via the library store."""
+def _resolve_entry_id(asset_id: str) -> Optional[str]:
+    """Map an asset reference to a real library entry id. Accepts either a true
+    entry id OR a human track title — the MIDI/vocal panel often passes the
+    visible title (e.g. "Et Tu Machina"), which is not a directory name, so a
+    plain id lookup misses every track. Fall back to an exact, then
+    case-insensitive, title match."""
     try:
         from backend.modules.library.router import get_store
 
-        path = get_store().get_audio_path(asset_id)
+        store = get_store()
+        if store.get_audio_path(asset_id) is not None:
+            return asset_id
+        entries = list(store.list_entries())
+        for rec in entries:
+            if rec.title == asset_id:
+                return rec.id
+        low = asset_id.strip().lower()
+        for rec in entries:
+            if (rec.title or "").strip().lower() == low:
+                return rec.id
+    except Exception as e:
+        log.info("vocal: entry id resolution failed for %s: %s", asset_id, e)
+    return None
+
+
+def _resolve_path(asset_id: str) -> Optional[Path]:
+    """Resolve a Library asset id (or title) to its audio file."""
+    try:
+        from backend.modules.library.router import get_store
+
+        rid = _resolve_entry_id(asset_id) or asset_id
+        path = get_store().get_audio_path(rid)
         return Path(path) if path else None
     except Exception as e:
         log.info("vocal: asset path resolution failed for %s: %s", asset_id, e)

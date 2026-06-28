@@ -11,7 +11,7 @@
  * validate. No synthesis here.
  */
 
-import { Activity, Download, Drum, FileCheck2, Loader2, Mic, Square } from 'lucide-react';
+import { Activity, Download, Drum, FileCheck2, Loader2, Mic, Music4, Square } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { RenderNote } from '../../lib/midiSynth';
@@ -34,6 +34,8 @@ import { useLibraryStore } from '../../state/libraryStore';
 import { logInfo, logWarn } from '../../state/logStore';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
 import { PianoRoll } from '../audio/PianoRoll';
+import { ArpeggiatorPanel } from '../audio/ArpeggiatorPanel';
+import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 
 const stepSec = (bpm: number): number => 60 / bpm / 4;
 
@@ -111,12 +113,17 @@ const MicMeter: React.FC<{ monitorRef: React.MutableRefObject<InputMonitor | nul
 
 export const MidiPanel: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
+  const entries = useLibraryStore((s) => s.entries);
   const [assetId, setAssetId] = useState('');
+  // What the search box shows (a friendly title); the actual API uses assetId.
+  const [assetQuery, setAssetQuery] = useState('');
+  const [assetOpen, setAssetOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('idle');
   const [artifact, setArtifact] = useState<VocalArtifactDoc | null>(null);
   const [validateMsg, setValidateMsg] = useState('');
+  const [arpOn, setArpOn] = useState(false);
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>(
     () => localStorage.getItem('vocal.inputDeviceId') ?? '',
@@ -126,10 +133,30 @@ export const MidiPanel: React.FC = () => {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordStartRef = useRef(0);
 
-  // Default the asset field to the selected library item (override freely).
+  // Default the asset field to the selected library item (override freely). Show
+  // the friendly title in the box while keeping the real id for the API.
   useEffect(() => {
-    if (selectedEntryId && !assetId) setAssetId(selectedEntryId);
+    if (selectedEntryId && !assetId) {
+      setAssetId(selectedEntryId);
+      const sel = useLibraryStore.getState().entries.find((e) => e.id === selectedEntryId);
+      if (sel) setAssetQuery(sel.title);
+    }
   }, [selectedEntryId, assetId]);
+
+  // Pick a library entry into the asset field: store the real id, show the title.
+  const pickAsset = useCallback((id: string, title: string) => {
+    setAssetId(id);
+    setAssetQuery(title);
+    setAssetOpen(false);
+  }, []);
+
+  // Library entries whose title matches the current search text (cap the list).
+  const assetMatches = (() => {
+    const q = assetQuery.trim().toLowerCase();
+    const audio = entries.filter((e) => e.kind === 'audio');
+    const list = q ? audio.filter((e) => e.title.toLowerCase().includes(q)) : audio;
+    return list.slice(0, 12);
+  })();
 
   const refreshInputs = useCallback(async () => {
     setMicPerm(await queryMicPermission());
@@ -402,21 +429,69 @@ export const MidiPanel: React.FC = () => {
 
         <span className="w-px h-4 bg-white/10" aria-hidden="true" />
 
-        {/* Analyze a library vocal into the roll */}
-        <label htmlFor="midi-asset-id" className="sr-only">
-          Library asset id
-        </label>
-        <input
-          id="midi-asset-id"
-          name="midi-asset-id"
-          type="text"
-          value={assetId}
-          onChange={(e) => setAssetId(e.target.value.trim())}
-          placeholder="asset id"
-          aria-label="Library asset id"
-          title="Library item id to analyze or load (defaults to the selected library item)"
-          className="w-36 bg-zinc-800 border border-zinc-500 text-zinc-100 text-[10px] font-mono px-1.5 py-1 rounded"
-        />
+        {/* Analyze a library vocal into the roll — search by name or drop a
+            library item here instead of pasting a raw id. */}
+        <div
+          className="relative"
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes('application/x-thedaw-library-id')) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+            }
+          }}
+          onDrop={(e) => {
+            const id = e.dataTransfer.getData('application/x-thedaw-library-id');
+            if (!id) return;
+            e.preventDefault();
+            const dropped = entries.find((en) => en.id === id);
+            pickAsset(id, dropped?.title ?? id);
+          }}
+        >
+          <label htmlFor="midi-asset-id" className="sr-only">
+            Search library song
+          </label>
+          <input
+            id="midi-asset-id"
+            name="midi-asset-id"
+            type="text"
+            value={assetQuery}
+            onChange={(e) => {
+              setAssetQuery(e.target.value);
+              setAssetId(e.target.value.trim());
+              setAssetOpen(true);
+            }}
+            onFocus={() => setAssetOpen(true)}
+            onBlur={() => window.setTimeout(() => setAssetOpen(false), 150)}
+            placeholder="search song / drop here"
+            aria-label="Search library song"
+            aria-expanded={assetOpen}
+            title="Type a song name (or drop a library item here). Pick a result to use it — no need to paste a raw id."
+            className="w-44 bg-zinc-800 border border-zinc-500 text-zinc-100 text-[10px] font-mono px-1.5 py-1 rounded"
+          />
+          {assetOpen && assetMatches.length > 0 && (
+            <div
+              role="listbox"
+              className="absolute left-0 top-full mt-1 z-50 w-64 max-h-56 overflow-y-auto rounded border border-zinc-600 bg-zinc-900 shadow-2xl"
+            >
+              {assetMatches.map((e) => (
+                <button
+                  key={e.id}
+                  type="button"
+                  role="option"
+                  aria-selected={e.id === assetId}
+                  onMouseDown={(ev) => ev.preventDefault()}
+                  onClick={() => pickAsset(e.id, e.title)}
+                  className={`w-full text-left px-2 py-1.5 text-[10px] border-b border-white/5 last:border-0 hover:bg-purple-500/15 ${
+                    e.id === assetId ? 'bg-purple-500/10 text-purple-200' : 'text-zinc-200'
+                  }`}
+                >
+                  <span className="block truncate">{e.title}</span>
+                  <span className="block truncate text-[8px] font-mono text-zinc-500">{e.id}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           type="button"
           onClick={analyze}
@@ -468,18 +543,42 @@ export const MidiPanel: React.FC = () => {
           <FileCheck2 className="w-3 h-3" />
           Validate
         </button>
+
+        <span className="w-px h-4 bg-white/10" aria-hidden="true" />
+
+        <button
+          type="button"
+          onClick={() => setArpOn((v) => !v)}
+          aria-pressed={arpOn}
+          title={arpOn ? 'Back to the piano roll' : 'Chord-progression arpeggiator'}
+          className={`${btn} ${
+            arpOn
+              ? 'border-amber-400 text-amber-200 bg-amber-400/20'
+              : 'border-amber-600 text-amber-300 hover:bg-amber-600/15'
+          }`}
+        >
+          <Music4 className="w-3 h-3" />
+          Arp
+        </button>
         <span className="text-[10px] font-mono text-zinc-500 truncate min-w-0 flex-1 text-right">
           {status}
         </span>
       </div>
 
-      {/* body: piano roll, plus a vocal rail only when an artifact is loaded */}
+      {/* body: piano roll (or the arpeggiator face), plus a vocal rail only when
+          an artifact is loaded. The arpeggiator stays mounted but hidden so its
+          transport keeps running when toggling back to the roll. */}
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 relative">
-          <PianoRoll />
+          <div className={arpOn ? 'hidden' : 'absolute inset-0'}>
+            <PianoRoll />
+          </div>
+          <div className={arpOn ? 'absolute inset-0' : 'hidden'}>
+            <ArpeggiatorPanel />
+          </div>
         </div>
 
-        {artifact && (
+        {!arpOn && artifact && (
           <div className="w-64 shrink-0 border-l border-white/8 overflow-y-auto p-2 space-y-3">
             <section>
               <h3 className="text-[8px] font-mono uppercase tracking-widest text-zinc-500 mb-1">
@@ -523,6 +622,10 @@ export const MidiPanel: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* Vocal2MIDI suite — the full vocal-to-MIDI tool as a collapsible right
+            column. Its recorder/AI/editor write notes into the piano roll above. */}
+        {!arpOn && <Vocal2MidiPanel />}
       </div>
     </div>
   );
