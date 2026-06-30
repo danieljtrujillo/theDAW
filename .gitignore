@@ -16,6 +16,8 @@ data/suno_jobs.json
 data/plugins/
 # Machine-specific VST3 scan cache (regenerated on scan)
 backend/modules/vst/vst3_scan_cache.json
+# Captured VST3 native-editor state (per-plugin presets, machine-specific)
+data/vst_presets/
 CHANGES-LOGS/
 backend/rag_index/
 archive/

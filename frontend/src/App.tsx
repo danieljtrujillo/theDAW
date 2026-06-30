@@ -32,6 +32,9 @@ import { startXrViz, stopXrViz } from './state/xrViz';
 import { XrBusTester } from './components/dev/XrBusTester';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
+import { useGanStore } from './state/ganStore';
+import { useProjectStore } from './state/projectStore';
+import { useAppUiStore } from './state/appUiStore';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
@@ -266,6 +269,25 @@ export default function App() {
   useEffect(() => {
     const stop = startPoseRouting();
     return stop;
+  }, []);
+
+  // OS file associations (desktop): a double-clicked .tasmo / .gan is delivered
+  // by the Electron main process; route it to the right opener and show MIX.
+  useEffect(() => {
+    const api = (window as unknown as {
+      electronAPI?: { onOpenFile?: (cb: (filePath: string) => void) => () => void };
+    }).electronAPI;
+    if (!api?.onOpenFile) return;
+    return api.onOpenFile((filePath) => {
+      const lower = filePath.toLowerCase();
+      if (lower.endsWith('.gan')) {
+        void useGanStore.getState().openPath(filePath);
+        useAppUiStore.getState().setCenterTab('mix');
+      } else if (lower.endsWith('.tasmo')) {
+        void useProjectStore.getState().loadPath(filePath);
+        useAppUiStore.getState().setCenterTab('mix');
+      }
+    });
   }, []);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {

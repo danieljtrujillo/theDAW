@@ -57,6 +57,31 @@ class VstInstance:
 _instances: dict[str, VstInstance] = {}
 
 
+def load_plugin_file(pb: Any, path: str) -> Any:
+    """Load a VST3 by path, resilient to multi-shell files.
+
+    Some VST3 files bundle several plugins; ``load_plugin`` then raises and asks
+    for an explicit name. We retry with the first contained plugin so those load
+    instead of failing outright. Genuinely unsupported files still raise their
+    original error.
+    """
+    try:
+        return pb.load_plugin(path)
+    except Exception:
+        try:
+            names = pb.VST3Plugin.get_plugin_names_for_file(path)
+        except Exception:
+            names = None
+        if names:
+            log.info(
+                "Multi-shell VST3 — loading first sub-plugin '%s' from %s",
+                names[0],
+                path,
+            )
+            return pb.load_plugin(path, plugin_name=names[0])
+        raise
+
+
 def load_plugin(plugin_path: str, instance_id: str | None = None) -> VstInstance:
     """Load a VST3 plugin and register it. Returns a VstInstance."""
     pb = _get_pedalboard()
@@ -64,7 +89,7 @@ def load_plugin(plugin_path: str, instance_id: str | None = None) -> VstInstance
     if not path.exists():
         raise FileNotFoundError(f"VST3 plugin not found: {plugin_path}")
 
-    plugin = pb.load_plugin(str(path))
+    plugin = load_plugin_file(pb, str(path))
     iid = instance_id or str(uuid.uuid4())
     inst = VstInstance(
         instance_id=iid, plugin_path=str(path), plugin_name=path.stem, plugin=plugin
@@ -118,19 +143,32 @@ def process_with_plugin(
     audio: np.ndarray,
     sample_rate: int,
     params: dict[str, float] | None = None,
+    raw_state: str | bytes | None = None,
 ) -> np.ndarray:
     """Process audio through a single VST3 plugin, statelessly.
 
-    The plugin is loaded fresh, optional parameters are applied best-effort,
-    the audio is processed, and the plugin is discarded (it is never added to
-    the instance registry). This mirrors the studio effect pipeline so a VST3
-    can be one stage of the MIX effect chain.
+    The plugin is loaded fresh, an optional full ``raw_state`` (captured from the
+    plugin's native editor, base64 or bytes) is restored, optional individual
+    parameters are applied best-effort, the audio is processed, and the plugin is
+    discarded (it is never added to the instance registry). This mirrors the
+    studio effect pipeline so a VST3 can be one stage of the MIX effect chain.
     """
     pb = _get_pedalboard()
     path = Path(plugin_path)
     if not path.exists():
         raise FileNotFoundError(f"VST3 plugin not found: {plugin_path}")
-    plugin = pb.load_plugin(str(path))
+    plugin = load_plugin_file(pb, str(path))
+    if raw_state:
+        try:
+            import base64
+
+            blob = (
+                base64.b64decode(raw_state) if isinstance(raw_state, str) else raw_state
+            )
+            plugin.raw_state = blob
+        except Exception:
+            # Stale or incompatible state — fall back to defaults / params.
+            log.debug("VST raw_state could not be applied to %s", path.stem)
     if params:
         for name, value in params.items():
             try:

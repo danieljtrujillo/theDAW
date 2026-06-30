@@ -17,6 +17,9 @@ export interface DawDevice {
   plugin_type: string; // "vst3" | "audiounit" | "builtin"
   plugin_path?: string | null;
   parameters?: Record<string, number>;
+  bypass?: boolean;
+  /** Opaque base64 plugin-state chunk, when a parser can capture it. */
+  state?: string | null;
 }
 
 export interface DawTrack {

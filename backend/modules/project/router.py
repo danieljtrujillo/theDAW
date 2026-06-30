@@ -1,8 +1,14 @@
 """FastAPI router for .tasmo project save/load (/api/project/*)."""
 
 from __future__ import annotations
+import hashlib
+import json
 import logging
-from fastapi import APIRouter, HTTPException
+import mimetypes
+import tempfile
+from pathlib import Path
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.modules.project.tasmo_project import TasmoProject
@@ -10,6 +16,34 @@ from backend.modules.project.tasmo_file import TasmoFile
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# Formats the browser (Electron/Chromium) decodes natively — served as-is.
+_BROWSER_OK_EXTS = {
+    ".wav",
+    ".wave",
+    ".flac",
+    ".mp3",
+    ".ogg",
+    ".oga",
+    ".m4a",
+    ".aac",
+    ".opus",
+    ".webm",
+    ".weba",
+}
+# Formats Chromium can't reliably decode (DAW-native sample formats) — these are
+# transcoded to WAV on the fly so an imported project still plays.
+_TRANSCODE_EXTS = {
+    ".aif",
+    ".aiff",
+    ".aifc",
+    ".caf",
+    ".wv",
+    ".wma",
+}
+# The endpoint only serves recognized audio (keeps it from being a general file
+# reader). The union of what we serve directly and what we transcode.
+_AUDIO_EXTS = _BROWSER_OK_EXTS | _TRANSCODE_EXTS
 
 
 # --- Recent files tracking (simple in-memory list) ---
@@ -50,6 +84,13 @@ def save_project(req: SaveRequest):
     if not path.endswith(".tasmo"):
         path += ".tasmo"
 
+    # Create the destination folder if needed (e.g. a fresh default projects dir
+    # the user never created by hand).
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
     try:
         manifest = TasmoFile.save(project, path, embed_audio=req.embed_audio)
     except Exception as e:
@@ -58,6 +99,47 @@ def save_project(req: SaveRequest):
     # Track in recent files
     _add_recent(path, project.project_name)
     return {"status": "saved", "path": path, "manifest": manifest}
+
+
+@router.post("/save-session")
+async def save_session(
+    project: str = Form(...),
+    path: str = Form(...),
+    files: list[UploadFile] = File(default=[]),
+):
+    """Save the LIVE session (the EDIT timeline) to a .tasmo, embedding each
+    clip's audio bytes uploaded alongside the project JSON.
+
+    The plain ``/save`` endpoint only links files already on disk, which cannot
+    capture in-browser editor clips (their audio lives in memory). This accepts
+    the project JSON plus one upload per clip — each clip's ``audio_file`` points
+    at ``audio/<filename>`` and the matching upload is written into the archive."""
+    try:
+        project_data = json.loads(project)
+        tasmo = TasmoProject.model_validate(project_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid project data: {e}")
+
+    audio_files: dict[str, bytes] = {}
+    for f in files:
+        name = Path(f.filename or "").name
+        if not name:
+            continue
+        audio_files[name] = await f.read()
+
+    out_path = path if path.endswith(".tasmo") else path + ".tasmo"
+    try:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    try:
+        manifest = TasmoFile.save(tasmo, out_path, audio_files=audio_files or None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save .tasmo: {e}")
+
+    _add_recent(out_path, tasmo.project_name)
+    return {"status": "saved", "path": out_path, "manifest": manifest}
 
 
 @router.post("/load", response_model=LoadResponse)
@@ -91,6 +173,67 @@ def project_info(path: str):
 def recent_projects():
     """List recently opened/saved projects."""
     return _recent_files
+
+
+@router.get("/default-dir")
+def default_projects_dir():
+    """Suggested default folder for .tasmo saves (created on first save). The
+    frontend persists the user's override; this is just the out-of-box default."""
+    return {"path": str(Path.home() / "Documents" / "theDAW Projects")}
+
+
+def _transcode_cache_dir() -> Path:
+    d = Path(tempfile.gettempdir()) / "thedaw_transcode"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+async def _transcode_to_wav(src: Path) -> Path:
+    """Transcode a DAW-native sample (AIFF, CAF, …) to WAV the browser can decode.
+    Cached by source path + mtime + size so re-opening a project is instant."""
+    from backend.lib import ffmpeg
+
+    stat = src.stat()
+    key = hashlib.sha1(
+        f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8")
+    ).hexdigest()
+    out = _transcode_cache_dir() / f"{key}.wav"
+    if out.is_file() and out.stat().st_size > 0:
+        return out
+    await ffmpeg.render(src, out, filter_args=[], extra_out_args=["-c:a", "pcm_s16le"])
+    return out
+
+
+@router.get("/clip-audio")
+async def clip_audio(path: str):
+    """Stream a clip's on-disk audio so the browser can load it when a project
+    is opened. ``.tasmo`` clips reference linked files by absolute path (or files
+    extracted from an embedded archive); the frontend cannot read those directly,
+    so it fetches them here. Browser-native formats are served as-is; DAW-native
+    formats (AIFF/CAF/…) are transcoded to WAV on the fly. Restricted to audio."""
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail=f"Audio file not found: {path}")
+    ext = p.suffix.lower()
+    if ext not in _AUDIO_EXTS:
+        raise HTTPException(status_code=400, detail=f"Not an audio file: {p.name}")
+
+    if ext in _TRANSCODE_EXTS:
+        try:
+            wav = await _transcode_to_wav(p)
+            return FileResponse(
+                str(wav), media_type="audio/wav", filename=f"{p.stem}.wav"
+            )
+        except Exception as e:
+            # Fall back to serving the original; the browser may still decode it.
+            log.warning("clip-audio transcode failed for %s: %s", p.name, e)
+
+    media_type, _ = mimetypes.guess_type(str(p))
+    return FileResponse(
+        str(p),
+        media_type=media_type or "application/octet-stream",
+        filename=p.name,
+    )
 
 
 @router.post("/export/audio")

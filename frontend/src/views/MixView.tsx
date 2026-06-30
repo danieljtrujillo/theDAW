@@ -2,11 +2,13 @@ import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, Trash2,
   Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
-  Plug, RefreshCw, Loader2, Play, Pause, Square,
+  Plug, RefreshCw, Loader2, Play, Pause, Square, Blocks, FolderOpen, SlidersHorizontal,
+  Maximize2, Minimize2,
 } from 'lucide-react';
 import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS } from '../state/effectChainStore';
 import { useVstStore } from '../state/vstStore';
-import type { Vst3PluginInfo } from '../lib/vstClient';
+import { vstApi, getNativeWindowHandle, getContentBounds, type Vst3PluginInfo } from '../lib/vstClient';
+import { useStatusBarStore } from '../state/statusBarStore';
 import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
 import { useStudioStore } from '../state/studioStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -29,10 +31,15 @@ import { buildEffectChain, ensureChopModule, RACK_EFFECTS } from '../lib/rackEff
 import { encodeWav } from '../lib/wavEncode';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
-import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory, type CategoryMeta } from '../lib/effectCatalog';
+import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory, fxPreview, vstPreviewKey, type CategoryMeta } from '../lib/effectCatalog';
 import { STUDIO_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
 import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../lib/magentaToolCatalog';
 import { MagentaToolStage } from '../components/audio/MagentaToolStage';
+import { GanPluginStage } from '../components/audio/GanPluginStage';
+import { useGanStore } from '../state/ganStore';
+import { ganApi, type GanPluginSummary } from '../lib/ganClient';
+import { GAN_FILTER } from '../lib/fileFilters';
+import { pickFile } from '../lib/storageClient';
 import { Boxes, Headphones, Music } from 'lucide-react';
 import '../components/layout/track-controls.css';
 
@@ -76,10 +83,16 @@ const ModuleRow: React.FC<{ name: string; desc: string; color: string; marked: b
     {marked && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />}
   </div>
 );
-const ModuleTile: React.FC<{ name: string; color: string; marked: boolean; onClick: () => void }> = ({ name, color, marked, onClick }) => (
-  <div onClick={onClick} style={{ width: 90, height: 98 }} className={`relative flex flex-col items-center justify-center gap-2 rounded border cursor-pointer transition-all overflow-hidden p-2 ${marked ? 'border-white/30 bg-white/5' : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}>
-    <span className="w-7 h-7 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 10px ${color}80` }} />
-    <span className="text-[10px] font-medium text-center leading-tight line-clamp-2" style={{ color }}>{name}</span>
+const ModuleTile: React.FC<{ name: string; color: string; marked: boolean; onClick: () => void; preview?: string; seed?: string }> = ({ name, color, marked, onClick, preview, seed }) => (
+  <div onClick={onClick} title={name} style={{ width: 90, height: 98 }} className={`relative rounded border cursor-pointer transition-all overflow-hidden ${marked ? 'border-white/30 ring-1 ring-white/20' : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}>
+    <div className="absolute inset-0 bg-[#0a0c14]">
+      {preview
+        ? <ModuleThumb preview={preview} seed={seed} className="w-full h-full" />
+        : <span className="absolute left-1/2 top-9 -translate-x-1/2 w-7 h-7 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}80` }} />}
+    </div>
+    <div className="absolute inset-x-0 bottom-0 px-1 pt-3 pb-1 bg-linear-to-t from-black/95 to-transparent">
+      <span className="text-[9px] font-medium leading-tight line-clamp-2 block" style={{ color }}>{name}</span>
+    </div>
   </div>
 );
 // A backend effect cell (color comes from its category classes).
@@ -93,14 +106,135 @@ const FxRow: React.FC<{ name: string; desc: string; cat: CategoryMeta; inChain: 
     {inChain && <span className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />}
   </div>
 );
-const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onClick: () => void }> = ({ name, cat, inChain, onClick }) => {
+const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onClick: () => void; preview?: string }> = ({ name, cat, inChain, onClick, preview }) => {
   const Icon = cat.icon;
   return (
-    <div onClick={onClick} style={{ width: 90, height: 98 }} className={`relative flex flex-col items-center justify-start gap-1.5 rounded border cursor-pointer transition-all overflow-hidden p-2 ${cat.tile.bg} ${inChain ? `${cat.tile.border} ring-2 ${cat.tile.ring}` : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}>
-      <div className={`absolute inset-0 ${cat.tile.glow} blur-xl pointer-events-none opacity-70`} />
-      <div className="relative z-10 flex items-center justify-center w-10 h-10 mt-1.5"><Icon className={`w-7 h-7 ${cat.tile.text}`} /></div>
-      <span className={`text-[10px] font-medium text-center leading-tight relative z-10 ${cat.tile.text} px-0.5 line-clamp-2`}>{name}</span>
+    <div onClick={onClick} title={name} style={{ width: 90, height: 98 }} className={`relative rounded border cursor-pointer transition-all overflow-hidden ${inChain ? `${cat.tile.border} ring-2 ${cat.tile.ring}` : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}>
+      <div className="absolute inset-0 bg-[#0a0c14]">
+        {preview
+          ? <ModuleThumb preview={preview} className="w-full h-full" />
+          : <div className="grid place-items-center h-full"><Icon className={`w-7 h-7 ${cat.tile.text}`} /></div>}
+      </div>
+      <div className="absolute inset-x-0 bottom-0 px-1 pt-3 pb-1 bg-linear-to-t from-black/95 to-transparent">
+        <span className={`text-[9px] font-medium leading-tight line-clamp-2 block ${cat.tile.text}`}>{name}</span>
+      </div>
       {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
+    </div>
+  );
+};
+
+// Host box for an EMBEDDED native VST3 editor. The backend sidecar pins the
+// plugin's real OS window (owned by Electron, positioned over this box) and CLIPS
+// it to the box, so an oversized editor keeps its natural size and is reachable by
+// SCROLLING this container (the inner spacer is sized to the plugin). EXPAND grows
+// the box to a large overlay for big GUIs. We only REPORT geometry + scroll here;
+// the editor is closed explicitly (Close / its own window), NEVER on React unmount
+// — so StrictMode / panel re-renders can't kill it.
+const VstEmbedHost: React.FC<{ pluginPath: string; pluginName: string; error?: string; onClose: () => void }> = ({ pluginPath, pluginName, error, onClose }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  // Plugin's natural size in CSS px (from the backend, which knows the real
+  // window size); drives the scrollable inner spacer.
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || error) return; // a load failure has no window to track
+    let alive = true;
+    const report = () => {
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      void getContentBounds().then((cb) => {
+        if (!alive) return;
+        // Viewport origin in absolute physical screen px (content-area screen
+        // origin (DIP) + element offset (CSS px ≈ DIP), scaled by dpr). Use the
+        // client box (excludes the scrollbar) so the native window doesn't cover
+        // the scrollbar; pass the scroll offset so it pans as we scroll.
+        const ox = cb ? cb.x : 0;
+        const oy = cb ? cb.y : 0;
+        void vstApi.editorRect(pluginPath, {
+          x: (ox + r.left) * dpr,
+          y: (oy + r.top) * dpr,
+          w: el.clientWidth * dpr,
+          h: el.clientHeight * dpr,
+          sx: el.scrollLeft * dpr,
+          sy: el.scrollTop * dpr,
+          dpr: 1, // values are already physical px
+        });
+      });
+    };
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    el.addEventListener('scroll', report, { passive: true });
+    window.addEventListener('resize', report);
+    // Poll so the window follows Electron moves too (a move fires no 'resize').
+    const iv = window.setInterval(report, 250);
+    return () => {
+      alive = false;
+      ro.disconnect();
+      el.removeEventListener('scroll', report);
+      window.removeEventListener('resize', report);
+      window.clearInterval(iv);
+    };
+  }, [pluginPath, error, expanded]);
+
+  // Poll the plugin's natural size so the scroll area matches it (and tracks a
+  // plugin that resizes its own window).
+  useEffect(() => {
+    if (error) return;
+    let alive = true;
+    const dpr = window.devicePixelRatio || 1;
+    const poll = () => {
+      vstApi.editorSize(pluginPath)
+        .then((res) => {
+          if (!alive) return;
+          if (res.status === 'ok' && res.w && res.h) {
+            setNatural({ w: Math.round(res.w / dpr), h: Math.round(res.h / dpr) });
+          }
+          if (alive) window.setTimeout(poll, 1000);
+        })
+        .catch(() => { if (alive) window.setTimeout(poll, 1500); });
+    };
+    poll();
+    return () => { alive = false; };
+  }, [pluginPath, error]);
+
+  const shell = expanded
+    ? 'fixed inset-6 z-50 bg-[#0c0a14] border border-teal-500/40 rounded-lg shadow-2xl flex flex-col min-h-0 overflow-hidden p-2 gap-2'
+    : 'h-full w-full flex flex-col min-h-0 overflow-hidden p-2 gap-2';
+
+  return (
+    <div className={shell}>
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={sectionTitle}>{pluginName}</span>
+        <span className="text-[8px] font-mono text-zinc-600">{error ? 'plugin error' : 'native VST GUI'}</span>
+        {!error && (
+          <button onClick={() => setExpanded((v) => !v)} title={expanded ? 'Collapse' : 'Expand'} className="ml-auto inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-teal-300 transition-colors shrink-0">
+            {expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />} {expanded ? 'Collapse' : 'Expand'}
+          </button>
+        )}
+        <button onClick={onClose} title="Close the plugin editor" className={`inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-red-400 transition-colors shrink-0 ${error ? 'ml-auto' : ''}`}>
+          <X className="w-3.5 h-3.5" /> Close
+        </button>
+      </div>
+      {error ? (
+        <div className="flex-1 min-h-0 rounded border border-red-500/30 bg-red-950/20 grid place-items-center p-3">
+          <div className="text-center max-w-md">
+            <span className="text-[11px] font-semibold text-red-300 block mb-1">This plugin could not be loaded</span>
+            <span className="text-[9px] font-mono text-red-200/70 wrap-break-word">{error}</span>
+          </div>
+        </div>
+      ) : (
+        <div ref={ref} className="flex-1 min-h-0 overflow-auto rounded border border-teal-500/30 bg-black/60 relative">
+          {/* Spacer sized to the plugin so the area scrolls; the native window is
+              positioned over the visible viewport by the backend watcher. */}
+          <div style={natural ? { width: natural.w, height: natural.h } : { width: '100%', height: '100%' }} />
+          {!natural && (
+            <span className="absolute inset-0 grid place-items-center text-[10px] font-mono text-zinc-600 pointer-events-none">loading plugin editor…</span>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -259,7 +393,7 @@ const defaultMixLayout: SurfaceLayout = {
   },
 };
 
-interface ChainEntry { id: string; effect: string; enabled: boolean; params: Record<string, number>; vst?: { plugin_path: string; plugin_name: string }; }
+interface ChainEntry { id: string; effect: string; enabled: boolean; params: Record<string, number>; vst?: { plugin_path: string; plugin_name: string; raw_state?: string }; }
 
 interface MixRegArgs {
   // input/output viz
@@ -286,6 +420,10 @@ interface MixRegArgs {
   // added to the chain as 'vst3' nodes.
   vstPlugins: Vst3PluginInfo[]; vstScanning: boolean; rescanVst: () => void;
   addVstToChain: (p: Vst3PluginInfo) => void; vstInChain: Set<string>;
+  // .gan web-plugins (generic loader): installed list + the one open in the stage.
+  ganPlugins: GanPluginSummary[]; ganActiveId: string | null; ganActiveUrl: string | null;
+  ganActiveName: string | null; ganBusy: boolean;
+  onOpenGan: () => void; onImportGan: () => void; onPickGan: (id: string) => void; onRevealGan: (path: string) => void;
   // studio modules (exact-GUI instruments)
   onPickModule: (id: string) => void; activeModuleId: string | null; activeModule: StudioModule | null;
   onPickPsycho: (id: string) => void; activePsychoId: string | null;
@@ -295,6 +433,9 @@ interface MixRegArgs {
   chain: ChainEntry[]; selectedId: string | null; setSelectedId: (id: string) => void;
   removeEffect: (id: string) => void; updateParams: (id: string, p: Record<string, number>) => void;
   toggleEnabled: (id: string) => void; reorder: (from: number, to: number) => void; clearChain: () => void;
+  onEditVst: (entry: ChainEntry) => void;
+  vstEmbed: { entryId: string; pluginPath: string; pluginName: string; error?: string } | null;
+  onCloseVstEmbed: () => void;
   outputFormat: string; setOutputFormat: (f: string) => void;
   showHistory: boolean; setShowHistory: (v: boolean) => void;
   processHistory: Array<{ id: string; effect: string; createdAt: number }>;
@@ -408,6 +549,13 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           <span className="text-[10px] font-bold flex-1 truncate">VST</span>
           <span className="text-[8px] font-mono text-teal-600 shrink-0">{p.vstPlugins.length}</span>
         </button>
+        <button onClick={() => p.setActiveCategory('plugins')}
+          title="GAN web-plugins — open a .gan or import a VST Foundry export; renders in the effect stage"
+          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'plugins' ? 'border-indigo-400 text-indigo-200 bg-indigo-500/10' : 'border-transparent text-indigo-400/80 hover:text-indigo-200 hover:bg-indigo-500/5'}`}>
+          <Blocks className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[10px] font-bold flex-1 truncate">Plugins</span>
+          <span className="text-[8px] font-mono text-indigo-600 shrink-0">{p.ganPlugins.length}</span>
+        </button>
         {CATEGORY_META.map((cat) => {
           const Icon = cat.icon;
           const active = p.activeCategory === cat.id;
@@ -440,8 +588,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   pinned('library', 'Library', (
     <div className="h-full w-full flex flex-col min-h-0 min-w-0 overflow-hidden p-2">
       <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'vst' ? 'VST3 Plugins' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
-        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && p.activeCategory !== 'magenta' && p.activeCategory !== 'vst' && (
+        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'vst' ? 'VST3 Plugins' : p.activeCategory === 'plugins' ? 'GAN Plugins' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
+        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && p.activeCategory !== 'magenta' && p.activeCategory !== 'vst' && p.activeCategory !== 'plugins' && (
           <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
             <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
             <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
@@ -536,7 +684,48 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                       <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{pl.name}</span>
                       {inChain && <span aria-label="In chain" className="w-1.5 h-1.5 rounded-full bg-teal-400 shrink-0" />}
                     </div>
+                    <div className="relative w-full h-16 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
+                      <ModuleThumb preview={vstPreviewKey(pl.category)} seed={`${pl.name}|${pl.manufacturer}`} className="w-full h-full" />
+                    </div>
                     <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{[pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : p.activeCategory === 'plugins' ? (
+        <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+          <div className="flex items-center gap-2 px-1.5 pb-1.5 shrink-0">
+            <button onClick={p.onOpenGan} disabled={p.ganBusy} className="btn-ghost inline-flex items-center gap-1 disabled:opacity-40" title="Open a .gan plugin file">
+              <FolderOpen className="w-3 h-3" /> Open .gan
+            </button>
+            <button onClick={p.onImportGan} disabled={p.ganBusy} className="btn-ghost inline-flex items-center gap-1 disabled:opacity-40" title="Import a VST Foundry export (project.json) into a .gan">
+              <Plus className="w-3 h-3" /> Import
+            </button>
+            {p.ganBusy && <Loader2 className="w-3 h-3 animate-spin text-zinc-500" />}
+          </div>
+          {p.ganPlugins.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-30 italic gap-2 py-8">
+              <Blocks className="w-7 h-7" />
+              <span className="text-[10px]">No .gan plugins yet. Open or import one.</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
+              {p.ganPlugins.map((pl) => {
+                const active = p.ganActiveId === pl.id;
+                return (
+                  <button key={pl.id} onClick={() => p.onPickGan(pl.id)}
+                    onContextMenu={(e) => { e.preventDefault(); p.onRevealGan(pl.gan_path); }}
+                    title={`${pl.name} — right-click to reveal the .gan in its folder`}
+                    className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-indigo-400/60 ring-1 ring-indigo-400/40 bg-indigo-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                    style={{ width: 132 }}>
+                    <div className="flex items-center gap-1.5">
+                      <Blocks className="w-3 h-3 text-indigo-300 shrink-0" />
+                      <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{pl.name}</span>
+                      {active && <span aria-label="Open" className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />}
+                    </div>
+                    <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{pl.description || pl.kind}</span>
                   </button>
                 );
               })}
@@ -554,7 +743,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
               <AllHeader icon={Boxes} color="text-cyan-300" label="Studio" count={STUDIO_MODULES.length} />
               <div className={boxCls}>
                 {STUDIO_MODULES.map((m) => (tile
-                  ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
+                  ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} preview={m.preview} />
                   : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
                 ))}
               </div>
@@ -565,7 +754,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 {PSYCHO_MODULES.map((m) => {
                   const marked = p.activePsychoId === m.id || p.rackChain.some((e) => e.effect === m.id);
                   return tile
-                    ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} />
+                    ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} preview={m.preview} />
                     : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} />;
                 })}
               </div>
@@ -578,7 +767,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                     const inChain = p.vstInChain.has(pl.path);
                     const desc = [pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category;
                     return tile
-                      ? <ModuleTile key={pl.path} name={pl.name} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} />
+                      ? <ModuleTile key={pl.path} name={pl.name} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} preview={vstPreviewKey(pl.category)} seed={`${pl.name}|${pl.manufacturer}`} />
                       : <ModuleRow key={pl.path} name={pl.name} desc={desc} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} />;
                   })}
                 </div>
@@ -594,7 +783,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                     {fxs.map((fx) => {
                       const inChain = p.chainEffectIds.has(fx.id);
                       return tile
-                        ? <FxTile key={fx.id} name={fx.name} cat={cat} inChain={inChain} onClick={() => p.addEffect(fx.id)} />
+                        ? <FxTile key={fx.id} name={fx.name} cat={cat} inChain={inChain} onClick={() => p.addEffect(fx.id)} preview={fxPreview[fx.id]} />
                         : <FxRow key={fx.id} name={fx.name} desc={fx.desc} cat={cat} inChain={inChain} onClick={() => p.addEffect(fx.id)} />;
                     })}
                   </div>
@@ -626,17 +815,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           {p.activeEffects.map((fx) => {
             const inChain = p.chainEffectIds.has(fx.id);
             const cat = fxToCategory[fx.id] ?? CATEGORY_META[0];
-            const Icon = cat.icon;
-            return (
-              <div key={fx.id} onClick={() => p.addEffect(fx.id)}
-                className={`relative flex flex-col items-center justify-start gap-1.5 rounded border cursor-pointer transition-all overflow-hidden p-2 ${cat.tile.bg} ${inChain ? `${cat.tile.border} ring-2 ${cat.tile.ring}` : 'border-white/8 hover:border-white/20 hover:brightness-110'}`}
-                style={{ width: 90, height: 98 }}>
-                <div className={`absolute inset-0 ${cat.tile.glow} blur-xl pointer-events-none opacity-70`} />
-                <div className="relative z-10 flex items-center justify-center w-10 h-10 mt-1.5"><Icon className={`w-7 h-7 ${cat.tile.text}`} /></div>
-                <span className={`text-[10px] font-medium text-center leading-tight relative z-10 ${cat.tile.text} px-0.5 line-clamp-2`}>{fx.name}</span>
-                {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
-              </div>
-            );
+            return <FxTile key={fx.id} name={fx.name} cat={cat} inChain={inChain} onClick={() => p.addEffect(fx.id)} preview={fxPreview[fx.id]} />;
           })}
         </div></div>
       )}
@@ -679,6 +858,15 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 <div className="flex items-center gap-1 shrink-0">
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === 0} title="Move earlier" onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronLeft className="w-3 h-3" /></button>
                   <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{entry.vst ? entry.vst.plugin_name : (EFFECT_LABELS[entry.effect] || entry.effect)}</span>
+                  {entry.vst && (
+                    <button
+                      className={`shrink-0 ${entry.vst.raw_state ? 'text-teal-400 hover:text-teal-300' : 'text-zinc-500 hover:text-teal-300'}`}
+                      title={entry.vst.raw_state ? "Edit plugin GUI (custom settings saved)" : "Open the plugin's native GUI"}
+                      onClick={(e) => { e.stopPropagation(); p.onEditVst(entry); }}
+                    >
+                      <SlidersHorizontal className="w-3 h-3" />
+                    </button>
+                  )}
                   <button className="text-zinc-500 hover:text-purple-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.toggleEnabled(entry.id); }}>{entry.enabled ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}</button>
                   <button className="text-zinc-600 hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.removeEffect(entry.id); }}><X className="w-3 h-3" /></button>
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === p.chain.length - 1} title="Move later" onClick={(e) => { e.stopPropagation(); p.reorder(index, index + 1); }}><ChevronRight className="w-3 h-3" /></button>
@@ -748,7 +936,11 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   // chain entry takes priority; otherwise a populated rack still shows here so it
   // can never be orphaned (and the Apply button stays reachable).
   pinned('effectStage', 'Effect Stage', (
-    p.activeMagentaTool
+    p.vstEmbed
+      ? <VstEmbedHost pluginPath={p.vstEmbed.pluginPath} pluginName={p.vstEmbed.pluginName} error={p.vstEmbed.error} onClose={p.onCloseVstEmbed} />
+    : p.ganActiveUrl
+      ? <GanPluginStage url={p.ganActiveUrl} name={p.ganActiveName} />
+    : p.activeMagentaTool
       ? <MagentaToolStage tool={p.activeMagentaTool} />
     : p.activePsychoId === 'spatializer'
       ? owlStage
@@ -791,11 +983,27 @@ export const MixView: React.FC = () => {
   const vstPlugins = useVstStore((s) => s.plugins);
   const vstScanning = useVstStore((s) => s.scanning);
   const scanVst = useVstStore((s) => s.scan);
+  // .gan web-plugins (generic loader) for the MIX effect stage.
+  const ganPlugins = useGanStore((s) => s.plugins);
+  const ganActiveId = useGanStore((s) => s.activeId);
+  const ganActiveUrl = useGanStore((s) => s.activeUrl);
+  const ganActiveName = useGanStore((s) => s.activeName);
+  const ganBusy = useGanStore((s) => s.busy);
+  const ganRefresh = useGanStore((s) => s.refresh);
+  const ganOpenPath = useGanStore((s) => s.openPath);
+  const ganOpenById = useGanStore((s) => s.openById);
+  const ganImportOwl = useGanStore((s) => s.importOwl);
+  const ganClose = useGanStore((s) => s.close);
   const removeEffect = useEffectChainStore((s) => s.removeEffect);
   const updateParams = useEffectChainStore((s) => s.updateParams);
   const toggleEnabled = useEffectChainStore((s) => s.toggleEnabled);
   const reorder = useEffectChainStore((s) => s.reorder);
   const clearChain = useEffectChainStore((s) => s.clearChain);
+  const setVstRawState = useEffectChainStore((s) => s.setVstRawState);
+  // The VST chain entry whose native editor is currently embedded in the Effect
+  // Stage (Electron only). null = no embedded editor. `error` is set when the
+  // plugin fails to load so the host shows it instead of a forever "loading…".
+  const [vstEmbed, setVstEmbed] = useState<{ entryId: string; pluginPath: string; pluginName: string; error?: string } | null>(null);
 
   const outputFormat = useStudioStore((s) => s.outputFormat);
   const setOutputFormat = useStudioStore((s) => s.setOutputFormat);
@@ -832,6 +1040,8 @@ export const MixView: React.FC = () => {
 
   // Populate the VST3 browser on first open (cached scan — cheap).
   useEffect(() => { void scanVst(false); }, [scanVst]);
+  // Populate the installed .gan plugin list on first open.
+  useEffect(() => { void ganRefresh(); }, [ganRefresh]);
 
   useEffect(() => {
     if (!sourceFile) { setSrcStats(null); return; }
@@ -955,6 +1165,77 @@ export const MixView: React.FC = () => {
   const addVstToChain = (pl: Vst3PluginInfo) => addVst({ plugin_path: pl.path, plugin_name: pl.name });
   const selectedEntry = chain.find((e) => e.id === selectedChainId) ?? chain[0] ?? null;
 
+  // Open a VST3 plugin's REAL native GUI (pedalboard show_editor in a sidecar
+  // process), then poll for the captured state and store it on this chain entry
+  // so the dialed-in sound is reused at process time. The editor is a native OS
+  // window, so the user tweaks it there and closes it to commit.
+  const handleEditVst = (entry: ChainEntry) => {
+    if (!entry.vst) return;
+    if (vstEmbed?.entryId === entry.id) return; // already open for this entry
+    const path = entry.vst.plugin_path;
+    const name = entry.vst.plugin_name;
+    const rawState = entry.vst.raw_state;
+    const status = useStatusBarStore.getState();
+    // Dismiss any other embedded editor before opening this one.
+    if (vstEmbed && vstEmbed.entryId !== entry.id) {
+      void vstApi.editorRect(vstEmbed.pluginPath, { x: 0, y: 0, w: 0, h: 0, dpr: 1, close: true });
+    }
+    const clearEmbed = () => setVstEmbed((cur) => (cur?.entryId === entry.id ? null : cur));
+    void (async () => {
+      // In Electron, embed the editor in the Effect Stage; in a browser it falls
+      // back to a floating native window (no parent handle available).
+      const hwnd = await getNativeWindowHandle();
+      const embed = hwnd
+        ? { parentHwnd: hwnd, rect: { x: 0, y: 0, w: 480, h: 320, dpr: window.devicePixelRatio || 1 } }
+        : undefined;
+      if (embed) setVstEmbed({ entryId: entry.id, pluginPath: path, pluginName: name });
+      try {
+        await vstApi.openEditor(path, rawState, embed);
+        status.setText(embed
+          ? `VST GUI: ${name} embedding in MIX…`
+          : `VST GUI: ${name} opened — close the window to save its settings`);
+        const startedAt = performance.now();
+        const poll = () => {
+          vstApi.editorResult(path)
+            .then((res) => {
+              if (res.status === 'ok' && res.raw_state) {
+                setVstRawState(entry.id, res.raw_state);
+                status.setText(`VST GUI: ${name} settings captured`);
+                clearEmbed();
+                return;
+              }
+              if (res.status === 'error') {
+                const msg = res.error || 'editor unavailable';
+                status.setText(`VST GUI: ${msg}`);
+                // Keep the host visible (Electron) so the failure is on-screen,
+                // not just in the status bar; otherwise just clear.
+                setVstEmbed((cur) => (cur?.entryId === entry.id ? { ...cur, error: msg } : cur));
+                return;
+              }
+              if (performance.now() - startedAt < 30 * 60 * 1000) window.setTimeout(poll, 1500);
+            })
+            .catch(() => { if (performance.now() - startedAt < 30 * 60 * 1000) window.setTimeout(poll, 1500); });
+        };
+        window.setTimeout(poll, 1500);
+      } catch (e) {
+        clearEmbed();
+        status.setText(`VST GUI FAILED: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  };
+
+  // Clicking a VST in the browser adds it to the chain (once) AND opens its GUI
+  // immediately — no separate "Edit GUI" step. Re-clicking one already in the
+  // chain just (re)opens its editor instead of adding a duplicate.
+  const addAndEditVst = (pl: Vst3PluginInfo) => {
+    let entry = useEffectChainStore.getState().chain.find((e) => e.vst?.plugin_path === pl.path);
+    if (!entry) {
+      addVstToChain(pl);
+      entry = [...useEffectChainStore.getState().chain].reverse().find((e) => e.vst?.plugin_path === pl.path);
+    }
+    if (entry) handleEditVst(entry as ChainEntry);
+  };
+
   // The instrument shown in the effect stage: an explicitly-picked Studio Module
   // takes priority; otherwise the selected chain effect opens its mapped module.
   const mappedModuleId = selectedEntry ? effectToModuleId[selectedEntry.effect] : undefined;
@@ -963,12 +1244,13 @@ export const MixView: React.FC = () => {
     ?? (mappedModuleId ? moduleById[mappedModuleId] ?? null : null);
 
   // Picking a module from the library toggles its instrument open/closed.
-  const handlePickModule = (id: string) => { setActivePsychoId(null); setActiveMagentaId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
+  const handlePickModule = (id: string) => { ganClose(); setActivePsychoId(null); setActiveMagentaId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
   // Selecting a chain entry hands the stage back to the effect→module mapping.
-  const selectChain = (id: string) => { setActivePsychoId(null); setActiveMagentaId(null); setSelectedChainId(id); setActiveModuleId(null); };
+  const selectChain = (id: string) => { ganClose(); setActivePsychoId(null); setActiveMagentaId(null); setSelectedChainId(id); setActiveModuleId(null); };
   // Picking a psychoacoustic tile adds it to the rack engine (once) and opens the
   // rack in the Effect Stage; clicking the focused one again closes the stage.
   const handlePickPsycho = (id: string) => {
+    ganClose();
     if (activePsychoId === id) { setActivePsychoId(null); return; }
     if (!rackChain.some((e) => e.effect === id)) rackAdd(id);
     setActiveModuleId(null);
@@ -979,9 +1261,28 @@ export const MixView: React.FC = () => {
   // clicking the focused one again closes it. Mutually exclusive with the above.
   const activeMagentaTool: MagentaTool | null = activeMagentaId ? magentaToolById[activeMagentaId] ?? null : null;
   const handlePickMagenta = (id: string) => {
+    ganClose();
     setActivePsychoId(null); setActiveModuleId(null);
     setActiveMagentaId((cur) => (cur === id ? null : id));
   };
+  // .gan loader: pick/import sets the active plugin and yields the stage to it.
+  const handleOpenGan = async () => {
+    const r = await pickFile({ filter: GAN_FILTER, title: 'Open a .gan plugin' });
+    if (!r.path) return;
+    setActiveModuleId(null); setActivePsychoId(null); setActiveMagentaId(null);
+    await ganOpenPath(r.path);
+  };
+  const handleImportGan = async () => {
+    const r = await pickFile({ title: 'Select a VST Foundry export (project.json)' });
+    if (!r.path) return;
+    setActiveModuleId(null); setActivePsychoId(null); setActiveMagentaId(null);
+    await ganImportOwl(r.path);
+  };
+  const handlePickGan = (id: string) => {
+    setActiveModuleId(null); setActivePsychoId(null); setActiveMagentaId(null);
+    void ganOpenById(id);
+  };
+  const handleRevealGan = (path: string) => { void ganApi.reveal(path).catch(() => {}); };
 
   const registry = buildMixRegistry({
     sourceUrl, outputUrl, srcStats, outStats, sourceFile,
@@ -999,12 +1300,20 @@ export const MixView: React.FC = () => {
     activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length + vstPlugins.length,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
-    vstPlugins, vstScanning, rescanVst: () => void scanVst(true), addVstToChain, vstInChain,
+    vstPlugins, vstScanning, rescanVst: () => void scanVst(true), addVstToChain: addAndEditVst, vstInChain,
+    ganPlugins, ganActiveId, ganActiveUrl, ganActiveName, ganBusy,
+    onOpenGan: () => void handleOpenGan(), onImportGan: () => void handleImportGan(),
+    onPickGan: handlePickGan, onRevealGan: handleRevealGan,
     onPickModule: handlePickModule, activeModuleId, activeModule,
     onPickPsycho: handlePickPsycho, activePsychoId,
     onPickMagenta: handlePickMagenta, activeMagentaId, activeMagentaTool,
     chain, selectedId: selectedChainId, setSelectedId: selectChain,
-    removeEffect, updateParams, toggleEnabled, reorder, clearChain,
+    removeEffect, updateParams, toggleEnabled, reorder, clearChain, onEditVst: handleEditVst,
+    vstEmbed,
+    onCloseVstEmbed: () => {
+      if (vstEmbed) void vstApi.editorRect(vstEmbed.pluginPath, { x: 0, y: 0, w: 0, h: 0, dpr: 1, close: true });
+      setVstEmbed(null);
+    },
     outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
     selectedEntry,
     rackChain, rackAdd, rackRemove, rackReorder, rackToggle, rackUpdateParams, rackClear,
@@ -1012,7 +1321,7 @@ export const MixView: React.FC = () => {
   });
 
   return (
-    <div className="relative h-full w-full overflow-hidden text-zinc-200">
+    <div className="relative h-full w-full overflow-hidden text-zinc-200 bg-[#07050a]">
       <ControlSurface surfaceId="mix" registry={registry} defaultLayout={defaultMixLayout} className="p-1.5" />
       <input ref={fileInputRef} name="mix-audio-file" type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} title="Upload audio file" />
     </div>

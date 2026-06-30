@@ -1061,6 +1061,226 @@ const makeChop: RackEffectFactory = (ctx, params) => {
   };
 };
 
+/* ── Standard mixing effects (real-time native Web Audio) ──────────────────────
+   These give the EDIT timeline (and master bus) genuinely-live EQ, dynamics,
+   reverb and delay. They are also the landing targets for imported DAW stock
+   effects (Ableton EQ Eight, FL Fruity Reverb, REAPER ReaComp, …): the importer
+   maps a recognized stock effect onto one of these so it plays live and stays
+   tweakable, instead of being preserved-but-silent. */
+
+/* Parametric EQ: low shelf + sweepable mid peak + high shelf in series. */
+const makeParametricEq: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const low = ctx.createBiquadFilter();
+  low.type = 'lowshelf';
+  low.frequency.value = 120;
+  const mid = ctx.createBiquadFilter();
+  mid.type = 'peaking';
+  mid.Q.value = 1;
+  const high = ctx.createBiquadFilter();
+  high.type = 'highshelf';
+  high.frequency.value = 6000;
+  input.connect(low);
+  low.connect(mid);
+  mid.connect(high);
+  const setParams = (p: Record<string, number>) => {
+    ramp(low.gain, clamp(p.low ?? 0, -24, 24), ctx);
+    mid.frequency.value = clamp(p.midFreq ?? 1000, 100, 12000);
+    ramp(mid.gain, clamp(p.mid ?? 0, -24, 24), ctx);
+    ramp(high.gain, clamp(p.high ?? 0, -24, 24), ctx);
+  };
+  setParams(params);
+  return {
+    input,
+    output: high,
+    setParams,
+    dispose: () => {
+      try {
+        input.disconnect();
+        low.disconnect();
+        mid.disconnect();
+        high.disconnect();
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+};
+
+/* Compressor: native DynamicsCompressor + makeup gain. */
+const makeCompressor: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const comp = ctx.createDynamicsCompressor();
+  const makeup = ctx.createGain();
+  input.connect(comp);
+  comp.connect(makeup);
+  const setParams = (p: Record<string, number>) => {
+    const t = ctx.currentTime;
+    comp.threshold.setValueAtTime(clamp(p.threshold ?? -24, -60, 0), t);
+    comp.ratio.setValueAtTime(clamp(p.ratio ?? 3, 1, 20), t);
+    comp.knee.setValueAtTime(clamp(p.knee ?? 6, 0, 40), t);
+    comp.attack.setValueAtTime(clamp((p.attack ?? 10) / 1000, 0, 1), t);
+    comp.release.setValueAtTime(clamp((p.release ?? 150) / 1000, 0, 1), t);
+    ramp(makeup.gain, dbToGain(clamp(p.makeup ?? 0, 0, 24)), ctx);
+  };
+  setParams(params);
+  return {
+    input,
+    output: makeup,
+    setParams,
+    dispose: () => {
+      try {
+        input.disconnect();
+        comp.disconnect();
+        makeup.disconnect();
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+};
+
+/* Build a synthetic stereo impulse response (exponentially decaying noise). */
+const makeReverbIR = (ctx: BaseAudioContext, seconds: number): AudioBuffer => {
+  const rate = ctx.sampleRate;
+  const len = Math.max(1, Math.floor(clamp(seconds, 0.1, 8) * rate));
+  const ir = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch += 1) {
+    const data = ir.getChannelData(ch);
+    for (let i = 0; i < len; i += 1) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.5);
+    }
+  }
+  return ir;
+};
+
+/* Reverb: convolution of a synthesized IR, with predelay, tone and wet/dry. */
+const makeReverb: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  const pre = ctx.createDelay(1.0);
+  const conv = ctx.createConvolver();
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  input.connect(dry);
+  dry.connect(output);
+  input.connect(pre);
+  pre.connect(conv);
+  conv.connect(tone);
+  tone.connect(wet);
+  wet.connect(output);
+  let curSeconds = -1;
+  const setParams = (p: Record<string, number>) => {
+    const seconds = clamp(p.decay ?? 2.0, 0.1, 8);
+    if (seconds !== curSeconds) {
+      conv.buffer = makeReverbIR(ctx, seconds);
+      curSeconds = seconds;
+    }
+    pre.delayTime.setValueAtTime(clamp((p.predelay ?? 20) / 1000, 0, 0.5), ctx.currentTime);
+    tone.frequency.value = clamp(p.tone ?? 8000, 500, 18000);
+    const mix = clamp(p.wet ?? 0.3, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
+  };
+  setParams(params);
+  return {
+    input,
+    output,
+    setParams,
+    dispose: () => {
+      try {
+        input.disconnect();
+        dry.disconnect();
+        pre.disconnect();
+        conv.disconnect();
+        tone.disconnect();
+        wet.disconnect();
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+};
+
+/* Delay/echo: feedback delay line with a tone-shaped feedback path + wet mix. */
+const makeDelay: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  const delay = ctx.createDelay(5.0);
+  const fb = ctx.createGain();
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  input.connect(dry);
+  dry.connect(output);
+  input.connect(delay);
+  delay.connect(tone);
+  tone.connect(fb);
+  fb.connect(delay); // feedback loop
+  delay.connect(wet);
+  wet.connect(output);
+  dry.gain.value = 1;
+  const setParams = (p: Record<string, number>) => {
+    ramp(delay.delayTime, clamp((p.time ?? 350) / 1000, 0, 5), ctx);
+    ramp(fb.gain, clamp(p.feedback ?? 0.35, 0, 0.95), ctx);
+    tone.frequency.value = clamp(p.tone ?? 6000, 200, 18000);
+    ramp(wet.gain, clamp(p.wet ?? 0.3, 0, 1), ctx);
+  };
+  setParams(params);
+  return {
+    input,
+    output,
+    setParams,
+    dispose: () => {
+      try {
+        input.disconnect();
+        dry.disconnect();
+        delay.disconnect();
+        tone.disconnect();
+        fb.disconnect();
+        wet.disconnect();
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+};
+
+/* Simple resonant filters (high-pass / low-pass) for imported filter devices. */
+const makeFilter = (type: BiquadFilterType): RackEffectFactory => (ctx, params) => {
+  const input = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  filter.type = type;
+  input.connect(filter);
+  const setParams = (p: Record<string, number>) => {
+    filter.frequency.value = clamp(
+      p.frequency ?? (type === 'highpass' ? 120 : 8000),
+      20,
+      20000,
+    );
+    filter.Q.value = clamp(p.resonance ?? 0.7, 0.1, 18);
+  };
+  setParams(params);
+  return {
+    input,
+    output: filter,
+    setParams,
+    dispose: () => {
+      try {
+        input.disconnect();
+        filter.disconnect();
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+};
+const makeHighpass = makeFilter('highpass');
+const makeLowpass = makeFilter('lowpass');
+
 /* ── registry ──────────────────────────────────────────────────────────────── */
 
 export const RACK_EFFECTS: readonly RackEffectDef[] = [
@@ -1202,6 +1422,82 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'gate', label: 'Gate', min: 0, max: 1, step: 1, default: 0 },
     ],
     make: makeChop,
+  },
+  {
+    id: 'parametric_eq',
+    label: 'Parametric EQ',
+    group: 'EQ & Dynamics',
+    description: 'Three-band tone shaping: low shelf, sweepable mid bell, high shelf.',
+    params: [
+      { key: 'low', label: 'Low', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB' },
+      { key: 'midFreq', label: 'Mid Freq', min: 100, max: 12000, step: 10, default: 1000, unit: 'Hz' },
+      { key: 'mid', label: 'Mid', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB' },
+      { key: 'high', label: 'High', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB' },
+    ],
+    make: makeParametricEq,
+  },
+  {
+    id: 'compressor',
+    label: 'Compressor',
+    group: 'EQ & Dynamics',
+    description: 'Dynamics compressor with makeup gain (threshold/ratio/attack/release).',
+    params: [
+      { key: 'threshold', label: 'Threshold', min: -60, max: 0, step: 0.5, default: -24, unit: 'dB' },
+      { key: 'ratio', label: 'Ratio', min: 1, max: 20, step: 0.1, default: 3 },
+      { key: 'attack', label: 'Attack', min: 0, max: 200, step: 1, default: 10, unit: 'ms' },
+      { key: 'release', label: 'Release', min: 5, max: 1000, step: 5, default: 150, unit: 'ms' },
+      { key: 'knee', label: 'Knee', min: 0, max: 40, step: 1, default: 6, unit: 'dB' },
+      { key: 'makeup', label: 'Makeup', min: 0, max: 24, step: 0.5, default: 0, unit: 'dB' },
+    ],
+    make: makeCompressor,
+  },
+  {
+    id: 'reverb',
+    label: 'Reverb',
+    group: 'Space',
+    description: 'Convolution reverb (synthesized IR) with predelay, tone and wet/dry mix.',
+    params: [
+      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's' },
+      { key: 'predelay', label: 'Predelay', min: 0, max: 200, step: 1, default: 20, unit: 'ms' },
+      { key: 'tone', label: 'Tone', min: 500, max: 18000, step: 50, default: 8000, unit: 'Hz' },
+      { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3 },
+    ],
+    make: makeReverb,
+  },
+  {
+    id: 'delay',
+    label: 'Delay',
+    group: 'Space',
+    description: 'Feedback delay/echo with a tone-shaped feedback path and wet mix.',
+    params: [
+      { key: 'time', label: 'Time', min: 0, max: 2000, step: 1, default: 350, unit: 'ms' },
+      { key: 'feedback', label: 'Feedback', min: 0, max: 0.95, step: 0.01, default: 0.35 },
+      { key: 'tone', label: 'Tone', min: 200, max: 18000, step: 50, default: 6000, unit: 'Hz' },
+      { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3 },
+    ],
+    make: makeDelay,
+  },
+  {
+    id: 'highpass',
+    label: 'High-Pass Filter',
+    group: 'EQ & Dynamics',
+    description: 'Resonant high-pass filter (removes lows below the cutoff).',
+    params: [
+      { key: 'frequency', label: 'Freq', min: 20, max: 2000, step: 5, default: 120, unit: 'Hz' },
+      { key: 'resonance', label: 'Q', min: 0.1, max: 18, step: 0.1, default: 0.7 },
+    ],
+    make: makeHighpass,
+  },
+  {
+    id: 'lowpass',
+    label: 'Low-Pass Filter',
+    group: 'EQ & Dynamics',
+    description: 'Resonant low-pass filter (removes highs above the cutoff).',
+    params: [
+      { key: 'frequency', label: 'Freq', min: 500, max: 20000, step: 10, default: 8000, unit: 'Hz' },
+      { key: 'resonance', label: 'Q', min: 0.1, max: 18, step: 0.1, default: 0.7 },
+    ],
+    make: makeLowpass,
   },
 ];
 

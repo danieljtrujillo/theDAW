@@ -177,6 +177,29 @@ export async function pickFile(opts?: { filter?: string; title?: string }): Prom
   );
 }
 
+export async function pickSave(opts?: {
+  filter?: string;
+  title?: string;
+  initialDir?: string;
+  initialName?: string;
+  defaultExt?: string;
+}): Promise<PathPickerResult> {
+  // Native Save As dialog (for .tasmo saves). The backend snake_cases the keys.
+  return json(
+    await fetch('/api/storage/pick-save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filter: opts?.filter,
+        title: opts?.title,
+        initial_dir: opts?.initialDir,
+        initial_name: opts?.initialName,
+        default_ext: opts?.defaultExt,
+      }),
+    }),
+  );
+}
+
 export async function fetchModelStatus(): Promise<ModelStatusResponse> {
   return json(await fetch('/api/storage/model-status'));
 }

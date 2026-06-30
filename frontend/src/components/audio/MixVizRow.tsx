@@ -48,10 +48,13 @@ export const MixVizRow: React.FC<MixVizRowProps> = ({
     return () => ro.disconnect();
   }, []);
   return (
-    <div className="h-full w-full min-h-0 flex flex-col overflow-hidden">
-      {/* header: label · view toggle · overlay · extra */}
-      <div className="shrink-0 flex items-center gap-2 px-2 py-1 border-b border-white/5">
-        <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 shrink-0">{label}</span>
+    <div
+      className="h-full w-full min-h-0 flex flex-col overflow-hidden rounded-lg border bg-black/40 shadow-[inset_0_0_24px_rgba(0,0,0,0.6)]"
+      style={{ borderColor: `${accent}55` }}
+    >
+      {/* header: label · view toggle · overlay · extra (DJ deck-slot style) */}
+      <div className="shrink-0 flex items-center gap-2 px-2 py-1 border-b border-white/10 bg-black/50">
+        <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: accent }}>{label}</span>
         <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5 shrink-0">
           <button onClick={() => onMode('wave')} title="Waveform" className={tabBtn(mode === 'wave')}>
             <AudioWaveform className="w-3 h-3" />
@@ -71,7 +74,7 @@ export const MixVizRow: React.FC<MixVizRowProps> = ({
       </div>
 
       {/* body */}
-      <div ref={bodyRef} className="flex-1 min-h-0 relative">
+      <div ref={bodyRef} className="flex-1 min-h-0 relative bg-[#060509]">
         {mode === 'live' ? (
           <AdvancedVisualizer />
         ) : url ? (

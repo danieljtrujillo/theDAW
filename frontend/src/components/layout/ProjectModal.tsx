@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useProjectStore } from '../../state/projectStore';
+import { useEditorStore } from '../../state/editorStore';
 import { PathInput } from '../ui/PathInput';
 import { TASMO_FILTER } from '../../lib/fileFilters';
 
@@ -51,6 +52,7 @@ export const ProjectModal: React.FC = () => {
     lastSaved,
     openPath,
     loaded,
+    defaultDir,
   } = useProjectStore(
     useShallow((s) => ({
       isOpen: s.isOpen,
@@ -67,6 +69,7 @@ export const ProjectModal: React.FC = () => {
       lastSaved: s.lastSaved,
       openPath: s.openPath,
       loaded: s.loaded,
+      defaultDir: s.defaultDir,
     })),
   );
   const close = useProjectStore((s) => s.close);
@@ -76,8 +79,18 @@ export const ProjectModal: React.FC = () => {
   const setEmbedAudio = useProjectStore((s) => s.setEmbedAudio);
   const setSavePath = useProjectStore((s) => s.setSavePath);
   const setOpenPath = useProjectStore((s) => s.setOpenPath);
+  const setDefaultDir = useProjectStore((s) => s.setDefaultDir);
   const save = useProjectStore((s) => s.save);
   const loadPath = useProjectStore((s) => s.loadPath);
+
+  // Sanitized default filename for the Save dialog.
+  const saveName = `${(projectName || 'project').replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'project'}.tasmo`;
+
+  // What "Save" will capture: an imported DAW project (seeded pendingTracks), or
+  // otherwise the live EDIT timeline (counted from the editor).
+  const liveTrackCount = useEditorStore((s) => s.tracks.length);
+  const liveClipCount = useEditorStore((s) => s.clips.length);
+  const isImport = pendingTracks.length > 0;
 
   if (!isOpen) return null;
 
@@ -171,20 +184,35 @@ export const ProjectModal: React.FC = () => {
               </div>
 
               <PathInput
+                id="project-default-dir"
+                name="project_default_dir"
+                label="Default folder"
+                kind="folder"
+                value={defaultDir}
+                onChange={setDefaultDir}
+                placeholder="Default .tasmo folder"
+                description="New projects are pre-named here; change it any time."
+              />
+
+              <PathInput
                 id="project-save-path"
                 name="project_save_path"
                 label="Save to"
-                kind="file"
+                kind="save"
                 fileFilter={TASMO_FILTER}
+                saveName={saveName}
+                saveExt="tasmo"
+                saveDir={defaultDir}
                 value={savePath}
                 onChange={setSavePath}
                 placeholder="C:\\path\\to\\song.tasmo"
-                description=".tasmo extension is added automatically if you omit it."
+                description="Pre-filled from the default folder; click Choose… to pick a different location."
               />
 
               <div className="text-[9px] font-mono text-zinc-500">
-                Captures {pendingTracks.length} track(s)
-                {sourceDaw ? ` from ${sourceDaw}` : ''}.
+                {isImport
+                  ? `Captures ${pendingTracks.length} track(s)${sourceDaw ? ` from ${sourceDaw}` : ''}.`
+                  : `Captures the EDIT timeline: ${liveTrackCount} track(s), ${liveClipCount} clip(s) (audio embedded).`}
               </div>
 
               <button

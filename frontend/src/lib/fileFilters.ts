@@ -9,6 +9,8 @@ export const DAW_PROJECT_FILTER =
 
 export const TASMO_FILTER = 'theDAW project (*.tasmo)|*.tasmo|All files (*.*)|*.*';
 
+export const GAN_FILTER = 'GAN plugin (*.gan)|*.gan|All files (*.*)|*.*';
+
 export const AUDIO_FILTER =
   'Audio (*.wav;*.flac;*.mp3;*.ogg;*.m4a;*.aac;*.aif;*.aiff)' +
   '|*.wav;*.flac;*.mp3;*.ogg;*.m4a;*.aac;*.aif;*.aiff' +

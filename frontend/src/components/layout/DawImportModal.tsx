@@ -6,15 +6,13 @@ import {
   FolderInput,
   Layers,
   Loader2,
-  PackagePlus,
+  Music4,
   X,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useDawImportStore } from '../../state/dawImportStore';
-import { useProjectStore } from '../../state/projectStore';
 import { PathInput } from '../ui/PathInput';
 import { DAW_LABELS } from '../../lib/dawImportClient';
-import { dawProjectToTasmo } from '../../lib/projectClient';
 import { DAW_PROJECT_FILTER } from '../../lib/fileFilters';
 
 export const DawImportModal: React.FC = () => {
@@ -32,14 +30,9 @@ export const DawImportModal: React.FC = () => {
   const close = useDawImportStore((s) => s.close);
   const setSourcePath = useDawImportStore((s) => s.setSourcePath);
   const detectAndImport = useDawImportStore((s) => s.detectAndImport);
-  const openProject = useProjectStore((s) => s.open);
+  const loadIntoEditor = useDawImportStore((s) => s.loadIntoEditor);
 
   if (!isOpen) return null;
-
-  const saveAsTasmo = () => {
-    if (!project) return;
-    openProject('save', dawProjectToTasmo(project));
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -143,12 +136,17 @@ export const DawImportModal: React.FC = () => {
 
               <button
                 type="button"
-                onClick={saveAsTasmo}
-                className="btn-ghost inline-flex items-center justify-center gap-1.5"
+                onClick={() => void loadIntoEditor()}
+                disabled={busy || project.tracks.length === 0}
+                className="btn-primary inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
               >
-                <PackagePlus className="w-3 h-3" />
-                Save as .tasmo…
+                {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Music4 className="w-3 h-3" />}
+                Load into theDAW
               </button>
+              <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+                Builds the tracks, clips and effects on the EDIT timeline and autosaves a portable
+                .tasmo to your projects folder.
+              </p>
             </div>
           )}
 

@@ -1568,6 +1568,144 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   }, [renderFrozenMaster]);
 
+  // --- Per-track VST freeze ---------------------------------------------------
+  // Browser audio can't host VST3 live (the plugins run in pedalboard on the
+  // backend), so "freezing" a track renders it offline — its clips + live rack
+  // FX baked locally, then its VST3 chain applied in series on the backend — into
+  // one printed stem the normal clip path plays back. Mirrors the master freeze.
+  const renderTrackStem = useCallback(
+    async (
+      trackId: string,
+    ): Promise<{ audioBlob: Blob; durationSec: number; peaks: Float32Array } | null> => {
+      const st = useEditorStore.getState();
+      const track = st.tracks.find((t) => t.id === trackId);
+      if (!track) return null;
+      const trackClips = st.clips.filter((c) => c.trackId === trackId);
+      if (trackClips.length === 0) {
+        logError('editor', 'Track has no clips to freeze.');
+        return null;
+      }
+      const vsts = (track.fxChain ?? []).filter((e) => e.enabled && e.effect === 'vst3' && e.vst);
+      const dur = Math.max(...trackClips.map((c) => c.startSec + c.durationSec), 0.1);
+      const sr = 44100;
+      const offline = new OfflineAudioContext(2, Math.ceil(dur * sr), sr);
+
+      // Decode clips with a real AudioContext (more reliable than offline decode).
+      const blobCache = new Map<Blob, AudioBuffer>();
+      const decodeCtx = new AudioContext({ sampleRate: sr });
+      try {
+        for (const c of trackClips) {
+          if (!blobCache.has(c.audioBlob)) {
+            const ab = await c.audioBlob.arrayBuffer();
+            const decoded = await Promise.race([
+              decodeCtx.decodeAudioData(ab.slice(0)),
+              new Promise<never>((_, rej) =>
+                setTimeout(() => rej(new Error('decodeAudioData timeout')), DECODE_TIMEOUT_MS),
+              ),
+            ]);
+            blobCache.set(c.audioBlob, decoded);
+          }
+        }
+      } finally {
+        decodeCtx.close().catch(() => {});
+      }
+
+      // Bake the live rack effects (VST entries are applied on the backend after).
+      const rackChain = (track.fxChain ?? []).filter((e) => e.effect !== 'vst3');
+      if (rackChain.some((e) => e.effect === 'chop' && e.enabled)) {
+        try {
+          await ensureChopModule(offline);
+        } catch {
+          /* falls back to passthrough */
+        }
+      }
+      const trackInput = offline.createGain();
+      const fx = buildEffectChain(offline, trackInput, offline.destination, rackChain);
+      for (const c of trackClips) {
+        const buf = blobCache.get(c.audioBlob);
+        if (!buf) continue;
+        const safeOffset = Math.min(c.offsetIntoSource, Math.max(0, buf.duration - 0.01));
+        const safeDur = Math.min(c.durationSec, buf.duration - safeOffset);
+        if (safeDur <= 0) continue;
+        const src = offline.createBufferSource();
+        src.buffer = buf;
+        const clipGain = offline.createGain();
+        const fadeIn = c.fadeInSec ?? 0;
+        const fadeOut = c.fadeOutSec ?? 0;
+        clipGain.gain.setValueAtTime(fadeIn > 0 ? 0 : 1, c.startSec);
+        if (fadeIn > 0) clipGain.gain.linearRampToValueAtTime(1, c.startSec + Math.min(fadeIn, safeDur));
+        if (fadeOut > 0) {
+          const fo = c.startSec + safeDur - Math.min(fadeOut, safeDur);
+          clipGain.gain.setValueAtTime(1, fo);
+          clipGain.gain.linearRampToValueAtTime(0, c.startSec + safeDur);
+        }
+        src.connect(clipGain).connect(trackInput);
+        src.start(c.startSec, safeOffset, safeDur);
+      }
+
+      let rendered: AudioBuffer;
+      try {
+        rendered = await offline.startRendering();
+      } finally {
+        fx.dispose();
+      }
+      let blob: Blob = encodeWav(rendered);
+
+      // VST3 chain on the backend, in signal-chain order.
+      let current = new File([blob], 'track-stem.wav', { type: 'audio/wav' });
+      for (const node of vsts) {
+        const form = new FormData();
+        form.append('audio', current);
+        form.append('plugin_path', node.vst!.plugin_path);
+        form.append('params', '{}');
+        if (node.vst!.raw_state) form.append('raw_state', node.vst!.raw_state);
+        const res = await fetch('/api/vst/process-file', { method: 'POST', body: form });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const j = (await res.json()) as { detail?: string };
+            if (j.detail) detail = j.detail;
+          } catch {
+            /* non-JSON */
+          }
+          throw new Error(detail);
+        }
+        const out = await res.blob();
+        current = new File([out], 'track-stem.wav', { type: 'audio/wav' });
+        blob = out;
+      }
+
+      const { peaks } = await computePeaks(blob, 240);
+      return { audioBlob: blob, durationSec: dur, peaks };
+    },
+    [],
+  );
+
+  const freezeTrackAction = useCallback(
+    async (trackId: string) => {
+      setIsFreezing(true);
+      try {
+        usePlayerStore.getState().stop();
+        const stem = await renderTrackStem(trackId);
+        if (!stem) return;
+        useEditorStore.getState().freezeTrack(trackId, stem);
+        liveMixer.reactivate();
+        logInfo('editor', 'Track frozen — VST FX printed into the stem.');
+      } catch (e) {
+        logError('editor', `Track freeze failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setIsFreezing(false);
+      }
+    },
+    [renderTrackStem],
+  );
+
+  const unfreezeTrackAction = useCallback((trackId: string) => {
+    usePlayerStore.getState().stop();
+    useEditorStore.getState().unfreezeTrack(trackId);
+    liveMixer.reactivate();
+  }, []);
+
   // --- Pointer math helpers. ---
   const pxToSec = useCallback((px: number) => px / zoom, [zoom]);
   const timelineClientXToSec = useCallback((clientX: number): number => {
@@ -2644,6 +2782,32 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       title="Track insert FX rack"
                       className={`w-4 h-4 rounded text-[8px] font-bold flex items-center justify-center ${(t.fxChain?.length ?? 0) > 0 || fxPanelTrackId === t.id ? 'bg-purple-500/20 text-purple-300 border border-purple-500/50' : 'bg-black/40 text-zinc-500 border border-white/5 hover:text-white'}`}
                     >F</button>
+                    {(t.frozenOriginal || (t.fxChain ?? []).some((e) => e.effect === 'vst3' && e.vst)) && (
+                      <button
+                        onClick={() =>
+                          t.frozenOriginal ? unfreezeTrackAction(t.id) : void freezeTrackAction(t.id)
+                        }
+                        disabled={isFreezing}
+                        aria-label={
+                          t.frozenOriginal
+                            ? `Unfreeze track ${t.name}`
+                            : `Freeze track ${t.name} to print VST FX`
+                        }
+                        aria-pressed={!!t.frozenOriginal}
+                        title={
+                          t.frozenOriginal
+                            ? 'Unfreeze (restore live clips + FX)'
+                            : 'Freeze: print VST3/effects into audio so the plugin is audible'
+                        }
+                        className={`w-4 h-4 rounded flex items-center justify-center border disabled:opacity-40 ${t.frozenOriginal ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50' : 'bg-black/40 text-zinc-500 border-white/5 hover:text-white'}`}
+                      >
+                        {isFreezing ? (
+                          <Loader2 className="w-2 h-2 animate-spin" />
+                        ) : (
+                          <Snowflake className="w-2 h-2" />
+                        )}
+                      </button>
+                    )}
                     <button
                       onClick={() => removeTrack(t.id)}
                       className="w-4 h-4 rounded text-[8px] flex items-center justify-center bg-black/40 text-zinc-600 border border-white/5 hover:text-red-400"

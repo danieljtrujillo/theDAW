@@ -10,14 +10,36 @@ from dataclasses import dataclass, field
 
 @dataclass
 class DawDevice:
+    """One effect/instrument device on a track (or, later, a clip).
+
+    ``plugin_type`` is "vst3" | "audiounit" | "builtin". For VST/AU devices,
+    ``plugin_path`` is the full on-disk path (so theDAW can re-host it);
+    builtin/native devices leave it None and rely on ``name`` for mapping.
+    ``parameters`` is a best-effort name->value snapshot. ``state`` optionally
+    carries an opaque base64 plugin-state chunk for later exact restoration.
+    Devices are stored in signal-chain order.
+    """
+
     name: str
     plugin_type: str  # "vst3" | "audiounit" | "builtin"
     plugin_path: str | None = None
     parameters: dict[str, float] = field(default_factory=dict)
+    bypass: bool = False
+    state: str | None = None
 
 
 @dataclass
 class DawClip:
+    """One clip on a track.
+
+    Timing convention (ALL importers): ``start_time``/``end_time`` are in
+    SECONDS on the project timeline (parsers convert beats via tempo, samples
+    via sample rate, etc.). ``midi_notes`` is a list of dicts shaped
+    ``{"pitch": int 0-127, "start": float seconds RELATIVE to the clip,
+    "duration": float seconds, "velocity": int 1-127}``. ``file_path`` is the
+    absolute on-disk audio sample path for audio clips (None for pure MIDI).
+    """
+
     name: str
     start_time: float
     end_time: float

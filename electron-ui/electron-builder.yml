@@ -5,6 +5,19 @@ directories:
   output: release
   buildResources: resources
 
+# Register theDAW as the handler for its file types so double-clicking a project
+# or plugin opens it in the app (the main process reads the path from argv and
+# routes it to the renderer). Developer/company is GANTASMO.
+fileAssociations:
+  - ext: tasmo
+    name: theDAW Project
+    description: theDAW project
+    role: Editor
+  - ext: gan
+    name: GAN Plugin
+    description: GANTASMO .gan web plugin
+    role: Editor
+
 # The Electron shell itself ships only the built renderer + main/preload bundles.
 # Everything Python lives beside the app under resources/ (see extraResources)
 # and is installed on first launch by the bundled uv. Keeping the Python source

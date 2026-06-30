@@ -35,7 +35,7 @@ interface StudioStoreState {
   processAudio: (payload: { effect: string; params: Record<string, number>; skipLibrary?: boolean }) => Promise<void>;
   // VST3 chain stage: uploads the current audio + plugin path to
   // /api/vst/process-file (mirrors processAudio) and returns processed audio.
-  processVst: (payload: { pluginPath: string; pluginName: string; params: Record<string, number>; skipLibrary?: boolean }) => Promise<void>;
+  processVst: (payload: { pluginPath: string; pluginName: string; params: Record<string, number>; rawState?: string; skipLibrary?: boolean }) => Promise<void>;
   // Runs the enabled effects in useEffectChainStore in series over the
   // source in useAdvancedEditorSourceStore, then imports the final result
   // to the library, loads the player, and writes advancedEditorStore.outputUrl.
@@ -204,7 +204,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     }
   },
 
-  processVst: async ({ pluginPath, pluginName, params, skipLibrary }) => {
+  processVst: async ({ pluginPath, pluginName, params, rawState, skipLibrary }) => {
     const source = get().sourceFile;
     if (!source) {
       const message = 'Load a source audio file before processing.';
@@ -224,6 +224,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     form.append('audio', source);
     form.append('plugin_path', pluginPath);
     form.append('params', JSON.stringify(params || {}));
+    if (rawState) form.append('raw_state', rawState);
 
     try {
       const response = await fetchWithTimeout('/api/vst/process-file', {
@@ -318,6 +319,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
             pluginPath: entry.vst.plugin_path,
             pluginName: entry.vst.plugin_name,
             params: entry.params,
+            rawState: entry.vst.raw_state,
             skipLibrary: true,
           });
         } else {

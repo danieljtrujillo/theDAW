@@ -381,6 +381,37 @@ function killBackend(): Promise<void> {
 
 let mainWindow: BrowserWindow | null = null
 
+// ---------------------------------------------------------------------------
+// OS file-open (.tasmo / .gan associations)
+//
+// Double-clicking an associated file launches (or re-uses) theDAW with the path
+// in argv (Windows/Linux) or via the 'open-file' event (macOS). We forward the
+// path to the renderer, which routes .tasmo -> project load and .gan -> the MIX
+// plugin loader. If the window isn't ready yet, the path is held and flushed on
+// did-finish-load.
+// ---------------------------------------------------------------------------
+
+let pendingOpenFile: string | null = null
+
+function fileArgFrom(argv: string[]): string | null {
+  for (const a of argv) {
+    if (typeof a !== 'string') continue
+    const lower = a.toLowerCase()
+    if ((lower.endsWith('.tasmo') || lower.endsWith('.gan')) && fs.existsSync(a)) {
+      return a
+    }
+  }
+  return null
+}
+
+function deliverOpenFile(filePath: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('open-file', filePath)
+  } else {
+    pendingOpenFile = filePath
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -412,6 +443,13 @@ function createWindow(): void {
 
 function loadRenderer(): void {
   if (!mainWindow) return
+  // Flush any file the app was opened with once the renderer has loaded.
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingOpenFile && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('open-file', pendingOpenFile)
+      pendingOpenFile = null
+    }
+  })
   const devURL = process.env.ELECTRON_RENDERER_URL
   if (!app.isPackaged && devURL) {
     mainWindow.loadURL(devURL)
@@ -517,11 +555,49 @@ function registerIpcHandlers(): void {
   ipcMain.handle('app:quit', () => {
     app.quit()
   })
+
+  // Native window handle (HWND on Windows) for embedding a VST3 editor window
+  // into the MIX area: the backend sidecar reparents the editor under this HWND.
+  // getNativeWindowHandle() returns a Buffer holding the pointer; encode it as a
+  // decimal string so it survives JSON/IPC without precision loss.
+  ipcMain.handle('window:getNativeHandle', () => {
+    if (!mainWindow) return null
+    try {
+      const buf = mainWindow.getNativeWindowHandle()
+      const value = buf.length >= 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0))
+      return value.toString()
+    } catch {
+      return null
+    }
+  })
+
+  // Screen-space rect of the web content area (DIP), so the renderer can convert
+  // an element's client rect into absolute screen pixels for positioning the
+  // embedded VST window. Changes as the window moves/resizes.
+  ipcMain.handle('window:getContentBounds', () => {
+    if (!mainWindow) return null
+    try {
+      return mainWindow.getContentBounds()
+    } catch {
+      return null
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
+
+// Windows camera backend: Chromium defaults to the Media Foundation video-capture
+// backend, which does NOT enumerate many virtual / phone-as-webcam bridges
+// (Iriun, Camo, DroidCam, EpocCam, NDI, OBS virtual camera) that register only as
+// DirectShow devices — so they never appear in enumerateDevices() and can't be
+// picked in the camera selector. Forcing the DirectShow capturer surfaces them.
+// Physical cameras keep working under DirectShow on Windows 10/11; remove this
+// switch only if a specific Media-Foundation-only device regresses.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-features', 'MediaFoundationVideoCapture')
+}
 
 // Register custom protocol scheme before app is ready
 protocol.registerSchemesAsPrivileged([
@@ -536,7 +612,33 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-app.whenReady().then(async () => {
+// Single-instance: a second launch (e.g. double-clicking a .tasmo while running)
+// forwards its file arg to the existing window instead of starting a second app.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+app.on('second-instance', (_event, argv) => {
+  const f = fileArgFrom(argv)
+  if (f) deliverOpenFile(f)
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+// macOS delivers associated files via this event rather than argv.
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+  deliverOpenFile(filePath)
+})
+
+if (gotSingleInstanceLock) app.whenReady().then(async () => {
+  // The path the app was launched with (Windows/Linux argv), flushed to the
+  // renderer once it loads.
+  const launchFile = fileArgFrom(process.argv)
+  if (launchFile) pendingOpenFile = launchFile
+
+
   // Identify as theDAW, not "Electron": names the process / menu / userData dir
   // and, via the AppUserModelID, the Windows taskbar grouping + shortcut binding.
   app.setName('theDAW')

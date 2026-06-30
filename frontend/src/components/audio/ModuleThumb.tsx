@@ -6,7 +6,102 @@ import React, { useEffect, useRef } from 'react';
    so each tile previews its instrument's character (EQ bars, transfer curve,
    goniometer rings, grain cloud, RVQ segments, …). Pure Canvas2D, framework-free. */
 
-type Draw = (ctx: CanvasRenderingContext2D, W: number, H: number) => void;
+type Draw = (ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number) => void;
+
+// Deterministic PRNG so a VST's generated faceplate is stable across reloads
+// (seeded by the plugin name) rather than reshuffling on every render.
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// A generated plugin faceplate for VSTs, which expose no native GUI to capture.
+// The category picks the screen motif (waveform for effects, note blocks for
+// instruments); the seeded rng drives hue, screen content, and knob layout, so
+// each plugin reads as a distinct module instead of a generic plug icon.
+function drawVst(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, kind: 'effect' | 'instrument') {
+  const hue = Math.floor(rng() * 360);
+  const accent = `hsl(${hue}, 78%, 62%)`;
+  const accentDim = `hsl(${hue}, 55%, 40%)`;
+  const accent2 = `hsl(${(hue + 45) % 360}, 82%, 62%)`;
+
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, `hsl(${hue}, 28%, 13%)`);
+  bg.addColorStop(1, `hsl(${hue}, 32%, 6%)`);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  const padX = Math.max(3, W * 0.07);
+  const screenY = Math.max(3, H * 0.1);
+  const screenW = W - padX * 2;
+  const screenH = Math.max(10, H * 0.34);
+
+  ctx.fillStyle = 'rgba(0,0,0,.5)';
+  ctx.beginPath(); ctx.roundRect(padX, screenY, screenW, screenH, 2); ctx.fill();
+  ctx.strokeStyle = `hsl(${hue}, 40%, 22%)`; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(padX, screenY, screenW, screenH, 2); ctx.stroke();
+
+  if (kind === 'instrument') {
+    const cols = 6 + Math.floor(rng() * 3);
+    const cw = screenW / cols;
+    const heights = Array.from({ length: cols }, () => 0.3 + rng() * 0.65);
+    for (let i = 0; i < cols; i++) {
+      const bh = heights[i] * (screenH - 4);
+      ctx.fillStyle = i % 2 ? accent2 : accent;
+      ctx.globalAlpha = 0.5 + heights[i] * 0.45;
+      ctx.fillRect(padX + i * cw + 1, screenY + screenH - 2 - bh, cw - 2, bh);
+    }
+    ctx.globalAlpha = 1;
+  } else {
+    const midY = screenY + screenH / 2;
+    const f1 = 0.06 + rng() * 0.1;
+    const f2 = 0.12 + rng() * 0.22;
+    const ph = rng() * Math.PI * 2;
+    const amp = screenH * (0.22 + rng() * 0.16);
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    for (let x = 0; x <= screenW; x++) {
+      const v = Math.sin(x * f1) * 0.62 + Math.sin(x * f2 + ph) * 0.34;
+      ctx.lineTo(padX + x, midY - v * amp);
+    }
+    ctx.stroke();
+  }
+
+  // status LEDs in the top-right of the screen
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i === 0 ? accent2 : 'rgba(255,255,255,.16)';
+    ctx.beginPath(); ctx.arc(padX + screenW - 4 - i * 4.5, screenY + 3.5, 1.3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // knob row
+  const knobN = 2 + Math.floor(rng() * 2); // 2..3 knobs
+  const ctrlTop = screenY + screenH + Math.max(4, H * 0.08);
+  const availH = H - ctrlTop - Math.max(3, H * 0.06);
+  const knobR = Math.max(3, Math.min(availH * 0.46, (screenW / knobN) * 0.34));
+  const cy = ctrlTop + knobR + 1;
+  for (let i = 0; i < knobN; i++) {
+    const cx = padX + ((i + 0.5) / knobN) * screenW;
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
+    ctx.beginPath(); ctx.arc(cx, cy, knobR, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = accentDim; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, knobR, 0, Math.PI * 2); ctx.stroke();
+    const a = (0.75 + rng() * 1.5) * Math.PI; // 135deg..405deg pointer sweep
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * knobR * 0.72, cy + Math.sin(a) * knobR * 0.72); ctx.stroke();
+    ctx.fillStyle = accent2;
+    ctx.beginPath(); ctx.arc(cx, cy, Math.max(0.8, knobR * 0.16), 0, Math.PI * 2); ctx.fill();
+  }
+}
 
 const DRAWERS: Record<string, Draw> = {
   'eq-bars': (ctx, W, H) => {
@@ -154,9 +249,13 @@ const DRAWERS: Record<string, Draw> = {
     ctx.strokeStyle = 'rgba(239,68,68,.35)'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
     ctx.beginPath(); ctx.moveTo(cutX, 4); ctx.lineTo(cutX, H - 4); ctx.stroke(); ctx.setLineDash([]);
   },
+  // VST faceplates — seeded per plugin (see drawVst). 'vst' is the generic fallback.
+  'vst-effect': (ctx, W, H, rng) => drawVst(ctx, W, H, rng, 'effect'),
+  'vst-instrument': (ctx, W, H, rng) => drawVst(ctx, W, H, rng, 'instrument'),
+  vst: (ctx, W, H, rng) => drawVst(ctx, W, H, rng, 'effect'),
 };
 
-export const ModuleThumb: React.FC<{ preview: string; className?: string }> = ({ preview, className }) => {
+export const ModuleThumb: React.FC<{ preview: string; seed?: string; className?: string }> = ({ preview, seed, className }) => {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -177,14 +276,17 @@ export const ModuleThumb: React.FC<{ preview: string; className?: string }> = ({
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
-      draw?.(ctx, W, H);
+      // A seed makes the drawer deterministic (used by VST faceplates); without
+      // one the legacy drawers keep their Math.random sparkle.
+      const rng = seed != null ? mulberry32(hashStr(seed)) : Math.random;
+      draw?.(ctx, W, H, rng);
     };
 
     render();
     const ro = new ResizeObserver(render);
     ro.observe(parent);
     return () => ro.disconnect();
-  }, [preview]);
+  }, [preview, seed]);
 
   return <canvas ref={ref} className={className} />;
 };
