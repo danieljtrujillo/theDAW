@@ -19,6 +19,9 @@ class EffectChainNode(BaseModel):
     parameters: dict[str, float] = {}
     bypass: bool = False
     vst_state: VstPluginState | None = None
+    # Stable chain-entry id so controller mappings (and other references) keyed to
+    # a specific FX slot survive a save/load round-trip.
+    id: str | None = None
 
 
 class Locator(BaseModel):
@@ -101,3 +104,15 @@ class TasmoProject(BaseModel):
     source_daw: str | None = None
     source_daw_version: str | None = None
     import_warnings: list[str] = []
+    # Persisted controller (MIDI-learn) auto-attach: the resolved Sway bindings +
+    # unattached list + source project name, so reopening a saved session re-wires
+    # the hardware to the same targets without re-importing the source DAW project.
+    # Opaque nested shape (mirrors the frontend SwayResolveResult); see
+    # swayImportResolve.ts / swayImportStore.ts.
+    controller_mappings: dict | None = None
+    # Persisted Perform-tab routing: the transport + per-scene launch controls and
+    # the Sway-dim -> track modulation routes, so reopening a saved session in the
+    # Perform tab restores the same scene-launch + modulation assignments. Opaque
+    # nested shape (mirrors the frontend PerformRoutingSnapshot); see
+    # performRouting.ts.
+    perform_routing: dict | None = None

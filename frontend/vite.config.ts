@@ -59,6 +59,12 @@ export default defineConfig(({mode}) => {
             three: ['three'],
             wavesurfer: ['wavesurfer.js', '@wavesurfer/react'],
             icons: ['lucide-react'],
+            // Heavy leaf libs pulled in by specific features; give them their own
+            // long-cached chunks so they leave the main entry chunk (and an app
+            // edit never busts them). Behaviour is unchanged — pure bundling.
+            genai: ['@google/genai'],
+            markdown: ['react-markdown', 'remark-gfm', 'marked'],
+            spessasynth: ['spessasynth_core', 'spessasynth_lib'],
           },
         },
       },

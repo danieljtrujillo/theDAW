@@ -900,8 +900,15 @@ async def get_all_modules():
 
 @app.patch("/api/modules/{module_name}/enabled")
 async def set_module_enabled(module_name: str, enabled: bool = Body(..., embed=True)):
-    modules_dir = Path(__file__).parent / "modules"
-    config_path = modules_dir / module_name / "module.json"
+    modules_dir = (Path(__file__).parent / "modules").resolve()
+    config_path = (modules_dir / module_name / "module.json").resolve()
+    # Contain the write to a direct child module directory: reject path traversal
+    # (e.g. "../../x") or nested/absolute names so this can only touch a module.json.
+    if (
+        not config_path.is_relative_to(modules_dir)
+        or config_path.parent.parent != modules_dir
+    ):
+        raise HTTPException(status_code=400, detail="Invalid module name")
     if not config_path.exists():
         raise HTTPException(status_code=404, detail="Module not found")
     config = json.loads(config_path.read_text())
@@ -1303,109 +1310,114 @@ async def generate(
         LogSNRShift,
     )
 
-    # lazy: load (or wake) the active model on first use; clear any resident
-    # MRT2 engine first so SA3 never stacks on top of it (commit-limit crash)
-    await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
-    # Off the event loop (see /api/generate-jobs): a synchronous model load here
-    # would block the single worker and stall /health + media streaming.
-    generation_pipeline = await asyncio.get_event_loop().run_in_executor(
-        None, _get_or_load_generation_pipeline, _active_model_name
-    )
+    # Hold the generation lock so /api/model/offload|onload cannot move
+    # the weights out from under an in-flight synchronous generation.
+    async with _generation_job_lock:
+        # lazy: load (or wake) the active model on first use; clear any resident
+        # MRT2 engine first so SA3 never stacks on top of it (commit-limit crash)
+        await asyncio.get_event_loop().run_in_executor(
+            None, _ensure_gpu_clear_of_magenta
+        )
+        # Off the event loop (see /api/generate-jobs): a synchronous model load here
+        # would block the single worker and stall /health + media streaming.
+        generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+            None, _get_or_load_generation_pipeline, _active_model_name
+        )
 
-    # Build dist_shift object
-    dist_shift = None
-    if dist_shift_type and dist_shift_type not in ("None", "none", ""):
-        if dist_shift_type == "LogSNR":
-            dist_shift = LogSNRShift(
-                anchor_length=logsnr_anchor_length,
-                anchor_logsnr=logsnr_anchor_logsnr,
-                rate=logsnr_rate,
-                logsnr_end=logsnr_end,
-            )
-        elif dist_shift_type == "Flux":
-            dist_shift = FluxDistributionShift(
-                min_length=flux_min_len,
-                max_length=flux_max_len,
-                alpha_min=flux_alpha_min,
-                alpha_max=flux_alpha_max,
-            )
-        elif dist_shift_type == "Full":
-            dist_shift = DistributionShift(
-                base_shift=full_base_shift,
-                max_shift=full_max_shift,
-                min_length=full_min_len,
-                max_length=full_max_len,
-            )
+        # Build dist_shift object
+        dist_shift = None
+        if dist_shift_type and dist_shift_type not in ("None", "none", ""):
+            if dist_shift_type == "LogSNR":
+                dist_shift = LogSNRShift(
+                    anchor_length=logsnr_anchor_length,
+                    anchor_logsnr=logsnr_anchor_logsnr,
+                    rate=logsnr_rate,
+                    logsnr_end=logsnr_end,
+                )
+            elif dist_shift_type == "Flux":
+                dist_shift = FluxDistributionShift(
+                    min_length=flux_min_len,
+                    max_length=flux_max_len,
+                    alpha_min=flux_alpha_min,
+                    alpha_max=flux_alpha_max,
+                )
+            elif dist_shift_type == "Full":
+                dist_shift = DistributionShift(
+                    base_shift=full_base_shift,
+                    max_shift=full_max_shift,
+                    min_length=full_min_len,
+                    max_length=full_max_len,
+                )
 
-    # Load init audio if provided
-    init_audio_tuple = None
-    if init_audio is not None and init_audio.filename:
-        init_audio_tuple = await _load_audio_upload(init_audio)
-    init_audio_type = _validate_init_audio_mode(
-        init_audio_type,
-        has_init_audio=init_audio_tuple is not None,
-    )
+        # Load init audio if provided
+        init_audio_tuple = None
+        if init_audio is not None and init_audio.filename:
+            init_audio_tuple = await _load_audio_upload(init_audio)
+        init_audio_type = _validate_init_audio_mode(
+            init_audio_type,
+            has_init_audio=init_audio_tuple is not None,
+        )
 
-    # Load inpaint audio if provided
-    inpaint_audio_tuple = None
-    if inpaint_audio is not None and inpaint_audio.filename:
-        inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+        # Load inpaint audio if provided
+        inpaint_audio_tuple = None
+        if inpaint_audio is not None and inpaint_audio.filename:
+            inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
 
-    generate_args = {
-        "prompt": prompt,
-        "negative_prompt": negative_prompt if negative_prompt else None,
-        "duration": duration,
-        "steps": steps,
-        "cfg_scale": cfg_scale,
-        "seed": seed,
-        "apg_scale": apg_scale,
-        "duration_padding_sec": duration_padding_sec,
-        "scale_phi": cfg_rescale,
-        "cfg_norm_threshold": cfg_norm_threshold,
-        "cfg_interval": (cfg_interval_min, cfg_interval_max),
-    }
-    generate_args["sample_size"] = _compute_request_sample_size(
-        generation_pipeline,
-        duration,
-        duration_padding_sec,
-    )
+        generate_args = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt if negative_prompt else None,
+            "duration": duration,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "seed": seed,
+            "apg_scale": apg_scale,
+            "duration_padding_sec": duration_padding_sec,
+            "scale_phi": cfg_rescale,
+            "cfg_norm_threshold": cfg_norm_threshold,
+            "cfg_interval": (cfg_interval_min, cfg_interval_max),
+        }
+        generate_args["sample_size"] = _compute_request_sample_size(
+            generation_pipeline,
+            duration,
+            duration_padding_sec,
+        )
 
-    if sampler_type:
-        generate_args["sampler_type"] = sampler_type
-    if sigma_max != 1.0:
-        generate_args["sigma_max"] = sigma_max
-    if dist_shift is not None:
-        generate_args["dist_shift"] = dist_shift
+        if sampler_type:
+            generate_args["sampler_type"] = sampler_type
+        if sigma_max != 1.0:
+            generate_args["sigma_max"] = sigma_max
+        if dist_shift is not None:
+            generate_args["dist_shift"] = dist_shift
 
-    # Init audio (audio-to-audio)
-    if init_audio_tuple:
-        generate_args["init_audio"] = init_audio_tuple
-        generate_args["init_noise_level"] = init_noise_level
+        # Init audio (audio-to-audio)
+        if init_audio_tuple:
+            generate_args["init_audio"] = init_audio_tuple
+            generate_args["init_noise_level"] = init_noise_level
 
-    # Inpainting
-    if inpaint_audio_tuple:
-        generate_args["inpaint_audio"] = inpaint_audio_tuple
-        if mask_start > 0 or mask_end > 0:
-            generate_args["inpaint_mask_start_seconds"] = mask_start
-            generate_args["inpaint_mask_end_seconds"] = mask_end
+        # Inpainting
+        if inpaint_audio_tuple:
+            generate_args["inpaint_audio"] = inpaint_audio_tuple
+            if mask_start > 0 or mask_end > 0:
+                generate_args["inpaint_mask_start_seconds"] = mask_start
+                generate_args["inpaint_mask_end_seconds"] = mask_end
 
-    loop = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
 
-    def _do_generate():
-        gen_audio = generation_pipeline.generate(**generate_args)
-        gen_audio = gen_audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
+        def _do_generate():
+            gen_audio = generation_pipeline.generate(**generate_args)
+            gen_audio = gen_audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
 
-        fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
+            fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
 
-        buf = io.BytesIO()
-        save_kwargs: dict = {}
-        if fmt == "wav":
-            save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
-        torchaudio.save(buf, gen_audio, sample_rate, format=fmt, **save_kwargs)
-        buf.seek(0)
-        return buf, fmt
+            buf = io.BytesIO()
+            save_kwargs: dict = {}
+            if fmt == "wav":
+                save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
+            torchaudio.save(buf, gen_audio, sample_rate, format=fmt, **save_kwargs)
+            buf.seek(0)
+            return buf, fmt
 
-    buffer, fmt = await loop.run_in_executor(None, _do_generate)
+        buffer, fmt = await loop.run_in_executor(None, _do_generate)
 
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
 
@@ -1423,6 +1435,20 @@ async def generate(
 # --- Async job shim for theDAW frontend (generate-jobs + polling) ---
 
 JOBS: dict[str, dict] = {}
+# A completed generate job's "result" carries base64 audio + spectrograms (MBs
+# per job). Without a cap the dict grows for the whole session; prune the oldest
+# FINISHED jobs (never running/queued) once past the limit.
+_JOBS_MAX = 40
+
+
+def _prune_jobs() -> None:
+    while len(JOBS) > _JOBS_MAX:
+        for jid, j in list(JOBS.items()):
+            if j.get("status") in ("completed", "failed", "error"):
+                JOBS.pop(jid, None)
+                break
+        else:
+            break
 
 
 def _generate_to_bytes(
@@ -1790,6 +1816,7 @@ async def generate_jobs(
         "progress": {"step": 0, "steps": int(steps)},
         "created_at": time.time(),
     }
+    _prune_jobs()
 
     asyncio.create_task(
         _run_generate_job(

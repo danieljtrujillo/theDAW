@@ -1378,8 +1378,17 @@ const ControllerView: React.FC<{
           const { item, locked } = resolve(index);
           const binding = bindings?.[pos];
           const learning = learnPos === pos;
+          const slotLabel = sec.labels?.[i];
           cells.push(
             <div className="sl-mapcell" key={index}>
+              {slotLabel && (
+                <div
+                  className="text-[7px] font-mono uppercase tracking-tight text-zinc-400 text-center truncate"
+                  title={slotLabel}
+                >
+                  {slotLabel}
+                </div>
+              )}
               <Slot
                 index={index}
                 kind={sec.kind}
@@ -1411,7 +1420,7 @@ const ControllerView: React.FC<{
         }
         return (
           <div className="sl-section" key={sec.id}>
-            <div className="sl-section-head">{sec.label} · {sec.rows}×{sec.cols}</div>
+            <div className="sl-section-head">{sec.label}{sec.labels ? '' : ` · ${sec.rows}×${sec.cols}`}</div>
             <div className="sl-grid" style={{ gridTemplateColumns: `repeat(${sec.cols}, var(--lane))` }}>
               {cells}
             </div>

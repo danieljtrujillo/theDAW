@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Play, Square, Target,
   Trash2, Sparkles, Plus, Activity,
-  Download, Send, Music,
+  Download, Send, Music, Palette,
 } from 'lucide-react';
 import { SlideTrack } from './SlideTrack';
 import { usePlaybackStore } from '../../state/playbackStore';
@@ -11,6 +11,11 @@ import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import {
+  STYLE_NAMES,
+  combineStylesForRole,
+  roleForTrack,
+} from '../../lib/drumStyleGenerator';
 
 const SEQUENCE_MIDI_PARAMS = [
   { key: 'bpm' as const, label: 'BPM', min: 40, max: 240, autoCc: 14, integer: true },
@@ -360,6 +365,9 @@ export const StepSequencer: React.FC = () => {
   const [exportBars, setExportBars] = useState(2);
   const [isBouncing, setIsBouncing] = useState(false);
   const trackMenu = useContextMenu<{ trackId: string }>();
+  const [styleOpen, setStyleOpen] = useState(false);
+  const [selectedStyles, setSelectedStyles] = useState<string[]>([]);
+  const styleRef = useRef<HTMLDivElement>(null);
 
   // Refs so the timer callback always reads the latest state without re-creating the interval.
   const tracksRef = useRef(tracks);
@@ -370,6 +378,23 @@ export const StepSequencer: React.FC = () => {
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
   useEffect(() => { currentStepRef.current = currentStep; }, [currentStep]);
   useEffect(() => { masterGainRef.current = masterGain; }, [masterGain]);
+
+  // Close the style popover on outside click / Escape.
+  useEffect(() => {
+    if (!styleOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (styleRef.current && !styleRef.current.contains(e.target as Node)) setStyleOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setStyleOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [styleOpen]);
 
   // Sequencer clock — advance step + fire active voices.
   useEffect(() => {
@@ -463,6 +488,39 @@ export const StepSequencer: React.FC = () => {
       ...t,
       steps: Array(STEPS).fill(false).map(() => Math.random() > 0.7),
     })));
+  };
+
+  const toggleSelectedStyle = (name: string) => {
+    setSelectedStyles((prev) =>
+      prev.includes(name) ? prev.filter((s) => s !== name) : [...prev, name],
+    );
+  };
+
+  // Fill EVERY track with the selected style(s), matched by each track's role
+  // (kick/snare/hat/bass/perc). Multiple styles union ("combine").
+  const applySelectedStyles = () => {
+    if (selectedStyles.length === 0) return;
+    setTracks(
+      tracks.map((t) => ({
+        ...t,
+        steps: combineStylesForRole(selectedStyles, roleForTrack(t)),
+      })),
+    );
+    logInfo(
+      'sequencer',
+      `Applied style${selectedStyles.length > 1 ? 's' : ''}: ${selectedStyles.join(' + ')}`,
+    );
+    setStyleOpen(false);
+  };
+
+  // Fill ONE track's row from the current selection (right-click menu).
+  const applyStyleToTrack = (trackId: string) => {
+    if (selectedStyles.length === 0) return;
+    patchTrackSteps(trackId, () =>
+      combineStylesForRole(selectedStyles, roleForTrack(
+        tracks.find((t) => t.id === trackId) ?? { name: '', voice: 'tone' },
+      )),
+    );
   };
 
   const handleExportMidi = () => {
@@ -621,6 +679,75 @@ export const StepSequencer: React.FC = () => {
             <Send className={`w-3 h-3 text-purple-300 ${isBouncing ? 'animate-pulse' : ''}`} />
             {isBouncing ? 'BOUNCING…' : 'SEND TO EDITOR'}
           </button>
+          <div className="relative" ref={styleRef}>
+            <button
+              type="button"
+              onClick={() => setStyleOpen((v) => !v)}
+              aria-haspopup="dialog"
+              aria-expanded={styleOpen}
+              aria-controls="step-seq-style-popover"
+              className="btn-ghost flex items-center gap-1.5 py-1 text-[9px]"
+              title="Fill tracks with a genre style (pick one or combine several)"
+            >
+              <Palette className="w-3 h-3 text-emerald-300" /> STYLE
+              {selectedStyles.length > 0 && (
+                <span className="text-[8px] font-mono text-emerald-300">{selectedStyles.length}</span>
+              )}
+            </button>
+            {styleOpen && (
+              <div
+                id="step-seq-style-popover"
+                role="dialog"
+                aria-label="Genre style fill"
+                className="absolute right-0 top-full mt-1 z-50 w-64 bg-[#0a080f] border border-white/10 rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.75)] p-2 flex flex-col gap-2"
+              >
+                <div className="flex items-center justify-between px-0.5">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                    Genre — tap to combine
+                  </span>
+                  {selectedStyles.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedStyles([])}
+                      className="text-[8px] font-mono uppercase text-zinc-500 hover:text-zinc-200"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-56 overflow-y-auto grid grid-cols-2 gap-1 pr-0.5">
+                  {STYLE_NAMES.map((name) => {
+                    const on = selectedStyles.includes(name);
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggleSelectedStyle(name)}
+                        className={[
+                          'px-1.5 py-1 rounded border text-[9px] text-left transition-colors truncate',
+                          on
+                            ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100'
+                            : 'border-white/5 bg-white/3 text-zinc-400 hover:text-zinc-100 hover:bg-white/8',
+                        ].join(' ')}
+                        title={name}
+                      >
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={applySelectedStyles}
+                  disabled={selectedStyles.length === 0}
+                  className="w-full flex items-center justify-center gap-2 px-2 py-1.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-[9px] font-black uppercase tracking-widest text-emerald-200 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                >
+                  <Palette className="w-3 h-3" /> Fill all tracks
+                </button>
+              </div>
+            )}
+          </div>
           <button
             onClick={randomizeFill}
             className="btn-ghost flex items-center gap-1.5 py-1 text-[9px]"
@@ -786,6 +913,16 @@ export const StepSequencer: React.FC = () => {
             type: 'item',
             label: 'Clear row',
             onSelect: () => patchTrackSteps(id, () => Array(STEPS).fill(false)),
+          },
+          {
+            type: 'item',
+            label:
+              selectedStyles.length > 0
+                ? `Style fill row (${selectedStyles.join(' + ')})`
+                : 'Style fill row (pick a style first)',
+            icon: <Palette className="w-3 h-3" />,
+            disabled: selectedStyles.length === 0,
+            onSelect: () => applyStyleToTrack(id),
           },
           { type: 'separator' },
           {

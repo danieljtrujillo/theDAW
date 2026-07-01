@@ -7,6 +7,7 @@ import {
   Workflow,
   Tv2,
   Disc,
+  Rows3,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
@@ -33,7 +34,7 @@ const TABS: Array<{
    *  so each workspace gets a recognizable color at a glance. */
   accent: { border: string; bg: string; text: string; iconText: string };
 }> = [
-  // Order locked by user: MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN.
+  // Order locked by user: MAKE, EDIT, SESSION, MIX, DJ, VJ, TRAIN, LEARN.
   {
     id: 'make',
     label: 'Make',
@@ -56,6 +57,18 @@ const TABS: Array<{
       bg: 'bg-emerald-500/15',
       text: 'text-emerald-100',
       iconText: 'text-emerald-300',
+    },
+  },
+  {
+    id: 'session',
+    label: 'Perform',
+    desc: 'Import a project and perform its scene/clip grid live',
+    icon: Rows3,
+    accent: {
+      border: 'border-sky-500/50',
+      bg: 'bg-sky-500/15',
+      text: 'text-sky-100',
+      iconText: 'text-sky-300',
     },
   },
   {

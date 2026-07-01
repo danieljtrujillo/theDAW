@@ -1,7 +1,10 @@
 /**
- * mixLiveRack — routes the MIX tab's psychoacoustic rack (mixRackStore) onto the
- * global player's master-output insert, so the rack is heard LIVE on the footer
- * transport (whatever the footer is playing) instead of only via an offline bounce.
+ * mixLiveRack — routes the MIX tab's effect chain (effectChainStore) onto the
+ * global player's master-output insert, so the chain's psychoacoustic effects are
+ * heard LIVE on the footer transport (whatever the footer is playing) instead of
+ * only via an offline bounce. buildEffectChain only builds entries whose id is a
+ * rack effect, so backend/VST entries in the same chain are ignored here (they are
+ * applied offline by processChain); the psychoacoustic subset is the live insert.
  *
  * The rack lives on the master insert independently of the loaded source, so
  * swapping the source / applying a new clip does NOT rebuild it. Effects never
@@ -14,10 +17,16 @@
  * empty rack is a clean passthrough, so leaving it attached colours nothing and
  * costs nothing.
  */
-import { useMixRackStore } from './mixRackStore';
+import { useEffectChainStore, MIX_RACK_IDS } from './effectChainStore';
 import { getEngineCtx, getMasterInsert } from './playerStore';
-import { buildEffectChain, ensureChopModule, type ChainHandle } from '../lib/rackEffects';
+import { buildEffectChain, ensureChopModule, ensureGranularModule, type ChainHandle } from '../lib/rackEffects';
 import type { ChainEntry } from './effectChainStore';
+
+/** The psychoacoustic subset of the unified chain — the only entries built onto
+ *  the live master insert (backend + VST + the 4 collision ids are ignored here;
+ *  they are applied offline by processChain). */
+const rackSubset = (chain: ChainEntry[]): ChainEntry[] =>
+  chain.filter((e) => MIX_RACK_IDS.has(e.effect));
 
 let handle: ChainHandle | null = null;
 let unsub: (() => void) | null = null;
@@ -32,18 +41,27 @@ const topoSig = (chain: ChainEntry[]): string => {
   return s;
 };
 
-const hasLiveChop = (chain: ChainEntry[]): boolean =>
-  chain.some((e) => e.effect === 'chop' && e.enabled);
+/** Which AudioWorklet-backed effects are present + enabled (chop has its own node;
+ *  ares embeds the granular worklet in its "grains" stage). */
+const workletNeeds = (chain: ChainEntry[]): { chop: boolean; granular: boolean } => ({
+  chop: chain.some((e) => e.effect === 'chop' && e.enabled),
+  granular: chain.some((e) => e.effect === 'ares' && e.enabled),
+});
 
-/** Rebuild the live chain. If a chop effect is present, preregister its worklet on
- *  the live context first, then rebuild again so it builds as the real node rather
- *  than the one-shot passthrough the factory falls back to before the module loads. */
+/** Rebuild the live chain. If a worklet-backed effect is present, preregister its
+ *  module on the live context first, then rebuild again so it builds as the real
+ *  node rather than the one-shot passthrough the factory falls back to before the
+ *  module loads. */
 const rebuild = (chain: ChainEntry[]): void => {
   if (!handle) return;
   handle.rebuild(chain);
-  if (hasLiveChop(chain)) {
-    void ensureChopModule(getEngineCtx())
-      .then(() => handle?.rebuild(useMixRackStore.getState().chain))
+  const need = workletNeeds(chain);
+  const loaders: Promise<void>[] = [];
+  if (need.chop) loaders.push(ensureChopModule(getEngineCtx()));
+  if (need.granular) loaders.push(ensureGranularModule(getEngineCtx()));
+  if (loaders.length) {
+    void Promise.all(loaders)
+      .then(() => handle?.rebuild(rackSubset(useEffectChainStore.getState().chain)))
       .catch(() => { /* falls back to a clean passthrough */ });
   }
 };
@@ -70,12 +88,13 @@ const reconcile = (chain: ChainEntry[]): void => {
 export function attachMixLiveRack(): void {
   if (handle) return;
   const { ctx, input, output } = getMasterInsert();
-  const chain = useMixRackStore.getState().chain;
+  const chain = rackSubset(useEffectChainStore.getState().chain);
   handle = buildEffectChain(ctx, input, output, chain);
   lastTopo = topoSig(chain);
   lastFull = JSON.stringify(chain);
-  if (hasLiveChop(chain)) rebuild(chain);
-  unsub = useMixRackStore.subscribe((s) => reconcile(s.chain));
+  const need = workletNeeds(chain);
+  if (need.chop || need.granular) rebuild(chain);
+  unsub = useEffectChainStore.subscribe((s) => reconcile(rackSubset(s.chain)));
 }
 
 /** Tear the live rack down and restore the clean insert passthrough. Rarely needed

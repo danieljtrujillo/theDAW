@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { uuid } from '../orb-kit/utils';
+import { RACK_EFFECTS, rackEffectDefaults } from '../lib/rackEffects';
 
 export const EFFECT_CATEGORIES: Record<string, string[]> = {
   'Dynamics': ['compression', 'volume', 'loudnorm', 'mastering_chain'],
@@ -68,6 +69,20 @@ export const EFFECT_LABELS: Record<string, string> = {
   export_opus: 'Export Opus',
 };
 
+/**
+ * The psychoacoustic (client-side Web-Audio) effect ids MIX treats as its LIVE
+ * rack subset: every RACK_EFFECTS id EXCEPT the four that collide with a backend
+ * effect id under a different param shape (stereo_widener, delay, highpass,
+ * lowpass). Those four stay owned by the backend effect path so a backend 'delay'
+ * is never hijacked by the rack live/bake path. Shared by mixLiveRack (heard
+ * live), studioStore.processChain (baked offline vs sent to /api/studio) and
+ * MixView (which effects the Psychoacoustics browser offers). Self-maintaining:
+ * derived from RACK_EFFECTS minus the backend id set (EFFECT_DEFAULTS keys).
+ */
+export const MIX_RACK_IDS: Set<string> = new Set(
+  RACK_EFFECTS.filter((d) => !(d.id in EFFECT_DEFAULTS)).map((d) => d.id),
+);
+
 /** Identity of a VST3 plugin node in the chain. Present only on VST entries;
  *  FFmpeg/built-in effects leave it undefined. */
 export interface VstNode {
@@ -93,6 +108,12 @@ export interface ChainEntry {
 interface EffectChainState {
   chain: ChainEntry[];
   addEffect: (effect: string) => void;
+  /** Add a psychoacoustic (client-side rack) effect to the chain, seeded from its
+   *  rackEffects descriptor. Separate from addEffect because EFFECT_DEFAULTS is
+   *  backend-only and four rack ids (delay/highpass/lowpass/stereo_widener)
+   *  collide with backend ids under different param shapes — so rack effects must
+   *  never seed from EFFECT_DEFAULTS. This is the only seeding path for rack ids. */
+  addRackEffect: (effect: string) => void;
   addVst: (plugin: VstNode) => void;
   setVstRawState: (id: string, rawState: string) => void;
   removeEffect: (id: string) => void;
@@ -109,6 +130,10 @@ export const useEffectChainStore = create<EffectChainState>()(
       addEffect: (effect) =>
         set((s) => ({
           chain: [...s.chain, { id: uuid(), effect, params: { ...(EFFECT_DEFAULTS[effect] || {}) }, enabled: true }],
+        })),
+      addRackEffect: (effect) =>
+        set((s) => ({
+          chain: [...s.chain, { id: uuid(), effect, params: { ...rackEffectDefaults(effect) }, enabled: true }],
         })),
       addVst: (plugin) =>
         set((s) => ({

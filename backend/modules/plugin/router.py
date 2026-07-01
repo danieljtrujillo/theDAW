@@ -42,6 +42,12 @@ _OWL_PROJECT = (
 )
 _OWL_BG = _REPO_ROOT / "frontend" / "public" / "owl" / "the-owl.png"
 
+# In-repo source for the bundled "Ares" control surface (VST Foundry export). Its
+# background.png sits beside the project.json, so the importer auto-loads it.
+_ARES_PROJECT = (
+    _REPO_ROOT / "backend" / "modules" / "plugin" / "assets" / "ares" / "project.json"
+)
+
 
 def _gan_path(plugin_id: str) -> Path:
     return GAN_DIR / f"{plugin_id}.gan"
@@ -190,6 +196,32 @@ def package_owl() -> dict:
     gan_path = _gan_path("the-owl")
     manifest_dict = GanFile.save(manifest, assets, str(gan_path))
     return {"manifest": manifest_dict, "gan_path": str(gan_path)}
+
+
+@router.post("/package-ares")
+def package_ares() -> dict:
+    """Build (or rebuild) the bundled 'Ares' control surface .gan in data/plugins
+    from the in-repo VST Foundry export (project.json + background.png beside it).
+    Returns its path + entry URL so the MIX Studio tile can open it in the stage."""
+    if not _ARES_PROJECT.is_file():
+        raise HTTPException(500, f"Ares project asset missing: {_ARES_PROJECT}")
+    try:
+        manifest, assets = import_vst_foundry(
+            str(_ARES_PROJECT),
+            name="Ares",
+            plugin_id="ares",
+        )
+    except (ValueError, KeyError) as e:
+        raise HTTPException(500, f"Ares package failed: {e}")
+    GAN_DIR.mkdir(parents=True, exist_ok=True)
+    gan_path = _gan_path("ares")
+    manifest_dict = GanFile.save(manifest, assets, str(gan_path))
+    GanFile.extract(str(gan_path), str(_runtime_dir("ares")))
+    return {
+        "manifest": manifest_dict,
+        "gan_path": str(gan_path),
+        "entry_url": _entry_url("ares", manifest_dict),
+    }
 
 
 class RevealRequest(BaseModel):

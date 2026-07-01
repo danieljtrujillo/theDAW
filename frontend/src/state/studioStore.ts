@@ -4,8 +4,10 @@ import { logError, logInfo } from './logStore';
 import { uuid } from '../orb-kit/utils';
 import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
-import { useEffectChainStore, EFFECT_LABELS } from './effectChainStore';
+import { useEffectChainStore, EFFECT_LABELS, MIX_RACK_IDS } from './effectChainStore';
 import { useAdvancedEditorSourceStore } from './advancedEditorStore';
+import { getRackEffect, buildEffectChain, ensureChopModule, ensureGranularModule } from '../lib/rackEffects';
+import { encodeWav } from '../lib/wavEncode';
 
 interface StudioHistoryEntry {
   id: string;
@@ -301,43 +303,95 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
 
     const fmt = get().outputFormat;
     const chainLabel = enabled
-      .map((e) => (e.vst ? e.vst.plugin_name : EFFECT_LABELS[e.effect] || e.effect))
+      .map((e) => (e.vst ? e.vst.plugin_name : EFFECT_LABELS[e.effect] || getRackEffect(e.effect)?.label || e.effect))
       .join(' → ');
     set({ isChainProcessing: true, error: null });
     useStatusBarStore.getState().setText(`MIX CHAIN STARTED: ${chainLabel}`);
     logInfo('studio', `Chain process: ${chainLabel} (${enabled.length} effects) format=${fmt}`);
 
-    try {
-      // Run each enabled effect in series, feeding each output into the
-      // next effect's input. Per-effect processing skips the library so
-      // only the final result is saved.
-      let currentFile = source;
-      for (const entry of enabled) {
-        get().setSourceFile(currentFile);
-        if (entry.vst) {
-          await get().processVst({
-            pluginPath: entry.vst.plugin_path,
-            pluginName: entry.vst.plugin_name,
-            params: entry.params,
-            rawState: entry.vst.raw_state,
-            skipLibrary: true,
-          });
-        } else {
-          await get().processAudio({ effect: entry.effect, params: entry.params, skipLibrary: true });
+    // Psychoacoustic (rack) effects are client-side Web-Audio — /api/studio does not
+    // know them. Walk the chain in VISIBLE ORDER, segmenting into consecutive runs
+    // of backend/VST effects (rendered via HTTP) vs rack effects (baked offline), so
+    // an interleaved arrangement bakes in the exact order the chain shows.
+    const isRack = (e: (typeof enabled)[number]): boolean => !e.vst && MIX_RACK_IDS.has(e.effect);
+    const segments: { rack: boolean; entries: typeof enabled }[] = [];
+    for (const e of enabled) {
+      const rack = isRack(e);
+      const last = segments[segments.length - 1];
+      if (last && last.rack === rack) last.entries.push(e);
+      else segments.push({ rack, entries: [e] });
+    }
+
+    // Bake a run of rack effects offline over `file` (mirrors the live rack). A bake
+    // failure returns the input unchanged so the pipeline still completes.
+    const bakeRack = async (file: File, entries: typeof enabled): Promise<File> => {
+      const decodeCtx = new AudioContext({ sampleRate: 44100 });
+      try {
+        const ab = await file.arrayBuffer();
+        const buf = await decodeCtx.decodeAudioData(ab.slice(0));
+        const offline = new OfflineAudioContext(2, buf.length, buf.sampleRate);
+        if (entries.some((e) => e.effect === 'chop')) {
+          try { await ensureChopModule(offline); } catch { /* falls back to passthrough */ }
         }
-        const url = get().outputUrl;
-        // The per-stage call already set an error + status if this failed.
-        if (!url) return;
-        const blob = await (await fetch(url)).blob();
-        const stageName = entry.vst ? entry.vst.plugin_name : entry.effect;
-        currentFile = new File([blob], `chain-${stageName}.${fmt}`, { type: blob.type });
+        if (entries.some((e) => e.effect === 'ares')) {
+          try { await ensureGranularModule(offline); } catch { /* falls back to passthrough */ }
+        }
+        const inGain = offline.createGain();
+        buildEffectChain(offline, inGain, offline.destination, entries);
+        const src = offline.createBufferSource();
+        src.buffer = buf;
+        src.connect(inGain);
+        src.start(0);
+        const rendered = await offline.startRendering();
+        const wav = encodeWav(rendered);
+        return new File([wav], 'chain-rack.wav', { type: 'audio/wav' });
+      } catch (e) {
+        logError('studio', `Rack bake failed (using prior result): ${e instanceof Error ? e.message : String(e)}`);
+        return file;
+      } finally {
+        decodeCtx.close().catch(() => {});
+      }
+    };
+
+    try {
+      // Feed each segment's output into the next, in visible chain order. Per-stage
+      // HTTP processing skips the library so only the final result is saved.
+      let currentFile = source;
+      for (const seg of segments) {
+        if (seg.rack) {
+          currentFile = await bakeRack(currentFile, seg.entries);
+          continue;
+        }
+        for (const entry of seg.entries) {
+          get().setSourceFile(currentFile);
+          if (entry.vst) {
+            await get().processVst({
+              pluginPath: entry.vst.plugin_path,
+              pluginName: entry.vst.plugin_name,
+              params: entry.params,
+              rawState: entry.vst.raw_state,
+              skipLibrary: true,
+            });
+          } else {
+            await get().processAudio({ effect: entry.effect, params: entry.params, skipLibrary: true });
+          }
+          const url = get().outputUrl;
+          // The per-stage call already set an error + status if this failed.
+          if (!url) return;
+          const blob = await (await fetch(url)).blob();
+          const stageName = entry.vst ? entry.vst.plugin_name : entry.effect;
+          currentFile = new File([blob], `chain-${stageName}.${fmt}`, { type: blob.type });
+        }
       }
 
-      const finalUrl = get().outputUrl;
-      if (!finalUrl) return;
-      useAdvancedEditorSourceStore.getState().setOutputUrl(finalUrl);
+      // Give each store its OWN object URL from the final blob (they revoke
+      // independently), and revoke the prior studio output so it doesn't leak.
+      const prevOut = get().outputUrl;
+      if (prevOut) URL.revokeObjectURL(prevOut);
+      set({ outputUrl: URL.createObjectURL(currentFile) });
+      useAdvancedEditorSourceStore.getState().setOutputUrl(URL.createObjectURL(currentFile));
 
-      const finalBlob = await fetch(finalUrl).then((r) => r.blob());
+      const finalBlob = currentFile;
       const title = `chain-${chainLabel.slice(0, 40)}.${fmt}`;
       try {
         const entry = await useLibraryStore.getState().importEntry({

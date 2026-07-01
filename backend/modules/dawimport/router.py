@@ -16,6 +16,10 @@ from pydantic import BaseModel
 log = logging.getLogger(__name__)
 router = APIRouter()
 
+# Note: source-clip audio for the Perform/Session grid is served by the project
+# module's /api/project/clip-audio endpoint (it transcodes AIFF/CAF -> WAV), so
+# this module does not need its own audio route.
+
 
 class PathRequest(BaseModel):
     path: str

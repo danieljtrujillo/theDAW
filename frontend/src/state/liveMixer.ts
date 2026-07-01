@@ -700,17 +700,25 @@ async function start(fromSec: number): Promise<void> {
   });
   useEditorStore.getState().setPlayhead(begin);
 
-  // Live mixer-param updates (skip the churny playhead-only store ticks).
+  // Live mixer-param updates. Gate on the FX-bearing slices changing BY REFERENCE
+  // so the 60Hz playhead tick (which only sets playheadSec, leaving tracks/
+  // masterFxChain refs intact) never triggers the per-frame JSON.stringify
+  // reconciliation. editorStore updates these slices immutably, so a real edit
+  // always swaps the reference.
   if (!unsubEditor) {
-    unsubEditor = useEditorStore.subscribe(() => {
+    unsubEditor = useEditorStore.subscribe((state, prev) => {
       if (!playing) return;
-      const sig = mixSignature(useEditorStore.getState().tracks);
-      if (sig !== lastMixSig) {
-        lastMixSig = sig;
-        applyMixLive();
+      if (state.tracks !== prev.tracks) {
+        const sig = mixSignature(state.tracks);
+        if (sig !== lastMixSig) {
+          lastMixSig = sig;
+          applyMixLive();
+        }
+        applyTrackChainsLive(); // live per-track rack edits
       }
-      applyMasterChainLive(); // live master rack edits (add/remove/reorder/param)
-      applyTrackChainsLive(); // live per-track rack edits
+      if (state.masterFxChain !== prev.masterFxChain) {
+        applyMasterChainLive(); // live master rack edits (add/remove/reorder/param)
+      }
     });
   }
 

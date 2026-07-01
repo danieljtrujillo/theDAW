@@ -1,0 +1,10 @@
+{
+  "name": "sheetimport",
+  "label": "Sheet Import",
+  "enabled": true,
+  "icon": "FileMusic",
+  "sidebar": false,
+  "api_prefix": "/api/sheetimport",
+  "backend": true,
+  "description": "Import MusicXML, ABC, Humdrum, and MIDI scores into the piano roll as note batches (music21)."
+}

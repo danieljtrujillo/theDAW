@@ -7,9 +7,14 @@ import {
   type TasmoProjectLoaded,
   type TasmoTrackInput,
 } from '../lib/projectClient';
+import type { PerformRoutingSnapshot } from './performRouting';
 import { logError, logInfo } from './logStore';
 import { useStatusBarStore } from './statusBarStore';
-import { loadProjectIntoEditor, captureEditorSession } from '../lib/projectImport';
+import {
+  loadProjectIntoEditor,
+  captureEditorSession,
+  captureControllerMappings,
+} from '../lib/projectImport';
 
 type ProjectTab = 'save' | 'open';
 
@@ -28,6 +33,9 @@ interface ProjectState {
   pendingTracks: TasmoTrackInput[];
   sourceDaw: string | null;
   importWarnings: string[];
+  // Perform-tab routing carried from a Perform save seed, so save() persists it
+  // into the .tasmo alongside the imported project structure.
+  pendingPerformRouting: PerformRoutingSnapshot | null;
   lastSaved: { path: string; manifest: ProjectManifest } | null;
 
   // Open form
@@ -79,6 +87,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   pendingTracks: [],
   sourceDaw: null,
   importWarnings: [],
+  pendingPerformRouting: null,
   lastSaved: null,
 
   openPath: '',
@@ -94,6 +103,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         pendingTracks: seed.tracks ?? [],
         sourceDaw: seed.source_daw ?? null,
         importWarnings: seed.import_warnings ?? [],
+        pendingPerformRouting: seed.perform_routing ?? null,
         lastSaved: null,
       });
     }
@@ -156,8 +166,16 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   save: async () => {
-    const { projectName, tempo, embedAudio, savePath, pendingTracks, sourceDaw, importWarnings } =
-      get();
+    const {
+      projectName,
+      tempo,
+      embedAudio,
+      savePath,
+      pendingTracks,
+      sourceDaw,
+      importWarnings,
+      pendingPerformRouting,
+    } = get();
     if (!savePath.trim()) {
       set({ error: 'Choose where to save the .tasmo file.' });
       return;
@@ -179,6 +197,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           tracks: pendingTracks,
           source_daw: sourceDaw,
           import_warnings: importWarnings,
+          controller_mappings: captureControllerMappings(),
+          perform_routing: pendingPerformRouting,
         };
         logInfo('project', `POST /api/project/save — ${path} embed=${embedAudio}`);
         res = await projectApi.save(project, path, embedAudio);
@@ -197,6 +217,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           project_name: name,
           tempo: session.bpm,
           tracks: session.tracks,
+          controller_mappings: session.controllerMappings ?? null,
         };
         logInfo(
           'project',

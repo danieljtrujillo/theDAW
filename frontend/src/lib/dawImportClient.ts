@@ -10,6 +10,12 @@ export interface DawClip {
   file_path: string | null;
   midi_notes?: unknown[] | null;
   warp_markers?: unknown[] | null;
+  /** Ableton Session-view placement (null/absent for arrangement clips):
+   *  which track column, which scene row, and the scene's name. */
+  track_index?: number | null;
+  scene_index?: number | null;
+  scene_name?: string | null;
+  slot_index?: number | null;
 }
 
 export interface DawDevice {
@@ -78,6 +84,9 @@ export interface DawProject {
   tracks: DawTrack[];
   locators: DawLocator[];
   controller_mappings: DawControllerMapping[];
+  /** Ableton Session-view scene names, in row order (empty for DAWs without a
+   *  session grid). Drives the Session tab's clip-launch grid. */
+  scenes: string[];
   plugins_used: string[];
   warnings: string[];
   missing_files: string[];
@@ -130,6 +139,13 @@ export const DAW_LABELS: Record<string, string> = {
 
 export const canImport = (daw: string): boolean => daw in IMPORT_ENDPOINT;
 export const hasHint = (daw: string): boolean => daw in HINT_ENDPOINT;
+
+/** URL that streams a source audio file referenced by an imported DAW project
+ *  (used by the Perform/Session grid + timeline import to play clips). Routes to
+ *  the project clip-audio endpoint, which serves browser-native formats directly
+ *  and transcodes DAW-native ones (AIFF/CAF/…) to WAV on the fly so they decode. */
+export const dawImportAudioUrl = (path: string): string =>
+  `/api/project/clip-audio?path=${encodeURIComponent(path)}`;
 
 export const dawApi = {
   detect: (path: string) => postJson<DawDetect>('/api/dawimport/detect', { path }),

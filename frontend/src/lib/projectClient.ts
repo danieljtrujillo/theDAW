@@ -2,6 +2,8 @@
 import { getJson, postJson, postForm } from './apiJson';
 import type { DawProject } from './dawImportClient';
 import { dawDeviceToEffectNode } from './dawEffectMap';
+import type { SwayBinding, SwayUnattached } from './swayImportResolve';
+import type { PerformRoutingSnapshot } from '../state/performRouting';
 
 // --- Effect chain (mirrors backend tasmo_project.py EffectChainNode/VstPluginState) ---
 export interface VstPluginState {
@@ -18,6 +20,18 @@ export interface EffectChainNode {
   parameters?: Record<string, number>;
   bypass?: boolean;
   vst_state?: VstPluginState | null;
+  /** Stable chain-entry id, so controller mappings keyed to this FX slot survive
+   *  a save/load round-trip. */
+  id?: string;
+}
+
+/** Persisted controller (MIDI-learn) auto-attach for a saved session — the
+ *  resolved Sway bindings + unattached list, so reopening re-wires the hardware
+ *  to the same targets. Mirrors the frontend SwayResolveResult + source name. */
+export interface TasmoControllerMappings {
+  source_name: string;
+  bindings: SwayBinding[];
+  unattached: SwayUnattached[];
 }
 
 // --- Save payload (built in the frontend, validated by the backend) ---
@@ -58,6 +72,9 @@ export interface TasmoProjectInput {
   tracks?: TasmoTrackInput[];
   source_daw?: string | null;
   import_warnings?: string[];
+  controller_mappings?: TasmoControllerMappings | null;
+  /** Perform-tab scene-launch + modulation routing (see performRouting.ts). */
+  perform_routing?: PerformRoutingSnapshot | null;
 }
 
 // --- Load result. The backend returns the FULL TasmoProject (model_dump), so
@@ -94,6 +111,8 @@ export interface TasmoProjectLoaded {
   sample_rate: number;
   tracks: TasmoLoadedTrack[];
   import_warnings?: string[];
+  controller_mappings?: TasmoControllerMappings | null;
+  perform_routing?: PerformRoutingSnapshot | null;
 }
 
 export interface ProjectManifest {
@@ -167,7 +186,9 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
       pan: t.pan,
       mute: t.mute,
       solo: t.solo,
-      clips: (t.clips ?? []).map((c) => ({
+      // Session-grid clips (scene_index set) are for the Session tab only; the
+      // EDIT timeline / .tasmo uses just the arrangement lane, unchanged.
+      clips: (t.clips ?? []).filter((c) => c.scene_index == null).map((c) => ({
         id: uid('c'),
         name: c.name,
         // Per-clip type: a clip with notes is MIDI even on an "audio" track.
