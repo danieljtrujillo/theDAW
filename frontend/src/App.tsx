@@ -26,12 +26,19 @@ import { processControlSource } from './state/processControlSource';
 import { swayControlSource, startSwayXrMirror } from './state/swayControlSource';
 import { startSwayBus } from './state/swayBus';
 import { startSwayRouting } from './state/swayRouting';
+import { startSwaySurface, swaySurfaceConsumes } from './state/swaySurface';
+import { startSwayImportDriver } from './state/swayImportStore';
+import { useSwaySurfaceStore } from './state/swaySurfaceStore';
+import { detectProfileFromNames, AUDIMA_SWAY_ID } from './state/controllerProfiles';
 import { poseControlSource, startPoseXrMirror } from './state/poseControlSource';
 import { startPoseRouting } from './state/poseRouting';
 import { startXrViz, stopXrViz } from './state/xrViz';
 import { XrBusTester } from './components/dev/XrBusTester';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
+import { useGanStore } from './state/ganStore';
+import { useProjectStore } from './state/projectStore';
+import { useAppUiStore } from './state/appUiStore';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
@@ -156,7 +163,7 @@ export default function App() {
       //    publish above still runs, so visual effects keep reacting.
       const [status, data1, data2] = e.data;
       const command = status & 0xf0;
-      if (command === 0x90 && data2 > 0 && !isMidiAudioMuted()) {
+      if (command === 0x90 && data2 > 0 && !isMidiAudioMuted() && !swaySurfaceConsumes(e.data)) {
         try {
           triggerPianoNoteFromMidi(data1, data2);
         } catch (err) {
@@ -217,6 +224,17 @@ export default function App() {
     };
   }, [midiEnabled]);
 
+  // Auto-enable the Sway DAW-control mirror when the Audima Sway is the detected
+  // controller — until the user manually toggles it, after which their choice
+  // sticks (autoEnable is a no-op once touched).
+  const midiInputNames = useMidiDevicesStore((s) => s.inputs);
+  useEffect(() => {
+    if (!midiInputNames.length) return;
+    if (detectProfileFromNames(midiInputNames)?.id === AUDIMA_SWAY_ID) {
+      useSwaySurfaceStore.getState().autoEnable();
+    }
+  }, [midiInputNames]);
+
   // Quest MIDI bridge (loopMIDI-free): when MIDI is on, open the WebSocket to
   // the backend `questmidi` module. It hosts the localhost TCP listener + adb
   // reverse and relays the headset's MIDI onto the same midiBus as hardware
@@ -236,6 +254,13 @@ export default function App() {
     const stopSway = startSwayBus();
     const stopSwayMirror = startSwayXrMirror();
     const stopSwayRoute = startSwayRouting();
+    // Audima Sway DAW-control mirror: when its mode is on, the device's
+    // faders/knobs/pads/play drive theDAW's mixer + transport + pads (the
+    // handler no-ops while the mode is off, so it is safe to leave running).
+    const stopSwaySurface = startSwaySurface();
+    // Imported-project controller auto-attach: drive the imported tracks/effects
+    // from the mappings the source DAW project defined (no-ops with no bindings).
+    const stopSwayImport = startSwayImportDriver();
     // Body-pose source (camera, forwarded from the VJ). Publish its channels on
     // the same bus; the pose values themselves arrive via poseBus regardless of MIDI.
     registerXrControlSource(poseControlSource);
@@ -255,6 +280,8 @@ export default function App() {
       stopSway();
       stopSwayMirror();
       stopSwayRoute();
+      stopSwaySurface();
+      stopSwayImport();
       stopPoseMirror();
       stopXrControl();
       stopXrViz();
@@ -266,6 +293,25 @@ export default function App() {
   useEffect(() => {
     const stop = startPoseRouting();
     return stop;
+  }, []);
+
+  // OS file associations (desktop): a double-clicked .tasmo / .gan is delivered
+  // by the Electron main process; route it to the right opener and show MIX.
+  useEffect(() => {
+    const api = (window as unknown as {
+      electronAPI?: { onOpenFile?: (cb: (filePath: string) => void) => () => void };
+    }).electronAPI;
+    if (!api?.onOpenFile) return;
+    return api.onOpenFile((filePath) => {
+      const lower = filePath.toLowerCase();
+      if (lower.endsWith('.gan')) {
+        void useGanStore.getState().openPath(filePath);
+        useAppUiStore.getState().setCenterTab('mix');
+      } else if (lower.endsWith('.tasmo')) {
+        void useProjectStore.getState().loadPath(filePath);
+        useAppUiStore.getState().setCenterTab('mix');
+      }
+    });
   }, []);
 
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {

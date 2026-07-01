@@ -43,8 +43,10 @@ export const useSoundfontStore = create<SoundfontState>((set) => ({
   ready: false,
   loading: false,
   loadError: null,
-  useSoundfont: false,
-  activeProgram: 0,
+  // Default to the bundled soundfont's Bright Acoustic Piano (GM program 1)
+  // instead of the raw sawtooth; falls back to the sawtooth if it fails to load.
+  useSoundfont: true,
+  activeProgram: 1,
   activeSynthVoice: null,
   // The three instrument modes are mutually exclusive: a soundfont program, a
   // procedural synth voice, or neither ("basic" sawtooth).

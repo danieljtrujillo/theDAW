@@ -1009,3 +1009,28 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         "__FILTER__", _ps_single_quote(flt)
     )
     return _run_windows_picker(script).model_dump()
+
+
+class PickSaveRequest(BaseModel):
+    filter: str | None = None
+    title: str | None = None
+    initial_dir: str | None = None
+    initial_name: str | None = None
+    default_ext: str | None = None
+
+
+@router.post("/pick-save")
+def storage_pick_save(req: PickSaveRequest | None = None) -> dict:
+    """Open a native Save As dialog (for .tasmo project saves etc.). Returns
+    ``{cancelled, path}`` like the other pickers."""
+    from backend.core.folder_dialog import pick_save_file
+
+    r = req or PickSaveRequest()
+    path = pick_save_file(
+        title=r.title or "Save as",
+        initial_dir=r.initial_dir,
+        initial_name=r.initial_name,
+        default_ext=r.default_ext,
+        filter_spec=r.filter,
+    )
+    return {"cancelled": path is None, "path": path}

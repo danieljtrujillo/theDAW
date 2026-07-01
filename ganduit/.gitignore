@@ -1,0 +1,15 @@
+# iPlug2 is fetched by scripts/setup.ps1 (large; not vendored here).
+iPlug2/
+# Generated IDE project tree (from iPlug2 duplicate.py).
+project/
+# Build artifacts.
+build/
+build-*/
+*.vst3
+*.clap
+*.component
+*.exe
+*.o
+*.obj
+# Extracted .gan runtime dirs (created at plugin load).
+ganduit_*/

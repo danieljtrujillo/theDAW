@@ -4,6 +4,24 @@
 
 ---
 
+## 0. Implementation Status (updated 2026-06-29)
+
+### Shipped (uncommitted; pending user sign-off)
+- **.tasmo round-trip:** Save captures the live EDIT session (multipart embed of in-memory clips); Open loads a project into the EDIT timeline (`loadProjectIntoEditor`), not just a preview.
+- **DAW import fidelity:** all 8 parsers (Ableton, Reaper, FL Studio, Bitwig, Audition, Resolume, Audacity, Logic) extract MIDI notes, audio clips with **real timing** (beats/ticks/samples → seconds), and the per-track **effect/device chain** (VST3/AU path + native device names + bypass). Logic stays audio-only (proprietary binary). Import now **loads straight into theDAW + autosaves an embedded `.tasmo`**.
+- **Effects, live:** EQ, Compressor, Reverb, Delay, High-/Low-pass are real-time Web-Audio rack effects; imported stock effects map onto them and play live (and on the master bus / manual add).
+- **VST3 per-track:** offline **Freeze** (per-track stem render → backend `/api/vst/process-file`) makes hosted VST3 audible per track (mirrors the master VST freeze). Live in-browser VST is not possible.
+- **Cross-machine media relink:** `backend/modules/dawimport/media.py` indexes the project folder by filename so samples authored on another machine (absolute paths that don't exist locally) relink to the copy bundled in the project. Wired into Ableton/Reaper/FL/Bitwig/Audition/Resolume.
+- **Auto transcoding:** `/api/project/clip-audio` transcodes DAW-native sample formats Chromium can't decode (AIFF/CAF/WavPack/WMA) to WAV on the fly, cached by source mtime+size.
+
+### Open tasks
+- **Performance / Session-view import (NOT done — timeline only).** Every importer currently targets the **arrangement / EDIT timeline**. Ableton **Session view** (clip-launch grid + scenes), FL Studio **performance mode**, and similar live-clip surfaces are NOT imported as launchable grids — Ableton session clips are only flattened onto the timeline as a fallback. Closing this needs two pieces: (1) a **clip-launch / scene surface in theDAW** (does not exist yet — EDIT is a linear arrangement; DJ/pads are separate), then (2) parser extraction of Session clip slots + scene rows (Ableton `ClipSlot`/`Scene`), FL performance blocks, etc., mapped into that surface. Large; sequence the surface first.
+- **Per-track VST add UI** in EDIT (today per-track VSTs arrive only via import; the master bus has its own add UI).
+- **Effect-parameter translation:** imported stock effects land at theDAW defaults (another DAW's exact curves aren't translatable). Optional future: map common native param names → theDAW params.
+- **Logic / Cubase / Pro Tools** deep import (proprietary/closed formats) — export-to-audio guidance only.
+
+---
+
 ## 1. Current Codebase Inventory
 
 ### 1.1 Backend Stack

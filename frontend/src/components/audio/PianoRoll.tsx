@@ -193,23 +193,40 @@ export const PianoRoll: React.FC = () => {
     }
     setPlaying(false);
   }, [setPlaying]);
+  // Time-based lookahead scheduler: notes fire at their exact time
+  // (step * stepSec), so FRACTIONAL step positions (32nd/64th notes and
+  // micro-timing offsets) play — not just integer 16ths. Loops seamlessly by
+  // scheduling each note's next occurrence every `total` steps.
   useEffect(() => {
     if (!isPlaying) return;
-    const stepMs = (60_000 / Math.max(40, bpm)) / 4;
-    const start = () => {
-      const next = (stepRef.current + 1) % totalSteps;
-      stepRef.current = next;
-      setCurrentStep(next);
-      const ctx = getEngineCtx();
-      const when = ctx.currentTime + 0.02;
+    const ctx = getEngineCtx();
+    if (ctx.state === 'suspended') void ctx.resume();
+    const stepSec = 60 / Math.max(40, bpm) / 4;
+    const lookahead = 0.12; // seconds scheduled ahead each tick
+    const startTime = ctx.currentTime + 0.06;
+    const startStep = stepRef.current;
+    const total = Math.max(1, totalSteps);
+    let cursor = startStep - 1e-4; // absolute step scheduled up to (exclusive)
+
+    const tick = () => {
+      const now = ctx.currentTime;
+      const targetAbs = startStep + (now + lookahead - startTime) / stepSec;
       for (const n of usePianoRollStore.getState().notes) {
-        if (n.step === next) {
-          const noteDur = (n.length * stepMs) / 1000;
-          triggerPianoNote(n.note, n.velocity, when, noteDur, masterRef.current);
+        let occ = n.step + Math.ceil((cursor - n.step) / total) * total;
+        if (occ <= cursor) occ += total;
+        while (occ <= targetAbs) {
+          const when = startTime + (occ - startStep) * stepSec;
+          triggerPianoNote(n.note, n.velocity, Math.max(now, when), n.length * stepSec, masterRef.current);
+          occ += total;
         }
       }
+      cursor = targetAbs;
+      const elapsedAbs = startStep + (now - startTime) / stepSec;
+      const pos = ((elapsedAbs % total) + total) % total;
+      stepRef.current = pos;
+      setCurrentStep(pos);
     };
-    playTimerRef.current = window.setInterval(start, stepMs);
+    playTimerRef.current = window.setInterval(tick, 25);
     return () => {
       if (playTimerRef.current != null) {
         window.clearInterval(playTimerRef.current);
@@ -223,16 +240,10 @@ export const PianoRoll: React.FC = () => {
       stopPlayback();
       return;
     }
-    // Fire step 0 immediately.
+    // Start from the top; the lookahead scheduler (effect above) fires notes,
+    // including step 0, at their exact times.
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
-    const when = ctx.currentTime + 0.02;
-    const stepMs = (60_000 / Math.max(40, bpm)) / 4;
-    for (const n of notes) {
-      if (n.step === 0) {
-        triggerPianoNote(n.note, n.velocity, when, (n.length * stepMs) / 1000, masterRef.current);
-      }
-    }
     setCurrentStep(0);
     stepRef.current = 0;
     setPlaying(true);
@@ -684,7 +695,7 @@ export const PianoRoll: React.FC = () => {
       {/* Status */}
       <div className="h-5 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 shrink-0">
         <span className="text-[8px] font-mono text-zinc-500">
-          {isPlaying ? `PLAYING · step ${currentStep + 1}/${totalSteps}` : 'STOPPED'} · {bpm} BPM
+          {isPlaying ? `PLAYING · step ${Math.floor(currentStep) + 1}/${totalSteps}` : 'STOPPED'} · {bpm} BPM
           {editingClipId && (
             <span className="ml-2 px-1 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[7px] uppercase tracking-widest">
               Linked to clip {editingClipId.slice(0, 8)}

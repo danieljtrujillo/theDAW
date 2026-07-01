@@ -117,6 +117,49 @@ export const CATEGORY_META: CategoryMeta[] = [
     rail: { active: 'border-rose-400 text-rose-200 bg-rose-500/10', idle: 'border-transparent text-rose-300/70 hover:text-rose-200 hover:bg-rose-500/5' } },
 ];
 
+// Each backend (FFmpeg) effect maps to the ModuleThumb canvas drawer that best
+// represents its visualizer, so every tile thumbnail reads as that effect rather
+// than a generic category icon. Keys are ModuleThumb DRAWERS keys.
+export const fxPreview: Record<string, string> = {
+  // stacks
+  mastering_chain: 'maximizer',
+  vocal_processing: 'enhance',
+  lofi_vinyl: 'character',
+  stereo_widener: 'imager',
+  reverb_delay: 'psy-spatial',
+  sub_exciter: 'psy-lowend',
+  phase_isolation: 'imager',
+  // dynamics
+  compression: 'dynamics',
+  loudnorm: 'maximizer',
+  volume: 'enhance',
+  delay: 'psy-spatial',
+  echo: 'psy-spatial',
+  fade: 'transient',
+  // eq
+  highpass: 'eq-bars',
+  lowpass: 'eq-bars',
+  eq_mid: 'eq-bars',
+  // tempo
+  tempo: 'psy-performance',
+  pitch_shift: 'psy-tone',
+  // cleanup
+  denoise: 'cleanup',
+  declick: 'repair',
+  silence_remove: 'cleanup',
+  // export
+  export_mp3: 'codec',
+  export_flac: 'codec',
+  export_aac: 'codec',
+  export_opus: 'codec',
+};
+
+// VSTs have no native GUI to capture, so each one renders a generated ModuleThumb
+// faceplate. The category picks the screen motif; the plugin name seeds the rest.
+export function vstPreviewKey(category: string): string {
+  return category === 'instrument' ? 'vst-instrument' : 'vst-effect';
+}
+
 const catById = Object.fromEntries(CATEGORY_META.map((c) => [c.id, c])) as Record<string, CategoryMeta>;
 
 export const fxToCategory: Record<string, CategoryMeta> = {};

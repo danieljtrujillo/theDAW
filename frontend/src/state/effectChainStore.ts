@@ -73,6 +73,9 @@ export const EFFECT_LABELS: Record<string, string> = {
 export interface VstNode {
   plugin_path: string;
   plugin_name: string;
+  /** Base64 plugin state captured from the native editor (show_editor); applied
+   *  at process time so the dialed-in sound is reused. Undefined = defaults. */
+  raw_state?: string;
 }
 
 export interface ChainEntry {
@@ -82,12 +85,16 @@ export interface ChainEntry {
   enabled: boolean;
   /** Set when this entry is a hosted VST3 plugin (effect === 'vst3'). */
   vst?: VstNode;
+  /** Display name for entries with no live rack definition — imported VST3 or a
+   *  source-DAW effect theDAW preserves but can't render live per-track yet. */
+  label?: string;
 }
 
 interface EffectChainState {
   chain: ChainEntry[];
   addEffect: (effect: string) => void;
   addVst: (plugin: VstNode) => void;
+  setVstRawState: (id: string, rawState: string) => void;
   removeEffect: (id: string) => void;
   updateParams: (id: string, params: Record<string, number>) => void;
   toggleEnabled: (id: string) => void;
@@ -106,6 +113,12 @@ export const useEffectChainStore = create<EffectChainState>()(
       addVst: (plugin) =>
         set((s) => ({
           chain: [...s.chain, { id: uuid(), effect: 'vst3', params: {}, enabled: true, vst: plugin }],
+        })),
+      setVstRawState: (id, rawState) =>
+        set((s) => ({
+          chain: s.chain.map((e) =>
+            e.id === id && e.vst ? { ...e, vst: { ...e.vst, raw_state: rawState } } : e,
+          ),
         })),
       removeEffect: (id) => set((s) => ({ chain: s.chain.filter((e) => e.id !== id) })),
       updateParams: (id, params) =>

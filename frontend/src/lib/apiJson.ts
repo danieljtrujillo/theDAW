@@ -32,6 +32,12 @@ export async function postJson<T>(url: string, body?: unknown): Promise<T> {
   );
 }
 
+/** POST a multipart/form-data body (file uploads). The browser sets the
+ *  Content-Type + boundary, so none is passed here. */
+export async function postForm<T>(url: string, form: FormData): Promise<T> {
+  return handle<T>(await fetch(url, { method: 'POST', body: form }));
+}
+
 export async function putJson<T>(url: string, body: unknown): Promise<T> {
   return handle<T>(
     await fetch(url, {

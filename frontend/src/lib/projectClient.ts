@@ -1,6 +1,24 @@
 // Typed client for the .tasmo project backend (/api/project/*).
-import { getJson, postJson } from './apiJson';
+import { getJson, postJson, postForm } from './apiJson';
 import type { DawProject } from './dawImportClient';
+import { dawDeviceToEffectNode } from './dawEffectMap';
+
+// --- Effect chain (mirrors backend tasmo_project.py EffectChainNode/VstPluginState) ---
+export interface VstPluginState {
+  plugin_path: string;
+  plugin_name: string;
+  parameters?: Record<string, number>;
+  preset_path?: string | null;
+  instance_id?: string;
+}
+
+export interface EffectChainNode {
+  node_type: string; // "vst3" | "audiounit" | "builtin"
+  effect_name: string;
+  parameters?: Record<string, number>;
+  bypass?: boolean;
+  vst_state?: VstPluginState | null;
+}
 
 // --- Save payload (built in the frontend, validated by the backend) ---
 export interface TasmoClipInput {
@@ -11,6 +29,11 @@ export interface TasmoClipInput {
   start_time?: number;
   end_time?: number;
   audio_file?: string | null;
+  /** Carried so MIDI clips survive the round-trip (the backend Clip model keeps
+   *  these). The shape is whatever the importer produced; the loader is tolerant. */
+  midi_notes?: unknown[] | null;
+  loop_start?: number | null;
+  loop_end?: number | null;
 }
 
 export interface TasmoTrackInput {
@@ -21,7 +44,9 @@ export interface TasmoTrackInput {
   pan?: number;
   mute?: boolean;
   solo?: boolean;
+  color?: string | null;
   clips?: TasmoClipInput[];
+  effect_chain?: EffectChainNode[];
 }
 
 export interface TasmoProjectInput {
@@ -35,17 +60,32 @@ export interface TasmoProjectInput {
   import_warnings?: string[];
 }
 
-// --- Load result (minimal view; extra backend fields are ignored) ---
+// --- Load result. The backend returns the FULL TasmoProject (model_dump), so
+// these mirror the fields the editor import reads; unlisted fields are ignored. ---
 export interface TasmoLoadedClip {
+  id?: string;
   name: string;
   clip_type: string;
+  track_id?: string;
+  start_time?: number;
+  end_time?: number;
   audio_file: string | null;
+  midi_notes?: Array<Record<string, number>> | null;
+  instrument_program?: number;
 }
 
 export interface TasmoLoadedTrack {
+  id?: string;
   name: string;
   type: string;
+  volume_db?: number;
+  pan?: number;
+  mute?: boolean;
+  solo?: boolean;
+  color?: string | null;
+  instrument_program?: number;
   clips: TasmoLoadedClip[];
+  effect_chain?: EffectChainNode[];
 }
 
 export interface TasmoProjectLoaded {
@@ -80,6 +120,23 @@ export const projectApi = {
       path,
       embed_audio,
     }),
+  /** Save the live session, embedding each clip's audio bytes (the editor's
+   *  clips are in-memory blobs with no on-disk path, so plain /save can't link
+   *  them). Each clip's audio_file must be ``audio/<file.name>``. */
+  saveSession: (
+    project: TasmoProjectInput,
+    path: string,
+    files: Array<{ name: string; blob: Blob }>,
+  ) => {
+    const form = new FormData();
+    form.append('project', JSON.stringify(project));
+    form.append('path', path);
+    for (const f of files) form.append('files', f.blob, f.name);
+    return postForm<{ status: string; path: string; manifest: ProjectManifest }>(
+      '/api/project/save-session',
+      form,
+    );
+  },
   load: (path: string) =>
     postJson<{ project: TasmoProjectLoaded; manifest: ProjectManifest }>('/api/project/load', {
       path,
@@ -87,6 +144,10 @@ export const projectApi = {
   info: (path: string) =>
     getJson<ProjectManifest>(`/api/project/info?path=${encodeURIComponent(path)}`),
   recent: () => getJson<RecentItem[]>('/api/project/recent'),
+  defaultDir: () => getJson<{ path: string }>('/api/project/default-dir'),
+  /** URL that streams a clip's on-disk audio file (for loading a project into
+   *  the editor). The path is an absolute local path from the loaded project. */
+  clipAudioUrl: (path: string) => `/api/project/clip-audio?path=${encodeURIComponent(path)}`,
   listAudio: (path: string) =>
     getJson<{ files: string[] }>(`/api/project/list-audio?path=${encodeURIComponent(path)}`),
 };
@@ -98,7 +159,6 @@ const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${
 export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
   const tracks: TasmoTrackInput[] = d.tracks.map((t) => {
     const trackId = uid('t');
-    const clipType = t.type === 'midi' ? 'midi' : 'audio';
     return {
       id: trackId,
       name: t.name,
@@ -110,12 +170,20 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
       clips: (t.clips ?? []).map((c) => ({
         id: uid('c'),
         name: c.name,
-        clip_type: clipType,
+        // Per-clip type: a clip with notes is MIDI even on an "audio" track.
+        clip_type: c.midi_notes && c.midi_notes.length ? 'midi' : 'audio',
         track_id: trackId,
         start_time: c.start_time,
         end_time: c.end_time,
         audio_file: c.file_path ?? null,
+        midi_notes: c.midi_notes ?? null,
+        loop_start: c.loop_start ?? null,
+        loop_end: c.loop_end ?? null,
       })),
+      // Map the track's device chain into theDAW effect nodes (VST3 -> real,
+      // creative FX -> rack, EQ/comp/reverb -> preserved). Order is kept.
+      effect_chain: (t.devices ?? []).map(dawDeviceToEffectNode),
+      color: t.color ?? null,
     };
   });
   return {

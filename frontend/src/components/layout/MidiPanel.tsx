@@ -35,6 +35,7 @@ import { logInfo, logWarn } from '../../state/logStore';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
 import { PianoRoll } from '../audio/PianoRoll';
 import { ArpeggiatorPanel } from '../audio/ArpeggiatorPanel';
+import { VirtuosoControls } from '../audio/VirtuosoControls';
 import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 
 const stepSec = (bpm: number): number => 60 / bpm / 4;
@@ -564,6 +565,10 @@ export const MidiPanel: React.FC = () => {
           {status}
         </span>
       </div>
+
+      {/* Virtuoso morph strip — shared across the piano roll and arp faces so the
+          transform amounts are always reachable without switching. */}
+      <VirtuosoControls />
 
       {/* body: piano roll (or the arpeggiator face), plus a vocal rail only when
           an artifact is loaded. The arpeggiator stays mounted but hidden so its

@@ -221,16 +221,20 @@ export const ArpeggiatorPanel: React.FC = () => {
         </div>
 
         {/* Quantize + Rag (live timing feel, same as the piano roll) */}
-        <div className={fieldBox} title="Quantize: 100% = dead-on grid; lower humanizes timing. Rag delays/pushes the off-16ths.">
+        <div className={fieldBox} title="Quantize: 100% = dead-on grid; lower humanizes timing. Rag delays/pushes the off-16ths. Use −/+ for single-percent steps.">
           <span className="text-[7px] font-mono text-zinc-600 uppercase">Q</span>
+          <button type="button" aria-label="Decrease quantize" title="−1%" onClick={() => patch({ quantize: Math.max(0, qPct - 1) / 100 })} className="text-zinc-500 hover:text-zinc-200 leading-none px-0.5">−</button>
           <label htmlFor="arp-quantize" className="sr-only">Quantize</label>
           <input id="arp-quantize" name="arp-quantize" type="range" min={0} max={100} value={qPct}
-            onChange={(e) => patch({ quantize: (parseInt(e.target.value, 10) || 0) / 100 })} className="w-12 accent-cyan-400" />
+            onChange={(e) => patch({ quantize: (parseInt(e.target.value, 10) || 0) / 100 })} className="w-16 accent-cyan-400" />
+          <button type="button" aria-label="Increase quantize" title="+1%" onClick={() => patch({ quantize: Math.min(100, qPct + 1) / 100 })} className="text-zinc-500 hover:text-zinc-200 leading-none px-0.5">+</button>
           <span className="text-[8px] font-mono text-cyan-300 w-7 text-right">{qPct}%</span>
           <span className="text-[7px] font-mono text-zinc-600 uppercase ml-1">Rag</span>
+          <button type="button" aria-label="Decrease rag" title="−1%" onClick={() => patch({ swing: Math.max(-50, ragPct - 1) / 100 })} className="text-zinc-500 hover:text-zinc-200 leading-none px-0.5">−</button>
           <label htmlFor="arp-rag" className="sr-only">Rag (swing)</label>
           <input id="arp-rag" name="arp-rag" type="range" min={-50} max={50} value={ragPct}
-            onChange={(e) => patch({ swing: (parseInt(e.target.value, 10) || 0) / 100 })} className="w-12 accent-purple-400" />
+            onChange={(e) => patch({ swing: (parseInt(e.target.value, 10) || 0) / 100 })} className="w-16 accent-purple-400" />
+          <button type="button" aria-label="Increase rag" title="+1%" onClick={() => patch({ swing: Math.min(50, ragPct + 1) / 100 })} className="text-zinc-500 hover:text-zinc-200 leading-none px-0.5">+</button>
           <span className="text-[8px] font-mono text-purple-300 w-8 text-right">{ragPct > 0 ? '+' : ''}{ragPct}%</span>
         </div>
 
@@ -249,7 +253,7 @@ export const ArpeggiatorPanel: React.FC = () => {
         <button
           type="button"
           onClick={sendToRoll}
-          title="Render the progression into the piano roll's notes"
+          title="Render the progression into the piano roll's notes (then morph it with the Virtuoso strip above)"
           className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono font-semibold uppercase tracking-wide rounded border border-purple-500/40 text-purple-200 hover:bg-purple-500/20 transition-colors"
         >
           <Piano className="w-3.5 h-3.5" /> Piano roll

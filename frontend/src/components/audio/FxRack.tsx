@@ -87,7 +87,38 @@ export function FxRack({
       <div className="flex flex-wrap gap-2 items-start">
       {chain.map((entry, i) => {
         const def = getRackEffect(entry.effect);
-        if (!def) return null;
+        // Entries with no live rack definition are imported VST3 plugins or a
+        // source-DAW effect theDAW preserves but can't render live per-track.
+        // Show them as a labelled, inert tile (toggle/remove) so nothing is
+        // hidden; they stay out of the live audio graph (buildEffectChain skips
+        // anything not in the rack).
+        if (!def) {
+          const label = entry.vst?.plugin_name || entry.label || entry.effect;
+          return (
+            <div
+              key={entry.id}
+              className="grow basis-60 max-w-xs rounded border border-white/5 bg-black/30 p-2 flex items-center gap-1.5 opacity-60"
+            >
+              <span className="text-[8px] font-black uppercase tracking-wider text-amber-300/80 shrink-0">
+                {entry.effect === 'vst3' ? 'VST' : 'IMP'}
+              </span>
+              <span
+                className="text-[10px] font-mono text-zinc-300 flex-1 truncate"
+                title={`${label} — preserved from import (not rendered live on this track yet)`}
+              >
+                {label}
+              </span>
+              <button
+                onClick={() => onRemove(entry.id)}
+                aria-label={`Remove ${label}`}
+                title="Remove this imported effect"
+                className="p-0.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/10 shrink-0"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        }
         // While a lane plays back, show the sampled value so the control follows
         // the automation; edits still write the stored params (onUpdateParams).
         const shown = displayParams ? { ...entry.params, ...(displayParams(entry.id) ?? {}) } : entry.params;
