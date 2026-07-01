@@ -18,7 +18,26 @@ import { useSwayRoutingStore, loadSwayTargets } from '../../state/swayRouting';
 import { usePoseStore, POSE_CHANNELS } from '../../state/poseBus';
 import { usePoseRoutingStore } from '../../state/poseRouting';
 import type { BindableTarget } from '../surface/widgetTypes';
-import { useMidiTriggerStore } from '../../state/midiTriggerStore';
+import { useMidiTriggerStore, enableMidi } from '../../state/midiTriggerStore';
+import {
+  useSwaySurfaceStore,
+  SWAY_PAD_MODES,
+  SWAY_PAD_MODE_LABELS,
+  type SwayPadMode,
+} from '../../state/swaySurfaceStore';
+import { useSwayImportStore } from '../../state/swayImportStore';
+
+const ctrlLabel = (isNote: boolean, channel: number, number: number): string =>
+  `${channel < 0 ? 'omni' : `ch${channel + 1}`} ${isNote ? 'N' : 'CC'}${number}`;
+
+const UNATTACHED_REASON: Record<string, string> = {
+  macro: 'rack macro',
+  instrument: 'instrument param',
+  track: 'track not found',
+  device: 'device not found',
+  param: 'no matching param',
+  effect: 'no live effect',
+};
 
 type TargetGroups = Array<[string, BindableTarget[]]>;
 
@@ -78,6 +97,16 @@ export const SwayPanel: React.FC = () => {
   const poseRoutes = usePoseRoutingStore((s) => s.routes);
   const setPoseRoute = usePoseRoutingStore((s) => s.setRoute);
   const midiEnabled = useMidiTriggerStore((s) => s.enabled);
+  const surfaceEnabled = useSwaySurfaceStore((s) => s.enabled);
+  const setSurfaceEnabled = useSwaySurfaceStore((s) => s.setEnabled);
+  const padMode = useSwaySurfaceStore((s) => s.padMode);
+  const setPadMode = useSwaySurfaceStore((s) => s.setPadMode);
+  const sustain = useSwaySurfaceStore((s) => s.sustain);
+  const setSustain = useSwaySurfaceStore((s) => s.setSustain);
+  const importedBindings = useSwayImportStore((s) => s.bindings);
+  const importedUnattached = useSwayImportStore((s) => s.unattached);
+  const importedSource = useSwayImportStore((s) => s.sourceName);
+  const clearImported = useSwayImportStore((s) => s.clear);
   const [targets, setTargets] = useState<BindableTarget[]>([]);
 
   useEffect(() => {
@@ -103,9 +132,17 @@ export const SwayPanel: React.FC = () => {
   return (
     <div className="h-full overflow-y-auto p-2.5 text-zinc-200">
       {!midiEnabled && (
-        <p className="mb-2 text-[9px] font-mono text-amber-300/80 leading-snug">
-          MIDI is off. Enable the master MIDI toggle to receive Sway input, then Learn each dimension.
-        </p>
+        <div className="mb-2 flex items-center gap-2">
+          <button
+            onClick={() => enableMidi()}
+            className="shrink-0 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-400/15 text-amber-200 text-[8px] font-black uppercase tracking-widest hover:bg-amber-400/25"
+          >
+            Enable MIDI
+          </button>
+          <span className="text-[9px] font-mono text-amber-300/80 leading-snug">
+            MIDI input is off. Turn it on to receive the Sway, then Learn dims or use DAW Control below.
+          </span>
+        </div>
       )}
 
       <div className="grid gap-x-4 gap-y-3 md:grid-cols-2">
@@ -187,6 +224,115 @@ export const SwayPanel: React.FC = () => {
           </div>
         </section>
       </div>
+
+      {/* DAW control surface: mirror the Sway hardware onto theDAW's EDIT mixer,
+          transport and pads (distinct from the expressive-dim learn above). */}
+      <section className="mt-3 rounded border border-white/10 bg-white/3 p-2">
+        <div className="flex items-center justify-between gap-2 mb-1.5">
+          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-300">DAW Control</h3>
+          <button
+            onClick={() => {
+              if (!surfaceEnabled) enableMidi();
+              setSurfaceEnabled(!surfaceEnabled);
+            }}
+            aria-pressed={surfaceEnabled}
+            aria-label="Toggle Sway DAW-control mirror"
+            className={`shrink-0 px-2 py-0.5 rounded border text-[8px] font-black uppercase tracking-widest ${
+              surfaceEnabled
+                ? 'border-emerald-400/60 bg-emerald-400/15 text-emerald-200'
+                : 'border-white/15 text-zinc-400 hover:border-emerald-400/50 hover:text-emerald-200'
+            }`}
+          >
+            {surfaceEnabled ? 'On' : 'Off'}
+          </button>
+        </div>
+        <p className="text-[9px] font-mono text-zinc-400 leading-snug mb-1.5">
+          Mirror the Sway hardware onto theDAW: play/stop, 8 volume faders + 8 pan knobs over a
+          selection-following bank of 8 EDIT tracks, and 16 pads. When on, these controls drive the
+          DAW instead of being free for expressive-dimension learn above.
+        </p>
+        <div className="flex items-center gap-1.5">
+          <label htmlFor="sway-pad-mode" className="text-[9px] font-bold uppercase tracking-wider text-emerald-200/90">
+            Pads
+          </label>
+          <select
+            id="sway-pad-mode"
+            name="sway-pad-mode"
+            value={padMode}
+            onChange={(e) => setPadMode(e.target.value as SwayPadMode)}
+            disabled={!surfaceEnabled}
+            className="bg-black/40 border border-zinc-800 rounded px-1.5 py-1 text-[9px] font-mono text-zinc-200 outline-none focus:border-emerald-500/50 disabled:opacity-40"
+          >
+            {SWAY_PAD_MODES.map((m) => (
+              <option key={m} value={m}>{SWAY_PAD_MODE_LABELS[m]}</option>
+            ))}
+          </select>
+          <span className="text-[8px] font-mono text-zinc-600">
+            {padMode === 'drums'
+              ? '16 pads -> GM percussion'
+              : padMode === 'track'
+                ? 'pads play the selected track'
+                : 'pads play the piano synth'}
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={() => setSustain(!sustain)}
+            aria-pressed={sustain}
+            aria-label="Toggle pad sustain (latch)"
+            disabled={!surfaceEnabled}
+            title="Sustain: a held/pressed pad rings until you press it again (latched), using a sustaining organ voice for melodic pads. Off = release on lift."
+            className={`shrink-0 px-2 py-0.5 rounded border text-[8px] font-black uppercase tracking-widest disabled:opacity-40 ${
+              sustain
+                ? 'border-emerald-400/60 bg-emerald-400/15 text-emerald-200'
+                : 'border-white/15 text-zinc-400 hover:border-emerald-400/50 hover:text-emerald-200'
+            }`}
+          >
+            Sustain
+          </button>
+        </div>
+      </section>
+
+      {(importedBindings.length > 0 || importedUnattached.length > 0) && (
+        <section className="mt-3 rounded border border-white/10 bg-white/3 p-2">
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-300">Imported Mappings</h3>
+            <div className="flex items-center gap-2">
+              <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                {importedSource ? `${importedSource} · ` : ''}{importedBindings.length} wired
+                {importedUnattached.length ? ` · ${importedUnattached.length} not reproduced` : ''}
+              </span>
+              <button
+                onClick={clearImported}
+                aria-label="Clear imported controller mappings"
+                className="shrink-0 px-1.5 py-0.5 rounded border border-white/15 text-[8px] font-black uppercase tracking-widest text-zinc-400 hover:border-rose-400/50 hover:text-rose-200"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <p className="text-[9px] font-mono text-zinc-400 leading-snug mb-1.5">
+            The controller mappings from the imported project, attached to theDAW so the Sway plays it on Open.
+          </p>
+          <div className="max-h-40 overflow-y-auto space-y-0.5">
+            {importedBindings.map((b, i) => (
+              <div key={`b-${i}`} className="flex items-center gap-2 text-[9px] font-mono">
+                <span className="w-16 shrink-0 text-amber-200/90">{ctrlLabel(b.isNote, b.channel, b.number)}</span>
+                <span className="text-zinc-500">-&gt;</span>
+                <span className="truncate text-zinc-300" title={b.label}>{b.label}</span>
+              </div>
+            ))}
+            {importedUnattached.map((u, i) => (
+              <div key={`u-${i}`} className="flex items-center gap-2 text-[9px] font-mono opacity-60">
+                <span className="w-16 shrink-0 text-zinc-500">{ctrlLabel(false, u.channel, u.number)}</span>
+                <span className="shrink-0 rounded bg-black/40 px-1 text-[8px] uppercase tracking-wider text-zinc-500">
+                  {UNATTACHED_REASON[u.reason] ?? u.reason}
+                </span>
+                <span className="truncate text-zinc-500" title={u.detail}>{u.detail}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <p className="mt-2.5 text-[8px] font-mono text-zinc-600 leading-snug">
         Learn binds a dimension to the next CC sent; routing drives DJ targets today (VJ, MAKE, and vocal join as the unified matrix lands). Camera pose comes from the VJ webcam (toggle GESTURE there) and routes like Sway, no learn needed.

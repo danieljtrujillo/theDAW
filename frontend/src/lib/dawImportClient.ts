@@ -20,6 +20,12 @@ export interface DawDevice {
   bypass?: boolean;
   /** Opaque base64 plugin-state chunk, when a parser can capture it. */
   state?: string | null;
+  /** Display name of the rack this device was flattened out of, if any. */
+  rack?: string | null;
+  /** True for instrument/sampler devices (no live per-track engine). */
+  is_instrument?: boolean;
+  /** True for a rack container itself (its nested devices follow it). */
+  is_rack?: boolean;
 }
 
 export interface DawTrack {
@@ -40,6 +46,28 @@ export interface DawLocator {
   color?: string | null;
 }
 
+export interface DawControllerMapping {
+  is_note: boolean;
+  /** 0-indexed MIDI channel (0..15); -1 = omni ("All" channels in the source DAW). */
+  channel: number;
+  /** CC# or note number (0..127). */
+  number: number;
+  map_mode: number;
+  /** "mixer" (track volume/pan) | "device" (a device parameter) | "unknown". */
+  target_kind: string;
+  track_name: string;
+  /** Index into DawProject.tracks (-1 when unresolved). */
+  track_index: number;
+  device_name: string;
+  /** Index into the target track's (flattened) devices, -1 when unresolved. */
+  device_index: number;
+  param_name: string;
+  /** The mapped parameter is a rack macro (fanned out to the params it drives). */
+  is_macro: boolean;
+  /** The target is an instrument-internal parameter (no theDAW engine). */
+  is_instrument_target: boolean;
+}
+
 export interface DawProject {
   source_daw: string;
   source_version: string;
@@ -49,6 +77,7 @@ export interface DawProject {
   sample_rate: number;
   tracks: DawTrack[];
   locators: DawLocator[];
+  controller_mappings: DawControllerMapping[];
   plugins_used: string[];
   warnings: string[];
   missing_files: string[];

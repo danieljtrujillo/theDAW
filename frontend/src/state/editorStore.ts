@@ -240,6 +240,10 @@ interface EditorStoreState {
   reorderTrackEffect: (trackId: string, from: number, to: number) => void;
   toggleTrackEffect: (trackId: string, entryId: string) => void;
   updateTrackEffectParams: (trackId: string, entryId: string, params: Record<string, number>) => void;
+  /** Replace an existing chain entry's effect with a live rack effect (reset to
+   *  its defaults, enabled), keeping the entry's id + slot. Used to "rebuild" an
+   *  imported device that came in inert so a controller mapping has a live home. */
+  rebuildTrackEffect: (trackId: string, entryId: string, effectId: string) => void;
 
   // Automation (Phase E)
   setAutomationWrite: (on: boolean) => void;
@@ -673,6 +677,24 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       tracks: s.tracks.map((t) =>
         t.id === trackId
           ? { ...t, fxChain: (t.fxChain ?? []).map((e) => (e.id === entryId ? { ...e, params } : e)) }
+          : t,
+      ),
+    })),
+
+  rebuildTrackEffect: (trackId, entryId, effectId) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? {
+              ...t,
+              // Keep the entry's id + original label (so the source device name
+              // still shows), but make it a live rack effect at its defaults.
+              fxChain: (t.fxChain ?? []).map((e) =>
+                e.id === entryId
+                  ? { ...e, effect: effectId, params: rackEffectDefaults(effectId), enabled: true, vst: undefined }
+                  : e,
+              ),
+            }
           : t,
       ),
     })),

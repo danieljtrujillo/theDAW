@@ -18,7 +18,7 @@ import type { EffectChainNode } from './projectClient';
 /** Ordered name patterns -> theDAW effect id. Specific before generic. */
 const NATIVE_FX_PATTERNS: Array<[RegExp, string]> = [
   // Creative / spatial — these have a LIVE rack equivalent (real approximation).
-  [/bitcrush|redux|decimat|crush|downsample/i, 'bitcrush'],
+  [/bitcrush|redux|decimat|crush|downsample|erosion/i, 'bitcrush'],
   [/ring\s*mod|ringmod|frequency\s*shift/i, 'ringmod'],
   [/auto\s*pan|tremolo|trance\s*gate|trancegate/i, 'gater'],
   [/chop|slice|stutter|beat\s*repeat|glitch/i, 'chop'],
@@ -33,6 +33,7 @@ const NATIVE_FX_PATTERNS: Array<[RegExp, string]> = [
   [/parametric|equal|\beq\b|equaliser|equalizer/i, 'parametric_eq'],
   [/reverb|\bverb\b|hall|room|plate|cathedral|convolv/i, 'reverb'],
   [/ping\s*pong|delay|echo/i, 'delay'],
+  [/auto\s*filter|autofilter/i, 'lowpass'],
   [/low\s*pass|lowpass|lpf/i, 'lowpass'],
   [/high\s*pass|highpass|hpf/i, 'highpass'],
   // No live equivalent yet — preserved + labelled on the track.

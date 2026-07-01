@@ -1,10 +1,16 @@
 """Ableton Live .als project parser.
 
 .als files are gzip-compressed XML. This module decompresses and parses
-the XML to extract the ARRANGEMENT view (where songs actually live) plus
-Session-view clips as a fallback: tempo, tracks (with mix params), audio
-clips with real timing, MIDI notes, locators, and VST/AU/native device
-references with best-effort parameter snapshots.
+the XML to extract the ARRANGEMENT view (where songs actually live): tempo,
+tracks (with mix params), audio clips with real timing, MIDI notes, locators,
+and VST/AU/native device references with best-effort parameter snapshots.
+
+Live 11/12 splits a track's arrangement content between the comped main lane
+(``ArrangerAutomation/Events``) and per-take "take lanes"
+(``TakeLanes/.../ClipAutomation/Events``); ``_parse_clips`` merges both into one
+non-overlapping lane so instruments whose part lives only in take lanes are not
+dropped. Session-view (ClipSlot) clips are used only when a track has no
+arrangement content at all.
 
 Ableton clip/note timing is in BEATS; we convert to seconds via the
 project tempo (sec = beats * 60 / tempo). Device chains are walked in
@@ -24,6 +30,7 @@ from xml.etree import ElementTree as ET
 from backend.modules.dawimport import media
 from backend.modules.dawimport.models import (
     DawClip,
+    DawControllerMapping,
     DawDevice,
     DawLocator,
     DawProject,
@@ -37,6 +44,9 @@ _TAG_TO_TYPE = {
     "MidiTrack": "midi",
     "ReturnTrack": "return",
     "MasterTrack": "master",
+    # Live 12 renamed the master track element to <MainTrack>; treat it the same
+    # so its mixer + master effect chain (a common Sway mapping target) import.
+    "MainTrack": "master",
 }
 
 # Tags that are native (stock) Ableton devices -> friendly display names.
@@ -106,6 +116,31 @@ _NATIVE_DEVICE_NAMES = {
 # Tags we never want to treat as a device row even though they may appear
 # inside a Devices container in some schema versions.
 _SKIP_DEVICE_TAGS = {"DeviceChain", "Devices", "MixerDevice", "Mixer"}
+
+# Instrument/sampler devices (not audio effects; no live per-track engine).
+_INSTRUMENT_TAGS = {
+    "OriginalSimpler",
+    "MultiSampler",
+    "InstrumentImpulse",
+    "UltraAnalog",
+    "Operator",
+    "InstrumentVector",
+    "Collision",
+    "Tension",
+    "Electric",
+    "InstrumentGroupDevice",
+    "DrumGroupDevice",
+}
+
+# Rack containers we descend INTO (flattening their nested devices into the
+# track's chain). DrumGroupDevice is kept as a single wrapper (its many cells are
+# instruments, not FX, and would flood the chain), so it is not recursed.
+_RACK_RECURSE_TAGS = {
+    "AudioEffectGroupDevice",
+    "InstrumentGroupDevice",
+    "MidiEffectGroupDevice",
+}
+_RACK_ALL_TAGS = _RACK_RECURSE_TAGS | {"DrumGroupDevice"}
 
 
 def parse_als(path: str) -> DawProject:
@@ -183,8 +218,10 @@ def parse_als(path: str) -> DawProject:
             except Exception as e:  # pragma: no cover - defensive
                 project.warnings.append(f"Failed to parse a {track_elem.tag}: {e}")
 
-    # Master track (separate element).
+    # Master track (separate element; <MainTrack> in Live 12, <MasterTrack> before).
     master_elem = live_set.find("MasterTrack")
+    if master_elem is None:
+        master_elem = live_set.find("MainTrack")
     if master_elem is not None:
         try:
             project.tracks.append(
@@ -192,6 +229,13 @@ def parse_als(path: str) -> DawProject:
             )
         except Exception as e:  # pragma: no cover - defensive
             project.warnings.append(f"Failed to parse MasterTrack: {e}")
+
+    # Controller (MIDI-learn) mappings — so theDAW can auto-attach a hardware
+    # controller (e.g. the Audima Sway) to the same targets the project wired.
+    try:
+        project.controller_mappings = _parse_controller_mappings(live_set)
+    except Exception as e:  # pragma: no cover - defensive
+        project.warnings.append(f"Could not parse controller mappings: {e}")
 
     # Locators.
     for loc_elem in live_set.iter("Locator"):
@@ -287,52 +331,117 @@ def _parse_track(
 # --------------------------------------------------------------------------- #
 
 
+# Two clips count as overlapping (so only one keeps its slot on the single
+# reconstructed lane) when their spans intersect by more than this, in seconds.
+# A small epsilon lets clips that merely touch end-to-start coexist.
+_CLIP_OVERLAP_EPS = 1e-3
+
+
 def _parse_clips(
     track_elem, project: DawProject, project_dir: Path, media_index: dict[str, str]
 ) -> list[DawClip]:
-    """Extract arrangement clips, then session clips, deduping by identity."""
-    clips: list[DawClip] = []
-    seen: set[tuple] = set()
+    """Reconstruct a track's single playable lane from Ableton's clip stores.
 
-    # Arrangement clips live under MainSequencer/ClipTimeable/ArrangerAutomation
-    # /Events (audio + midi) and the freeze variant. Rather than guess the exact
-    # container per schema version, walk the whole track but only pick up clips
-    # that carry a CurrentStart (arrangement clips do; session clips do not).
+    Live 11/12 keeps arrangement content in two places: the comped main lane
+    (``MainSequencer/.../ArrangerAutomation/Events``) and per-take "take lanes"
+    (``TakeLanes/.../TakeLane/ClipAutomation/Events``). The comp is what actually
+    plays; take lanes are raw recorded takes scattered at the positions where
+    they were captured (often far out on the timeline and overlapping). So the
+    comp is authoritative: when a track has comp clips we use only those. Take
+    lanes are a fallback for tracks whose part lives *only* in take lanes (no
+    comp), where they are the sole content — there we keep one clip per slot
+    (richest take wins) so alternates don't stack. Session-view ClipSlots are a
+    last resort when a track has no arrangement content at all. theDAW's timeline
+    is one lane per track, so the result is always a single non-overlapping lane.
+    """
     main_seq = track_elem.find(".//DeviceChain/MainSequencer")
-    arrangement_scope = main_seq if main_seq is not None else track_elem
-    for clip_elem in _iter_clip_elements(arrangement_scope):
-        cur_start = clip_elem.find("CurrentStart")
-        if cur_start is None and clip_elem.get("CurrentStart") is None:
-            continue  # not an arrangement-positioned clip; handled below
-        clip = _build_clip(
-            clip_elem, project, project_dir, media_index, arrangement=True
-        )
+
+    placed: list[DawClip] = []
+    spans: list[tuple[float, float]] = []
+
+    def _try_add(clip: DawClip | None) -> bool:
         if clip is None:
-            continue
-        key = (clip.name, round(clip.start_time, 4), clip.file_path, clip.end_time)
-        if key in seen:
-            continue
-        seen.add(key)
-        clips.append(clip)
+            return False
+        s, e = clip.start_time, clip.end_time
+        for ps, pe in spans:
+            if s < pe - _CLIP_OVERLAP_EPS and ps < e - _CLIP_OVERLAP_EPS:
+                return False  # overlaps a clip already on the lane
+        spans.append((s, e))
+        placed.append(clip)
+        return True
 
-    # Session-view clips (ClipSlot) as a fallback. These have no arrangement
-    # position; we keep their loop length as a [0, len] placeholder so they are
-    # not silently dropped.
-    for slot in track_elem.iter("ClipSlot"):
-        for clip_elem in _iter_clip_elements(slot):
-            # Skip if it also appeared in the arrangement (same file/name).
-            clip = _build_clip(
-                clip_elem, project, project_dir, media_index, arrangement=False
+    # 1) Comp clips (what plays in the arrangement) — authoritative when present.
+    comp = [
+        _build_clip(el, project, project_dir, media_index, arrangement=True)
+        for el in _arranger_clip_elements(main_seq)
+    ]
+    for clip in sorted((c for c in comp if c is not None), key=lambda c: c.start_time):
+        _try_add(clip)
+
+    # 2) No comp -> the track's part lives only in take lanes. Use them, keeping
+    #    the richest take (most notes, then longest) when alternates overlap.
+    if not placed:
+        takes = [
+            _build_clip(el, project, project_dir, media_index, arrangement=True)
+            for el in _takelane_clip_elements(track_elem)
+        ]
+        takes = [c for c in takes if c is not None]
+        takes.sort(
+            key=lambda c: (
+                c.start_time,
+                -(len(c.midi_notes) if c.midi_notes else 0),
+                -(c.end_time - c.start_time),
             )
-            if clip is None:
-                continue
-            key = (clip.name, round(clip.start_time, 4), clip.file_path, clip.end_time)
-            if key in seen:
-                continue
-            seen.add(key)
-            clips.append(clip)
+        )
+        for clip in takes:
+            _try_add(clip)
 
-    return clips
+    # 3) Session-view clips only when the track is otherwise empty.
+    if not placed:
+        for slot in track_elem.iter("ClipSlot"):
+            for clip_elem in _iter_clip_elements(slot):
+                _try_add(
+                    _build_clip(
+                        clip_elem, project, project_dir, media_index, arrangement=False
+                    )
+                )
+
+    placed.sort(key=lambda c: c.start_time)
+    return placed
+
+
+def _arranger_clip_elements(main_seq):
+    """Audio/MIDI clip elements in the comped arrangement lane(s).
+
+    The comp lives under ``ArrangerAutomation/Events`` — beneath ``ClipTimeable``
+    for MIDI tracks and ``Sample`` for audio tracks. Walking every
+    ``ArrangerAutomation`` covers both without hard-coding the parent, and we
+    filter to clip tags so device/parameter automation events are ignored.
+    """
+    if main_seq is None:
+        return []
+    out = []
+    for arranger in main_seq.iter("ArrangerAutomation"):
+        events = arranger.find("Events")
+        if events is None:
+            continue
+        for el in events:
+            if el.tag in ("AudioClip", "MidiClip"):
+                out.append(el)
+    return out
+
+
+def _takelane_clip_elements(track_elem):
+    """Audio/MIDI clip elements across all of a track's take lanes."""
+    out = []
+    for lane in track_elem.iter("TakeLane"):
+        events = lane.find("ClipAutomation/Events")
+        if events is None:
+            continue
+        for el in events:
+            if el.tag in ("AudioClip", "MidiClip"):
+                out.append(el)
+    return out
 
 
 def _iter_clip_elements(scope):
@@ -395,6 +504,11 @@ def _build_clip(
 
     if is_midi:
         midi_notes = _parse_midi_notes(clip_elem, tempo, project)
+        # An empty MIDI clip (a placeholder region with no notes) carries no
+        # music; drop it so it neither clutters the timeline nor creates a
+        # phantom occupied region when silent gaps are collapsed.
+        if not midi_notes:
+            return None
     else:
         file_path = _resolve_audio_path(clip_elem, project, project_dir, media_index)
 
@@ -526,8 +640,12 @@ def _parse_midi_notes(clip_elem, tempo: float, project: DawProject) -> list[dict
         if note is not None:
             notes.append(note)
 
-    if not notes and clip_elem.find("Notes") is not None:
-        project.warnings.append("A MIDI clip yielded no notes (unknown schema).")
+    # Only warn when the clip actually carries note events we failed to read; an
+    # empty MIDI clip (a placeholder region with no notes) is legitimate.
+    if not notes and clip_elem.find(".//MidiNoteEvent") is not None:
+        project.warnings.append(
+            "A MIDI clip's notes could not be parsed (unknown schema)."
+        )
 
     notes.sort(key=lambda x: x["start"])
     return notes
@@ -564,24 +682,69 @@ def _note_from_event(ev, tempo: float, default_pitch: int | None) -> dict | None
 # --------------------------------------------------------------------------- #
 
 
-def _parse_devices(track_elem, project: DawProject) -> list[DawDevice]:
-    """Walk DeviceChain/DeviceChain/Devices in order; emit DawDevices."""
-    devices: list[DawDevice] = []
+def _is_instrument_tag(tag: str) -> bool:
+    return tag in _INSTRUMENT_TAGS
 
-    # The effect chain lives at DeviceChain/DeviceChain/Devices. (The outer
-    # DeviceChain also contains the Mixer + MainSequencer.)
-    devices_container = track_elem.find(".//DeviceChain/DeviceChain/Devices")
-    if devices_container is None:
-        devices_container = track_elem.find(".//Devices")
-    if devices_container is None:
-        return devices
 
-    for dev_elem in list(devices_container):
-        if dev_elem.tag in _SKIP_DEVICE_TAGS:
+def _collect_device_elems(container, out: list, rack_name: str | None) -> None:
+    """Flatten a Devices container into an ordered list of (device_elem, rack_name).
+
+    Rack containers (audio/instrument/MIDI effect racks) are kept AND descended
+    into, so nested effects become first-class chain entries theDAW can host and a
+    controller can drive, while the rack wrapper is preserved so macro mappings
+    keep a home. Drum racks are kept but not descended (their cells are
+    instruments, not FX).
+    """
+    if container is None:
+        return
+    for dev in list(container):
+        if dev.tag in _SKIP_DEVICE_TAGS:
             continue
+        out.append((dev, rack_name))
+        if dev.tag in _RACK_RECURSE_TAGS:
+            un = dev.find("UserName")
+            nm = (
+                un.get("Value")
+                if (un is not None and un.get("Value"))
+                else _NATIVE_DEVICE_NAMES.get(dev.tag, _humanize_tag(dev.tag))
+            )
+            branches = dev.find("Branches")
+            if branches is not None:
+                for branch in list(branches):
+                    dc = branch.find("DeviceChain")
+                    inner = None
+                    if dc is not None:
+                        for sub in list(dc):
+                            cand = sub.find("Devices")
+                            if cand is not None:
+                                inner = cand
+                                break
+                        if inner is None:
+                            inner = dc.find(".//Devices")
+                    _collect_device_elems(inner, out, nm)
+
+
+def _flatten_device_elements(track_elem) -> list:
+    """Ordered (device_elem, rack_name) for a track, racks flattened."""
+    top = track_elem.find(".//DeviceChain/DeviceChain/Devices")
+    if top is None:
+        top = track_elem.find(".//Devices")
+    out: list = []
+    _collect_device_elems(top, out, None)
+    return out
+
+
+def _parse_devices(track_elem, project: DawProject) -> list[DawDevice]:
+    """Flattened signal-chain devices (nested rack devices included, in order)."""
+    devices: list[DawDevice] = []
+    for dev_elem, rack_name in _flatten_device_elements(track_elem):
         dev = _parse_device(dev_elem, project)
-        if dev is not None:
-            devices.append(dev)
+        if dev is None:
+            continue
+        dev.rack = rack_name
+        dev.is_rack = dev_elem.tag in _RACK_ALL_TAGS
+        dev.is_instrument = _is_instrument_tag(dev_elem.tag)
+        devices.append(dev)
     return devices
 
 
@@ -724,6 +887,179 @@ def _extract_native_params(dev_elem) -> dict[str, float]:
             if low in ("true", "false"):
                 params[child.tag] = 1.0 if low == "true" else 0.0
     return params
+
+
+# --------------------------------------------------------------------------- #
+# Controller (MIDI-learn) mappings
+# --------------------------------------------------------------------------- #
+
+
+def _track_elements_in_order(live_set) -> list:
+    """Track elements in the SAME order as ``DawProject.tracks`` (regular tracks
+    under <Tracks>, then the MasterTrack), so a resolved index lines up."""
+    order: list = []
+    tracks_elem = live_set.find("Tracks")
+    if tracks_elem is not None:
+        for te in tracks_elem:
+            if te.tag in _TAG_TO_TYPE:
+                order.append(te)
+    master = live_set.find("MasterTrack")
+    if master is None:
+        master = live_set.find("MainTrack")
+    if master is not None:
+        order.append(master)
+    return order
+
+
+def _track_display_name(track_elem, track_type: str) -> str:
+    ne = track_elem.find(".//Name/EffectiveName")
+    if ne is None:
+        ne = track_elem.find(".//Name/UserName")
+    name = ne.get("Value", "") if ne is not None else ""
+    if not name:
+        name = {"master": "Master", "return": "Return"}.get(track_type, "Track")
+    return name
+
+
+def _device_display_name(dev_elem) -> str:
+    tag = dev_elem.tag
+    if tag in ("PluginDevice", "AuPluginDevice"):
+        for info in ("Vst3PluginInfo", "VstPluginInfo", "AuPluginInfo"):
+            ie = dev_elem.find(f".//{info}")
+            if ie is not None:
+                nm = _child_value(ie, "Name") or _child_value(ie, "PlugName")
+                if nm:
+                    return nm
+        for sub in ("PlugName", "Name"):
+            el = dev_elem.find(f".//{sub}")
+            if el is not None and el.get("Value"):
+                return el.get("Value")
+        return "Plugin"
+    un = dev_elem.find("UserName")
+    if un is not None and un.get("Value"):
+        return un.get("Value")
+    return _NATIVE_DEVICE_NAMES.get(tag, _humanize_tag(tag))
+
+
+def _is_device_tag(tag: str) -> bool:
+    if tag in _SKIP_DEVICE_TAGS:
+        return False
+    if tag in ("PluginDevice", "AuPluginDevice") or tag in _NATIVE_DEVICE_NAMES:
+        return True
+    # Catch anything else Ableton models as a device (Max for Live's
+    # MxDevice*, group/rack *Device tags, …) while excluding *DeviceChain
+    # containers.
+    return "Device" in tag and "DeviceChain" not in tag
+
+
+def _parse_controller_mappings(live_set) -> list[DawControllerMapping]:
+    """Extract MIDI remote (MIDI-learn) mappings from the set.
+
+    Ableton stores each mapping as a ``<KeyMidi>`` child of the mapped parameter:
+    ``<IsNote>``, ``<Channel>`` (1..16, 0 = All), ``<NoteOrController>`` (CC# or
+    note), ``<ControllerMapMode>``, and an empty ``<PersistentKeyString>`` (a
+    non-empty one is a computer-key mapping, not MIDI). We resolve each mapping's
+    target by walking ancestors to the enclosing device and track, so theDAW can
+    re-attach a controller to the same targets on Open.
+    """
+    mappings: list[DawControllerMapping] = []
+
+    # ElementTree has no parent pointers; build a child -> parent map once.
+    parent: dict = {}
+    for p in live_set.iter():
+        for c in p:
+            parent[c] = p
+
+    track_order = _track_elements_in_order(live_set)
+    track_index_by_id = {id(te): i for i, te in enumerate(track_order)}
+    # Per-track flattened device-element -> index, matching DawTrack.devices order.
+    track_flat_cache: dict = {}
+
+    for km in live_set.iter("KeyMidi"):
+        pks = km.find("PersistentKeyString")
+        if pks is not None and (pks.get("Value") or "").strip():
+            continue  # computer-key mapping, not MIDI
+        num = _read_int(km.find("NoteOrController"), -1)
+        if num is None or num < 0:
+            continue  # unmapped placeholder
+        is_note_el = km.find("IsNote")
+        is_note = is_note_el is not None and (
+            is_note_el.get("Value", "false").lower() in ("true", "1")
+        )
+        ch_raw = _read_int(km.find("Channel"), 0) or 0
+        channel = ch_raw - 1 if ch_raw >= 1 else -1  # Ableton 1..16; 0 = All
+        map_mode = _read_int(km.find("ControllerMapMode"), 0) or 0
+
+        # Walk up: parameter -> (plugin param name) -> device -> track.
+        param_parent = parent.get(km)
+        param_name = param_parent.tag if param_parent is not None else ""
+        device_name = ""
+        device_elem = None
+        track_name = ""
+        track_index = -1
+        track_elem = None
+        in_mixer = False
+
+        cur = param_parent
+        while cur is not None:
+            tag = cur.tag
+            if tag in ("PluginFloatParameter", "PluginParameter"):
+                pn = cur.find("ParameterName")
+                if pn is not None and pn.get("Value"):
+                    param_name = pn.get("Value")
+            elif tag in ("Mixer", "MixerDevice"):
+                in_mixer = True
+            elif device_elem is None and _is_device_tag(tag):
+                device_elem = cur
+                device_name = _device_display_name(cur)
+            if track_elem is None and id(cur) in track_index_by_id:
+                track_elem = cur
+                track_index = track_index_by_id[id(cur)]
+                track_name = _track_display_name(cur, _TAG_TO_TYPE.get(tag, "audio"))
+            cur = parent.get(cur)
+
+        # Resolve the device's index within the track's flattened chain.
+        device_index = -1
+        if track_elem is not None and device_elem is not None:
+            flat = track_flat_cache.get(id(track_elem))
+            if flat is None:
+                flat = {
+                    id(e): i
+                    for i, (e, _rk) in enumerate(_flatten_device_elements(track_elem))
+                }
+                track_flat_cache[id(track_elem)] = flat
+            device_index = flat.get(id(device_elem), -1)
+
+        is_macro = param_name.startswith("MacroControls")
+        is_instrument_target = (
+            device_elem is not None and device_elem.tag in _INSTRUMENT_TAGS
+        )
+
+        if device_name:
+            kind = "device"
+        elif in_mixer:
+            kind = "mixer"
+        else:
+            kind = "unknown"
+
+        mappings.append(
+            DawControllerMapping(
+                is_note=is_note,
+                channel=channel,
+                number=num,
+                map_mode=map_mode,
+                target_kind=kind,
+                track_name=track_name,
+                track_index=track_index,
+                device_name=device_name,
+                device_index=device_index,
+                param_name=param_name,
+                is_macro=is_macro,
+                is_instrument_target=is_instrument_target,
+            )
+        )
+
+    return mappings
 
 
 # --------------------------------------------------------------------------- #

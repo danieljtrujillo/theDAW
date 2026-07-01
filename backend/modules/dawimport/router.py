@@ -67,6 +67,7 @@ def import_ableton(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .als: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -81,6 +82,7 @@ def import_reaper(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .RPP: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -95,6 +97,7 @@ def import_logic(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .logicx: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -120,6 +123,7 @@ def import_fl_studio(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .flp: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -134,6 +138,7 @@ def import_audacity(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .aup3: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -148,6 +153,7 @@ def import_audition(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .sesx: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -162,6 +168,7 @@ def import_bitwig(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .bwproject: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 
@@ -176,6 +183,7 @@ def import_resolume(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .avc: {e}")
+    project.collapse_silent_gaps()
     return project.to_dict()
 
 

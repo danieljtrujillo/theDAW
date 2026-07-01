@@ -35,6 +35,7 @@ import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
 import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/editorPlaybackBridge';
+import { publishSelectedTracks } from '../../state/editorSelectionBridge';
 import * as liveMixer from '../../state/liveMixer';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
@@ -678,6 +679,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
+
+  // Publish the track selection for non-React consumers (the Sway control
+  // surface's selection-following fader bank reads this).
+  useEffect(() => {
+    publishSelectedTracks(selectedTrackIds);
+  }, [selectedTrackIds]);
 
   // --- Inpaint panel state ---
   type InpaintPhase =

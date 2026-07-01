@@ -9,6 +9,8 @@ import {
 } from '../lib/dawImportClient';
 import { dawProjectToTasmo, projectApi } from '../lib/projectClient';
 import { loadProjectIntoEditor } from '../lib/projectImport';
+import { resolveControllerMappings } from '../lib/swayImportResolve';
+import { useSwayImportStore } from './swayImportStore';
 import { useProjectStore } from './projectStore';
 import { logError, logInfo } from './logStore';
 import { useStatusBarStore } from './statusBarStore';
@@ -102,6 +104,17 @@ export const useDawImportStore = create<DawImportState>()((set, get) => ({
       const summary = await loadProjectIntoEditor(loaded.project);
       void useProjectStore.getState().refreshRecent();
 
+      // Auto-attach the source project's controller (MIDI-learn) mappings onto the
+      // freshly-loaded editor tracks/effects, so the Sway is ready to play on Open.
+      const attach = resolveControllerMappings(project);
+      useSwayImportStore.getState().setResult(attach, project.name);
+      if (attach.bindings.length || attach.unattached.length) {
+        logInfo(
+          'dawimport',
+          `Sway auto-attach: ${attach.bindings.length} control(s) wired, ${attach.unattached.length} not reproduced`,
+        );
+      }
+
       set({ busy: false, isOpen: false });
       status(
         `IMPORTED -> theDAW: ${summary.tracks} track(s), ${summary.clips} clip(s)` +
@@ -109,6 +122,7 @@ export const useDawImportStore = create<DawImportState>()((set, get) => ({
           (summary.effects
             ? `, ${summary.effects} fx (${summary.effectsLive} live)`
             : '') +
+          (attach.bindings.length ? `, ${attach.bindings.length} Sway control(s) attached` : '') +
           ` — saved ${saved.path}`,
       );
     } catch (e) {
