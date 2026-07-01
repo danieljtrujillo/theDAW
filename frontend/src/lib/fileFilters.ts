@@ -9,6 +9,12 @@ export const DAW_PROJECT_FILTER =
 
 export const TASMO_FILTER = 'theDAW project (*.tasmo)|*.tasmo|All files (*.*)|*.*';
 
+// The Session tab accepts both a saved theDAW project and any DAW project file.
+export const SESSION_IMPORT_FILTER =
+  'Session sources (*.tasmo;*.als;*.rpp;*.flp;*.aup3;*.sesx;*.bwproject;*.avc;*.logicx)' +
+  '|*.tasmo;*.als;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.avc;*.logicx;*.cpr;*.ptx' +
+  '|All files (*.*)|*.*';
+
 export const GAN_FILTER = 'GAN plugin (*.gan)|*.gan|All files (*.*)|*.*';
 
 export const AUDIO_FILTER =

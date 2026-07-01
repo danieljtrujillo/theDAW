@@ -1,5 +1,9 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { useAppUiStore } from '../../state/appUiStore';
+import { TabErrorBoundary } from './TabErrorBoundary';
+// Session tab is eager (not code-split): keeps it robust against lazy-chunk
+// load failures and it is light (an Ableton session grid over existing stores).
+import { SessionView } from '../../views/SessionView';
 
 /**
  * The center workspace — CenterTabBar at the top + the active tab's
@@ -78,6 +82,11 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           )}
           {centerTab === 'edit' && (
             <Suspense fallback={<TabFallback />}><WaveformEditor onSwitchTab={onSwitchTab} /></Suspense>
+          )}
+          {centerTab === 'session' && (
+            <div className="absolute inset-0 overflow-hidden">
+              <TabErrorBoundary tabName="Perform"><SessionView /></TabErrorBoundary>
+            </div>
           )}
           {centerTab === 'mix' && (
             // PROCESS → MIX. The MIX workspace on the Control-Surface editor

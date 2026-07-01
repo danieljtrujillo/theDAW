@@ -3,20 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shell } from './components/layout/Shell';
 import { PlayerFooter } from './components/audio/PlayerFooter';
 import { LoadingScreen } from './components/layout/LoadingScreen';
 import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
-import { AssistantPanel } from './orb-kit/AssistantPanel';
+// The assistant panel pulls in react-markdown + @google/genai; keep it out of
+// the first-paint bundle by lazy-loading it and only mounting it once the user
+// first opens the orb chat (see `assistantMounted` below).
+const AssistantPanel = lazy(() => import('./orb-kit/AssistantPanel'));
 import { logInfo, logWarn } from './state/logStore';
 import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
 import { useModuleStore } from './state/moduleStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
-import { triggerPianoNoteFromMidi } from './components/audio/PianoRoll';
+import { triggerPianoNoteFromMidi } from './lib/pianoTrigger';
 import { publishMidi } from './state/midiBus';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
 import { startXrControl, stopXrControl, registerXrControlSource } from './state/xrControlClient';
@@ -45,6 +48,10 @@ import './orb-kit/chat/orb-chat.css';
 
 export default function App() {
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
+  // Defer the assistant chunk (react-markdown + @google/genai) until the user
+  // first opens the orb chat; once mounted it stays mounted so chat history
+  // survives a close/reopen (the panel keeps its messages in local state).
+  const [assistantMounted, setAssistantMounted] = useState(false);
   const [orbPosition, setOrbPosition] = useState(() => ({
     x: typeof window !== 'undefined' ? window.innerWidth - 80 : 900,
     y: 500,
@@ -118,6 +125,12 @@ export default function App() {
   useEffect(() => {
     logInfo('system', 'theDAW UI initialized');
   }, []);
+
+  // Mount the lazy assistant panel the first time it's opened, then leave it
+  // mounted (its `isOpen` prop drives show/hide, so state is preserved).
+  useEffect(() => {
+    if (isAssistantOpen) setAssistantMounted(true);
+  }, [isAssistantOpen]);
 
   // App-wide TEXT size: publish the persisted scale as the `--text-scale` CSS
   // variable. index.css multiplies every font-size utility by it (font-size
@@ -338,12 +351,16 @@ export default function App() {
         defaultPosition={{ x: 12, y: typeof window !== 'undefined' ? window.innerHeight - 92 : 500 }}
         persistenceKey="thedaw-orb-pos-v3"
       />
-      <AssistantPanel
-        isOpen={isAssistantOpen}
-        onClose={() => setIsAssistantOpen(false)}
-        onExecuteAction={handleAssistantAction}
-        orbPosition={orbPosition}
-      />
+      {assistantMounted && (
+        <Suspense fallback={null}>
+          <AssistantPanel
+            isOpen={isAssistantOpen}
+            onClose={() => setIsAssistantOpen(false)}
+            onExecuteAction={handleAssistantAction}
+            orbPosition={orbPosition}
+          />
+        </Suspense>
+      )}
 
       {/* Dev-only: simulated XR controller to drive the control bus without a
           headset. Stripped from production builds. */}

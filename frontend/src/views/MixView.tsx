@@ -5,17 +5,16 @@ import {
   Plug, RefreshCw, Loader2, Play, Pause, Square, Blocks, FolderOpen, SlidersHorizontal,
   Maximize2, Minimize2,
 } from 'lucide-react';
-import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS } from '../state/effectChainStore';
+import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS, MIX_RACK_IDS } from '../state/effectChainStore';
 import { useVstStore } from '../state/vstStore';
 import { vstApi, getNativeWindowHandle, getContentBounds, type Vst3PluginInfo } from '../lib/vstClient';
 import { useStatusBarStore } from '../state/statusBarStore';
 import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
 import { useStudioStore } from '../state/studioStore';
 import { useLibraryStore } from '../state/libraryStore';
-import { usePlayerStore } from '../state/playerStore';
+import { usePlayerStore, getAnalyser } from '../state/playerStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useAppUiStore } from '../state/appUiStore';
-import { logError } from '../state/logStore';
 import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideRow } from '../components/audio/SlideRow';
 import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
@@ -24,11 +23,8 @@ import { EffectGuiStage } from '../components/audio/EffectGuiStage';
 import { TheOwl } from '../components/audio/TheOwl';
 import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
-import { FxRack } from '../components/audio/FxRack';
-import { useMixRackStore } from '../state/mixRackStore';
 import { attachMixLiveRack } from '../state/mixLiveRack';
-import { buildEffectChain, ensureChopModule, RACK_EFFECTS } from '../lib/rackEffects';
-import { encodeWav } from '../lib/wavEncode';
+import { RACK_EFFECTS, getRackEffect } from '../lib/rackEffects';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory, fxPreview, vstPreviewKey, type CategoryMeta } from '../lib/effectCatalog';
@@ -55,10 +51,39 @@ const PSYCHO_GROUP_STYLE: Record<string, { color: string; preview: string }> = {
   Tone: { color: '#ef5350', preview: 'psy-tone' },
   Performance: { color: '#8b5cf6', preview: 'psy-performance' },
 };
-const PSYCHO_MODULES: PsychoModule[] = RACK_EFFECTS.map((fx) => {
+// Only the rack-only ids (MIX_RACK_IDS excludes the 4 that collide with backend
+// effect ids), so the Psychoacoustics browser never offers a rack variant of an
+// effect that also exists as a backend tile (delay/highpass/lowpass/stereo widener).
+const PSYCHO_MODULES: PsychoModule[] = RACK_EFFECTS.filter((fx) => MIX_RACK_IDS.has(fx.id) && fx.id !== 'ares').map((fx) => {
   const s = PSYCHO_GROUP_STYLE[fx.group] ?? { color: '#a855f7', preview: 'psy-spatial' };
   return { id: fx.id, name: fx.label, color: s.color, desc: fx.description, preview: s.preview };
 });
+
+/* ── Ares control surface -> the 'ares' composite effect ──────────────────────
+   Each Ares .gan control id maps onto one param of the single 'ares' chain effect
+   (all normalized 0..1). The XY Kaoss pad is handled separately: its X / Y / Z
+   drive the three macro params below. Ids come from the bundled Ares project.json:
+   the five knobs, the WET/DRY slider, Freeze, the filter-type selector, and the
+   five blade on/off toggles all drive the effect. */
+const ARES_CTRL_PARAM: Record<string, string> = {
+  '38c6p1p': 'filterCutoff', // lad_cutoff (on-blade knob)
+  '9frddyr': 'delayTime', // lad_time
+  ydmrzl8: 'reverbSize', // lad_size
+  qwf45ly: 'grainsDensity', // lad_density
+  n9rdt84: 'gateRate', // lad_rate
+  t4uakcb: 'wetDry', // ares_sword_mix_slider
+  p32cjjl: 'freeze', // ares_freeze_btn
+  '5lf2jcc': 'filterType', // sel_filter
+  tgfilter: 'filterOn', // ares_tgl_filter (blade icon on/off)
+  tgdelay: 'delayOn', // ares_tgl_delay
+  tgreverb: 'reverbOn', // ares_tgl_reverb
+  tggrains: 'grainsOn', // ares_tgl_grains
+  tggate: 'gateOn', // ares_tgl_gate
+};
+// XY pad: X sweeps the filter, Y drives the overall wet amount (obvious impact),
+// Z the grain density.
+const ARES_PAD_AXES = ['filterCutoff', 'wetDry', 'grainsDensity'] as const;
+const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 if (import.meta.env.DEV) {
   const uncovered = [...new Set(RACK_EFFECTS.map((fx) => fx.group))].filter((g) => !(g in PSYCHO_GROUP_STYLE));
   if (uncovered.length) console.warn('[MixView] psychoacoustic groups with no tile style (fallback used):', uncovered);
@@ -426,7 +451,11 @@ interface MixRegArgs {
   onOpenGan: () => void; onImportGan: () => void; onPickGan: (id: string) => void; onRevealGan: (path: string) => void;
   // studio modules (exact-GUI instruments)
   onPickModule: (id: string) => void; activeModuleId: string | null; activeModule: StudioModule | null;
-  onPickPsycho: (id: string) => void; activePsychoId: string | null;
+  // Psychoacoustic effects are first-class members of THE chain (added via
+  // onPickPsycho -> addRackEffect); no separate rack store.
+  onPickPsycho: (id: string) => void;
+  // Ares control surface (bundled .gan) — first-class Studio entry.
+  onPickAres: () => void; aresInstalled: boolean;
   // magenta RT2 tools (Collider / Jam / MRT2 — generative instruments)
   onPickMagenta: (id: string) => void; activeMagentaId: string | null; activeMagentaTool: MagentaTool | null;
   // chain
@@ -440,13 +469,6 @@ interface MixRegArgs {
   showHistory: boolean; setShowHistory: (v: boolean) => void;
   processHistory: Array<{ id: string; effect: string; createdAt: number }>;
   selectedEntry: ChainEntry | null;
-  // psychoacoustic rack — the EDIT FX engine, applied to the MIX source and baked
-  // into the output (separate from the backend effect chain above)
-  rackChain: ChainEntry[];
-  rackAdd: (id: string) => void; rackRemove: (id: string) => void;
-  rackReorder: (from: number, to: number) => void; rackToggle: (id: string) => void;
-  rackUpdateParams: (id: string, params: Record<string, number>) => void; rackClear: () => void;
-  applyRack: () => void; applyingRack: boolean; hasSource: boolean;
 }
 
 function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
@@ -523,17 +545,11 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           <span className="text-[8px] font-mono text-zinc-500 shrink-0">{p.allEffectCount}</span>
         </button>
         <button onClick={() => p.setActiveCategory('studio')}
+          title="Studio modules, the Ares control surface, and the psychoacoustic effects"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'studio' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
           <Boxes className="w-3.5 h-3.5 shrink-0" />
           <span className="text-[10px] font-bold flex-1 truncate">Studio</span>
-          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length}</span>
-        </button>
-        <button onClick={() => p.setActiveCategory('psychoacoustics')}
-          title="Psychoacoustic effects — pick one to open the rack in the Effect Stage"
-          className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'psychoacoustics' ? 'border-fuchsia-400 text-fuchsia-200 bg-fuchsia-500/10' : 'border-transparent text-fuchsia-400/80 hover:text-fuchsia-200 hover:bg-fuchsia-500/5'}`}>
-          <Headphones className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[10px] font-bold flex-1 truncate">Psychoacoustics</span>
-          <span className="text-[8px] font-mono text-fuchsia-600 shrink-0">{PSYCHO_MODULES.length}</span>
+          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length + PSYCHO_MODULES.length + 1}</span>
         </button>
         <button onClick={() => p.setActiveCategory('magenta')}
           title="Magenta RealTime 2 — generative instruments (Collider · Jam · MRT2)"
@@ -588,8 +604,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
   pinned('library', 'Library', (
     <div className="h-full w-full flex flex-col min-h-0 min-w-0 overflow-hidden p-2">
       <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio Modules' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'psychoacoustics' ? 'Psychoacoustics' : p.activeCategory === 'vst' ? 'VST3 Plugins' : p.activeCategory === 'plugins' ? 'GAN Plugins' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
-        {p.activeCategory !== 'studio' && p.activeCategory !== 'psychoacoustics' && p.activeCategory !== 'magenta' && p.activeCategory !== 'vst' && p.activeCategory !== 'plugins' && (
+        <span className={sectionTitle}>{p.activeCategory === 'studio' ? 'Studio' : p.activeCategory === 'magenta' ? 'Magenta Tools' : p.activeCategory === 'vst' ? 'VST3 Plugins' : p.activeCategory === 'plugins' ? 'GAN Plugins' : p.activeCategory === 'all' ? 'All Effects' : (CATEGORY_META.find((c) => c.id === p.activeCategory)?.label ?? 'Effects')}</span>
+        {p.activeCategory !== 'studio' && p.activeCategory !== 'magenta' && p.activeCategory !== 'vst' && p.activeCategory !== 'plugins' && (
           <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5">
             <button onClick={() => p.setViewMode('list')} title="List view" className={`p-1 rounded transition-colors ${p.viewMode === 'list' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutList className="w-3 h-3" /></button>
             <button onClick={() => p.setViewMode('tile')} title="Icon view" className={`p-1 rounded transition-colors ${p.viewMode === 'tile' ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`}><Grid3x3 className="w-3 h-3" /></button>
@@ -617,47 +633,60 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           })}
         </div></div>
       ) : p.activeCategory === 'studio' ? (
-        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
-          {STUDIO_MODULES.map((m) => {
-            const active = p.activeModule?.id === m.id;
-            return (
-              <button key={m.id} onClick={() => p.onPickModule(m.id)} title={m.desc}
-                className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-cyan-400/60 ring-1 ring-cyan-400/40 bg-cyan-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
-                style={{ width: 132 }}>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
-                  <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
-                </div>
-                <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
-                  <ModuleThumb preview={m.preview} className="w-full h-full" />
-                </div>
-                <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
-              </button>
-            );
-          })}
-        </div></div>
-      ) : p.activeCategory === 'psychoacoustics' ? (
-        <div className="flex-1 overflow-y-auto"><div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
-          {PSYCHO_MODULES.map((m) => {
-            const active = p.activePsychoId === m.id;
-            const inRack = p.rackChain.some((e) => e.effect === m.id);
-            return (
-              <button key={m.id} onClick={() => p.onPickPsycho(m.id)} title={m.desc}
-                className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-fuchsia-400/60 ring-1 ring-fuchsia-400/40 bg-fuchsia-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
-                style={{ width: 132 }}>
-                <div className="flex items-center gap-1.5">
-                  <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
-                  <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
-                  {inRack && <span role="img" aria-label="In rack" className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 shrink-0" />}
-                </div>
-                <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
-                  <ModuleThumb preview={m.preview} className="w-full h-full" />
-                </div>
-                <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
-              </button>
-            );
-          })}
-        </div></div>
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
+            {/* Ares control surface — first-class bundled plugin, opens in the stage. */}
+            <button onClick={p.onPickAres} title="Ares — XY Kaoss control surface"
+              className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${p.ganActiveId === 'ares' ? 'border-rose-400/60 ring-1 ring-rose-400/40 bg-rose-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+              style={{ width: 132 }}>
+              <div className="flex items-center gap-1.5">
+                <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: '#ff3b3b', boxShadow: '0 0 5px #ff3b3b80' }} />
+                <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">Ares</span>
+                {p.ganActiveId === 'ares' && <span aria-label="Open" className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />}
+              </div>
+              <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden grid place-items-center">
+                <Gauge className="w-7 h-7 text-rose-300/80" />
+              </div>
+              <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{p.aresInstalled ? 'XY Kaoss control surface' : 'packaging…'}</span>
+            </button>
+            {STUDIO_MODULES.map((m) => {
+              const active = p.activeModule?.id === m.id;
+              return (
+                <button key={`mod-${m.id}`} onClick={() => p.onPickModule(m.id)} title={m.desc}
+                  className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-cyan-400/60 ring-1 ring-cyan-400/40 bg-cyan-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                  style={{ width: 132 }}>
+                  <div className="flex items-center gap-1.5">
+                    <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
+                    <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                  </div>
+                  <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
+                    <ModuleThumb preview={m.preview} className="w-full h-full" />
+                  </div>
+                  <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+                </button>
+              );
+            })}
+            {PSYCHO_MODULES.map((m) => {
+              const active = p.selectedEntry?.effect === m.id;
+              const inChain = p.chainEffectIds.has(m.id);
+              return (
+                <button key={`psy-${m.id}`} onClick={() => p.onPickPsycho(m.id)} title={m.desc}
+                  className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-fuchsia-400/60 ring-1 ring-fuchsia-400/40 bg-fuchsia-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                  style={{ width: 132 }}>
+                  <div className="flex items-center gap-1.5">
+                    <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
+                    <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                    {inChain && <span role="img" aria-label="In chain" className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 shrink-0" />}
+                  </div>
+                  <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
+                    <ModuleThumb preview={m.preview} className="w-full h-full" />
+                  </div>
+                  <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       ) : p.activeCategory === 'vst' ? (
         <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
           <div className="flex items-center gap-2 px-1.5 pb-1.5 shrink-0">
@@ -740,8 +769,11 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         return (
           <div className="flex-1 overflow-y-auto"><div className="flex flex-col gap-2 content-start">
             <div className="flex flex-col gap-1">
-              <AllHeader icon={Boxes} color="text-cyan-300" label="Studio" count={STUDIO_MODULES.length} />
+              <AllHeader icon={Boxes} color="text-cyan-300" label="Studio" count={STUDIO_MODULES.length + 1} />
               <div className={boxCls}>
+                {tile
+                  ? <ModuleTile key="ares" name="Ares" color="#ff3b3b" marked={p.ganActiveId === 'ares'} onClick={p.onPickAres} />
+                  : <ModuleRow key="ares" name="Ares" desc="XY Kaoss control surface" color="#ff3b3b" marked={p.ganActiveId === 'ares'} onClick={p.onPickAres} />}
                 {STUDIO_MODULES.map((m) => (tile
                   ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} preview={m.preview} />
                   : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
@@ -752,7 +784,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
               <AllHeader icon={Headphones} color="text-fuchsia-300" label="Psychoacoustics" count={PSYCHO_MODULES.length} />
               <div className={boxCls}>
                 {PSYCHO_MODULES.map((m) => {
-                  const marked = p.activePsychoId === m.id || p.rackChain.some((e) => e.effect === m.id);
+                  const marked = p.selectedEntry?.effect === m.id || p.chainEffectIds.has(m.id);
                   return tile
                     ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} preview={m.preview} />
                     : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={marked} onClick={() => p.onPickPsycho(m.id)} />;
@@ -857,7 +889,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 className={`rounded p-1.5 border transition-all cursor-pointer shrink-0 w-40 flex flex-col ${p.selectedEntry?.id === entry.id ? 'border-purple-500/60 bg-purple-500/5' : 'border-zinc-800 hover:border-white/10'} ${!entry.enabled ? 'opacity-40' : ''}`}>
                 <div className="flex items-center gap-1 shrink-0">
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === 0} title="Move earlier" onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronLeft className="w-3 h-3" /></button>
-                  <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{entry.vst ? entry.vst.plugin_name : (EFFECT_LABELS[entry.effect] || entry.effect)}</span>
+                  <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{entry.vst ? entry.vst.plugin_name : (EFFECT_LABELS[entry.effect] || getRackEffect(entry.effect)?.label || entry.effect)}</span>
                   {entry.vst && (
                     <button
                       className={`shrink-0 ${entry.vst.raw_state ? 'text-teal-400 hover:text-teal-300' : 'text-zinc-500 hover:text-teal-300'}`}
@@ -874,8 +906,9 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 {Object.keys(entry.params).length > 0 && (
                   <div className="flex flex-col gap-1 mt-1.5 overflow-y-auto min-h-0" onClick={(e) => e.stopPropagation()}>
                     {Object.entries(entry.params).map(([key, val]) => {
-                      const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || [0, 1, 0.01];
-                      return <SlideRow key={key} label={prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
+                      const rd = getRackEffect(entry.effect)?.params.find((pp) => pp.key === key);
+                      const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || (rd ? [rd.min, rd.max, rd.step] : [0, 1, 0.01]);
+                      return <SlideRow key={key} label={rd?.label || prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
                     })}
                   </div>
                 )}
@@ -887,54 +920,11 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     </div>
   ));
 
-  /* ── effect stage — the active effect's EXACT GUI (the Edit Tool Stack
-     instrument, live Web-Audio preview), falling back to the generic viz for
-     chain effects that have no dedicated instrument, and a pick-a-module prompt
-     when nothing is focused. ── */
-  const psychoRackStage = (
-    <div className="h-full w-full flex flex-col min-h-0 overflow-hidden p-2 gap-2">
-      <div className="flex items-center gap-2 shrink-0">
-        <span className={sectionTitle}>Psychoacoustic Rack</span>
-        <span className="text-[8px] font-mono text-zinc-600">live FX, baked to output</span>
-        {p.rackChain.length > 0 && (
-          <button onClick={p.rackClear} title="Clear rack" className="ml-auto text-zinc-600 hover:text-red-400 transition-colors shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
-        )}
-      </div>
-      <div className="flex-1 overflow-y-auto min-h-0">
-        <FxRack
-          chain={p.rackChain}
-          idPrefix="mix-rack"
-          onAdd={p.rackAdd}
-          onRemove={p.rackRemove}
-          onReorder={p.rackReorder}
-          onToggle={p.rackToggle}
-          onUpdateParams={p.rackUpdateParams}
-        />
-      </div>
-      <button
-        onClick={p.applyRack}
-        disabled={!p.hasSource || p.rackChain.length === 0 || p.applyingRack}
-        title={!p.hasSource ? 'Load a source first' : 'Render the source through the rack into the output'}
-        className="shrink-0 w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
-      >
-        {p.applyingRack ? 'Rendering…' : 'Apply rack to output'}
-      </button>
-    </div>
-  );
-  // "The Owl" (the spatializer) gets its dedicated front-end in the Effect Stage
-  // footprint — the same spot Studio Modules land. It drives the live rack entry's
-  // params directly. Falls back to the rack view if the entry isn't present yet.
-  const owlEntry = p.rackChain.find((e) => e.effect === 'spatializer');
-  const owlStage = owlEntry ? (
-    <TheOwl
-      params={owlEntry.params}
-      idPrefix={`mix-owl-${owlEntry.id}`}
-      onChange={(np) => p.rackUpdateParams(owlEntry.id, np)}
-    />
-  ) : psychoRackStage;
-  // A focused psycho tile shows the rack; an explicit Studio module or selected
-  // chain entry takes priority; otherwise a populated rack still shows here so it
-  // can never be orphaned (and the Apply button stays reachable).
+  /* ── effect stage — THE LIVE VIEW only. Shows the active plugin/instrument or the
+     selected chain entry's live viz. A selected spatializer entry gets The Owl's
+     dedicated surface (which drives that entry's params in the ONE chain); every
+     other selected entry shows its EffectsVizPanel. No rack editor here. ── */
+  const selected = p.selectedEntry;
   pinned('effectStage', 'Effect Stage', (
     p.vstEmbed
       ? <VstEmbedHost pluginPath={p.vstEmbed.pluginPath} pluginName={p.vstEmbed.pluginName} error={p.vstEmbed.error} onClose={p.onCloseVstEmbed} />
@@ -942,17 +932,13 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
       ? <GanPluginStage url={p.ganActiveUrl} name={p.ganActiveName} />
     : p.activeMagentaTool
       ? <MagentaToolStage tool={p.activeMagentaTool} />
-    : p.activePsychoId === 'spatializer'
-      ? owlStage
-    : p.activePsychoId
-      ? psychoRackStage
-      : p.activeModule
-        ? <EffectGuiStage module={p.activeModule} sourceFile={p.sourceFile} />
-        : p.selectedEntry
-          ? <EffectsVizPanel effect={p.selectedEntry.effect} params={p.selectedEntry.params} className="h-full! border-purple-500/15!" />
-          : p.rackChain.length > 0
-            ? psychoRackStage
-            : <EffectGuiStage module={null} sourceFile={p.sourceFile} />
+    : p.activeModule
+      ? <EffectGuiStage module={p.activeModule} sourceFile={p.sourceFile} />
+    : selected && selected.effect === 'spatializer'
+      ? <TheOwl params={selected.params} idPrefix={`mix-owl-${selected.id}`} onChange={(np) => p.updateParams(selected.id, np)} />
+    : selected
+      ? <EffectsVizPanel effect={selected.effect} params={selected.params} className="h-full! border-purple-500/15!" />
+      : <EffectGuiStage module={null} sourceFile={p.sourceFile} />
   ));
 
   return reg;
@@ -964,20 +950,12 @@ export const MixView: React.FC = () => {
   const sourceFile = useAdvancedEditorSourceStore((s) => s.sourceFile);
   const outputUrl = useAdvancedEditorSourceStore((s) => s.outputUrl);
   const setSource = useAdvancedEditorSourceStore((s) => s.setSource);
-  const setOutputUrl = useAdvancedEditorSourceStore((s) => s.setOutputUrl);
-
-  // Psychoacoustic rack (EDIT's Web-Audio FX engine) applied to the MIX source.
-  const rackChain = useMixRackStore((s) => s.chain);
-  const rackAdd = useMixRackStore((s) => s.add);
-  const rackRemove = useMixRackStore((s) => s.remove);
-  const rackReorder = useMixRackStore((s) => s.reorder);
-  const rackToggle = useMixRackStore((s) => s.toggle);
-  const rackUpdateParams = useMixRackStore((s) => s.updateParams);
-  const rackClear = useMixRackStore((s) => s.clear);
-  const [applyingRack, setApplyingRack] = useState(false);
 
   const chain = useEffectChainStore((s) => s.chain) as ChainEntry[];
   const addEffect = useEffectChainStore((s) => s.addEffect);
+  // Psychoacoustic effects are first-class members of THE chain (added via
+  // addRackEffect so they seed rack defaults, not the backend EFFECT_DEFAULTS).
+  const addRackEffect = useEffectChainStore((s) => s.addRackEffect);
   const addVst = useEffectChainStore((s) => s.addVst);
   // VST3 plugins for the effects browser (hosted via pedalboard).
   const vstPlugins = useVstStore((s) => s.plugins);
@@ -993,6 +971,7 @@ export const MixView: React.FC = () => {
   const ganOpenPath = useGanStore((s) => s.openPath);
   const ganOpenById = useGanStore((s) => s.openById);
   const ganImportOwl = useGanStore((s) => s.importOwl);
+  const ganEnsureAres = useGanStore((s) => s.ensureAres);
   const ganClose = useGanStore((s) => s.close);
   const removeEffect = useEffectChainStore((s) => s.removeEffect);
   const updateParams = useEffectChainStore((s) => s.updateParams);
@@ -1014,8 +993,6 @@ export const MixView: React.FC = () => {
   const [viewMode, setViewMode] = useState<'list' | 'tile'>('tile');
   const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
-  // The psychoacoustic effect focused in the Effect Stage (opens the rack there).
-  const [activePsychoId, setActivePsychoId] = useState<string | null>(null);
   // The Magenta RT2 tool focused in the Effect Stage (Collider / Jam / MRT2).
   const [activeMagentaId, setActiveMagentaId] = useState<string | null>(null);
   const [srcStats, setSrcStats] = useState<AudioStats | null>(null);
@@ -1040,8 +1017,88 @@ export const MixView: React.FC = () => {
 
   // Populate the VST3 browser on first open (cached scan — cheap).
   useEffect(() => { void scanVst(false); }, [scanVst]);
-  // Populate the installed .gan plugin list on first open.
-  useEffect(() => { void ganRefresh(); }, [ganRefresh]);
+  // Populate the installed .gan plugin list on first open, then make sure the
+  // bundled Ares control surface is packaged so it shows as a Studio tile.
+  useEffect(() => { void ganRefresh().then(() => ganEnsureAres()); }, [ganRefresh, ganEnsureAres]);
+
+  // ── Ares control surface -> live effect params ─────────────────────────────
+  // The Ares .gan XY pad postMessages {type:'updateValue', id, valueX, valueY,
+  // valueZ}; drive the focused (else first) psychoacoustic chain entry's params
+  // from it — its first up-to-three params take X / Y / Z. rAF-coalesced so 60fps
+  // input never thrashes the store (mixLiveRack pushes params without a rebuild,
+  // so it stays click-free). If no rack effect is in the chain yet, one owlpad is
+  // added so the pad always has something audible to move.
+  const aresXyId = useMemo(() => {
+    const a = ganPlugins.find((pl) => pl.id === 'ares');
+    return a?.controls.find((c) => c.name === 'ares_xy_kaoss_pad')?.id ?? 'pf5ixrn';
+  }, [ganPlugins]);
+  const aresXyIdRef = useRef(aresXyId);
+  aresXyIdRef.current = aresXyId;
+  // Ares .gan controls -> the single 'ares' composite chain effect. The XY pad's
+  // X/Y/Z drive the macro params (ARES_PAD_AXES); every other mapped control sets
+  // its own param (ARES_CTRL_PARAM). rAF-coalesced (patches merged per frame) so
+  // 60fps pad input never thrashes the store, and mixLiveRack pushes params without
+  // a rebuild so it stays click-free.
+  useEffect(() => {
+    let raf: number | null = null;
+    let pendingPatch: Record<string, number> | null = null;
+    const flush = () => {
+      raf = null;
+      const patch = pendingPatch;
+      pendingPatch = null;
+      if (!patch) return;
+      const ares = useEffectChainStore.getState().chain.find((e) => e.effect === 'ares');
+      if (!ares) return; // Ares controls act only when the Ares effect is in the chain
+      useEffectChainStore.getState().updateParams(ares.id, { ...ares.params, ...patch });
+    };
+    const handler = (e: MessageEvent) => {
+      const d = e.data;
+      if (!d || d.type !== 'updateValue') return;
+      let add: Record<string, number> | null = null;
+      if (d.id === aresXyIdRef.current && typeof d.valueX === 'number') {
+        const axes = [
+          d.valueX,
+          typeof d.valueY === 'number' ? d.valueY : 0.5,
+          typeof d.valueZ === 'number' ? d.valueZ : 0.5,
+        ];
+        add = {};
+        for (let i = 0; i < ARES_PAD_AXES.length; i += 1) add[ARES_PAD_AXES[i]] = clamp01(axes[i]);
+      } else {
+        const key = ARES_CTRL_PARAM[d.id];
+        if (key && typeof d.value === 'number') add = { [key]: clamp01(d.value) };
+      }
+      if (!add) return;
+      pendingPatch = pendingPatch ? { ...pendingPatch, ...add } : add;
+      if (raf == null) raf = requestAnimationFrame(flush);
+    };
+    window.addEventListener('message', handler);
+    return () => {
+      window.removeEventListener('message', handler);
+      if (raf != null) cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  // While Ares is open, feed the live master output level into its .gan so its
+  // level meter reflects the real signal (pushed down through the runtime relay).
+  useEffect(() => {
+    if (ganActiveId !== 'ares') return;
+    const analyser = getAnalyser();
+    const buf = new Uint8Array(analyser.fftSize);
+    let raf = 0;
+    let alive = true;
+    const tick = () => {
+      if (!alive) return;
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i += 1) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      const level = Math.min(1, Math.sqrt(sum / buf.length) * 3);
+      const fr = document.getElementById('gan-stage-frame') as HTMLIFrameElement | null;
+      fr?.contentWindow?.postMessage({ type: 'level', value: level }, '*');
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { alive = false; cancelAnimationFrame(raf); };
+  }, [ganActiveId]);
 
   useEffect(() => {
     if (!sourceFile) { setSrcStats(null); return; }
@@ -1087,51 +1144,6 @@ export const MixView: React.FC = () => {
       const next = useEffectChainStore.getState().chain;
       const added = next[next.length - 1];
       if (added) { updateParams(added.id, { ...quickMaster }); setSelectedChainId(added.id); }
-    }
-  };
-
-  // Render the source through the psychoacoustic rack in an OfflineAudioContext and
-  // set it as the MIX output (mirrors EDIT's offline bounce; chop worklet preloaded).
-  const applyRack = async () => {
-    const file = useAdvancedEditorSourceStore.getState().sourceFile;
-    const chainNow = useMixRackStore.getState().chain;
-    if (!file || chainNow.length === 0 || applyingRack) return;
-    setApplyingRack(true);
-    const decodeCtx = new AudioContext({ sampleRate: 44100 });
-    try {
-      const ab = await file.arrayBuffer();
-      const buf = await decodeCtx.decodeAudioData(ab.slice(0));
-      const offline = new OfflineAudioContext(2, buf.length, buf.sampleRate);
-      if (chainNow.some((e) => e.effect === 'chop' && e.enabled)) {
-        try { await ensureChopModule(offline); } catch { /* falls back to passthrough */ }
-      }
-      const inGain = offline.createGain();
-      buildEffectChain(offline, inGain, offline.destination, chainNow);
-      const src = offline.createBufferSource();
-      src.buffer = buf;
-      src.connect(inGain);
-      src.start(0);
-      const rendered = await offline.startRendering();
-      const wav = encodeWav(rendered);
-      setOutputUrl(URL.createObjectURL(wav));
-      // Persist the rendered result to the library (mirrors the backend chain's
-      // save). Without this the rack output only appears in the Output viz and
-      // is never saved.
-      const label = chainNow.filter((e) => e.enabled).map((e) => e.effect).join(' + ') || 'rack';
-      const title = `rack-${label.slice(0, 40)}.wav`;
-      try {
-        await useLibraryStore.getState().importEntry({
-          blob: wav,
-          filename: title,
-          mimeType: 'audio/wav',
-          metadata: { title, prompt: `Psychoacoustic rack: ${label}`, source: 'studio', tags: ['psychoacoustic-rack'] },
-        });
-      } catch (e) {
-        logError('studio', `Rack library save failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    } catch { /* non-fatal: leave the prior output in place */ } finally {
-      decodeCtx.close().catch(() => {});
-      setApplyingRack(false);
     }
   };
 
@@ -1244,45 +1256,86 @@ export const MixView: React.FC = () => {
     ?? (mappedModuleId ? moduleById[mappedModuleId] ?? null : null);
 
   // Picking a module from the library toggles its instrument open/closed.
-  const handlePickModule = (id: string) => { ganClose(); setActivePsychoId(null); setActiveMagentaId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
+  const handlePickModule = (id: string) => { ganClose(); setActiveMagentaId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
   // Selecting a chain entry hands the stage back to the effect→module mapping.
-  const selectChain = (id: string) => { ganClose(); setActivePsychoId(null); setActiveMagentaId(null); setSelectedChainId(id); setActiveModuleId(null); };
-  // Picking a psychoacoustic tile adds it to the rack engine (once) and opens the
-  // rack in the Effect Stage; clicking the focused one again closes the stage.
+  const selectChain = (id: string) => {
+    setActiveMagentaId(null); setActiveModuleId(null); setSelectedChainId(id);
+    // Ares' real UI is its .gan surface — (re)open it when its entry is selected
+    // instead of falling back to the generic viz; any other effect closes the .gan.
+    const entry = useEffectChainStore.getState().chain.find((e) => e.id === id);
+    if (entry?.effect === 'ares') {
+      void (async () => {
+        if (!useGanStore.getState().plugins.some((p) => p.id === 'ares')) await ganEnsureAres();
+        await ganOpenById('ares');
+      })();
+    } else {
+      ganClose();
+    }
+  };
+  // Picking a psychoacoustic tile adds it to THE chain (seeded with rack defaults)
+  // and focuses it, so the effect stage shows its live view. If it is already in
+  // the chain, just focus the existing entry.
   const handlePickPsycho = (id: string) => {
     ganClose();
-    if (activePsychoId === id) { setActivePsychoId(null); return; }
-    if (!rackChain.some((e) => e.effect === id)) rackAdd(id);
     setActiveModuleId(null);
     setActiveMagentaId(null);
-    setActivePsychoId(id);
+    const existing = useEffectChainStore.getState().chain.find((e) => e.effect === id);
+    if (existing) { setSelectedChainId(existing.id); return; }
+    addRackEffect(id);
+    const next = useEffectChainStore.getState().chain;
+    const added = next[next.length - 1];
+    if (added) setSelectedChainId(added.id);
   };
   // Picking a Magenta tool opens its generative instrument in the Effect Stage;
   // clicking the focused one again closes it. Mutually exclusive with the above.
   const activeMagentaTool: MagentaTool | null = activeMagentaId ? magentaToolById[activeMagentaId] ?? null : null;
   const handlePickMagenta = (id: string) => {
     ganClose();
-    setActivePsychoId(null); setActiveModuleId(null);
+    setActiveModuleId(null);
     setActiveMagentaId((cur) => (cur === id ? null : id));
   };
   // .gan loader: pick/import sets the active plugin and yields the stage to it.
   const handleOpenGan = async () => {
     const r = await pickFile({ filter: GAN_FILTER, title: 'Open a .gan plugin' });
     if (!r.path) return;
-    setActiveModuleId(null); setActivePsychoId(null); setActiveMagentaId(null);
+    setActiveModuleId(null); setActiveMagentaId(null);
     await ganOpenPath(r.path);
   };
   const handleImportGan = async () => {
     const r = await pickFile({ title: 'Select a VST Foundry export (project.json)' });
     if (!r.path) return;
-    setActiveModuleId(null); setActivePsychoId(null); setActiveMagentaId(null);
+    setActiveModuleId(null); setActiveMagentaId(null);
     await ganImportOwl(r.path);
   };
   const handlePickGan = (id: string) => {
-    setActiveModuleId(null); setActivePsychoId(null); setActiveMagentaId(null);
+    setActiveModuleId(null); setActiveMagentaId(null);
     void ganOpenById(id);
   };
   const handleRevealGan = (path: string) => { void ganApi.reveal(path).catch(() => {}); };
+
+  // Ares is a first-class Studio entry (bundled .gan). Opening it hands the effect
+  // stage to its iframe; package it on demand if the on-mount ensure hasn't landed.
+  const aresInstalled = ganPlugins.some((p) => p.id === 'ares');
+  const handlePickAres = () => {
+    setActiveModuleId(null); setActiveMagentaId(null);
+    // Ensure ONE 'ares' composite effect is in the chain and focus it, then open
+    // its .gan surface in the Live View.
+    const existing = useEffectChainStore.getState().chain.find((e) => e.effect === 'ares');
+    if (existing) {
+      setSelectedChainId(existing.id);
+    } else {
+      addRackEffect('ares');
+      const next = useEffectChainStore.getState().chain;
+      const added = next[next.length - 1];
+      if (added) setSelectedChainId(added.id);
+    }
+    void (async () => {
+      if (!useGanStore.getState().plugins.some((p) => p.id === 'ares')) await ganEnsureAres();
+      await ganOpenById('ares');
+    })();
+  };
+  // The generic Plugins browser excludes Ares (it lives in Studio as first-class).
+  const ganPluginsVisible = ganPlugins.filter((p) => p.id !== 'ares');
 
   const registry = buildMixRegistry({
     sourceUrl, outputUrl, srcStats, outStats, sourceFile,
@@ -1297,15 +1350,16 @@ export const MixView: React.FC = () => {
     onClearSource: () => setSourceBoth(null),
     isChainProcessing,
     onDownload: handleDownload, onSendToDAW: () => void handleSendToDAW(), onSendToInpaint: () => void handleSendToInpaint(),
-    activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length + vstPlugins.length,
+    activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length + vstPlugins.length + 1,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
     vstPlugins, vstScanning, rescanVst: () => void scanVst(true), addVstToChain: addAndEditVst, vstInChain,
-    ganPlugins, ganActiveId, ganActiveUrl, ganActiveName, ganBusy,
+    ganPlugins: ganPluginsVisible, ganActiveId, ganActiveUrl, ganActiveName, ganBusy,
     onOpenGan: () => void handleOpenGan(), onImportGan: () => void handleImportGan(),
     onPickGan: handlePickGan, onRevealGan: handleRevealGan,
     onPickModule: handlePickModule, activeModuleId, activeModule,
-    onPickPsycho: handlePickPsycho, activePsychoId,
+    onPickPsycho: handlePickPsycho,
+    onPickAres: handlePickAres, aresInstalled,
     onPickMagenta: handlePickMagenta, activeMagentaId, activeMagentaTool,
     chain, selectedId: selectedChainId, setSelectedId: selectChain,
     removeEffect, updateParams, toggleEnabled, reorder, clearChain, onEditVst: handleEditVst,
@@ -1316,8 +1370,6 @@ export const MixView: React.FC = () => {
     },
     outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
     selectedEntry,
-    rackChain, rackAdd, rackRemove, rackReorder, rackToggle, rackUpdateParams, rackClear,
-    applyRack: () => void applyRack(), applyingRack, hasSource: !!sourceFile,
   });
 
   return (

@@ -17,6 +17,9 @@ interface GanState {
   openPath: (path: string) => Promise<void>;
   openById: (id: string) => Promise<void>;
   importOwl: (projectPath: string) => Promise<void>;
+  /** Ensure the bundled "Ares" control surface is installed (package it on first
+   *  run), then refresh the list so it shows as a first-class Studio entry. */
+  ensureAres: () => Promise<void>;
   close: () => void;
 }
 
@@ -94,6 +97,19 @@ export const useGanStore = create<GanState>()((set, get) => ({
       const msg = e instanceof Error ? e.message : 'import failed';
       set({ busy: false, error: msg });
       useStatusBarStore.getState().setText(`IMPORT FAILED: ${msg}`);
+      logError('plugin', msg);
+    }
+  },
+
+  ensureAres: async () => {
+    // Always (re)package: package-ares is idempotent (rebuilds the .gan + extracts
+    // a fresh runtime), so this guarantees edits to the bundled Ares project.json
+    // ship even on a machine that already has an older ares.gan installed.
+    try {
+      await ganApi.packageAres();
+      await get().refresh();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Ares package failed';
       logError('plugin', msg);
     }
   },

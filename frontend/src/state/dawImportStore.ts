@@ -8,9 +8,11 @@ import {
   type DawProject,
 } from '../lib/dawImportClient';
 import { dawProjectToTasmo, projectApi } from '../lib/projectClient';
+import { tasmoLoadedToDawProject } from '../lib/tasmoToSession';
 import { loadProjectIntoEditor } from '../lib/projectImport';
 import { resolveControllerMappings } from '../lib/swayImportResolve';
 import { useSwayImportStore } from './swayImportStore';
+import { usePerformRoutingStore } from './performRouting';
 import { useProjectStore } from './projectStore';
 import { logError, logInfo } from './logStore';
 import { useStatusBarStore } from './statusBarStore';
@@ -28,6 +30,9 @@ interface DawImportState {
   close: () => void;
   setSourcePath: (path: string) => void;
   detectAndImport: () => Promise<void>;
+  /** Open a saved .tasmo project directly in the Session grid (converts it to a
+   *  DawProject; each track's clips become scene rows). */
+  loadTasmoAsSession: (path?: string) => Promise<void>;
   /** Convert the parsed project, autosave an embedded .tasmo to the default
    *  projects folder, then load it straight onto the EDIT timeline. */
   loadIntoEditor: () => Promise<void>;
@@ -76,6 +81,32 @@ export const useDawImportStore = create<DawImportState>()((set, get) => ({
       const msg = e instanceof Error ? e.message : 'Import failed.';
       set({ busy: false, error: msg });
       status(`IMPORT FAILED: ${msg}`);
+      logError('dawimport', msg);
+    }
+  },
+
+  loadTasmoAsSession: async (path) => {
+    const p = (path ?? get().sourcePath).trim();
+    if (!p) {
+      set({ error: 'Choose a .tasmo file first.' });
+      return;
+    }
+    set({ busy: true, error: null, project: null, hint: null, detected: null });
+    try {
+      logInfo('dawimport', `POST /api/project/load (session) — ${p}`);
+      const loaded = await projectApi.load(p);
+      const project = tasmoLoadedToDawProject(loaded.project);
+      set({ project, busy: false });
+      // Restore the Perform-tab routing saved with this project, so scene-launch +
+      // Sway-dim modulation assignments come back on Open.
+      if (loaded.project.perform_routing) {
+        usePerformRoutingStore.getState().hydrate(loaded.project.perform_routing);
+      }
+      status(`OPENED .tasmo IN SESSION: ${project.tracks.length} track(s)`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to open .tasmo.';
+      set({ busy: false, error: msg });
+      status(`OPEN FAILED: ${msg}`);
       logError('dawimport', msg);
     }
   },

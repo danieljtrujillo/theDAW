@@ -113,6 +113,18 @@ def _wrapper_style(el: dict, w: float, h: float) -> str:
     blend = el.get("blendMode")
     if blend and blend != "normal":
         style += f"mix-blend-mode:{blend};"
+    # Apply the element's rotation so on-art labels can match angled artwork.
+    # VST Foundry stores degrees, often wrapped into 0..360 (e.g. 357 = -3).
+    rot = el.get("rotation")
+    if rot:
+        try:
+            rf = float(rot)
+        except (TypeError, ValueError):
+            rf = 0.0
+        if rf > 180:
+            rf -= 360
+        if abs(rf) > 0.01:
+            style += f"transform:rotate({rf:.2f}deg);"
     return style
 
 
@@ -256,10 +268,14 @@ def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> s
         ".gan-unknown{border:1px dashed rgba(255,255,255,0.15);border-radius:4px;}"
         "</style></head><body>"
     )
+    # Relay control values UP to the host, and forward host->plugin messages
+    # (e.g. live audio 'level' for the meter) DOWN to every element iframe.
     relay = (
         "<script>window.addEventListener('message',function(e){"
-        "var d=e.data;"
-        "if(d&&d.type==='updateValue'){window.parent.postMessage(d,'*');}"
+        "var d=e.data;if(!d)return;"
+        "if(d.type==='updateValue'){window.parent.postMessage(d,'*');}"
+        "else if(d.type==='level'){var fr=document.querySelectorAll('#gan-canvas iframe');"
+        "for(var i=0;i<fr.length;i++){try{fr[i].contentWindow.postMessage(d,'*');}catch(_){}}}"
         "});</script>"
     )
     body = (

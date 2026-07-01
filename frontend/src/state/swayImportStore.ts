@@ -19,6 +19,11 @@ interface SwayImportState {
   unattached: SwayUnattached[];
   sourceName: string;
   setResult: (r: SwayResolveResult, sourceName: string) => void;
+  /** Manually wire one CC to a target the auto-resolve couldn't (e.g. a rack
+   *  macro, whose param graph is not stored in the .als/.swayproj). Optionally
+   *  drops the matching unattached entry so it moves from "not reproduced" to
+   *  "wired". The user supplies the target, so nothing is guessed. */
+  addBinding: (b: SwayBinding, removeMatch?: { channel: number; number: number }) => void;
   clear: () => void;
 }
 
@@ -27,6 +32,21 @@ export const useSwayImportStore = create<SwayImportState>((set) => ({
   unattached: [],
   sourceName: '',
   setResult: (r, sourceName) => set({ bindings: r.bindings, unattached: r.unattached, sourceName }),
+  addBinding: (b, removeMatch) =>
+    set((s) => {
+      let unattached = s.unattached;
+      if (removeMatch) {
+        let dropped = false;
+        unattached = s.unattached.filter((u) => {
+          if (!dropped && u.channel === removeMatch.channel && u.number === removeMatch.number) {
+            dropped = true;
+            return false;
+          }
+          return true;
+        });
+      }
+      return { bindings: [...s.bindings, b], unattached };
+    }),
   clear: () => set({ bindings: [], unattached: [], sourceName: '' }),
 }));
 

@@ -6,7 +6,7 @@
  * active tab's content. Height is the column's own `multiHeight`
  * from bottomPanelStore — independent of the LOG's `logHeight`.
  */
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
   FileMusic, Waves, Brush,
@@ -18,7 +18,10 @@ import { ScoreView } from './ScoreView';
 import { MediaBucketView } from './MediaBucketView';
 import { SlidePanel } from './SlidePanel';
 import { SwayPanel } from './SwayPanel';
-import { MidiPanel } from './MidiPanel';
+// Lazy: the MIDI tab (piano roll + vocal2midi) drags in @google/genai
+// (AI compose + gemini vocal services). Keep it out of first paint; the chunk
+// loads only when the user first opens the MIDI tab.
+const MidiPanel = lazy(() => import('./MidiPanel').then((m) => ({ default: m.MidiPanel })));
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
@@ -136,7 +139,9 @@ export const BottomMultiTabPanel: React.FC = () => {
         )}
         {activeTab === 'midi' && (
           <div className="absolute inset-0">
-            <MidiPanel />
+            <Suspense fallback={null}>
+              <MidiPanel />
+            </Suspense>
           </div>
         )}
         {activeTab === 'draw' && (

@@ -202,6 +202,9 @@ def parse_als(path: str) -> DawProject:
     except (TypeError, ValueError):
         pass
 
+    # Session-view scene names (row order) for the Session tab's clip grid.
+    project.scenes = _parse_scenes(live_set)
+
     # Tracks (regular tracks live under <Tracks>; the master is separate).
     tracks_elem = live_set.find("Tracks")
     if tracks_elem is not None:
@@ -210,11 +213,23 @@ def parse_als(path: str) -> DawProject:
             if track_type is None:
                 continue
             try:
-                project.tracks.append(
-                    _parse_track(
-                        track_elem, track_type, project, project_dir, media_index
+                track = _parse_track(
+                    track_elem, track_type, project, project_dir, media_index
+                )
+                # Additive: the session-view clip matrix (indexed by scene/track)
+                # for the Session grid. The arrangement lane on ``track.clips`` is
+                # untouched; scene-tagged clips are ignored by the EDIT flow.
+                track.clips.extend(
+                    _parse_session_clips(
+                        track_elem,
+                        len(project.tracks),
+                        project,
+                        project_dir,
+                        media_index,
+                        project.scenes,
                     )
                 )
+                project.tracks.append(track)
             except Exception as e:  # pragma: no cover - defensive
                 project.warnings.append(f"Failed to parse a {track_elem.tag}: {e}")
 
@@ -451,6 +466,55 @@ def _iter_clip_elements(scope):
     for tag in ("AudioClip", "MidiClip"):
         for el in scope.iter(tag):
             yield el
+
+
+def _parse_scenes(live_set) -> list[str]:
+    """Session-view scene names in row order (empty when the set has none)."""
+    out: list[str] = []
+    scenes_elem = live_set.find("Scenes")
+    if scenes_elem is None:
+        return out
+    for scene in scenes_elem.findall("Scene"):
+        name_e = scene.find("Name")
+        out.append(name_e.get("Value", "") if name_e is not None else "")
+    return out
+
+
+def _parse_session_clips(
+    track_elem,
+    track_index: int,
+    project: DawProject,
+    project_dir: Path,
+    media_index: dict[str, str],
+    scenes: list[str],
+) -> list[DawClip]:
+    """Collect a track's SESSION-view clips as scene-grid cells.
+
+    Additive to the single arrangement lane from ``_parse_clips``: each
+    ``ClipSlot`` is a scene row, so the Session tab can render the clip-launch
+    grid. These carry scene/slot/track indices; arrangement clips leave those
+    None. The EDIT-timeline flow filters scene-tagged clips out (it uses only
+    the arrangement lane), so this never disturbs the existing import.
+    """
+    main_seq = track_elem.find(".//DeviceChain/MainSequencer")
+    slot_list = main_seq.find("ClipSlotList") if main_seq is not None else None
+    if slot_list is None:
+        return []
+    out: list[DawClip] = []
+    for slot_index, slot in enumerate(slot_list.findall("ClipSlot")):
+        for clip_elem in _iter_clip_elements(slot):
+            clip = _build_clip(
+                clip_elem, project, project_dir, media_index, arrangement=False
+            )
+            if clip is None:
+                continue
+            clip.track_index = track_index
+            clip.scene_index = slot_index
+            clip.slot_index = slot_index
+            clip.scene_name = scenes[slot_index] if slot_index < len(scenes) else ""
+            out.append(clip)
+            break  # one clip per slot
+    return out
 
 
 def _build_clip(

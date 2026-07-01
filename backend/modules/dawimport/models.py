@@ -56,6 +56,13 @@ class DawClip:
     file_path: str | None = None
     midi_notes: list[dict] | None = None
     warp_markers: list[dict] | None = None
+    # Session-view placement (None for arrangement clips): which track column,
+    # which scene row (and its name), and the raw clip-slot index. Drives the
+    # Session tab's clip-launch grid; arrangement clips keep these None.
+    track_index: int | None = None
+    scene_index: int | None = None
+    scene_name: str | None = None
+    slot_index: int | None = None
 
 
 @dataclass
@@ -124,6 +131,9 @@ class DawProject:
     tracks: list[DawTrack] = field(default_factory=list)
     locators: list[DawLocator] = field(default_factory=list)
     controller_mappings: list[DawControllerMapping] = field(default_factory=list)
+    # Session-view scene names in row order (empty for DAWs / projects without a
+    # session grid). Drives the Session tab's clip-launch grid.
+    scenes: list[str] = field(default_factory=list)
     plugins_used: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     missing_files: list[str] = field(default_factory=list)
@@ -144,7 +154,14 @@ class DawProject:
         (no oversized gaps, no lead-in silence) are left unchanged. MIDI notes
         are clip-relative, so they need no adjustment. Returns seconds removed.
         """
-        timed = [c for t in self.tracks for c in t.clips if c.end_time > c.start_time]
+        # Only arrangement (timeline) clips participate; session-grid clips carry
+        # scene positions, not timeline positions, so they are left untouched.
+        timed = [
+            c
+            for t in self.tracks
+            for c in t.clips
+            if c.end_time > c.start_time and c.scene_index is None
+        ]
         if not timed:
             return 0.0
 
@@ -182,7 +199,7 @@ class DawProject:
 
         for t in self.tracks:
             for c in t.clips:
-                if c.end_time > c.start_time:
+                if c.end_time > c.start_time and c.scene_index is None:
                     c.start_time = _shift(c.start_time)
                     c.end_time = _shift(c.end_time)
         for loc in self.locators:

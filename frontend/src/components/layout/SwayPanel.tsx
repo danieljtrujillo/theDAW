@@ -26,9 +26,105 @@ import {
   type SwayPadMode,
 } from '../../state/swaySurfaceStore';
 import { useSwayImportStore } from '../../state/swayImportStore';
+import { useEditorStore } from '../../state/editorStore';
+import { getRackEffect } from '../../lib/rackEffects';
+import type { SwayBinding, SwayUnattached } from '../../lib/swayImportResolve';
 
 const ctrlLabel = (isNote: boolean, channel: number, number: number): string =>
   `${channel < 0 ? 'omni' : `ch${channel + 1}`} ${isNote ? 'N' : 'CC'}${number}`;
+
+/**
+ * Manually wire one unresolved CC (e.g. a rack macro, whose param graph is not
+ * stored in the .als/.swayproj) to a real target the USER chooses — a track's
+ * volume/pan or a live FX parameter on that track. Nothing is guessed: the auto
+ * attach couldn't reconstruct it, so this is the honest, functional fallback.
+ */
+const ManualAssign: React.FC<{ u: SwayUnattached }> = ({ u }) => {
+  const tracks = useEditorStore((s) => s.tracks);
+  const addBinding = useSwayImportStore((s) => s.addBinding);
+  const [trackId, setTrackId] = useState('');
+  const [target, setTarget] = useState('volume');
+
+  const track = tracks.find((t) => t.id === trackId) ?? tracks[0];
+  const effTrackId = track?.id ?? '';
+
+  // Target options: always volume/pan, plus each live rack-FX param on the track.
+  const fxOptions = useMemo(() => {
+    if (!track?.fxChain) return [] as Array<{ value: string; label: string }>;
+    const out: Array<{ value: string; label: string }> = [];
+    for (const e of track.fxChain) {
+      const def = getRackEffect(e.effect);
+      if (!def) continue;
+      for (const p of def.params) {
+        out.push({ value: `fx|${e.id}|${p.key}`, label: `${def.label} · ${p.label}` });
+      }
+    }
+    return out;
+  }, [track]);
+
+  const assign = () => {
+    if (!track) return;
+    let b: SwayBinding;
+    if (target === 'volume') {
+      b = { channel: u.channel, number: u.number, isNote: false, trackId: effTrackId, target: 'volume', min: 0, max: 1, label: `${track.name} · Volume` };
+    } else if (target === 'pan') {
+      b = { channel: u.channel, number: u.number, isNote: false, trackId: effTrackId, target: 'pan', min: 0, max: 1, label: `${track.name} · Pan` };
+    } else {
+      const [, entryId, paramKey] = target.split('|');
+      const entry = track.fxChain?.find((e) => e.id === entryId);
+      const def = entry ? getRackEffect(entry.effect) : null;
+      const desc = def?.params.find((p) => p.key === paramKey);
+      if (!entry || !def || !desc) return;
+      b = { channel: u.channel, number: u.number, isNote: false, trackId: effTrackId, target: 'fx', entryId, paramKey, min: desc.min, max: desc.max, label: `${track.name} · ${def.label} · ${desc.label}` };
+    }
+    addBinding(b, { channel: u.channel, number: u.number });
+  };
+
+  if (tracks.length === 0) return null;
+  return (
+    <span className="flex items-center gap-1">
+      <label htmlFor={`assign-track-${u.channel}-${u.number}`} className="sr-only">
+        Assign track
+      </label>
+      <select
+        id={`assign-track-${u.channel}-${u.number}`}
+        value={effTrackId}
+        onChange={(e) => setTrackId(e.target.value)}
+        className="bg-black/60 border border-white/10 rounded px-1 py-0.5 text-[8px] text-zinc-200 max-w-24 outline-none"
+      >
+        {tracks.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+      </select>
+      <label htmlFor={`assign-target-${u.channel}-${u.number}`} className="sr-only">
+        Assign target
+      </label>
+      <select
+        id={`assign-target-${u.channel}-${u.number}`}
+        value={target}
+        onChange={(e) => setTarget(e.target.value)}
+        className="bg-black/60 border border-white/10 rounded px-1 py-0.5 text-[8px] text-zinc-200 max-w-28 outline-none"
+      >
+        <option value="volume">Volume</option>
+        <option value="pan">Pan</option>
+        {fxOptions.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={assign}
+        className="shrink-0 px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-[8px] font-black uppercase tracking-widest text-emerald-200 hover:bg-emerald-500/20"
+      >
+        Wire
+      </button>
+    </span>
+  );
+};
 
 const UNATTACHED_REASON: Record<string, string> = {
   macro: 'rack macro',
@@ -312,6 +408,8 @@ export const SwayPanel: React.FC = () => {
           </div>
           <p className="text-[9px] font-mono text-zinc-400 leading-snug mb-1.5">
             The controller mappings from the imported project, attached to theDAW so the Sway plays it on Open.
+            Rack macros carry no stored param graph in the .als/.swayproj, so they are not auto-reproduced — pick a
+            track + target and Wire each one to bind it by hand.
           </p>
           <div className="max-h-40 overflow-y-auto space-y-0.5">
             {importedBindings.map((b, i) => (
@@ -322,12 +420,13 @@ export const SwayPanel: React.FC = () => {
               </div>
             ))}
             {importedUnattached.map((u, i) => (
-              <div key={`u-${i}`} className="flex items-center gap-2 text-[9px] font-mono opacity-60">
+              <div key={`u-${i}`} className="flex items-center gap-2 text-[9px] font-mono">
                 <span className="w-16 shrink-0 text-zinc-500">{ctrlLabel(false, u.channel, u.number)}</span>
                 <span className="shrink-0 rounded bg-black/40 px-1 text-[8px] uppercase tracking-wider text-zinc-500">
                   {UNATTACHED_REASON[u.reason] ?? u.reason}
                 </span>
-                <span className="truncate text-zinc-500" title={u.detail}>{u.detail}</span>
+                <span className="truncate text-zinc-500 flex-1 min-w-0" title={u.detail}>{u.detail}</span>
+                <ManualAssign u={u} />
               </div>
             ))}
           </div>

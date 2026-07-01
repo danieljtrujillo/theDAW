@@ -1,6 +1,7 @@
 import React from 'react';
 import { Activity } from 'lucide-react';
 import { EFFECT_LABELS } from '../state/effectChainStore';
+import { getRackEffect } from '../lib/rackEffects';
 
 /* ── EffectsVizPanel ───────────────────────────────────────────────────
    Reserved bottom-center region of the MIX tab for effects visualization
@@ -20,7 +21,7 @@ export interface EffectsVizPanelProps {
 }
 
 export const EffectsVizPanel: React.FC<EffectsVizPanelProps> = ({ effect, params, className }) => {
-  const label = effect ? EFFECT_LABELS[effect] || effect : null;
+  const label = effect ? EFFECT_LABELS[effect] || getRackEffect(effect)?.label || effect : null;
   // Surface a couple of the live param values so the placeholder reflects
   // the selection (and the wiring is visibly real before the scope lands).
   const paramPairs = Object.entries(params).slice(0, 4);

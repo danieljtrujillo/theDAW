@@ -26,10 +26,12 @@ import {
   type TasmoTrackInput,
   type TasmoClipInput,
   type EffectChainNode,
+  type TasmoControllerMappings,
 } from './projectClient';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
 import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
 import { logError, logInfo } from '../state/logStore';
+import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 
 const TRACK_COLORS = ['#8b5cf6', '#a855f7', '#ec4899', '#06b6d4', '#10b981', '#facc15', '#f97316', '#ef4444'];
 
@@ -116,7 +118,7 @@ const effectNodeToChainEntry = (node: EffectChainNode): ChainEntry => {
   if (node.node_type === 'vst3' || node.node_type === 'audiounit') {
     const vs = node.vst_state;
     return {
-      id: uid('fx'),
+      id: node.id || uid('fx'),
       effect: 'vst3',
       params,
       // VST3 can't run live in-browser, but an enabled entry is the freeze target
@@ -131,7 +133,7 @@ const effectNodeToChainEntry = (node: EffectChainNode): ChainEntry => {
   const rackDef = getRackEffect(id);
   if (rackDef) {
     return {
-      id: uid('fx'),
+      id: node.id || uid('fx'),
       effect: id,
       params: { ...rackEffectDefaults(id), ...params },
       enabled: !node.bypass,
@@ -141,7 +143,7 @@ const effectNodeToChainEntry = (node: EffectChainNode): ChainEntry => {
   // Catalog id (eq_mid/compression/reverb_delay/…) or unmapped foreign name:
   // theDAW has no live per-track engine for it, so keep it inert but visible.
   return {
-    id: uid('fx'),
+    id: node.id || uid('fx'),
     effect: id,
     params,
     enabled: false,
@@ -159,6 +161,7 @@ const liveFxCount = (chain: EffectChainNode[] | undefined): number =>
 const chainEntryToEffectNode = (e: ChainEntry): EffectChainNode => {
   if (e.effect === 'vst3' && e.vst) {
     return {
+      id: e.id,
       node_type: 'vst3',
       effect_name: e.vst.plugin_name,
       parameters: e.params ?? {},
@@ -167,6 +170,7 @@ const chainEntryToEffectNode = (e: ChainEntry): EffectChainNode => {
     };
   }
   return {
+    id: e.id,
     node_type: 'builtin',
     effect_name: e.effect,
     parameters: e.params ?? {},
@@ -288,6 +292,24 @@ export async function loadProjectIntoEditor(
   }
 
   useEditorStore.getState().loadProject({ tracks: outTracks, clips: outClips, bpm });
+
+  // Restore persisted controller (Sway) auto-attach bindings so a re-opened
+  // session re-wires the hardware to the same track/FX targets. Track ids are
+  // preserved on load and FX entry ids now round-trip (see effectNodeToChainEntry),
+  // so the persisted bindings still resolve. Clear when the project carries none,
+  // so a non-Sway project doesn't inherit stale bindings.
+  const cm = project.controller_mappings;
+  if (cm && Array.isArray(cm.bindings) && cm.bindings.length) {
+    useSwayImportStore.getState().setResult(
+      { bindings: cm.bindings, unattached: cm.unattached ?? [] },
+      cm.source_name ?? '',
+    );
+    startSwayImportDriver();
+    logInfo('project', `Restored ${cm.bindings.length} controller mapping(s) from the saved session`);
+  } else {
+    useSwayImportStore.getState().clear();
+  }
+
   useAppUiStore.getState().setCenterTab('edit');
   logInfo(
     'project',
@@ -320,6 +342,15 @@ export interface CapturedSession {
   files: Array<{ name: string; blob: Blob }>;
   bpm: number;
   clipCount: number;
+  controllerMappings?: TasmoControllerMappings;
+}
+
+/** Snapshot the live Sway auto-attach bindings for persistence into a .tasmo,
+ *  or undefined when there are none to save. */
+export function captureControllerMappings(): TasmoControllerMappings | undefined {
+  const s = useSwayImportStore.getState();
+  if (!s.bindings.length && !s.unattached.length) return undefined;
+  return { source_name: s.sourceName, bindings: s.bindings, unattached: s.unattached };
 }
 
 /**
@@ -374,5 +405,11 @@ export function captureEditorSession(): CapturedSession {
     };
   });
 
-  return { tracks, files, bpm: editor.bpm, clipCount };
+  return {
+    tracks,
+    files,
+    bpm: editor.bpm,
+    clipCount,
+    controllerMappings: captureControllerMappings(),
+  };
 }

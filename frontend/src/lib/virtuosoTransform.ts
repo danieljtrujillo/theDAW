@@ -203,7 +203,23 @@ interface RunOpts {
   doubleOctave?: boolean;
   /** Fraction of the run after which subdivisions accelerate to 32nds. */
   accelAt?: number;
+  /**
+   * True tuplet subdivisions instead of the default straight 16th->32nd feel.
+   * The step grid is 16ths, but the time-based preview scheduler plays fractional
+   * steps and the bounce rounds them to ticks, so real triplets/sextuplets sound:
+   *   3 = 8th-triplet (4/3 step) accelerating to 16th-triplet (2/3 step)
+   *   6 = 16th-triplet (2/3 step) accelerating to 32nd-triplet (1/3 step)
+   *   0 = straight (default): 16th (1) -> 32nd (0.5).
+   */
+  tuplet?: 0 | 3 | 6;
 }
+
+/** Subdivision increments (in 16th steps) for a run's before/after-accel phases. */
+const runIncs = (tuplet: 0 | 3 | 6): [number, number] => {
+  if (tuplet === 3) return [4 / 3, 2 / 3]; // 8th-triplet -> 16th-triplet
+  if (tuplet === 6) return [2 / 3, 1 / 3]; // 16th-triplet -> 32nd-triplet
+  return [1, 0.5]; // straight 16th -> 32nd
+};
 
 /**
  * A directional flourish from `fromMidi` to `toMidi` filling (fromStep, toStep):
@@ -223,11 +239,12 @@ function genRun(
   const notes: PianoNote[] = [];
   const dur = toStep - fromStep;
   if (dur <= 0 || !ladder.length) return notes;
-  const { baseVel = 84, doubleOctave = false, accelAt = 0.55 } = opts;
+  const { baseVel = 84, doubleOctave = false, accelAt = 0.55, tuplet = 0 } = opts;
   const accelStep = fromStep + dur * accelAt;
+  const [incSlow, incFast] = runIncs(tuplet);
   const slots: Array<{ s: number; inc: number }> = [];
   for (let s = fromStep; s < toStep - 1e-6; ) {
-    const inc = s < accelStep ? 1 : 0.5;
+    const inc = s < accelStep ? incSlow : incFast;
     slots.push({ s, inc });
     s += inc;
   }
@@ -445,11 +462,14 @@ export function runsAndFlourishes(
         out.push(mk(seq[idx], a.step + s, inc, clampVel(72 + Math.round((s / gap) * 50))));
       }
     } else {
-      // scalar flourish that accelerates and lands on the next anchor (b).
+      // scalar flourish that accelerates and lands on the next anchor (b). Past
+      // ~0.75 the runs turn into true triplet flourishes for a virtuosic feel.
+      const tuplet: 0 | 3 | 6 = amount > 0.75 && hash01(gapIndex * 5 + seed * SEED_PRIME) < amount ? 3 : 0;
       genRun(a.note, b.note, a.step + inc0(gap), b.step, ladder, {
         baseVel: 74,
         doubleOctave: octaveDouble,
         accelAt: amount > 0.8 ? 0.35 : 0.6,
+        tuplet,
       }).forEach((n) => out.push(n));
     }
   }
@@ -674,10 +694,18 @@ function renderSection(
     spans.forEach((sp, bi) => {
       const next = spans[bi + 1] ?? sp;
       const nextTone = pcNearest(next.triad[0], MEL_CENTER + (oct - 5) * 12);
+      // Vary the subdivision per bar so the passage isn't a uniform 16th run:
+      // deterministic by bar+seed (stable across slider drags). Climax leans on
+      // fast sextuplet-triplet runs; solo alternates straight and triplet feels.
+      const roll = hash01(sp.start + bi * 7 + ctx.seed * SEED_PRIME);
+      const tuplet: 0 | 3 | 6 = role === 'climax'
+        ? roll < 0.5 ? 6 : 3
+        : roll < 0.4 ? 3 : 0;
       genRun(cursor, nextTone, sp.start, sp.start + sp.len, ctx.ladder, {
         baseVel: role === 'climax' ? 98 : 84,
         doubleOctave: true,
         accelAt: 0.4,
+        tuplet,
       }).forEach((n) => out.push(n));
       cursor = nextTone;
     });

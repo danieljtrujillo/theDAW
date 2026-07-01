@@ -36,6 +36,11 @@ export interface ControllerSection {
   label: string;
   rows: number;
   cols: number;
+  /** Optional per-control names, one per slot (length == rows*cols). Used for
+   *  devices whose controls are individually meaningful — e.g. the Audima Sway's
+   *  per-hand X/Y axes and Strike — so the surface labels each slot rather than
+   *  showing an anonymous grid. Absent for ordinary knob/fader/pad banks. */
+  labels?: string[];
 }
 
 export interface ControllerProfile {
@@ -53,6 +58,9 @@ const K = (rows: number, cols = 8, label = 'KNOBS'): ControllerSection => ({ id:
 const F = (rows: number, cols = 8, label = 'FADERS'): ControllerSection => ({ id: 'faders', kind: 'fader', label, rows, cols });
 const P = (rows: number, cols = 8, label = 'PADS'): ControllerSection => ({ id: 'pads', kind: 'pad', label, rows, cols });
 const B = (rows: number, cols = 8, label = 'BUTTONS'): ControllerSection => ({ id: 'buttons', kind: 'pad', label, rows, cols });
+/** Labeled continuous-control row (e.g. the Sway's motion dimensions), one slot
+ *  per name so each control is individually named + learnable. */
+const M = (labels: string[], label = 'MOTION'): ControllerSection => ({ id: 'motion', kind: 'knob', label, rows: 1, cols: labels.length, labels });
 
 /* Shared family-layout templates (read-only; referenced by many devices). */
 const DJ2: ControllerSection[] = [K(1, 6, 'EQ/FILTER'), F(1, 3, 'CH+XFADER'), P(2, 8, 'PERF PADS')];
@@ -316,10 +324,17 @@ const ROWS: Row[] = [
   ['ssl-uf', 'SSL UF8 / UC1', 'SSL', 'mixer', ['ssl uf8', 'ssl uc1', 'uf8'], MCU],
 
   /* ───────── Audima (expressive motion) ───────── */
-  // Six motion dimensions (Strike/Sway/Pulse/Glide/Press/Sculpt) read as
-  // continuous controls, plus the 8 encoders and the performance pads. The dims
-  // bind by learn (swayBus); this row only labels the physical surface.
-  ['audima-sway', 'Audima Sway', 'Audima', 'generic', ['sway', 'audima'], [K(1, 6, '6 DIMENSIONS'), K(1, 8, 'ENCODERS'), P(2, 8, 'PERF PADS')]],
+  // The rail's physically distinct motion controls: per-hand horizontal (X) and
+  // vertical (Y) axes plus the Strike (beat-stutter) trigger — each named so the
+  // Y axis and Strike are visible + learnable (they were hidden behind a single
+  // "6 DIMENSIONS" placeholder before). theDAW's swayBus maps these into its six
+  // named dims; exact CC per control is per-preset and bound by learn / .als
+  // auto-attach (swayImportResolve). Then the 8 encoders and performance pads.
+  ['audima-sway', 'Audima Sway', 'Audima', 'generic', ['sway', 'audima'], [
+    M(['L Hand X', 'L Hand Y', 'R Hand X', 'R Hand Y', 'Strike']),
+    K(1, 8, 'ENCODERS'),
+    P(2, 8, 'PERF PADS'),
+  ]],
 
   /* ───────── Generic fallbacks (lowest priority) ───────── */
   ['generic-16', 'Generic 16-channel', 'Generic', 'generic', [], [K(2, 8, 'KNOBS'), F(1, 8, 'FADERS'), B(2, 8, 'BUTTONS')]],

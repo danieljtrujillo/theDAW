@@ -7,7 +7,9 @@ const CatalogueView = lazy(() => import('../../catalog/CatalogueView').then((m) 
 import { CenterTabBar } from './CenterTabBar';
 import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel } from './BottomMultiTabPanel';
-import { DocsModal } from './DocsModal';
+// Lazy: the docs modal bundles a markdown/HTML renderer + screenshots; keep it
+// out of first paint and only fetch the chunk when the user opens Docs.
+const DocsModal = lazy(() => import('./DocsModal').then((m) => ({ default: m.DocsModal })));
 import { SettingsModal } from './SettingsModal';
 import { DawImportModal } from './DawImportModal';
 import { ProjectModal } from './ProjectModal';
@@ -276,7 +278,11 @@ export const Shell: React.FC = () => {
         <Library className="w-4 h-4" />
         {isRightPanelOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
       </button>
-      <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
+      {docsOpen && (
+        <Suspense fallback={null}>
+          <DocsModal open={docsOpen} onClose={() => setDocsOpen(false)} />
+        </Suspense>
+      )}
       {shareOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={() => setShareOpen(false)} />
