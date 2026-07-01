@@ -1574,7 +1574,7 @@ const DeckRack: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: 
             </div>
           )}
           {stemNames.length > 0 ? (
-            <div className="max-h-[88px] min-h-0 overflow-y-auto pr-0.5">
+            <div className="max-h-22 min-h-0 overflow-y-auto pr-0.5">
               <div className="grid gap-1 place-items-center" style={{ gridTemplateColumns: `repeat(${Math.min(stemNames.length, 4)}, minmax(0,1fr))` }}>
                 {stemNames.map((name) => (
                   <SlideKnob key={name} label={stemLabel(name)} value={stemLevels[name] ?? 1} onChange={(v) => onStem(name, v)} min={0} max={1} step={0.01} size={28} centerReadout />

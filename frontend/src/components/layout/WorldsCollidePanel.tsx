@@ -176,7 +176,7 @@ const Knob: React.FC<{ label: string; value: number; onChange: (v: number) => vo
           aria-valuenow={value}
         >
           <div className="absolute inset-0 rounded-full" style={{ background: arcBg }} />
-          <div className="absolute inset-[4px] rounded-full bg-zinc-900 border border-white/10" />
+          <div className="absolute inset-1 rounded-full bg-zinc-900 border border-white/10" />
           <div className="absolute inset-0" style={{ transform: `rotate(${225 + sweep}deg)` }}>
             <span className="absolute left-1/2 top-1 -translate-x-1/2 w-1 h-2.5 rounded-full bg-fuchsia-100 shadow-[0_0_6px_rgba(217,70,239,0.8)]" />
           </div>
