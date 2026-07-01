@@ -10,7 +10,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 /**
  * Boot cinematic — the theDAW model only.
- *   - the theDAW.gltf model in liquid chrome (the cymatics chrome material),
+ *   - the theDAW.glb model in liquid chrome (the cymatics chrome material),
  *     assembling from scattered vertices into the solid object over ~7s
  *   - rendered on a TRANSPARENT canvas so the one shared dark background shows
  *     through (no separate metallic backdrop, no different scene)
@@ -150,7 +150,7 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
       envRT = exrRT;
     });
 
-    new GLTFLoader().load('/theDAW.gltf', (gltf) => {
+    new GLTFLoader().load('/theDAW.glb', (gltf) => {
       if (disposed) return;
       // Smooth the faceted normals: weld duplicate verts (-> indexed) then average
       // shared face normals, so the chrome reads as liquid metal, not low-poly.

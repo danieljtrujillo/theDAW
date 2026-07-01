@@ -364,7 +364,37 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const tool = useEditorStore((s) => s.tool);
   const zoom = useEditorStore((s) => s.zoom);
-  const playheadSec = useEditorStore((s) => s.playheadSec);
+  // Playhead: the live engine calls setPlayhead ~60x/sec during playback.
+  // SUBSCRIBING to playheadSec here would re-render the entire timeline (every
+  // clip + its per-sample waveform bars — thousands of nodes) each frame. Read it
+  // non-reactively for initial/re-render positioning, and drive the moving
+  // playhead line + timecode readouts imperatively via refs + a store
+  // subscription (see the effect just below). This is the dominant editor
+  // frame-time win for playback on any non-trivial project.
+  const playheadSec = useEditorStore.getState().playheadSec;
+  const rulerLineRef = useRef<HTMLDivElement>(null);
+  const rulerHandleRef = useRef<HTMLDivElement>(null);
+  const laneLineRef = useRef<HTMLDivElement>(null);
+  const headerTcRef = useRef<HTMLSpanElement>(null);
+  const footerTcRef = useRef<HTMLSpanElement>(null);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  useEffect(() => {
+    const apply = (sec: number) => {
+      const z = zoomRef.current;
+      const x = `${sec * z}px`;
+      if (rulerLineRef.current) rulerLineRef.current.style.left = x;
+      if (rulerHandleRef.current) rulerHandleRef.current.style.left = `${sec * z - 6}px`;
+      if (laneLineRef.current) laneLineRef.current.style.left = x;
+      const tc = formatTimecode(sec);
+      if (headerTcRef.current) headerTcRef.current.textContent = tc;
+      if (footerTcRef.current) footerTcRef.current.textContent = tc;
+    };
+    apply(useEditorStore.getState().playheadSec);
+    return useEditorStore.subscribe((s, prev) => {
+      if (s.playheadSec !== prev.playheadSec) apply(s.playheadSec);
+    });
+  }, []);
   const snap = useEditorStore((s) => s.snap);
   const setSelected = useEditorStore((s) => s.setSelected);
   const setTool = useEditorStore((s) => s.setTool);
@@ -484,6 +514,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Derived: are we currently playing the editor's rendered timeline?
   const isEditorPlaying = playerIsPlaying && playerEntryId === 'editor-timeline';
 
+  // The FX/fader overlay should visually follow the moving playhead ONLY during
+  // automation-READ playback with active lanes. Subscribe to playheadSec just for
+  // that narrow case, so ordinary playback (no lanes / write mode — the common
+  // case) never pays the per-frame re-render the playhead note above avoids.
+  const automationFollowActive =
+    isEditorPlaying && !automationWrite &&
+    automationLanes.some((l) => l.enabled && l.points.length > 0);
+  const followPlayhead = useEditorStore((s) => (automationFollowActive ? s.playheadSec : 0));
+
   // Sampled FX-param overrides for a rack entry at the current playhead, so its
   // controls visually follow automation during playback (display only; edits still
   // write the stored params).
@@ -500,12 +539,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         } else if (tgt.kind !== 'trackFx' || tgt.trackId !== scope.trackId) {
           continue;
         }
-        const v = sampleLane(lane, playheadSec);
+        const v = sampleLane(lane, followPlayhead);
         if (v != null) out[tgt.paramKey] = v;
       }
       return Object.keys(out).length ? out : undefined;
     },
-    [isEditorPlaying, automationWrite, automationLanes, playheadSec],
+    [isEditorPlaying, automationWrite, automationLanes, followPlayhead],
   );
 
   // Displayed value for a native (volume/pan) track fader: follows its lane during
@@ -516,7 +555,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       (l) => l.enabled && l.points.length > 0 && l.target.kind === kind && l.target.trackId === trackId,
     );
     if (!lane) return stored;
-    const v = sampleLane(lane, playheadSec);
+    const v = sampleLane(lane, followPlayhead);
     return v == null ? stored : v;
   };
 
@@ -2328,7 +2367,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           </button>
 
           <button
-            onClick={() => addMarker(playheadSec)}
+            onClick={() => addMarker(useEditorStore.getState().playheadSec)}
             aria-label="Add marker at playhead"
             title="Add a marker at the playhead (double-click a flag to rename, Alt-click to delete)"
             className="flex items-center gap-1.5 p-1 px-2 rounded border border-white/5 text-zinc-500 hover:text-white hover:bg-white/5 transition-colors text-[9px] font-mono uppercase tracking-wider"
@@ -2350,7 +2389,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
         <div className="flex items-center gap-3">
           <span className="text-[9px] font-mono text-zinc-500 tabular-nums">
-            {formatTimecode(playheadSec)} / {formatTimecode(totalDuration)}
+            <span ref={headerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
           <button
             onClick={() => isEditorPlaying ? stopEditorPlayback() : void playEditorTimeline()}
@@ -2895,12 +2934,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 onDelete={() => removeMarker(m.id)}
               />
             ))}
-            {/* Playhead in ruler: line + draggable triangle handle */}
+            {/* Playhead in ruler: line + draggable triangle handle (position is
+                driven imperatively during playback — see the playhead effect) */}
             <div
+              ref={rulerLineRef}
               className="absolute top-0 bottom-0 w-px bg-red-500/60 pointer-events-none z-20"
               style={{ left: playheadSec * zoom }}
             />
             <div
+              ref={rulerHandleRef}
               data-playhead-handle="1"
               className="absolute bottom-0 z-30 cursor-ew-resize"
               style={{ left: playheadSec * zoom - 6, width: 13 }}
@@ -3142,8 +3184,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               />
             )}
 
-            {/* Playhead line in track lanes */}
+            {/* Playhead line in track lanes (position driven imperatively) */}
             <div
+              ref={laneLineRef}
               className="absolute top-0 bottom-0 w-px bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)] z-30 pointer-events-none"
               style={{ left: playheadSec * zoom }}
             />
@@ -3163,7 +3206,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       <div className="h-6 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 shrink-0">
         <div className="flex items-center gap-3">
           <span className="text-[9px] font-mono text-zinc-500 tabular-nums">
-            {formatTimecode(playheadSec)} / {formatTimecode(totalDuration)}
+            <span ref={footerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
           <span className="text-[8px] font-mono text-zinc-600">
             {clips.length} clips · {tracks.length} tracks

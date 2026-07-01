@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Upload, FolderOpen, Search, Star, Music } from 'lucide-react';
+import { Upload, FolderOpen, Search, Star, Music, FileMusic } from 'lucide-react';
 import { sendMidiIdToTarget } from '../../lib/sendToTargets';
+import { SHEET_ACCEPT } from '../../lib/sheetImportClient';
 import { logError } from '../../state/logStore';
 
 interface MidiRow {
@@ -28,15 +29,18 @@ const rowLabel = (m: MidiRow): string => {
  *   - "From file…" opens the OS file picker (hidden <input type=file>).
  *   - the library list loads any converted MIDI straight into the roll.
  */
-export const MidiImportPopover: React.FC<{ onImportFile: (file: File) => void }> = ({
-  onImportFile,
-}) => {
+export const MidiImportPopover: React.FC<{
+  onImportFile: (file: File) => void;
+  /** Optional: import a notation file (MusicXML/ABC/kern) via the backend. */
+  onImportSheetFile?: (file: File) => void;
+}> = ({ onImportFile, onImportSheetFile }) => {
   const [open, setOpen] = useState(false);
   const [midis, setMidis] = useState<MidiRow[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const sheetRef = useRef<HTMLInputElement>(null);
 
   const loadMidis = useCallback(async () => {
     setLoading(true);
@@ -107,6 +111,24 @@ export const MidiImportPopover: React.FC<{ onImportFile: (file: File) => void }>
         }}
       />
 
+      {/* Hidden picker for notation files (parsed on the backend via music21). */}
+      {onImportSheetFile && (
+        <input
+          ref={sheetRef}
+          type="file"
+          id="piano-roll-import-sheet"
+          name="piano-roll-import-sheet"
+          accept={SHEET_ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onImportSheetFile(f);
+            e.target.value = '';
+            setOpen(false);
+          }}
+        />
+      )}
+
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -132,8 +154,20 @@ export const MidiImportPopover: React.FC<{ onImportFile: (file: File) => void }>
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded bg-white/3 hover:bg-white/8 border border-white/10 text-[10px] text-zinc-200 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-purple-300 shrink-0" />
-            From file on disk…
+            MIDI file on disk…
           </button>
+
+          {onImportSheetFile && (
+            <button
+              type="button"
+              onClick={() => sheetRef.current?.click()}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded bg-white/3 hover:bg-white/8 border border-white/10 text-[10px] text-zinc-200 transition-colors"
+              title="Import a notation file: MusicXML, ABC, or Humdrum kern"
+            >
+              <FileMusic className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+              Sheet music (MusicXML / ABC)…
+            </button>
+          )}
 
           <div className="flex items-center gap-1.5 px-1 pt-0.5">
             <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">

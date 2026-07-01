@@ -77,7 +77,7 @@ cd frontend && npm run dev                                              # fronte
 
 ## Architecture
 
-theDAW is a React frontend over a FastAPI backend that wraps the Stable Audio 3 pipeline, a plugin module system, and spawned sidecars. The frontend proxies `/api/*` to the backend on port 8600. The wiki [Dataflow](https://github.com/gantasmo/theDAW/wiki/Dataflow) page maps every input and output in one chart.
+theDAW is a React frontend over a FastAPI backend that wraps the Stable Audio 3 pipeline, a plugin module system, and spawned sidecars. The frontend proxies `/api/*` to the backend on port 8600. Heavy features (the AI assistant, the MIDI tab, and the in-app docs) are code-split and load on first use rather than at boot, and the startup cinematic ships its logo, environment map, and model at display resolution, so the workspace paints quickly. The wiki [Dataflow](https://github.com/gantasmo/theDAW/wiki/Dataflow) page maps every input and output in one chart.
 
 **System.**
 

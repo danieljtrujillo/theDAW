@@ -19,7 +19,7 @@ import { subscribeToMidi, type MidiBusMessage } from './midiBus';
 import { useEditorStore, type EditorTrack } from './editorStore';
 import { callEditorPlay, callEditorStop } from './editorPlaybackBridge';
 import { getSelectedTracks } from './editorSelectionBridge';
-import { triggerPianoNoteFromMidi } from '../components/audio/PianoRoll';
+import { triggerPianoNoteFromMidi } from '../lib/pianoTrigger';
 import {
   ensureSoundfontReady,
   isLiveSynthReady,

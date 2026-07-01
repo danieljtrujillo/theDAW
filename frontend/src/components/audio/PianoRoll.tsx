@@ -2,16 +2,18 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Square, Download, Trash2, ZoomIn, ZoomOut, Send, Save } from 'lucide-react';
 import { usePianoRollStore, pianoNotesToMidiNotes, type PianoNote } from '../../state/pianoRollStore';
 import { usePlaybackStore } from '../../state/playbackStore';
-import { getEngineCtx, getMasterGain } from '../../state/playerStore';
+import { getEngineCtx } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
-import { triggerActiveVoice, renderStepNotesToBlob } from '../../lib/midiSynth';
-import { isSoundfontActive, previewNoteSF } from '../../lib/soundfontEngine';
+import { renderStepNotesToBlob } from '../../lib/midiSynth';
+import { triggerPianoNote } from '../../lib/pianoTrigger';
 import { InstrumentPicker } from './InstrumentPicker';
 import { MidiImportPopover } from './MidiImportPopover';
+import { parseSheetFile } from '../../lib/sheetImportClient';
+import { AiComposePopover } from './AiComposePopover';
 
 const NOTE_HEIGHT = 12;
 const HEADER_HEIGHT = 22;
@@ -21,40 +23,14 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 const isBlackKey = (midi: number) => [1, 3, 6, 8, 10].includes(midi % 12);
 const noteLabel = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
-/** Live preview convenience: route the shared synth voice through the engine
- *  master/analyser. The voice itself lives in `lib/midiSynth` so previews,
- *  bounces, and library MIDI renders all sound identical. */
-const triggerPianoNote = (midi: number, velocity: number, when: number, duration: number, master: number) => {
-  const ctx = getEngineCtx();
-  if (ctx.state === 'suspended') void ctx.resume();
-  if (isSoundfontActive()) {
-    // The soundfont voice plays immediately, so approximate the scheduled
-    // `when` with a timer relative to now (fine for preview + playback).
-    const delayMs = Math.max(0, (when - ctx.currentTime) * 1000);
-    window.setTimeout(() => void previewNoteSF(midi, velocity, duration), delayMs);
-    return;
-  }
-  triggerActiveVoice(ctx, getMasterGain(), midi, velocity, when, duration, master);
-};
-
-/**
- * Public alias used by the global Web MIDI listener in App.tsx.
- * Defaults `when` to the engine's current time + a tiny lookahead,
- * `duration` to a comfortable 180ms decay, and `master` to 0.8 so
- * controller-driven notes feel uniform without callers having to
- * know the synth's internals. The PianoRoll component itself still
- * uses the bare `triggerPianoNote` for its own scheduling.
- */
+// triggerPianoNote / triggerPianoNoteFromMidi live in lib/pianoTrigger so the
+// global Web MIDI listener + Sway surface can play a note without importing this
+// whole component graph. The piano roll uses `triggerPianoNote` for its own
+// scheduling (imported above).
 const PIANO_MIDI_PARAMS = [
   { key: 'bpm' as const,        label: 'BPM',         min: 40,  max: 240, autoCc: 14, integer: true },
   { key: 'totalSteps' as const, label: 'Total Steps', min: 16,  max: 256, autoCc: 15, integer: true },
 ];
-
-export const triggerPianoNoteFromMidi = (midi: number, velocity = 100, duration = 0.18) => {
-  const ctx = getEngineCtx();
-  if (ctx.state === 'suspended') void ctx.resume();
-  triggerPianoNote(midi, velocity, ctx.currentTime + 0.02, duration, 0.8);
-};
 
 /** Render the current pattern offline to a WAV Blob. Used by SEND TO EDITOR.
  *  Delegates to the shared step renderer in `lib/midiSynth`. */
@@ -372,6 +348,40 @@ export const PianoRoll: React.FC = () => {
     }).catch((e) => logError('piano-roll', `Could not read file: ${e instanceof Error ? e.message : String(e)}`));
   };
 
+  const handleImportSheet = (file: File) => {
+    void (async () => {
+      try {
+        const score = await parseSheetFile(file);
+        // Flatten all parts into a single piano-roll layer (step/length already
+        // on the 16th grid from the backend).
+        const flat: PianoNote[] = [];
+        for (const track of score.tracks) {
+          for (const n of track.notes) {
+            flat.push({
+              id: `sheet-${Math.random().toString(36).slice(2)}-${flat.length}`,
+              note: n.pitch,
+              step: n.step,
+              length: Math.max(1, n.length),
+              velocity: n.velocity,
+            });
+          }
+        }
+        if (flat.length === 0) {
+          logError('piano-roll', `No notes found in "${file.name}"`);
+          return;
+        }
+        flat.sort((a, b) => a.step - b.step);
+        importNotes(flat, score.bpm);
+        logInfo(
+          'piano-roll',
+          `Imported ${flat.length} notes from score "${file.name}" (${score.format}) at ${Math.round(score.bpm)} BPM`,
+        );
+      } catch (e) {
+        logError('piano-roll', `Sheet import failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  };
+
   const handleGridScroll = () => {
     if (keyboardRowsRef.current && gridScrollRef.current) {
       keyboardRowsRef.current.scrollTop = gridScrollRef.current.scrollTop;
@@ -536,7 +546,11 @@ export const PianoRoll: React.FC = () => {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono text-zinc-500">{notes.length} note{notes.length === 1 ? '' : 's'}</span>
-          <MidiImportPopover onImportFile={handleImportMidi} />
+          <AiComposePopover
+            currentBpm={bpm}
+            onGenerated={(result) => importNotes(result.notes, result.bpm)}
+          />
+          <MidiImportPopover onImportFile={handleImportMidi} onImportSheetFile={handleImportSheet} />
           <button
             onClick={handleExportMidi}
             className="btn-ghost text-[9px] py-1 flex items-center gap-1.5"
