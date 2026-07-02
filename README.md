@@ -83,7 +83,7 @@ theDAW is a React frontend over a FastAPI backend that wraps the Stable Audio 3 
 
 ```mermaid
 flowchart TD
-  UI["theDAW UI<br/>MAKE EDIT MIX DJ VJ TRAIN LEARN"]:::in
+  UI["theDAW UI<br/>MAKE EDIT PERFORM MIX DJ VJ TRAIN LEARN"]:::in
   API["FastAPI backend :8600<br/>job queue, FFmpeg, introspection"]:::proc
   SA3["Stable Audio 3<br/>DiT + SAME AE"]:::eng
   MODS["Plugin modules"]:::proc
@@ -268,7 +268,7 @@ The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS an
 
 ### Footer, log, and assistant
 
-The footer stays across every tab with the current title, a status chip, transport, a seek bar, a volume slider, and a download button. The processing log is a 500-entry ring buffer with leveled, color-coded lines. The assistant orb streams chat from any configured provider, including Claude Code over the CLI, Gemini, Anthropic, OpenAI, Grok, Groq, OpenRouter, Ollama, LM Studio, llama.cpp, and vLLM, with a hashed multi-key pool, attachments, and RAG over the docs through ChromaDB. Full reference: [User Guide §17](docs/USER_GUIDE.md#17-player-footer), [§18](docs/USER_GUIDE.md#18-processing-log), and [§32](docs/USER_GUIDE.md#32-admin-module-and-assistant-key-apis).
+The footer stays across every tab with the current title, a status chip, transport, a seek bar, a volume slider, and a download button. The processing log is a 500-entry ring buffer with leveled, color-coded lines and SIMPLE / VERBOSE view modes. The assistant orb streams chat from any configured provider, including Claude Code over the CLI, Gemini, Anthropic, OpenAI, Grok, Groq, OpenRouter, Ollama, LM Studio, llama.cpp, and vLLM, with a hashed multi-key pool, attachments, and RAG over the docs through ChromaDB. Full reference: [User Guide §17](docs/USER_GUIDE.md#17-player-footer), [§18](docs/USER_GUIDE.md#18-processing-log), and [§32](docs/USER_GUIDE.md#32-admin-module-and-assistant-key-apis).
 
 ---
 
@@ -293,7 +293,7 @@ In-tree sidecars under `sidecars/` (`questcast`, `queststitch`, `magenta`) and t
 | **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | Async HTTP wrapper running a generation job queue, FFmpeg audio processing, and model introspection on port 8600. |
 | **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `analyzer`, `chimera`, `controllervision`, `convert`, `effects`, `library`, `midi`, `notation`, `settings`, `stems`, `storage`, `vj`, and `ytimport`, the cloud and real-time engines (`suno`, `magenta`), the XR bridges (`questmidi`, `questcast`, `queststitch`, `xrcontrol`), the `akvj` depth pipeline, `broadcast` for watch-link, `modeldl`, and the Edit Tool Stack under `/api/edit/*`. |
-| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Seven workspaces (MAKE, EDIT, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend. |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Eight workspaces (MAKE, EDIT, PERFORM, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend. |
 | **Sidecars** | `sidecars/` | The vendored `magenta-rt2-nvidia` port, the `questcast` and `queststitch` Quest bridges, and the `magenta` studio sidecar. |
 
 ---

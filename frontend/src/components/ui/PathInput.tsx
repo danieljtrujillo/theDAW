@@ -15,6 +15,18 @@ interface PathInputProps {
   disabled?: boolean;
   onBlur?: () => void;
   onEnter?: () => void;
+  onFocus?: () => void;
+  /** Runs before the built-in Enter handling; call e.preventDefault() to
+   *  suppress the built-in Enter behavior (onEnter / blur). */
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  /** ARIA passthroughs for call sites that attach a popup (e.g. a combobox
+   *  with a recent-items listbox). Undefined values render no attribute, so
+   *  existing call sites are unaffected. */
+  role?: React.AriaRole;
+  ariaExpanded?: boolean;
+  ariaControls?: string;
+  ariaActiveDescendant?: string;
+  ariaAutocomplete?: React.AriaAttributes['aria-autocomplete'];
   className?: string;
   /** Render label + input on one row (compact). Implies descriptionHover. */
   inline?: boolean;
@@ -41,6 +53,13 @@ export const PathInput: React.FC<PathInputProps> = ({
   disabled = false,
   onBlur,
   onEnter,
+  onFocus,
+  onKeyDown,
+  role,
+  ariaExpanded,
+  ariaControls,
+  ariaActiveDescendant,
+  ariaAutocomplete,
   className = '',
   inline = false,
   descriptionHover = false,
@@ -105,12 +124,19 @@ export const PathInput: React.FC<PathInputProps> = ({
           title={hoverTitle}
           onChange={(e) => onChange(e.target.value)}
           onBlur={onBlur}
+          onFocus={onFocus}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            onKeyDown?.(e);
+            if (e.key === 'Enter' && !e.defaultPrevented) {
               if (onEnter) onEnter();
               else (e.target as HTMLInputElement).blur();
             }
           }}
+          role={role}
+          aria-expanded={ariaExpanded}
+          aria-controls={ariaControls}
+          aria-activedescendant={ariaActiveDescendant}
+          aria-autocomplete={ariaAutocomplete}
           disabled={disabled}
           spellCheck={false}
           placeholder={placeholder}

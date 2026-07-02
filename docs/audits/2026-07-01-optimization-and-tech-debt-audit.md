@@ -1,6 +1,6 @@
 # theDAW (stable-audio-3) — Codebase Audit Synthesis
 
-## Remediation status (updated 2026-07-01)
+## Remediation status (updated 2026-07-02)
 
 Fixed so far (verified: tsc / ruff / py_compile / build / .gan compose):
 - **Stripped ~8.6MB of dead base64** from `ares/project.json` (7MB→66KB) and `the-owl/project.json` (2MB→22KB). Runtime uses the `.png` file, so no visual change.
@@ -12,6 +12,9 @@ Fixed so far (verified: tsc / ruff / py_compile / build / .gan compose):
 - **Deferred first paint via `React.lazy`** — `AssistantPanel` (App.tsx, mount-gated to first orb open), `DocsModal` (Shell.tsx), and the `MidiPanel` MIDI tab (BottomMultiTabPanel, loads on tab open). `triggerPianoNoteFromMidi`/`triggerPianoNote` were extracted into `lib/pianoTrigger.ts` so App + the Sway surface play controller notes without importing the PianoRoll graph. Net: `@google/genai` (276kB) is no longer statically imported by the entry — it now loads only with the MIDI tab — and the entry chunk dropped 1,421kB → ~1,167kB. (verified: tsc + vite build; the deferred panels still opening is pending in-app eyes.)
 - **Oversized boot assets re-encoded** — `GANTASMO_LOGO.webp` 2.62MB → 0.90MB (animated, re-encoded to 2x the 110px display cap; all 74 frames preserved), `piz_compressed.exr` 1.79MB → 0.91MB (equirectangular env map downscaled 1024×512 → 512×256, zip16), `theDAW.gltf` 1.57MB → `theDAW.glb` 1.18MB (lossless binary pack of the base64-embedded buffer; loader URL updated). ~3.0MB off the pre-interaction boot payload. (verified: encode integrity + GLB parse structure; the cinematic look/animation is pending in-app eyes.)
 - **WaveformEditor 60fps re-render (audit #1)** — the timeline no longer subscribes to `playheadSec`; the moving playhead line/handle + timecode readouts are driven imperatively via refs + a store subscription, so the ~60Hz playback tick stops re-rendering every clip and its per-sample waveform bars. The FX/fader automation overlay keeps following the playhead via a narrow selector that only re-renders during automation-read playback with active lanes. (verified: tsc + vite build; playback smoothness + automation-follow pending in-app ears/eyes.)
+- **Library list + aggregate N+1 (audit #8)** -- the library list and aggregate endpoints now serve from the SQLite index instead of walking the filesystem and re-querying per entry on every request: a DB-backed `list_entries_fast` plus bulk JOIN methods for the aggregates, and `get_stem`/`get_midi` for the single-item lookups. (verified: field-identical responses against the real library; warm /entries ~67ms, roughly 2x+ faster.)
+- **Analysis N+1 decode (audit #9)** -- a full audio analysis pass now decodes the file once instead of four times: a single shared 22050 Hz mono decode is threaded through the sub-analyzers via `y_sr`. (verified: results exactly equal to the multi-decode path.)
+- **process-mode sync DSP (audit #10)** -- `module_base` now dispatches process-mode handlers via `asyncio.to_thread` and the handlers were flipped to plain sync, so a heavy DSP effect render no longer blocks the backend event loop. (verified: `/api/health` stays live during a render.)
 
 Next: oversized `screenshots/` (~17MB PNGs) to WebP + lazy, the remaining eager bottom-panel tabs (Score/alphaTab-OSMD, Draw, StepSequencer) behind `React.lazy`, and the rest below. WaveformEditor could go further (memoized Clip component + canvas/SVG waveform polylines) but the dominant 60fps cost is now removed.
 

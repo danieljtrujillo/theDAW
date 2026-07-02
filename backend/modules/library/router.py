@@ -200,7 +200,7 @@ def list_entries(kind: str = "audio") -> dict[str, Any]:
             400, f"kind must be one of {sorted(_KIND_FILTERS)}, got {kind!r}"
         )
     store = get_store()
-    entries = [r.to_dict() for r in store.list_entries(kinds=_KIND_FILTERS[kind])]
+    entries = [r.to_dict() for r in store.list_entries_fast(kinds=_KIND_FILTERS[kind])]
     _attach_play_counts(store, entries)
     _attach_analysis(store, entries)
     return {
@@ -277,22 +277,18 @@ def stream_stem_audio(stem_id: str) -> FileResponse:
     store = get_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
-    # Stem rows are keyed per-entry, but stem ids are globally unique
-    # (`{entry_id}__{stem_name}`), so a linear scan is fine — small N
-    # and avoids needing a new DB index.
-    for entry in store.db.list_entries():
-        for stem in store.db.list_stems(entry["id"]):
-            if stem.get("id") == stem_id:
-                path = Path(stem.get("audio_path") or "")
-                if not path.is_file():
-                    raise HTTPException(404, f"stem file missing on disk: {path}")
-                mime, _ = mimetypes.guess_type(str(path))
-                return FileResponse(
-                    path=str(path),
-                    media_type=mime or "audio/wav",
-                    filename=path.name,
-                )
-    raise HTTPException(404, f"stem {stem_id!r} not found")
+    stem = store.db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(404, f"stem {stem_id!r} not found")
+    path = Path(stem.get("audio_path") or "")
+    if not path.is_file():
+        raise HTTPException(404, f"stem file missing on disk: {path}")
+    mime, _ = mimetypes.guess_type(str(path))
+    return FileResponse(
+        path=str(path),
+        media_type=mime or "audio/wav",
+        filename=path.name,
+    )
 
 
 @router.patch("/stems/{stem_id}")
@@ -644,13 +640,7 @@ def list_all_stems() -> dict[str, Any]:
     store = get_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
-    out: list[dict[str, Any]] = []
-    for entry in store.db.list_entries():
-        for stem in store.db.list_stems(entry["id"]):
-            stem_payload = dict(stem)
-            stem_payload["parent_title"] = entry.get("title")
-            stem_payload["parent_id"] = entry["id"]
-            out.append(stem_payload)
+    out = store.db.list_all_stems()
     return {"stems": out, "count": len(out)}
 
 
@@ -661,13 +651,7 @@ def list_all_midi() -> dict[str, Any]:
     store = get_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
-    out: list[dict[str, Any]] = []
-    for entry in store.db.list_entries():
-        for midi in store.db.list_midis(entry["id"]):
-            midi_payload = dict(midi)
-            midi_payload["parent_title"] = entry.get("title")
-            midi_payload["parent_id"] = entry["id"]
-            out.append(midi_payload)
+    out = store.db.list_all_midis()
     return {"midis": out, "count": len(out)}
 
 
@@ -679,15 +663,11 @@ def list_all_scores() -> dict[str, Any]:
     store = get_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
-    out: list[dict[str, Any]] = []
-    for entry in store.db.list_entries():
-        for art in store.db.list_notation_artifacts(entry["id"]):
-            if art.get("kind") == "midi":
-                continue
-            payload = dict(art)
-            payload["parent_title"] = entry.get("title")
-            payload["parent_id"] = entry["id"]
-            out.append(payload)
+    out = [
+        art
+        for art in store.db.list_all_notation_artifacts()
+        if art.get("kind") != "midi"
+    ]
     return {"scores": out, "count": len(out)}
 
 
@@ -721,13 +701,12 @@ def get_full_graph() -> dict[str, Any]:
     seen_ids = set(entries_by_id.keys())
 
     # Look up stems + midis once so we can label virtual nodes nicely.
-    all_stems: dict[str, dict[str, Any]] = {}
-    all_midis: dict[str, dict[str, Any]] = {}
-    for entry in raw_entries:
-        for s in store.db.list_stems(entry["id"]):
-            all_stems[s["id"]] = s
-        for m in store.db.list_midis(entry["id"]):
-            all_midis[m["id"]] = m
+    all_stems: dict[str, dict[str, Any]] = {
+        s["id"]: s for s in store.db.list_all_stems()
+    }
+    all_midis: dict[str, dict[str, Any]] = {
+        m["id"]: m for m in store.db.list_all_midis()
+    }
 
     for edge in raw_edges:
         for ref in (edge["from_id"], edge["to_id"]):

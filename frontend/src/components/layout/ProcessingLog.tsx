@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Trash2, Download, X, Zap, Cast } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
@@ -82,7 +82,27 @@ const fmtEst = (ms: number): string => {
 export const LogBody: React.FC = () => {
   const entries = useLogStore((s) => s.entries);
   const clear   = useLogStore((s) => s.clear);
+  const verbose = useBottomPanelStore((s) => s.logVerbose);
+  const setLogVerbose = useBottomPanelStore((s) => s.setLogVerbose);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  // SIMPLE mode hides debug entries and folds consecutive identical
+  // level+source+msg runs into one row. The row keeps the FIRST entry of the
+  // run so its React key stays stable while the count grows in place.
+  const displayRows = useMemo<Array<{ entry: LogEntry; count: number }>>(() => {
+    if (verbose) return entries.map((entry) => ({ entry, count: 1 }));
+    const rows: Array<{ entry: LogEntry; count: number }> = [];
+    for (const entry of entries) {
+      if (entry.level === 'debug') continue;
+      const last = rows[rows.length - 1];
+      if (last && last.entry.level === entry.level && last.entry.source === entry.source && last.entry.msg === entry.msg) {
+        last.count += 1;
+      } else {
+        rows.push({ entry, count: 1 });
+      }
+    }
+    return rows;
+  }, [entries, verbose]);
 
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -123,29 +143,52 @@ export const LogBody: React.FC = () => {
     return () => clearInterval(t);
   }, [fetchStats, isBackendReady]);
 
+  // Keyed on the raw entries (not the folded view) so collapsed repeats still
+  // autoscroll; verbose is included so toggling modes re-pins to the newest
+  // entries after the list height changes.
   useEffect(() => {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [entries]);
+  }, [entries, verbose]);
 
   return (
     <div className="h-full flex flex-col min-h-0 bg-black/40">
-      {/* Thin toolbar at the top of the body for download/clear. */}
-      <div className="shrink-0 flex items-center justify-end gap-1 px-2 py-1 border-b border-white/5 bg-purple-500/4">
+      {/* Thin toolbar at the top of the body for mode toggle + download/clear. */}
+      <div className="shrink-0 flex items-center justify-between gap-1 px-2 py-1 border-b border-white/5 bg-purple-500/4">
         <button
-          onClick={() => downloadLog(entries)}
-          className="p-1 text-zinc-600 hover:text-purple-300 transition-colors"
-          title="Download log"
+          type="button"
+          onClick={() => setLogVerbose(!verbose)}
+          aria-pressed={verbose}
+          aria-label="Toggle verbose log"
+          className={`uppercase text-[8px] font-mono font-black tracking-widest transition-colors ${
+            verbose ? 'text-purple-300' : 'text-zinc-600 hover:text-purple-300'
+          }`}
+          title={verbose
+            ? 'VERBOSE: every entry with timestamp and source. Click for SIMPLE (repeats folded, debug hidden).'
+            : 'SIMPLE: repeats folded, debug hidden. Click for VERBOSE (every entry with timestamp and source).'}
         >
-          <Download className="w-3 h-3" />
+          {verbose ? 'VERBOSE' : 'SIMPLE'}
         </button>
-        <button
-          onClick={() => clear()}
-          className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
-          title="Clear log"
-        >
-          <Trash2 className="w-3 h-3" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => downloadLog(entries)}
+            aria-label="Download log"
+            className="p-1 text-zinc-600 hover:text-purple-300 transition-colors"
+            title="Download log"
+          >
+            <Download className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => clear()}
+            aria-label="Clear log"
+            className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
+            title="Clear log"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
       </div>
 
       <div className="relative flex-1 min-h-0">
@@ -155,13 +198,20 @@ export const LogBody: React.FC = () => {
         >
           {entries.length === 0
             ? <p className="text-zinc-700 italic">Waiting for signal...</p>
-            : entries.map((e) => (
-                <p key={e.id} className={`pl-2 ${levelStyles[e.level]}`}>
-                  <span className="text-zinc-600">{fmtTime(e.ts)}</span>{' '}
-                  <span className="text-zinc-500 uppercase">[{e.source}]</span>{' '}
-                  <span>{e.msg}</span>
-                </p>
-              ))
+            : displayRows.map(({ entry: e, count }) => verbose
+                ? (
+                  <p key={e.id} className={`pl-2 ${levelStyles[e.level]}`}>
+                    <span className="text-zinc-600">{fmtTime(e.ts)}</span>{' '}
+                    <span className="text-zinc-500 uppercase">[{e.source}]</span>{' '}
+                    <span>{e.msg}</span>
+                  </p>
+                )
+                : (
+                  <p key={e.id} className={`pl-2 ${levelStyles[e.level]}`}>
+                    <span>{e.msg}</span>
+                    {count > 1 && <span className="text-zinc-600"> x{count}</span>}
+                  </p>
+                ))
           }
         </div>
 

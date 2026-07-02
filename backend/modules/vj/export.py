@@ -240,7 +240,7 @@ def _unique_path(path: Path) -> Path:
 
 def _run_ffmpeg(cmd: list[str]) -> None:
     log.info("vj.export: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         # ffmpeg's genuinely useful error line (encoder reject, bad option,

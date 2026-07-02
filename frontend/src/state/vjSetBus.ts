@@ -31,6 +31,9 @@ export interface VjSetItem {
   url?: string;
   /** Media kind hint. */
   kind?: 'audio' | 'video' | 'image';
+  /** Poster thumb URL so VJ bank cells render an <img> instead of holding a
+   *  live <video> connection per cell (HTTP/1.1 pool starvation). */
+  thumbUrl?: string | null;
 }
 
 export interface VjSetPayload {

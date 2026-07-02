@@ -18,7 +18,12 @@ def estimate_bars(beats: list[float], time_sig_numerator: int = 4) -> Optional[f
     return float(len(beats)) / float(n)
 
 
-def estimate_rms_db(audio_path) -> Optional[float]:
+def estimate_rms_db(
+    audio_path,
+    *,
+    # y_sr carries a pre-decoded librosa.load(path, sr=22050, mono=True) result so callers can share one decode.
+    y_sr: Optional[tuple] = None,
+) -> Optional[float]:
     """Rough loudness proxy: 20*log10(RMS). No actual LUFS — that
     requires the pyloudnorm dep; we'll add it later if needed."""
     try:
@@ -31,10 +36,13 @@ def estimate_rms_db(audio_path) -> Optional[float]:
     p = Path(audio_path)
     if not p.is_file():
         return None
-    try:
-        y, _sr = librosa.load(str(p), sr=22050, mono=True)
-    except Exception:
-        return None
+    if y_sr is not None:
+        y = y_sr[0]
+    else:
+        try:
+            y, _ = librosa.load(str(p), sr=22050, mono=True)
+        except Exception:
+            return None
     if y.size == 0:
         return None
     rms = float(np.sqrt(np.mean(y * y)))

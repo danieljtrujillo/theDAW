@@ -18,6 +18,8 @@ fake output.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import tempfile
 from pathlib import Path
@@ -110,12 +112,19 @@ def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
                 )
                 await ffmpeg.render(in_path, out_path, filter_args)
             else:
-                # process / macro / sidecar — handler owns the full render
-                await tool.handler(in_path, out_path, validated)
+                # process / macro / sidecar — handler owns the full render.
+                # Async handlers await ffmpeg subprocesses and never block;
+                # pure-sync handlers are CPU-bound numpy/scipy DSP that would
+                # stall the whole event loop for the render, so they run on a
+                # worker thread instead.
+                if inspect.iscoroutinefunction(tool.handler):
+                    await tool.handler(in_path, out_path, validated)
+                else:
+                    await asyncio.to_thread(tool.handler, in_path, out_path, validated)
 
             if not out_path.exists():
                 raise HTTPException(500, "Tool produced no output")
-            data = out_path.read_bytes()
+            data = await asyncio.to_thread(out_path.read_bytes)
             return Response(
                 content=data,
                 media_type=MIME.get(output_format, "audio/wav"),

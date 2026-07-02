@@ -69,12 +69,24 @@ def analyze_audio(
     if duration_sec is not None:
         out["duration_sec"] = float(duration_sec)
 
+    # Decode ONCE for the librosa-backed steps. Tempo fallback, RMS, key,
+    # and pitch all historically called librosa.load(path, sr=22050,
+    # mono=True) verbatim, so one shared decode replaces up to four
+    # full-file decodes per analysis. On failure each helper falls back to
+    # its own load and keeps its own error logging.
+    try:
+        import librosa
+
+        y_sr: Optional[tuple] = librosa.load(str(p), sr=22050, mono=True)
+    except Exception:
+        y_sr = None
+
     # Tempo + beats (reuse chimera detector — it's the single source of
     # truth for BPM in this codebase).
     try:
         from backend.modules.chimera.detect import detect_tempo_and_beats
 
-        tempo = detect_tempo_and_beats(p)
+        tempo = detect_tempo_and_beats(p, y_sr=y_sr)
         out["bpm"] = tempo["bpm"]
         out["beats"] = list(tempo["beats"])
     except Exception as e:
@@ -83,12 +95,12 @@ def analyze_audio(
         out["beats"] = []
 
     out["bars_estimated"] = estimate_bars(out.get("beats") or [])
-    out["rms_db"] = estimate_rms_db(p)
+    out["rms_db"] = estimate_rms_db(p, y_sr=y_sr)
 
     if include_key:
-        out.update(detect_key(p))
+        out.update(detect_key(p, y_sr=y_sr))
     if include_pitch:
-        out.update(detect_pitch_stats(p))
+        out.update(detect_pitch_stats(p, y_sr=y_sr))
     if include_genre:
         # Reserved — see plan §4.1. Heavy HF dep; skipping for now.
         out["genre"] = None

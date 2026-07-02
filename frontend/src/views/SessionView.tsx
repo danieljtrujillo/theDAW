@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useDawImportStore } from '../state/dawImportStore';
 import { useProjectStore } from '../state/projectStore';
 import { DAW_LABELS } from '../lib/dawImportClient';
-import { dawProjectToTasmo } from '../lib/projectClient';
+import { dawProjectToTasmo, type RecentItem } from '../lib/projectClient';
 import { capturePerformRouting } from '../state/performRouting';
 import { SESSION_IMPORT_FILTER } from '../lib/fileFilters';
 import { PathInput } from '../components/ui/PathInput';
@@ -27,13 +27,83 @@ export const SessionView: React.FC = () => {
   const detectAndImport = useDawImportStore((s) => s.detectAndImport);
   const loadTasmoAsSession = useDawImportStore((s) => s.loadTasmoAsSession);
   const openProject = useProjectStore((s) => s.open);
+  const recent = useProjectStore((s) => s.recent);
+  const refreshRecent = useProjectStore((s) => s.refreshRecent);
   const [timelineBusy, setTimelineBusy] = React.useState(false);
   const [showRouting, setShowRouting] = React.useState(false);
+  const [recentOpen, setRecentOpen] = React.useState(false);
+  const [activeIdx, setActiveIdx] = React.useState(-1);
+  const blurCloseTimer = React.useRef<number | null>(null);
+  const recentVisible = recentOpen && recent.length > 0;
+
+  // A refresh can shrink the list while the dropdown is open; keep the active
+  // option (and aria-activedescendant) pointing at a rendered row.
+  React.useEffect(() => {
+    setActiveIdx((i) => Math.min(i, recent.length - 1));
+  }, [recent.length]);
 
   // A .tasmo opens directly in the grid; any DAW project file goes through detect+import.
   const importSource = () => {
     if (sourcePath.trim().toLowerCase().endsWith('.tasmo')) void loadTasmoAsSession();
     else void detectAndImport();
+  };
+
+  const openRecent = () => {
+    // A pending blur-close from a quick blur/refocus would otherwise close the
+    // dropdown right after this open.
+    if (blurCloseTimer.current !== null) {
+      window.clearTimeout(blurCloseTimer.current);
+      blurCloseTimer.current = null;
+    }
+    setRecentOpen(true);
+    setActiveIdx(-1);
+    void refreshRecent();
+  };
+
+  const closeRecent = () => {
+    setRecentOpen(false);
+    setActiveIdx(-1);
+  };
+
+  // Delayed so an option's onClick lands before the dropdown unmounts.
+  const scheduleCloseRecent = () => {
+    if (blurCloseTimer.current !== null) window.clearTimeout(blurCloseTimer.current);
+    blurCloseTimer.current = window.setTimeout(() => {
+      blurCloseTimer.current = null;
+      closeRecent();
+    }, 150);
+  };
+
+  // Mirrors ProjectModal's one-click UX: picking a recent entry imports it
+  // immediately. setSourcePath commits synchronously, so detectAndImport reads
+  // the freshly set path from the store.
+  const pickRecent = (r: RecentItem) => {
+    // Match the Import button's guard so a pick cannot start a second import
+    // while one is in flight.
+    if (busy) return;
+    setSourcePath(r.path);
+    closeRecent();
+    if (r.path.toLowerCase().endsWith('.tasmo')) void loadTasmoAsSession(r.path);
+    else void detectAndImport();
+  };
+
+  const onPathKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!recentOpen) {
+        setRecentOpen(true);
+        void refreshRecent();
+      }
+      setActiveIdx((i) => Math.min(i + 1, recent.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Escape') {
+      closeRecent();
+    } else if (e.key === 'Enter' && recentVisible && activeIdx >= 0 && recent[activeIdx]) {
+      e.preventDefault();
+      pickRecent(recent[activeIdx]);
+    }
   };
 
   const saveAsTasmo = () => {
@@ -64,6 +134,64 @@ export const SessionView: React.FC = () => {
               {project ? `${project.name} · ${project.tempo} BPM` : 'No project loaded'}
             </div>
           </div>
+        </div>
+        <div className="relative flex-1 min-w-0 flex items-center gap-2">
+          <PathInput
+            id="session-import-path"
+            name="session_import_path"
+            label="Project"
+            kind="file"
+            inline
+            fileFilter={SESSION_IMPORT_FILTER}
+            value={sourcePath}
+            onChange={setSourcePath}
+            onEnter={importSource}
+            onFocus={openRecent}
+            onBlur={scheduleCloseRecent}
+            onKeyDown={onPathKeyDown}
+            role="combobox"
+            ariaExpanded={recentVisible}
+            ariaControls={recentVisible ? 'session-recent-listbox' : undefined}
+            ariaAutocomplete="list"
+            ariaActiveDescendant={activeIdx >= 0 ? `session-recent-opt-${activeIdx}` : undefined}
+            placeholder=".als / .tasmo"
+            className="flex-1 min-w-0"
+          />
+          <button
+            type="button"
+            onClick={importSource}
+            disabled={busy || !sourcePath.trim()}
+            className="btn-primary h-7 px-2 inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
+          >
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <FolderInput className="w-3 h-3" />}
+            Import
+          </button>
+          {recentVisible && (
+            <div
+              id="session-recent-listbox"
+              role="listbox"
+              aria-label="Recent projects"
+              className="absolute left-0 right-0 top-full mt-1 z-50 max-h-56 overflow-y-auto rounded border border-white/10 bg-black/90 shadow-xl"
+            >
+              {recent.map((r, i) => (
+                <button
+                  key={r.path}
+                  type="button"
+                  role="option"
+                  id={`session-recent-opt-${i}`}
+                  aria-selected={i === activeIdx}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickRecent(r)}
+                  className={`w-full text-left px-2 py-1.5 border-b border-white/5 last:border-0 hover:bg-purple-500/15 ${
+                    i === activeIdx ? 'bg-purple-500/10 text-purple-200' : 'text-zinc-200'
+                  }`}
+                >
+                  <span className="block truncate text-[10px] font-mono">{r.name}</span>
+                  <span className="block truncate text-[8px] text-zinc-500">{r.path}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {project && (
           <div className="ml-auto flex items-center gap-2 text-[8px] font-mono text-zinc-500">
@@ -103,29 +231,6 @@ export const SessionView: React.FC = () => {
             </button>
           </div>
         )}
-      </div>
-
-      <div className="shrink-0 border-b border-white/5 bg-[#0f0f15] px-3 py-2 grid grid-cols-[minmax(260px,1fr)_auto] gap-2 items-end">
-        <PathInput
-          id="session-import-path"
-          name="session_import_path"
-          label="Project (.als or .tasmo)"
-          kind="file"
-          fileFilter={SESSION_IMPORT_FILTER}
-          value={sourcePath}
-          onChange={setSourcePath}
-          onEnter={importSource}
-          placeholder=".als / .tasmo"
-        />
-        <button
-          type="button"
-          onClick={importSource}
-          disabled={busy || !sourcePath.trim()}
-          className="btn-primary h-9 inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
-        >
-          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <FolderInput className="w-3 h-3" />}
-          Import
-        </button>
       </div>
 
       {(error || detected || hint || project?.warnings.length) && (

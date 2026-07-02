@@ -74,7 +74,12 @@ def _correlate(chroma_mean: list[float], profile: tuple[float, ...]) -> list[flo
     return out
 
 
-def detect_key(audio_path: Path) -> dict[str, Optional[float] | Optional[str]]:
+def detect_key(
+    audio_path: Path,
+    *,
+    # y_sr carries a pre-decoded librosa.load(path, sr=22050, mono=True) result so callers can share one decode.
+    y_sr: Optional[tuple] = None,
+) -> dict[str, Optional[float] | Optional[str]]:
     """Return ``{key, scale, confidence}`` for the audio file.
 
     On failure (no librosa, unreadable file, silent input) returns
@@ -94,11 +99,14 @@ def detect_key(audio_path: Path) -> dict[str, Optional[float] | Optional[str]]:
     if not p.is_file():
         return out
 
-    try:
-        y, sr = librosa.load(str(p), sr=22050, mono=True)
-    except Exception as e:
-        log.info("analysis.key: librosa load failed for %s: %s", p.name, e)
-        return out
+    if y_sr is not None:
+        y, sr = y_sr
+    else:
+        try:
+            y, sr = librosa.load(str(p), sr=22050, mono=True)
+        except Exception as e:
+            log.info("analysis.key: librosa load failed for %s: %s", p.name, e)
+            return out
 
     if y.size == 0:
         return out

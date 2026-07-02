@@ -17,7 +17,12 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-def detect_pitch_stats(audio_path: Path) -> dict[str, Optional[float]]:
+def detect_pitch_stats(
+    audio_path: Path,
+    *,
+    # y_sr carries a pre-decoded librosa.load(path, sr=22050, mono=True) result so callers can share one decode.
+    y_sr: Optional[tuple] = None,
+) -> dict[str, Optional[float]]:
     out: dict[str, Optional[float]] = {
         "pitch_mean_hz": None,
         "pitch_std_hz": None,
@@ -34,18 +39,21 @@ def detect_pitch_stats(audio_path: Path) -> dict[str, Optional[float]]:
     if not p.is_file():
         return out
 
-    try:
-        y, sr = librosa.load(str(p), sr=22050, mono=True)
-    except Exception as e:
-        log.info("analysis.pitch: load failed for %s: %s", p.name, e)
-        return out
+    if y_sr is not None:
+        y, sr = y_sr
+    else:
+        try:
+            y, sr = librosa.load(str(p), sr=22050, mono=True)
+        except Exception as e:
+            log.info("analysis.pitch: load failed for %s: %s", p.name, e)
+            return out
     if y.size == 0:
         return out
 
     try:
         # 65 Hz ≈ C2, 1047 Hz ≈ C6 — covers bass-to-soprano without
         # wasting compute on extreme ranges.
-        f0, voiced_flag, _voiced_prob = librosa.pyin(
+        f0, _, _ = librosa.pyin(
             y,
             fmin=65.0,
             fmax=1047.0,

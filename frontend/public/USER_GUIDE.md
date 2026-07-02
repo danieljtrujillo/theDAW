@@ -183,7 +183,9 @@ The application window has five regions:
 
 **Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
-**Center tab switching:** the active workspace is controlled by the center tab bar in the locked order **MAKE / EDIT / MIX / DJ / VJ / TRAIN / LEARN** (`CENTER_TABS`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly.
+**Center tab switching:** the active workspace is controlled by the center tab bar in the locked order **MAKE / EDIT / PERFORM / MIX / DJ / VJ / TRAIN / LEARN** (`CENTER_TABS`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly.
+
+**PERFORM tab:** the Perform workspace (`SessionView`) imports a DAW project or a `.tasmo` file and performs its scene/clip grid live. The project controls live in the tab header (a path input, Browse, and Import), so the session grid gets the full remaining height. Clicking or focusing the path input opens a dropdown of recent projects: ArrowDown and ArrowUp move through the list, Enter opens the highlighted entry, Escape closes the dropdown, and one click on an entry imports it immediately. The recent list persists across backend restarts (`data/recent_projects.json`).
 
 **DJ and VJ persistence:** the DJ and VJ tabs host live performance state (a multi-deck mixer and an embedded WebGL VJ iframe). Once first visited, they stay mounted and only toggle CSS visibility on tab switch, so deck state and the warm VJ pipeline survive a switch. A backgrounded VJ tab is told to park its render loop, so it costs close to 0% GPU while hidden.
 
@@ -601,7 +603,7 @@ Beyond the browser-camera path above, the VJ source selector offers sources the 
 - **Cymatics** renders a procedural, audio-reactive cymatics scene as the source, with plate, orb, landscape, sphere, and plasma modes, mixable against the other sources on the source crossfader.
 - **Screen or window capture** picks a monitor or an application window through the browser's `getDisplayMedia` and feeds it as the source.
 - **Shader** runs a generic GLSL source on the atzedent uniform convention with five scenes: a Menger flythrough plus Mandelbulb, Julia, Mandelbox, and kaleidoscopic-IFS fractals. Each scene exposes editable, audio-mappable float params and a Hue control, and a global Material picker reshades it through eight styles (Neon, Chrome, Matte, Glass, Gold, Iridescent, Velvet, Plasma). It mixes against the other sources on the crossfader.
-- **Depth cloud** renders a live point cloud from the `akvj` bridge (§10.3), which fans an Azure-Kinect depth-and-color stream from a Unity app into the engine.
+- **Point clouds (KINECT and DEPTH)**: KINECT renders a live point cloud from the `akvj` bridge (§10.3), which fans an Azure-Kinect depth-and-color stream into the engine, and DEPTH builds a point cloud from the loaded clip (or the webcam) through an in-browser monocular depth model. Both share one control set: the **Move X/Y/Z** and **Rot X/Y/Z** sliders move and rotate the cloud itself about its own center (double-click a slider label to reset it), a **LOCK** toggle (on by default) keeps the camera facing the cloud center, and **RECENTER** reframes the cloud so it fills the output dead-center, after which the **Distance** slider scales around that fit.
 - **Spectra** is an audio-reactive generative source, distinct from the §16.1 spectral analyzer, mixable on the source crossfader.
 
 ### 10.2 Pop-out and Mobile
@@ -617,7 +619,7 @@ The tab wires several bridges to the engine through `postMessage`:
 - **Control sync**: the engine publishes its control manifest, which appears as glass-capsule faders in the SLIDE bottom-panel tab. Moving a SLIDE fader updates the engine, and a move inside the engine updates SLIDE, in both directions.
 - **Track metadata**: the current track title, model, source, duration, and play state are posted so the engine can sync its own readouts.
 - **Visibility**: when the tab is hidden, the engine parks its render loop, so a warm but backgrounded VJ tab costs close to 0% GPU.
-- **akvj depth**: the `akvj` module (`/api/akvj`, with `/ws/source` and `/ws/view` WebSockets) fans an Azure-Kinect depth-and-color stream from a Unity app into the engine, feeding the Depth cloud source in §10.1.
+- **akvj depth**: the `akvj` module (`/api/akvj`, with `/ws/source` and `/ws/view` WebSockets) fans an Azure-Kinect depth-and-color stream into the engine, feeding the KINECT point-cloud source in §10.1. Delivery is drop-to-latest per viewer, so a slow viewer never stalls the feed, and the Kinect sidecar caches its startup calibration table on disk, so the table builds in milliseconds instead of several seconds.
 
 ### 10.4 Export
 
@@ -637,7 +639,7 @@ Any source snapshots into a bank slot for instant recall during a set. Clicking 
 
 ### 10.8 Effect chain
 
-Separate from Autopilot (§10.6), the operator stacks effects on the output as a composable, source-agnostic, MIDI-mappable chain, with a SOLO mode that isolates one effect for setup. The families are color and optics (hue, saturation, contrast, invert, edge detect), geometry (mirror, kaleidoscope, radial mirror, tiling, equirectangular 360, stereo split), generative (reaction-diffusion, SDF raymarch portal, isolines, fluid displacement), depth (fog, tilt-shift, plane splits, depth-edge outline), distortion and glitch (feedback, RGB split, chromatic aberration, strobe, pixelate, wave warp), time (speed, reverse, echo trails, slit-scan), and post (scanlines, vignette, CRT). The ASCII effect is a post pass that renders the output through a glyph atlas.
+Separate from Autopilot (§10.6), the operator stacks effects on the output as a composable, source-agnostic, MIDI-mappable chain, with a SOLO mode that isolates one effect for setup. The families are color and optics (hue, saturation, contrast, invert, edge detect), geometry (mirror, kaleidoscope, radial mirror, tiling, equirectangular 360, stereo split), generative (reaction-diffusion, SDF raymarch portal, isolines, fluid displacement), depth (fog, tilt-shift, plane splits, depth-edge outline), distortion and glitch (feedback, RGB split, chromatic aberration, strobe, pixelate, wave warp), time (speed, reverse, echo trails, slit-scan), and post (scanlines, vignette, CRT). The ASCII effect is a post pass that re-renders the final composited output through a glyph atlas, so the whole frame converts to ASCII and the raw video never shows through underneath, even with TRAILS or Autopilot active.
 
 ### 10.9 BPM sync and pose control
 
@@ -1121,8 +1123,9 @@ Each entry carries a severity level shown as a colored left-border indicator:
 ### Controls
 
 - **Ring buffer capacity:** 500 entries. The oldest entries are discarded when the cap is reached.
+- **SIMPLE / VERBOSE toggle:** a mode switch in the log toolbar. SIMPLE (the default) shows message-only lines, folds consecutive identical messages into one line with an xN counter, and hides debug entries. VERBOSE shows every entry with its timestamp and [source] tag.
 - **Auto-scroll:** the log panel scrolls to the most recent entry automatically.
-- **Download:** exports the full buffer as `thedaw-log-YYYYMMDD-HHMMSS.txt`. Each line contains an ISO timestamp, level, source, and message.
+- **Download:** exports the full raw buffer as `thedaw-log-YYYYMMDD-HHMMSS.txt` in both modes, regardless of the SIMPLE/VERBOSE view. Each line contains an ISO timestamp, level, source, and message.
 - **Clear:** wipes the ring buffer.
 - **Collapse/expand:** click anywhere on the header bar. The collapsed state shows the entry count and a "click to expand" hint.
 

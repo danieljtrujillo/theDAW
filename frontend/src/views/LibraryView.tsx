@@ -1588,6 +1588,7 @@ const MediaGrid: React.FC<{
       label: entry.title,
       url: entry.mediaUrl ?? entry.audioUrl,
       kind: entry.kind === 'image' ? 'image' : 'video',
+      thumbUrl: entry.thumbUrl ?? null,
     });
     logInfo('library', `Sent "${entry.title}" to the VJ.`);
   };

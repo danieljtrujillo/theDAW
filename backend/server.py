@@ -8,6 +8,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import base64
+import importlib
 import io
 import json
 import logging
@@ -20,9 +21,10 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import numpy as np
 from fastapi import Body, FastAPI, Form, File, HTTPException, Request, UploadFile
@@ -45,7 +47,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="theDAW API")
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    """FastAPI lifespan (replaces the deprecated on_event hooks). The startup
+    and shutdown bodies live in `_on_startup` / `_on_shutdown` below; globals
+    resolve at call time, so their later definition is fine."""
+    await _on_startup()
+    yield
+    await _on_shutdown()
+
+
+app = FastAPI(title="theDAW API", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,7 +134,9 @@ def _warm_heavy() -> None:
 
         import torch
         import torch.version  # submodule; explicit so type checkers resolve .cuda
-        import torchaudio  # noqa: F401
+
+        # Warm-only import (side effect: module cached in sys.modules).
+        importlib.import_module("torchaudio")
 
         gpu_info = "no CUDA"
         if torch.cuda.is_available():
@@ -139,7 +154,8 @@ def _warm_heavy() -> None:
         )
 
         _generation_models()
-        from stable_audio_3.inference import distribution_shift  # noqa: F401
+        # Warm-only import (side effect: module cached in sys.modules).
+        importlib.import_module("stable_audio_3.inference.distribution_shift")
 
         logger.info("startup: heavy imports warmed (torch + stable_audio_3 ready)")
     except Exception as e:  # noqa: BLE001 — warming is best-effort
@@ -796,8 +812,7 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
     return result
 
 
-@app.on_event("startup")
-async def load_model():
+async def _on_startup():
     startup_t0 = time.perf_counter()
 
     # System stats (kept torch-free so server-ready never waits on the ~9.6s
@@ -864,8 +879,7 @@ async def load_model():
         logger.debug("startup: notation backfill enqueue skipped: %s", e)
 
 
-@app.on_event("shutdown")
-async def stop_background_workers() -> None:
+async def _on_shutdown() -> None:
     try:
         from backend.core.background_workers import get_background_queue
 
@@ -938,6 +952,7 @@ async def system_stats():
                 capture_output=True,
                 text=True,
                 timeout=2,
+                stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0:
                 parts = [p.strip() for p in r.stdout.strip().split(",")]
@@ -1157,8 +1172,6 @@ async def preload_model(model: str = Form(...)):
 @app.post("/api/spectrogram")
 async def generate_spectrogram(
     audio_base64: Optional[str] = Form(None),
-    mime_type: str = Form("audio/wav"),
-    sample_rate_form: int = Form(44100),
     audio_file: Optional[UploadFile] = File(None),
 ):
     """
@@ -1302,6 +1315,11 @@ async def generate(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
+    # RF-Inversion fields are part of the documented request surface (the
+    # frontend sends them; USER_GUIDE lists them) but the local pipeline has
+    # no inversion path yet, so they are accepted and intentionally unused.
+    _ = (inversion_steps, inversion_gamma, inversion_unconditional)
+
     import torch
     import torchaudio
     from stable_audio_3.inference.distribution_shift import (
@@ -1413,7 +1431,11 @@ async def generate(
             save_kwargs: dict = {}
             if fmt == "wav":
                 save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
-            torchaudio.save(buf, gen_audio, sample_rate, format=fmt, **save_kwargs)
+            # torchaudio.save accepts file-like objects at runtime; its stub
+            # only declares str | PathLike, hence the cast.
+            torchaudio.save(
+                cast(Any, buf), gen_audio, sample_rate, format=fmt, **save_kwargs
+            )
             buf.seek(0)
             return buf, fmt
 
@@ -1472,7 +1494,11 @@ def _generate_to_bytes(
     save_kwargs: dict = {}
     if fmt == "wav":
         save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
-    torchaudio.save(buf, audio, output_sample_rate, format=fmt, **save_kwargs)
+    # torchaudio.save accepts file-like objects at runtime; its stub only
+    # declares str | PathLike, hence the cast.
+    torchaudio.save(
+        cast(Any, buf), audio, output_sample_rate, format=fmt, **save_kwargs
+    )
     return buf.getvalue(), fmt
 
 
@@ -1702,6 +1728,11 @@ async def generate_jobs(
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
 ):
+    # RF-Inversion fields are part of the documented request surface (the
+    # frontend sends them; USER_GUIDE lists them) but the local pipeline has
+    # no inversion path yet, so they are accepted and intentionally unused.
+    _ = (inversion_steps, inversion_gamma, inversion_unconditional)
+
     from stable_audio_3.inference.distribution_shift import (
         DistributionShift,
         FluxDistributionShift,
@@ -1897,6 +1928,9 @@ async def list_presets():
 
 @app.post("/api/presets")
 async def save_preset(preset: dict):
+    # Stub: preset persistence is not implemented; the body is accepted (and
+    # discarded) so callers stay forward-compatible.
+    _ = preset
     return {"id": str(uuid.uuid4()), "saved": True}
 
 

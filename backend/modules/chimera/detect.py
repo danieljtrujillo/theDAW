@@ -48,7 +48,12 @@ def _empty_result(sr: int = 0, duration_sec: float = 0.0) -> DetectionResult:
     }
 
 
-def detect_tempo_and_beats(path: str | Path) -> DetectionResult:
+def detect_tempo_and_beats(
+    path: str | Path,
+    *,
+    # y_sr carries a pre-decoded librosa.load(path, sr=22050, mono=True) result; only the librosa fallback consumes it (aubio streams the file at native SR).
+    y_sr: Optional[tuple] = None,
+) -> DetectionResult:
     """Detect tempo + beat times (seconds). aubio first, librosa fallback."""
     try:
         return _detect_aubio(path)
@@ -59,7 +64,7 @@ def detect_tempo_and_beats(path: str | Path) -> DetectionResult:
             e,
         )
         try:
-            return _detect_librosa(path)
+            return _detect_librosa(path, y_sr=y_sr)
         except Exception as e2:
             log.warning(
                 "chimera detect: librosa fallback also failed for %s: %s",
@@ -69,12 +74,19 @@ def detect_tempo_and_beats(path: str | Path) -> DetectionResult:
             return _empty_result()
 
 
-def _detect_librosa(path: str | Path) -> DetectionResult:
+def _detect_librosa(
+    path: str | Path,
+    *,
+    y_sr: Optional[tuple] = None,
+) -> DetectionResult:
     """Tempo + beats via librosa — decodes MP3/M4A/etc. that aubio can't open."""
     import librosa
     import numpy as np
 
-    y, sr = librosa.load(str(path), sr=_LIBROSA_SR, mono=True)
+    if y_sr is not None:
+        y, sr = y_sr
+    else:
+        y, sr = librosa.load(str(path), sr=_LIBROSA_SR, mono=True)
     sr = int(sr)
     duration_sec = (len(y) / float(sr)) if sr else 0.0
     if y.size == 0 or duration_sec < _MIN_DURATION_SEC:

@@ -74,8 +74,16 @@ def _imager(params: dict) -> list[str]:
     ]
 
 
+# The numpy/scipy handlers below (_dynamic_eq, _match_eq, _transient_shaper,
+# _spectral_stabilizer) are plain sync functions on purpose: build_router
+# offloads non-coroutine handlers to a worker thread via asyncio.to_thread,
+# keeping the event loop responsive during CPU-bound DSP. The ffmpeg-driven
+# handlers (_maximizer, _loudness_meter, _master_assistant) stay async because
+# they await subprocesses.
+
+
 # ── Dynamic EQ (process, numpy/scipy) ─────────────────────────────────
-async def _dynamic_eq(inp: Path, out: Path, params: dict) -> None:
+def _dynamic_eq(inp: Path, out: Path, params: dict) -> None:
     from .dsp import dynamic_eq_process
 
     audio, sr = sf.read(str(inp), always_2d=True)
@@ -113,7 +121,7 @@ async def _dynamic_eq(inp: Path, out: Path, params: dict) -> None:
 
 
 # ── Match EQ (process, scipy firwin2) ──────────────────────────────────
-async def _match_eq(inp: Path, out: Path, params: dict) -> None:
+def _match_eq(inp: Path, out: Path, params: dict) -> None:
     strength = params["strength"] / 100.0
     smoothing = int(params["smoothing"])
 
@@ -196,7 +204,7 @@ def _harmonic_exciter(params: dict) -> list[str]:
 
 
 # ── Transient Shaper (process, numpy) ──────────────────────────────────
-async def _transient_shaper(inp: Path, out: Path, params: dict) -> None:
+def _transient_shaper(inp: Path, out: Path, params: dict) -> None:
     from .dsp import transient_shape
 
     audio, sr = sf.read(str(inp), always_2d=True)
@@ -218,7 +226,7 @@ async def _transient_shaper(inp: Path, out: Path, params: dict) -> None:
 
 
 # ── Spectral Stabilizer (process, numpy) ──────────────────────────────
-async def _spectral_stabilizer(inp: Path, out: Path, params: dict) -> None:
+def _spectral_stabilizer(inp: Path, out: Path, params: dict) -> None:
     from .dsp import spectral_stabilize
 
     audio, sr = sf.read(str(inp), always_2d=True)

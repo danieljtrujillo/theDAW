@@ -15,7 +15,7 @@ module/sidecar boundary and plug into ``convert_score`` later.
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import logging
 import os
 import shutil
@@ -142,7 +142,11 @@ def musescore_binary() -> Optional[str]:
 def _musescore_version(binary: str) -> str:
     try:
         proc = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, timeout=20
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            stdin=subprocess.DEVNULL,
         )
         text = (proc.stdout or proc.stderr or "unknown").strip()
         return text.splitlines()[0][:80] if text else "unknown"
@@ -276,11 +280,15 @@ def _convert_with_music21(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         score = converter.parse(str(source_path))
+        if score is None:
+            raise ValueError(f"music21 could not parse {source_path}")
         # Quantize raw transcriptions to clean, notatable rhythms. Best-effort.
         try:
             score = score.quantize((4, 3), inPlace=False, recurse=True)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
             log.debug("notation: music21 quantize skipped for %s: %s", source_path, exc)
+        if score is None:
+            raise ValueError(f"music21 quantize produced no score for {source_path}")
         # Stamp the originating song's name (and the artist as composer) so the
         # engraved sheet is titled + credited — raw MIDI carries neither, which
         # is why untitled sheets showed music21's "Music21 Fragment" placeholder
@@ -291,8 +299,10 @@ def _convert_with_music21(
         try:
             from music21.metadata import Metadata  # type: ignore[import]
 
-            if score.metadata is None:
-                score.insert(0, Metadata())
+            md = score.metadata
+            if md is None:
+                md = Metadata()
+                score.insert(0, md)
             # Only the work title (song name); deliberately NOT movementName.
             # music21 writes title -> <work-title> AND movementName ->
             # <movement-title>; OSMD (and MuseScore) render work-title as the
@@ -300,8 +310,8 @@ def _convert_with_music21(
             # song name prints the title twice. The artist is the composer; the
             # viewer places it under the title via the subtitle slot.
             if clean:
-                score.metadata.title = clean
-            score.metadata.composer = composer
+                md.title = clean
+            md.composer = composer
         except Exception as exc:  # noqa: BLE001 - titling is best-effort
             log.debug("notation: could not set title on %s: %s", output_path, exc)
         written = score.write(fmt, fp=str(output_path))
@@ -350,6 +360,7 @@ def _convert_with_musescore(
             capture_output=True,
             text=True,
             timeout=180,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {"ok": False, "engine": "musescore", "error": repr(exc)}
@@ -548,13 +559,15 @@ def midi_to_arrangement(
         from music21.metadata import Metadata  # type: ignore[import]
 
         sc = result["score"]
-        if sc.metadata is None:
-            sc.insert(0, Metadata())
+        md = sc.metadata
+        if md is None:
+            md = Metadata()
+            sc.insert(0, md)
         # Title only (not movementName) so the song name isn't printed twice; see
         # the note in _convert_with_music21. Artist is the composer credit.
         if clean:
-            sc.metadata.title = clean
-        sc.metadata.composer = composer
+            md.title = clean
+        md.composer = composer
     except Exception as exc:  # noqa: BLE001 - crediting is best-effort
         log.debug("notation: could not set composer on arrangement: %s", exc)
 

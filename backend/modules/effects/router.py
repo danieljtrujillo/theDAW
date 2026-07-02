@@ -126,6 +126,7 @@ def _has_librubberband() -> bool:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                stdin=subprocess.DEVNULL,
             )
             _librubberband = out.returncode == 0 and "rubberband" in out.stdout.lower()
         except Exception:
@@ -421,6 +422,7 @@ async def studio_process(
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
