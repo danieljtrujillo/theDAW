@@ -34,6 +34,7 @@ import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../lib/magenta
 import { MagentaToolStage } from '../components/audio/MagentaToolStage';
 import { GanPluginStage } from '../components/audio/GanPluginStage';
 import { useGanStore } from '../state/ganStore';
+import { useMixStageStore } from '../state/mixStageStore';
 import { ganApi, type GanPluginSummary } from '../lib/ganClient';
 import { GAN_FILTER } from '../lib/fileFilters';
 import { pickFile } from '../lib/storageClient';
@@ -797,6 +798,36 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
       ? <MagentaToolStage tool={p.activeMagentaTool} />
     : p.activeModule
       ? <EffectGuiStage module={p.activeModule} sourceFile={p.sourceFile} />
+    : selected?.vst
+      ? (
+        /* A selected VST3 chain entry gets an actionable stage card instead of
+           the generic viz: its REAL UI is the plugin's native editor window,
+           which cannot render inline here. The editor is deliberately NOT
+           reopened automatically on mount: vstEditorStore closes it on tab
+           leave BY DESIGN because a native OS window must not float over other
+           tabs, and an auto-reopen would resurrect that floating window on
+           every return to MIX. One click on the button below reopens it via
+           the exact same handler as the chain row's GUI button, and the
+           dialed-in sound is safe either way because raw_state persists on the
+           chain entry. */
+        <div className="h-full w-full min-h-0 grid place-items-center p-2">
+          <div className="flex flex-col gap-2 rounded-md border border-teal-500/25 bg-black/40 px-4 py-3 min-w-56">
+            <div className="flex items-center gap-1.5">
+              <Plug className="w-3.5 h-3.5 text-teal-300 shrink-0" />
+              <span className="text-[11px] font-bold text-zinc-100 truncate">{selected.vst.plugin_name}</span>
+            </div>
+            {selected.vst.raw_state && <span className="text-[8px] font-mono text-teal-400">settings saved</span>}
+            <button
+              type="button"
+              aria-label="Open plugin GUI"
+              onClick={() => p.onEditVst(selected)}
+              className="btn-ghost text-[9px] py-1 flex items-center justify-center gap-1 text-teal-300 border-teal-500/20 bg-teal-500/5"
+            >
+              <SlidersHorizontal className="w-3 h-3" /> Open plugin GUI
+            </button>
+          </div>
+        </div>
+      )
     : selected && selected.effect === 'spatializer'
       ? <TheOwl params={selected.params} idPrefix={`mix-owl-${selected.id}`} onChange={(np) => p.updateParams(selected.id, np)} />
     : selected
@@ -861,10 +892,17 @@ export const MixView: React.FC = () => {
 
   const [activeCategory, setActiveCategory] = useState('all');
   const [viewMode, setViewMode] = useState<'list' | 'tile'>('tile');
-  const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
-  const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
+  // The three Effect Stage selectors live in mixStageStore (module scope, no
+  // persist) because DAWCenterPanel fully unmounts MixView on tab leave; local
+  // useState would reset them and a tab round-trip would land the stage on the
+  // EffectsVizPanel placeholder instead of the selected effect's real UI.
+  const selectedChainId = useMixStageStore((s) => s.selectedChainId);
+  const setSelectedChainId = useMixStageStore((s) => s.setSelectedChainId);
+  const activeModuleId = useMixStageStore((s) => s.activeModuleId);
+  const setActiveModuleId = useMixStageStore((s) => s.setActiveModuleId);
   // The Magenta RT2 tool focused in the Effect Stage (Collider / Jam / MRT2).
-  const [activeMagentaId, setActiveMagentaId] = useState<string | null>(null);
+  const activeMagentaId = useMixStageStore((s) => s.activeMagentaId);
+  const setActiveMagentaId = useMixStageStore((s) => s.setActiveMagentaId);
   const [srcStats, setSrcStats] = useState<AudioStats | null>(null);
   const [outStats, setOutStats] = useState<AudioStats | null>(null);
   const [dragOverSource, setDragOverSource] = useState(false);
@@ -890,6 +928,42 @@ export const MixView: React.FC = () => {
   // Populate the installed .gan plugin list on first open, then make sure the
   // bundled Ares control surface is packaged so it shows as a Studio tile.
   useEffect(() => { void ganRefresh().then(() => ganEnsureAres()); }, [ganRefresh, ganEnsureAres]);
+
+  // A tab round-trip restores the stage selection from mixStageStore, but the
+  // Ares .gan surface itself may not survive it: EDIT's unmount cleanup closes
+  // a shared Ares session on tab leave. If the restored selected entry is the
+  // 'ares' composite effect, re-open its surface once on mount so the stage
+  // shows the real UI instead of the generic viz. Guard rationale: the
+  // ganStore activeId must be null so a DIFFERENT live .gan plugin the user
+  // left open is never hijacked (ganStore is global and survives tab leaves),
+  // and no explicitly restored module or Magenta stage may exist because those
+  // outrank the chain selection in the stage ladder. selectChain is NOT reused
+  // here because it ganClose()s for non-ares entries, which would kill a
+  // restored gan session. The gan setters are zustand-bound and stable, so
+  // this effect runs once per mount.
+  useEffect(() => {
+    const { selectedChainId: restoredId, activeModuleId: restoredModule, activeMagentaId: restoredMagenta } = useMixStageStore.getState();
+    if (restoredModule || restoredMagenta) return;
+    const chainNow = useEffectChainStore.getState().chain;
+    const entry = chainNow.find((e) => e.id === restoredId) ?? chainNow[0] ?? null;
+    if (!entry || entry.effect !== 'ares') return;
+    if (useGanStore.getState().activeId !== null) return;
+    void (async () => {
+      // Sequence through ensureAres before opening: the sibling mount effect
+      // fires ganRefresh().then(ganEnsureAres) in the same tick, and
+      // package-ares rewrites the installed runtime files in place, so opening
+      // without waiting could iframe half-written files. ensureAres dedups
+      // concurrent calls in ganStore, so both mount paths share one run.
+      await ganEnsureAres();
+      // Re-check the guard after the await: an openPath/openById the user
+      // started while the ensure ran (busy while in flight, activeId once
+      // resolved) must win; the auto re-open must never resolve last and
+      // steal the stage from an explicitly opened plugin.
+      const gs = useGanStore.getState();
+      if (gs.activeId !== null || gs.busy) return;
+      await ganOpenById('ares');
+    })();
+  }, [ganEnsureAres, ganOpenById]);
 
   // ── Ares control surface -> live effect params ─────────────────────────────
   // The Ares .gan XY pad postMessages {type:'updateValue', id, valueX, valueY,
@@ -1041,8 +1115,10 @@ export const MixView: React.FC = () => {
     (activeModuleId ? moduleById[activeModuleId] ?? null : null)
     ?? (mappedModuleId ? moduleById[mappedModuleId] ?? null : null);
 
-  // Picking a module from the library toggles its instrument open/closed.
-  const handlePickModule = (id: string) => { ganClose(); setActiveMagentaId(null); setActiveModuleId((cur) => (cur === id ? null : id)); };
+  // Picking a module from the library toggles its instrument open/closed. The
+  // toggle reads the store directly because the store setter takes a plain
+  // value, not a functional updater.
+  const handlePickModule = (id: string) => { ganClose(); setActiveMagentaId(null); setActiveModuleId(useMixStageStore.getState().activeModuleId === id ? null : id); };
   // Selecting a chain entry hands the stage back to the effect→module mapping.
   const selectChain = (id: string) => {
     setActiveMagentaId(null); setActiveModuleId(null); setSelectedChainId(id);
@@ -1078,7 +1154,7 @@ export const MixView: React.FC = () => {
   const handlePickMagenta = (id: string) => {
     ganClose();
     setActiveModuleId(null);
-    setActiveMagentaId((cur) => (cur === id ? null : id));
+    setActiveMagentaId(useMixStageStore.getState().activeMagentaId === id ? null : id);
   };
   // .gan loader: pick/import sets the active plugin and yields the stage to it.
   const handleOpenGan = async () => {

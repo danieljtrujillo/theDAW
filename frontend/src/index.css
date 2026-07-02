@@ -185,3 +185,24 @@ select optgroup {
 .text-xs,   .text-xs\!   { font-size: calc(0.75rem  * var(--text-scale, 1)) !important; }
 .text-sm,   .text-sm\!   { font-size: calc(0.875rem * var(--text-scale, 1)) !important; }
 .text-base, .text-base\! { font-size: calc(1rem     * var(--text-scale, 1)) !important; }
+
+/* ---------------------------------------------------------------------------
+ * Genealogy graph hover glow (LineageModal's GenealogyView).
+ * The classes + the --glow custom property are toggled imperatively via
+ * classList so React never re-renders the mounted SVG while the mouse moves.
+ * Deliberately NO transitions on any of these rules: transitioned filters on
+ * hundreds of SVG groups forced a repaint storm; glow must apply and clear in
+ * a single frame.
+ * Node cards are small (140x140) so their drop-shadow filter surfaces stay
+ * cheap. Edges must NOT use drop-shadow: a bezier edge's <g> bounding box can
+ * span thousands of px, and the oversized filter surface makes Chromium drop
+ * or checkerboard the layer (edges visibly flash out of existence). Lit edges
+ * therefore glow via full opacity + a 3x stroke instead.
+ * ------------------------------------------------------------------------- */
+.genealogy-svg.gen-hovering g[data-node-id]:not(.gen-lit) { opacity: 0.35; }
+.genealogy-svg.gen-hovering g[data-edge-from]:not(.gen-lit) { opacity: 0.12; }
+.genealogy-svg g.gen-lit[data-node-id] { filter: drop-shadow(0 0 14px var(--glow)) brightness(1.3); }
+.genealogy-svg g.gen-lit-hot[data-node-id] { filter: drop-shadow(0 0 26px var(--glow)) drop-shadow(0 0 10px var(--glow)) brightness(1.6) saturate(1.35); }
+.genealogy-svg g.gen-lit-hot[data-node-id] > rect:first-of-type { stroke-width: 4; }
+.genealogy-svg g.gen-lit[data-edge-from] { opacity: 1; }
+.genealogy-svg g.gen-lit[data-edge-from] path { stroke-width: 4.5; }

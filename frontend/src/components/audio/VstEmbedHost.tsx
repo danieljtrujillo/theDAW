@@ -16,12 +16,24 @@ import { vstApi, getContentBounds } from '../../lib/vstClient';
 // same in every view that mounts it.
 const sectionTitle = 'text-[10px] font-black uppercase tracking-widest text-purple-300';
 
-export const VstEmbedHost: React.FC<{ pluginPath: string; pluginName: string; error?: string; onClose: () => void }> = ({ pluginPath, pluginName, error, onClose }) => {
+export const VstEmbedHost: React.FC<{
+  pluginPath: string;
+  pluginName: string;
+  error?: string;
+  onClose: () => void;
+  /** Reports the plugin's natural editor size (CSS px) whenever it changes, so
+   *  a hosting popup can size itself to the plugin instead of a fixed box. */
+  onNaturalSize?: (w: number, h: number) => void;
+}> = ({ pluginPath, pluginName, error, onClose, onNaturalSize }) => {
   const ref = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // Plugin's natural size in CSS px (from the backend, which knows the real
   // window size); drives the scrollable inner spacer.
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  // The callback rides a ref so the polling effect below keeps its
+  // [pluginPath, error] dependency list even when the parent re-creates it.
+  const onNaturalSizeRef = useRef(onNaturalSize);
+  onNaturalSizeRef.current = onNaturalSize;
 
   useEffect(() => {
     const el = ref.current;
@@ -71,12 +83,22 @@ export const VstEmbedHost: React.FC<{ pluginPath: string; pluginName: string; er
     if (error) return;
     let alive = true;
     const dpr = window.devicePixelRatio || 1;
+    let last: { w: number; h: number } | null = null;
     const poll = () => {
       vstApi.editorSize(pluginPath)
         .then((res) => {
           if (!alive) return;
           if (res.status === 'ok' && res.w && res.h) {
-            setNatural({ w: Math.round(res.w / dpr), h: Math.round(res.h / dpr) });
+            const w = Math.round(res.w / dpr);
+            const h = Math.round(res.h / dpr);
+            // Only propagate a real change; the poll fires every second and a
+            // fresh object each tick would re-render the host (and the parent
+            // popup) for nothing.
+            if (!last || last.w !== w || last.h !== h) {
+              last = { w, h };
+              setNatural((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+              onNaturalSizeRef.current?.(w, h);
+            }
           }
           if (alive) window.setTimeout(poll, 1000);
         })

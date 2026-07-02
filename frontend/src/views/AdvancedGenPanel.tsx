@@ -1034,9 +1034,10 @@ export const AdvancedGenPanel: React.FC<{
             </div>
 
             {/* OUTPUT (Magenta) ↔ FX/SHIFT (SA3) — moved from the chimera card;
-                stretches to the rail bottom so there is no blank space below */}
+                mt-auto anchors it to the rail bottom so it sits level with the
+                left column's sampler faders instead of leaving a gap below */}
             {isMagenta ? (
-              <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+              <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2 mt-auto`}>
                 <span className={subTitle}>OUTPUT</span>
                 <div className="flex items-start justify-around gap-1 shrink-0">
                   <RoundToggle label="Cut" icon={Scissors} on={p.cutToDuration} onChange={(v) => sf('cutToDuration', v)} />
@@ -1056,7 +1057,7 @@ export const AdvancedGenPanel: React.FC<{
                 </div>
               </div>
             ) : (
-              <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+              <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2 mt-auto`}>
                 <span className={subTitle}>FX</span>
                 <div className="flex items-start justify-around gap-1 shrink-0">
                   <SlideKnob label="Norm thr" value={p.cfgNormThreshold} onChange={(v) => sf('cfgNormThreshold', v)} min={0} max={100} step={0.1} tipKey="cfgNormThreshold" size={46} centerReadout />

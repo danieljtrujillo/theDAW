@@ -242,6 +242,9 @@ const buildClip = async (
     sourceKind,
     sourcePianoRoll,
     sourceBpm: sourceKind ? bpm : undefined,
+    // Restore the per-clip mute; omit the field entirely for unmuted clips so
+    // pre-mute projects hydrate exactly as before.
+    muted: c.muted ? true : undefined,
   };
 };
 
@@ -389,6 +392,8 @@ export function captureEditorSession(): CapturedSession {
                   velocity: n.velocity,
                 }))
               : null,
+          // Per-clip mute survives the .tasmo round-trip (fades do not yet).
+          muted: c.muted ?? false,
         };
       });
     return {

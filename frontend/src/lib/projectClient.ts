@@ -48,6 +48,8 @@ export interface TasmoClipInput {
   midi_notes?: unknown[] | null;
   loop_start?: number | null;
   loop_end?: number | null;
+  /** Per-clip mute; optional so pre-mute payloads stay valid. */
+  muted?: boolean;
 }
 
 export interface TasmoTrackInput {
@@ -89,6 +91,8 @@ export interface TasmoLoadedClip {
   audio_file: string | null;
   midi_notes?: Array<Record<string, number>> | null;
   instrument_program?: number;
+  /** Per-clip mute; absent in .tasmo files written before the field existed. */
+  muted?: boolean;
 }
 
 export interface TasmoLoadedTrack {

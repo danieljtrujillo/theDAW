@@ -25,9 +25,10 @@
  * The OFFLINE bounce is kept as-is for export / commit / send-to-init — those
  * genuinely need a rendered file. liveMixer only replaces the live PREVIEW.
  *
- * Honesty / scope: live updates cover the MIXER params (volume/pan/mute/solo).
- * Structural clip edits (add/remove/split/move) made WHILE playing take effect
- * on the next play, same as a hardware mixer wouldn't re-cut tape mid-take.
+ * Honesty / scope: live updates cover the MIXER params (volume/pan/mute/solo)
+ * plus per-clip mute (a retained gain gate per scheduled clip). Structural clip
+ * edits (add/remove/split/move) made WHILE playing take effect on the next
+ * play, same as a hardware mixer wouldn't re-cut tape mid-take.
  */
 import {
   useEditorStore,
@@ -94,6 +95,11 @@ let unsubEditor: (() => void) | null = null;
 let lastMixSig = '';
 let lastTimePush = 0; // throttle playerStore.currentTime writes
 let midiTimers: number[] = []; // setTimeout handles for scheduled MIDI note on/off
+// Per-clip mute gates retained at schedule time, keyed by clip id. Structural
+// clip edits still require a re-schedule; muted is the one clip property gated
+// live, so the editor-store subscription flips these gains mid-playback.
+let clipMuteGains = new Map<string, GainNode>();
+let lastClipMuteSig = '';
 let liveMidiActive = false; // true while MIDI clips play via the live synth (vs their bounce)
 let autoFxTimer = 0; // setInterval handle for the FX-param automation lookahead
 
@@ -144,6 +150,27 @@ function mixSignature(tracks: EditorTrack[]): string {
   let s = '';
   for (const t of tracks) s += `${t.id}:${t.volume}:${t.pan}:${t.mute}:${t.solo}|`;
   return s;
+}
+
+/** Signature of which clips are muted, so the clips-slice subscription (which
+ *  also fires on drags/resizes) only touches the live gates on a mute change. */
+function clipMuteSignature(clips: AudioClip[]): string {
+  let s = '';
+  for (const c of clips) if (c.muted) s += `${c.id}|`;
+  return s;
+}
+
+/** Push each scheduled clip's live mute gate (0 or 1, click-free). Clips muted
+ *  at schedule time were never scheduled, so unmuting those takes effect on the
+ *  next play; muting (and re-unmuting) a playing clip is audible immediately. */
+function applyClipMutesLive(): void {
+  if (clipMuteGains.size === 0) return;
+  const ctx = getEngineCtx();
+  for (const clip of useEditorStore.getState().clips) {
+    const gate = clipMuteGains.get(clip.id);
+    if (!gate) continue;
+    gate.gain.setTargetAtTime(clip.muted ? 0 : 1, ctx.currentTime, RAMP_TC);
+  }
 }
 
 /** Push current track volume/pan/mute/solo onto the live nodes (click-free).
@@ -285,7 +312,11 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
   const ctx = getEngineCtx();
   const now = ctx.currentTime;
   sources = [];
+  clipMuteGains = new Map();
   for (const clip of clips) {
+    // Muted clips are not scheduled at all; a mute toggled DURING playback is
+    // handled live by the clip's mute gate (see applyClipMutesLive).
+    if (clip.muted) continue;
     // When the live synth drives MIDI, skip the clip's bounced audio so we don't
     // double up; scheduleMidiClips plays its notes instead.
     if (liveMidiActive && isMidiClip(clip)) continue;
@@ -330,12 +361,18 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
       g.linearRampToValueAtTime(0, clipStartCtx + safeDur);
     }
 
+    // Live mute gate, kept separate from clipGain so a mid-playback mute toggle
+    // never clobbers the fade envelope's scheduled ramps.
+    const muteGate = ctx.createGain();
+    muteGate.gain.value = 1;
+    clipMuteGains.set(clip.id, muteGate);
+
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(clipGain).connect(nodes.gain);
+    src.connect(clipGain).connect(muteGate).connect(nodes.gain);
     src.start(when, safeOffset + into, remaining);
     src.onended = () => {
-      try { src.disconnect(); clipGain.disconnect(); } catch { /* already gone */ }
+      try { src.disconnect(); clipGain.disconnect(); muteGate.disconnect(); } catch { /* already gone */ }
     };
     sources.push(src);
   }
@@ -378,7 +415,7 @@ function scheduleTeleports(clips: AudioClip[], fromSec: number): void {
     if (!nodes) continue;
     const insts = nodes.fx.instances();
     const trackClips = clips.filter(
-      (c) => c.trackId === t.id && !(liveMidiActive && isMidiClip(c)),
+      (c) => c.trackId === t.id && !c.muted && !(liveMidiActive && isMidiClip(c)),
     );
 
     for (const entry of teleEntries) {
@@ -535,13 +572,16 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
   const channelOf = new Map<string, number>();
   let nextCh = 0;
   for (const clip of clips) {
-    if (!isMidiClip(clip) || channelOf.has(clip.trackId)) continue;
+    if (clip.muted || !isMidiClip(clip) || channelOf.has(clip.trackId)) continue;
     if (nextCh > 15) break;
     channelOf.set(clip.trackId, nextCh++);
   }
 
   for (const clip of clips) {
     if (!isMidiClip(clip)) continue;
+    // Clips muted before play schedule no notes; mute is ALSO re-checked at
+    // note-fire time below, so muting a sounding clip lands mid-playback.
+    if (clip.muted) continue;
     const track = trackById.get(clip.trackId);
     if (!track || effectiveVol(track, anySolo) <= 0) continue; // honor mute/solo
     const channel = channelOf.get(clip.trackId);
@@ -557,7 +597,18 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
       const offDelay = Math.max(onDelay + 10, (offSec - fromSec) * 1000);
       const midi = n.note;
       const vel = n.velocity;
-      midiTimers.push(window.setTimeout(() => liveNoteOn(channel, program, midi, vel), onDelay));
+      const clipId = clip.id;
+      midiTimers.push(window.setTimeout(() => {
+        // Structural edits (moved/resized/added notes) still need a re-schedule,
+        // but mute is re-read from the editor store at fire time so muting a
+        // sounding MIDI clip lands mid-playback like an audio clip's gate.
+        const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
+        if (live?.muted) return;
+        liveNoteOn(channel, program, midi, vel);
+      }, onDelay));
+      // The note-off always fires: a note-off for a note that was skipped is
+      // harmless, and skipping it would leave a stuck note when the clip is
+      // muted between a note's on and off timers.
       midiTimers.push(window.setTimeout(() => liveNoteOff(channel, midi), offDelay));
     }
   }
@@ -576,6 +627,10 @@ function clearSources(): void {
     try { s.onended = null; s.stop(); s.disconnect(); } catch { /* already stopped */ }
   }
   sources = [];
+  for (const g of clipMuteGains.values()) {
+    try { g.disconnect(); } catch { /* already gone */ }
+  }
+  clipMuteGains = new Map();
   clearMidiTimers();
   stopFxAutomation();
 }
@@ -683,6 +738,7 @@ async function start(fromSec: number): Promise<void> {
   startOffsetSec = begin;
   lastTimePush = 0;
   lastMixSig = mixSignature(ed.tracks);
+  lastClipMuteSig = clipMuteSignature(clips);
   scheduleClips(clips, begin);
   scheduleTeleports(clips, begin);
   scheduleAutomation(begin); // native vol/pan envelopes onto their AudioParams
@@ -718,6 +774,15 @@ async function start(fromSec: number): Promise<void> {
       }
       if (state.masterFxChain !== prev.masterFxChain) {
         applyMasterChainLive(); // live master rack edits (add/remove/reorder/param)
+      }
+      // Clip mute is the one clip property applied live; every other clip edit
+      // is structural and lands on the next (re)schedule.
+      if (state.clips !== prev.clips) {
+        const sig = clipMuteSignature(state.clips);
+        if (sig !== lastClipMuteSig) {
+          lastClipMuteSig = sig;
+          applyClipMutesLive();
+        }
       }
     });
   }
