@@ -50,6 +50,10 @@ export interface AudioClip {
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
   fadeOutSec?: number;
+  /** Muted: the clip is skipped by playback and every offline bounce. This is
+   *  the ONE clip property liveMixer gates live mid-playback; all other clip
+   *  edits are structural and take effect on the next play. */
+  muted?: boolean;
 }
 
 export interface EditorTrack {

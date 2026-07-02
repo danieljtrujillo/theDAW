@@ -296,6 +296,42 @@ In-tree sidecars under `sidecars/` (`questcast`, `queststitch`, `magenta`) and t
 | **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Eight workspaces (MAKE, EDIT, PERFORM, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend. |
 | **Sidecars** | `sidecars/` | The vendored `magenta-rt2-nvidia` port, the `questcast` and `queststitch` Quest bridges, and the `magenta` studio sidecar. |
 
+### Folder map
+
+The table above maps the components; the tree below is the same root as it looks on a first run, with the folders a new user actually touches called out.
+
+```
+stable-audio-3/
+|-- theDAW.bat        <-- double-click this to install everything and launch (backend :8600, UI :5173)
+|-- backend/          <-- FastAPI server and the plugin modules behind /api/*
+|-- frontend/         <-- the React / Vite workspace served at http://localhost:5173
+|-- stable_audio_3/   <-- the Stable Audio 3 inference library (DiT, SAME autoencoder, LoRA)
+|-- sidecars/
+|   |-- magenta-rt2-nvidia/   <-- run Setup-MRT2.bat in here once to install the Magenta RT2 engine
+|   |-- magenta/              <-- the Magenta studio sidecar
+|   \-- questcast/            <-- the Quest video bridge
+|-- electron-ui/      <-- the optional desktop (Electron) shell, chosen in Settings > Startup
+|-- install/          <-- setup.ps1, the consent-based installer theDAW.bat runs when a tool is missing
+|-- docs/             <-- the User Guide, setup guides, and workflow docs
+|-- data/             <-- created at runtime; the personal library (gitignored, safe to back up)
+|   |-- generations/            <-- every render and import, plus the library.db metadata
+|   |-- plugins/                <-- installed .gan web-plugins
+|   |-- settings.json           <-- app settings
+|   \-- local_checkpoints.json  <-- checkpoints registered in Settings > Models
+|-- models/           <-- OPTIONAL: create this folder and drop checkpoint subfolders here (see below)
+|-- local_models.txt  <-- OPTIONAL: extra checkpoint folders to search, one path per line
+|-- tests/            <-- the pytest suite for the inference library
+|-- scripts/          <-- automation that captures the screenshots and the feature tour
+\-- .venv/            <-- created by uv sync; the Python environment (no need to touch it)
+```
+
+**Where do models go?**
+
+- **The built-in models need no manual placement.** Every load resolves local-first: local model folders, then the Hugging Face cache at `%USERPROFILE%\.cache\huggingface\hub\` (relocatable by setting `HF_HOME` before launch), then a one-time download into that cache. **Local only (never download)** is on by default for fresh installs, so nothing fetches until it is allowed in **Settings → Models**; once allowed, the weights download automatically on the first generation that needs them (the `medium` checkpoint is roughly 17 GB), and the T5Gemma text encoder fetches into the same cache.
+- **A checkpoint already on disk** registers through **Settings → Models → Add a checkpoint you already have**: Browse to the folder (or the `.safetensors` file itself) and it appears in the MAKE model picker. Entries persist in `data/local_checkpoints.json`, and removing one never touches the files.
+- **The folder convention** works without the UI: create `models/` at the repo root (or list extra directories in `local_models.txt`, one path per line, or in the `SA3_LOCAL_MODELS_DIR` environment variable, `;`-separated on Windows) and give each checkpoint a subfolder named after its Hugging Face repo, for example `models/stable-audio-3-medium/` holding the config JSON and the `.safetensors`. [User Guide §21.2](docs/USER_GUIDE.md#212-manual-model-placement-download-links-and-folder-tree) has the full download table.
+- **Magenta RealTime 2 models are not placed by hand.** `sidecars/magenta-rt2-nvidia/Setup-MRT2.bat` installs the WSL2 engine and its assets in one pass.
+
 ---
 
 ## Models

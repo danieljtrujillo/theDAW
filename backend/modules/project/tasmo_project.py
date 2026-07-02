@@ -57,6 +57,9 @@ class Clip(BaseModel):
     channels: int = 2
     midi_notes: list[dict] | None = None
     midi_file: str | None = None
+    # Per-clip mute (the clip is skipped by playback and bounces). Defaulted so
+    # .tasmo files written before this field existed still validate.
+    muted: bool = False
     generation_prompt: str | None = None
     generation_seed: int | None = None
     generation_params: dict | None = None

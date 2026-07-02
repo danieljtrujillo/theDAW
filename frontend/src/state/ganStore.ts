@@ -23,6 +23,13 @@ interface GanState {
   close: () => void;
 }
 
+// In-flight ensureAres promise. package-ares rewrites the installed Ares
+// runtime files in place, so two concurrent ensures (or an openById racing
+// one) could serve half-written files to the stage iframe. All concurrent
+// callers await this single run; it resets when the run settles, so later
+// calls still repackage and pick up bundled-project edits.
+let ensureAresInflight: Promise<void> | null = null;
+
 export const useGanStore = create<GanState>()((set, get) => ({
   plugins: [],
   busy: false,
@@ -105,13 +112,22 @@ export const useGanStore = create<GanState>()((set, get) => ({
     // Always (re)package: package-ares is idempotent (rebuilds the .gan + extracts
     // a fresh runtime), so this guarantees edits to the bundled Ares project.json
     // ship even on a machine that already has an older ares.gan installed.
-    try {
-      await ganApi.packageAres();
-      await get().refresh();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Ares package failed';
-      logError('plugin', msg);
-    }
+    // Concurrent calls (MixView mounts fire two ensure paths in the same tick)
+    // share ONE in-flight run so the runtime is never rewritten by two
+    // package-ares requests at once.
+    if (ensureAresInflight) return ensureAresInflight;
+    ensureAresInflight = (async () => {
+      try {
+        await ganApi.packageAres();
+        await get().refresh();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Ares package failed';
+        logError('plugin', msg);
+      } finally {
+        ensureAresInflight = null;
+      }
+    })();
+    return ensureAresInflight;
   },
 
   close: () => set({ activeId: null, activeUrl: null, activeName: null }),

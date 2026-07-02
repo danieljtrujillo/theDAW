@@ -47,12 +47,13 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const centerTab = useAppUiStore((s) => s.centerTab);
 
   // Track which heavy live-performance tabs have been opened at least
-  // once. We only mount DJ / VJ after first visit (so a user who never
-  // touches them pays nothing), then keep them mounted permanently and
-  // toggle visibility — preserving deck state + the warm VJ iframe.
+  // once. We only mount DJ / VJ / LEARN after first visit (so a user who
+  // never touches them pays nothing), then keep them mounted permanently
+  // and toggle visibility — preserving deck state, the warm VJ iframe,
+  // and the LEARN genealogy graph's fetch + layout + pan/zoom.
   const [warmedTabs, setWarmedTabs] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (centerTab === 'dj' || centerTab === 'vj') {
+    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'learn') {
       setWarmedTabs((prev) => {
         if (prev.has(centerTab)) return prev;
         const next = new Set(prev);
@@ -98,8 +99,19 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <Suspense fallback={<TabFallback />}><MixView /></Suspense>
             </div>
           )}
-          {centerTab === 'learn' && (
-            <Suspense fallback={<TabFallback />}><LineageView rootEntryId={null} /></Suspense>
+          {/* LEARN stays mounted once warmed (same pattern as DJ/VJ below)
+              so tab switches preserve the fetched graph, the computed
+              layout, the DOM, and the user's pan/zoom. The `visible` prop
+              tells the view when it is re-shown so it can refetch the
+              cheap bulk graph endpoint and rebuild only if the library
+              actually changed. */}
+          {warmedTabs.has('learn') && (
+            <div
+              className="absolute inset-0"
+              style={{ display: centerTab === 'learn' ? undefined : 'none' }}
+            >
+              <Suspense fallback={<TabFallback />}><LineageView rootEntryId={null} visible={centerTab === 'learn'} /></Suspense>
+            </div>
           )}
 
           {/* DJ + VJ stay mounted once warmed; visibility toggles with
