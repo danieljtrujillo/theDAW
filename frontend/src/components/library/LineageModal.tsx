@@ -287,10 +287,6 @@ function computeLineage(
   return out;
 }
 
-/** Uniform highlight: every lineage-connected node/edge is full brightness, the
- *  rest is heavily dimmed (no per-generation falloff). */
-const lineageOpacity = (onPath: boolean): number => (onPath ? 1 : 0.12);
-
 const LINEAGE_HOVER_INTENT_MS = 200;
 
 // Genealogy grid geometry (px). Square cards; the gaps come from the sliders.
@@ -1094,9 +1090,10 @@ const GenealogyView: React.FC<{
         />
       ))}
 
-      {/* Edges under nodes. Hovering a node lights up its WHOLE lineage: the
-          lineage edges stay full and thicken, off-path edges fade — without
-          dimming any nodes. */}
+      {/* Edges under nodes. Rendered hover-INDEPENDENT: nothing here fades or
+          rebuilds when the cursor moves. Hover glow lands imperatively on these
+          same elements via the lineage-glow effect below (keyed by the data-*
+          attributes), so off-path filaments stay fully visible. */}
       {connected.edges.map((edge, i) => {
         const from = positions[edge.from_id];
         const to = positions[edge.to_id];
@@ -1108,34 +1105,33 @@ const GenealogyView: React.FC<{
         const dx = (x2 - x1) * 0.5;
         const d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
         const color = EDGE_COLOR_BY_KIND[edge.kind] ?? '#71717a';
-        const onPath = lineage.has(edge.from_id) && lineage.has(edge.to_id);
-        const eOp = !hovered ? 0.85 : onPath ? 1 : 0.07;
         return (
-          <g key={i} opacity={eOp} style={{ transition: 'opacity 240ms ease' }}>
-            <GenEdgeBody d={d} color={color} x2={x2} y2={y2} strong={!!hovered && onPath} />
+          <g
+            key={i}
+            opacity={0.85}
+            data-edge-from={edge.from_id}
+            data-edge-to={edge.to_id}
+            data-edge-color={color}
+            style={{ transition: 'filter 200ms ease, opacity 200ms ease' }}
+          >
+            <GenEdgeBody d={d} color={color} x2={x2} y2={y2} strong={false} />
           </g>
         );
       })}
 
-      {/* Nodes are never dimmed. Hovering glows the hovered node strongly and the
-          rest of its lineage softly, in each node's source color. */}
+      {/* Nodes, also hover-independent (only selection re-renders). */}
       {connected.nodes.map((n) => {
         const p = positions[n.id];
         if (!p) return null;
         const sourceColor = pickNodeColor(n);
-        const isHovered = hovered === n.id;
         const isSelected = selectedId === n.id;
-        const inLineage = !!hovered && lineage.has(n.id);
-        const glow = isHovered
-          ? `drop-shadow(0 0 14px ${sourceColor}) drop-shadow(0 0 5px ${sourceColor})`
-          : inLineage
-            ? `drop-shadow(0 0 8px ${sourceColor})`
-            : undefined;
         return (
           <g
             key={n.id}
             transform={`translate(${p.x}, ${p.y})`}
-            style={{ cursor: 'pointer', filter: glow, transition: 'filter 160ms ease' }}
+            data-node-id={n.id}
+            data-node-color={sourceColor}
+            style={{ cursor: 'pointer', transition: 'filter 160ms ease' }}
             onMouseEnter={() => enterNode(n.id)}
             onMouseLeave={leaveNode}
             onClick={(e) => {
@@ -1144,12 +1140,50 @@ const GenealogyView: React.FC<{
               setSelectedId((cur) => (cur === n.id ? null : n.id));
             }}
           >
-            <GenNodeBody n={n} title={displayTitle(n)} sourceColor={sourceColor} strong={isHovered || isSelected || inLineage} w={NODE_W} h={NODE_H} />
+            <GenNodeBody n={n} title={displayTitle(n)} sourceColor={sourceColor} strong={isSelected} w={NODE_W} h={NODE_H} />
           </g>
         );
       })}
     </svg>
-  ), [bounds, generationLayouts, GEN_GAP, connected, positions, lineage, hovered, selectedId, enterNode, leaveNode, displayTitle]);
+  ), [bounds, generationLayouts, GEN_GAP, connected, positions, selectedId, enterNode, leaveNode, displayTitle]);
+
+  // Lineage hover glow, applied imperatively. The SVG above is referentially
+  // stable across hover changes (hover is NOT in its memo deps), so React never
+  // touches the mounted graph while the mouse moves — this effect writes a
+  // filter onto just the hovered lineage's <g> elements and clears exactly the
+  // ones it lit last time. Off-lineage nodes/edges are left untouched (no dim,
+  // no fade, no remount).
+  const litRef = useRef<SVGGElement[]>([]);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    litRef.current.forEach((g) => {
+      g.style.filter = '';
+      g.style.opacity = '';
+    });
+    litRef.current = [];
+    if (!hovered) return;
+    const lit: SVGGElement[] = [];
+    el.querySelectorAll<SVGGElement>('g[data-node-id]').forEach((g) => {
+      const id = g.dataset.nodeId as string;
+      if (!lineage.has(id)) return;
+      const color = g.dataset.nodeColor || '#a78bfa';
+      g.style.filter = id === hovered
+        ? `drop-shadow(0 0 16px ${color}) drop-shadow(0 0 6px ${color}) brightness(1.35)`
+        : `drop-shadow(0 0 9px ${color}) brightness(1.15)`;
+      lit.push(g);
+    });
+    el.querySelectorAll<SVGGElement>('g[data-edge-from]').forEach((g) => {
+      const from = g.dataset.edgeFrom as string;
+      const to = g.dataset.edgeTo as string;
+      if (!lineage.has(from) || !lineage.has(to)) return;
+      const color = g.dataset.edgeColor || '#a78bfa';
+      g.style.filter = `drop-shadow(0 0 6px ${color}) brightness(1.6)`;
+      g.style.opacity = '1';
+      lit.push(g);
+    });
+    litRef.current = lit;
+  }, [hovered, lineage, svgContent]);
 
   if (connected.nodes.length === 0) {
     return (
@@ -1694,11 +1728,12 @@ const Graph3DView: React.FC<{
     [hoveredId, dirAdj],
   );
 
-  // Node-mesh dimming on hover. Walks the Three.js scene; each node
-  // group has been tagged with userData.nodeId by nodeThreeObject, and
-  // its materials carry userData.baseOpacity. When a node is hovered,
-  // non-neighbor groups drop to baseOpacity * 0.15; everything snaps
-  // back to baseOpacity when the cursor leaves.
+  // Node-mesh lineage GLOW on hover. Each node group is tagged with
+  // userData.nodeId by nodeThreeObject and its materials carry
+  // userData.baseOpacity. Non-lineage nodes stay at base opacity (nothing
+  // disappears when the cursor moves); the hovered node and its lineage
+  // brighten instead. The scene is traversed ONCE per hover change to collect
+  // node meshes; the rAF tween then touches only that list until it settles.
   useEffect(() => {
     if (appearance.renderMode !== '3d') return;
     type SceneLike = { traverse: (cb: (obj: unknown) => void) => void };
@@ -1707,15 +1742,13 @@ const Graph3DView: React.FC<{
       material?: { opacity?: number; userData?: { baseOpacity?: number } };
       parent?: { userData?: { nodeId?: string } };
     };
-    // Ease each mesh's opacity toward its lineage target (no flash). Runs a
-    // rAF until everything settles, then stops; a hover change re-runs the
-    // effect and restarts the tween toward the new targets.
     let raf = 0;
-    const apply = () => {
+    let meshes: Array<{ m: MeshLike; target: number }> | null = null;
+    const collect = (): boolean => {
       const ref = fgRef.current as { scene?: () => unknown } | null;
       const scene = ref?.scene?.() as SceneLike | undefined;
-      if (!scene || typeof scene.traverse !== 'function') { raf = requestAnimationFrame(apply); return; }
-      let animating = false;
+      if (!scene || typeof scene.traverse !== 'function') return false;
+      const list: Array<{ m: MeshLike; target: number }> = [];
       scene.traverse((obj: unknown) => {
         const m = obj as MeshLike;
         if (!m.isMesh || !m.material) return;
@@ -1723,13 +1756,23 @@ const Graph3DView: React.FC<{
         if (typeof base !== 'number') return;
         const ownerId = m.parent?.userData?.nodeId;
         if (!ownerId) return;
-        const target = !hoveredId ? base : base * lineageOpacity(lineage.has(ownerId));
-        const cur = m.material.opacity ?? base;
+        const boost = hoveredId && lineage.has(ownerId) ? (ownerId === hoveredId ? 2.2 : 1.7) : 1;
+        list.push({ m, target: Math.min(1, base * boost) });
+      });
+      meshes = list;
+      return true;
+    };
+    const apply = () => {
+      if (!meshes && !collect()) { raf = requestAnimationFrame(apply); return; }
+      let animating = false;
+      for (const { m, target } of meshes!) {
+        if (!m.material) continue;
+        const cur = m.material.opacity ?? target;
         const diff = target - cur;
-        if (Math.abs(diff) < 0.004) { m.material.opacity = target; return; }
+        if (Math.abs(diff) < 0.004) { m.material.opacity = target; continue; }
         m.material.opacity = cur + diff * 0.028;
         animating = true;
-      });
+      }
       raf = animating ? requestAnimationFrame(apply) : 0;
     };
     raf = requestAnimationFrame(apply);
@@ -2464,7 +2507,8 @@ const Graph3DView: React.FC<{
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
             const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
-            return onPath ? (l.color ?? '#a78bfa') : '#1c1828';
+            // Glow, don't hide: lineage links brighten, the rest keep their color.
+            return onPath ? '#f3e8ff' : (l.color ?? '#a78bfa');
           }}
           linkOpacity={appearance.linkOpacity}
           linkWidth={(l: { source?: { id?: string } | string; target?: { id?: string } | string }) => {
@@ -2472,7 +2516,8 @@ const Graph3DView: React.FC<{
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
             const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
-            return onPath ? appearance.linkWidth * 2.2 : appearance.linkWidth * 0.4;
+            // Glow, don't hide: lineage links thicken, the rest stay unchanged.
+            return onPath ? appearance.linkWidth * 2.6 : appearance.linkWidth;
           }}
           linkCurvature={appearance.edgeCurve}
           linkDirectionalArrowLength={5}
@@ -2510,7 +2555,8 @@ const Graph3DView: React.FC<{
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
             const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
-            return onPath ? (l.color ?? '#a78bfa') : '#1c1828';
+            // Glow, don't hide: lineage links brighten, the rest keep their color.
+            return onPath ? '#f3e8ff' : (l.color ?? '#a78bfa');
           }}
           linkLineDash={() => null}
           linkWidth={(l: { source?: { id?: string } | string; target?: { id?: string } | string }) => {
@@ -2518,7 +2564,8 @@ const Graph3DView: React.FC<{
             const srcId = typeof l.source === 'object' ? l.source?.id : l.source;
             const tgtId = typeof l.target === 'object' ? l.target?.id : l.target;
             const onPath = lineage.has(srcId ?? '') && lineage.has(tgtId ?? '');
-            return onPath ? appearance.linkWidth * 2.2 : appearance.linkWidth * 0.4;
+            // Glow, don't hide: lineage links thicken, the rest stay unchanged.
+            return onPath ? appearance.linkWidth * 2.6 : appearance.linkWidth;
           }}
           linkCurvature={appearance.edgeCurve}
           linkDirectionalArrowLength={6}

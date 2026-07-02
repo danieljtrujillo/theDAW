@@ -62,6 +62,7 @@ def probe_file(path: Path, timeout_sec: float = 20.0) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=timeout_sec,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         log.info("analysis.ffprobe: probe failed for %s: %s", p.name, e)

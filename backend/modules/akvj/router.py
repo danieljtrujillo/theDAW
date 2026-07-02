@@ -18,6 +18,10 @@ The relay only peeks at the 5-byte ``AKV1`` header to tell the two table-chunk
 messages (which a late-joining viewer must be primed with) apart from frames. A
 plain JPEG frame has no ``AKV1`` magic, so the MJPEG path is unaffected.
 
+Delivery is drop-to-latest per viewer: table chunks queue losslessly and in
+order, while a newer frame overwrites an unsent one, so one slow viewer can
+never stall the source receive loop or the other viewers.
+
 Endpoints (prefix /api/akvj):
     GET  /status      source/viewer/frame counters
     GET  /sidecar     native Kinect sidecar lifecycle state
@@ -29,6 +33,7 @@ Endpoints (prefix /api/akvj):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Optional
@@ -62,8 +67,31 @@ def _table_row_start(data: bytes) -> Optional[int]:
     return int.from_bytes(data[10:12], "little")
 
 
+class _Viewer:
+    """Per-viewer send state for the drop-to-latest relay.
+
+    Table chunks are load-bearing for late joiners (the point cloud cannot be
+    rebuilt with any row block missing), so they queue losslessly and in order.
+    Frames may be coalesced: a newer frame overwrites an unsent one in the
+    single slot, so a slow viewer sees fewer frames instead of stalling the
+    source receive loop behind its send.
+    """
+
+    __slots__ = ("ws", "control", "frame", "wake")
+
+    def __init__(self, ws: WebSocket) -> None:
+        self.ws = ws
+        # Pending table chunks keyed by rowStart (insertion-ordered). The 5s
+        # heartbeat re-sends the whole table, so keying replaces an unsent
+        # duplicate instead of queueing it; the pending set is thereby bounded
+        # at one full table (~3 MB) per viewer no matter how slow its socket.
+        self.control: dict[int, bytes] = {}
+        self.frame: list[Optional[bytes]] = [None]
+        self.wake = asyncio.Event()
+
+
 class _State:
-    viewers: set[WebSocket] = set()
+    viewers: dict[WebSocket, _Viewer] = {}
     source: Optional[WebSocket] = None
     latest: Optional[bytes] = None  # most recent frame (JPEG or AKV1), for priming
     # XY table chunks keyed by rowStart, so a late-joining viewer can be primed
@@ -83,17 +111,45 @@ def source_connected() -> bool:
     return _s.source is not None
 
 
-async def _broadcast(frame: bytes) -> None:
-    if not _s.viewers:
-        return
-    dead: list[WebSocket] = []
-    for ws in list(_s.viewers):
-        try:
-            await ws.send_bytes(frame)
-        except Exception:  # noqa: BLE001 — viewer went away mid-send
-            dead.append(ws)
-    for d in dead:
-        _s.viewers.discard(d)
+def _offer_table_chunk(row: int, chunk: bytes) -> None:
+    """Queue a table chunk to every viewer without awaiting any of them."""
+    for v in list(_s.viewers.values()):
+        v.control[row] = chunk
+        v.wake.set()
+
+
+def _offer_frame(frame: bytes) -> None:
+    """Overwrite each viewer's single frame slot; an unsent frame is dropped."""
+    for v in list(_s.viewers.values()):
+        v.frame[0] = frame
+        v.wake.set()
+
+
+async def _viewer_sender(v: _Viewer) -> None:
+    """Per-viewer sender loop, so each socket drains at its own pace.
+
+    The control queue is fully drained before the frame slot on every wake, so
+    a late joiner's primed table chunks always precede the first frame that
+    must be unprojected with them.
+    """
+    try:
+        while True:
+            await v.wake.wait()
+            v.wake.clear()
+            while v.control:
+                # Insertion order == priming/sidecar send order; a heartbeat
+                # replacement keeps the original position, so chunks still
+                # arrive rowStart-ordered.
+                row = next(iter(v.control))
+                await v.ws.send_bytes(v.control.pop(row))
+            frame = v.frame[0]
+            if frame is not None:
+                v.frame[0] = None
+                await v.ws.send_bytes(frame)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — viewer went away mid-send
+        _s.viewers.pop(v.ws, None)
 
 
 @router.get("/status")
@@ -189,12 +245,14 @@ async def ws_source(websocket: WebSocket) -> None:
                 row = _table_row_start(data)
                 if row is not None:
                     _s.table_chunks[row] = data
-                await _broadcast(data)
+                # A malformed rowStart still relays (key -1), it just cannot
+                # be deduplicated against later chunks.
+                _offer_table_chunk(row if row is not None else -1, data)
                 continue
             _s.latest = data
             _s.frames += 1
             _s.last_frame_at = time.monotonic()
-            await _broadcast(data)
+            _offer_frame(data)
     except WebSocketDisconnect:
         pass
     except Exception as e:  # noqa: BLE001 — sender went away mid-frame
@@ -210,15 +268,18 @@ async def ws_view(websocket: WebSocket) -> None:
     """A VJ viewer. Primed with the cached XY table chunks (native path) then the
     latest frame, so it can rebuild the cloud immediately on a late join."""
     await websocket.accept()
-    _s.viewers.add(websocket)
-    try:
-        for row in sorted(_s.table_chunks):
-            await websocket.send_bytes(_s.table_chunks[row])
-        if _s.latest is not None:
-            await websocket.send_bytes(_s.latest)
-    except Exception:  # noqa: BLE001 — viewer went away immediately
-        _s.viewers.discard(websocket)
-        return
+    v = _Viewer(websocket)
+    # Priming fills the control queue before the sender task starts, and the
+    # sender drains that queue ahead of the frame slot, so every cached table
+    # chunk reaches a late joiner before any frame.
+    for row in sorted(_s.table_chunks):
+        v.control[row] = _s.table_chunks[row]
+    if _s.latest is not None:
+        v.frame[0] = _s.latest
+    if v.control or v.frame[0] is not None:
+        v.wake.set()
+    sender = asyncio.create_task(_viewer_sender(v))
+    _s.viewers[websocket] = v
     try:
         # One-way (source -> viewer); await to detect the viewer closing.
         while True:
@@ -228,4 +289,11 @@ async def ws_view(websocket: WebSocket) -> None:
     except Exception as e:  # noqa: BLE001
         log.debug("akvj: viewer error: %s", e)
     finally:
-        _s.viewers.discard(websocket)
+        _s.viewers.pop(websocket, None)
+        sender.cancel()
+        try:
+            await sender
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — sender already failed on this socket
+            pass

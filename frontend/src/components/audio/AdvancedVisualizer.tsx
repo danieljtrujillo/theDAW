@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Zap, Target, Settings2, Maximize2 } from 'lucide-react';
+import { Zap, Target, Maximize2, Minimize2 } from 'lucide-react';
 import { getAnalyser, getEngineCtx, samplePeakAndRMS } from '../../state/playerStore';
 import { QuantumLatticeView } from './QuantumLatticeView';
 
@@ -20,6 +20,18 @@ export const AdvancedVisualizer: React.FC = () => {
   const [peakDb, setPeakDb] = useState(-Infinity);
   const [rmsDb, setRmsDb] = useState(-Infinity);
   const [ctxInfo, setCtxInfo] = useState<{ sr: number; fft: number }>({ sr: 44100, fft: 2048 });
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Track whether THIS instance's wrapper is the fullscreen element. The
+  // component mounts in several hosts at once, so the state must compare
+  // against the instance's own ref rather than a global boolean.
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === wrapperRef.current);
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
 
   // Resize the canvas to its container, accounting for device pixel ratio.
   useEffect(() => {
@@ -215,17 +227,18 @@ export const AdvancedVisualizer: React.FC = () => {
           <div className="w-px h-3 bg-white/15" />
 
           <div className="flex gap-0.5">
-            <button className="p-0.5 hover:bg-white/15 rounded text-zinc-500 hover:text-zinc-200 transition-colors">
-              <Settings2 className="w-3 h-3" />
-            </button>
             <button
+              type="button"
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              aria-pressed={isFullscreen}
               className="p-0.5 hover:bg-white/15 rounded text-zinc-500 hover:text-zinc-200 transition-colors"
               onClick={() => {
-                if (document.fullscreenElement) void document.exitFullscreen();
-                else void wrapperRef.current?.requestFullscreen();
+                if (isFullscreen) void document.exitFullscreen().catch(() => {});
+                else void wrapperRef.current?.requestFullscreen().catch(() => {});
               }}
             >
-              <Maximize2 className="w-3 h-3" />
+              {isFullscreen ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
             </button>
           </div>
         </div>

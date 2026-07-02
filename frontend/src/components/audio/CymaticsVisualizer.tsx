@@ -24,7 +24,7 @@ import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { Circle, Droplet, Grid3x3, Maximize2, Mountain } from 'lucide-react';
+import { Circle, Droplet, Grid3x3, Maximize2, Minimize2, Mountain } from 'lucide-react';
 import { fs as backdropFS, vs as backdropVS } from './cymatics/backdrop-shader';
 import { vs as sphereVS } from './cymatics/sphere-shader';
 import { vs as cymaticsVS } from './cymatics/cymatics-shader';
@@ -629,10 +629,23 @@ interface VisualizerPanelProps {
 const VisualizerPanelImpl: React.FC<VisualizerPanelProps> = ({ audioNode, initialMode = 'orb', orbTilt = 0, flipX = false, iconsSide = 'right', className }) => {
   const [vizMode, setVizMode] = useState<CymaticsMode>(initialMode);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Track whether THIS panel's root is the fullscreen element. Two panels
+  // mount side by side, so the state must compare against the instance's own
+  // ref rather than a global boolean.
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === rootRef.current);
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
   const toggleFullscreen = () => {
     const el = rootRef.current;
     if (!el) return;
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => {});
     else void el.requestFullscreen?.().catch(() => {});
   };
   const iconBtn = (active: boolean) =>
@@ -645,8 +658,15 @@ const VisualizerPanelImpl: React.FC<VisualizerPanelProps> = ({ audioNode, initia
     <div ref={rootRef} className={`relative overflow-hidden rounded-lg bg-black ${className ?? ''}`}>
       <CymaticsVisualizer mode={vizMode} audioNode={audioNode} orbTilt={orbTilt} flipX={flipX} className="absolute inset-0" />
       <div className={`absolute bottom-1.5 z-10 flex flex-col gap-1 ${iconsSide === 'left' ? 'left-1.5' : 'right-1.5'}`}>
-        <button type="button" title="Fullscreen" aria-label="Toggle fullscreen" onClick={toggleFullscreen} className={iconBtn(false)}>
-          <Maximize2 className="h-3.5 w-3.5" />
+        <button
+          type="button"
+          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          aria-pressed={isFullscreen}
+          onClick={toggleFullscreen}
+          className={iconBtn(false)}
+        >
+          {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
         </button>
         {MODES.map(({ key, label, Icon }) => (
           <button

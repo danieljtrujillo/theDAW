@@ -2,17 +2,24 @@
 
 These are the "process" mode handlers that read audio → manipulate → write audio,
 rather than emitting ffmpeg filter args.
+
+The bodies are plain sync functions on purpose: build_router offloads
+non-coroutine handlers to a worker thread via asyncio.to_thread, keeping the
+event loop responsive during CPU-bound DSP. ``vocal_isolate`` and
+``breath_removal`` additionally keep thin async facades because
+``backend.modules.vocal.preprocess.isolation`` awaits those exact names.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
 
-async def vocal_isolate(input_path: Path, output_path: Path, params: dict) -> None:
+def vocal_isolate_sync(input_path: Path, output_path: Path, params: dict) -> None:
     """Mid/side vocal extraction from stereo audio.
 
     vocals ≈ mid = (L+R)/2  (center channel)
@@ -51,7 +58,13 @@ async def vocal_isolate(input_path: Path, output_path: Path, params: dict) -> No
     sf.write(str(output_path), blended, sr)
 
 
-async def stem_separation(input_path: Path, output_path: Path, params: dict) -> None:
+async def vocal_isolate(input_path: Path, output_path: Path, params: dict) -> None:
+    """Async facade kept because vocal.preprocess.isolation awaits this name;
+    the DSP body runs in a worker thread so the event loop stays live."""
+    await asyncio.to_thread(vocal_isolate_sync, input_path, output_path, params)
+
+
+def stem_separation(input_path: Path, output_path: Path, params: dict) -> None:
     """Harmonic/percussive source separation via librosa HPSS.
 
     Genuine separation algorithm. Default returns percussive stem.
@@ -91,7 +104,7 @@ async def stem_separation(input_path: Path, output_path: Path, params: dict) -> 
     sf.write(str(output_path), result, sr)
 
 
-async def spectral_repair(input_path: Path, output_path: Path, params: dict) -> None:
+def spectral_repair(input_path: Path, output_path: Path, params: dict) -> None:
     """STFT → median filter on magnitude → ISTFT.
 
     Removes transient anomalies by smoothing magnitude across time with a
@@ -137,6 +150,12 @@ async def spectral_repair(input_path: Path, output_path: Path, params: dict) -> 
 
 
 async def breath_removal(input_path: Path, output_path: Path, params: dict) -> None:
+    """Async facade kept because vocal.preprocess.isolation awaits this name;
+    the DSP body runs in a worker thread so the event loop stays live."""
+    await asyncio.to_thread(breath_removal_sync, input_path, output_path, params)
+
+
+def breath_removal_sync(input_path: Path, output_path: Path, params: dict) -> None:
     """Detect breaths via low-RMS + high spectral centroid, attenuate with crossfades.
 
     Breaths are characterized by: low energy (RMS) relative to speech, and high

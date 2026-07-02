@@ -5,6 +5,12 @@ Fallback: atempo (built-in to every ffmpeg build, slightly lower quality).
 
 The fallback path returns engine="atempo" in the result so the caller can
 surface a warning to the user.
+
+Every ffmpeg spawn here runs with `-nostdin` AND `stdin=DEVNULL`. The backend
+does not always own a real console: under launcher hosts (Pinokio's ConPTY
+shells, service wrappers) an inherited stdin handle makes ffmpeg's console
+input reader block forever, which presents as "atempo timed out" on a job
+that takes under a second in a terminal.
 """
 
 from __future__ import annotations
@@ -36,11 +42,12 @@ def normalize_to_target(
     output_path: str | Path,
     target_sr: int = 44100,
     target_channels: int = 2,
-    timeout_sec: float = 30.0,
+    timeout_sec: float = 120.0,
 ) -> str:
     """Decode arbitrary audio (mp3/m4a/wav/flac/ogg) to WAV at a fixed sr/channel count."""
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -56,7 +63,13 @@ def normalize_to_target(
         str(output_path),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg normalize timed out after {timeout_sec}s") from e
     if proc.returncode != 0:
@@ -69,6 +82,7 @@ def normalize_to_target(
 def _build_rubberband_cmd(input_path: str, output_path: str, ratio: float) -> list[str]:
     return [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -84,6 +98,7 @@ def _build_rubberband_cmd(input_path: str, output_path: str, ratio: float) -> li
 def _build_atempo_cmd(input_path: str, output_path: str, ratio: float) -> list[str]:
     return [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -100,7 +115,7 @@ def stretch_audio(
     input_path: str | Path,
     output_path: str | Path,
     ratio: float,
-    timeout_sec: float = 60.0,
+    timeout_sec: float = 180.0,
     force_engine: Optional[str] = None,
 ) -> StretchResult:
     """Stretch input audio by `ratio` (output_duration = input_duration / ratio).
@@ -140,7 +155,11 @@ def stretch_audio(
         cmd = _build_rubberband_cmd(in_str, out_str, ratio)
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout_sec
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(
@@ -164,7 +183,13 @@ def stretch_audio(
 
     cmd = _build_atempo_cmd(in_str, out_str, ratio)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg atempo timed out after {timeout_sec}s") from e
 

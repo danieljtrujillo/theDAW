@@ -79,6 +79,7 @@ def _pip_install_cmd(python_exe: str, packages: list[str]) -> tuple[list[str], s
         capture_output=True,
         text=True,
         timeout=15,
+        stdin=subprocess.DEVNULL,
     )
     if pip_check.returncode == 0:
         return ([python_exe, "-m", "pip", "install", *packages], "pip")
@@ -89,6 +90,7 @@ def _pip_install_cmd(python_exe: str, packages: list[str]) -> tuple[list[str], s
         capture_output=True,
         text=True,
         timeout=120,
+        stdin=subprocess.DEVNULL,
     )
     if ensurepip.returncode == 0:
         return ([python_exe, "-m", "pip", "install", *packages], "pip-after-ensurepip")
@@ -122,6 +124,7 @@ def install_engine(engine: str) -> dict:
             capture_output=True,
             text=True,
             timeout=15 * 60,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         out["error"] = repr(e)

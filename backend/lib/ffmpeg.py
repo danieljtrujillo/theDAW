@@ -23,8 +23,13 @@ class FFmpegError(RuntimeError):
 
 async def run(cmd: list[str], timeout: float = 600.0) -> str:
     """Run an ffmpeg/ffprobe command. Returns stderr text. Raises on failure."""
+    # stdin=DEVNULL: the backend does not always own a real console (Pinokio's
+    # ConPTY shells, service wrappers). An inherited stdin handle makes
+    # ffmpeg's console input reader block forever, which presents as a timeout
+    # on a job that takes under a second in a terminal.
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )

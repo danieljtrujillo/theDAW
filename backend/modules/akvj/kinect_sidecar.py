@@ -31,12 +31,15 @@ native DLLs, so nothing else has to be installed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
 import struct
 import sys
 import time
+from pathlib import Path
+from typing import Optional
 
 MAGIC = b"AKV1"
 MSG_TABLE = 1
@@ -66,13 +69,26 @@ def _fps_enum(fps_int: int):
     return FPS.FPS_30, 30
 
 
-def build_xy_table(calibration, width: int, height: int):
-    """Per-pixel ray slopes (rayX, rayY) with position = (rayX, rayY, 1)*depth.
+def _xy_table_cache_path(calibration_raw: str) -> Path:
+    """Disk-cache location for the XY table, keyed by the device calibration.
 
-    Built once from k4a's 2d->3d unprojection at a reference depth, so the browser
-    only needs depth per frame. Invalid pixels get (0, 0) and render at the origin
-    (the shader discards zero-depth points anyway). Emits progress because the
-    per-pixel build takes a few seconds and would otherwise look like a hang."""
+    The cache key must also fold in the depth mode, resolution, and a format
+    version: the raw calibration JSON is per-device but mode-agnostic, and any
+    change to the table layout must invalidate old files instead of loading
+    them into a mismatched parser.
+    """
+    key = hashlib.sha256(
+        (calibration_raw + "|NFOV_UNBINNED|640x576|v1").encode()
+    ).hexdigest()
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".cache")
+    return Path(base) / "theDAW" / "akvj" / f"xy_{key}.npy"
+
+
+def _build_xy_table_perpixel(calibration, width: int, height: int):
+    """Per-pixel table build (~369k convert_2d_to_3d calls), kept as the
+    fallback when the SDK's vectorized point-cloud transform is unavailable.
+    Emits progress because it takes a few seconds and would otherwise look
+    like a hang."""
     import numpy as np
     from pyk4a import CalibrationType
 
@@ -103,7 +119,76 @@ def build_xy_table(calibration, width: int, height: int):
                 rows=y + 1,
                 total=height,
             )
-    emit(status="table_ready", valid_pixels=valid, total_pixels=width * height)
+    return table, valid
+
+
+def build_xy_table(calibration, width: int, height: int, calibration_raw: str = ""):
+    """Per-pixel ray slopes (rayX, rayY) with position = (rayX, rayY, 1)*depth.
+
+    Built once from k4a's 2d->3d unprojection at a reference depth, so the browser
+    only needs depth per frame. Invalid pixels get (0, 0) and render at the origin
+    (the shader discards zero-depth points anyway). The table is device-static, so
+    it is cached on disk keyed by the calibration blob; a rebuild uses the SDK's
+    vectorized depth->point-cloud transform and falls back to the original
+    per-pixel loop when that is unavailable."""
+    import numpy as np
+
+    cache_path = None
+    if calibration_raw:
+        try:
+            cache_path = _xy_table_cache_path(calibration_raw)
+            cached = np.load(cache_path)
+            if cached.shape == (height, width, 2) and cached.dtype == np.dtype("<f4"):
+                valid = int(np.count_nonzero(np.any(cached != 0, axis=2)))
+                emit(
+                    status="table_ready",
+                    valid_pixels=valid,
+                    total_pixels=width * height,
+                    source="cache",
+                )
+                return cached
+        except Exception:  # noqa: BLE001 — any cache problem falls through to a rebuild
+            pass
+
+    source = "sdk"
+    try:
+        from pyk4a.transformation import depth_image_to_point_cloud
+
+        # ref_mm=4000 keeps the SDK's int16-mm point cloud in range (|x| and |y|
+        # stay under ~2800 mm at NFOV's field of view) while the 1 mm output
+        # quantization divides down to a ray-slope error of only ~2.5e-4.
+        ref_mm = 4000
+        depth_ref = np.full((height, width), ref_mm, np.uint16)
+        pc = depth_image_to_point_cloud(
+            depth_ref, calibration, thread_safe=True, calibration_type_depth=True
+        )
+    except Exception:  # noqa: BLE001 — older pyk4a or SDK failure; use the slow path
+        pc = None
+    if pc is not None:
+        z = pc[:, :, 2].astype(np.float32)
+        valid_mask = z > 1e-3
+        table = np.zeros((height, width, 2), dtype="<f4")
+        np.divide(pc[:, :, 0], z, out=table[:, :, 0], where=valid_mask)
+        np.divide(pc[:, :, 1], z, out=table[:, :, 1], where=valid_mask)
+        valid = int(np.count_nonzero(valid_mask))
+    else:
+        source = "perpixel"
+        table, valid = _build_xy_table_perpixel(calibration, width, height)
+
+    if cache_path is not None:
+        # Best-effort save: a read-only or full disk must never break startup.
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(cache_path, table)
+        except Exception:  # noqa: BLE001
+            pass
+
+    emit(
+        status="table_ready",
+        valid_pixels=valid,
+        total_pixels=width * height,
+        source=source,
+    )
     return table
 
 
@@ -118,36 +203,13 @@ def pack_table_chunks(table, width: int, height: int):
         yield header + payload
 
 
-def encode_color_jpeg(transformed_color, quality: int) -> bytes:
-    """BGRA (H,W,4) depth-aligned colour -> JPEG (RGB) bytes."""
-    from PIL import Image
-
-    rgb = transformed_color[:, :, :3][:, :, ::-1]  # BGRA -> RGB
-    img = Image.fromarray(rgb, "RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    return buf.getvalue()
-
-
-def pack_frame(width, height, depth_bytes, color_bytes) -> bytes:
-    header = struct.pack(
-        "<4sBBHHBBII",
-        MAGIC,
-        MSG_FRAME,
-        VERSION,
-        width,
-        height,
-        DEPTH_ENC_RAW_U16,
-        COLOR_ENC_JPEG,
-        len(depth_bytes),
-        len(color_bytes),
-    )
-    return header + depth_bytes + color_bytes
+FRAME_HEADER = struct.Struct("<4sBBHHBBII")
 
 
 async def run() -> None:
     import numpy as np
     import websockets
+    from PIL import Image
     from pyk4a import ColorResolution, Config, DepthMode, ImageFormat, PyK4A
 
     ws_url = os.getenv("AKVJ_WS_URL", "ws://127.0.0.1:8600/api/akvj/ws/source")
@@ -215,7 +277,11 @@ async def run() -> None:
         percent=0,
         note="one-time XY unprojection table (a few seconds)",
     )
-    table = build_xy_table(k4a.calibration, width, height)
+    try:
+        cal_raw = k4a.calibration_raw or ""
+    except Exception:  # noqa: BLE001 — the disk cache is optional; build without it
+        cal_raw = ""
+    table = build_xy_table(k4a.calibration, width, height, cal_raw)
     table_msgs = list(pack_table_chunks(table, width, height))
     emit(status="table_packed", chunks=len(table_msgs))
 
@@ -224,6 +290,58 @@ async def run() -> None:
     fps_t0 = time.monotonic()
     fps_count = 0
 
+    depth_nbytes = width * height * 2
+    # The scratch buffers are reused across frames; capture_and_pack returns an
+    # immutable bytes copy, so packing frame N+1 may overlap sending frame N.
+    jpeg_buf = io.BytesIO()
+    scratch = bytearray(FRAME_HEADER.size + depth_nbytes + 512 * 1024)
+
+    def capture_and_pack():
+        """Capture one frame and assemble the complete AKV1 message.
+
+        Runs entirely in the default executor: get_capture blocks on the
+        device, and .depth / .transformed_color trigger the SDK's lazy
+        color-to-depth transform (pyk4a is thread_safe by default), so all of
+        that work stays off the event loop thread."""
+        nonlocal scratch
+        capture = k4a.get_capture()
+        depth = capture.depth
+        color = capture.transformed_color
+        if depth is None or color is None:
+            return None
+        jpeg_buf.seek(0)
+        jpeg_buf.truncate()
+        rgb = color[:, :, :3][:, :, ::-1]  # BGRA -> RGB
+        Image.fromarray(rgb, "RGB").save(jpeg_buf, format="JPEG", quality=quality)
+        color_len = jpeg_buf.tell()
+        total = FRAME_HEADER.size + depth_nbytes + color_len
+        if total > len(scratch):
+            scratch = bytearray(total + 128 * 1024)
+        FRAME_HEADER.pack_into(
+            scratch,
+            0,
+            MAGIC,
+            MSG_FRAME,
+            VERSION,
+            width,
+            height,
+            DEPTH_ENC_RAW_U16,
+            COLOR_ENC_JPEG,
+            depth_nbytes,
+            color_len,
+        )
+        depth_view = np.frombuffer(
+            scratch, dtype="<u2", count=width * height, offset=FRAME_HEADER.size
+        )
+        depth_view.reshape(height, width)[:] = depth
+        color_off = FRAME_HEADER.size + depth_nbytes
+        scratch[color_off : color_off + color_len] = jpeg_buf.getbuffer()[:color_len]
+        return bytes(memoryview(scratch)[:total])
+
+    # Predeclared so the finally below can inspect them even when connect()
+    # itself fails before the streaming loop ever assigns them.
+    pack_fut: Optional[asyncio.Future] = None
+    send_task: Optional[asyncio.Task] = None
     emit(status="connecting", ws_url=ws_url)
     try:
         async with websockets.connect(
@@ -237,32 +355,61 @@ async def run() -> None:
                 status="streaming", fps=0, frames=0, note="sending depth+colour frames"
             )
 
+            # Depth-1 pipeline: frame N+1 is captured and packed in the executor
+            # while frame N's send is awaited. latest_payload keeps only the
+            # newest completed pack, so a slow relay link drops frames instead
+            # of accumulating queue latency.
+            pack_fut = loop.run_in_executor(None, capture_and_pack)
+            latest_payload: Optional[bytes] = None
             while True:
-                capture = await loop.run_in_executor(None, k4a.get_capture)
-                depth = capture.depth
-                color = capture.transformed_color
-                if depth is None or color is None:
-                    continue
-
-                depth_bytes = np.ascontiguousarray(depth, dtype="<u2").tobytes()
-                color_bytes = encode_color_jpeg(color, quality)
-                await ws.send(pack_frame(width, height, depth_bytes, color_bytes))
-
-                frames += 1
-                fps_count += 1
+                waiting = {pack_fut} if send_task is None else {pack_fut, send_task}
+                done, _ = await asyncio.wait(
+                    waiting, return_when=asyncio.FIRST_COMPLETED
+                )
+                if pack_fut in done:
+                    payload = pack_fut.result()
+                    pack_fut = loop.run_in_executor(None, capture_and_pack)
+                    if payload is not None:
+                        latest_payload = payload
+                if send_task is not None and send_task in done:
+                    send_task.result()
+                    send_task = None
+                    frames += 1
+                    fps_count += 1
                 now = time.monotonic()
                 if now - fps_t0 >= 2.0:
                     fps = round(fps_count / (now - fps_t0))
                     emit(status="streaming", fps=fps, frames=frames)
                     fps_t0 = now
                     fps_count = 0
-                if now - last_table >= TABLE_HEARTBEAT_SEC:
+                if send_task is None and now - last_table >= TABLE_HEARTBEAT_SEC:
+                    # The heartbeat shares the socket with frame sends, so it
+                    # only runs between frame sends to keep message order whole.
                     for m in table_msgs:
                         await ws.send(m)
                     last_table = now
+                if send_task is None and latest_payload is not None:
+                    send_task = asyncio.ensure_future(ws.send(latest_payload))
+                    latest_payload = None
     except Exception as e:  # noqa: BLE001 — relay closed / device error mid-stream
         emit(status="error", message=f"stream ended: {e}")
     finally:
+        # Both in-flight tasks must be retrieved before the device stops:
+        # abandoning them logs "exception was never retrieved" noise, and
+        # awaiting pack_fut guarantees k4a.stop() never overlaps an executor
+        # thread still inside get_capture. CancelledError is a BaseException
+        # on this interpreter, so it is suppressed explicitly.
+        if send_task is not None:
+            send_task.cancel()
+            try:
+                await send_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if pack_fut is not None:
+            try:
+                await pack_fut
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         try:
             k4a.stop()
         except Exception:  # noqa: BLE001

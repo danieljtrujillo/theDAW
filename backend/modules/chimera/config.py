@@ -29,11 +29,14 @@ _cached: Optional[ToolchainStatus] = None
 
 def _run(cmd: list[str], timeout: float = 5.0) -> tuple[int, str]:
     try:
+        # stdin=DEVNULL: probes run in consoleless/PTY-wrapped hosts (Pinokio,
+        # services) where an inherited stdin can block ffmpeg's input reader.
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:

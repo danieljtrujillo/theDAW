@@ -84,7 +84,13 @@ def find_ffprobe() -> Optional[str]:
 
 
 def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(cmd, capture_output=True, timeout=timeout, shell=False)
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        timeout=timeout,
+        shell=False,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def _probe_with_ffprobe(path: Path) -> dict[str, Any]:
@@ -118,8 +124,9 @@ def _probe_with_ffprobe(path: Path) -> dict[str, Any]:
     stream = streams[0] if streams else {}
     fmt = data.get("format") or {}
     duration = None
+    raw_duration = fmt.get("duration")
     try:
-        duration = float(fmt.get("duration")) if fmt.get("duration") else None
+        duration = float(raw_duration) if raw_duration is not None else None
     except (TypeError, ValueError):
         duration = None
     pix_fmt = str(stream.get("pix_fmt") or "")

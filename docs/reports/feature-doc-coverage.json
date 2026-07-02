@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-07-01T15:16:33.688Z",
-  "repoRevision": "0959bfe3929e",
+  "generatedAt": "2026-07-02T09:38:02.566Z",
+  "repoRevision": "2f6878ab7601",
   "repomixContext": {
     "path": "repomix-output.md",
     "present": true,
@@ -936,6 +936,7 @@
       "featureId": "settings-feature-toggles-modules-admin",
       "docAnchors": [
         "#one-shot-launcher-windows",
+        "#5-ui-shell",
         "#13-4-per-entry-controls",
         "#19-8-jobs-list",
         "#19-11-assistant",

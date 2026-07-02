@@ -898,6 +898,56 @@ class LibraryDB:
             cur.close()
             return dict(row) if row else None
 
+    # ---- Bulk cross-entry reads ---------------------------------------------
+    #
+    # Batched siblings of list_stems / list_midis / list_notation_artifacts,
+    # in the mold of get_all_analysis: the /_all/* endpoints and the genealogy
+    # graph previously looped list_entries and issued one child query per
+    # entry, an N+1 storm on a large library. Each method takes the writelock
+    # ONCE and answers with a single JOIN. The parent_title / parent_id
+    # columns reproduce the payload the old per-entry loops appended, and the
+    # ORDER BY reproduces the loop order (entries newest-first, then the
+    # per-entry child sort).
+
+    def list_all_stems(self) -> list[dict[str, Any]]:
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                """
+                SELECT s.*, e.title AS parent_title, s.entry_id AS parent_id
+                FROM stems s JOIN entries e ON e.id = s.entry_id
+                ORDER BY e.created_at DESC, s.stem_name
+                """
+            ).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
+    def list_all_midis(self) -> list[dict[str, Any]]:
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                """
+                SELECT m.*, e.title AS parent_title, m.entry_id AS parent_id
+                FROM midis m JOIN entries e ON e.id = m.entry_id
+                ORDER BY e.created_at DESC, m.converted_at
+                """
+            ).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
+    def list_all_notation_artifacts(self) -> list[dict[str, Any]]:
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                """
+                SELECT n.*, e.title AS parent_title, n.entry_id AS parent_id
+                FROM notation_artifacts n JOIN entries e ON e.id = n.entry_id
+                ORDER BY e.created_at DESC, n.created_at
+                """
+            ).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
     # ---- Schema info --------------------------------------------------------
 
     def schema_version(self) -> int:

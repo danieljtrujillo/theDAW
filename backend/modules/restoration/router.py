@@ -96,23 +96,26 @@ def _restore_all(params: dict) -> list[str]:
     return ["-af", ",".join(filters)]
 
 
-# ── process-mode async wrappers (delegate to dsp.py) ────────────────────────
+# ── process-mode wrappers (delegate to dsp.py) ──────────────────────────────
+# Plain sync on purpose: build_router offloads non-coroutine handlers to a
+# worker thread via asyncio.to_thread, keeping the event loop responsive
+# during CPU-bound DSP.
 
 
-async def _vocal_isolate(input_path: Path, output_path: Path, params: dict) -> None:
-    await dsp.vocal_isolate(input_path, output_path, params)
+def _vocal_isolate(input_path: Path, output_path: Path, params: dict) -> None:
+    dsp.vocal_isolate_sync(input_path, output_path, params)
 
 
-async def _stem_separation(input_path: Path, output_path: Path, params: dict) -> None:
-    await dsp.stem_separation(input_path, output_path, params)
+def _stem_separation(input_path: Path, output_path: Path, params: dict) -> None:
+    dsp.stem_separation(input_path, output_path, params)
 
 
-async def _spectral_repair(input_path: Path, output_path: Path, params: dict) -> None:
-    await dsp.spectral_repair(input_path, output_path, params)
+def _spectral_repair(input_path: Path, output_path: Path, params: dict) -> None:
+    dsp.spectral_repair(input_path, output_path, params)
 
 
-async def _breath_removal(input_path: Path, output_path: Path, params: dict) -> None:
-    await dsp.breath_removal(input_path, output_path, params)
+def _breath_removal(input_path: Path, output_path: Path, params: dict) -> None:
+    dsp.breath_removal_sync(input_path, output_path, params)
 
 
 # ── tool specifications ─────────────────────────────────────────────────────

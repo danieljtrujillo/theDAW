@@ -6,6 +6,7 @@ codegraph/
 data/api_key_pools.json
 data/generations/
 data/settings.json
+data/recent_projects.json
 data/local_checkpoints.json
 data/library.db
 data/library.db-*
@@ -27,6 +28,9 @@ archive/
 !docs/readme/**/*.png
 # Bundled .gan plugin artwork (The Owl) — a required runtime asset, not a capture still
 !frontend/public/owl/*.png
+# Bundled .gan plugin artwork (Ares) — the VST Foundry export's background.png beside
+# its project.json; required to package ares.gan (without it the surface has no background)
+!backend/modules/plugin/assets/**/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

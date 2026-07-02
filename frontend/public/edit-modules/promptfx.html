@@ -140,29 +140,59 @@ window.addEventListener('pointermove',e=>{if(!knobDragging)return;creativeness=M
 window.addEventListener('pointerup',()=>{knobDragging=false});
 document.getElementById('knobWrap').addEventListener('wheel',e=>{e.preventDefault();creativeness=Math.round(Math.max(0,Math.min(100,creativeness+(e.deltaY>0?-2:2))));renderCreativeKnob()},{passive:false});
 function animate(){requestAnimationFrame(animate);frame++;drawChainBlocks()}animate();
-let actx,analyser,source,inputFile,inputBuf;let livePromptNodes=[];
+let actx,analyser,source,inputFile,inputBuf,liveBuf;let livePromptNodes=[];
 const PROMPT_FX_MAP={radio:ctx=>{const hp=ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=300;const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=3400;hp.connect(lp);return{input:hp,output:lp,nodes:[hp,lp]}},underwater:ctx=>{const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=800;lp.Q.value=2;return{input:lp,output:lp,nodes:[lp]}},bright:ctx=>{const hs=ctx.createBiquadFilter();hs.type='highshelf';hs.frequency.value=3000;hs.gain.value=6;return{input:hs,output:hs,nodes:[hs]}},dark:ctx=>{const hs=ctx.createBiquadFilter();hs.type='highshelf';hs.frequency.value=3000;hs.gain.value=-6;return{input:hs,output:hs,nodes:[hs]}},reverb:ctx=>{const d1=ctx.createDelay();d1.delayTime.value=.06;const g1=ctx.createGain();g1.gain.value=.4;const d2=ctx.createDelay();d2.delayTime.value=.1;const g2=ctx.createGain();g2.gain.value=.3;const mix=ctx.createGain();d1.connect(g1);g1.connect(d1);g1.connect(mix);d2.connect(g2);g2.connect(d2);g2.connect(mix);const split=ctx.createGain();split.connect(d1);split.connect(d2);split.connect(mix);return{input:split,output:mix,nodes:[d1,g1,d2,g2,mix,split]}},vinyl:ctx=>{const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=8000;const hp=ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=150;lp.connect(hp);return{input:lp,output:hp,nodes:[lp,hp]}},robot:ctx=>{const osc=ctx.createOscillator();osc.type='sine';osc.frequency.value=200;const oscGain=ctx.createGain();oscGain.gain.value=1;osc.connect(oscGain);osc.start();const ring=ctx.createGain();ring.gain.value=0;oscGain.connect(ring.gain);return{input:ring,output:ring,nodes:[osc,oscGain,ring]}},distant:ctx=>{const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=1200;const g=ctx.createGain();g.gain.value=.25;lp.connect(g);return{input:lp,output:g,nodes:[lp,g]}},warm:ctx=>{const ls=ctx.createBiquadFilter();ls.type='lowshelf';ls.frequency.value=200;ls.gain.value=3;const hs=ctx.createBiquadFilter();hs.type='highshelf';hs.frequency.value=10000;hs.gain.value=-2;ls.connect(hs);return{input:ls,output:hs,nodes:[ls,hs]}},thin:ctx=>{const hp=ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=800;return{input:hp,output:hp,nodes:[hp]}},echo:ctx=>{const d=ctx.createDelay();d.delayTime.value=.25;const g=ctx.createGain();g.gain.value=.4;d.connect(g);g.connect(d);const mix=ctx.createGain();g.connect(mix);const split=ctx.createGain();split.connect(d);split.connect(mix);return{input:split,output:mix,nodes:[d,g,mix,split]}},space:ctx=>{const d1=ctx.createDelay();d1.delayTime.value=.12;const g1=ctx.createGain();g1.gain.value=.35;const d2=ctx.createDelay();d2.delayTime.value=.18;const g2=ctx.createGain();g2.gain.value=.25;const mix=ctx.createGain();d1.connect(g1);g1.connect(d1);g1.connect(mix);d2.connect(g2);g2.connect(d2);g2.connect(mix);const split=ctx.createGain();split.connect(d1);split.connect(d2);split.connect(mix);return{input:split,output:mix,nodes:[d1,g1,d2,g2,mix,split]}}};
 function rebuildLivePromptChain(){livePromptNodes.forEach(n=>{try{n.disconnect()}catch(e){}});livePromptNodes=[];if(!actx||!source)return;const words=currentPrompt.toLowerCase().split(/[\s,]+/).filter(Boolean),matchedKws=words.filter(w=>PROMPT_FX_MAP[w]);try{source.disconnect()}catch(e){}try{analyser.disconnect()}catch(e){}if(matchedKws.length===0){source.connect(analyser);analyser.connect(actx.destination);return}const seen=new Set,uniqueKws=matchedKws.filter(kw=>{if(seen.has(kw))return false;seen.add(kw);return true});let prevOutput=null,firstInput=null;uniqueKws.forEach(kw=>{const fx=PROMPT_FX_MAP[kw](actx);livePromptNodes.push(...fx.nodes);if(!firstInput)firstInput=fx.input;if(prevOutput)prevOutput.connect(fx.input);prevOutput=fx.output});source.connect(firstInput);prevOutput.connect(analyser);analyser.connect(actx.destination)}
 function ensureAudio(){if(actx)return;actx=new AudioContext();analyser=actx.createAnalyser();analyser.fftSize=4096;analyser.smoothingTimeConstant=.8}
-function connectBuf(buf){if(source)try{source.stop()}catch(e){}source=actx.createBufferSource();source.buffer=buf;source.loop=true;rebuildLivePromptChain();source.start()}
+/* theDAW host transport: playback start/stop is reported to the parent stage. A stopped
+   loop restarts from zero on the next play, which is acceptable for a loop preview. */
+function postTransportState(playing){window.parent.postMessage({type:'thedaw-transport-state',playing:playing},'*')}
+function stopSource(){if(!source)return;try{source.stop()}catch(e){}source=null;postTransportState(false)}
+function startSource(){if(!liveBuf)return;if(source)try{source.stop()}catch(e){}source=actx.createBufferSource();source.buffer=liveBuf;source.loop=true;rebuildLivePromptChain();source.start();postTransportState(true)}
+/* prepareBuf() remembers the buffer without starting playback (host-driven preview). */
+function prepareBuf(buf){stopSource();liveBuf=buf}
+function connectBuf(buf){prepareBuf(buf);startSource()}
 async function loadFile(file){ensureAudio();inputFile=file;const ab=await file.arrayBuffer();inputBuf=await actx.decodeAudioData(ab.slice(0));document.getElementById('ain').src=URL.createObjectURL(file);connectBuf(inputBuf)}
+/* prepareFile() mirrors loadFile() but leaves playback stopped for the host toggle. */
+async function prepareFile(file){ensureAudio();inputFile=file;const ab=await file.arrayBuffer();inputBuf=await actx.decodeAudioData(ab.slice(0));document.getElementById('ain').src=URL.createObjectURL(file);prepareBuf(inputBuf)}
 document.getElementById('fileinput').onchange=e=>{if(e.target.files[0])loadFile(e.target.files[0])};
 document.getElementById('pickFile').onclick=()=>document.getElementById('fileinput').click();
 document.getElementById('useTone').onclick=async()=>{const r=await fetch('/static/testtone.wav');const b=await r.blob();loadFile(new File([b],'testtone.wav',{type:'audio/wav'}))};
 document.getElementById('runBtn').onclick=async()=>{if(!inputFile)return;const st=document.getElementById('status');st.className='ftr-stat';st.textContent='processing...';const fd=new FormData();fd.append('effect','promptfx');fd.append('params',JSON.stringify({prompt:currentPrompt,creativeness:creativeness/100}));fd.append('output_format','wav');fd.append('audio',inputFile);const t0=performance.now();try{const r=await fetch('/api/edit/creative-neural/process',{method:'POST',body:fd});if(r.ok){const blob=await r.blob();document.getElementById('aout').src=URL.createObjectURL(blob);st.className='ftr-stat ok';st.textContent=(blob.size/1024).toFixed(0)+'KB '+Math.round(performance.now()-t0)+'ms'}else{st.className='ftr-stat err';st.textContent=r.status+' error'}}catch(e){st.className='ftr-stat err';st.textContent='ERR'}};
 
-// ── Receive audio from parent page ──
+/* The footer <audio> previews join the host transport protocol. An element play is reported as playing; a pause or ended report stays true only while another preview voice (the loop source or the other element) is still audible. */
+const ainEl=document.getElementById('ain'),aoutEl=document.getElementById('aout');
+function previewStillAudible(){return !!(source||(ainEl&&!ainEl.paused&&!ainEl.ended)||(aoutEl&&!aoutEl.paused&&!aoutEl.ended))}
+[ainEl,aoutEl].forEach(el=>{if(!el)return;el.addEventListener('play',()=>postTransportState(true));el.addEventListener('pause',()=>postTransportState(previewStillAudible()));el.addEventListener('ended',()=>postTransportState(previewStillAudible()))});
+
+// ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
       const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
-      if (typeof loadFile === 'function') { loadFile(file); }
+      // Host-supplied audio loads paused; the stage's transport toggle starts it.
+      if (typeof prepareFile === 'function') { prepareFile(file); }
       else {
         const ain = document.getElementById('ain') || document.querySelector('audio');
         if (ain) { ain.src = URL.createObjectURL(blob); }
       }
     } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+  if (e.data && e.data.type === 'thedaw-transport') {
+    if (e.data.action === 'play') {
+      if (actx && actx.state === 'suspended') actx.resume();
+      // A single preview voice plays at a time: the element previews are paused
+      // before the loop source starts so the loop never layers over them.
+      if (ainEl) ainEl.pause();
+      if (aoutEl) aoutEl.pause();
+      startSource();
+    } else if (e.data.action === 'pause') {
+      stopSource();
+      // The host pause silences the element previews as well as the loop source.
+      if (ainEl) ainEl.pause();
+      if (aoutEl) aoutEl.pause();
+    }
   }
 });
 </script>

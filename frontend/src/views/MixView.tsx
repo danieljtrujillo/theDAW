@@ -3,12 +3,11 @@ import {
   Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, Trash2,
   Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
   Plug, RefreshCw, Loader2, Play, Pause, Square, Blocks, FolderOpen, SlidersHorizontal,
-  Maximize2, Minimize2,
 } from 'lucide-react';
 import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS, MIX_RACK_IDS } from '../state/effectChainStore';
 import { useVstStore } from '../state/vstStore';
-import { vstApi, getNativeWindowHandle, getContentBounds, type Vst3PluginInfo } from '../lib/vstClient';
-import { useStatusBarStore } from '../state/statusBarStore';
+import { useVstEditorStore } from '../state/vstEditorStore';
+import type { Vst3PluginInfo } from '../lib/vstClient';
 import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
 import { useStudioStore } from '../state/studioStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -20,10 +19,12 @@ import { SlideRow } from '../components/audio/SlideRow';
 import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
 import { EffectsVizPanel } from './EffectsVizPanel';
 import { EffectGuiStage } from '../components/audio/EffectGuiStage';
+import { VstEmbedHost } from '../components/audio/VstEmbedHost';
 import { TheOwl } from '../components/audio/TheOwl';
 import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
 import { attachMixLiveRack } from '../state/mixLiveRack';
+import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../lib/aresBridge';
 import { RACK_EFFECTS, getRackEffect } from '../lib/rackEffects';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
@@ -59,31 +60,9 @@ const PSYCHO_MODULES: PsychoModule[] = RACK_EFFECTS.filter((fx) => MIX_RACK_IDS.
   return { id: fx.id, name: fx.label, color: s.color, desc: fx.description, preview: s.preview };
 });
 
-/* ── Ares control surface -> the 'ares' composite effect ──────────────────────
-   Each Ares .gan control id maps onto one param of the single 'ares' chain effect
-   (all normalized 0..1). The XY Kaoss pad is handled separately: its X / Y / Z
-   drive the three macro params below. Ids come from the bundled Ares project.json:
-   the five knobs, the WET/DRY slider, Freeze, the filter-type selector, and the
-   five blade on/off toggles all drive the effect. */
-const ARES_CTRL_PARAM: Record<string, string> = {
-  '38c6p1p': 'filterCutoff', // lad_cutoff (on-blade knob)
-  '9frddyr': 'delayTime', // lad_time
-  ydmrzl8: 'reverbSize', // lad_size
-  qwf45ly: 'grainsDensity', // lad_density
-  n9rdt84: 'gateRate', // lad_rate
-  t4uakcb: 'wetDry', // ares_sword_mix_slider
-  p32cjjl: 'freeze', // ares_freeze_btn
-  '5lf2jcc': 'filterType', // sel_filter
-  tgfilter: 'filterOn', // ares_tgl_filter (blade icon on/off)
-  tgdelay: 'delayOn', // ares_tgl_delay
-  tgreverb: 'reverbOn', // ares_tgl_reverb
-  tggrains: 'grainsOn', // ares_tgl_grains
-  tggate: 'gateOn', // ares_tgl_gate
-};
-// XY pad: X sweeps the filter, Y drives the overall wet amount (obvious impact),
-// Z the grain density.
-const ARES_PAD_AXES = ['filterCutoff', 'wetDry', 'grainsDensity'] as const;
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+/* The Ares control-surface -> 'ares' composite-effect mappings (control-id map,
+   XY-pad axes, message coalescing) live in lib/aresBridge.ts now, shared with
+   EDIT's Ares popup; MIX registers the bridge on mount below. */
 if (import.meta.env.DEV) {
   const uncovered = [...new Set(RACK_EFFECTS.map((fx) => fx.group))].filter((g) => !(g in PSYCHO_GROUP_STYLE));
   if (uncovered.length) console.warn('[MixView] psychoacoustic groups with no tile style (fallback used):', uncovered);
@@ -144,122 +123,6 @@ const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onCl
         <span className={`text-[9px] font-medium leading-tight line-clamp-2 block ${cat.tile.text}`}>{name}</span>
       </div>
       {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
-    </div>
-  );
-};
-
-// Host box for an EMBEDDED native VST3 editor. The backend sidecar pins the
-// plugin's real OS window (owned by Electron, positioned over this box) and CLIPS
-// it to the box, so an oversized editor keeps its natural size and is reachable by
-// SCROLLING this container (the inner spacer is sized to the plugin). EXPAND grows
-// the box to a large overlay for big GUIs. We only REPORT geometry + scroll here;
-// the editor is closed explicitly (Close / its own window), NEVER on React unmount
-// — so StrictMode / panel re-renders can't kill it.
-const VstEmbedHost: React.FC<{ pluginPath: string; pluginName: string; error?: string; onClose: () => void }> = ({ pluginPath, pluginName, error, onClose }) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const [expanded, setExpanded] = useState(false);
-  // Plugin's natural size in CSS px (from the backend, which knows the real
-  // window size); drives the scrollable inner spacer.
-  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || error) return; // a load failure has no window to track
-    let alive = true;
-    const report = () => {
-      const r = el.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      void getContentBounds().then((cb) => {
-        if (!alive) return;
-        // Viewport origin in absolute physical screen px (content-area screen
-        // origin (DIP) + element offset (CSS px ≈ DIP), scaled by dpr). Use the
-        // client box (excludes the scrollbar) so the native window doesn't cover
-        // the scrollbar; pass the scroll offset so it pans as we scroll.
-        const ox = cb ? cb.x : 0;
-        const oy = cb ? cb.y : 0;
-        void vstApi.editorRect(pluginPath, {
-          x: (ox + r.left) * dpr,
-          y: (oy + r.top) * dpr,
-          w: el.clientWidth * dpr,
-          h: el.clientHeight * dpr,
-          sx: el.scrollLeft * dpr,
-          sy: el.scrollTop * dpr,
-          dpr: 1, // values are already physical px
-        });
-      });
-    };
-    report();
-    const ro = new ResizeObserver(report);
-    ro.observe(el);
-    el.addEventListener('scroll', report, { passive: true });
-    window.addEventListener('resize', report);
-    // Poll so the window follows Electron moves too (a move fires no 'resize').
-    const iv = window.setInterval(report, 250);
-    return () => {
-      alive = false;
-      ro.disconnect();
-      el.removeEventListener('scroll', report);
-      window.removeEventListener('resize', report);
-      window.clearInterval(iv);
-    };
-  }, [pluginPath, error, expanded]);
-
-  // Poll the plugin's natural size so the scroll area matches it (and tracks a
-  // plugin that resizes its own window).
-  useEffect(() => {
-    if (error) return;
-    let alive = true;
-    const dpr = window.devicePixelRatio || 1;
-    const poll = () => {
-      vstApi.editorSize(pluginPath)
-        .then((res) => {
-          if (!alive) return;
-          if (res.status === 'ok' && res.w && res.h) {
-            setNatural({ w: Math.round(res.w / dpr), h: Math.round(res.h / dpr) });
-          }
-          if (alive) window.setTimeout(poll, 1000);
-        })
-        .catch(() => { if (alive) window.setTimeout(poll, 1500); });
-    };
-    poll();
-    return () => { alive = false; };
-  }, [pluginPath, error]);
-
-  const shell = expanded
-    ? 'fixed inset-6 z-50 bg-[#0c0a14] border border-teal-500/40 rounded-lg shadow-2xl flex flex-col min-h-0 overflow-hidden p-2 gap-2'
-    : 'h-full w-full flex flex-col min-h-0 overflow-hidden p-2 gap-2';
-
-  return (
-    <div className={shell}>
-      <div className="flex items-center gap-2 shrink-0">
-        <span className={sectionTitle}>{pluginName}</span>
-        <span className="text-[8px] font-mono text-zinc-600">{error ? 'plugin error' : 'native VST GUI'}</span>
-        {!error && (
-          <button onClick={() => setExpanded((v) => !v)} title={expanded ? 'Collapse' : 'Expand'} className="ml-auto inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-teal-300 transition-colors shrink-0">
-            {expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />} {expanded ? 'Collapse' : 'Expand'}
-          </button>
-        )}
-        <button onClick={onClose} title="Close the plugin editor" className={`inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-red-400 transition-colors shrink-0 ${error ? 'ml-auto' : ''}`}>
-          <X className="w-3.5 h-3.5" /> Close
-        </button>
-      </div>
-      {error ? (
-        <div className="flex-1 min-h-0 rounded border border-red-500/30 bg-red-950/20 grid place-items-center p-3">
-          <div className="text-center max-w-md">
-            <span className="text-[11px] font-semibold text-red-300 block mb-1">This plugin could not be loaded</span>
-            <span className="text-[9px] font-mono text-red-200/70 wrap-break-word">{error}</span>
-          </div>
-        </div>
-      ) : (
-        <div ref={ref} className="flex-1 min-h-0 overflow-auto rounded border border-teal-500/30 bg-black/60 relative">
-          {/* Spacer sized to the plugin so the area scrolls; the native window is
-              positioned over the visible viewport by the backend watcher. */}
-          <div style={natural ? { width: natural.w, height: natural.h } : { width: '100%', height: '100%' }} />
-          {!natural && (
-            <span className="absolute inset-0 grid place-items-center text-[10px] font-mono text-zinc-600 pointer-events-none">loading plugin editor…</span>
-          )}
-        </div>
-      )}
     </div>
   );
 };
@@ -979,10 +842,17 @@ export const MixView: React.FC = () => {
   const reorder = useEffectChainStore((s) => s.reorder);
   const clearChain = useEffectChainStore((s) => s.clearChain);
   const setVstRawState = useEffectChainStore((s) => s.setVstRawState);
-  // The VST chain entry whose native editor is currently embedded in the Effect
-  // Stage (Electron only). null = no embedded editor. `error` is set when the
-  // plugin fails to load so the host shows it instead of a forever "loading…".
-  const [vstEmbed, setVstEmbed] = useState<{ entryId: string; pluginPath: string; pluginName: string; error?: string } | null>(null);
+  // The app-wide embedded VST editor session lives in vstEditorStore (ONE native
+  // editor window exists at a time; leaving the owning tab closes it). The Effect
+  // Stage hosts it only while MIX owns it; EDIT hosts it in its own popup.
+  const vstSessionEntryId = useVstEditorStore((s) => s.entryId);
+  const vstSessionPath = useVstEditorStore((s) => s.pluginPath);
+  const vstSessionName = useVstEditorStore((s) => s.pluginName);
+  const vstSessionError = useVstEditorStore((s) => s.error);
+  const vstSessionOwnerTab = useVstEditorStore((s) => s.ownerTab);
+  const vstEmbed = vstSessionEntryId && vstSessionPath && vstSessionName && vstSessionOwnerTab === 'mix'
+    ? { entryId: vstSessionEntryId, pluginPath: vstSessionPath, pluginName: vstSessionName, error: vstSessionError ?? undefined }
+    : null;
 
   const outputFormat = useStudioStore((s) => s.outputFormat);
   const setOutputFormat = useStudioStore((s) => s.setOutputFormat);
@@ -1030,53 +900,19 @@ export const MixView: React.FC = () => {
   // added so the pad always has something audible to move.
   const aresXyId = useMemo(() => {
     const a = ganPlugins.find((pl) => pl.id === 'ares');
-    return a?.controls.find((c) => c.name === 'ares_xy_kaoss_pad')?.id ?? 'pf5ixrn';
+    return a?.controls.find((c) => c.name === 'ares_xy_kaoss_pad')?.id ?? ARES_XY_PAD_FALLBACK_ID;
   }, [ganPlugins]);
   const aresXyIdRef = useRef(aresXyId);
   aresXyIdRef.current = aresXyId;
-  // Ares .gan controls -> the single 'ares' composite chain effect. The XY pad's
-  // X/Y/Z drive the macro params (ARES_PAD_AXES); every other mapped control sets
-  // its own param (ARES_CTRL_PARAM). rAF-coalesced (patches merged per frame) so
-  // 60fps pad input never thrashes the store, and mixLiveRack pushes params without
-  // a rebuild so it stays click-free.
-  useEffect(() => {
-    let raf: number | null = null;
-    let pendingPatch: Record<string, number> | null = null;
-    const flush = () => {
-      raf = null;
-      const patch = pendingPatch;
-      pendingPatch = null;
-      if (!patch) return;
-      const ares = useEffectChainStore.getState().chain.find((e) => e.effect === 'ares');
-      if (!ares) return; // Ares controls act only when the Ares effect is in the chain
-      useEffectChainStore.getState().updateParams(ares.id, { ...ares.params, ...patch });
-    };
-    const handler = (e: MessageEvent) => {
-      const d = e.data;
-      if (!d || d.type !== 'updateValue') return;
-      let add: Record<string, number> | null = null;
-      if (d.id === aresXyIdRef.current && typeof d.valueX === 'number') {
-        const axes = [
-          d.valueX,
-          typeof d.valueY === 'number' ? d.valueY : 0.5,
-          typeof d.valueZ === 'number' ? d.valueZ : 0.5,
-        ];
-        add = {};
-        for (let i = 0; i < ARES_PAD_AXES.length; i += 1) add[ARES_PAD_AXES[i]] = clamp01(axes[i]);
-      } else {
-        const key = ARES_CTRL_PARAM[d.id];
-        if (key && typeof d.value === 'number') add = { [key]: clamp01(d.value) };
-      }
-      if (!add) return;
-      pendingPatch = pendingPatch ? { ...pendingPatch, ...add } : add;
-      if (raf == null) raf = requestAnimationFrame(flush);
-    };
-    window.addEventListener('message', handler);
-    return () => {
-      window.removeEventListener('message', handler);
-      if (raf != null) cancelAnimationFrame(raf);
-    };
-  }, []);
+  // Ares .gan controls -> the single 'ares' composite chain effect, via the
+  // shared bridge (lib/aresBridge: XY pad -> macro params, mapped controls ->
+  // their params, rAF-coalesced). Registered for the life of the MIX view;
+  // EDIT's Ares popup takes ownership only while it is open.
+  useEffect(() => registerAresBridge({
+    getXyPadId: () => aresXyIdRef.current,
+    findEntry: () => useEffectChainStore.getState().chain.find((e) => e.effect === 'ares') ?? null,
+    updateParams: (id, params) => useEffectChainStore.getState().updateParams(id, params),
+  }), []);
 
   // While Ares is open, feed the live master output level into its .gan so its
   // level meter reflects the real signal (pushed down through the runtime relay).
@@ -1178,62 +1014,12 @@ export const MixView: React.FC = () => {
   const selectedEntry = chain.find((e) => e.id === selectedChainId) ?? chain[0] ?? null;
 
   // Open a VST3 plugin's REAL native GUI (pedalboard show_editor in a sidecar
-  // process), then poll for the captured state and store it on this chain entry
-  // so the dialed-in sound is reused at process time. The editor is a native OS
-  // window, so the user tweaks it there and closes it to commit.
+  // process) via the shared vstEditorStore, which polls for the captured state
+  // and stores it on this chain entry (setVstRawState) so the dialed-in sound is
+  // reused at process time. The editor is a native OS window, so the user tweaks
+  // it there and closes it to commit.
   const handleEditVst = (entry: ChainEntry) => {
-    if (!entry.vst) return;
-    if (vstEmbed?.entryId === entry.id) return; // already open for this entry
-    const path = entry.vst.plugin_path;
-    const name = entry.vst.plugin_name;
-    const rawState = entry.vst.raw_state;
-    const status = useStatusBarStore.getState();
-    // Dismiss any other embedded editor before opening this one.
-    if (vstEmbed && vstEmbed.entryId !== entry.id) {
-      void vstApi.editorRect(vstEmbed.pluginPath, { x: 0, y: 0, w: 0, h: 0, dpr: 1, close: true });
-    }
-    const clearEmbed = () => setVstEmbed((cur) => (cur?.entryId === entry.id ? null : cur));
-    void (async () => {
-      // In Electron, embed the editor in the Effect Stage; in a browser it falls
-      // back to a floating native window (no parent handle available).
-      const hwnd = await getNativeWindowHandle();
-      const embed = hwnd
-        ? { parentHwnd: hwnd, rect: { x: 0, y: 0, w: 480, h: 320, dpr: window.devicePixelRatio || 1 } }
-        : undefined;
-      if (embed) setVstEmbed({ entryId: entry.id, pluginPath: path, pluginName: name });
-      try {
-        await vstApi.openEditor(path, rawState, embed);
-        status.setText(embed
-          ? `VST GUI: ${name} embedding in MIX…`
-          : `VST GUI: ${name} opened — close the window to save its settings`);
-        const startedAt = performance.now();
-        const poll = () => {
-          vstApi.editorResult(path)
-            .then((res) => {
-              if (res.status === 'ok' && res.raw_state) {
-                setVstRawState(entry.id, res.raw_state);
-                status.setText(`VST GUI: ${name} settings captured`);
-                clearEmbed();
-                return;
-              }
-              if (res.status === 'error') {
-                const msg = res.error || 'editor unavailable';
-                status.setText(`VST GUI: ${msg}`);
-                // Keep the host visible (Electron) so the failure is on-screen,
-                // not just in the status bar; otherwise just clear.
-                setVstEmbed((cur) => (cur?.entryId === entry.id ? { ...cur, error: msg } : cur));
-                return;
-              }
-              if (performance.now() - startedAt < 30 * 60 * 1000) window.setTimeout(poll, 1500);
-            })
-            .catch(() => { if (performance.now() - startedAt < 30 * 60 * 1000) window.setTimeout(poll, 1500); });
-        };
-        window.setTimeout(poll, 1500);
-      } catch (e) {
-        clearEmbed();
-        status.setText(`VST GUI FAILED: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    })();
+    useVstEditorStore.getState().open(entry, setVstRawState);
   };
 
   // Clicking a VST in the browser adds it to the chain (once) AND opens its GUI
@@ -1364,10 +1150,7 @@ export const MixView: React.FC = () => {
     chain, selectedId: selectedChainId, setSelectedId: selectChain,
     removeEffect, updateParams, toggleEnabled, reorder, clearChain, onEditVst: handleEditVst,
     vstEmbed,
-    onCloseVstEmbed: () => {
-      if (vstEmbed) void vstApi.editorRect(vstEmbed.pluginPath, { x: 0, y: 0, w: 0, h: 0, dpr: 1, close: true });
-      setVstEmbed(null);
-    },
+    onCloseVstEmbed: () => useVstEditorStore.getState().close(),
     outputFormat, setOutputFormat, showHistory, setShowHistory, processHistory,
     selectedEntry,
   });

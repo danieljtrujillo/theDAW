@@ -46,9 +46,33 @@ _TRANSCODE_EXTS = {
 _AUDIO_EXTS = _BROWSER_OK_EXTS | _TRANSCODE_EXTS
 
 
-# --- Recent files tracking (simple in-memory list) ---
-_recent_files: list[dict] = []
+# --- Recent files tracking (in-memory, mirrored to disk so it survives restarts) ---
+_RECENT_PATH = Path(__file__).resolve().parents[3] / "data" / "recent_projects.json"
 MAX_RECENT = 20
+
+
+def _load_recent() -> list[dict]:
+    """Read the persisted recent list, dropping malformed entries. Any failure
+    yields an empty list because recent-project history is a convenience and
+    must never block module import or server startup."""
+    try:
+        raw = json.loads(_RECENT_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    entries: list[dict] = []
+    for item in raw:
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("name"), str)
+        ):
+            entries.append({"path": item["path"], "name": item["name"]})
+    return entries[:MAX_RECENT]
+
+
+_recent_files: list[dict] = _load_recent()
 
 
 class SaveRequest(BaseModel):
@@ -264,3 +288,11 @@ def _add_recent(path: str, name: str) -> None:
     _recent_files = [r for r in _recent_files if r["path"] != path]
     _recent_files.insert(0, entry)
     _recent_files = _recent_files[:MAX_RECENT]
+    # Best-effort persistence: recent-list IO must never fail a save/load request.
+    try:
+        _RECENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _RECENT_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(_recent_files, indent=2), encoding="utf-8")
+        tmp.replace(_RECENT_PATH)
+    except OSError as e:
+        log.warning("project.recent: failed to persist %s: %s", _RECENT_PATH, e)

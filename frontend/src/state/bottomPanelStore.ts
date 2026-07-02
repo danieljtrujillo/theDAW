@@ -28,12 +28,14 @@ interface BottomPanelState {
   activeTab: BottomPanelTab;
   isOpen: boolean;          // multi-tab panel body open
   isLogOpen: boolean;       // log panel body open
+  logVerbose: boolean;      // LOG shows every raw entry; false = folded SIMPLE view
   multiHeight: number;      // px height of the dock body (shared by multi + log)
   logWidth: number;         // px width of the log column (independent)
   multiMaximized: boolean;  // multi-tab fills the work area
   setActiveTab: (t: BottomPanelTab) => void;
   setOpen: (v: boolean) => void;
   setLogOpen: (v: boolean) => void;
+  setLogVerbose: (v: boolean) => void;
   setMultiHeight: (h: number) => void;
   setLogWidth: (w: number) => void;
   setMultiMaximized: (v: boolean) => void;
@@ -52,12 +54,14 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       activeTab: 'spectral',
       isOpen: false,
       isLogOpen: false,
+      logVerbose: false,
       multiHeight: 320,
       logWidth: 320,
       multiMaximized: false,
       setActiveTab: (t) => set({ activeTab: t }),
       setOpen: (v) => set({ isOpen: v }),
       setLogOpen: (v) => set({ isLogOpen: v }),
+      setLogVerbose: (v) => set({ logVerbose: v }),
       setMultiHeight: (h) => set({ multiHeight: Math.max(MULTI_MIN, Math.min(MULTI_MAX, h)) }),
       setLogWidth: (w) => set({ logWidth: Math.max(LOG_MIN_WIDTH, Math.min(LOG_MAX_WIDTH, w)) }),
       setMultiMaximized: (v) => set({ multiMaximized: v }),
@@ -88,6 +92,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         activeTab: s.activeTab,
         multiHeight: s.multiHeight,
         logWidth: s.logWidth,
+        logVerbose: s.logVerbose,
       }),
     },
   ),

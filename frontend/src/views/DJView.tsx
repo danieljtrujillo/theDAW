@@ -2659,7 +2659,7 @@ const DeckWaveform: React.FC<{
         if (pos < viewStart || pos > viewEnd) return null;
         return (<div key={i} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left: `${((pos - viewStart) / visibleFrac) * 100}%`, width: '2px', background: accentColor }}><span className="absolute top-0 left-0 text-[6px] font-black text-black px-0.5 leading-tight" style={{ background: accentColor }}>{i + 1}</span></div>);
       })}
-      {zoom > 1.04 && <div className="absolute bottom-1 right-1 z-30 rounded bg-black/70 px-1.5 py-0.5 text-[8px] font-mono text-white/70 pointer-events-none">{zoom.toFixed(1)}x</div>}
+      {zoom > 1.04 && <div className="absolute bottom-1 right-1 z-30 rounded bg-black/70 px-1.5 py-0.5 text-[8px] font-mono text-white/70 pointer-events-none">{zoom.toFixed(2)}x</div>}
       <div ref={playheadRef} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: '0%', width: '2px', background: '#ffffff', boxShadow: '0 0 4px rgba(255,255,255,0.8)' }} />
     </div>
   );

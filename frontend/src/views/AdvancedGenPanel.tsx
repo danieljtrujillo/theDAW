@@ -365,6 +365,68 @@ export const AdvancedGenPanel: React.FC<{
     prevAudioRef.current = lastAudioUrl;
   }, [lastAudioUrl]);
 
+  // Synesteez host bridge — the iframe posts finished WAV blobs; import them
+  // into the library, load them on the master footer transport, and mirror
+  // player state back so the iframe's Play buttons can show Play/Pause.
+  const synesteezFrameRef = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    if (heroTab !== 'synesteez') return;
+    const post = (msg: Record<string, unknown>) => {
+      synesteezFrameRef.current?.contentWindow?.postMessage(msg, window.location.origin);
+    };
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      if (!synesteezFrameRef.current || e.source !== synesteezFrameRef.current.contentWindow) return;
+      const d = e.data as { type?: string; name?: string; blob?: Blob; duration?: number; entryId?: string };
+      if (d?.type === 'synesteez:output' && d.blob instanceof Blob) {
+        const { blob } = d;
+        void (async () => {
+          try {
+            const entry = await useLibraryStore.getState().importEntry({
+              blob,
+              filename: `${d.name ?? 'synesteez'}.wav`,
+              mimeType: 'audio/wav',
+              metadata: {
+                title: d.name ?? 'Synesteez output',
+                model: 'synesteez',
+                duration: d.duration,
+                source: 'studio',
+                tags: ['synesteez'],
+              },
+            });
+            await usePlayerStore.getState().load(blob, { label: entry.title, entryId: entry.id });
+            post({ type: 'synesteez:saved', ok: true, entryId: entry.id, title: entry.title });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logError('synesteez', `Library save failed: ${msg}`);
+            post({ type: 'synesteez:saved', ok: false, error: msg });
+          }
+        })();
+      } else if (d?.type === 'synesteez:play' && d.entryId) {
+        void (async () => {
+          const player = usePlayerStore.getState();
+          if (player.currentEntryId === d.entryId) { player.toggle(); return; }
+          const lib = useLibraryStore.getState();
+          const entry = lib.entries.find((en) => en.id === d.entryId);
+          if (!entry) return;
+          try {
+            const blob = await lib.fetchAudioBlob(entry);
+            await usePlayerStore.getState().load(blob, { label: entry.title, entryId: entry.id });
+            usePlayerStore.getState().play();
+          } catch (err) {
+            logError('synesteez', `Playback load failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
+      }
+    };
+    window.addEventListener('message', onMsg);
+    const unsub = usePlayerStore.subscribe((s, prev) => {
+      if (s.isPlaying === prev.isPlaying && s.currentEntryId === prev.currentEntryId) return;
+      post({ type: 'synesteez:player', isPlaying: s.isPlaying, entryId: s.currentEntryId });
+    });
+    return () => { window.removeEventListener('message', onMsg); unsub(); };
+  }, [heroTab]);
+
   const [cmpLayers, setCmpLayers] = useState<Set<string>>(
     () => new Set(['output', 'init', 'mel', 'stft', 'chromagram', 'cqt']),
   );
@@ -825,6 +887,7 @@ export const AdvancedGenPanel: React.FC<{
           {heroTab === 'synesteez' && (
             <div className="relative z-10 flex-1 min-h-0 overflow-hidden rounded-lg border border-white/5 bg-[#0d0d0f]">
               <iframe
+                ref={synesteezFrameRef}
                 src="/synesteez/index.html"
                 title="Synesteez — image to spectrogram audio"
                 className="w-full h-full border-0 block"

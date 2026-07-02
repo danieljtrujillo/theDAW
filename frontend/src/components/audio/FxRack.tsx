@@ -7,7 +7,7 @@
  * the caller supplies the chain array and the mutators.
  */
 
-import { ChevronUp, ChevronDown, X } from 'lucide-react';
+import { Blocks, ChevronUp, ChevronDown, SlidersHorizontal, X } from 'lucide-react';
 import { RACK_EFFECTS, getRackEffect } from '../../lib/rackEffects';
 import type { ChainEntry } from '../../state/effectChainStore';
 import { SlideTrack } from './SlideTrack';
@@ -34,6 +34,13 @@ interface FxRackProps {
   /** Hide the built-in "+ Add effect" select (the caller supplies its own add UI,
    *  e.g. DRAW's colored effect palette). The chain rows still render. */
   hideAdd?: boolean;
+  /** When provided, VST entries get a GUI-open button that (re)opens the
+   *  plugin's native editor (teal once a captured raw_state is stored). Absent
+   *  (e.g. DRAW), VST tiles stay inert exactly as before. */
+  onOpenVst?: (entry: ChainEntry) => void;
+  /** When provided, the 'ares' composite entry gets an open-surface button
+   *  that opens its .gan control surface. */
+  onOpenSurface?: (entry: ChainEntry) => void;
 }
 
 const fmtValue = (v: number, step: number, unit?: string): string => {
@@ -52,6 +59,8 @@ export function FxRack({
   projectBpm,
   displayParams,
   hideAdd,
+  onOpenVst,
+  onOpenSurface,
 }: FxRackProps) {
   const addId = `${idPrefix}-add`;
 
@@ -108,6 +117,16 @@ export function FxRack({
               >
                 {label}
               </span>
+              {entry.vst && onOpenVst && (
+                <button
+                  onClick={() => onOpenVst(entry)}
+                  aria-label={`Open ${label} plugin GUI`}
+                  title={entry.vst.raw_state ? 'Edit plugin GUI (custom settings saved)' : "Open the plugin's native GUI"}
+                  className={`p-0.5 rounded hover:bg-white/5 shrink-0 ${entry.vst.raw_state ? 'text-teal-400 hover:text-teal-300' : 'text-zinc-500 hover:text-teal-300'}`}
+                >
+                  <SlidersHorizontal className="w-3 h-3" />
+                </button>
+              )}
               <button
                 onClick={() => onRemove(entry.id)}
                 aria-label={`Remove ${label}`}
@@ -139,6 +158,16 @@ export function FxRack({
               <span className="text-[10px] font-mono text-zinc-200 flex-1 truncate" title={def.description}>
                 {def.label}
               </span>
+              {entry.effect === 'ares' && onOpenSurface && (
+                <button
+                  onClick={() => onOpenSurface(entry)}
+                  aria-label="Open the Ares control surface"
+                  title="Open the Ares control surface"
+                  className="p-0.5 rounded text-zinc-500 hover:text-indigo-300 hover:bg-white/5 shrink-0"
+                >
+                  <Blocks className="w-3 h-3" />
+                </button>
+              )}
               <button
                 onClick={() => onReorder(i, i - 1)}
                 disabled={i === 0}

@@ -5,7 +5,7 @@ and Claude. It is the fast answer to "what is built, what is in flight, what is
 next." For how a shipped feature actually works, use `docs/USER_GUIDE.md`; this
 file tracks state, not behavior.
 
-Last updated: 2026-06-28.
+Last updated: 2026-07-02.
 
 Status tags: **SHIPPED** = merged to `main`. **BUILT** = on a branch, not merged.
 **PENDING** = designed or queued, not built. **OPEN BUG**. **BLOCKED** = waiting
@@ -13,7 +13,43 @@ on an external gate (hardware, a decision, disk).
 
 ---
 
-## 0. Latest: VST3 hosting, DAW import, .tasmo projects, .gan plugins (BUILT)
+## 0. Latest: Perform header import, LOG modes, VJ cloud controls, backend perf (BUILT)
+
+In the working tree on `feat/tasmo-daw-import-fx`, **BUILT** (not yet committed or
+merged to `main`):
+
+- **Perform tab header import**: the project browse/import controls moved into
+  the tab header (path input + Browse + Import) and the session grid takes the
+  freed vertical space. Clicking or focusing the path input opens a
+  recent-projects dropdown (ArrowDown/ArrowUp to move, Enter to open, Escape to
+  close; one click on an entry imports it immediately), and the recent list now
+  persists across backend restarts (`data/recent_projects.json`).
+- **LOG view modes**: a SIMPLE/VERBOSE toggle in the log toolbar. SIMPLE
+  (default) shows message-only lines, folds consecutive identical messages into
+  one line with an xN counter, and hides debug entries; VERBOSE shows every
+  entry with timestamp and [source] tag. Download exports the full raw log in
+  both modes.
+- **VJ point-cloud controls (DEPTH + KINECT)**: the six transform sliders are
+  now Move X/Y/Z and Rot X/Y/Z and move/rotate the cloud itself about its own
+  center (double-click a slider label to reset it). A LOCK toggle (on by
+  default) keeps the camera facing the cloud center, and RECENTER reframes the
+  cloud to fill the output dead-center, after which Distance scales around that
+  fit.
+- **KINECT latency**: reduced end to end. Viewer delivery is drop-to-latest, so
+  a slow viewer no longer stalls the feed, and the Kinect sidecar's startup
+  calibration table now builds in milliseconds and is cached on disk.
+- **VJ ASCII effect**: now fully converts the output to ASCII; the raw video no
+  longer shows through underneath when TRAILS or AUTOPILOT are active.
+- **Backend performance**: library list/aggregate endpoints serve from the
+  SQLite index instead of walking the filesystem per request (identical
+  responses, roughly 2x+ faster, warm /entries ~67ms); a full audio analysis
+  pass decodes the file once instead of four times (identical results); heavy
+  DSP effect renders run off the backend event loop, so other requests stay
+  responsive during a render.
+
+---
+
+## 1. VST3 hosting, DAW import, .tasmo projects, .gan plugins (BUILT)
 
 On `feat/sway-pose-control`, **BUILT** (not yet merged to `main`):
 
@@ -45,7 +81,7 @@ path); MIX styling pass to match DJ; effect thumbnails as per-effect visualizer 
 
 ---
 
-## 1. EDIT tab: performance FX, instruments, automation
+## 2. EDIT tab: performance FX, instruments, automation
 
 The EDIT timeline grew a full performance and automation layer this cycle. All of
 the following is **SHIPPED** (merged via PRs #38-#42):
@@ -78,7 +114,7 @@ the following is **SHIPPED** (merged via PRs #38-#42):
   "hold to chop" trigger. Gater tempo-sync (it is free-running Hz today).
 - Live verification of the chop and glitch worklets by ear is still wanted.
 
-## 2. Library, stems, MIDI, notation
+## 3. Library, stems, MIDI, notation
 
 - **SHIPPED**: stems and MIDI as first-class library rows (play, favorite,
   delete, route) in their own sub-tabs; audio-to-MIDI conversion; the soundfont
@@ -94,7 +130,7 @@ the following is **SHIPPED** (merged via PRs #38-#42):
 - **PENDING notation**: Phase 4 (MT3 transcription), Phase 5 (OMR), Phase 8
   (notation-reactive visuals).
 
-## 3. DJ tab
+## 4. DJ tab
 
 - **SHIPPED (D1-D7)**: two decks with beatmatch sync, key-lock, live stems with
   per-stem faders, FX + limiter, hot cues, cue/headphone via `setSinkId`, DJ
@@ -104,7 +140,7 @@ the following is **SHIPPED** (merged via PRs #38-#42):
   true real-time stems (today stems are pre-separated). The shipped UI is
   two-deck only.
 
-## 4. VJ tab
+## 5. VJ tab
 
 - **SHIPPED**: the VJ app runs as an embedded module with auto-spawn; the
   Resolume-style clip-grid layout; a native OS folder picker for export; the
@@ -118,7 +154,7 @@ the following is **SHIPPED** (merged via PRs #38-#42):
   visual pass on the media library; the GO-LIVE broadcaster front end plus a
   DJ-audio host->iframe hop and a TURN relay for public watch-links.
 
-## 5. XR / Quest integrations
+## 6. XR / Quest integrations
 
 These are the headset features. All **SHIPPED** to `main`, with the headset-side
 pieces living in theDAW XR (the GANTASMO-MIDI Unity project). The point of the design is that
@@ -153,7 +189,7 @@ they ride plain ADB (USB or wireless) with auto-started relays.
 - **PENDING (two-PC live set)**: two machines, both feeds mixable through the VJ
   or autoplay; needs the broadcast module's host / multi-input / audio-in rework.
 
-## 6. Generation, models, setup
+## 7. Generation, models, setup
 
 - **SHIPPED**: the MAKE model dropdown with SA3 <-> Magenta GPU auto-swap; the
   Settings -> Models panel (local checkpoints, no-download guarantee, Browse to
@@ -169,7 +205,7 @@ they ride plain ADB (USB or wireless) with auto-started relays.
   approved streaming loader. The backend lazy-loads and parks models in RAM as a
   mitigation.
 
-## 7. Infrastructure and maintenance
+## 8. Infrastructure and maintenance
 
 - **PENDING**: the 2026-06-10 codebase audit (124 findings) has judge rulings
   that are not yet applied.
@@ -178,7 +214,7 @@ they ride plain ADB (USB or wireless) with auto-started relays.
 - **ONGOING**: RAG / doc maintenance. Doc edits are approval-based; this file and
   the current doc pass were explicitly requested.
 
-## 8. Documentation and RAG
+## 9. Documentation and RAG
 
 - The user-facing reference is `docs/USER_GUIDE.md`, indexed into the in-app
   assistant's RAG (`backend/rag.py` `DOC_PATHS`). The feature-to-doc coverage
@@ -191,7 +227,7 @@ they ride plain ADB (USB or wireless) with auto-started relays.
   Metamorph (sections 7.7-7.10), first-class stems and MIDI (13.12), the
   soundfont and voice instrument picker (15.8), and manual model placement (21.2).
 
-## 9. Branch map
+## 10. Branch map
 
 `main` holds everything shipped. Recent feature branches (merged): 
 `feat/library-stems-midi-first-class` (#38), `feat/edit-clip-instrument` (#39),
@@ -200,7 +236,7 @@ they ride plain ADB (USB or wireless) with auto-started relays.
 VJ build, the model/storage panel, the MIX overhaul, the playlist suggester, the
 Magenta RT2 integration, the SLIDE controller, and the Quest MIDI bridge.
 
-## 10. Immediate next steps (suggested order)
+## 11. Immediate next steps (suggested order)
 
 1. Automation E4-full (lane editing + fader-follows-automation), then E5 (bake
    into COMMIT EDIT). Finishes Phase E.

@@ -21,23 +21,28 @@ from . import dsp
 FAMILY = "creative_neural"
 
 
+# The numpy/librosa handlers below are plain sync functions on purpose:
+# build_router offloads non-coroutine handlers to a worker thread via
+# asyncio.to_thread, keeping the event loop responsive during CPU-bound DSP.
+
+
 # ── 1. grainlab (process, numpy/librosa) ──────────────────────────────────
-async def _grainlab(inp: Path, out: Path, params: dict) -> None:
+def _grainlab(inp: Path, out: Path, params: dict) -> None:
     dsp.grainlab(inp, out, params)
 
 
 # ── 2. voxsynth (process, STFT vocoder) ───────────────────────────────────
-async def _voxsynth(inp: Path, out: Path, params: dict) -> None:
+def _voxsynth(inp: Path, out: Path, params: dict) -> None:
     dsp.voxsynth(inp, out, params)
 
 
 # ── 3. spectramorph (process, STFT freeze/smear) ─────────────────────────
-async def _spectramorph(inp: Path, out: Path, params: dict) -> None:
+def _spectramorph(inp: Path, out: Path, params: dict) -> None:
     dsp.spectramorph(inp, out, params)
 
 
 # ── 4. crossfade_morph (process, spectral morph) ─────────────────────────
-async def _crossfade_morph(inp: Path, out: Path, params: dict) -> None:
+def _crossfade_morph(inp: Path, out: Path, params: dict) -> None:
     dsp.crossfade_morph(inp, out, params)
 
 
@@ -141,6 +146,9 @@ async def _ambientforge(inp: Path, out: Path, params: dict) -> None:
 
     Ignores input content — synthesizes from noise + spectral shaping + reverb.
     """
+    # The process dispatch always passes the uploaded file; this tool synthesizes
+    # its bed from lavfi sources and deliberately never reads it.
+    _ = inp
     duration = params["duration"]
 
     # Build a pink noise source with spectral shaping and reverb
@@ -171,7 +179,7 @@ async def _ambientforge(inp: Path, out: Path, params: dict) -> None:
 
 
 # ── 8. tokensynth (process, ring mod + vibrato + tremolo) ─────────────────
-async def _tokensynth(inp: Path, out: Path, params: dict) -> None:
+def _tokensynth(inp: Path, out: Path, params: dict) -> None:
     dsp.tokensynth(inp, out, params)
 
 

@@ -917,7 +917,26 @@ syncUI();
 updateBiquads();
 draw();
 
-// ── Receive audio from parent page ──
+/* ════════════════════════════════════════════
+   theDAW HOST TRANSPORT
+   ════════════════════════════════════════════ */
+// Every element play/pause is reported to the parent stage so its toggle stays
+// truthful even when playback starts from the in-module LOAD/TONE/PROCESS buttons.
+function postTransportState(playing){
+  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*');
+}
+const reportPreviewState=()=>postTransportState(!audioIn.paused||!audioOut.paused);
+['play','pause'].forEach(evt=>{
+  audioIn.addEventListener(evt,reportPreviewState);
+  audioOut.addEventListener(evt,reportPreviewState);
+});
+// The host play action resumes whichever preview element last started playing,
+// so a paused processed-output preview is not silently swapped for the dry input.
+let lastActive='in';
+audioIn.addEventListener('play',()=>{lastActive='in';});
+audioOut.addEventListener('play',()=>{lastActive='out';});
+
+// ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
@@ -926,10 +945,25 @@ window.addEventListener('message', async (e) => {
       const url = URL.createObjectURL(file);
       audioIn.src = url;
       if (!sourceNode) connectSource(audioIn);
-      audioIn.play();
+      // Host-supplied audio loads paused; the stage's transport toggle starts it.
       statusEl.textContent = file.name || 'track.wav';
-      if (audioCtx.state === 'suspended') audioCtx.resume();
     } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+  if (e.data && e.data.type === 'thedaw-transport') {
+    if (e.data.action === 'play' && audioIn.src && audioIn.src !== window.location.href) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      // The processed-output preview resumes when it was the last one playing;
+      // otherwise the dry input resumes as before.
+      if (lastActive === 'out' && audioOut.src && audioOut.src !== window.location.href) {
+        audioOut.play();
+      } else {
+        if (!sourceNode) connectSource(audioIn);
+        audioIn.play();
+      }
+    } else if (e.data.action === 'pause') {
+      audioIn.pause();
+      audioOut.pause();
+    }
   }
 });
 

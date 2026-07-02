@@ -753,7 +753,18 @@ document.getElementById('btnProcess').addEventListener('click', processAudio);
    ============================================================ */
 draw();
 
-// ── Receive audio from parent page ──
+/* ============================================================
+   theDAW HOST TRANSPORT
+   ============================================================ */
+/* Every element play/pause is reported to the parent stage so its toggle stays
+   truthful even when playback starts from the in-module LOAD/TONE/PROCESS buttons. */
+function postTransportState(playing) {
+  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*');
+}
+audioEl.addEventListener('play', () => postTransportState(true));
+audioEl.addEventListener('pause', () => postTransportState(false));
+
+// ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
@@ -762,10 +773,18 @@ window.addEventListener('message', async (e) => {
       inputFile = file;
       audioEl.src = URL.createObjectURL(file);
       if (!sourceNode) connectSource(audioEl);
-      audioEl.play();
+      /* Host-supplied audio loads paused; the stage's transport toggle starts it. */
       document.getElementById('status').textContent = file.name || 'track.wav';
-      if (audioCtx.state === 'suspended') audioCtx.resume();
     } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+  if (e.data && e.data.type === 'thedaw-transport') {
+    if (e.data.action === 'play' && audioEl.src && audioEl.src !== window.location.href) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      if (!sourceNode) connectSource(audioEl);
+      audioEl.play();
+    } else if (e.data.action === 'pause') {
+      audioEl.pause();
+    }
   }
 });
 

@@ -173,11 +173,15 @@ async def _neural_reverb(inp: Path, out: Path, params: dict) -> None:
 
 
 # ── PitchLift (process, librosa pyin → sine resynthesis) ─────────────────────
-async def _pitchlift(inp: Path, out: Path, params: dict) -> None:
+def _pitchlift(inp: Path, out: Path, params: dict) -> None:
     """Monophonic pitch tracking via librosa.pyin, resynthesized as a sine wave.
 
     Output is an audible sine melody following the detected f0 contour. Future:
     output MIDI via basic-pitch instead.
+
+    Plain sync on purpose: build_router offloads non-coroutine handlers to a
+    worker thread, keeping the event loop responsive during the CPU-bound
+    pyin + resynthesis loop.
     """
     import numpy as np
     import soundfile as sf
@@ -193,8 +197,8 @@ async def _pitchlift(inp: Path, out: Path, params: dict) -> None:
 
     f0, voiced_flag, voiced_prob = librosa.pyin(
         mono,
-        fmin=librosa.note_to_hz("C2"),
-        fmax=librosa.note_to_hz("C7"),
+        fmin=float(librosa.note_to_hz("C2")),
+        fmax=float(librosa.note_to_hz("C7")),
         sr=sr,
         frame_length=2048,
         hop_length=512,

@@ -24,9 +24,9 @@ Img to Audio Spectrogram Converter - GANTASMO
       --slider-bg: #2a2a35;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; min-height: 100vh; }
+    html, body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; height: 100%; overflow: hidden; }
 
-    .app { display: flex; flex-direction: column; min-height: 100vh; }
+    .app { display: flex; flex-direction: column; height: 100vh; }
 
     /* TABS — slim top strip (the branded header was removed for compactness) */
     .tab-nav { display: flex; gap: 2px; padding: 6px 12px 0; background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -39,13 +39,15 @@ Img to Audio Spectrogram Converter - GANTASMO
     .tab-btn:hover:not(.active) { color: var(--text); }
 
     /* TAB PANES */
-    .tab-pane { display: none; flex: 1; padding: 10px; }
-    .tab-pane.active { display: flex; flex-direction: column; gap: 10px; }
+    .tab-pane { display: none; flex: 1; padding: 8px; min-height: 0; }
+    .tab-pane.active { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 
     /* LAYOUT */
-    .two-col { display: flex; gap: 12px; align-items: flex-start; }
-    .ctrl-col { flex: 0 0 320px; display: flex; flex-direction: column; gap: 8px; }
-    .preview-col { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .two-col { display: flex; gap: 8px; align-items: flex-start; }
+    .tab-pane > .two-col { flex: 1; min-height: 0; align-items: stretch; }
+    .ctrl-col { flex: 0 0 280px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
+    .preview-col { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+    .preview-col canvas { width: auto; max-width: 100%; max-height: 38vh; }
 
     /* SECTIONS */
     details.section {
@@ -53,7 +55,7 @@ Img to Audio Spectrogram Converter - GANTASMO
       border-radius: 6px; overflow: hidden;
     }
     details.section summary {
-      padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 11px;
+      padding: 4px 10px; cursor: pointer; font-weight: 600; font-size: 11px;
       letter-spacing: .5px; text-transform: uppercase; color: var(--muted);
       list-style: none; display: flex; align-items: center; gap: 6px;
       user-select: none;
@@ -61,10 +63,10 @@ Img to Audio Spectrogram Converter - GANTASMO
     details.section summary::before { content: '▸'; transition: transform .15s; }
     details.section[open] summary::before { transform: rotate(90deg); }
     details.section summary:hover { color: var(--text); }
-    .section-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+    .section-body { padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
 
     /* CONTROLS */
-    .ctrl { display: flex; flex-direction: column; gap: 4px; }
+    .ctrl { display: flex; flex-direction: column; gap: 3px; }
     .ctrl-row { display: flex; align-items: center; gap: 8px; }
     .ctrl label { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
     .ctrl label span { color: var(--text); font-weight: 600; }
@@ -133,17 +135,27 @@ Img to Audio Spectrogram Converter - GANTASMO
     /* CANVAS */
     canvas { display: block; width: 100%; background: #000; border-radius: 4px; border: 1px solid var(--border); }
 
-    /* AUDIO */
-    audio { width: 100%; height: 36px; border-radius: 4px; }
-    audio::-webkit-media-controls-panel { background: var(--card); }
-    .audio-row { display: flex; gap: 8px; align-items: center; }
-    .output-section { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .output-section h4 { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    /* OUTPUT — slim row: playback happens on theDAW footer transport */
+    .output-row {
+      background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+      padding: 4px 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    .output-row .status { flex: 1; min-width: 60px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Hover-tooltip marker (replaces inline explainer copy) */
+    .info-tip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 13px; height: 13px; border-radius: 50%; border: 1px solid var(--muted);
+      color: var(--muted); font-size: 9px; font-weight: 700; cursor: help; flex-shrink: 0;
+    }
+    .info-tip:hover { color: var(--text); border-color: var(--text); }
 
     /* FILE INPUT */
     .file-drop {
-      border: 2px dashed var(--border); border-radius: 6px; padding: 16px;
+      border: 2px dashed var(--border); border-radius: 6px; padding: 5px 8px;
       text-align: center; cursor: pointer; color: var(--muted); transition: border-color .15s;
+      font-size: 11px;
     }
     .file-drop:hover, .file-drop.drag-over { border-color: var(--accent); color: var(--text); }
     .file-drop input { display: none; }
@@ -164,10 +176,10 @@ Img to Audio Spectrogram Converter - GANTASMO
     .drag-handle:active { cursor: grabbing; }
 
     /* ---- META COMPOSER TAB ---- */
-    .meta-layout { display: flex; gap: 10px; flex: 1; min-height: 0; }
-    .meta-library { flex: 0 0 140px; display: flex; flex-direction: column; gap: 6px; }
+    .meta-layout { display: flex; gap: 8px; flex: 1; min-height: 0; }
+    .meta-library { flex: 0 0 140px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
     .meta-library h4 { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-    .tile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; overflow-y: auto; max-height: 400px; }
+    .tile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; overflow-y: auto; flex: 1; min-height: 0; align-content: start; }
     .tile-item {
       border-radius: 4px; overflow: hidden; cursor: pointer;
       border: 2px solid transparent; position: relative; aspect-ratio: 1;
@@ -181,11 +193,11 @@ Img to Audio Spectrogram Converter - GANTASMO
     }
     .tile-item:hover .tile-del { display: block; }
 
-    .meta-canvas-wrap { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-    .meta-canvas-wrap h4 { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-    #metaCanvas { cursor: crosshair; }
+    .meta-canvas-wrap { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+    .meta-canvas-wrap h4 { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; display: flex; align-items: center; gap: 4px; }
+    #metaCanvas { cursor: crosshair; flex: 1 1 0; min-height: 140px; }
 
-    .meta-props { flex: 0 0 160px; display: flex; flex-direction: column; gap: 8px; }
+    .meta-props { flex: 0 0 160px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; }
     .meta-props h4 { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
     .prop-group { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 
@@ -200,10 +212,10 @@ Img to Audio Spectrogram Converter - GANTASMO
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
     /* Compact desktop targets (embedded in the app, mouse-first) */
-    .btn { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 6px 14px; }
-    .btn.sm { min-height: 24px; padding: 4px 9px; }
-    .tab-btn { min-height: 28px; display: inline-flex; align-items: center; }
-    details.section summary { min-height: 30px; }
+    .btn { min-height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 5px 12px; }
+    .btn.sm { min-height: 22px; padding: 3px 8px; }
+    .tab-btn { min-height: 26px; display: inline-flex; align-items: center; }
+    details.section summary { min-height: 24px; }
 
     select, input[type=number] { font-size: 12px; }
     input[type=range] { touch-action: pan-y; }
@@ -230,8 +242,7 @@ Img to Audio Spectrogram Converter - GANTASMO
       .seq-item-ctrls { flex-wrap: wrap; }
     }
     @media (max-width: 480px) {
-      .tab-pane { padding: 10px 8px; }
-      .section-body { padding: 8px 10px; gap: 8px; }
+      .tab-pane { padding: 8px 6px; }
     }
   </style>
 </head>
@@ -240,7 +251,7 @@ Img to Audio Spectrogram Converter - GANTASMO
   <nav class="tab-nav">
     <button class="tab-btn active" data-tab="composer">Composer</button>
     <button class="tab-btn" data-tab="sequence">Sequence</button>
-    <button class="tab-btn" data-tab="meta">Meta Composer</button>
+    <button class="tab-btn" data-tab="meta" title="Build a spectrogram as a collage of images. Each tile occupies a time-by-frequency region; its brightness maps directly to amplitude at that pitch and moment.">Meta Composer</button>
   </nav>
 
   <!-- ═══════════════════════════════ COMPOSER ═══════════════════════════════ -->
@@ -252,8 +263,8 @@ Img to Audio Spectrogram Converter - GANTASMO
           <summary>Image</summary>
           <div class="section-body">
             <div class="file-drop" id="composerDrop">
-              <input type="file" id="imageInput" accept="image/*">
-              <div>Drop image here or <strong>click to browse</strong></div>
+              <input type="file" id="imageInput" name="imageInput" accept="image/*" aria-label="Source image">
+              <div>Drop image or <strong>browse</strong></div>
             </div>
             <div class="ctrl">
               <label>Scan direction</label>
@@ -277,13 +288,14 @@ Img to Audio Spectrogram Converter - GANTASMO
           <summary>Duration</summary>
           <div class="section-body">
             <div class="ctrl">
-              <label>Duration <span id="durationValue">5.0</span>s</label>
-              <input type="range" id="duration" min="0.1" max="300" step="0.1" value="5.0">
-            </div>
-            <div class="ctrl-row" style="gap:6px">
-              <label style="color:var(--muted);font-size:11px">Precise:</label>
-              <input type="number" id="durationExact" min="0.1" max="300" step="0.1" value="5.0" style="width:70px">
-              <span style="font-size:11px;color:var(--muted)">sec</span>
+              <div class="ctrl-row" style="justify-content:space-between">
+                <label for="duration" style="font-size:11px;color:var(--muted)">Duration</label>
+                <span class="ctrl-row" style="gap:4px">
+                  <input type="number" id="durationExact" name="durationExact" aria-label="Duration in seconds" min="0.1" max="300" step="0.1" value="5.0" style="width:64px">
+                  <span style="font-size:11px;color:var(--muted)">s</span>
+                </span>
+              </div>
+              <input type="range" id="duration" name="duration" min="0.1" max="300" step="0.1" value="5.0">
             </div>
           </div>
         </details>
@@ -471,13 +483,10 @@ Img to Audio Spectrogram Converter - GANTASMO
             <canvas id="spectrogramPreviewCanvas"></canvas>
           </div>
         </div>
-        <div class="output-section">
-          <h4>Audio Output</h4>
-          <audio id="audioPlayer" controls></audio>
-          <div class="audio-row">
-            <button class="btn ghost sm" id="downloadBtn" disabled>Download WAV</button>
-            <span class="status" id="fileSizeLabel"></span>
-          </div>
+        <div class="output-row">
+          <button class="btn sm" id="composerPlayBtn" disabled>Play</button>
+          <button class="btn ghost sm" id="downloadBtn" disabled>Download WAV</button>
+          <span class="status" id="fileSizeLabel"></span>
         </div>
       </div>
     </div>
@@ -493,7 +502,7 @@ Img to Audio Spectrogram Converter - GANTASMO
           <span style="font-size:11px;color:var(--muted)">Drag items to reorder</span>
         </div>
         <div class="seq-list" id="seqList">
-          <div style="color:var(--muted);font-size:11px;padding:20px;text-align:center;border:1px dashed var(--border);border-radius:6px">
+          <div style="color:var(--muted);font-size:11px;padding:10px;text-align:center;border:1px dashed var(--border);border-radius:6px">
             No images added yet
           </div>
         </div>
@@ -541,13 +550,10 @@ Img to Audio Spectrogram Converter - GANTASMO
         <div class="progress-wrap" id="seqProgressWrap" style="display:none">
           <div class="progress-bar" id="seqProgress"></div>
         </div>
-        <div class="output-section">
-          <h4>Audio Output</h4>
-          <audio id="seqAudioPlayer" controls></audio>
-          <div class="audio-row">
-            <button class="btn ghost sm" id="seqDownloadBtn" disabled>Download WAV</button>
-            <span class="status" id="seqFileSizeLabel"></span>
-          </div>
+        <div class="output-row">
+          <button class="btn sm" id="seqPlayBtn" disabled>Play</button>
+          <button class="btn ghost sm" id="seqDownloadBtn" disabled>Download WAV</button>
+          <span class="status" id="seqFileSizeLabel"></span>
         </div>
       </div>
     </div>
@@ -555,9 +561,6 @@ Img to Audio Spectrogram Converter - GANTASMO
 
   <!-- ══════════════════════════ META COMPOSER ═══════════════════════════════ -->
   <div class="tab-pane" id="tab-meta">
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
-      Build a spectrogram as a <strong style="color:var(--text)">collage of images</strong>. Each tile occupies a time×frequency region — its brightness maps directly to amplitude at that pitch and moment.
-    </div>
     <div class="meta-layout">
       <div class="meta-library">
         <h4>Tile Library</h4>
@@ -578,7 +581,7 @@ Img to Audio Spectrogram Converter - GANTASMO
 
       <div class="meta-canvas-wrap">
         <div style="display:flex;align-items:center;justify-content:space-between">
-          <h4>Spectrogram Canvas <span style="color:var(--muted);font-weight:400">(click to place selected tile)</span></h4>
+          <h4>Spectrogram Canvas <span class="info-tip" title="Build a spectrogram as a collage of images. Each tile occupies a time-by-frequency region; its brightness maps directly to amplitude at that pitch and moment. Click a tile in the library, then click the canvas to place it.">?</span></h4>
           <button class="btn danger sm" id="metaClearBtn">Clear All</button>
         </div>
         <canvas id="metaCanvas" height="300"></canvas>
@@ -646,15 +649,12 @@ Img to Audio Spectrogram Converter - GANTASMO
           <div class="progress-wrap" id="metaProgressWrap" style="display:none">
             <div class="progress-bar" id="metaProgress"></div>
           </div>
+          <div class="output-row">
+            <button class="btn sm" id="metaPlayBtn" disabled>Play</button>
+            <button class="btn ghost sm" id="metaDownloadBtn" disabled>Download</button>
+            <span class="status" id="metaFileSizeLabel"></span>
+          </div>
         </div>
-      </div>
-    </div>
-    <div class="output-section" style="margin-top:10px">
-      <h4>Audio Output</h4>
-      <audio id="metaAudioPlayer" controls></audio>
-      <div class="audio-row">
-        <button class="btn ghost sm" id="metaDownloadBtn" disabled>Download WAV</button>
-        <span class="status" id="metaFileSizeLabel"></span>
       </div>
     </div>
   </div>
@@ -1012,6 +1012,98 @@ function cancelWorker() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// theDAW HOST BRIDGE
+// Embedded as a same-origin iframe inside theDAW. Finished WAVs are
+// posted to the host, which imports them into the library and loads
+// them on the master footer transport; the Play buttons toggle that
+// transport. Standalone (no host) falls back to a local Audio().
+// ═══════════════════════════════════════════════════════════════════
+const HOST = window.parent !== window ? window.parent : null;
+const OUT_TABS = {
+  composer: { play: 'composerPlayBtn', dl: 'downloadBtn', size: 'fileSizeLabel', status: 'composerStatus' },
+  sequence: { play: 'seqPlayBtn', dl: 'seqDownloadBtn', size: 'seqFileSizeLabel', status: 'seqStatus' },
+  meta: { play: 'metaPlayBtn', dl: 'metaDownloadBtn', size: 'metaFileSizeLabel', status: 'metaStatus' },
+};
+const outputs = {};          // key -> {blob, url, name, duration, entryId}
+const pendingSaves = [];     // FIFO of keys awaiting a 'synesteez:saved' ack
+let hostPlayer = { isPlaying: false, entryId: null };
+let fallbackAudio = null;    // standalone playback
+let fallbackKey = null;
+
+function refreshPlayButtons() {
+  for (const key of Object.keys(OUT_TABS)) {
+    const btn = document.getElementById(OUT_TABS[key].play);
+    const out = outputs[key];
+    if (!btn) continue;
+    const active = HOST
+      ? !!(out && out.entryId && hostPlayer.isPlaying && hostPlayer.entryId === out.entryId)
+      : !!(out && fallbackKey === key && fallbackAudio && !fallbackAudio.paused);
+    btn.textContent = active ? 'Pause' : 'Play';
+  }
+}
+
+function togglePlay(key) {
+  const out = outputs[key];
+  if (!out) return;
+  if (HOST) {
+    HOST.postMessage({ type: 'synesteez:play', entryId: out.entryId }, location.origin);
+    return;
+  }
+  if (!fallbackAudio) {
+    fallbackAudio = new Audio();
+    fallbackAudio.addEventListener('play', refreshPlayButtons);
+    fallbackAudio.addEventListener('pause', refreshPlayButtons);
+    fallbackAudio.addEventListener('ended', refreshPlayButtons);
+  }
+  if (fallbackKey !== key || fallbackAudio.src !== out.url) {
+    fallbackKey = key;
+    fallbackAudio.src = out.url;
+  }
+  if (fallbackAudio.paused) fallbackAudio.play(); else fallbackAudio.pause();
+}
+
+function publishOutput(key, name, blob, durationSec) {
+  const t = OUT_TABS[key];
+  if (outputs[key] && outputs[key].url) { try { URL.revokeObjectURL(outputs[key].url); } catch (e) { /* ignore */ } }
+  const out = outputs[key] = { blob, url: URL.createObjectURL(blob), name, duration: durationSec, entryId: null };
+  const dlBtn = document.getElementById(t.dl);
+  dlBtn.disabled = false;
+  dlBtn.onclick = () => { const a = document.createElement('a'); a.href = out.url; a.download = name + '.wav'; a.click(); };
+  const playBtn = document.getElementById(t.play);
+  playBtn.disabled = !!HOST; // with a host, playable once the library save acks
+  playBtn.onclick = () => togglePlay(key);
+  document.getElementById(t.size).textContent = (blob.size / 1024 / 1024).toFixed(2) + ' MB';
+  if (HOST) {
+    pendingSaves.push(key);
+    HOST.postMessage({ type: 'synesteez:output', name, blob, duration: durationSec }, location.origin);
+    setStatus(t.status, 'Done. Saving to library...', 'ok');
+  } else {
+    setStatus(t.status, 'Done!', 'ok');
+  }
+  refreshPlayButtons();
+}
+
+window.addEventListener('message', (e) => {
+  if (e.origin !== location.origin || !e.data || typeof e.data.type !== 'string') return;
+  if (e.data.type === 'synesteez:saved') {
+    const key = pendingSaves.shift();
+    const t = key && OUT_TABS[key];
+    if (!t) return;
+    if (e.data.ok) {
+      if (outputs[key]) outputs[key].entryId = e.data.entryId;
+      document.getElementById(t.play).disabled = false;
+      setStatus(t.status, 'Saved to library', 'ok');
+    } else {
+      setStatus(t.status, 'Library save failed: ' + (e.data.error || 'unknown'), 'err');
+    }
+    refreshPlayButtons();
+  } else if (e.data.type === 'synesteez:player') {
+    hostPlayer = { isPlaying: !!e.data.isPlaying, entryId: e.data.entryId ?? null };
+    refreshPlayButtons();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // IMAGE PROCESSING
 // ═══════════════════════════════════════════════════════════════════
 const isMobile = () => window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 700;
@@ -1191,6 +1283,7 @@ function sliderLabel(sliderId, labelId, transform) {
 // COMPOSER TAB
 // ═══════════════════════════════════════════════════════════════════
 let composerImageData = null;
+let composerImageName = null;
 let composerDebounce = null;
 
 function composerOnChange() {
@@ -1219,10 +1312,8 @@ function initComposer() {
   // Duration
   const durSlider = document.getElementById('duration');
   const durExact = document.getElementById('durationExact');
-  const durLabel = document.getElementById('durationValue');
   durSlider.addEventListener('input', () => {
     config.duration = parseFloat(durSlider.value);
-    durLabel.textContent = config.duration.toFixed(1);
     durExact.value = config.duration.toFixed(1);
     composerOnChange();
   });
@@ -1230,7 +1321,7 @@ function initComposer() {
     const v = Math.max(0.1, Math.min(300, parseFloat(durExact.value) || 5));
     config.duration = v;
     durSlider.value = v;
-    durLabel.textContent = v.toFixed(1);
+    durExact.value = v.toFixed(1);
     composerOnChange();
   });
 
@@ -1305,6 +1396,7 @@ async function loadComposerImage(file) {
     const img = await loadImageFile(file);
     const { maxW, maxH } = adaptiveMaxSize(config.duration);
     composerImageData = processImageToData(img, maxW, maxH);
+    composerImageName = file.name.replace(/\.[^.]+$/, '');
     const oriented = reorientPixels(composerImageData, config.imageDirection);
     displayImageOnCanvas(oriented, document.getElementById('imageCanvas'));
     drawSpectrogramPreview(oriented, document.getElementById('spectrogramPreviewCanvas'), config);
@@ -1349,13 +1441,7 @@ async function generateComposerAudio() {
     });
 
     const blob = createWavBlob(channels, config.sampleRate, config.bitDepth);
-    const url = URL.createObjectURL(blob);
-    document.getElementById('audioPlayer').src = url;
-    const dlBtn = document.getElementById('downloadBtn');
-    dlBtn.disabled = false;
-    dlBtn.onclick = () => { const a = document.createElement('a'); a.href = url; a.download = 'sonivista.wav'; a.click(); };
-    document.getElementById('fileSizeLabel').textContent = `${(blob.size / 1024 / 1024).toFixed(2)} MB`;
-    setStatus('composerStatus', 'Done!', 'ok');
+    publishOutput('composer', 'Synesteez - ' + (composerImageName || 'image'), blob, config.duration);
   } catch (e) {
     setStatus('composerStatus', 'Error: ' + (e.message || e), 'err');
   } finally {
@@ -1427,7 +1513,7 @@ function updateSeqTotalLabel() {
 function renderSeqList() {
   const list = document.getElementById('seqList');
   if (seqImages.length === 0) {
-    list.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:20px;text-align:center;border:1px dashed var(--border);border-radius:6px">No images added yet</div>';
+    list.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:10px;text-align:center;border:1px dashed var(--border);border-radius:6px">No images added yet</div>';
     updateSeqTotalLabel();
     return;
   }
@@ -1654,14 +1740,9 @@ async function generateSequence() {
     }
 
     const blob = createWavBlob(outChannels, sr, config.bitDepth);
-    const url = URL.createObjectURL(blob);
-    document.getElementById('seqAudioPlayer').src = url;
-    const dlBtn = document.getElementById('seqDownloadBtn');
-    dlBtn.disabled = false;
-    dlBtn.onclick = () => { const a = document.createElement('a'); a.href = url; a.download = 'sonivista-sequence.wav'; a.click(); };
     const totalSec = outChannels[0].length / sr;
-    document.getElementById('seqFileSizeLabel').textContent = `${(blob.size / 1024 / 1024).toFixed(2)} MB · ${totalSec.toFixed(1)}s`;
-    setStatus('seqStatus', `Done! ${seqImages.length} image${seqImages.length !== 1 ? 's' : ''}, ${totalSec.toFixed(1)}s total`, 'ok');
+    publishOutput('sequence', `Synesteez Sequence - ${seqImages.length} image${seqImages.length !== 1 ? 's' : ''}`, blob, totalSec);
+    document.getElementById('seqFileSizeLabel').textContent = `${(blob.size / 1024 / 1024).toFixed(2)} MB, ${totalSec.toFixed(1)}s`;
 
   } catch (e) {
     setStatus('seqStatus', 'Error: ' + (e.message || e), 'err');
@@ -1878,10 +1959,11 @@ function fillMosaic() {
 function renderMetaCanvas() {
   const canvas = document.getElementById('metaCanvas');
   const W = canvas.width || canvas.clientWidth || 600;
-  canvas.width = W;
+  const H = canvas.height || 300;
+  if (canvas.width !== W) canvas.width = W;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, W, canvas.height);
+  ctx.fillRect(0, 0, W, H);
 
   const COLORS = ['#00e676','#ff6d00','#7c4dff','#00b0ff','#f44336','#ffcc00','#00bcd4','#e91e63'];
 
@@ -1890,9 +1972,9 @@ function renderMetaCanvas() {
     if (!tile) return;
 
     const px = p.x / 100 * W;
-    const py = p.y / 100 * canvas.height;
+    const py = p.y / 100 * H;
     const pw = p.w / 100 * W;
-    const ph = p.h / 100 * canvas.height;
+    const ph = p.h / 100 * H;
 
     // Draw thumbnail
     ctx.save();
@@ -1918,7 +2000,7 @@ function renderMetaCanvas() {
     ctx.fillStyle = '#333';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Select a tile from the library, then click here to place it', W/2, canvas.height/2);
+    ctx.fillText('Select a tile from the library, then click here to place it', W/2, H/2);
     ctx.textAlign = 'left';
   }
 }
@@ -1995,13 +2077,7 @@ async function generateMeta() {
     });
 
     const blob = createWavBlob(channels, metaCfg.sampleRate, config.bitDepth);
-    const url = URL.createObjectURL(blob);
-    document.getElementById('metaAudioPlayer').src = url;
-    const dlBtn = document.getElementById('metaDownloadBtn');
-    dlBtn.disabled = false;
-    dlBtn.onclick = () => { const a = document.createElement('a'); a.href = url; a.download = 'sonivista-meta.wav'; a.click(); };
-    document.getElementById('metaFileSizeLabel').textContent = `${(blob.size / 1024 / 1024).toFixed(2)} MB`;
-    setStatus('metaStatus', 'Done!', 'ok');
+    publishOutput('meta', `Synesteez Meta - ${metaPlacements.length} tile${metaPlacements.length !== 1 ? 's' : ''}`, blob, metaCfg.duration);
   } catch (e) {
     setStatus('metaStatus', 'Error: ' + (e.message || e), 'err');
   } finally {
@@ -2026,15 +2102,16 @@ document.addEventListener('DOMContentLoaded', () => {
   initSequence();
   initMeta();
 
-  // Resize meta canvas reactively
-  const metaCanvasParent = document.getElementById('metaCanvas').parentElement;
+  // Resize meta canvas reactively — the canvas is flex-sized (fills the
+  // column), so both bitmap dimensions track the layout box.
+  const metaCanvasEl = document.getElementById('metaCanvas');
   function resizeMetaCanvas() {
-    const mc = document.getElementById('metaCanvas');
-    const newW = metaCanvasParent ? metaCanvasParent.clientWidth : 600;
-    if (newW > 0) { mc.width = newW; renderMetaCanvas(); }
+    const newW = metaCanvasEl.clientWidth;
+    const newH = metaCanvasEl.clientHeight;
+    if (newW > 0 && newH > 0) { metaCanvasEl.width = newW; metaCanvasEl.height = newH; renderMetaCanvas(); }
   }
   if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(resizeMetaCanvas).observe(metaCanvasParent);
+    new ResizeObserver(resizeMetaCanvas).observe(metaCanvasEl);
   } else {
     window.addEventListener('resize', resizeMetaCanvas);
     setTimeout(resizeMetaCanvas, 120);
