@@ -213,6 +213,15 @@ def import_vst_foundry(
                 f"{_knob_html(el, idx)}</div>"
             )
             controls.append(GanControl(id=eid, name=ename, kind="value"))
+        elif etype == "Image":
+            # This export carries no asset bytes for Image elements and the
+            # artwork is already baked into background.png, so a borderless,
+            # non-interactive placeholder is the faithful rendering; if a
+            # future export ships asset data, render an <img> from it instead.
+            log.info("owl import: image element without asset data (%s)", eid)
+            body_parts.append(
+                f'<div class="gan-el gan-image" style="{style}" title="{ename}"></div>'
+            )
         else:
             # Unknown native type — render a labelled placeholder rather than
             # silently dropping it, so nothing disappears without a trace.
@@ -265,6 +274,7 @@ def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> s
         "justify-content:center;touch-action:none;}"
         ".gan-knob-ind{width:3px;height:38%;margin-top:8%;border-radius:2px;"
         "background:#fff;box-shadow:0 0 6px var(--gan-glow);}"
+        ".gan-image{pointer-events:none;}"
         ".gan-unknown{border:1px dashed rgba(255,255,255,0.15);border-radius:4px;}"
         "</style></head><body>"
     )

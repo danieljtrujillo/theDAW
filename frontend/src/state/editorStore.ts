@@ -240,6 +240,9 @@ interface EditorStoreState {
   reorderTrackEffect: (trackId: string, from: number, to: number) => void;
   toggleTrackEffect: (trackId: string, entryId: string) => void;
   updateTrackEffectParams: (trackId: string, entryId: string, params: Record<string, number>) => void;
+  /** Store a VST entry's captured native-editor state on a track chain node,
+   *  so the dialed-in sound is applied at freeze/render time. */
+  setTrackVstRawState: (trackId: string, entryId: string, rawState: string) => void;
   /** Replace an existing chain entry's effect with a live rack effect (reset to
    *  its defaults, enabled), keeping the entry's id + slot. Used to "rebuild" an
    *  imported device that came in inert so a controller mapping has a live home. */
@@ -283,6 +286,9 @@ interface EditorStoreState {
 
   // Selectors
   addMasterVst: (plugin: VstNode) => void;
+  /** Store a VST entry's captured native-editor state on a master VST chain
+   *  node (staleness is caught by the freeze signature, which covers raw_state). */
+  setMasterVstRawState: (entryId: string, rawState: string) => void;
   removeMasterVst: (entryId: string) => void;
   reorderMasterVst: (from: number, to: number) => void;
   clearMasterVst: () => void;
@@ -610,6 +616,13 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       frozenMaster: null,
     })),
 
+  setMasterVstRawState: (entryId, rawState) =>
+    set((s) => ({
+      masterVstChain: s.masterVstChain.map((e) =>
+        e.id === entryId && e.vst ? { ...e, vst: { ...e.vst, raw_state: rawState } } : e,
+      ),
+    })),
+
   removeMasterVst: (entryId) =>
     set((s) => ({
       masterVstChain: s.masterVstChain.filter((e) => e.id !== entryId),
@@ -677,6 +690,20 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       tracks: s.tracks.map((t) =>
         t.id === trackId
           ? { ...t, fxChain: (t.fxChain ?? []).map((e) => (e.id === entryId ? { ...e, params } : e)) }
+          : t,
+      ),
+    })),
+
+  setTrackVstRawState: (trackId, entryId, rawState) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? {
+              ...t,
+              fxChain: (t.fxChain ?? []).map((e) =>
+                e.id === entryId && e.vst ? { ...e, vst: { ...e.vst, raw_state: rawState } } : e,
+              ),
+            }
           : t,
       ),
     })),

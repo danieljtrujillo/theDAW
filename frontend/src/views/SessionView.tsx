@@ -147,6 +147,7 @@ export const SessionView: React.FC = () => {
             onChange={setSourcePath}
             onEnter={importSource}
             onFocus={openRecent}
+            onClick={openRecent}
             onBlur={scheduleCloseRecent}
             onKeyDown={onPathKeyDown}
             role="combobox"

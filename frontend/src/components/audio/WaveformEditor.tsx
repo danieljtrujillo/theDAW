@@ -3,7 +3,7 @@ import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
   SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
-  Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw,
+  Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw, Blocks,
 } from 'lucide-react';
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
@@ -21,6 +21,12 @@ import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, sampleLane, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useVstStore } from '../../state/vstStore';
+import { useVstEditorStore } from '../../state/vstEditorStore';
+import { VstEmbedHost } from './VstEmbedHost';
+import { GanPluginStage } from './GanPluginStage';
+import { useGanStore } from '../../state/ganStore';
+import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../../lib/aresBridge';
+import type { ChainEntry } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
@@ -420,6 +426,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Master VST3 chain (rendered/frozen, hosted via pedalboard) + scan list.
   const masterVstChain = useEditorStore((s) => s.masterVstChain);
   const addMasterVst = useEditorStore((s) => s.addMasterVst);
+  const setMasterVstRawState = useEditorStore((s) => s.setMasterVstRawState);
+  const setTrackVstRawState = useEditorStore((s) => s.setTrackVstRawState);
   const removeMasterVst = useEditorStore((s) => s.removeMasterVst);
   const reorderMasterVst = useEditorStore((s) => s.reorderMasterVst);
   const clearMasterVst = useEditorStore((s) => s.clearMasterVst);
@@ -616,6 +624,84 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const magentaTool: MagentaTool | null = magentaToolId ? magentaToolById[magentaToolId] ?? null : null;
   const [showMetamorph, setShowMetamorph] = useState(false);
   const [fxPanelTrackId, setFxPanelTrackId] = useState<string | null>(null);
+  // The app-wide embedded native VST editor session (vstEditorStore hosts ONE
+  // editor window; leaving the owning tab closes it). EDIT hosts it in a
+  // floating popup only while EDIT owns it; MIX hosts it in its Effect Stage.
+  const vstSessionEntryId = useVstEditorStore((s) => s.entryId);
+  const vstSessionPath = useVstEditorStore((s) => s.pluginPath);
+  const vstSessionName = useVstEditorStore((s) => s.pluginName);
+  const vstSessionError = useVstEditorStore((s) => s.error);
+  const vstSessionOwnerTab = useVstEditorStore((s) => s.ownerTab);
+  // Open a VST entry's REAL native GUI; the sink stores the captured raw_state
+  // on the right chain (a track's fxChain or the master VST chain).
+  const openVstEditor = (entry: ChainEntry, sink: (entryId: string, rawState: string) => void) =>
+    useVstEditorStore.getState().open(entry, sink);
+  // Clicking an available plugin adds it to the master VST chain (once) AND
+  // opens its GUI immediately (parity with MIX's browser). Re-clicking one
+  // already in the chain just (re)opens its editor instead of adding a duplicate.
+  const addAndEditMasterVst = (pl: Vst3PluginInfo) => {
+    let entry = useEditorStore.getState().masterVstChain.find((e) => e.vst?.plugin_path === pl.path);
+    if (!entry) {
+      addMasterVst({ plugin_path: pl.path, plugin_name: pl.name });
+      entry = [...useEditorStore.getState().masterVstChain].reverse().find((e) => e.vst?.plugin_path === pl.path);
+    }
+    if (entry) openVstEditor(entry, setMasterVstRawState);
+  };
+  // The Ares .gan control-surface popup and the chain entry (track or master
+  // scope) it drives while open.
+  const [aresPanel, setAresPanel] = useState<{ scope: { kind: 'master' } | { kind: 'track'; trackId: string }; entryId: string } | null>(null);
+  const ganActiveUrl = useGanStore((s) => s.activeUrl);
+  const ganActiveName = useGanStore((s) => s.activeName);
+  // Open the Ares surface for a specific 'ares' chain entry: package the bundled
+  // .gan on first use, open it in the popup's GanPluginStage, and route its
+  // controls onto THAT entry's params (see the bridge effect below).
+  const openAresSurface = (scope: { kind: 'master' } | { kind: 'track'; trackId: string }, entry: ChainEntry) => {
+    setAresPanel({ scope, entryId: entry.id });
+    void (async () => {
+      if (!useGanStore.getState().plugins.some((p) => p.id === 'ares')) await useGanStore.getState().ensureAres();
+      await useGanStore.getState().openById('ares');
+    })();
+  };
+  const closeAresSurface = () => {
+    setAresPanel(null);
+    useGanStore.getState().close();
+  };
+  // While the popup is open, EDIT owns the ONE app-wide Ares bridge; closing it
+  // releases ownership (MIX re-registers its own bridge on mount).
+  useEffect(() => {
+    if (!aresPanel) return;
+    const { scope, entryId } = aresPanel;
+    return registerAresBridge({
+      getXyPadId: () => {
+        const ares = useGanStore.getState().plugins.find((pl) => pl.id === 'ares');
+        return ares?.controls.find((c) => c.name === 'ares_xy_kaoss_pad')?.id ?? ARES_XY_PAD_FALLBACK_ID;
+      },
+      findEntry: () => {
+        const st = useEditorStore.getState();
+        const chain = scope.kind === 'track'
+          ? st.tracks.find((t) => t.id === scope.trackId)?.fxChain ?? []
+          : st.masterFxChain;
+        return chain.find((e) => e.id === entryId) ?? null;
+      },
+      updateParams: (id, params) => {
+        const st = useEditorStore.getState();
+        if (scope.kind === 'track') st.updateTrackEffectParams(scope.trackId, id, params);
+        else st.updateMasterEffectParams(id, params);
+      },
+    });
+  }, [aresPanel]);
+  // Mirror the open panel into a ref so the unmount-only cleanup below can see
+  // whether the popup was still open when EDIT unmounted.
+  const aresPanelRef = useRef(aresPanel);
+  aresPanelRef.current = aresPanel;
+  // Switching center tabs unmounts EDIT with the popup still open; the panel
+  // state dies with the component and the bridge effect above unregisters
+  // itself, but the app-wide ganStore session would otherwise leak, so the
+  // Ares surface would hijack MIX's Effect Stage while bound to EDIT's entry.
+  // Run closeAresSurface's remaining teardown (the ganStore close) on unmount.
+  useEffect(() => () => {
+    if (aresPanelRef.current) useGanStore.getState().close();
+  }, []);
   const [instrPanel, setInstrPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
   const instrPanelRef = useRef<HTMLDivElement>(null);
   // Outside-click / Escape dismiss the clip-instrument popover. Deferred a
@@ -2275,7 +2361,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <button onClick={() => setZoom(zoom - 5)} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom out">
               <ZoomOut className="w-3 h-3" />
             </button>
-            <span className="text-[9px] font-mono text-zinc-400 w-12 text-center">{zoom}px/s</span>
+            <span className="text-[9px] font-mono text-zinc-400 w-14 text-center">{zoom.toFixed(2)}px/s</span>
             <button onClick={() => setZoom(zoom + 5)} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom in">
               <ZoomIn className="w-3 h-3" />
             </button>
@@ -2492,6 +2578,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     <div key={node.id} className="flex items-center gap-1.5 bg-black/40 border border-white/5 rounded px-1.5 py-1">
                       <span className="text-[8px] font-mono text-teal-300/70 shrink-0">{i + 1}</span>
                       <span className="flex-1 min-w-0 text-[9px] font-mono text-zinc-300 truncate">{node.vst?.plugin_name ?? 'VST'}</span>
+                      {node.vst && (
+                        <button
+                          onClick={() => openVstEditor(node, setMasterVstRawState)}
+                          aria-label={`Open ${node.vst.plugin_name} plugin GUI`}
+                          title={node.vst.raw_state ? 'Edit plugin GUI (custom settings saved)' : "Open the plugin's native GUI"}
+                          className={`p-0.5 shrink-0 ${node.vst.raw_state ? 'text-teal-400 hover:text-teal-300' : 'text-zinc-500 hover:text-teal-300'}`}
+                        >
+                          <SlidersHorizontal className="w-3 h-3" />
+                        </button>
+                      )}
                       <button onClick={() => reorderMasterVst(i, i - 1)} disabled={i === 0} aria-label="Move up" className="p-0.5 text-zinc-500 hover:text-white disabled:opacity-30"><ChevronUp className="w-3 h-3" /></button>
                       <button onClick={() => reorderMasterVst(i, i + 1)} disabled={i === masterVstChain.length - 1} aria-label="Move down" className="p-0.5 text-zinc-500 hover:text-white disabled:opacity-30"><ChevronDown className="w-3 h-3" /></button>
                       <button onClick={() => removeMasterVst(node.id)} aria-label="Remove VST" className="p-0.5 text-zinc-500 hover:text-red-300"><X className="w-3 h-3" /></button>
@@ -2512,7 +2608,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               ) : (
                 <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
                   {vstPlugins.map((pl) => (
-                    <button key={pl.path} onClick={() => addMasterVst({ plugin_path: pl.path, plugin_name: pl.name })} title={pl.path}
+                    <button key={pl.path} onClick={() => addAndEditMasterVst(pl)} title={pl.path}
                       className="flex items-center gap-1.5 bg-black/30 border border-white/5 rounded px-1.5 py-1 text-left hover:bg-white/5">
                       <Plug className="w-3 h-3 text-teal-300 shrink-0" />
                       <span className="flex-1 min-w-0 text-[9px] font-mono text-zinc-300 truncate">{pl.name}</span>
@@ -2545,6 +2641,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 onUpdateParams={(id, p) => writeFxParams({ kind: 'master' }, id, p)}
                 projectBpm={projectBpm}
                 displayParams={(id) => fxDisplayParams({ kind: 'master' }, id)}
+                onOpenVst={(entry) => openVstEditor(entry, setMasterVstRawState)}
+                onOpenSurface={(entry) => openAresSurface({ kind: 'master' }, entry)}
               />
             </section>
           )}
@@ -2637,10 +2735,54 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onUpdateParams={(id, p) => writeFxParams({ kind: 'track', trackId: t.id }, id, p)}
               projectBpm={projectBpm}
               displayParams={(id) => fxDisplayParams({ kind: 'track', trackId: t.id }, id)}
+              onOpenVst={(entry) => openVstEditor(entry, (entryId, raw) => setTrackVstRawState(t.id, entryId, raw))}
+              onOpenSurface={(entry) => openAresSurface({ kind: 'track', trackId: t.id }, entry)}
             />
           </div>
         );
       })()}
+
+      {/* Embedded native VST editor (floating hardware-card popup, offset below
+          the top-28 FX panels so both can be open). Rendered only while EDIT
+          owns the ONE app-wide embed session; the same VstEmbedHost drives the
+          native OS window in MIX's Effect Stage. */}
+      {vstSessionEntryId && vstSessionPath && vstSessionName && vstSessionOwnerTab === 'edit' && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 top-36 z-50 hardware-card bg-black/95 border border-teal-500/30 rounded-lg shadow-2xl shadow-teal-900/40 overflow-hidden"
+          style={{ width: 'min(640px, 92vw)', height: 'min(480px, 72vh)' }}
+        >
+          <VstEmbedHost
+            pluginPath={vstSessionPath}
+            pluginName={vstSessionName}
+            error={vstSessionError ?? undefined}
+            onClose={() => useVstEditorStore.getState().close()}
+          />
+        </div>
+      )}
+
+      {/* Ares control surface (floating popup); its .gan drives the picked
+          'ares' chain entry's params through the shared bridge while open. */}
+      {aresPanel && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 top-36 z-50 hardware-card bg-black/95 border border-indigo-500/30 rounded-lg shadow-2xl shadow-indigo-900/40 flex flex-col overflow-hidden"
+          style={{ width: 'min(720px, 92vw)', height: 'min(520px, 72vh)' }}
+        >
+          <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2 shrink-0">
+            <Blocks className="w-3.5 h-3.5 text-indigo-300" />
+            <span className="text-[10px] font-mono uppercase tracking-wider text-indigo-300">Ares Surface</span>
+            <button
+              onClick={closeAresSurface}
+              aria-label="Close Ares surface"
+              className="ml-auto p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <GanPluginStage url={ganActiveUrl} name={ganActiveName} />
+          </div>
+        </div>
+      )}
 
       {/* Automation lane panel (floating; while automation edit mode is on) */}
       {automationEdit && (

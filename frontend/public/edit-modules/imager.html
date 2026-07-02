@@ -471,13 +471,37 @@ function updateWidth() {
   sideGainR.gain.setTargetAtTime(cross, now, 0.01);
 }
 
-function connectBuf(buf) {
+/* theDAW host transport: playback start/stop is reported to the parent stage. */
+let liveBuf = null;
+function postTransportState(playing) {
+  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*');
+}
+function stopSource() {
+  if (!source) return;
+  try { source.stop(); } catch(e) {}
+  source = null;
+  postTransportState(false);
+}
+/* startSource() builds a fresh looping source from the last prepared buffer. A stopped
+   loop restarts from zero on the next play, which is acceptable for a loop preview. */
+function startSource() {
+  if (!liveBuf) return;
   if (source) try { source.stop(); } catch(e) {}
   source = actx.createBufferSource();
-  source.buffer = buf; source.loop = true;
+  source.buffer = liveBuf; source.loop = true;
   source.connect(inSplitter);
   source.start();
   updateWidth();
+  postTransportState(true);
+}
+/* prepareBuf() remembers the buffer without starting playback (host-driven preview). */
+function prepareBuf(buf) {
+  stopSource();
+  liveBuf = buf;
+}
+function connectBuf(buf) {
+  prepareBuf(buf);
+  startSource();
 }
 
 async function loadFile(file) {
@@ -485,6 +509,14 @@ async function loadFile(file) {
   const ab = await file.arrayBuffer();
   const buf = await actx.decodeAudioData(ab.slice(0));
   connectBuf(buf);
+}
+
+/* prepareFile() mirrors loadFile() but leaves playback stopped for the host toggle. */
+async function prepareFile(file) {
+  ensureAudio(); inputFile = file;
+  const ab = await file.arrayBuffer();
+  const buf = await actx.decodeAudioData(ab.slice(0));
+  prepareBuf(buf);
 }
 
 /* ═══════════════════════════════════════════════
@@ -835,18 +867,27 @@ async function processAudio() {
 
 document.getElementById('btnProcess').addEventListener('click', processAudio);
 
-// ── Receive audio from parent page ──
+// ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
       const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
-      if (typeof loadFile === 'function') { loadFile(file); }
+      // Host-supplied audio loads paused; the stage's transport toggle starts it.
+      if (typeof prepareFile === 'function') { prepareFile(file); }
       else {
         const ain = document.getElementById('audioEl') || document.querySelector('audio');
         if (ain) { ain.src = URL.createObjectURL(blob); }
       }
     } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+  if (e.data && e.data.type === 'thedaw-transport') {
+    if (e.data.action === 'play') {
+      if (actx && actx.state === 'suspended') actx.resume();
+      startSource();
+    } else if (e.data.action === 'pause') {
+      stopSource();
+    }
   }
 });
 

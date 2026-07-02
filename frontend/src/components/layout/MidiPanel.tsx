@@ -33,6 +33,7 @@ import {
 import { useLibraryStore } from '../../state/libraryStore';
 import { logInfo, logWarn } from '../../state/logStore';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { usePlayerStore } from '../../state/playerStore';
 import { PianoRoll } from '../audio/PianoRoll';
 import { ArpeggiatorPanel } from '../audio/ArpeggiatorPanel';
 import { VirtuosoControls } from '../audio/VirtuosoControls';
@@ -360,9 +361,16 @@ export const MidiPanel: React.FC = () => {
       const { blob } = await renderDrumBeatBlob(render);
       const span = Math.max(...render.map((r) => r.startSec)) + 0.5;
       const fx = vocalizeEffect(render, span);
-      const url = URL.createObjectURL(blob);
-      void new Audio(url).play().catch(() => {});
-      setTimeout(() => URL.revokeObjectURL(url), 20000);
+      // The beat routes through the footer player so the global transport,
+      // visualizer, and HUD own its playback instead of a detached element.
+      const player = usePlayerStore.getState();
+      await player.load(blob, { label: 'MIDI beat' });
+      // The beat preview is a one-shot. load() applies the store's loop flag
+      // (default true) and has no per-load override, so the visible footer loop
+      // toggle is switched off before play; re-enabling it is one click.
+      const { isLooping, toggleLoop } = usePlayerStore.getState();
+      if (isLooping) toggleLoop();
+      player.play();
       setStatus(`beat playing - fx idea: ${fx.effectId} (${fx.reason})`);
     } catch (e) {
       setStatus(`beat error: ${String(e)}`);

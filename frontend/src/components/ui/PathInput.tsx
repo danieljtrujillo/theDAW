@@ -16,6 +16,7 @@ interface PathInputProps {
   onBlur?: () => void;
   onEnter?: () => void;
   onFocus?: () => void;
+  onClick?: () => void;
   /** Runs before the built-in Enter handling; call e.preventDefault() to
    *  suppress the built-in Enter behavior (onEnter / blur). */
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
@@ -54,6 +55,7 @@ export const PathInput: React.FC<PathInputProps> = ({
   onBlur,
   onEnter,
   onFocus,
+  onClick,
   onKeyDown,
   role,
   ariaExpanded,
@@ -125,6 +127,7 @@ export const PathInput: React.FC<PathInputProps> = ({
           onChange={(e) => onChange(e.target.value)}
           onBlur={onBlur}
           onFocus={onFocus}
+          onClick={onClick}
           onKeyDown={(e) => {
             onKeyDown?.(e);
             if (e.key === 'Enter' && !e.defaultPrevented) {

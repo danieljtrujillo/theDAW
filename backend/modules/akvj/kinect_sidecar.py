@@ -338,6 +338,10 @@ async def run() -> None:
         scratch[color_off : color_off + color_len] = jpeg_buf.getbuffer()[:color_len]
         return bytes(memoryview(scratch)[:total])
 
+    # Predeclared so the finally below can inspect them even when connect()
+    # itself fails before the streaming loop ever assigns them.
+    pack_fut: Optional[asyncio.Future] = None
+    send_task: Optional[asyncio.Task] = None
     emit(status="connecting", ws_url=ws_url)
     try:
         async with websockets.connect(
@@ -356,7 +360,6 @@ async def run() -> None:
             # newest completed pack, so a slow relay link drops frames instead
             # of accumulating queue latency.
             pack_fut = loop.run_in_executor(None, capture_and_pack)
-            send_task: Optional[asyncio.Task] = None
             latest_payload: Optional[bytes] = None
             while True:
                 waiting = {pack_fut} if send_task is None else {pack_fut, send_task}
@@ -391,6 +394,22 @@ async def run() -> None:
     except Exception as e:  # noqa: BLE001 — relay closed / device error mid-stream
         emit(status="error", message=f"stream ended: {e}")
     finally:
+        # Both in-flight tasks must be retrieved before the device stops:
+        # abandoning them logs "exception was never retrieved" noise, and
+        # awaiting pack_fut guarantees k4a.stop() never overlaps an executor
+        # thread still inside get_capture. CancelledError is a BaseException
+        # on this interpreter, so it is suppressed explicitly.
+        if send_task is not None:
+            send_task.cancel()
+            try:
+                await send_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if pack_fut is not None:
+            try:
+                await pack_fut
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         try:
             k4a.stop()
         except Exception:  # noqa: BLE001

@@ -11,6 +11,7 @@ Endpoints (prefix from module.json → `/api/library`):
     DELETE /entries/{id}       remove the entry (audio + metadata)
     POST   /import             accept an audio upload, return new entry
     POST   /import-media       accept a video/image upload, return new entry
+    POST   /reindex            re-sync the SQLite mirror from the filesystem
 
 The audio stream uses FileResponse so range requests work (essential for
 the player to scrub) and there's no in-memory copy of large files.
@@ -438,6 +439,18 @@ def import_folder(
         "name": root.name,
         "entries": entries,
     }
+
+
+@router.post("/reindex")
+def reindex_library() -> dict[str, Any]:
+    """Walk the on-disk library and upsert every entry into the SQLite mirror.
+    Heals entries added to data/generations outside the API (dropped in by
+    hand, synced from another machine, ...). store.reindex() is idempotent,
+    so repeated calls are safe."""
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    return {"reindexed": store.reindex()}
 
 
 @router.patch("/entries/{entry_id}")
