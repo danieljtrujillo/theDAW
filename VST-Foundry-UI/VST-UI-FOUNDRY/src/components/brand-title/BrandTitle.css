@@ -1,0 +1,168 @@
+/*
+ * Brand lockup styles — paired with BrandTitle.tsx.
+ *
+ * Assets are referenced RELATIVE to this file (./assets/...), so the whole
+ * brand-title/ folder is drop-in for any bundler that resolves url() in CSS
+ * (Vite, webpack, Parcel, etc.). If your setup can't resolve relative url()
+ * in CSS, see README.md → "Asset paths" for the public-root alternative.
+ *
+ * Almost everything you'd want to tweak (colors, sizes, speeds) is a CSS
+ * variable in the `.brand` block below — override them from the host app
+ * instead of editing rules. See README.md for a guided tour.
+ */
+
+/* Self-hosted so the brand styling works offline. */
+/* (Unused font face removed for cleaner sans-serif) */
+
+.brand {
+  /* ---- Tunables: override these from the host to retheme ---- */
+  --brand-icon-color: #ffffff;       /* robot mark fill (default "ink") */
+  --brand-accent: #000000;           /* pixel-word drop shadow (black)  */
+  --brand-pixel-color: #a855f7;      /* pixel-word color (purple) */
+  --brand-mad: #ef4444;              /* hover "angry" outline (red)      */
+  --brand-grad-a: #9333ea;           /* byline "0" gradient — edge color */
+  --brand-grad-b: #f0abfc;           /* byline "0" gradient — mid color  */
+  --brand-icon-size: 30px;           /* robot mark width/height          */
+  --brand-title-size: 22px;          /* big CLAUDE CODE size             */
+  --brand-pixel-size: 14px;          /* small pixel word size            */
+  --brand-wiggle-speed: 0.16s;       /* hover head-wiggle cadence        */
+  --brand-gradient-speed: 2s;        /* byline "0" gradient sweep         */
+  /* ----------------------------------------------------------- */
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+/* Alternate tint (e.g. a compact rail uses the same mark in purple). */
+.brand--purple {
+  --brand-icon-color: #a855f7;
+}
+
+/* Icon-only mode: centered mark, no text, no spacing. */
+.brand--iconOnly {
+  gap: 0;
+  margin-bottom: 0;
+  justify-content: center;
+}
+
+.brandImg {
+  width: var(--brand-icon-size);
+  height: var(--brand-icon-size);
+  flex: none;
+  /* The robot silhouette is painted by background-color through an image mask,
+     so it can be tinted to ANY color — change --brand-icon-color, not the PNG. */
+  background-color: var(--brand-icon-color);
+  -webkit-mask: url("./assets/brand-icon.png") center / contain no-repeat;
+  mask: url("./assets/brand-icon.png") center / contain no-repeat;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.2s ease, filter 0.2s ease;
+}
+
+/* Hover: the robot gets mad — head wiggles (skew flips back and forth) with
+   a colored outline drawn by four drop-shadows. */
+.brand:hover .brandImg {
+  animation: mad-wiggle var(--brand-wiggle-speed) ease-in-out infinite alternate;
+  filter: drop-shadow(1px 0 0 var(--brand-mad))
+    drop-shadow(-1px 0 0 var(--brand-mad))
+    drop-shadow(0 1px 0 var(--brand-mad))
+    drop-shadow(0 -1px 0 var(--brand-mad));
+}
+
+@keyframes mad-wiggle {
+  from { transform: rotate(-12deg) skewX(-8deg) scale(1.12); }
+  to   { transform: rotate(12deg) skewX(8deg) scale(1.12); }
+}
+
+/* Pixel "better" floats above CLAUDE CODE, overlapping it slightly;
+   the by-line hangs underneath. */
+.brandText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+  transform: translateY(4px);
+}
+
+.brandTitle {
+  margin: 0;
+  font-weight: 700;
+  font-size: var(--brand-title-size);
+  letter-spacing: -0.025em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  /* Inherits text color from the host. Set `color` on .brand to pin it. */
+}
+
+.brandPixel {
+  display: inline-block;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  font-size: calc(var(--brand-pixel-size) + 1px);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  
+  /* Sheen gradient */
+  background: linear-gradient(
+    120deg,
+    var(--brand-pixel-color) 0%,
+    var(--brand-pixel-color) 40%,
+    #ffffff 50%,
+    var(--brand-pixel-color) 60%,
+    var(--brand-pixel-color) 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: pixel-sheen 3s linear infinite;
+
+  line-height: 1;
+  /* subtle drop shadow */
+  filter: drop-shadow(1px 1px 0px var(--brand-accent));
+  position: relative;
+  z-index: 1;
+  margin-bottom: -6px;
+  margin-left: 2px;
+  transform: skewX(-10deg) rotate(-3deg);
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+@keyframes pixel-sheen {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.brandBy {
+  margin-top: 3px;
+  margin-left: 3px;
+  font-size: 7.5px;
+  font-family: var(--mono, "Cascadia Mono", "Consolas", ui-monospace, monospace);
+  font-weight: 700;
+  text-transform: lowercase;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+  transform-origin: left center;
+}
+
+.brand:hover .brandBy {
+  transform: scale(1.15);
+}
+
+.brandZero {
+  background: linear-gradient(
+    to right,
+    var(--brand-grad-a),
+    var(--brand-grad-b),
+    var(--brand-grad-a)
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-gradient var(--brand-gradient-speed) linear infinite;
+}
+
+@keyframes text-gradient {
+  to { background-position: 200% center; }
+}

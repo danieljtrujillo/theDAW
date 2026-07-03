@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  --color-app-base: var(--app-base, #0a0a0c);
+  --color-app-surface: var(--app-surface, #121116);
+  --color-app-surface-hover: var(--app-surface-hover, #1c1a24);
+  --color-app-main: var(--app-main, #f8fafc);
+  --color-app-muted: var(--app-muted, #a1a1aa);
+  --color-app-border: var(--app-border, #221f2e);
+  --color-app-accent: var(--app-accent, #a855f7);
+  --color-app-accent-hover: var(--app-accent-hover, #9333ea);
+  --color-app-accent-subtle: var(--app-accent-subtle, rgba(168, 85, 247, 0.2));
+}
+
+@layer base {
+  :root {
+    --font-scale: 1;
+  }
+  html {
+    font-size: calc(16px * var(--font-scale));
+  }
+  body.colorblind-mode {
+    filter: saturate(1.5) contrast(1.2); /* Adjust contrast/saturation to help distinguish colors, or could use SVG filters */
+  }
+}
+
+@layer utilities {
+  .brand {
+    --brand-icon-color: var(--color-app-main);
+    --brand-accent: var(--color-app-main);
+    --brand-mad: #f97316;
+    --brand-grad-a: var(--color-app-main);
+    --brand-grad-b: #ffffff;
+    --brand-icon-size: 28px;
+    --brand-title-size: 16px;
+    --brand-pixel-size: 8px;
+    color: var(--color-app-main);
+    margin-bottom: 0;
+  }
+
+  /* Semi-3D Depths */
+  .neu-panel {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+  }
+  .neu-panel-inset {
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0.2);
+  }
+  .neu-button {
+    background: linear-gradient(180deg, var(--color-app-surface-hover) 0%, var(--color-app-surface) 100%);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+  }
+  .neu-button:active, .neu-button-active {
+    background: var(--color-app-surface);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+  }
+  
+  .btn-3d {
+    background: linear-gradient(180deg, var(--color-app-surface-hover) 0%, var(--color-app-surface) 100%);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1);
+    border: 1px solid var(--color-app-border);
+    transition: all 0.1s ease;
+  }
+  .btn-3d:hover {
+    background: linear-gradient(180deg, var(--color-app-main) 0%, #d4d4d8 100%);
+    color: var(--color-app-base);
+    border-color: var(--color-app-main);
+  }
+  .btn-3d:active {
+    background: var(--color-app-surface);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+    transform: translateY(1px);
+    color: var(--color-app-main);
+  }
+  
+  /* Subtle gradients */
+  .glass-panel {
+    background: linear-gradient(135deg, rgba(26,26,26,0.8) 0%, rgba(20,20,20,0.95) 100%);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+  }
+}
