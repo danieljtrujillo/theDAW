@@ -16,7 +16,7 @@ Welcome to the **VST UI Foundry** documentation. VST UI Foundry is a browser-bas
 
 ## Key Features
 
-- **Multi-provider AI co-designer:** one assistant backed by 9 providers — Google Gemini, OpenAI, Anthropic, xAI Grok, Groq, OpenRouter, OpenRouter Free, Ollama (local), and LM Studio (local) — plus a Claude Code CLI provider. Models are discovered live per provider.
+- **Multi-provider AI co-designer:** one assistant backed by 9 providers — Google Gemini, OpenAI, Anthropic, xAI Grok, Groq, OpenRouter, OpenRouter Free, Ollama (local), and LM Studio (local) — plus **Better Claude Code by skreamb0t (@StarskreamEXE)**, which drives the local Claude Code CLI. Models are discovered live per provider.
 - **37 AI tools with direct canvas control:** 22 canvas/app actions, web page fetching, 9 texture tools, and 5 generation/edit tools — the AI can add, move, style, align, theme, and delete elements directly.
 - **Drag-and-drop canvas:** Knob, Slider, Button, Toggle, Meter, Waveform, XY Pad, ValueBox, Label, Image, Group, and **CustomCode** (a sandboxed iframe that runs your own JS).
 - **Procedural glow engine:** outer, inner, and center (volumetric) glows, plus contoured PNG drop-shadows that trace transparent image shapes.
