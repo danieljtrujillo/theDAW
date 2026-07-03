@@ -24,8 +24,10 @@ Speaks structured JSON status lines on stdout for the sidecar manager:
   {"status": "streaming", "fps": N, ...} periodically
   {"status": "error", "message": ...} on any fatal problem
 
-Windows x64 / Linux x64 only. pyk4a-bundle ships the matched k4a/depthengine
-native DLLs, so nothing else has to be installed.
+Windows x64 / Linux x64 only. pyk4a-bundle ships the matched Azure Kinect
+runtime inside the wheel (``k4a.dll`` + depthengine on Windows, ``libk4a.so``
+on Linux). macOS has no Azure Kinect SDK and is rejected by the sidecar
+manager before this script is ever spawned.
 """
 
 from __future__ import annotations

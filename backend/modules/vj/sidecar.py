@@ -1,20 +1,27 @@
 """Manage the GANTASMO-LIVE-VJ Vite server as an SA3 sidecar.
 
-The VJ project lives in its own repo at
-``D:/StableAudio/GANTASMO-LIVE-VJ`` (overridable via
-``theDAW_VJ_PROJECT``). It's a vanilla Vite/React app — no Python,
-no heavy ML deps — so the spawn logic is much simpler than the stems
-sidecar: build (when stale) + ``npm run preview`` and poll the port
-until the server is listening.
+The VJ project is its own repo (``gantasmo/VJ-9000``), discovered
+relative to the app or overridable via ``theDAW_VJ_PROJECT``. It's a
+vanilla Vite/React SPA — no Python, no heavy ML deps, no server
+component — so the compiled ``dist/`` IS the whole app.
 
-By default the sidecar serves a PRODUCTION build (``vite preview``
-over ``dist/``): no HMR websocket, no per-request transforms, no
-file watcher — measurably lighter than the dev server during
-performance use. ``dist/`` is rebuilt automatically when missing or
-older than the newest source file. Set ``theDAW_VJ_DEV=1`` to force
-the dev server (HMR) while working ON the VJ app itself.
+DEFAULT (static mode): whenever a build is resolvable, the theDAW
+BACKEND serves ``dist/`` itself as a StaticFiles mount at
+``/vj-app`` (see ``server.py``) and spawns NO Node process. This
+removes the runtime Node.js requirement on end-user machines and
+makes the VJ tab behave identically on Windows, macOS, Linux, and
+Docker. ``resolve_dist_dir()`` / ``is_static_mode()`` / the
+``STATIC_MOUNT_PATH`` constant drive that path; a dist can come from
+``theDAW_VJ_DIST``, the resolved checkout's ``dist/``, or a release
+bundle beside the app. When the resolved project is a full source
+checkout with npm present, ``ensure_static_dist()`` refreshes a stale
+build first so dev checkouts stay current.
 
-We deliberately use a NON-default port (5187) because:
+DEV mode (``theDAW_VJ_DEV=1``): the legacy path — spawn the Vite dev
+server (HMR) and poll the port — for working ON the VJ app itself.
+
+The dev/preview server (dev mode only) deliberately uses a NON-default
+port (5187) because:
   * 3000 (React default) is the user's explicit "don't use this"
     request — they've had too many collisions.
   * 5173 is the SA3 frontend's port.
@@ -52,7 +59,34 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-DEFAULT_PROJECT_PATH = Path(r"D:/StableAudio/GANTASMO-LIVE-VJ")
+# Repo root (…/stable-audio-3): backend/modules/vj/sidecar.py -> parents[3].
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _vj_project_candidates() -> list[Path]:
+    """Portable search order for the VJ project when theDAW_VJ_PROJECT is
+    unset. Ordered from "bundled/checked-out inside the app" to
+    "dev-checkout sibling of this repo". Nothing here is machine-specific:
+    every entry is derived from this file's location, so it resolves the
+    same on any install. The first candidate whose package.json exists
+    wins; if none do, the first entry is used so diagnostics name a path
+    local to THIS install rather than one from the build machine."""
+    return [
+        _REPO_ROOT / "vj",  # bundled checkout inside the app (release layout)
+        _REPO_ROOT.parent / "GANTASMO-LIVE-VJ",  # sibling of the repo
+        _REPO_ROOT.parent.parent / "GANTASMO-LIVE-VJ",  # nested dev layout
+    ]
+
+
+def _default_project_path() -> Path:
+    candidates = _vj_project_candidates()
+    for c in candidates:
+        if (c / "package.json").is_file():
+            return c
+    return candidates[0]
+
+
+DEFAULT_PROJECT_PATH = _default_project_path()
 DEFAULT_PORT = 5187
 PORT_READY_TIMEOUT_SEC = 60.0
 PORT_POLL_INTERVAL_SEC = 0.5
@@ -106,6 +140,69 @@ def resolve_config() -> VJConfig:
     return VJConfig(
         project_path=project_path, port=port, npm_path=npm_path, dev_mode=dev_mode
     )
+
+
+# The URL subpath the backend serves the production VJ build under. The VJ
+# build is compiled with vite `base: '/vj-app/'` so its assets resolve here.
+STATIC_MOUNT_PATH = "/vj-app"
+
+
+def _dist_candidates() -> list[Path]:
+    """Search order for a servable VJ production build (``dist/``). Ordered
+    from most explicit to least: an env override, the resolved project's own
+    build, then release-bundle locations relative to the app. Every entry is
+    derived from config/this file's location — nothing machine-specific."""
+    cands: list[Path] = []
+    d = os.getenv("theDAW_VJ_DIST")
+    if d:
+        cands.append(Path(d).expanduser().resolve())
+    cands.append(resolve_config().project_path / "dist")  # dev checkout build
+    cands.append(_REPO_ROOT / "vj-dist")  # dist-only release bundle
+    cands.append(_REPO_ROOT / "vj" / "dist")  # full checkout bundle
+    return cands
+
+
+def resolve_dist_dir() -> Optional[Path]:
+    """First candidate that holds a real build (``index.html`` present), or
+    None when nothing is servable yet."""
+    for c in _dist_candidates():
+        if (c / "index.html").is_file():
+            return c
+    return None
+
+
+def is_static_mode() -> bool:
+    """True when the backend should SERVE a static VJ build rather than spawn
+    a Node dev/preview server. This is the default whenever a build is
+    resolvable; ``theDAW_VJ_DEV=1`` forces the Node dev-server path instead."""
+    if os.getenv("theDAW_VJ_DEV") == "1":
+        return False
+    return resolve_dist_dir() is not None
+
+
+def ensure_static_dist() -> Path:
+    """Return the servable ``dist/`` dir for the static mount. When the
+    resolved project is a full source checkout with npm available, refresh a
+    stale/missing build first so dev checkouts stay current; a dist-only
+    release bundle (no source, no npm) is served as-is. Raises RuntimeError
+    naming the env overrides when nothing can be served."""
+    cfg = resolve_config()
+    proj = cfg.project_path
+    has_source = (proj / "package.json").is_file()
+    has_npm = bool(shutil.which("npm") or shutil.which("npm.cmd"))
+    if has_source and has_npm:
+        try:
+            _ensure_build(cfg)  # no-op unless dist is missing or stale
+        except RuntimeError as e:
+            log.warning("vj.sidecar: static rebuild failed, using existing dist: %s", e)
+    dist = resolve_dist_dir()
+    if dist is None:
+        raise RuntimeError(
+            "VJ build not found. Point theDAW_VJ_PROJECT at a VJ checkout "
+            "(it builds automatically when npm is present) or theDAW_VJ_DIST "
+            "at a prebuilt dist/ folder."
+        )
+    return dist
 
 
 def _newest_source_mtime(root: Path) -> float:
@@ -211,8 +308,29 @@ def probe() -> dict:
     """Non-spawning diagnostics for the Settings UI / /status endpoint."""
     cfg = resolve_config()
     pkg = cfg.project_path
+
+    # Static mode: a bundled/resolvable build is served by the backend itself.
+    # No Node process, no port, no npm — the only failure is "no build found".
+    if is_static_mode():
+        dist = resolve_dist_dir()
+        issues: list[str] = []
+        if dist is None:
+            issues.append("no VJ build found — set theDAW_VJ_DIST or theDAW_VJ_PROJECT")
+        return {
+            "project_path": str(pkg),
+            "dist_path": str(dist) if dist else None,
+            "mode": "static",
+            # In static mode "served" replaces the port-listening check.
+            "listening": dist is not None,
+            "process_alive": False,
+            "url": f"{STATIC_MOUNT_PATH}/",
+            "mobile_url": None,
+            "lan_ip": detect_lan_ip(),
+            "issues": issues,
+        }
+
     pkg_json = pkg / "package.json"
-    issues: list[str] = []
+    issues = []
     if not pkg.is_dir():
         issues.append(f"project path does not exist: {pkg}")
     elif not pkg_json.is_file():
@@ -223,9 +341,9 @@ def probe() -> dict:
     return {
         "project_path": str(pkg),
         "port": cfg.port,
-        # "preview" = production build via `vite preview` (default);
-        # "dev" = HMR dev server (theDAW_VJ_DEV=1).
-        "mode": "dev" if cfg.dev_mode else "preview",
+        # HMR dev server (theDAW_VJ_DEV=1). Reached only when no static build
+        # is resolvable, so this is the developer/live-edit path.
+        "mode": "dev",
         "build_stale": _build_is_stale(pkg) if pkg.is_dir() else None,
         "listening": listening,
         "process_alive": _proc is not None and _proc.poll() is None,

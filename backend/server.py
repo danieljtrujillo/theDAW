@@ -1936,3 +1936,49 @@ async def save_preset(preset: dict):
 
 app.include_router(assistant_router)
 app.include_router(admin_router)
+
+# VJ app served as a static production build (default when a build is
+# bundled/resolvable; theDAW_VJ_DEV=1 opts back into the Node dev server). This
+# removes the runtime Node.js requirement on end-user machines and makes the VJ
+# tab work identically on Windows, macOS, Linux, and Docker. Mounted at
+# /vj-app (matching the VJ build's vite base) BEFORE the SPA catch-all below so
+# it isn't shadowed. In dev the frontend's Vite config proxies /vj-app -> :8600,
+# so the iframe loads it same-origin; in packaged/Docker it's already one origin.
+try:
+    from backend.modules.vj import sidecar as _vj_sidecar
+
+    if _vj_sidecar.is_static_mode():
+        _vj_dist = _vj_sidecar.resolve_dist_dir()
+        if _vj_dist is not None:
+            from fastapi.staticfiles import StaticFiles
+
+            app.mount(
+                _vj_sidecar.STATIC_MOUNT_PATH,
+                StaticFiles(directory=_vj_dist, html=True),
+                name="vj-app",
+            )
+            logger.info(
+                "vj: serving %s at %s (static build)",
+                _vj_dist,
+                _vj_sidecar.STATIC_MOUNT_PATH,
+            )
+except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
+    logger.warning("vj: static mount skipped: %s", _vj_mount_err)
+
+# Optional single-container UI serving (the Docker release image sets
+# theDAW_SERVE_UI=1). Every API route lives under /api and is registered
+# above, BEFORE this mount, so the SPA catch-all can never shadow an
+# endpoint. Without the env var (theDAW.bat, manual dev servers, electron)
+# this block is a no-op and dev behavior is unchanged: Vite serves the UI on
+# :5173 and proxies /api to :8600.
+if os.environ.get("theDAW_SERVE_UI") == "1":
+    _ui_dist = PROJECT_ROOT / "frontend" / "dist"
+    if (_ui_dist / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=_ui_dist, html=True), name="ui")
+        logger.info("ui: serving %s at / (theDAW_SERVE_UI=1)", _ui_dist)
+    else:
+        logger.warning(
+            "ui: theDAW_SERVE_UI=1 but %s is missing; UI mount skipped", _ui_dist
+        )

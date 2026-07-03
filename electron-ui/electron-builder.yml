@@ -3,6 +3,9 @@ productName: theDAW
 copyright: Copyright (c) 2026 GANTASMO
 directories:
   output: release
+  # buildResources holds resources/icon.png (1024x1024), which electron-builder
+  # discovers automatically and converts to .ico for Windows and .icns for
+  # macOS, so no explicit win.icon / mac.icon keys are needed.
   buildResources: resources
 
 # Register theDAW as the handler for its file types so double-clicking a project
@@ -38,6 +41,12 @@ extraResources:
       - "!**/__pycache__/**"
       - "!**/*.py[cod]"
       - "!rag_index/**"
+      # Machine-local Python venvs created at runtime (the whisper
+      # transcription sidecar builds .whisper_venv next to its module) must
+      # never ship: they hard-code absolute host paths and add ~300MB the
+      # target machine rebuilds for itself on first use.
+      - "!**/.whisper_venv/**"
+      - "!**/.venv/**"
   - from: ../stable_audio_3
     to: python/stable_audio_3
     filter:
@@ -56,10 +65,29 @@ extraResources:
     to: python/docs
     filter:
       - "**/*.md"
+      # Internal developer working-notes are not user documentation, so they
+      # must never ship in the installer.
+      - "!plans/**"
+      - "!audits/**"
+      - "!changes/**"
+      - "!reports/**"
+      - "!in-flight-work.md"
+      - "!WHERE-WE-STAND.md"
   - from: ../frontend/public/USER_GUIDE.md
     to: python/frontend/public/USER_GUIDE.md
-  # uv.exe + ffmpeg.exe, downloaded by scripts/fetch-runtime-tools.mjs before
-  # the build. Prepended to the spawned backend's PATH at runtime.
+  # Static VJ (gantasmo/VJ-9000) production build, staged by scripts/fetch-vj-build.mjs
+  # (npm run fetch:vj) before packaging. Lands at python/vj-dist, which the backend's
+  # VJ sidecar resolves as _REPO_ROOT/"vj-dist" and mounts at /vj-app — so the VJ tab
+  # works with no Node.js on the target machine. The dir is gitignored + regenerated.
+  - from: resources/vj-dist
+    to: python/vj-dist
+    filter:
+      - "**/*"
+  # uv + ffmpeg + ffprobe, downloaded by scripts/fetch-runtime-tools.mjs before
+  # the build. Prepended to the spawned backend's PATH at runtime. The contents
+  # are HOST-PLATFORM-SPECIFIC (Windows: uv.exe/ffmpeg.exe/ffprobe.exe, macOS:
+  # uv/ffmpeg/ffprobe), so a Windows installer must be built on Windows and a
+  # mac dmg on macOS with a freshly fetched tools dir.
   - from: resources/tools
     to: tools
     filter:
@@ -90,9 +118,15 @@ nsis:
   deleteAppDataOnUninstall: false
 
 mac:
+  # Apple Silicon only. uv.lock resolves torch for darwin exclusively as an
+  # arm64 wheel (macosx_11_0_arm64); there is no darwin x64 torch wheel, so an
+  # Intel build could never bootstrap its Python env on first launch.
   target:
-    - dmg
+    - target: dmg
+      arch:
+        - arm64
   category: public.app-category.music
+  artifactName: theDAW-${version}-${arch}.${ext}
 
 linux:
   target:

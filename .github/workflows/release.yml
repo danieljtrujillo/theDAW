@@ -1,0 +1,239 @@
+# Release pipeline for theDAW.
+#
+# Trigger: pushing a tag that matches v* (for example v0.1.0), or a manual
+# workflow_dispatch run for a dry build without a release.
+#
+# Release scheme (ONE coherent flow, documented in docs/RELEASING.md):
+#   1. The version-check job verifies that the tag, electron-ui/package.json,
+#      and pyproject.toml all agree on the version, then creates a DRAFT
+#      GitHub Release for the tag.
+#   2. The artifact jobs (windows-exe, macos-dmg) build installers, upload
+#      them as short-lived workflow artifacts, and attach them to that draft
+#      release with `gh release upload --clobber`.
+#   3. The docker-ghcr job pushes the container image to GHCR.
+#   4. A human reviews the draft release, writes notes, and publishes it.
+#      CI never publishes the release on its own.
+#
+# House style follows .github/workflows/lint.yml: ubuntu-latest where
+# possible, first-party actions only (actions/*), versions pinned via env
+# vars with sync-rule comments, and no third-party actions.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# The default token stays read-only; individual jobs elevate only the
+# scopes they need (contents: write for release uploads, packages: write
+# for GHCR pushes).
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Node.js major version used to build the frontend bundle and the
+  # Electron shell. KEEP IN SYNC with the Node version documented in
+  # docs/RELEASING.md (section "Local builds").
+  NODE_VERSION: "22"
+  # Container image name on the GitHub Container Registry. KEEP IN SYNC
+  # with the image name documented in docs/RELEASING.md.
+  IMAGE_NAME: ghcr.io/gantasmo/thedaw
+
+jobs:
+  # Resolves the release version and fails fast on any version drift
+  # between the tag, electron-ui/package.json, and pyproject.toml.
+  # electron-ui/package.json is the version authority; pyproject.toml
+  # must carry the identical string (sync rule in docs/RELEASING.md).
+  version-check:
+    runs-on: ubuntu-latest
+    # This job creates the draft GitHub Release on tag pushes, so it needs
+    # write access to repository contents.
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve and verify the release version
+        id: resolve
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(jq -r .version electron-ui/package.json)"
+          fi
+          PKG_VERSION="$(jq -r .version electron-ui/package.json)"
+          PY_VERSION="$(grep -Po '^version\s*=\s*"\K[^"]+' pyproject.toml | head -n 1)"
+          echo "Resolved version: $VERSION"
+          echo "electron-ui/package.json version: $PKG_VERSION"
+          echo "pyproject.toml version: $PY_VERSION"
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Version mismatch: the release ref resolves to $VERSION but electron-ui/package.json declares $PKG_VERSION."
+            exit 1
+          fi
+          if [ "$VERSION" != "$PY_VERSION" ]; then
+            echo "::error::Version mismatch: the release ref resolves to $VERSION but pyproject.toml declares $PY_VERSION."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      # Creating the draft release here (rather than in an artifact job)
+      # avoids a race between windows-exe and macos-dmg both trying to
+      # create it first. The artifact jobs only upload into it.
+      - name: Create the draft GitHub Release for this tag
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; artifact jobs will upload into it."
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --verify-tag \
+              --title "theDAW $GITHUB_REF_NAME" \
+              --notes "Draft release created by the release workflow. The Windows installer and the macOS disk image are attached by CI. A maintainer reviews and publishes this release manually; see docs/RELEASING.md."
+          fi
+
+  # Builds the Windows NSIS installer and attaches it to the draft release.
+  # The installer is unsigned, so SmartScreen shows a warning on first run
+  # (documented in docs/RELEASING.md).
+  windows-exe:
+    runs-on: windows-latest
+    needs: version-check
+    # This job attaches the installer to the draft GitHub Release, so it
+    # needs write access to repository contents.
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version-check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            electron-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Install electron-ui dependencies
+        run: npm ci
+        working-directory: electron-ui
+      - name: Build the Windows installer
+        run: npm run dist:win:ci
+        working-directory: electron-ui
+      - uses: actions/upload-artifact@v7
+        with:
+          name: theDAW-Setup-${{ env.VERSION }}-exe
+          path: electron-ui/release/theDAW-Setup-${{ env.VERSION }}.exe
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach the installer to the draft release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "electron-ui/release/theDAW-Setup-${VERSION}.exe" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  # Builds the macOS disk image and attaches it to the draft release.
+  # The dmg is unsigned and un-notarized because no Apple Developer
+  # certificate is configured: Gatekeeper blocks a plain double-click, so
+  # users must right-click the app and choose Open, or clear quarantine
+  # with `xattr -d com.apple.quarantine`. The dmg targets arm64 (Apple
+  # Silicon) only. First launch bootstraps the Python backend with uv and
+  # downloads several GB of dependencies and model weights.
+  macos-dmg:
+    runs-on: macos-latest
+    needs: version-check
+    # This job attaches the disk image to the draft GitHub Release, so it
+    # needs write access to repository contents.
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version-check.outputs.version }}
+      # Disabling certificate auto-discovery keeps electron-builder from
+      # attempting to code-sign with whatever identity the runner keychain
+      # happens to expose; the build is intentionally unsigned.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            electron-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Install electron-ui dependencies
+        run: npm ci
+        working-directory: electron-ui
+      # dist:mac:ci runs the darwin-aware tool fetch itself; this mkdir is
+      # purely defensive so the build cannot fail on a missing directory.
+      - name: Ensure the bundled-tools directory exists
+        run: mkdir -p electron-ui/resources/tools
+      - name: Build the macOS disk image
+        run: npm run dist:mac:ci
+        working-directory: electron-ui
+      - uses: actions/upload-artifact@v7
+        with:
+          name: theDAW-${{ env.VERSION }}-arm64-dmg
+          path: electron-ui/release/theDAW-${{ env.VERSION }}-arm64.dmg
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach the disk image to the draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "electron-ui/release/theDAW-${VERSION}-arm64.dmg" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  # Builds the container image from the root Dockerfile and pushes it to
+  # GHCR. Tag pushes publish :VERSION and :latest; dispatch builds publish
+  # a :sha-<shortsha> tag instead so they never move :latest.
+  docker-ghcr:
+    runs-on: ubuntu-latest
+    needs: version-check
+    permissions:
+      contents: read
+      # Pushing to the GitHub Container Registry requires the packages
+      # write scope on the default token.
+      packages: write
+    env:
+      VERSION: ${{ needs.version-check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      # Plain `docker login` with the default token keeps this job free of
+      # third-party actions (house rule from lint.yml).
+      - name: Log in to the GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Build and push the image
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            docker buildx build --push \
+              --tag "${IMAGE_NAME}:${VERSION}" \
+              --tag "${IMAGE_NAME}:latest" \
+              .
+          else
+            docker buildx build --push \
+              --tag "${IMAGE_NAME}:sha-${GITHUB_SHA::7}" \
+              .
+          fi
