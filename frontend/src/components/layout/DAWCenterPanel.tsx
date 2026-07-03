@@ -36,6 +36,7 @@ const TrainView = lazy(() => import('../../views/TrainView').then((m) => ({ defa
 const LineageView = lazy(() => import('../library/LineageModal').then((m) => ({ default: m.LineageView })));
 const VJView = lazy(() => import('../../views/VJView').then((m) => ({ default: m.VJView })));
 const DJView = lazy(() => import('../../views/DJView').then((m) => ({ default: m.DJView })));
+const FoundryView = lazy(() => import('../../views/FoundryView').then((m) => ({ default: m.FoundryView })));
 
 const TabFallback: React.FC = () => (
   <div className="absolute inset-0 grid place-items-center">
@@ -53,7 +54,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // and the LEARN genealogy graph's fetch + layout + pan/zoom.
   const [warmedTabs, setWarmedTabs] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'learn') {
+    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'foundry' || centerTab === 'learn') {
       setWarmedTabs((prev) => {
         if (prev.has(centerTab)) return prev;
         const next = new Set(prev);
@@ -132,6 +133,14 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               style={{ display: centerTab === 'vj' ? undefined : 'none' }}
             >
               <Suspense fallback={<TabFallback />}><VJView /></Suspense>
+            </div>
+          )}
+          {warmedTabs.has('foundry') && (
+            <div
+              className="absolute inset-0"
+              style={{ display: centerTab === 'foundry' ? undefined : 'none' }}
+            >
+              <Suspense fallback={<TabFallback />}><FoundryView /></Suspense>
             </div>
           )}
         </div>

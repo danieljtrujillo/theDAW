@@ -17,7 +17,7 @@
 ########################################################################
 # Stage 1: frontend build.
 ########################################################################
-FROM node:22-slim AS ui
+FROM node:22.23.1-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS ui
 
 WORKDIR /build/frontend
 
@@ -37,7 +37,7 @@ RUN npm run build
 # command), so the backend can mount the compiled dist at /vj-app and serve it
 # with no Node.js at runtime. Override the source with VJ_REPO / VJ_REF.
 ########################################################################
-FROM node:22-slim AS vj
+FROM node:22.23.1-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS vj
 WORKDIR /build/vj
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -51,9 +51,28 @@ RUN --mount=type=cache,target=/root/.npm \
     && npm run build
 
 ########################################################################
+# Stage 1c: VST Foundry fullstack build.
+#
+# Foundry is an in-repo Node/Express app. Build it from the context, then prune
+# to production deps so the runtime stage ships only what `node dist/server.cjs`
+# needs. Package files are copied first so source edits don't bust the npm cache.
+########################################################################
+FROM node:22.23.1-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS foundry
+WORKDIR /build/foundry
+COPY VST-Foundry-UI/VST-UI-FOUNDRY/package.json VST-Foundry-UI/VST-UI-FOUNDRY/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY VST-Foundry-UI/VST-UI-FOUNDRY/ ./
+RUN npm run build && npm prune --omit=dev
+
+########################################################################
 # Stage 2: Python runtime.
 ########################################################################
-FROM python:3.10-slim-bookworm AS runtime
+FROM python:3.10-slim-bookworm@sha256:89cef4d55961e885def21b86e34e102e65b7eab8cd281e806a66ff1709c9a455 AS runtime
+
+# Node.js runtime for the VST Foundry sidecar (it runs `node dist/server.cjs`).
+# The single binary is copied from the official node image; libstdc++6 is the
+# one shared lib the slim python base lacks that node links against.
+COPY --from=node:22.23.1-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 /usr/local/bin/node /usr/local/bin/node
 
 # The uv binary is copied from the official distroless image. The tag is
 # pinned; bump it deliberately, never float on :latest.
@@ -64,12 +83,17 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /uvx /bin/
 # compiles at install time. git supports optional VCS installs such as the
 # py-aup3 Audacity parser. libglib2.0-0 satisfies opencv-python-headless on
 # slim images.
+# apt-get upgrade patches fixable Debian CVEs in the digest-pinned base at
+# build time (the base is immutable via @sha256, but its repos still serve
+# current security updates). Kept in the same layer as install + cleanup.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         build-essential \
         git \
         libglib2.0-0 \
+        libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -112,6 +136,14 @@ COPY --from=ui /build/frontend/dist ./frontend/dist
 # resolves (_REPO_ROOT/"vj-dist") and mounts at /vj-app. This removes the VJ
 # tab's Node.js requirement, so it works in the container like anywhere else.
 COPY --from=vj /build/vj/dist ./vj-dist
+
+# The VST Foundry production bundle lands where the foundry sidecar resolves it
+# (_REPO_ROOT/"VST-Foundry-UI"/"VST-UI-FOUNDRY"). It runs `node dist/server.cjs`
+# with the node binary copied above — a fullstack Node app, so it ships dist/ +
+# production node_modules + package.json.
+COPY --from=foundry /build/foundry/dist ./VST-Foundry-UI/VST-UI-FOUNDRY/dist
+COPY --from=foundry /build/foundry/node_modules ./VST-Foundry-UI/VST-UI-FOUNDRY/node_modules
+COPY --from=foundry /build/foundry/package.json ./VST-Foundry-UI/VST-UI-FOUNDRY/package.json
 
 # The RAG embedder (all-MiniLM-L6-v2) is baked into the image at a path that
 # is INSIDE the image and is never shadowed by a volume mount. backend/rag.py

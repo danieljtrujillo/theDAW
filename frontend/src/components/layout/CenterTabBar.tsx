@@ -8,6 +8,7 @@ import {
   Tv2,
   Disc,
   Rows3,
+  Hammer,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
@@ -105,6 +106,18 @@ const TABS: Array<{
       bg: 'bg-fuchsia-500/15',
       text: 'text-fuchsia-100',
       iconText: 'text-fuchsia-300',
+    },
+  },
+  {
+    id: 'foundry',
+    label: 'Foundry',
+    desc: 'Design and export custom VST / plugin interfaces on an infinite canvas',
+    icon: Hammer,
+    accent: {
+      border: 'border-amber-500/50',
+      bg: 'bg-amber-500/15',
+      text: 'text-amber-100',
+      iconText: 'text-amber-300',
     },
   },
   {
