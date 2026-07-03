@@ -71,10 +71,15 @@ def _vj_project_candidates() -> list[Path]:
     same on any install. The first candidate whose package.json exists
     wins; if none do, the first entry is used so diagnostics name a path
     local to THIS install rather than one from the build machine."""
+    # Both the local dev name (GANTASMO-LIVE-VJ) and the repo name a fresh
+    # `git clone` produces (VJ-9000) are searched, so a plain clone beside the
+    # repo works with no env var on any machine.
     return [
         _REPO_ROOT / "vj",  # bundled checkout inside the app (release layout)
         _REPO_ROOT.parent / "GANTASMO-LIVE-VJ",  # sibling of the repo
+        _REPO_ROOT.parent / "VJ-9000",  # sibling, fresh-clone name
         _REPO_ROOT.parent.parent / "GANTASMO-LIVE-VJ",  # nested dev layout
+        _REPO_ROOT.parent.parent / "VJ-9000",  # nested dev, fresh-clone name
     ]
 
 
@@ -159,6 +164,9 @@ def _dist_candidates() -> list[Path]:
     cands.append(resolve_config().project_path / "dist")  # dev checkout build
     cands.append(_REPO_ROOT / "vj-dist")  # dist-only release bundle
     cands.append(_REPO_ROOT / "vj" / "dist")  # full checkout bundle
+    # Where `npm run fetch:vj` stages the build during dev — so testing the
+    # static path locally needs no env var, just that one command.
+    cands.append(_REPO_ROOT / "electron-ui" / "resources" / "vj-dist")
     return cands
 
 
