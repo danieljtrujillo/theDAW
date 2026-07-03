@@ -165,6 +165,10 @@ export interface UIElement {
   blendMode?: string;
   effect?: "none" | "pulsing" | "orbital" | "audioReactive" | "breathing" | "flickering" | "floating";
   rotation?: number;
+  // Mirror flips (context menu "Flip Horizontal/Vertical"). Opt-in — undefined
+  // renders byte-identical to today. Composed with rotation at render time.
+  flipX?: boolean;
+  flipY?: boolean;
   valueX?: number; // for XYPad
   valueY?: number; // for XYPad
   value?: number;

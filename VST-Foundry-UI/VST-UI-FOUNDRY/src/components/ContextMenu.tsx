@@ -10,6 +10,9 @@ export interface ContextMenuAction {
   disabled?: boolean;
   divider?: boolean;
   iconOnly?: boolean;
+  // Don't close the menu after onClick — for actions that swap the menu's own
+  // content in place (e.g. "Editor" switching the popup into editor mode).
+  keepOpen?: boolean;
 }
 
 interface ContextMenuProps {
@@ -204,7 +207,7 @@ export default function ContextMenu({ x, y, actions, onClose, children }: Contex
             onClick={() => {
               if (action.disabled) return;
               action.onClick();
-              onClose();
+              if (!action.keepOpen) onClose();
             }}
             disabled={action.disabled}
             className={`w-full flex items-center justify-between px-3 py-1.5 text-sm transition-colors
@@ -232,7 +235,7 @@ export default function ContextMenu({ x, y, actions, onClose, children }: Contex
               onClick={() => {
                 if (action.disabled) return;
                 action.onClick();
-                onClose();
+                if (!action.keepOpen) onClose();
               }}
               disabled={action.disabled}
               title={action.label}

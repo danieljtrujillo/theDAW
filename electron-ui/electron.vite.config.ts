@@ -53,6 +53,10 @@ export default defineConfig({
         '/api': {
           target: 'http://localhost:8600',
           changeOrigin: true,
+          // WebSocket upgrade (xr control bus, questmidi) — without this the
+          // proxy silently drops WS connections and the control manifest
+          // never reaches consumers (VST-Foundry bindings, XR headset).
+          ws: true,
           timeout: 0,
           proxyTimeout: 0
         }

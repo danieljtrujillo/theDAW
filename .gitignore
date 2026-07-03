@@ -233,6 +233,7 @@ docs/*.pdf
 
 # Local archive of superseded/scratch files (see archive/README.md) — not tracked
 /archive/
+/research/
 .vite/
 .orb_attachments/
 
@@ -242,6 +243,9 @@ docs/*.pdf
 
 # Session changelogs — local dev notes, not version-controlled
 /docs/changes/
+
+# Session/branch reports — local working notes, not version-controlled
+/docs/reports/
 
 # Loose capture stills & scratch media at repo root (mirror the *.png policy so
 # ad-hoc .jpeg screenshots like shot01_*.jpeg never get committed). Anchored to
@@ -264,6 +268,8 @@ docs/*.pdf
 /_*.py
 /*.mp3
 /dna-polyphonic-splice*.html
+/temp-tools/doc-audit-*/
+/temp-tools/doc-audit-manifest.json
 
 # Local audit artifacts: vulnerability details stay off the remote.
 /CODEBASE_AUDIT_*.md
@@ -293,3 +299,11 @@ electron-ui/resources/vj-dist/
 # at package time by scripts/fetch-foundry-build.mjs.
 electron-ui/resources/foundry-app/
 logs/
+
+# Editing/backup cruft (e.g. vendored apps' *.bak-<date> files)
+*.bak
+*.bak-*
+deprecated/
+
+# Local model weights (multi-GB safetensors + configs) - never commit
+models/

@@ -29,9 +29,12 @@ import { ConfirmModal, PromptModal } from "./components/Modals";
 import ContextMenu from "./components/ContextMenu";
 import {
   Copy,
+  CopyPlus,
   Trash,
   ArrowUp,
   ArrowDown,
+  ChevronsUp,
+  ChevronsDown,
   ClipboardPaste,
   Layers,
   Image,
@@ -41,8 +44,16 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronDown,
+  Sparkles,
+  Scissors,
+  SquarePen,
+  FlipHorizontal2,
+  FlipVertical2,
+  RotateCw,
+  MessageSquarePlus,
 } from "lucide-react";
 import CompactElementProperties from "./components/CompactElementProperties";
+import InpaintModal from "./components/InpaintModal";
 import AIAssistantOrb from "./components/AIAssistantOrb";
 import EventLog from "./components/EventLog";
 import TextureGenerateModal from "./components/TextureGenerateModal";
@@ -108,6 +119,17 @@ export default function App() {
     y: number;
     type: "canvas" | "element";
     elementId?: string;
+    // "menu" = compact action list (default on right-click); "editor" = the
+    // full CompactElementProperties panel, opened via the menu's Editor item.
+    mode: "menu" | "editor";
+  } | null>(null);
+
+  // Object-removal (LaMa inpaint) modal target: the Image element being cleaned
+  // and its current image URL. Null = closed.
+  const [inpaintTarget, setInpaintTarget] = useState<{
+    elementId: string;
+    imageUrl: string;
+    name: string;
   } | null>(null);
 
   const [isCategoriesOpen, setIsCategoriesOpen] = useState(true);
@@ -157,7 +179,7 @@ export default function App() {
     hasLoadedAutosave,
   });
 
-  // Copy/paste/duplicate clipboard, shared by keyboard and context menu.
+  // Copy/paste/duplicate/cut clipboard, shared by keyboard and context menu.
   const {
     clipboard,
     copyFromKeyboard,
@@ -165,6 +187,7 @@ export default function App() {
     copyFromMenu,
     pasteFromMenu,
     duplicateFromMenu,
+    cutSelection,
   } = useClipboard({
     elements,
     selectedElementIds,
@@ -348,6 +371,24 @@ export default function App() {
   // dims (Canvas.tsx sets them on upload), so boundsToCanvasRect is exact.
   const handleExtractorAddAssets = (newAssets: Asset[]) =>
     setAssets((prev) => [...prev, ...newAssets]);
+
+  // Apply an inpaint result: store the cleaned image as a NEW asset (the
+  // original is preserved) and repoint the target Image element at it. Rides the
+  // normal history/autosave paths like any other element edit.
+  const handleInpaintApply = (elementId: string, dataUrl: string) => {
+    const el = elements.find((e) => e.id === elementId);
+    const srcName = assets.find((a) => a.id === el?.assetId)?.name || el?.name || "Image";
+    const newAsset: Asset = {
+      id: Math.random().toString(36).substring(2, 9),
+      name: `${srcName} (cleaned)`,
+      url: dataUrl,
+    };
+    setAssets((prev) => [...prev, newAsset]);
+    setElements((prev) =>
+      prev.map((e) => (e.id === elementId ? { ...e, assetId: newAsset.id } : e)),
+    );
+    setInpaintTarget(null);
+  };
 
   const handleExtractorPlaceLayers = (items: PlacedLayer[]) => {
     const newEls: UIElement[] = items.map(
@@ -553,8 +594,78 @@ export default function App() {
     });
   };
 
-  // Global keyboard shortcuts (tool switch, undo/redo, copy/paste, group,
-  // delete, arrow-nudge). Copy/paste are delegated to useClipboard.
+  // ---- Context-menu element ops -------------------------------------------
+  // All operate on the current selection. Right-clicking an unselected element
+  // selects it first (see the Canvas onContextMenu handler), so the clicked
+  // element is always included.
+  const deleteSelectedFromMenu = () => {
+    const idsToDelete = new Set(selectedElementIds);
+    setElements(
+      elements
+        .filter((el) => !idsToDelete.has(el.id))
+        .map((el) =>
+          el.type === "Group" && el.childrenIds
+            ? {
+                ...el,
+                childrenIds: el.childrenIds.filter(
+                  (id) => !idsToDelete.has(id),
+                ),
+              }
+            : el,
+        ),
+    );
+    setSelectedElementIds([]);
+  };
+
+  const toggleFlipSelected = (axis: "flipX" | "flipY") => {
+    const targets = new Set(selectedElementIds);
+    setElements(
+      elements.map((el) =>
+        targets.has(el.id) ? { ...el, [axis]: !el[axis] } : el,
+      ),
+    );
+  };
+
+  // "Flip Z" — a 2D element's Z-axis flip is a 180° spin.
+  const rotateSelected180 = () => {
+    const targets = new Set(selectedElementIds);
+    setElements(
+      elements.map((el) =>
+        targets.has(el.id)
+          ? { ...el, rotation: ((el.rotation || 0) + 180) % 360 }
+          : el,
+      ),
+    );
+  };
+
+  // Toggle lock on the whole selection, driven by the anchor element's state so
+  // a mixed selection converges instead of flipping each element individually.
+  const toggleLockFromMenu = (anchorId: string) => {
+    const targetIds = selectedElementIds.includes(anchorId)
+      ? selectedElementIds
+      : [anchorId];
+    const isLocked = elements.find((e) => e.id === anchorId)?.isLocked;
+    setElements(
+      elements.map((e) =>
+        targetIds.includes(e.id) ? { ...e, isLocked: !isLocked } : e,
+      ),
+    );
+  };
+
+  // "Add to Chat" — hand the selection to the AI assistant orb as referenced
+  // items (chips in its composer). The orb listens for this event, resolves the
+  // ids against the live canvas, and opens itself.
+  const addSelectionToChat = () => {
+    if (selectedElementIds.length === 0) return;
+    window.dispatchEvent(
+      new CustomEvent("vst-ai-add-reference", {
+        detail: { ids: selectedElementIds },
+      }),
+    );
+  };
+
+  // Global keyboard shortcuts (tool switch, undo/redo, copy/paste/cut, group,
+  // delete, arrow-nudge). Copy/paste/cut are delegated to useClipboard.
   useKeyboardShortcuts({
     elements,
     selectedElementIds,
@@ -565,6 +676,7 @@ export default function App() {
     redo,
     copyFromKeyboard,
     pasteFromKeyboard,
+    cutSelection,
   });
 
   // Debounced autosave (idb + server), gated until the mount-time load finishes.
@@ -1002,11 +1114,17 @@ export default function App() {
             onRegisterParams={handleRegisterParams}
             onParamValueChange={handleParamValueChange}
             onContextMenu={(x, y, elementId) => {
+              // Right-clicking an unselected element selects it (standard UX),
+              // so every menu action operates on the current selection.
+              if (elementId && !selectedElementIds.includes(elementId)) {
+                setSelectedElementIds([elementId]);
+              }
               setContextMenu({
                 x,
                 y,
                 type: elementId ? "element" : "canvas",
                 elementId,
+                mode: "menu",
               });
             }}
           />
@@ -1226,141 +1344,250 @@ export default function App() {
             onClose={() => setContextMenu(null)}
             actions={
               contextMenu.type === "element"
-                ? [
-                    ...(elements.find((e) => e.id === contextMenu.elementId)
-                      ?.type === "Image"
-                      ? [
-                          {
-                            label: elements.find(
-                              (e) => e.id === contextMenu.elementId,
-                            )?.imageModifiers?.removeBg
-                              ? "Restore Background"
-                              : "Remove Background",
-                            icon: <Image className="w-4 h-4" />,
-                            onClick: async () => {
-                              if (contextMenu.elementId) {
+                ? contextMenu.mode === "menu"
+                  ? [
+                      // Compact action list — the actual right-click menu. The
+                      // full properties editor is opt-in via "Editor".
+                      {
+                        label: "Editor",
+                        icon: <SquarePen className="w-4 h-4" />,
+                        keepOpen: true,
+                        onClick: () =>
+                          setContextMenu((prev) =>
+                            prev ? { ...prev, mode: "editor" } : prev,
+                          ),
+                      },
+                      ...(elements.find((e) => e.id === contextMenu.elementId)
+                        ?.type === "Image"
+                        ? [
+                            {
+                              label: elements.find(
+                                (e) => e.id === contextMenu.elementId,
+                              )?.imageModifiers?.removeBg
+                                ? "Restore Background"
+                                : "Remove Background",
+                              icon: <Image className="w-4 h-4" />,
+                              onClick: async () => {
+                                if (contextMenu.elementId) {
+                                  const el = elements.find(
+                                    (e) => e.id === contextMenu.elementId,
+                                  );
+                                  if (el) {
+                                    const currentBgEnabled =
+                                      el.imageModifiers?.removeBg || false;
+                                    setElements(
+                                      elements.map((e) =>
+                                        e.id === el.id
+                                          ? {
+                                              ...e,
+                                              imageModifiers: {
+                                                ...(e.imageModifiers || {}),
+                                                removeBg: !currentBgEnabled,
+                                                tolerance:
+                                                  e.imageModifiers?.tolerance ||
+                                                  30,
+                                              },
+                                            }
+                                          : e,
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                            },
+                            {
+                              label: "Remove Object (Inpaint)…",
+                              icon: <Sparkles className="w-4 h-4" />,
+                              onClick: () => {
                                 const el = elements.find(
                                   (e) => e.id === contextMenu.elementId,
                                 );
-                                if (el) {
-                                  const currentBgEnabled =
-                                    el.imageModifiers?.removeBg || false;
-                                  setElements(
-                                    elements.map((e) =>
-                                      e.id === el.id
-                                        ? {
-                                            ...e,
-                                            imageModifiers: {
-                                              ...(e.imageModifiers || {}),
-                                              removeBg: !currentBgEnabled,
-                                              tolerance:
-                                                e.imageModifiers?.tolerance ||
-                                                30,
-                                            },
-                                          }
-                                        : e,
-                                    ),
-                                  );
+                                const url = assets.find(
+                                  (a) => a.id === el?.assetId,
+                                )?.url;
+                                if (el && url) {
+                                  setInpaintTarget({
+                                    elementId: el.id,
+                                    imageUrl: url,
+                                    name: el.name,
+                                  });
                                 }
-                              }
+                              },
                             },
-                          },
-                          { divider: true, label: "", onClick: () => {} },
-                        ]
-                      : []),
-                    {
-                      label: "Copy",
-                      icon: <Copy className="w-4 h-4" />,
-                      iconOnly: true,
-                      onClick: () => {
-                        copyFromMenu();
+                          ]
+                        : []),
+                      { divider: true, label: "1", onClick: () => {} },
+                      {
+                        label: "Cut",
+                        icon: <Scissors className="w-4 h-4" />,
+                        shortcut: "Ctrl+X",
+                        onClick: () => {
+                          cutSelection();
+                        },
                       },
-                    },
-                    {
-                      label: "Duplicate",
-                      icon: <Copy className="w-4 h-4" />,
-                      iconOnly: true,
-                      onClick: () => {
-                        duplicateFromMenu();
+                      {
+                        label: "Copy",
+                        icon: <Copy className="w-4 h-4" />,
+                        shortcut: "Ctrl+C",
+                        onClick: () => {
+                          copyFromMenu();
+                        },
                       },
-                    },
-                    {
-                      label: "Delete",
-                      icon: <Trash className="w-4 h-4" />,
-                      danger: true,
-                      iconOnly: true,
-                      onClick: () => {
-                        const idsToDelete = new Set(selectedElementIds);
-                        setElements(
-                          elements
-                            .filter((el) => !idsToDelete.has(el.id))
-                            .map((el) =>
-                              el.type === "Group" && el.childrenIds
-                                ? {
-                                    ...el,
-                                    childrenIds: el.childrenIds.filter(
-                                      (id) => !idsToDelete.has(id),
-                                    ),
-                                  }
-                                : el,
-                            ),
-                        );
-                        setSelectedElementIds([]);
+                      {
+                        label: "Duplicate",
+                        icon: <CopyPlus className="w-4 h-4" />,
+                        onClick: () => {
+                          duplicateFromMenu();
+                        },
                       },
-                    },
-                    {
-                      label: elements.find(
-                        (e) => e.id === contextMenu.elementId,
-                      )?.isLocked
-                        ? "Unlock"
-                        : "Lock",
-                      icon: elements.find((e) => e.id === contextMenu.elementId)
-                        ?.isLocked ? (
-                        <Unlock className="w-4 h-4" />
-                      ) : (
-                        <Lock className="w-4 h-4" />
-                      ),
-                      iconOnly: true,
-                      onClick: () => {
-                        const targetIds = selectedElementIds.includes(
-                          contextMenu.elementId!,
-                        )
-                          ? selectedElementIds
-                          : [contextMenu.elementId!];
-                        const isLocked = elements.find(
+                      { divider: true, label: "2", onClick: () => {} },
+                      {
+                        label: "Flip Horizontal",
+                        icon: <FlipHorizontal2 className="w-4 h-4" />,
+                        onClick: () => toggleFlipSelected("flipX"),
+                      },
+                      {
+                        label: "Flip Vertical",
+                        icon: <FlipVertical2 className="w-4 h-4" />,
+                        onClick: () => toggleFlipSelected("flipY"),
+                      },
+                      {
+                        label: "Flip Z (Rotate 180°)",
+                        icon: <RotateCw className="w-4 h-4" />,
+                        onClick: rotateSelected180,
+                      },
+                      {
+                        label: elements.find(
                           (e) => e.id === contextMenu.elementId,
-                        )?.isLocked;
-                        setElements(
-                          elements.map((e) =>
-                            targetIds.includes(e.id)
-                              ? { ...e, isLocked: !isLocked }
-                              : e,
-                          ),
-                        );
+                        )?.isLocked
+                          ? "Unlock"
+                          : "Lock",
+                        icon: elements.find(
+                          (e) => e.id === contextMenu.elementId,
+                        )?.isLocked ? (
+                          <Unlock className="w-4 h-4" />
+                        ) : (
+                          <Lock className="w-4 h-4" />
+                        ),
+                        onClick: () =>
+                          toggleLockFromMenu(contextMenu.elementId!),
                       },
-                    },
-                    {
-                      label: "Bring to Front",
-                      icon: <ArrowUp className="w-4 h-4" />,
-                      iconOnly: true,
-                      onClick: () => {
-                        if (contextMenu.elementId)
-                          handleReorderTo(
-                            contextMenu.elementId,
-                            elements.length - 1,
-                          );
+                      { divider: true, label: "3", onClick: () => {} },
+                      {
+                        label: "Move Forward",
+                        icon: <ChevronUp className="w-4 h-4" />,
+                        onClick: () => {
+                          if (contextMenu.elementId)
+                            handleReorderElement(contextMenu.elementId, "up");
+                        },
                       },
-                    },
-                    {
-                      label: "Send to Back",
-                      icon: <ArrowDown className="w-4 h-4" />,
-                      iconOnly: true,
-                      onClick: () => {
-                        if (contextMenu.elementId)
-                          handleReorderTo(contextMenu.elementId, 0);
+                      {
+                        label: "Move Backward",
+                        icon: <ChevronDown className="w-4 h-4" />,
+                        onClick: () => {
+                          if (contextMenu.elementId)
+                            handleReorderElement(contextMenu.elementId, "down");
+                        },
                       },
-                    },
-                  ]
+                      {
+                        label: "Move to Front",
+                        icon: <ChevronsUp className="w-4 h-4" />,
+                        onClick: () => {
+                          if (contextMenu.elementId)
+                            handleReorderElement(contextMenu.elementId, "top");
+                        },
+                      },
+                      {
+                        label: "Move to Back",
+                        icon: <ChevronsDown className="w-4 h-4" />,
+                        onClick: () => {
+                          if (contextMenu.elementId)
+                            handleReorderElement(
+                              contextMenu.elementId,
+                              "bottom",
+                            );
+                        },
+                      },
+                      { divider: true, label: "4", onClick: () => {} },
+                      {
+                        label: "Add to Chat",
+                        icon: <MessageSquarePlus className="w-4 h-4" />,
+                        onClick: addSelectionToChat,
+                      },
+                      { divider: true, label: "5", onClick: () => {} },
+                      {
+                        label: "Delete",
+                        icon: <Trash className="w-4 h-4" />,
+                        danger: true,
+                        shortcut: "Del",
+                        onClick: deleteSelectedFromMenu,
+                      },
+                    ]
+                  : [
+                      // Editor mode — quick-action icon toolbar under the
+                      // properties panel (the pre-menu popup experience).
+                      {
+                        label: "Copy",
+                        icon: <Copy className="w-4 h-4" />,
+                        iconOnly: true,
+                        onClick: () => {
+                          copyFromMenu();
+                        },
+                      },
+                      {
+                        label: "Duplicate",
+                        icon: <CopyPlus className="w-4 h-4" />,
+                        iconOnly: true,
+                        onClick: () => {
+                          duplicateFromMenu();
+                        },
+                      },
+                      {
+                        label: "Delete",
+                        icon: <Trash className="w-4 h-4" />,
+                        danger: true,
+                        iconOnly: true,
+                        onClick: deleteSelectedFromMenu,
+                      },
+                      {
+                        label: elements.find(
+                          (e) => e.id === contextMenu.elementId,
+                        )?.isLocked
+                          ? "Unlock"
+                          : "Lock",
+                        icon: elements.find(
+                          (e) => e.id === contextMenu.elementId,
+                        )?.isLocked ? (
+                          <Unlock className="w-4 h-4" />
+                        ) : (
+                          <Lock className="w-4 h-4" />
+                        ),
+                        iconOnly: true,
+                        onClick: () =>
+                          toggleLockFromMenu(contextMenu.elementId!),
+                      },
+                      {
+                        label: "Bring to Front",
+                        icon: <ArrowUp className="w-4 h-4" />,
+                        iconOnly: true,
+                        onClick: () => {
+                          if (contextMenu.elementId)
+                            handleReorderTo(
+                              contextMenu.elementId,
+                              elements.length - 1,
+                            );
+                        },
+                      },
+                      {
+                        label: "Send to Back",
+                        icon: <ArrowDown className="w-4 h-4" />,
+                        iconOnly: true,
+                        onClick: () => {
+                          if (contextMenu.elementId)
+                            handleReorderTo(contextMenu.elementId, 0);
+                        },
+                      },
+                    ]
                 : [
                     {
                       label: "Paste",
@@ -1381,19 +1608,32 @@ export default function App() {
                   ]
             }
           >
-            {contextMenu.type === "element" && contextMenu.elementId && elements.some((e) => e.id === contextMenu.elementId) && (
-              <div className="border-b border-app-border mb-1 pb-1">
-                <CompactElementProperties
-                  element={
-                    elements.find((e) => e.id === contextMenu.elementId)!
-                  }
-                  elements={elements}
-                  onUpdateElements={handleUpdateElements}
-                  textures={textures}
-                />
-              </div>
-            )}
+            {contextMenu.type === "element" &&
+              contextMenu.mode === "editor" &&
+              contextMenu.elementId &&
+              elements.some((e) => e.id === contextMenu.elementId) && (
+                <div className="border-b border-app-border mb-1 pb-1">
+                  <CompactElementProperties
+                    element={
+                      elements.find((e) => e.id === contextMenu.elementId)!
+                    }
+                    elements={elements}
+                    onUpdateElements={handleUpdateElements}
+                    textures={textures}
+                  />
+                </div>
+              )}
           </ContextMenu>
+        )}
+        {inpaintTarget && (
+          <InpaintModal
+            imageUrl={inpaintTarget.imageUrl}
+            title={inpaintTarget.name}
+            onApply={(dataUrl) =>
+              handleInpaintApply(inpaintTarget.elementId, dataUrl)
+            }
+            onClose={() => setInpaintTarget(null)}
+          />
         )}
         <AIAssistantOrb
           elements={elements}

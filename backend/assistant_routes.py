@@ -218,6 +218,14 @@ def _find_claude_cmd() -> str:
 
 
 CLAUDE_CMD = _find_claude_cmd()
+
+# Underfit-tab assistant MCP: config that registers the underfit LoRA-trainer
+# MCP (node mcp-server.cjs → underfit dashboard API on :8791, 21 tools). Loaded
+# via --mcp-config ONLY when a chat request sets assistantProfile == "underfit"
+# (see _claude_base_cmd_args), so no other assistant/coding session gets it.
+UNDERFIT_MCP_CONFIG = str(
+    (Path(__file__).parent / "underfit_mcp_config.json").resolve()
+)
 PROJECT_CWD = str(Path(__file__).resolve().parent.parent)
 STABLE_AUDIO_SKILL_NAME = "stable-audio-3-mastery"
 STABLE_AUDIO_SKILL_PATH = (
@@ -347,6 +355,9 @@ class ChatRequest(BaseModel):
         "interactive"  # interactive | persistent | resume | oneshot
     )
     claudeSessionId: Optional[str] = None
+    assistantProfile: Optional[str] = (
+        None  # e.g. "underfit" → load the underfit MCP for this session
+    )
     attachments: Optional[List[ChatAttachment]] = None
     staged_attachments: Optional[list] = (
         None  # internal; set by chat_stream before routing
@@ -423,6 +434,53 @@ def _format_claude_rag_context(rag_chunks: list[dict]) -> str:
 def _sse_frame(data: dict) -> str:
     """Format a dict as an SSE data frame."""
     return f"data: {json.dumps(data)}\n\n"
+
+
+def _model_caps_for_provider(provider_id: str, model: str) -> list[str]:
+    """Return known capability tags for a selected provider/model pair."""
+    if provider_id == "gemini":
+        caps_map = {m["id"]: m.get("capabilities", []) for m in GEMINI_MODELS}
+        return _enrich_models_with_caps([{"id": model, "name": model}], caps_map, [])[
+            0
+        ].get("capabilities", [])
+
+    caps_by_provider = {
+        "openai": OPENAI_CAPS,
+        "grok": GROK_CAPS,
+        "groq": GROQ_CAPS,
+    }
+    if provider_id in caps_by_provider:
+        return caps_by_provider[provider_id].get(model, [])
+
+    return []
+
+
+def _should_send_tools(provider_id: str, model: str) -> tuple[bool, str | None]:
+    """Decide whether to send OpenAI-style tools with the request."""
+
+    if provider_id in ("ollama", "lmstudio", "llamacpp", "vllm"):
+        return False, f"{provider_id} tool support is not guaranteed"
+
+    caps = _model_caps_for_provider(provider_id, model)
+    if caps and "tools" not in caps:
+        return False, f"{model} does not advertise tool support"
+
+    return True, None
+
+
+def _is_tool_compat_error(status_code: int, err_text: str) -> bool:
+    """Return True when a provider rejected only the tool envelope/capability."""
+    lowered = err_text.lower()
+    markers = (
+        "tool",
+        "function",
+        "function call",
+        "thought_signature",
+        "no endpoints found that support tool use",
+    )
+    return status_code in {400, 404, 422} and any(
+        marker in lowered for marker in markers
+    )
 
 
 def _extract_text(content: Any) -> str:
@@ -652,6 +710,13 @@ def _claude_base_cmd_args(req: ChatRequest) -> list[str]:
     fallback = _claude_fallback_model(model)
     if fallback:
         args.extend(["--fallback-model", fallback])
+    # Underfit tab assistant: attach the underfit LoRA-trainer MCP (21 tools)
+    # ONLY for that orb's requests, so its Claude session can drive training via
+    # the dashboard API while other assistant/coding sessions stay unaffected.
+    if getattr(req, "assistantProfile", None) == "underfit" and os.path.isfile(
+        UNDERFIT_MCP_CONFIG
+    ):
+        args.extend(["--mcp-config", UNDERFIT_MCP_CONFIG])
     return args
 
 
@@ -1711,12 +1776,21 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
             )
 
         try:
+            send_tools, tool_skip_reason = _should_send_tools(provider_id, model)
             request_json: dict = {
                 "model": model,
                 "messages": messages_payload,
                 "stream": True,
-                "tools": theDAW_TOOLS,
             }
+            if send_tools:
+                request_json["tools"] = theDAW_TOOLS
+            elif key_attempt == 0 and tool_skip_reason:
+                yield _sse_frame(
+                    {
+                        "type": "status",
+                        "message": f"{tool_skip_reason}; using text/actions only.",
+                    }
+                )
 
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(120.0, connect=10.0)
@@ -1750,9 +1824,9 @@ async def _stream_openai_compat(req: ChatRequest, request: Request, provider_id:
                     if response.status_code != 200:
                         body = await response.aread()
                         err_text = body.decode("utf-8", errors="replace")[:500]
-                        # If tools not supported, retry without them
-                        if response.status_code == 400 and (
-                            "tool" in err_text.lower() or "function" in err_text.lower()
+                        # If tools are rejected, retry the same model without them.
+                        if send_tools and _is_tool_compat_error(
+                            response.status_code, err_text
                         ):
                             logger.info(
                                 "[AssistantChat] %s doesn't support tools, retrying without",
@@ -2205,6 +2279,11 @@ async def _stream_anthropic(req: ChatRequest, request: Request):
 # ---------------------------------------------------------------------------
 
 CLAUDE_MODELS = [
+    {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "capabilities": ["tools", "reasoning", "vision", "code", "long_context"],
+    },
     {
         "id": "claude-opus-4-6",
         "name": "Claude Opus 4.6",

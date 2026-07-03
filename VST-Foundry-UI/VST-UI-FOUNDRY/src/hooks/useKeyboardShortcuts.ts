@@ -21,6 +21,7 @@ interface UseKeyboardShortcutsArgs {
   redo: () => void;
   copyFromKeyboard: () => void;
   pasteFromKeyboard: () => void;
+  cutSelection: () => void;
 }
 
 // Global keydown handler: tool switch (v/h), undo/redo, copy/paste (delegated to
@@ -37,6 +38,7 @@ export function useKeyboardShortcuts({
   redo,
   copyFromKeyboard,
   pasteFromKeyboard,
+  cutSelection,
 }: UseKeyboardShortcutsArgs) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -60,6 +62,8 @@ export function useKeyboardShortcuts({
         copyFromKeyboard();
       } else if ((e.metaKey || e.ctrlKey) && e.key === "v") {
         pasteFromKeyboard();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "x") {
+        cutSelection();
       } else if ((e.metaKey || e.ctrlKey) && e.key === "g") {
         e.preventDefault();
         if (selectedElementIds.length > 1) {
@@ -158,5 +162,6 @@ export function useKeyboardShortcuts({
     elements,
     copyFromKeyboard,
     pasteFromKeyboard,
+    cutSelection,
   ]);
 }

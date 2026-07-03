@@ -29,6 +29,7 @@ export const swayControlSource: XrControlSource = {
       min: 0,
       max: 1,
       step: 0.001,
+      readonly: true,
     }));
   },
 

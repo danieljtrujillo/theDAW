@@ -69,12 +69,26 @@ if not exist "frontend\node_modules" (
     )
     popd
 )
+if not exist "VST-Foundry-UI\VST-UI-FOUNDRY\node_modules" (
+    echo Installing VST Foundry dependencies: npm install
+    pushd VST-Foundry-UI\VST-UI-FOUNDRY
+    call npm install
+    if errorlevel 1 (
+        popd
+        echo.
+        echo   [X] VST Foundry npm install failed - see the error above.
+        pause
+        exit /b 1
+    )
+    popd
+)
 echo.
 
 :: -- Kill any stale processes on our ports ------------------------------
 for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5173 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8600 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5187 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5472 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 :: -- Read the saved launch mode (web | desktop) from data\settings.json -

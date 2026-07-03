@@ -26,6 +26,7 @@ import { startXrControl, stopXrControl, registerXrControlSource } from './state/
 import { djControlSource } from './state/xrControlDjSource';
 import { makeControlSource } from './state/makeControlSource';
 import { processControlSource } from './state/processControlSource';
+import { liveFxControlSource } from './state/liveFxControlSource';
 import { swayControlSource, startSwayXrMirror } from './state/swayControlSource';
 import { startSwayBus } from './state/swayBus';
 import { startSwayRouting } from './state/swayRouting';
@@ -252,18 +253,39 @@ export default function App() {
   // the backend `questmidi` module. It hosts the localhost TCP listener + adb
   // reverse and relays the headset's MIDI onto the same midiBus as hardware
   // controllers, so nothing else needs to change to react to the Quest.
+  // XR control bus (spatialization P0/P1 + Foundry bindings): publish theDAW's
+  // control manifest and apply inbound control-sets. UNCONDITIONAL — the bus is
+  // a cheap local WebSocket and its consumers are not MIDI-specific: the
+  // VST-Foundry builder binds canvas controls to these targets regardless of
+  // whether a MIDI device is enabled. Registration is passive (sources
+  // lazy-load their engines on first buildEntries/apply), so this adds nothing
+  // to boot beyond the socket.
+  useEffect(() => {
+    // DJ source maps DJ_TARGETS to spatial controls with no per-control wiring.
+    registerXrControlSource(djControlSource);
+    // Sway (Audima): six expressive dimensions as named 0..1 signals.
+    registerXrControlSource(swayControlSource);
+    // Body-pose source (camera, forwarded from the VJ); pose values arrive via
+    // poseBus regardless of MIDI.
+    registerXrControlSource(poseControlSource);
+    // MAKE (Magenta RT2): live generation params as bindable targets.
+    registerXrControlSource(makeControlSource);
+    // PROCESS (MIX effect chain): drive effect params on the next offline render.
+    registerXrControlSource(processControlSource);
+    // LIVE (master FX): always-available, non-destructive sound shaping on the
+    // player output — the VST-Foundry demo-mode bind-test surface.
+    registerXrControlSource(liveFxControlSource);
+    startXrControl();
+    return () => {
+      stopXrControl();
+    };
+  }, []);
+
+  // MIDI-specific bridges stay gated: Quest MIDI, the sway CC bus + mirrors,
+  // pose mirror, and the XR visualization feed.
   useEffect(() => {
     if (!midiEnabled) return;
     startQuestMidi();
-    // XR control bus (spatialization P0/P1): publish theDAW's control manifest
-    // to a theDAW-XR headset and apply inbound control-sets. The DJ source maps
-    // DJ_TARGETS to spatial controls with no per-control wiring; it lazy-loads
-    // the DJ engine so registering it here does not pull djEngine into boot.
-    registerXrControlSource(djControlSource);
-    // Sway (Audima): the six expressive dimensions become named 0..1 signals on
-    // the same control bus, learned from the device's CCs. Target-agnostic, so
-    // they can drive VFX, 3D audio, and MAKE/voice targets once those subscribe.
-    registerXrControlSource(swayControlSource);
     const stopSway = startSwayBus();
     const stopSwayMirror = startSwayXrMirror();
     const stopSwayRoute = startSwayRouting();
@@ -278,13 +300,6 @@ export default function App() {
     // the same bus; the pose values themselves arrive via poseBus regardless of MIDI.
     registerXrControlSource(poseControlSource);
     const stopPoseMirror = startPoseXrMirror();
-    // MAKE (Magenta RT2): live generation params as bindable targets, so SWAY and
-    // an XR headset can drive generation. Bidirectional like DJ; lazy-loaded.
-    registerXrControlSource(makeControlSource);
-    // PROCESS (MIX effect chain): drive effect params on the next offline render,
-    // including the vocal_processing path. Bidirectional like DJ; lazy-loaded.
-    registerXrControlSource(processControlSource);
-    startXrControl();
     // Stream the visualization feed (waveform pack) over the same bridge so a
     // theDAW-XR headset can render theDAW's live audio natively.
     startXrViz();
@@ -296,7 +311,6 @@ export default function App() {
       stopSwaySurface();
       stopSwayImport();
       stopPoseMirror();
-      stopXrControl();
       stopXrViz();
     };
   }, [midiEnabled]);

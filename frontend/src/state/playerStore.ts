@@ -8,7 +8,7 @@ import { logError, logInfo } from './logStore';
  * always reflect whatever's audible.
  *
  *   HTMLAudioElement ──┐
- *                      ├──▶ master gain ──▶ [master insert] ──▶ analyser ──▶ destination
+ *                      ├──▶ master gain ──▶ [master insert] ──▶ [live-FX insert] ──▶ analyser ──▶ destination
  *   editor preview  ───┤
  *   sequencer voices ──┘
  *
@@ -16,6 +16,11 @@ import { logError, logInfo } from './logStore';
  * the summed output. A live effect rack (the MIX psychoacoustic rack) splices
  * itself between insertIn and insertOut so it processes everything audible on
  * the footer transport without rebuilding when the source/clip changes.
+ *
+ * The [live-FX insert] is a second passthrough bus (fxIn ─▶ fxOut) after the
+ * rack. The always-available live master FX chain (lib/liveMasterFx — the
+ * VST-Foundry "Live Audio" bind-test surface) splices itself there, so it
+ * shapes the final mixed output independently of the MIX rack.
  */
 
 let _ctx: AudioContext | null = null;
@@ -24,6 +29,9 @@ let _analyser: AnalyserNode | null = null;
 // Master-output insert bus: master -> insertIn -> [rack] -> insertOut -> analyser.
 let _insertIn: GainNode | null = null;
 let _insertOut: GainNode | null = null;
+// Live-FX insert bus: insertOut -> fxIn -> [live master FX] -> fxOut -> analyser.
+let _fxIn: GainNode | null = null;
+let _fxOut: GainNode | null = null;
 let _audioEl: HTMLAudioElement | null = null;
 let _mediaSrc: MediaElementAudioSourceNode | null = null;
 let _objectUrl: string | null = null;
@@ -78,9 +86,15 @@ export const ensureEngine = (): EngineHandles => {
   // a clean passthrough so audio flows with no rack and with no rack overhead.
   const insertIn = ctx.createGain();
   const insertOut = ctx.createGain();
+  // Live-FX insert: a second passthrough bus after the rack insert, where the
+  // always-available live master FX chain (lib/liveMasterFx) splices itself.
+  const fxIn = ctx.createGain();
+  const fxOut = ctx.createGain();
   master.connect(insertIn);
   insertIn.connect(insertOut);
-  insertOut.connect(analyser);
+  insertOut.connect(fxIn);
+  fxIn.connect(fxOut);
+  fxOut.connect(analyser);
   analyser.connect(ctx.destination);
 
   const audioEl = new Audio();
@@ -124,6 +138,8 @@ export const ensureEngine = (): EngineHandles => {
   _analyser = analyser;
   _insertIn = insertIn;
   _insertOut = insertOut;
+  _fxIn = fxIn;
+  _fxOut = fxOut;
   _audioEl = audioEl;
   _mediaSrc = mediaSrc;
   return { ctx, master, analyser, audioEl };
@@ -145,6 +161,18 @@ export const getEngineCtx = (): AudioContext => ensureEngine().ctx;
 export const getMasterInsert = (): { ctx: AudioContext; input: GainNode; output: GainNode } => {
   ensureEngine();
   return { ctx: _ctx!, input: _insertIn!, output: _insertOut! };
+};
+
+/**
+ * The live-FX insert bus, directly after the MIX rack insert. The live master
+ * FX chain (lib/liveMasterFx — driven by the VST-Foundry "Live Audio" bindable
+ * targets) wires itself between `input` and `output`, so it shapes the final
+ * mixed output live and non-destructively. Default wiring is a clean
+ * `input -> output` passthrough, so an unattached chain colours nothing.
+ */
+export const getLiveFxInsert = (): { ctx: AudioContext; input: GainNode; output: GainNode } => {
+  ensureEngine();
+  return { ctx: _ctx!, input: _fxIn!, output: _fxOut! };
 };
 
 /**

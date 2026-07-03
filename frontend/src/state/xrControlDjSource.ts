@@ -56,7 +56,7 @@ export const djControlSource: XrControlSource = {
     if (!t) return false;
     // Toggles want a boolean; ranges want a number; pads trigger (arg ignored).
     if (t.kind === 'toggle') t.invoke(Boolean(value));
-    else if (t.kind === 'pad') t.invoke(true);
+    else if (t.kind === 'pad') { if (value) t.invoke(true); return true; }
     else t.invoke(Number(value));
     return true;
   },

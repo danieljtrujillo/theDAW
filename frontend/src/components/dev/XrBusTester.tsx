@@ -18,8 +18,12 @@ import { Radio, X } from 'lucide-react';
 import type { XrManifestEntry, XrControlValue } from '../../state/xrControlClient';
 
 function wsUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/api/xr/control/ws`;
+  const { protocol, host } = window.location;
+  if (protocol === 'https:') {
+    return `wss://${host}/api/xr/control/ws`;
+  }
+  // Desktop (app://) and local dev: connect straight to the backend.
+  return 'ws://localhost:8600/api/xr/control/ws';
 }
 
 const RANGE_KINDS = new Set(['knob', 'fader', 'crossfader', 'xy', 'xyz', 'jog']);

@@ -1,0 +1,22 @@
+/* White theme for the Underfit assistant orb.
+ *
+ * Scoped to `.underfit-orb-white` so it ONLY recolors this tab's orb and
+ * never touches theDAW's other Gantasmo orbs. The orb core, glow, swirl and
+ * particles all read these accent/glow CSS variables from gantasmo-orb.css;
+ * overriding them here turns the amber/violet orb white/neutral. */
+.gantasmo-orb-theme.underfit-orb-white {
+  --accent-primary: #ffffff;
+  --accent-secondary: #e5e7eb;
+  --accent-tertiary: #f1f5f9;
+  --accent-success: #d1fae5;
+  --accent-warning: #f5f5f4;
+  --glow-primary: rgba(255, 255, 255, 0.55);
+  --glow-secondary: rgba(226, 232, 240, 0.45);
+  --glow-tertiary: rgba(241, 245, 249, 0.35);
+  --border-glow: rgba(255, 255, 255, 0.35);
+}
+
+/* Keep the ghost-face readable on the now-white core. */
+.gantasmo-orb-theme.underfit-orb-white .gantasmo-face .face-base {
+  fill: #f8fafc;
+}

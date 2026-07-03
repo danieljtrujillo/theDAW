@@ -115,5 +115,3 @@ export const useAppUiStore = create<AppUiState>()(
     },
   ),
 );
-
-

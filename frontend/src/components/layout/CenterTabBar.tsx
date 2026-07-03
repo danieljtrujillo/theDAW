@@ -7,6 +7,8 @@ import {
   Workflow,
   Tv2,
   Disc,
+  Hammer,
+  FlaskConical,
   Rows3,
   Hammer,
 } from 'lucide-react';
@@ -133,6 +135,18 @@ const TABS: Array<{
     },
   },
   {
+    id: 'underfit',
+    label: 'Underfit',
+    desc: 'Train LoRA finetunes with the Underfit dashboard',
+    icon: FlaskConical,
+    accent: {
+      border: 'border-sky-500/50',
+      bg: 'bg-sky-500/15',
+      text: 'text-sky-100',
+      iconText: 'text-sky-300',
+    },
+  },
+  {
     id: 'learn',
     label: 'Learn',
     desc: 'Guides, docs and the in-app assistant',
@@ -188,4 +202,3 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
     </div>
   );
 };
-
