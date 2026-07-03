@@ -27,6 +27,21 @@ const DETECT_SCHEMA = {
   },
 };
 
+const PANEL_SCHEMA = {
+  type: "ARRAY",
+  items: {
+    type: "OBJECT",
+    properties: {
+      title: { type: "STRING", description: "The panel's visible title text, verbatim (e.g. 'FREEZE CHAMBER')" },
+      ymin: { type: "NUMBER", description: "Normalized top Y coordinate (0.0 to 1.0)" },
+      xmin: { type: "NUMBER", description: "Normalized left X coordinate (0.0 to 1.0)" },
+      ymax: { type: "NUMBER", description: "Normalized bottom Y coordinate (0.0 to 1.0)" },
+      xmax: { type: "NUMBER", description: "Normalized right X coordinate (0.0 to 1.0)" },
+    },
+    required: ["title", "ymin", "xmin", "ymax", "xmax"],
+  },
+};
+
 const LABEL_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -53,6 +68,16 @@ function detectPrompt(sensitivity: number): string {
         ? "Be conservative and only detect the most obvious, distinct, large elements."
         : "Use a balanced threshold for detection.";
   return `Analyze this image and identify EVERY single interactive UI element (such as knobs, buttons, sliders, meters, switches, icons, displays, readouts, and panels). ${thresholdLevel} Break down complex groups into their individual components. You must return their precise bounding boxes. Coordinate values (ymin, xmin, ymax, xmax) must be exactly normalized floats between 0.000 and 1.000. Be extremely thorough. Provide a short, descriptive label for each (e.g., 'Reverb Knob', 'Sync Button', 'Filter Icon').`;
+}
+
+function panelPrompt(sensitivity: number): string {
+  const thresholdLevel =
+    sensitivity > 0.7
+      ? "Include even small or subtle sections."
+      : sensitivity < 0.3
+        ? "Only include the most clearly delineated major panels."
+        : "Use a balanced threshold.";
+  return `Analyze this audio-plugin UI image and identify every distinct MODULE PANEL — a visually grouped section with its own background plate, usually a border/frame and a title (e.g. 'KAOSS PAD', 'FREEZE CHAMBER', 'OUTPUT'). ${thresholdLevel} Do NOT return individual controls (knobs, buttons, sliders) — only whole panels/sections that CONTAIN controls. Return the panel's visible title verbatim (or a short descriptive name if untitled) and its precise bounding box. Coordinate values (ymin, xmin, ymax, xmax) must be exactly normalized floats between 0.000 and 1.000 and must include the panel's full backplate edge-to-edge.`;
 }
 
 function labelPrompt(sensitivity: number): string {
@@ -165,6 +190,26 @@ export function registerExtractRoutes(app: Express): void {
     } catch (e: any) {
       appendLog(`[extract] detect failed: ${e?.message || e}`);
       res.status(502).json({ error: e?.message || "Detection failed" });
+    }
+  });
+
+  // Panel/module detection — whole titled sections, not individual controls.
+  app.post("/api/extract/detect-panels", async (req, res) => {
+    const v = validateExtractBody(req, res);
+    if (!v) return;
+    try {
+      const panels = await geminiGenerateJson({
+        model: v.model,
+        apiKey: v.apiKey,
+        base64Image: v.base64Image,
+        mimeType: v.mimeType,
+        prompt: panelPrompt(v.sensitivity),
+        responseSchema: PANEL_SCHEMA,
+      });
+      res.json({ panels: Array.isArray(panels) ? panels : [] });
+    } catch (e: any) {
+      appendLog(`[extract] detect-panels failed: ${e?.message || e}`);
+      res.status(502).json({ error: e?.message || "Panel detection failed" });
     }
   });
 
