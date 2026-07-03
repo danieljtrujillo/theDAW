@@ -1,8 +1,9 @@
 """Manage the GANTASMO-LIVE-VJ Vite server as an SA3 sidecar.
 
-The VJ project lives in its own repo at
-``D:/StableAudio/GANTASMO-LIVE-VJ`` (overridable via
-``theDAW_VJ_PROJECT``). It's a vanilla Vite/React app — no Python,
+The VJ project (VJ-9000) lives in its own repo checked out as a
+sibling of theDAW's repo root (overridable via ``theDAW_VJ_PROJECT``;
+the legacy ``D:/StableAudio/GANTASMO-LIVE-VJ`` working tree is used as
+a fallback). It's a vanilla Vite/React app — no Python,
 no heavy ML deps — so the spawn logic is much simpler than the stems
 sidecar: build (when stale) + ``npm run preview`` and poll the port
 until the server is listening.
@@ -52,7 +53,11 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-DEFAULT_PROJECT_PATH = Path(r"D:/StableAudio/GANTASMO-LIVE-VJ")
+# Sibling-repo convention (audit 2026-07-01): VJ-9000 is checked out next
+# to theDAW's repo root; the legacy D:\StableAudio tree stays as a fallback.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_PROJECT_PATH = _REPO_ROOT.parent / "VJ-9000"
+LEGACY_PROJECT_PATH = Path(r"D:/StableAudio/GANTASMO-LIVE-VJ")
 DEFAULT_PORT = 5187
 PORT_READY_TIMEOUT_SEC = 60.0
 PORT_POLL_INTERVAL_SEC = 0.5
@@ -88,6 +93,8 @@ def resolve_config() -> VJConfig:
     """Resolve project path + port + the npm binary to use."""
     pkg = os.getenv("theDAW_VJ_PROJECT")
     project_path = Path(pkg).expanduser().resolve() if pkg else DEFAULT_PROJECT_PATH
+    if not pkg and not project_path.is_dir() and LEGACY_PROJECT_PATH.is_dir():
+        project_path = LEGACY_PROJECT_PATH
 
     port_env = os.getenv("theDAW_VJ_PORT")
     try:
