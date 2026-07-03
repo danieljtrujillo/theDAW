@@ -13,11 +13,13 @@
     2   a required tool (uv / Node) is still missing (declined or failed)
     10  installed something - re-run theDAW.bat so PATH refreshes
 
-  Switch:
-    -Yes   assume "yes" to the prompts (non-interactive)
+  Switches:
+    -Yes            assume "yes" to the prompts (non-interactive)
+    -UnderfitVenv   only run the Underfit trainer-tab venv bootstrap, then exit
+                    (theDAW.bat calls this after the main venv is built)
 #>
 [CmdletBinding()]
-param([switch]$Yes)
+param([switch]$Yes, [switch]$UnderfitVenv)
 $ErrorActionPreference = 'Stop'
 
 # --------------------------------------------------------------------------- #
@@ -47,6 +49,32 @@ function Refresh-Path(){
   if($m){ $parts += $m }
   if($u){ $parts += $u }
   $env:Path = ($parts -join ';')
+}
+
+# The Underfit LoRA-trainer tab runs its own uv-managed Python env
+# (underfit/.venv). It's a large, opt-in feature, so this is consent-gated and
+# never blocks theDAW — declining just leaves the tab's dashboard unavailable
+# until you set it up. Creating the env is `uv sync --inexact` (the exact step
+# from underfit/install.sh); the trainer backend + model packs are a separate,
+# heavier step the tab installs on demand.
+function Setup-UnderfitVenv(){
+  Refresh-Path
+  $root  = Split-Path -Parent $PSScriptRoot
+  $ufDir = Join-Path $root 'underfit'
+  if(-not (Test-Path (Join-Path $ufDir 'pyproject.toml'))){ return }   # not vendored
+  if(Test-Path (Join-Path $ufDir '.venv\Scripts\python.exe')){ OK 'Underfit trainer env present'; return }
+  Head 'Underfit trainer tab (optional)'
+  if(-not (Have 'uv')){ WARN 'uv is required to create the Underfit env - install uv first, then re-launch.'; return }
+  Info "The Underfit LoRA-trainer tab needs a one-time Python env (underfit\.venv)."
+  Info "This runs 'uv sync' in underfit\ (~a few minutes). Model packs download later, on demand."
+  if(-not (Ask 'Create the Underfit trainer env now?')){ WARN 'Skipped - the Underfit tab stays unavailable until you set it up.'; return }
+  Info 'Creating underfit\.venv via: uv sync --inexact'
+  Push-Location $ufDir
+  try {
+    & uv sync --inexact
+    if($LASTEXITCODE -eq 0){ OK 'Underfit trainer env created.' }
+    else { WARN "uv sync exited $LASTEXITCODE - the Underfit tab stays unavailable for now." }
+  } finally { Pop-Location }
 }
 
 $wingetOk = Have 'winget'
@@ -96,6 +124,10 @@ function Bootstrap-Winget(){
     return $false
   }
 }
+
+# Dedicated mode: theDAW.bat calls `setup.ps1 -UnderfitVenv` after the main venv
+# bootstrap to create the optional Underfit trainer env if it's missing.
+if($UnderfitVenv){ Setup-UnderfitVenv; exit 0 }
 
 Clear-Host
 Write-Host ""
@@ -161,6 +193,7 @@ else { WARN "winget not found - uv still installs via its own installer; Node/FF
 if($todo.Count -eq 0){
   Head "Everything theDAW needs is already installed"
   OK "No downloads needed."
+  Setup-UnderfitVenv
   exit 0
 }
 

@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "underfit"
+version = "0.1.0"
+description = "LoRA finetuning for Stable Audio models"
+readme = "README.md"
+# 3.10 only — matches what the stable-audio-3 backend ships with.
+# uv will auto-fetch a 3.10 interpreter if the system doesn't have one.
+requires-python = ">=3.10,<3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "CJ Carr", email = "cj@dadabots.com" },
+]
+keywords = ["audio", "diffusion", "lora", "stable-audio", "fine-tuning"]
+
+# Dependency manifest for `uv` (https://docs.astral.sh/uv/). This is NOT a
+# PyPI package — underfit runs directly from the git clone:
+#     git clone https://github.com/dada-bots/underfit && cd underfit
+#     ./install.sh
+#
+# The diffusion backend (stable-audio-3) is intentionally NOT listed here —
+# `install.sh` runs the setup wizard which clones and `uv pip install -e`s
+# the stable-audio-3 source tree as an editable package.
+#
+# Pins below mirror the constraints stable-audio-3 hard-pins (torch 2.7.1 +
+# cu126), so `uv pip install -e <sa3-path>` is a no-op for these packages
+# instead of a downgrade. Bump together when stable-audio-3 bumps.
+dependencies = [
+  "torch==2.7.1",
+  "torchaudio==2.7.1",
+  "safetensors>=0.7.0",
+  "tqdm>=4.67.3",
+  "huggingface_hub>=1.7.1",
+  "numpy>=2.2.6",
+  "soundfile>=0.12",
+  "Pillow>=10",
+  # Used for streaming checkpoint loads — keeps CPU peak RAM low when
+  # training large models on memory-constrained hosts (Colab T4, etc.).
+  "accelerate>=0.30",
+]
+
+[[tool.uv.index]]
+# cu128 wheels: support every NVIDIA arch from sm_50 → sm_120, which means
+# Volta/Turing/Ampere/Ada/Hopper PLUS Blackwell (RTX 50xx, RTX PRO 6000,
+# DGX B100/B200). Requires NVIDIA driver R570+, which is the norm on any
+# host that has a Blackwell card and is widely deployed elsewhere too.
+# sa3 pins cu126 internally, but uv will prefer the index declared here
+# for the torch/torchaudio top-level deps.
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+]
+torchaudio = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+]
+
+[project.urls]
+Homepage = "https://github.com/dada-bots/underfit"
+Repository = "https://github.com/dada-bots/underfit"
+Issues = "https://github.com/dada-bots/underfit/issues"
+
+[tool.uv]
+# Install underfit itself editably so `from underfit.X import Y` and
+# `python -m underfit.X` resolve from anywhere — no sys.path hacks needed
+# in scripts or in the dashboard handlers.
+package = true
+required-version = ">=0.5"
+
+[tool.hatch.build.targets.wheel]
+# Only ship the `underfit/` package — not dashboard/, dataset_processing/,
+# underfit-colab.ipynb, etc. Those are run-from-clone-only artifacts.
+packages = ["underfit"]
+
+[project.scripts]
+# CLI shims installed into the venv's bin/. After `uv sync` you can call
+# these directly without `python -m ...`:
+underfit-setup = "underfit.cli.setup:main"
+underfit-update-registries = "underfit.cli.update_registries:main"

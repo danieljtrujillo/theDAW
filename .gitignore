@@ -4,6 +4,8 @@ codegraph/
 
 # Secrets & user data
 data/api_key_pools.json
+# Underfit upstream-update check cache (written by backend/modules/underfit/updater.py)
+data/underfit_update.json
 data/generations/
 data/settings.json
 data/recent_projects.json
@@ -307,3 +309,12 @@ deprecated/
 
 # Local model weights (multi-GB safetensors + configs) - never commit
 models/
+
+# Underfit is vendored as a git-subrepo (dada-bots/underfit + local mods): its
+# CODE is tracked by theDAW; only its heavy runtime dirs are excluded here (also
+# covered by underfit/.gitignore). state/ is multi-GB — never commit it.
+/underfit/state/
+/underfit/.venv/
+/underfit/.gradio/
+/underfit/**/node_modules/
+/underfit/**/__pycache__/

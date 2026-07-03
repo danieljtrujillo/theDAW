@@ -56,6 +56,13 @@ if "%NEED_SYNC%"=="1" (
         exit /b 1
     )
 )
+
+:: -- Underfit trainer tab: create its optional venv if the vendored underfit\
+::    is present but underfit\.venv is missing. Delegated to setup.ps1 (consent
+::    prompt + uv sync --inexact); best-effort - never blocks the launch.
+if exist "underfit\pyproject.toml" if not exist "underfit\.venv\Scripts\python.exe" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\setup.ps1" -UnderfitVenv
+)
 if not exist "frontend\node_modules" (
     echo Installing frontend dependencies: npm install
     pushd frontend

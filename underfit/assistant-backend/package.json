@@ -1,0 +1,20 @@
+{
+  "name": "underfit-assistant-backend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Underfit's own assistant backend — a clone of the VST Foundry assistant (identical providers, models, and the Better Claude Code / Claude Code CLI provider), wired to the underfit MCP tools. API-only; the UI is underfit's dashboard on :8791.",
+  "scripts": {
+    "start": "tsx server.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.14.0",
+    "tsx": "^4.22.4",
+    "typescript": "~5.8.2"
+  }
+}

@@ -1,0 +1,65 @@
+# ── Runtime user state ──────────────────────────────────────────────────
+# Everything in STATE_DIR is gitignored: runs, datasets, audio, checkpoint
+# symlinks, gradio logs, state JSONs. Defaults to <repo>/state/ — overridable
+# via UNDERFIT_STATE_DIR. If a user points STATE_DIR elsewhere, that location
+# isn't covered by .gitignore, but it's also outside the repo so git won't see
+# it anyway.
+state/
+
+# ── Editor / OS / build artifacts ───────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.bak.*
+
+dist/
+build/
+*.egg-info/
+node_modules/
+
+# Assistant-backend runtime state (sessions, logs, generated artifacts)
+assistant-backend/data/
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Python venv (multi-GB, machine-specific; uv also self-ignores it) ────
+.venv/
+
+# ── Gradio runtime cache ─────────────────────────────────────────────────
+.gradio/
+
+# ── Local scratch: underscore-prefixed one-off debug scripts, JSON dumps,
+#    and server logs, plus dated .bak snapshots. Kept on disk, never
+#    uploaded. (_[!_]* avoids matching __init__.py and other dunder files.)
+_[!_]*.py
+_[!_]*.json
+*.bak-*
+
+# ── Agent / tooling artifacts (Claude Code, Serena, Playwright, repomix) ─
+.claude/
+.serena/
+.playwright-mcp/
+repomix-output.md
+
+# ── Internal process notes: plans, reports, audits, session changelogs.
+#    (Served docs in docs/thedaw-style/ stay TRACKED — they're app content.)
+docs/plans/
+docs/reports/
+docs/changes/
+docs/audits/
+docs/internal/
+.ipynb_checkpoints/
+
+# ── Logs & model weights never belong in the repo ───────────────────────
+*.log
+*.safetensors
+*.ckpt
+
+# ── Internal-only docs & scripts (not part of the public release) ───────
+_internal/
+CLAUDE.md
+LEARNINGS.md
