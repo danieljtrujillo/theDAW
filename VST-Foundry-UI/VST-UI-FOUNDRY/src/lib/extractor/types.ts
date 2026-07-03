@@ -19,4 +19,20 @@ export interface ExtractedElement {
   maskDataUrl?: string;
   displayMode: "rect" | "cutout" | "mask";
   status: "pending" | "detected" | "processing" | "labeled";
+  // Set when this element was detected INSIDE a module panel (two-pass group
+  // extraction); references ExtractedPanel.id.
+  panelId?: string;
+}
+
+// A detected module panel (titled section containing controls). Bounds are
+// normalized to the SOURCE image, like ExtractedElement.
+export interface ExtractedPanel {
+  id: string;
+  title: string;
+  xmin: number;
+  ymin: number;
+  xmax: number;
+  ymax: number;
+  cropDataUrl?: string; // the panel backplate crop (children pixels included)
+  status: "detected" | "scanning" | "scanned";
 }

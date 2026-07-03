@@ -13,3 +13,21 @@ export function boundsToCanvasRect(
     height: Math.max(1, (b.ymax - b.ymin) * canvas.height),
   };
 }
+
+// Map bounds that are relative to a panel CROP (0..1 within the crop) back
+// into source-image space (0..1 within the full image). Pass 2 of group
+// extraction detects children inside each panel's crop; their bounds must be
+// re-based before they can live beside pass-1 (full-image) elements.
+export function panelLocalToGlobal(
+  local: { xmin: number; ymin: number; xmax: number; ymax: number },
+  panel: { xmin: number; ymin: number; xmax: number; ymax: number },
+): { xmin: number; ymin: number; xmax: number; ymax: number } {
+  const w = panel.xmax - panel.xmin;
+  const h = panel.ymax - panel.ymin;
+  return {
+    xmin: panel.xmin + local.xmin * w,
+    ymin: panel.ymin + local.ymin * h,
+    xmax: panel.xmin + local.xmax * w,
+    ymax: panel.ymin + local.ymax * h,
+  };
+}
