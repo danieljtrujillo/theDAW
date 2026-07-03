@@ -4,6 +4,8 @@ codegraph/
 
 # Secrets & user data
 data/api_key_pools.json
+# Underfit upstream-update check cache (written by backend/modules/underfit/updater.py)
+data/underfit_update.json
 data/generations/
 data/settings.json
 data/recent_projects.json
