@@ -27,7 +27,6 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "about-thedaw.md",
     PROJECT_ROOT / "docs" / "SHOWCASE.md",
     PROJECT_ROOT / "docs" / "USER_GUIDE.md",
-    PROJECT_ROOT / "docs" / "DESIGN_PRINCIPLES.md",
     PROJECT_ROOT / "docs" / "guides" / "prompting.md",
     PROJECT_ROOT / "docs" / "guides" / "SUNO_EXTERNAL_API.md",
     PROJECT_ROOT / "docs" / "guides" / "ui-controls-guide.md",
