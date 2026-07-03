@@ -1,0 +1,10 @@
+{
+  "name": "underfit",
+  "label": "Underfit",
+  "enabled": true,
+  "sidebar": false,
+  "icon": "flask-conical",
+  "api_prefix": "/api/underfit",
+  "backend": true,
+  "description": "Sidecar for the Underfit LoRA-trainer dashboard — spawns the vendored underfit server on :8791 at backend startup so the Underfit tab loads without launching anything separately. Added additively; no existing module is modified."
+}
