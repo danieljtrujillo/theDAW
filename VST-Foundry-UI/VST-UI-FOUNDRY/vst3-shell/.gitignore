@@ -1,0 +1,35 @@
+# iPlug2 clone is huge — never commit it.
+iPlug2/
+
+# SDKs fetched by iPlug2 download scripts (Steinberg VST3 SDK, prebuilt deps, etc.)
+**/VST3_SDK/
+**/vst3sdk/
+**/Dependencies/
+sdks/
+SDKs/
+
+# Build artifacts
+build/
+build-*/
+out/
+**/build/
+**/x64/
+**/Release/
+**/Debug/
+*.vst3
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+# Misc
+.vs/
+*.user

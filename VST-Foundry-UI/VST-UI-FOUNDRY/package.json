@@ -1,0 +1,60 @@
+{
+  "name": "vst-ui-foundry",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "cross-env NODE_ENV=production node dist/server.cjs",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@imgly/background-removal": "^1.7.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "express": "^5.2.1",
+    "file-saver": "^2.0.5",
+    "idb-keyval": "^6.2.5",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "onnxruntime-web": "1.21.0-dev.20250206-d981b153d3",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/express": "^5.0.6",
+    "@types/file-saver": "^2.0.7",
+    "@types/node": "^22.14.0",
+    "@types/supertest": "^7.2.0",
+    "autoprefixer": "^10.4.21",
+    "cross-env": "^10.1.0",
+    "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
+    "supertest": "^7.2.2",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.22.4",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3",
+    "vitest": "^4.1.9"
+  },
+  "optionalDependencies": {
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.3.1",
+    "lightningcss-win32-x64-msvc": "^1.32.0"
+  },
+  "overrides": {
+    "dompurify": "^3.4.11",
+    "@imgly/background-removal": {
+      "onnxruntime-web": "1.21.0-dev.20250206-d981b153d3"
+    }
+  }
+}

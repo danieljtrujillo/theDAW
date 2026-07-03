@@ -1,0 +1,10 @@
+{
+  "name": "foundry",
+  "label": "VST Foundry",
+  "enabled": true,
+  "sidebar": false,
+  "icon": "hammer",
+  "api_prefix": "/api/foundry",
+  "backend": true,
+  "description": "Visual VST / plugin UI builder — design and export custom plugin interfaces on an infinite canvas. Ported additively from the standalone VST-Foundry app; no existing module is modified."
+}

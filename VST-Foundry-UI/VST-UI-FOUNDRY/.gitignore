@@ -1,0 +1,28 @@
+# Local data — personal files, not committed
+data/
+
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Editor/agent backups and archived files — kept locally, never committed
+*.bak
+*.bak-*
+deprecated/
+
+# local research/plan scratch (never committed)
+research/
+
+# Internal working notes — kept on disk, never published
+/docs/plans/
+/docs/reports/
+/FOUNDRY_ACTION_PLAN.md
+/FOUNDRY-RETHINK.html
+
+# Imported reference app (AI Studio scaffold) — local reference only
+/component-extractor/
