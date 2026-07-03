@@ -17,7 +17,7 @@
 // Run:  node scripts/fetch-vj-build.mjs
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, existsSync, rmSync, cpSync } from 'node:fs'
+import { mkdirSync, existsSync, rmSync, cpSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -56,8 +56,14 @@ function resolveSource() {
   for (const c of candidates) {
     if (existsSync(join(c, 'package.json'))) return { path: c, cloned: false }
   }
-  // Nothing local — clone the public repo into a temp dir.
-  const dest = join(tmpdir(), `vj-9000-${VJ_REF}`)
+  // Nothing local — clone the public repo into a temp dir. realpathSync
+  // expands any Windows 8.3 short name in the temp path (e.g. RUNNER~1 ->
+  // runneradmin on CI): vite's build-html plugin computes the emitted
+  // index.html name via path.relative(root, htmlRealPath), and if root is the
+  // short name while the html resolves to the long name, that relative path
+  // escapes the root ("../../..") and rollup rejects it. Canonicalizing the
+  // base up front keeps root and the html real path on the same spelling.
+  const dest = join(realpathSync(tmpdir()), `vj-9000-${VJ_REF}`)
   rmSync(dest, { recursive: true, force: true })
   console.log(`[fetch-vj] cloning ${VJ_REPO}@${VJ_REF} -> ${dest}`)
   run(gitCmd, ['clone', '--depth', '1', '--branch', VJ_REF, VJ_REPO, dest])
