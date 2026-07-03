@@ -28,7 +28,7 @@ The assistant supports ten AI backends. Pick one from the provider selector at t
 
 | Provider | What it is | Default model | API key |
 |----------|-----------|---------------|---------|
-| **Claude Code** | Anthropic's Claude running through the local Claude Code CLI. This is the default. | `claude-opus-4-6` | Uses your installed Claude Code CLI login (no key pasted here) |
+| **Better Claude Code** | Anthropic's Claude running through the local Claude Code CLI. This is the default. | `claude-opus-4-6` | Uses your installed Claude Code CLI login (no key pasted here) |
 | **Google Gemini** | Gemini via Google's OpenAI-compatible API | `gemini-2.5-flash` | [aistudio.google.com](https://aistudio.google.com) |
 | **OpenAI** | GPT models | `gpt-4.1-mini` | [platform.openai.com](https://platform.openai.com) |
 | **Anthropic** | Claude via Anthropic's direct Messages API | `claude-sonnet-4-6` | [console.anthropic.com](https://console.anthropic.com) |
@@ -45,15 +45,15 @@ The assistant supports ten AI backends. Pick one from the provider selector at t
 
 ---
 
-## Claude Code (the default)
+## Better Claude Code (the default)
 
-The default provider, **Claude Code**, is different from the others. Instead of calling a web API, it runs the **Claude Code CLI** as a local process on your machine. That gives Claude a richer, more capable agent loop and direct access to every canvas tool.
+The default provider, **Better Claude Code by skreamb0t (@StarskreamEXE)**, is different from the others. Instead of calling a web API, it runs the **Claude Code CLI** as a local process on your machine. That gives Claude a richer, more capable agent loop and direct access to every canvas tool.
 
 To use it you need the Claude Code CLI installed and logged in. If it is not installed, see Troubleshooting below.
 
 ### Effort
 
-Claude Code has an **effort** selector that controls how much thinking it puts into a task:
+Better Claude Code has an **effort** selector that controls how much thinking it puts into a task:
 
 - **low** — fastest, for simple changes.
 - **medium** — balanced.
@@ -69,7 +69,7 @@ You can run Claude in **normal** mode or **extended thinking** mode. Extended th
 
 ### Session continuity
 
-Claude Code **remembers your conversation across turns**. Each turn continues the same session, so you can build incrementally:
+Better Claude Code **remembers your conversation across turns**. Each turn continues the same session, so you can build incrementally:
 
 > "Add a row of four knobs."
 > "Now label them Attack, Decay, Sustain, Release."
@@ -150,19 +150,19 @@ For the full picture of providers, Stable Diffusion setup, where files are saved
 
 ## Tips
 
-- **Complex canvas work, use Claude Code.** For multi-step builds, precise alignment, and CustomCode components, Claude Code at high or max effort is the strongest choice because of its richer agent loop and full tool access.
+- **Complex canvas work, use Better Claude Code.** For multi-step builds, precise alignment, and CustomCode components, Better Claude Code at high or max effort is the strongest choice because of its richer agent loop and full tool access.
 - **Quick styling and one-off tweaks, use Gemini or GPT.** For fast restyles, color changes, and simple additions, `gemini-2.5-flash` or `gpt-4.1-mini` are quick and inexpensive.
 - **Privacy or offline, use Ollama or LM Studio.** When you do not want anything leaving your machine, run a local model. No key, no cloud.
 - **Free experimentation, use OpenRouter (Free).** Use the free-models provider to try things without spending anything.
 - **Be specific about position and size.** Coordinates ("at x=100"), counts ("three knobs"), and style words ("center glow, neon cyan") give the assistant exactly what it needs.
-- **Build incrementally.** Especially with Claude Code, make one change, see it, then ask for the next. The session remembers what you already did.
+- **Build incrementally.** Especially with Better Claude Code, make one change, see it, then ask for the next. The session remembers what you already did.
 
 ---
 
 ## Troubleshooting
 
-**Claude Code says the CLI is missing or fails to start.**
-Claude Code runs the local Claude Code CLI. Make sure it is installed and that you are logged in. Open a terminal and confirm the `claude` command works. If it does not, install the CLI and sign in, then reopen the assistant. As a fallback you can switch to the **Anthropic** provider, which talks to Claude over the web API and only needs an API key.
+**Better Claude Code says the CLI is missing or fails to start.**
+Better Claude Code runs the local Claude Code CLI. Make sure it is installed and that you are logged in. Open a terminal and confirm the `claude` command works. If it does not, install the CLI and sign in, then reopen the assistant. As a fallback you can switch to the **Anthropic** provider, which talks to Claude over the web API and only needs an API key.
 
 **A provider returns an error or "not running."**
 - For cloud providers, check that you entered a valid API key for that provider and that the key has credit or quota.
