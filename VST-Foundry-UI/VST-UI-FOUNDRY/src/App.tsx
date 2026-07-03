@@ -59,6 +59,7 @@ import EventLog from "./components/EventLog";
 import TextureGenerateModal from "./components/TextureGenerateModal";
 import ExtractorModal, {
   PlacedLayer,
+  PlacedModule,
 } from "./components/extractor/ExtractorModal";
 import { boundsToCanvasRect } from "./lib/extractor/mapping";
 import {
@@ -425,6 +426,69 @@ export default function App() {
     );
     setElements((prev) => [...prev, ...newEls]);
     setSelectedElementIds(newEls.map((e) => e.id));
+  };
+
+  // Place whole extracted modules as real Groups: a Frame backplate wearing the
+  // panel crop as faceSrc + typed face-wearing controls at exact offsets, moving
+  // as one. Mirrors the AI-bridge groupElements structure: children carry
+  // group-relative coords + groupId; the Group lists childrenIds (backplate
+  // first so it renders UNDER the controls). The backplate is a Frame element
+  // (no asset dependency); the crop still lands in the Asset library via the
+  // modal's onAddAssets.
+  const handleExtractorPlaceModules = (modules: PlacedModule[]) => {
+    const created: UIElement[] = [];
+    const groupIds: string[] = [];
+    for (const m of modules) {
+      const g = boundsToCanvasRect(m.bounds, canvasState);
+      const groupId = Math.random().toString(36).substring(2, 9);
+      const backplate: UIElement = {
+        id: Math.random().toString(36).substring(2, 9),
+        name: `${m.title} backplate`,
+        type: "Frame",
+        x: 0,
+        y: 0,
+        width: g.width,
+        height: g.height,
+        faceSrc: m.backplateUrl ?? m.backplateAsset.url,
+        label: m.title,
+        groupId,
+      };
+      const children: UIElement[] = m.children.map((c) => {
+        const r = boundsToCanvasRect(c.bounds, canvasState);
+        const base = {
+          id: Math.random().toString(36).substring(2, 9),
+          name: c.label || c.asset.name,
+          x: r.x - g.x,
+          y: r.y - g.y,
+          width: r.width,
+          height: r.height,
+          label: c.label,
+          groupId,
+        };
+        return c.controlType === "Image"
+          ? { ...base, type: "Image" as const, assetId: c.asset.id }
+          : {
+              ...base,
+              type: c.controlType,
+              faceSrc: c.faceUrl ?? c.asset.url,
+              value: 50,
+            };
+      });
+      const group: UIElement = {
+        id: groupId,
+        name: m.title,
+        type: "Group",
+        x: g.x,
+        y: g.y,
+        width: g.width,
+        height: g.height,
+        childrenIds: [backplate.id, ...children.map((c) => c.id)],
+      };
+      created.push(backplate, ...children, group);
+      groupIds.push(groupId);
+    }
+    setElements((prev) => [...prev, ...created]);
+    setSelectedElementIds(groupIds);
   };
 
   // Save-to-Arsenal signal (C5). ControlParamsSection dispatches
@@ -1289,6 +1353,7 @@ export default function App() {
           sourceImage={canvasState.backgroundImage}
           onAddAssets={handleExtractorAddAssets}
           onPlaceLayers={handleExtractorPlaceLayers}
+          onPlaceModules={handleExtractorPlaceModules}
           onAddTextures={(newTextures) =>
             setTextures((prev) => [...prev, ...newTextures])
           }
