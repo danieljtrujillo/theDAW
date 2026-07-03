@@ -109,9 +109,17 @@ ENV PYTHONUNBUFFERED=1 \
 # group holds only pytest and ruff, so --no-dev is a verified reduction, not
 # a guess. theDAW.bat runs "uv sync --group dev" on developer machines only
 # to add those tools.
+#
+# pyk4a-bundle (the Azure Kinect point-cloud backend for the akvj module) is
+# skipped in the container: its only Linux wheel is manylinux_2_38 (glibc
+# >= 2.38) and this digest-pinned bookworm base ships glibc 2.36, so uv cannot
+# install it here. The container has no Kinect device anyway, and the akvj
+# sidecar imports pyk4a lazily (inside functions / via a subprocess probe), so
+# the backend boots fine without it. The dependency stays in pyproject/uv.lock
+# with its win32-or-linux-x86_64 marker so bare-metal Linux installs keep it.
 COPY pyproject.toml uv.lock .python-version ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project --no-install-package pyk4a-bundle
 
 # README.md is required because pyproject.toml declares it as the project
 # readme and the project install builds metadata from it.
@@ -126,9 +134,10 @@ COPY docs/ ./docs/
 COPY frontend/public/USER_GUIDE.md ./frontend/public/USER_GUIDE.md
 
 # The second sync installs the project itself against the already-cached
-# dependency set.
+# dependency set. pyk4a-bundle is skipped for the same reason as the first sync
+# (glibc 2.38 wheel vs the base's glibc 2.36; no Kinect device in the container).
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --no-install-package pyk4a-bundle
 
 # The built SPA lands where backend/server.py expects it
 # (PROJECT_ROOT/frontend/dist) for the theDAW_SERVE_UI mount.
