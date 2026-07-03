@@ -56,7 +56,7 @@ code, and relative sibling links. The set's own landing page is
 | [custom-code.md](custom-code.md) | The `CustomCode` element, its sandboxed iframe, postMessage bridge, and parameter model | Guide |
 | [gan-format.md](gan-format.md) | The `.gan` portable web-plugin bundle: on-disk shape, export/import round-trip, host bridge | Guide (reference) |
 | [textures-and-skins.md](textures-and-skins.md) | Procedural and AI textures, CSS material skins, and image faces; how they composite and ride exports | Guide |
-| [assistant-and-mcp.md](assistant-and-mcp.md) | The Assistant orb, the multi-provider chat backend, the persistent BCC session, and the MCP canvas bridge | Guide |
+| [assistant-and-mcp.md](assistant-and-mcp.md) | The Assistant orb, the multi-provider chat backend, the persistent Better Claude Code session, and the MCP canvas bridge | Guide |
 | [thedaw-integration.md](thedaw-integration.md) | The sidecar, the center-tab embed, the two control buses, and the exported-plugin runtime inside theDAW | Guide |
 | [projects-and-data.md](projects-and-data.md) | Where Foundry state lives (IndexedDB, localStorage, on-disk `data/`) and what survives a restart | Guide (reference) |
 | [troubleshooting.md](troubleshooting.md) | Ports, spawn failures, rejected imports, native-shell build errors, and the commands to clear them | Guide (reference) |
