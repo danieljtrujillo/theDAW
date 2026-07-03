@@ -276,6 +276,9 @@ docs/*.pdf
 /docs/changes/
 /docs/in-flight-work.md
 /docs/WHERE-WE-STAND.md
+/docs/TASMO-VST-DAW-IMPORT-ROADMAP.md
+/docs/DESIGN_PRINCIPLES.md
+/docs/DESIGN_WIREFRAME.svg
 
 # Electron desktop shell — build artifacts + runtime logs (deps via node_modules/ above)
 electron-ui/out/
