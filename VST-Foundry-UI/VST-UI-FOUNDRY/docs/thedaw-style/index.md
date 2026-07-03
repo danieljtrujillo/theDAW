@@ -25,7 +25,7 @@ it stands and links its siblings for context.
 | [custom-code.md](custom-code.md) | The **CustomCode** element: your own HTML/CSS/JS in a sandboxed iframe, its postMessage bridge, parameters, and theDAW bindings. |
 | [textures-and-skins.md](textures-and-skins.md) | The visual asset pipeline — procedural and AI-generated textures, CSS material skins, and image faces, and how they attach and export. |
 | [component-extractor.md](component-extractor.md) | The Component Extractor: turning one reference image into labeled cutout components (and real controls) via vision AI, integrated and standalone. |
-| [assistant-and-mcp.md](assistant-and-mcp.md) | The in-app AI co-designer — the Assistant orb, the multi-provider chat backend, the persistent BCC session, and the MCP canvas bridge. |
+| [assistant-and-mcp.md](assistant-and-mcp.md) | The in-app AI co-designer — the Assistant orb, the multi-provider chat backend, the persistent Better Claude Code session, and the MCP canvas bridge. |
 | [gan-format.md](gan-format.md) | The `.gan` portable web-plugin package: its on-disk shape, Foundry's export/import round-trip, and the theDAW host bridge that wires it up. |
 | [vst3-export.md](vst3-export.md) | The VST3 export path — the browser-side data-bundle exporter and the native iPlug2 **FoundryShell** that loads it at runtime. |
 | [thedaw-integration.md](thedaw-integration.md) | How Foundry lives inside theDAW: the Node sidecar, the center-tab embed, the two control buses, and the exported-`.gan` plugin runtime. |

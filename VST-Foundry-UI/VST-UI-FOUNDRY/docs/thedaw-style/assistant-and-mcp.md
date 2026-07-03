@@ -1,8 +1,9 @@
 # Foundry Assistant — Orb, Providers, and MCP
 
 Reference for Foundry's in-app AI co-designer: the floating **Assistant orb**,
-the multi-provider chat backend, the persistent **Better Claude Code** (BCC)
-session, and the **MCP** bridge that lets the model read and mutate your canvas.
+the multi-provider chat backend, the persistent **Better Claude Code by
+skreamb0t (@StarskreamEXE)** session, and the **MCP** bridge that lets the model
+read and mutate your canvas.
 Plain descriptions of what each piece does and how a message becomes a canvas
 change. For the workspace it drives, see
 [canvas-and-controls.md](canvas-and-controls.md); for the images it can
@@ -72,7 +73,7 @@ sidecar that hosts the rest of Foundry (see
 | Method + path | Purpose |
 |---|---|
 | `GET /api/health` | Liveness probe (`{app, status, time}`). |
-| `GET /api/assistant/providers` | Provider catalog. Claude/BCC is unshifted to the front. |
+| `GET /api/assistant/providers` | Provider catalog. Better Claude Code is unshifted to the front. |
 | `GET /api/assistant/models/:provider` | Model discovery for one provider (live fetch or fallbacks). |
 | `POST /api/assistant/chat` | The one chat endpoint. SSE. Dispatches by `provider`. |
 | `POST /api/assistant/transcribe` | Raw audio (`audio/*`) → faster-whisper → `{ok, text}`. |
@@ -92,12 +93,12 @@ sidecar that hosts the rest of Foundry (see
 
 The assistant is **bring-your-own-key** for cloud providers and needs no key for
 local ones. The catalog is defined in `PROVIDERS` (`server/providers.ts`); the
-Claude Code provider is deliberately **not** in that map and is special-cased in
-the routes.
+Better Claude Code provider is deliberately **not** in that map and is
+special-cased in the routes.
 
 | Provider id | Label | Key required | Local | Notes |
 |---|---|---|---|---|
-| `claude` | BCC (Better Claude Code) | No | Yes | Spawns the local `claude` CLI. Surfaced FIRST in the providers list. |
+| `claude` | Better Claude Code | No | Yes | Spawns the local `claude` CLI. Surfaced FIRST in the providers list. |
 | `gemini` | Google Gemini | Yes | No | OpenAI-compat base; models via Google's `/v1beta/models`. |
 | `openai` | OpenAI | Yes | No | OpenAI-compat. |
 | `anthropic` | Anthropic | Yes | No | Native Anthropic Messages API path. |
@@ -186,7 +187,7 @@ attached for the whole conversation instead of flapping every message.
 | `CLAUDE_TURN_STALL_MS` | 5 min | Inactivity watchdog — re-armed on every stdout frame; only a true stall trips it. |
 
 Each turn is serialized: a message that arrives while a turn is running is
-**queued, not rejected** (BCC parity — mid-turn sends never return 409). The
+**queued, not rejected** (Better Claude Code parity — mid-turn sends never return 409). The
 route parks in the session's FIFO idle-waiter list, keeps the SSE alive with
 pings, and resumes in arrival order when the in-flight turn finishes. Switching
 model or effort on a live conversation respawns the child in place (resume keeps
@@ -358,7 +359,7 @@ former single-file implementation.
 
 Behavior worth knowing:
 
-- **Mid-turn queue (BCC parity).** Typing while a turn streams does not fire a
+- **Mid-turn queue (Better Claude Code parity).** Typing while a turn streams does not fire a
   second colliding request. The message is parked in a FIFO queue (shown in the
   UI) and sent automatically when the current turn ends. **Stop** clears the
   queue and, if the agent is blocked on a question, denies it so the child
