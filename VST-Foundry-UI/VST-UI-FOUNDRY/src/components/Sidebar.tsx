@@ -19,6 +19,7 @@ import {
   Code,
   Save,
   AudioWaveform,
+  Square,
   X,
 } from "lucide-react";
 
@@ -1123,6 +1124,89 @@ const CATEGORIES: ComponentCategory[] = [
               />
             ))}
           </div>
+        ),
+      },
+    ],
+  },
+  {
+    name: "Frames",
+    icon: Square,
+    variants: [
+      // FILLED variants first (backplate looks — a surface behind controls).
+      {
+        type: "Frame",
+        variant: "Backplate",
+        label: "Backplate",
+        description: "A plain filled backplate — a surface to place controls on.",
+        defaultWidth: 220,
+        defaultHeight: 160,
+        preview: (
+          <div className="w-16 h-10 rounded bg-app-surface border border-app-border" />
+        ),
+      },
+      {
+        type: "Frame",
+        variant: "Plate",
+        label: "Screw Plate",
+        description: "A filled backplate with corner screw dots.",
+        defaultWidth: 220,
+        defaultHeight: 160,
+        preview: (
+          <div className="w-16 h-10 rounded bg-app-surface border border-app-border relative">
+            {["top-0.5 left-0.5", "top-0.5 right-0.5", "bottom-0.5 left-0.5", "bottom-0.5 right-0.5"].map((pos) => (
+              <div key={pos} className={`absolute ${pos} w-1 h-1 rounded-full bg-app-border`} />
+            ))}
+          </div>
+        ),
+      },
+      {
+        type: "Frame",
+        variant: "Glass",
+        label: "Glass Panel",
+        description: "A translucent frosted panel with a soft top highlight.",
+        defaultWidth: 220,
+        defaultHeight: 160,
+        preview: (
+          <div className="w-16 h-10 rounded bg-white/10 border border-white/20 relative overflow-hidden">
+            <div className="absolute inset-x-0 top-0 h-1/3 bg-linear-to-b from-white/25 to-transparent" />
+          </div>
+        ),
+      },
+      {
+        type: "Frame",
+        variant: "Titled",
+        label: "Titled Panel",
+        description: "A backplate with a top title strip that shows the element label.",
+        defaultWidth: 220,
+        defaultHeight: 160,
+        preview: (
+          <div className="w-16 h-10 rounded bg-app-surface border border-app-border overflow-hidden flex flex-col">
+            <div className="h-3 shrink-0 bg-app-surface-hover border-b border-app-border" />
+            <div className="flex-1" />
+          </div>
+        ),
+      },
+      // HOLLOW variants after (frame looks — trim around things, transparent center).
+      {
+        type: "Frame",
+        variant: "Border",
+        label: "Border Frame",
+        description: "A plain border ring with a transparent center.",
+        defaultWidth: 220,
+        defaultHeight: 160,
+        preview: (
+          <div className="w-16 h-10 rounded border border-app-border bg-transparent" />
+        ),
+      },
+      {
+        type: "Frame",
+        variant: "Bezel",
+        label: "Bezel Frame",
+        description: "A double-border bezel with an inner inset shadow and transparent center.",
+        defaultWidth: 220,
+        defaultHeight: 160,
+        preview: (
+          <div className="w-16 h-10 rounded border-2 border-app-border bg-transparent shadow-[inset_0_0_0_2px_rgba(255,255,255,0.08)]" />
         ),
       },
     ],

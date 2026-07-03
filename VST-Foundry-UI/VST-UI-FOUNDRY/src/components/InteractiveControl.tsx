@@ -31,6 +31,7 @@ import WaveShaperControl from "./controls/WaveShaperControl";
 import EnvelopeControl from "./controls/EnvelopeControl";
 import StepSequencerControl from "./controls/StepSequencerControl";
 import KeyboardControl from "./controls/KeyboardControl";
+import FrameControl from "./controls/FrameControl";
 import { styleParam } from "./controls/controlParams";
 import { getSkinLayers } from "../lib/skins";
 
@@ -50,6 +51,9 @@ const UNIVERSAL_FACE_TYPES = new Set<ElementType>([
   "Envelope",
   "StepSequencer",
   "Keyboard",
+  // Frame is decorative — a backplate/frame. A static face lets an extracted
+  // backplate IMAGE stand in for the programmatic plate (faceHideBase hides it).
+  "Frame",
 ]);
 
 interface Props {
@@ -783,6 +787,10 @@ export default function InteractiveControl({
 
     if (el.type === "Keyboard") {
       return <KeyboardControl el={el} variant={variant} isPreview={isPreview} />;
+    }
+
+    if (el.type === "Frame") {
+      return <FrameControl el={el} variant={variant} isPreview={isPreview} />;
     }
 
     return null;

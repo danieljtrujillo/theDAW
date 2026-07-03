@@ -67,7 +67,7 @@ function detectPrompt(sensitivity: number): string {
       : sensitivity < 0.3
         ? "Be conservative and only detect the most obvious, distinct, large elements."
         : "Use a balanced threshold for detection.";
-  return `Analyze this image and identify EVERY single interactive UI element (such as knobs, buttons, sliders, meters, switches, icons, displays, readouts, and panels). ${thresholdLevel} Break down complex groups into their individual components. You must return their precise bounding boxes. Coordinate values (ymin, xmin, ymax, xmax) must be exactly normalized floats between 0.000 and 1.000. Be extremely thorough. Provide a short, descriptive label for each (e.g., 'Reverb Knob', 'Sync Button', 'Filter Icon').`;
+  return `Analyze this image and identify EVERY single interactive UI element (such as knobs, buttons, sliders, meters, switches, icons, displays, readouts, and panels/frames (module backplates)). ${thresholdLevel} Break down complex groups into their individual components. You must return their precise bounding boxes. Coordinate values (ymin, xmin, ymax, xmax) must be exactly normalized floats between 0.000 and 1.000. Be extremely thorough. Provide a short, descriptive label for each (e.g., 'Reverb Knob', 'Sync Button', 'Filter Icon').`;
 }
 
 function panelPrompt(sensitivity: number): string {

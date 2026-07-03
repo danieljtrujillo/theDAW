@@ -19,6 +19,7 @@ export const ELEMENT_TYPES = [
   "Envelope", // ADSR envelope editor (attack / decay / sustain / release)
   "StepSequencer", // grid step sequencer
   "Keyboard", // piano-key input strip
+  "Frame", // decorative module frame / panel backplate
   "CustomCode",
 ] as const;
 
