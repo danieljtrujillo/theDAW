@@ -54,6 +54,21 @@ function uvUrl() {
   return `${base}/uv-${triple}.tar.gz`
 }
 
+// Pinned Node.js runtime — used to run the bundled VST Foundry fullstack
+// server (node dist/server.cjs). SYNC RULE: bump deliberately after checking
+// https://nodejs.org/dist/ for the latest v22 LTS; never float 'latest'.
+// 22.23.1 was the latest v22 LTS when this pin was written (2026-07).
+const NODE_VERSION = '22.23.1'
+
+function nodeUrl() {
+  const base = `https://nodejs.org/dist/v${NODE_VERSION}`
+  if (process.platform === 'win32') {
+    return `${base}/node-v${NODE_VERSION}-win-x64.zip`
+  }
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  return `${base}/node-v${NODE_VERSION}-darwin-${arch}.tar.gz`
+}
+
 // Windows FFmpeg comes from gyan.dev exactly as before (matching
 // install/setup.ps1). macOS FFmpeg + ffprobe come from Martin Riedl's static
 // build server (https://ffmpeg.martin-riedl.de), pinned to the immutable
@@ -162,6 +177,26 @@ async function fetchUv() {
   rmSync(work, { recursive: true, force: true })
 }
 
+async function fetchNode() {
+  const binName = process.platform === 'win32' ? 'node.exe' : 'node'
+  const dest = join(toolsDir, binName)
+  if (present(dest)) {
+    log(`${binName} already present, skipping`)
+    return
+  }
+  const work = join(tmpdir(), 'thedaw-fetch-node')
+  rmSync(work, { recursive: true, force: true })
+  mkdirSync(work, { recursive: true })
+  const url = nodeUrl()
+  const archive = join(work, process.platform === 'win32' ? 'node.zip' : 'node.tar.gz')
+  await download(url, archive)
+  extract(archive, work)
+  const found = findFile(work, binName)
+  if (!found) throw new Error(`${binName} not found in the downloaded archive`)
+  install(found, dest)
+  rmSync(work, { recursive: true, force: true })
+}
+
 async function fetchFfmpegWin() {
   const ffmpeg = join(toolsDir, 'ffmpeg.exe')
   const ffprobe = join(toolsDir, 'ffprobe.exe')
@@ -217,6 +252,7 @@ async function main() {
   }
   mkdirSync(toolsDir, { recursive: true })
   await fetchUv()
+  await fetchNode()
   if (process.platform === 'win32') {
     await fetchFfmpegWin()
   } else {

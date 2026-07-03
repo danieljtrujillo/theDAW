@@ -1,4 +1,17 @@
-"""Manage the VST Foundry fullstack dev server as a theDAW sidecar."""
+"""Manage the VST Foundry fullstack server as a theDAW sidecar.
+
+VST Foundry is an in-repo Node/Express app (VST-Foundry-UI/VST-UI-FOUNDRY) with
+its own frontend + backend, so it runs as its own server on a dedicated port
+and the theDAW UI embeds it by iframe (see frontend FoundryView).
+
+DEFAULT (production): when a compiled build is present (``dist/server.cjs`` +
+``node_modules``), run it directly with node — no npm, no dev server, no install
+step. The packaged release ships the built app plus a bundled node runtime, so
+this path needs nothing preinstalled. ``THEDAW_NODE`` overrides the node binary.
+
+DEV (``THEDAW_FOUNDRY_DEV=1``, or when no build exists): npm-install on first run
+then ``npm run dev`` (Vite+Express, HMR off) for working ON Foundry itself.
+"""
 
 from __future__ import annotations
 
@@ -85,6 +98,29 @@ def resolve_config() -> FoundryConfig:
 
     npm_path = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
     return FoundryConfig(project_path=project_path, port=port, npm_path=npm_path)
+
+
+def _resolve_node() -> Optional[str]:
+    """The node binary to run the compiled Foundry server with. Honors
+    THEDAW_NODE, else finds one on PATH (the packaged app prepends its bundled
+    tools dir to PATH, so a shipped node is picked up automatically)."""
+    explicit = os.getenv("THEDAW_NODE")
+    if explicit:
+        return explicit
+    return shutil.which("node") or shutil.which("node.exe")
+
+
+def _production_server(cfg: FoundryConfig) -> Optional[Path]:
+    """The compiled fullstack server (``dist/server.cjs``, produced by
+    ``npm run build``) if it exists AND its runtime deps are present. esbuild
+    bundles server.ts with ``--packages=external``, so ``node_modules`` must
+    ship alongside dist/. Returns None when no runnable production build is
+    available (then the sidecar falls back to the npm dev server)."""
+    server = cfg.project_path / "dist" / "server.cjs"
+    node_modules = cfg.project_path / "node_modules"
+    if server.is_file() and node_modules.is_dir():
+        return server
+    return None
 
 
 def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
@@ -206,41 +242,53 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                     "Set THEDAW_FOUNDRY_PROJECT to override."
                 )
 
-            node_modules = cfg.project_path / "node_modules"
-            if not node_modules.is_dir():
-                log.info("foundry.sidecar: node_modules missing — running npm install")
-                try:
-                    with _open_log() as log_fh:
-                        rc = subprocess.call(
-                            [cfg.npm_path, "install"],
-                            cwd=str(cfg.project_path),
-                            stdout=log_fh,
-                            stderr=log_fh,
-                            shell=False,
-                        )
-                except FileNotFoundError as e:
-                    raise RuntimeError(
-                        f"VST Foundry sidecar: npm not found ({e}). Install Node.js."
-                    ) from e
-                if rc != 0:
-                    raise RuntimeError(
-                        f"npm install failed in {cfg.project_path} (rc={rc}). "
-                        "Run it manually to see the full error output, then retry."
-                        f"\n--- foundry-sidecar.log (tail) ---\n{_log_tail()}"
-                    )
+            env = os.environ.copy()
+            env["THEDAW_FOUNDRY_PORT"] = str(cfg.port)
 
-            cmd = [cfg.npm_path, "run", "dev"]
+            prod_server = _production_server(cfg)
+            node_bin = _resolve_node()
+            if os.getenv("THEDAW_FOUNDRY_DEV") != "1" and prod_server and node_bin:
+                # PRODUCTION (default when a built app is present): run the
+                # compiled fullstack server directly with node — no npm, no dev
+                # server, no install step. The packaged release ships dist/ +
+                # node_modules + a node runtime, so this needs nothing installed.
+                env["NODE_ENV"] = "production"
+                cmd = [node_bin, str(prod_server)]
+            else:
+                # DEV / source checkout (or THEDAW_FOUNDRY_DEV=1): install deps
+                # on first run, then run the Vite+Express dev server. HMR off —
+                # nobody live-edits Foundry's source through the embed, and the
+                # unreachable HMR socket (24678) otherwise floods the console.
+                node_modules = cfg.project_path / "node_modules"
+                if not node_modules.is_dir():
+                    log.info(
+                        "foundry.sidecar: node_modules missing — running npm install"
+                    )
+                    try:
+                        with _open_log() as log_fh:
+                            rc = subprocess.call(
+                                [cfg.npm_path, "install"],
+                                cwd=str(cfg.project_path),
+                                stdout=log_fh,
+                                stderr=log_fh,
+                                shell=False,
+                            )
+                    except FileNotFoundError as e:
+                        raise RuntimeError(
+                            f"VST Foundry sidecar: npm not found ({e}). Install Node.js."
+                        ) from e
+                    if rc != 0:
+                        raise RuntimeError(
+                            f"npm install failed in {cfg.project_path} (rc={rc}). "
+                            "Run it manually to see the full error output, then retry."
+                            f"\n--- foundry-sidecar.log (tail) ---\n{_log_tail()}"
+                        )
+                env["DISABLE_HMR"] = "true"
+                cmd = [cfg.npm_path, "run", "dev"]
+
             log.info(
                 "foundry.sidecar: spawning %s (cwd=%s)", " ".join(cmd), cfg.project_path
             )
-            env = os.environ.copy()
-            env["THEDAW_FOUNDRY_PORT"] = str(cfg.port)
-            # Embedded sidecar: no one live-edits Foundry's source here, so turn
-            # off Vite HMR + file watching. This removes the unreachable HMR
-            # WebSocket (port 24678) whose retries otherwise flood the browser
-            # console with ERR_CONNECTION_REFUSED. (Foundry's vite.config honors
-            # DISABLE_HMR; theDAW's own frontend runs HMR-off by default too.)
-            env["DISABLE_HMR"] = "true"
             try:
                 creationflags = 0
                 if sys.platform == "win32":

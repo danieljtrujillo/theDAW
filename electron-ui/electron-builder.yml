@@ -83,6 +83,15 @@ extraResources:
     to: python/vj-dist
     filter:
       - "**/*"
+  # VST Foundry production bundle (dist/ + production node_modules + package.json),
+  # staged by scripts/fetch-foundry-build.mjs (npm run fetch:foundry). Lands where the
+  # foundry sidecar resolves it (_REPO_ROOT/"VST-Foundry-UI"/"VST-UI-FOUNDRY") and runs
+  # `node dist/server.cjs` with the bundled node (resources/tools/node). Foundry is a
+  # fullstack Node app, so unlike VJ it ships its whole runtime. Gitignored + regenerated.
+  - from: resources/foundry-app
+    to: python/VST-Foundry-UI/VST-UI-FOUNDRY
+    filter:
+      - "**/*"
   # uv + ffmpeg + ffprobe, downloaded by scripts/fetch-runtime-tools.mjs before
   # the build. Prepended to the spawned backend's PATH at runtime. The contents
   # are HOST-PLATFORM-SPECIFIC (Windows: uv.exe/ffmpeg.exe/ffprobe.exe, macOS:
