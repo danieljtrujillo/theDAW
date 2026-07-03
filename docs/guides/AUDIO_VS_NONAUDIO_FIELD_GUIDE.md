@@ -4,7 +4,7 @@ This guide groups the live cache fields from `cache/main/library_cache_FULLY_ENR
 by what they mean for music generation and analysis.
 
 It is based on the sampled live-cache field dictionary in
-[LIVE_CACHE_FIELD_DICTIONARY.md](/C:/Users/skream/projects/SunoHarvester/docs/DATA_TRUTH/LIVE_CACHE_FIELD_DICTIONARY.md),
+`LIVE_CACHE_FIELD_DICTIONARY.md` (from the SunoHarvester dataset),
 which was generated from `5,000` real songs.
 
 ## How to think about this cache
