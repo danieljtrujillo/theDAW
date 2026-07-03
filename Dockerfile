@@ -39,8 +39,10 @@ RUN npm run build
 ########################################################################
 FROM node:22.23.1-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS vj
 WORKDIR /build/vj
+# ca-certificates is required alongside git: the slim base ships no CA bundle,
+# so the HTTPS clone of VJ-9000 below fails certificate verification without it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 ARG VJ_REPO=https://github.com/gantasmo/VJ-9000.git
 # Active VJ branch carrying the '/vj-app/' build base; switch to main once merged.
