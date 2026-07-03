@@ -10,7 +10,6 @@ import {
   Hammer,
   FlaskConical,
   Rows3,
-  Hammer,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
