@@ -29,6 +29,10 @@ export const ELEMENT_TYPE_ALIASES: Record<string, ElementType> = {
   stepseq: "StepSequencer",
   keyboard: "Keyboard",
   piano: "Keyboard",
+  frame: "Frame",
+  panel: "Frame",
+  backplate: "Frame",
+  plate: "Frame",
   customcode: "CustomCode",
 };
 

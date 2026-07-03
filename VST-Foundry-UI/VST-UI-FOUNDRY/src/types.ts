@@ -19,6 +19,7 @@ export const ELEMENT_TYPES = [
   "Envelope", // ADSR envelope editor (attack / decay / sustain / release)
   "StepSequencer", // grid step sequencer
   "Keyboard", // piano-key input strip
+  "Frame", // decorative module frame / panel backplate
   "CustomCode",
 ] as const;
 
@@ -165,6 +166,10 @@ export interface UIElement {
   blendMode?: string;
   effect?: "none" | "pulsing" | "orbital" | "audioReactive" | "breathing" | "flickering" | "floating";
   rotation?: number;
+  // Mirror flips (context menu "Flip Horizontal/Vertical"). Opt-in — undefined
+  // renders byte-identical to today. Composed with rotation at render time.
+  flipX?: boolean;
+  flipY?: boolean;
   valueX?: number; // for XYPad
   valueY?: number; // for XYPad
   value?: number;

@@ -25,7 +25,7 @@ const UI_ELEMENT_PROPERTIES: Record<string, any> = {
   type: {
     type: "string",
     description:
-      "Component type. One of: Knob, Button, Slider, Toggle, Meter, Waveform, XYPad, Display, Text/Label, Image, Select, Panel, LED, CustomCode, Group.",
+      "Component type. One of: Knob, Button, Slider, Toggle, Meter, Waveform, XYPad, Display, Text/Label, Image, Select, Panel, Frame, LED, CustomCode, Group.",
   },
   name: { type: "string", description: "Human-readable element name shown in the layers panel." },
   variant: { type: "string", description: "Visual variant/style preset for this component type (e.g. a knob skin)." },
@@ -1113,7 +1113,7 @@ NOTES:
 ═══════════════════════════════════════════════════════════════
 COMPONENT TYPES
 ═══════════════════════════════════════════════════════════════
-Knob, Button, Slider, Toggle, Meter, Waveform, XYPad, Display, Text/Label, Image, Select (dropdown with options[]), Panel, LED, Group, and CustomCode.
+Knob, Button, Slider, Toggle, Meter, Waveform, XYPad, Display, Text/Label, Image, Select (dropdown with options[]), Panel, Frame (decorative module backplate / frame), LED, Group, and CustomCode.
 CustomCode elements render arbitrary HTML/CSS/SVG/JS inside a SANDBOXED IFRAME — full JavaScript, CSS animation, SVG and <canvas> are supported. Reach for CustomCode when you need a bespoke visualizer, animated readout, or any control the built-in types cannot express. Put the markup/script in the 'customCode' property.
 MAKE CUSTOMCODE ELEMENTS EDITABLE — this is important: whenever a CustomCode element has any tunable value (a color, size, speed, count, threshold, label, on/off, etc.), do BOTH of these so the user can adjust it afterwards:
   1. In 'customCode', read every tunable value from window.PARAMS.<key> (with a sensible fallback), and implement window.onFoundryParams = (p) => { /* re-read window.PARAMS and re-render */ } so live edits apply without a reload.

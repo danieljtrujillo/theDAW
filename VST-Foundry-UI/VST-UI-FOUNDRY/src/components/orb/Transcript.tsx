@@ -90,6 +90,17 @@ export function Transcript({
               </div>
             )}
 
+            {/* Referenced canvas elements ("Add to Chat") */}
+            {m.refs && m.refs.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: m.text ? 6 : 0 }}>
+                {m.refs.map((r) => (
+                  <span key={r.id} style={{ fontSize: 10, background: "rgba(0,0,0,0.25)", borderRadius: 9999, padding: "1px 8px", color: "rgba(255,255,255,0.85)" }}>
+                    {r.name} · {r.type}
+                  </span>
+                ))}
+              </div>
+            )}
+
             {/* Reasoning process */}
             {m.thinking && <CollapsibleReasoning thinking={m.thinking} textScale={textScale} />}
 

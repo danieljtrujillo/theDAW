@@ -22,8 +22,13 @@ let running = false;
 let everConnected = false;
 
 function wsUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/api/questmidi/ws`;
+  const { protocol, host } = window.location;
+  if (protocol === 'https:') {
+    return `wss://${host}/api/questmidi/ws`;
+  }
+  // Desktop (app://) and local dev: connect straight to the backend — the
+  // app:// handler can't upgrade WebSockets and dev proxies may lack ws:true.
+  return 'ws://localhost:8600/api/questmidi/ws';
 }
 
 function scheduleReconnect(): void {

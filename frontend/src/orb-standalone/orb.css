@@ -1,0 +1,8 @@
+/* Tailwind utilities for the standalone orb bundle. `source(none)` disables
+   automatic content detection (so we don't pull in all of theDAW's frontend);
+   the two @source lines scope generation to exactly the orb's files. The
+   orb-kit skin + white-theme CSS are imported by the component itself and are
+   bundled alongside these utilities into a single underfit-orb.css. */
+@import "tailwindcss" source(none);
+@source "../views/underfit/UnderfitAssistantOrb.tsx";
+@source "../orb-kit";

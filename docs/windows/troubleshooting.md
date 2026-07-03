@@ -163,3 +163,32 @@ installs or use the manual fallback for the reported tool:
 
 After installing a tool, close the current launcher window (or open a NEW
 terminal) so PATH refreshes, then re-run `theDAW.bat`.
+
+## VST Foundry tab won't load / "VST Foundry did not start"
+
+**Symptom:** The **Foundry** center tab spins on "Loading VST Foundry…" and then
+shows "VST Foundry did not start," sometimes with an error detail underneath.
+
+**Cause:** Usually one of three things:
+
+- A **stale backend** that was already running before the Foundry module was
+  added, so it doesn't expose `/api/foundry`. Relaunch `theDAW.bat` for a fresh
+  backend.
+- **Node.js not installed / not on PATH.** The sidecar runs `npm install` and
+  `npm run dev`; both fail without Node. Install Node.js v20.19+ / v22.12+ and
+  re-run.
+- A **sidecar crash** — for example a broken `npm install` or a port conflict on
+  5472.
+
+**Fix:**
+
+1. Relaunch `theDAW.bat` (it clears any stale process on 5472 and starts a fresh
+   backend), then reopen the Foundry tab and use **Reload** in its header.
+2. Confirm Node is present: `node -v`.
+3. Hit the status endpoint for details — it reports the resolved project path,
+   port, whether the sidecar is listening, and any issues:
+   ```powershell
+   curl http://localhost:8600/api/foundry/status
+   ```
+4. Read the sidecar log for the crash output:
+   `data\logs\foundry-sidecar.log`.

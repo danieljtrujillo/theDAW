@@ -66,3 +66,34 @@ describe("/api/extract/label validation", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("/api/extract/detect-panels validation", () => {
+  it("400s when image is missing", async () => {
+    const res = await request(app)
+      .post("/api/extract/detect-panels")
+      .send({ mimeType: "image/png", model: "m", apiKey: "k" });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s when mimeType is unsupported", async () => {
+    const res = await request(app)
+      .post("/api/extract/detect-panels")
+      .send({ image: "aGk=", mimeType: "image/gif", model: "m", apiKey: "k" });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s when model is missing", async () => {
+    const res = await request(app)
+      .post("/api/extract/detect-panels")
+      .send({ image: "aGk=", mimeType: "image/png", apiKey: "k" });
+    expect(res.status).toBe(400);
+  });
+
+  it("blocks a foreign browser Origin with 403 (origin-lock)", async () => {
+    const res = await request(app)
+      .post("/api/extract/detect-panels")
+      .set("Origin", "http://evil.com")
+      .send({ image: "aGk=", mimeType: "image/png", model: "m", apiKey: "k" });
+    expect(res.status).toBe(403);
+  });
+});

@@ -48,7 +48,7 @@ export const makeControlSource: XrControlSource = {
     const t = (await targets()).find((x) => x.id === id);
     if (!t) return false;
     if (t.kind === 'toggle') t.invoke(Boolean(value));
-    else if (t.kind === 'pad') t.invoke(true);
+    else if (t.kind === 'pad') { if (value) t.invoke(true); return true; }
     else t.invoke(Number(value));
     return true;
   },

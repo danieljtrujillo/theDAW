@@ -37,12 +37,22 @@ export interface PendingControl {
   reason?: string;
 }
 
+// A canvas element the user attached to a message as context (context menu
+// "Add to Chat"). Name/type are snapshotted at attach time for display; the id
+// points the model at the full definition inside appState.elements.
+export interface ElementRef {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
   thinking?: string;
   image?: string; // base64
+  refs?: ElementRef[]; // canvas elements referenced via "Add to Chat"
   toolCalls?: ToolCallEntry[];
   meta?: TurnMeta;
   groundingUrls?: Array<{ title: string; url: string }>;

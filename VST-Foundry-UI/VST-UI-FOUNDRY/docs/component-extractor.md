@@ -34,6 +34,8 @@ The extractor gives you three ways to capture regions of the image, and they can
 | **Manual rectangle** | Drag a box directly on the image. | Captures exactly the region you draw. |
 | **Lasso** | Toggle **Lasso** (or hold **Alt** while dragging), then trace a freeform outline. | Produces a polygon cutout instead of a plain rectangle. |
 
+The three methods above capture loose regions. A fourth toolbar button, **Detect Modules** (the Boxes icon), instead captures whole titled *module panels* and the controls inside them — see [Detecting Modules](#detecting-modules).
+
 ### Sensitivity
 
 The **Sensitivity** slider (0–100%) tunes how aggressive both detection and cutout tracing are:
@@ -58,6 +60,29 @@ Manually drawn boxes are queued rather than processed on the spot, so you can ca
 
 ---
 
+## Detecting Modules
+
+**Detect Modules** (the Boxes icon in the toolbar) captures whole *module panels* — a titled group such as an "OSC 1" or "FILTER" section — instead of individual controls. It runs a **two-pass** detection:
+
+1. **Panels** — the first pass asks the vision AI for the titled module panels in the image. Each one returns as a collapsible section in the tray, titled with the panel name and cut out as a backplate.
+2. **Per-panel controls** — for every panel found, a second pass runs the same control detection Auto Detect uses, but *inside that panel's crop*, then maps each child's bounds back onto the source image and files it under the panel. Panels are scanned one at a time (a spinner marks the panel currently scanning), the same rate-limit-safe pattern as Process Pending.
+
+The detected children land as ordinary captured assets tagged with the panel as their group, so you refine, re-label, and **Process Pending** them exactly like any other detection. Every control in a panel must finish processing (reach the *labeled* state) before that module can be placed.
+
+### Module panel sections
+
+Each panel is a **collapsible section** at the top of the tray, above the loose asset list. Its header shows the panel title, the member count, a scanning spinner while the second pass runs, a **Place Module** button, and a delete (**X**). Collapse a section to fold its member cards out of the way. Deleting a panel keeps its member controls — they drop back into the loose list as ungrouped assets, so nothing is thrown away.
+
+### Place Module
+
+**Place Module** drops the whole panel onto the canvas as one Foundry **Group**: the panel backplate becomes a **Frame** element wearing the panel crop as its face, and every member control is placed over it — each wearing its own cutout as its face, at its original offset inside the panel. Choose each member's target control type with the per-card **Control type** select before placing (a graphic with no control meaning stays an **Image**). The backplate crop and every child cutout also land in the Asset library.
+
+Because the module is a real Group, you can select it, save it to the **Arsenal**, and drag that saved module into any project — backplate, controls, offsets and all.
+
+> **Frames.** The backplate uses **Frame**, a decorative element type with its own **Frames** sidebar section. Frames come in *filled* backplate variants (Backplate, Screw Plate, Glass, Titled) that sit behind controls, and *hollow* trim variants (Border, Bezel) with a transparent center. Any extracted backplate becomes a Frame, and you can drag a fresh Frame straight from the sidebar the same way.
+
+---
+
 ## Refining Assets
 
 Every captured asset appears as a card in the **Captured Assets** tray on the right. Each card offers:
@@ -76,7 +101,7 @@ The active display mode determines which image is used everywhere else: **mask**
 
 ## Saving and Placing
 
-You can get assets out of the extractor seven ways:
+You can get assets out of the extractor eight ways:
 
 | Action | Where | Result |
 |--------|-------|--------|
@@ -87,6 +112,7 @@ You can get assets out of the extractor seven ways:
 | **Place All as Layers** | Tray header | Adds the assets *and* places them on the canvas as Image layers, positioned over the background at their exact original coordinates. |
 | **→ Design** (per card) | On each asset card | Places that single asset onto the canvas as a positioned layer. |
 | **Tex** (per card) | On each asset card | Adds that single asset to the Texture Library. |
+| **Place Module** | Module panel header (per panel) | Places the whole module — the backplate as a **Frame** plus its member controls as face-wearing controls, at their original offsets — onto the canvas as one Foundry Group. See [Detecting Modules](#detecting-modules). |
 
 Placed layers use each asset's normalized bounds scaled to the canvas dimensions. Because the background sets the canvas size on upload, placed layers land exactly where the component sat in the original image.
 

@@ -306,8 +306,12 @@ const RENDERER_JS = `(function () {
     d.style.width = num(el.width, 40) + "px";
     d.style.height = num(el.height, 40) + "px";
     d.style.boxSizing = "border-box";
-    if (el.rotation) {
-      d.style.transform = "rotate(" + num(el.rotation, 0) + "deg)";
+    var tf = [];
+    if (el.rotation) tf.push("rotate(" + num(el.rotation, 0) + "deg)");
+    if (el.flipX) tf.push("scaleX(-1)");
+    if (el.flipY) tf.push("scaleY(-1)");
+    if (tf.length) {
+      d.style.transform = tf.join(" ");
       d.style.transformOrigin = "center center";
     }
     return d;

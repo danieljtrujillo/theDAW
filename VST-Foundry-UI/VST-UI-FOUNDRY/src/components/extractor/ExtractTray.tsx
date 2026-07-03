@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ExtractedElement } from "../../lib/extractor/types";
+import { ExtractedElement, ExtractedPanel } from "../../lib/extractor/types";
 import { ElementType, ELEMENT_TYPES } from "../../types";
 import { ELEMENT_TYPE_ALIASES, normalizeElementType } from "../orb/elements";
 import {
@@ -17,6 +17,10 @@ import {
   Palette,
   SlidersHorizontal,
   RefreshCw,
+  Boxes,
+  X,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
@@ -39,6 +43,17 @@ interface ExtractTrayProps {
   sensitivity: number;
   // Re-run the pipeline on one element at an alternative sensitivity.
   onReprocess: (el: ExtractedElement, sensitivity: number) => void;
+  // Detected module panels (two-pass group extraction). Each renders as a
+  // collapsible section above the loose list, with its member cards inside.
+  panels: ExtractedPanel[];
+  // Place a whole panel as one Foundry Group: backplate + its member controls,
+  // each wearing its currently selected control type.
+  onPlaceModule: (
+    panel: ExtractedPanel,
+    items: { el: ExtractedElement; controlType: ElementType }[],
+  ) => void;
+  // Remove a panel; its member elements stay as loose captured assets.
+  onDeletePanel: (id: string) => void;
 }
 
 export default function ExtractTray({
@@ -51,6 +66,9 @@ export default function ExtractTray({
   onMakeControls,
   sensitivity,
   onReprocess,
+  panels,
+  onPlaceModule,
+  onDeletePanel,
 }: ExtractTrayProps) {
   const [isSavingAll, setIsSavingAll] = useState(false);
   // Per-card control-type overrides, keyed by element id. Unset entries fall
@@ -65,6 +83,13 @@ export default function ExtractTray({
   const [reproSens, setReproSens] = useState<Record<string, number>>({});
   const reproFor = (el: ExtractedElement): number =>
     reproSens[el.id] ?? sensitivity;
+
+  // Which panel sections are expanded. A missing entry means open (panels
+  // default open); a stored `false` means the user has collapsed it.
+  const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({});
+  const isPanelOpen = (id: string): boolean => openPanels[id] !== false;
+  const togglePanel = (id: string): void =>
+    setOpenPanels((prev) => ({ ...prev, [id]: prev[id] === false }));
 
   const labeledEls = elements.filter((el) => el.status === "labeled");
 
@@ -142,6 +167,356 @@ export default function ExtractTray({
     }
   };
 
+  // Single captured-asset card. Extracted verbatim from the former loose-list
+  // map so panel sections and the loose list share one renderer. The returned
+  // root carries `key={el.id}`, so callers may map it directly.
+  const renderCard = (el: ExtractedElement) => {
+    const currentImg =
+      el.displayMode === "mask" && el.maskDataUrl
+        ? el.maskDataUrl
+        : el.displayMode === "cutout" && el.cutoutDataUrl
+          ? el.cutoutDataUrl
+          : el.cropDataUrl;
+
+    return (
+      <div
+        key={el.id}
+        className="bg-app-surface border border-app-border rounded-lg overflow-hidden group shadow-sm flex flex-col"
+      >
+        <div
+          className="bg-app-base/50 p-3 flex justify-center items-center h-40 relative group/img"
+          style={{
+            backgroundImage:
+              "url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAMElEQVQ4T2P8z8Dwn4GKgHHUQBoG/mOUYkBBMy2mO41yqGFAi8VMRvNQDcR/qIQBALSZNxE9iG7uAAAAAElFTkSuQmCC')",
+          }}
+        >
+          {currentImg ? (
+            <img
+              src={currentImg}
+              alt={el.label}
+              className="max-w-full max-h-full object-contain drop-shadow-md"
+            />
+          ) : (
+            <div className="text-xs text-app-muted">No Image</div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onDelete(el.id)}
+            className="absolute top-2 right-2 bg-red-900/80 hover:bg-red-600 text-white p-1.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity"
+            title="Delete asset"
+            aria-label="Delete asset"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+
+          {el.status === "detected" && (
+            <div
+              className="absolute top-2 left-2 bg-blue-900/80 text-blue-200 p-1 rounded"
+              title="Auto-detected"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+            </div>
+          )}
+        </div>
+
+        {/* Mode Toggles */}
+        <div className="grid grid-cols-3 border-y border-app-border bg-app-base/80">
+          <button
+            type="button"
+            aria-pressed={el.displayMode === "rect"}
+            onClick={() => onUpdate(el.id, { displayMode: "rect" })}
+            className={`flex flex-col items-center gap-1 py-1.5 transition-colors ${el.displayMode === "rect" ? "bg-app-surface-hover text-app-main" : "text-app-muted hover:text-app-main hover:bg-app-surface"}`}
+          >
+            <Crop className="w-3.5 h-3.5" />
+            <span className="text-[10px] font-medium leading-none">Rect</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={el.displayMode === "cutout"}
+            onClick={() => onUpdate(el.id, { displayMode: "cutout" })}
+            disabled={!el.cutoutDataUrl}
+            className={`flex flex-col items-center gap-1 py-1.5 transition-colors ${!el.cutoutDataUrl ? "opacity-30 cursor-not-allowed" : el.displayMode === "cutout" ? "bg-blue-500/10 text-blue-400" : "text-app-muted hover:text-app-main hover:bg-app-surface"}`}
+          >
+            <Scissors className="w-3.5 h-3.5" />
+            <span className="text-[10px] font-medium leading-none">Auto</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={el.displayMode === "mask"}
+            onClick={() => {
+              if (!el.maskDataUrl || el.displayMode === "mask") {
+                onEditMask(el.id);
+                onUpdate(el.id, { displayMode: "mask" });
+              } else {
+                onUpdate(el.id, { displayMode: "mask" });
+              }
+            }}
+            className={`flex flex-col items-center gap-1 py-1.5 transition-colors ${el.displayMode === "mask" ? "bg-purple-500/10 text-purple-400" : "text-app-muted hover:text-app-main hover:bg-app-surface"}`}
+          >
+            <Brush className="w-3.5 h-3.5" />
+            <span className="text-[10px] font-medium leading-none">
+              {el.maskDataUrl && el.displayMode === "mask" ? "Edit Mask" : "Mask"}
+            </span>
+          </button>
+        </div>
+
+        <div className="p-3 flex flex-col gap-3">
+          {el.status === "processing" ? (
+            <div className="flex items-center gap-2 text-purple-400 text-sm font-medium">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Generating Cutout...
+            </div>
+          ) : el.status === "pending" || el.status === "detected" ? (
+            <div className="flex items-center gap-2 text-app-muted text-sm italic">
+              Waiting to process...
+            </div>
+          ) : (
+            <>
+              <input
+                type="text"
+                id={"extract-label-" + el.id}
+                name={"extract-label-" + el.id}
+                aria-label="Element label"
+                value={el.label}
+                onChange={(e) => onUpdate(el.id, { label: e.target.value })}
+                className="bg-app-base hover:bg-app-surface focus:bg-app-surface border border-app-border text-app-main text-sm font-medium w-full px-2 py-1.5 rounded transition-colors outline-none focus:border-app-accent"
+                placeholder="Label"
+              />
+
+              <div className="flex flex-col gap-1.5">
+                {el.group && (
+                  <div className="text-[11px] text-app-muted font-semibold px-1">
+                    {el.group}
+                  </div>
+                )}
+                {el.tags && el.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 px-1">
+                    {el.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="px-1.5 py-0.5 rounded bg-app-surface-hover text-app-main text-[10px] font-mono whitespace-nowrap"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {!el.group && (!el.tags || el.tags.length === 0) && (
+                  <div className="text-[11px] text-app-muted px-1 italic">
+                    No tags detected
+                  </div>
+                )}
+              </div>
+
+              {/* Target control type for "Make Control" — defaults to
+                  the detected type (Image for graphics with no control
+                  alias), overridable per card. */}
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor={"extract-type-" + el.id}
+                  className="text-[11px] text-app-muted font-semibold shrink-0"
+                >
+                  Control type
+                </label>
+                <select
+                  id={"extract-type-" + el.id}
+                  name={"extract-type-" + el.id}
+                  aria-label="Control type"
+                  value={selectionFor(el)}
+                  onChange={(e) =>
+                    setControlTypes((prev) => ({
+                      ...prev,
+                      [el.id]: e.target.value as ElementType,
+                    }))
+                  }
+                  className="bg-app-base hover:bg-app-surface focus:bg-app-surface border border-app-border text-app-main text-sm w-full px-2 py-1.5 rounded transition-colors outline-none focus:border-app-accent"
+                >
+                  {ELEMENT_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Re-process at an alternative sensitivity — for when
+                  the first pass produced a bad cutout or labels. */}
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor={"extract-resens-" + el.id}
+                  className="text-[11px] text-app-muted font-semibold shrink-0"
+                >
+                  Sens {Math.round(reproFor(el) * 100)}%
+                </label>
+                <input
+                  type="range"
+                  id={"extract-resens-" + el.id}
+                  name={"extract-resens-" + el.id}
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={reproFor(el)}
+                  onChange={(e) =>
+                    setReproSens((prev) => ({
+                      ...prev,
+                      [el.id]: parseFloat(e.target.value),
+                    }))
+                  }
+                  className="w-full accent-purple-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => onReprocess(el, reproFor(el))}
+                  className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium text-[11px] shrink-0"
+                  title="Re-run detection + cutout on this element at the sensitivity above"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Redo
+                </button>
+              </div>
+            </>
+          )}
+
+          <div className="text-[10px] text-app-muted font-mono flex justify-between items-center px-1">
+            <span>ID: {el.id}</span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => onAddToDesign([el], true)}
+                className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium"
+                title="Send to design canvas as a layer"
+              >
+                <ArrowRight className="w-3 h-3" />
+                Design
+              </button>
+              <button
+                type="button"
+                onClick={() => onAddAsTextures([el])}
+                className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium"
+                title="Add to the Texture Library for use on UI elements"
+              >
+                <Palette className="w-3 h-3" />
+                Tex
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onMakeControls([
+                    { el, controlType: selectionFor(el) },
+                  ])
+                }
+                className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium"
+                title="Make an interactive control that wears this cutout as its face"
+              >
+                <SlidersHorizontal className="w-3 h-3" />
+                Control
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const link = document.createElement("a");
+                  link.download = `${el.label || el.id}.png`;
+                  link.href = currentImg || "";
+                  link.click();
+                }}
+                className="text-blue-400 hover:text-blue-300 flex items-center gap-1 font-sans font-medium"
+              >
+                <Download className="w-3 h-3" />
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // A collapsible module-panel section: header (title + child count + scanning
+  // spinner + Place Module + delete) over the panel's member cards.
+  const renderPanelSection = (panel: ExtractedPanel) => {
+    const members = elements.filter((el) => el.panelId === panel.id);
+    const open = isPanelOpen(panel.id);
+    // Placement needs every member fully processed (labeled) so each control
+    // has a cutout/face; an empty panel has nothing to place.
+    const allLabeled =
+      members.length > 0 && members.every((el) => el.status === "labeled");
+    const placeDisabled = !allLabeled;
+    const placeTitle = placeDisabled
+      ? members.length === 0
+        ? "No controls detected in this panel yet"
+        : "Every control in this panel must finish processing (labeled) before the module can be placed"
+      : "Place this whole module — backplate + its controls — onto the canvas as a Group";
+
+    return (
+      <div
+        key={panel.id}
+        className="border border-app-border rounded-lg overflow-hidden bg-app-base"
+      >
+        <div className="flex items-center gap-2 px-2 py-2 bg-app-surface border-b border-app-border">
+          <button
+            type="button"
+            onClick={() => togglePanel(panel.id)}
+            aria-expanded={open}
+            aria-label={
+              (open ? "Collapse" : "Expand") + " panel " + panel.title
+            }
+            className="text-app-muted hover:text-app-main shrink-0"
+          >
+            {open ? (
+              <ChevronDown className="w-4 h-4" />
+            ) : (
+              <ChevronRight className="w-4 h-4" />
+            )}
+          </button>
+          <div className="flex-1 min-w-0 flex items-center gap-1.5">
+            <span className="text-sm font-semibold text-app-main truncate">
+              {panel.title}
+            </span>
+            <span className="text-[11px] text-app-muted font-mono shrink-0">
+              ({members.length})
+            </span>
+            {panel.status === "scanning" && (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400 shrink-0" />
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onPlaceModule(
+                panel,
+                members.map((el) => ({
+                  el,
+                  controlType: selectionFor(el),
+                })),
+              )
+            }
+            disabled={placeDisabled}
+            title={placeTitle}
+            className="btn-3d text-white text-xs flex items-center gap-1.5 disabled:opacity-50 py-1 px-2 rounded shrink-0"
+          >
+            <Boxes className="w-3.5 h-3.5" />
+            Place Module
+          </button>
+          <button
+            type="button"
+            onClick={() => onDeletePanel(panel.id)}
+            aria-label={"Delete panel " + panel.title}
+            title={"Delete panel " + panel.title}
+            className="text-app-muted hover:text-red-400 shrink-0 p-1 rounded"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {open && (
+          <div className="p-3 space-y-4">
+            {members.map((el) => renderCard(el))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="w-80 border-l border-app-border bg-app-base flex flex-col shrink-0 overflow-hidden">
       <div className="border-b border-app-border px-4 py-3 shrink-0 bg-app-surface flex flex-col gap-2">
@@ -213,275 +588,18 @@ export default function ExtractTray({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {elements.length === 0 ? (
+        {panels.map((panel) => renderPanelSection(panel))}
+
+        {elements.length === 0 && panels.length === 0 ? (
           <div className="text-app-muted text-sm text-center mt-10">
             Drag a box on the image to capture an asset.
           </div>
         ) : (
           elements
+            .filter((el) => !el.panelId)
             .slice()
             .reverse()
-            .map((el) => {
-              const currentImg =
-                el.displayMode === "mask" && el.maskDataUrl
-                  ? el.maskDataUrl
-                  : el.displayMode === "cutout" && el.cutoutDataUrl
-                    ? el.cutoutDataUrl
-                    : el.cropDataUrl;
-
-              return (
-                <div
-                  key={el.id}
-                  className="bg-app-surface border border-app-border rounded-lg overflow-hidden group shadow-sm flex flex-col"
-                >
-                  <div
-                    className="bg-app-base/50 p-3 flex justify-center items-center h-40 relative group/img"
-                    style={{
-                      backgroundImage:
-                        "url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAMElEQVQ4T2P8z8Dwn4GKgHHUQBoG/mOUYkBBMy2mO41yqGFAi8VMRvNQDcR/qIQBALSZNxE9iG7uAAAAAElFTkSuQmCC')",
-                    }}
-                  >
-                    {currentImg ? (
-                      <img
-                        src={currentImg}
-                        alt={el.label}
-                        className="max-w-full max-h-full object-contain drop-shadow-md"
-                      />
-                    ) : (
-                      <div className="text-xs text-app-muted">No Image</div>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => onDelete(el.id)}
-                      className="absolute top-2 right-2 bg-red-900/80 hover:bg-red-600 text-white p-1.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity"
-                      title="Delete asset"
-                      aria-label="Delete asset"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-
-                    {el.status === "detected" && (
-                      <div
-                        className="absolute top-2 left-2 bg-blue-900/80 text-blue-200 p-1 rounded"
-                        title="Auto-detected"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Mode Toggles */}
-                  <div className="grid grid-cols-3 border-y border-app-border bg-app-base/80">
-                    <button
-                      type="button"
-                      aria-pressed={el.displayMode === "rect"}
-                      onClick={() => onUpdate(el.id, { displayMode: "rect" })}
-                      className={`flex flex-col items-center gap-1 py-1.5 transition-colors ${el.displayMode === "rect" ? "bg-app-surface-hover text-app-main" : "text-app-muted hover:text-app-main hover:bg-app-surface"}`}
-                    >
-                      <Crop className="w-3.5 h-3.5" />
-                      <span className="text-[10px] font-medium leading-none">Rect</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={el.displayMode === "cutout"}
-                      onClick={() => onUpdate(el.id, { displayMode: "cutout" })}
-                      disabled={!el.cutoutDataUrl}
-                      className={`flex flex-col items-center gap-1 py-1.5 transition-colors ${!el.cutoutDataUrl ? "opacity-30 cursor-not-allowed" : el.displayMode === "cutout" ? "bg-blue-500/10 text-blue-400" : "text-app-muted hover:text-app-main hover:bg-app-surface"}`}
-                    >
-                      <Scissors className="w-3.5 h-3.5" />
-                      <span className="text-[10px] font-medium leading-none">Auto</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={el.displayMode === "mask"}
-                      onClick={() => {
-                        if (!el.maskDataUrl || el.displayMode === "mask") {
-                          onEditMask(el.id);
-                          onUpdate(el.id, { displayMode: "mask" });
-                        } else {
-                          onUpdate(el.id, { displayMode: "mask" });
-                        }
-                      }}
-                      className={`flex flex-col items-center gap-1 py-1.5 transition-colors ${el.displayMode === "mask" ? "bg-purple-500/10 text-purple-400" : "text-app-muted hover:text-app-main hover:bg-app-surface"}`}
-                    >
-                      <Brush className="w-3.5 h-3.5" />
-                      <span className="text-[10px] font-medium leading-none">
-                        {el.maskDataUrl && el.displayMode === "mask" ? "Edit Mask" : "Mask"}
-                      </span>
-                    </button>
-                  </div>
-
-                  <div className="p-3 flex flex-col gap-3">
-                    {el.status === "processing" ? (
-                      <div className="flex items-center gap-2 text-purple-400 text-sm font-medium">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Generating Cutout...
-                      </div>
-                    ) : el.status === "pending" || el.status === "detected" ? (
-                      <div className="flex items-center gap-2 text-app-muted text-sm italic">
-                        Waiting to process...
-                      </div>
-                    ) : (
-                      <>
-                        <input
-                          type="text"
-                          id={"extract-label-" + el.id}
-                          name={"extract-label-" + el.id}
-                          aria-label="Element label"
-                          value={el.label}
-                          onChange={(e) => onUpdate(el.id, { label: e.target.value })}
-                          className="bg-app-base hover:bg-app-surface focus:bg-app-surface border border-app-border text-app-main text-sm font-medium w-full px-2 py-1.5 rounded transition-colors outline-none focus:border-app-accent"
-                          placeholder="Label"
-                        />
-
-                        <div className="flex flex-col gap-1.5">
-                          {el.group && (
-                            <div className="text-[11px] text-app-muted font-semibold px-1">
-                              {el.group}
-                            </div>
-                          )}
-                          {el.tags && el.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-1.5 px-1">
-                              {el.tags.map((tag) => (
-                                <span
-                                  key={tag}
-                                  className="px-1.5 py-0.5 rounded bg-app-surface-hover text-app-main text-[10px] font-mono whitespace-nowrap"
-                                >
-                                  {tag}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          {!el.group && (!el.tags || el.tags.length === 0) && (
-                            <div className="text-[11px] text-app-muted px-1 italic">
-                              No tags detected
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Target control type for "Make Control" — defaults to
-                            the detected type (Image for graphics with no control
-                            alias), overridable per card. */}
-                        <div className="flex items-center gap-2">
-                          <label
-                            htmlFor={"extract-type-" + el.id}
-                            className="text-[11px] text-app-muted font-semibold shrink-0"
-                          >
-                            Control type
-                          </label>
-                          <select
-                            id={"extract-type-" + el.id}
-                            name={"extract-type-" + el.id}
-                            aria-label="Control type"
-                            value={selectionFor(el)}
-                            onChange={(e) =>
-                              setControlTypes((prev) => ({
-                                ...prev,
-                                [el.id]: e.target.value as ElementType,
-                              }))
-                            }
-                            className="bg-app-base hover:bg-app-surface focus:bg-app-surface border border-app-border text-app-main text-sm w-full px-2 py-1.5 rounded transition-colors outline-none focus:border-app-accent"
-                          >
-                            {ELEMENT_TYPES.map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Re-process at an alternative sensitivity — for when
-                            the first pass produced a bad cutout or labels. */}
-                        <div className="flex items-center gap-2">
-                          <label
-                            htmlFor={"extract-resens-" + el.id}
-                            className="text-[11px] text-app-muted font-semibold shrink-0"
-                          >
-                            Sens {Math.round(reproFor(el) * 100)}%
-                          </label>
-                          <input
-                            type="range"
-                            id={"extract-resens-" + el.id}
-                            name={"extract-resens-" + el.id}
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={reproFor(el)}
-                            onChange={(e) =>
-                              setReproSens((prev) => ({
-                                ...prev,
-                                [el.id]: parseFloat(e.target.value),
-                              }))
-                            }
-                            className="w-full accent-purple-500"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => onReprocess(el, reproFor(el))}
-                            className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium text-[11px] shrink-0"
-                            title="Re-run detection + cutout on this element at the sensitivity above"
-                          >
-                            <RefreshCw className="w-3 h-3" />
-                            Redo
-                          </button>
-                        </div>
-                      </>
-                    )}
-
-                    <div className="text-[10px] text-app-muted font-mono flex justify-between items-center px-1">
-                      <span>ID: {el.id}</span>
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => onAddToDesign([el], true)}
-                          className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium"
-                          title="Send to design canvas as a layer"
-                        >
-                          <ArrowRight className="w-3 h-3" />
-                          Design
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onAddAsTextures([el])}
-                          className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium"
-                          title="Add to the Texture Library for use on UI elements"
-                        >
-                          <Palette className="w-3 h-3" />
-                          Tex
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onMakeControls([
-                              { el, controlType: selectionFor(el) },
-                            ])
-                          }
-                          className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium"
-                          title="Make an interactive control that wears this cutout as its face"
-                        >
-                          <SlidersHorizontal className="w-3 h-3" />
-                          Control
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const link = document.createElement("a");
-                            link.download = `${el.label || el.id}.png`;
-                            link.href = currentImg || "";
-                            link.click();
-                          }}
-                          className="text-blue-400 hover:text-blue-300 flex items-center gap-1 font-sans font-medium"
-                        >
-                          <Download className="w-3 h-3" />
-                          Save
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
+            .map((el) => renderCard(el))
         )}
       </div>
     </div>

@@ -22,6 +22,7 @@ import "../orb-kit-skin/orb-chat.css";
 import type {
   ChatMessage,
   ChatSession,
+  ElementRef,
   ProviderInfo,
   ModelInfo,
   ToolCallEntry,
@@ -234,6 +235,9 @@ export default function AIAssistantOrb({
   // Message / Streaming States
   const [input, setInput] = useState("");
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  // Canvas elements attached as message context via the canvas context menu's
+  // "Add to Chat" (chips in the composer; cleared on send).
+  const [referencedElements, setReferencedElements] = useState<ElementRef[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [currentThinking, setCurrentThinking] = useState("");
@@ -299,7 +303,9 @@ export default function AIAssistantOrb({
   // `activeTurnRef` is the synchronous guard (state is too stale for back-to-back
   // sends); `pendingSendsRef` is the FIFO queue; `queuedSends` mirrors it for the UI.
   const activeTurnRef = useRef(false);
-  const pendingSendsRef = useRef<Array<{ prompt: string; image?: string }>>([]);
+  const pendingSendsRef = useRef<
+    Array<{ prompt: string; image?: string; refs?: ElementRef[] }>
+  >([]);
   const [queuedSends, setQueuedSends] = useState<string[]>([]);
 
   // Dragging states
@@ -333,6 +339,8 @@ export default function AIAssistantOrb({
     setInput,
     attachedImage,
     setAttachedImage,
+    referencedElements,
+    setReferencedElements,
     setMessages,
     messagesRef,
     setIsStreaming,
@@ -361,6 +369,34 @@ export default function AIAssistantOrb({
     toolSessionIdRef,
     handleClientToolCall,
   });
+
+  // Canvas context menu "Add to Chat" → attach the elements as referenced
+  // items and open the panel. Ids are resolved against the LIVE canvas via
+  // elementsRef (stable), so the mount-time listener never reads stale props.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      const ids: string[] = Array.isArray(detail.ids) ? detail.ids : [];
+      if (!ids.length) return;
+      const els = elementsRef.current;
+      setReferencedElements((prev) => {
+        const next = [...prev];
+        ids.forEach((id) => {
+          if (next.some((r) => r.id === id)) return;
+          const el = els.find((x) => x.id === id);
+          if (el) next.push({ id: el.id, name: el.name, type: el.type });
+        });
+        return next;
+      });
+      setIsOpen(true);
+    };
+    window.addEventListener("vst-ai-add-reference", handler as EventListener);
+    return () =>
+      window.removeEventListener(
+        "vst-ai-add-reference",
+        handler as EventListener,
+      );
+  }, []);
 
   // Apply a stored session's AI configuration without clobbering the active
   // provider/model when loading legacy (pre-multi-provider) sessions.
@@ -1065,6 +1101,25 @@ export default function AIAssistantOrb({
                 </div>
               </div>
 
+              {/* Referenced canvas elements ("Add to Chat" chips) */}
+              {referencedElements.length > 0 && (
+                <div style={{ padding: "6px 16px", background: "rgba(0,0,0,0.2)", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 10, color: "#71717a", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Referenced</span>
+                  {referencedElements.map((r) => (
+                    <span key={r.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "#a1a1aa", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 9999, padding: "2px 4px 2px 8px" }}>
+                      {r.name}
+                      <span style={{ color: "#71717a" }}>· {r.type}</span>
+                      <button
+                        onClick={() => setReferencedElements((prev) => prev.filter((p) => p.id !== r.id))}
+                        title="Remove reference"
+                        aria-label={`Remove referenced element ${r.name}`}
+                        style={{ padding: 2, background: "none", border: "none", cursor: "pointer", color: "#71717a", display: "flex" }}
+                      ><X className="w-3 h-3" /></button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {/* Attached image preview */}
               {attachedImage && (
                 <div style={{ padding: "6px 16px", background: "rgba(0,0,0,0.2)", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1145,7 +1200,7 @@ export default function AIAssistantOrb({
                 {isStreaming ? (
                   <button onClick={handleInterruptStream} title="Stop" style={{ width: 36, height: 36, borderRadius: 8, cursor: "pointer", background: "rgba(239,68,68,0.2)", border: "1px solid rgba(239,68,68,0.4)", color: "#fca5a5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Square className="w-3.5 h-3.5 fill-current" /></button>
                 ) : (
-                  <button onClick={() => handleSendMessage()} disabled={!input.trim() && !attachedImage} title="Send" style={{ width: 36, height: 36, borderRadius: 8, border: "none", cursor: (!input.trim() && !attachedImage) ? "not-allowed" : "pointer", background: "linear-gradient(135deg, #b91c1c, #991b1b)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 2px 8px rgba(185,28,28,0.3)", opacity: (!input.trim() && !attachedImage) ? 0.5 : 1 }}><Send className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => handleSendMessage()} disabled={!input.trim() && !attachedImage && referencedElements.length === 0} title="Send" style={{ width: 36, height: 36, borderRadius: 8, border: "none", cursor: (!input.trim() && !attachedImage && referencedElements.length === 0) ? "not-allowed" : "pointer", background: "linear-gradient(135deg, #b91c1c, #991b1b)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 2px 8px rgba(185,28,28,0.3)", opacity: (!input.trim() && !attachedImage && referencedElements.length === 0) ? 0.5 : 1 }}><Send className="w-3.5 h-3.5" /></button>
                 )}
               </div>
             </div>

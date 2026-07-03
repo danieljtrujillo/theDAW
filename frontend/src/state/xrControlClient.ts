@@ -32,6 +32,8 @@ export interface XrManifestEntry {
   unit?: string;
   /** Current value, when the source can read one (seeds the XR widget). */
   value?: XrControlValue;
+  /** Input-only sources publish state but cannot be set. */
+  readonly?: boolean;
 }
 
 /** A contributor of controls for one namespace (e.g. "dj", "vj", "make"). */
@@ -64,8 +66,16 @@ let running = false;
 let everConnected = false;
 
 function wsUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/api/xr/control/ws`;
+  const { protocol, host } = window.location;
+  if (protocol === 'https:') {
+    // Hosted over TLS: same-origin so the deployment's proxy carries it.
+    return `wss://${host}/api/xr/control/ws`;
+  }
+  // Everywhere else — desktop app:// scheme (its protocol handler proxies
+  // HTTP /api/* but cannot upgrade WebSockets), electron-vite dev
+  // (http://localhost:5173, whose proxy historically lacked ws:true), and
+  // web dev — the backend is always local on :8600, so connect directly.
+  return 'ws://localhost:8600/api/xr/control/ws';
 }
 
 async function buildManifest(): Promise<XrManifestEntry[]> {

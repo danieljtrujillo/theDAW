@@ -71,6 +71,31 @@ export function useClipboard({
     setElements([...elements, ...newEls]);
   }, [elements, selectedElementIds, setElements]);
 
+  // Cut (Ctrl+X and context menu) — copy the selection (group children ride
+  // along), then remove exactly that copied set so paste restores what was cut.
+  // Group childrenIds referencing a cut child are cleaned up like delete does.
+  const cutSelection = useCallback(() => {
+    const finalToCut = collectWithGroupChildren(elements, selectedElementIds);
+    if (!finalToCut.length) return;
+    setClipboard(finalToCut);
+    const idsToDelete = new Set(finalToCut.map((el) => el.id));
+    setElements((prev) =>
+      prev
+        .filter((el) => !idsToDelete.has(el.id))
+        .map((el) =>
+          el.type === "Group" && el.childrenIds
+            ? {
+                ...el,
+                childrenIds: el.childrenIds.filter(
+                  (id) => !idsToDelete.has(id),
+                ),
+              }
+            : el,
+        ),
+    );
+    setSelectedElementIds([]);
+  }, [elements, selectedElementIds, setElements, setSelectedElementIds]);
+
   return {
     clipboard,
     copyFromKeyboard,
@@ -78,5 +103,6 @@ export function useClipboard({
     copyFromMenu,
     pasteFromMenu,
     duplicateFromMenu,
+    cutSelection,
   };
 }

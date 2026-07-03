@@ -19,7 +19,11 @@ const ARSENAL_KEY = "vst-arsenal";
 
 // One saved control in the Arsenal palette. `presetData` holds the
 // instance-agnostic UIElement fields (NO id / x / y) so an entry drops onto any
-// canvas through the existing presetData drag path unchanged.
+// canvas through the existing presetData drag path unchanged. For a saved Group
+// (a whole MODULE), `presetData.__module = { children }` additionally carries
+// the group's children stripped of instance identity (each Image child keeps a
+// resolved `__assetUrl` so the asset can be re-materialized on drop in any
+// project); handleDropElement rebuilds the Group + children from it.
 export interface ArsenalEntry {
   id: string; // uuid
   name: string;

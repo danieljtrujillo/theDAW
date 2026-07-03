@@ -1,7 +1,7 @@
 import type React from "react";
 import { useRef } from "react";
 import type { UIElement, CanvasState } from "../../types";
-import type { ChatMessage, ToolCallEntry, TurnMeta, PendingControl } from "./types";
+import type { ChatMessage, ElementRef, ToolCallEntry, TurnMeta, PendingControl } from "./types";
 
 // ---------------------------------------------------------------------------
 // Chat streaming (SSE fetch/read loop) + mid-turn send queue drain.
@@ -14,6 +14,8 @@ export interface UseChatStreamParams {
   setInput: React.Dispatch<React.SetStateAction<string>>;
   attachedImage: string | null;
   setAttachedImage: React.Dispatch<React.SetStateAction<string | null>>;
+  referencedElements: ElementRef[];
+  setReferencedElements: React.Dispatch<React.SetStateAction<ElementRef[]>>;
 
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   messagesRef: React.RefObject<ChatMessage[]>;
@@ -26,7 +28,9 @@ export interface UseChatStreamParams {
   setPendingControl: React.Dispatch<React.SetStateAction<PendingControl | null>>;
 
   activeTurnRef: React.RefObject<boolean>;
-  pendingSendsRef: React.RefObject<Array<{ prompt: string; image?: string }>>;
+  pendingSendsRef: React.RefObject<
+    Array<{ prompt: string; image?: string; refs?: ElementRef[] }>
+  >;
   setQueuedSends: React.Dispatch<React.SetStateAction<string[]>>;
 
   abortControllerRef: React.RefObject<AbortController | null>;
@@ -63,6 +67,8 @@ export function useChatStream(params: UseChatStreamParams) {
     setInput,
     attachedImage,
     setAttachedImage,
+    referencedElements,
+    setReferencedElements,
     setMessages,
     messagesRef,
     setIsStreaming,
@@ -138,20 +144,31 @@ export function useChatStream(params: UseChatStreamParams) {
   };
 
   // Main stream caller function
-  const handleSendMessage = async (customPrompt?: string, optionalImage?: string) => {
-    const promptToSend = customPrompt || input;
-    if (!promptToSend.trim() && !optionalImage && !attachedImage) return;
+  const handleSendMessage = async (
+    customPrompt?: string,
+    optionalImage?: string,
+    optionalRefs?: ElementRef[],
+  ) => {
+    // ?? not ||: a queued refs-only message legitimately has prompt "" and must
+    // not fall back to whatever is in the live input box at drain time.
+    const promptToSend = customPrompt ?? input;
+    // Referenced canvas elements ("Add to Chat") ride the message like the
+    // attached image does: captured here, cleared from the composer, and
+    // carried through the mid-turn queue.
+    const refsToSend = optionalRefs ?? (referencedElements.length ? referencedElements : undefined);
+    if (!promptToSend.trim() && !optionalImage && !attachedImage && !refsToSend) return;
 
     setInput("");
     const imageToSend = optionalImage || attachedImage;
     setAttachedImage(null);
+    setReferencedElements([]);
 
     // BCC parity: if a turn is already streaming, queue this message instead of
     // firing a second, colliding request (which the backend used to reject 409).
     // It is sent automatically when the current turn finishes (see the drain in
     // the stream loop's `finally`). Stop clears the queue.
     if (activeTurnRef.current) {
-      pendingSendsRef.current.push({ prompt: promptToSend, image: imageToSend || undefined });
+      pendingSendsRef.current.push({ prompt: promptToSend, image: imageToSend || undefined, refs: refsToSend });
       setQueuedSends(pendingSendsRef.current.map((p) => p.prompt));
       return;
     }
@@ -163,6 +180,7 @@ export function useChatStream(params: UseChatStreamParams) {
       role: "user",
       text: promptToSend,
       image: imageToSend || undefined,
+      refs: refsToSend,
       timestamp: Date.now(),
     };
 
@@ -208,11 +226,17 @@ export function useChatStream(params: UseChatStreamParams) {
       // Model-agnostic conversation history: [{role, content}].
       // Drop the seeded welcome greeting so providers that require a
       // user-first message (e.g. Anthropic) are not given an assistant lead.
+      // Messages with element refs get a context block appended so the model
+      // knows exactly which appState.elements entries the user means.
       const conversationHistory = currentHistory
         .filter((m) => m.id !== "welcome")
         .map((m) => ({
           role: m.role,
-          content: m.text,
+          content: m.refs?.length
+            ? `${m.text}\n\n[Referenced canvas elements — full definitions are in appState.elements]\n${m.refs
+                .map((r) => `- "${r.name}" (${r.type}, id: ${r.id})`)
+                .join("\n")}`
+            : m.text,
         }));
 
       const activeProvider = selectedProviderRef.current;
@@ -570,7 +594,7 @@ export function useChatStream(params: UseChatStreamParams) {
       setQueuedSends(pendingSendsRef.current.map((p) => p.prompt));
       if (next) {
         // Defer a tick so the state resets above settle before the next turn opens.
-        setTimeout(() => handleSendMessage(next.prompt, next.image), 0);
+        setTimeout(() => handleSendMessage(next.prompt, next.image, next.refs), 0);
       } else if (turnSucceeded) {
         // No more queued turns: notify (if backgrounded) and refresh the REAL
         // context meter now that the child is idle.

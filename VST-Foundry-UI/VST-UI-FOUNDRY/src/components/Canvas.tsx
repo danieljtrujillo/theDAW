@@ -266,7 +266,7 @@ export default function Canvas({
           top: el.y,
           width: el.width,
           height: el.height,
-          transform: `rotate(${el.rotation || 0}deg)`,
+          transform: `rotate(${el.rotation || 0}deg)${el.flipX ? " scaleX(-1)" : ""}${el.flipY ? " scaleY(-1)" : ""}`,
           transformOrigin: "center center",
           zIndex: dragState?.isDragging && isSelected ? 1000 + index : index, // Keeps on top only while dragging
           mixBlendMode: (el.type === "Image" && el.blendMode) ? (el.blendMode as any) : undefined,
@@ -301,10 +301,7 @@ export default function Canvas({
           e.preventDefault();
           e.stopPropagation();
           if (onContextMenu && !isPreview) {
-            const rect = (
-              e.currentTarget as HTMLElement
-            ).getBoundingClientRect();
-            onContextMenu(rect.right + 10, rect.top, el.id);
+            onContextMenu(e.clientX, e.clientY, el.id);
           }
         }}
         className={`group outline-none select-none flex flex-col ${roundedClass} ${

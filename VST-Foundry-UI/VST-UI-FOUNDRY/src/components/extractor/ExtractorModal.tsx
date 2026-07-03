@@ -8,15 +8,17 @@ import {
   Scissors,
   X,
   Image as ImageIcon,
+  Boxes,
 } from "lucide-react";
 import { Asset, Texture, ElementType } from "../../types";
-import { ExtractedElement } from "../../lib/extractor/types";
+import { ExtractedElement, ExtractedPanel } from "../../lib/extractor/types";
 import {
   generateId,
   extractCrop,
   applyPolygonMask,
   trimTransparentPixels,
 } from "../../lib/extractor/utils";
+import { panelLocalToGlobal } from "../../lib/extractor/mapping";
 import { LS_PROVIDER_KEYS } from "../orb/constants";
 import ExtractCanvas from "./ExtractCanvas";
 import ExtractTray from "./ExtractTray";
@@ -34,12 +36,32 @@ export interface PlacedLayer {
   faceUrl?: string; // durable face URL (server-uploaded when possible)
 }
 
+// A whole module: panel backplate + its member controls, placed as one Foundry
+// Group. Child bounds are SOURCE-image-normalized (same space as PlacedLayer).
+export interface PlacedModule {
+  title: string;
+  bounds: { xmin: number; ymin: number; xmax: number; ymax: number };
+  backplateAsset: Asset; // panel crop (durable URL when upload succeeded)
+  // The durable uploaded URL for the panel crop. App places the backplate as a
+  // Frame element wearing this as faceSrc (Task 10 amendment) rather than an
+  // Image+asset — but the crop still lands in the Asset library via onAddAssets.
+  backplateUrl: string;
+  children: {
+    asset: Asset;
+    bounds: { xmin: number; ymin: number; xmax: number; ymax: number };
+    label: string;
+    controlType: ElementType;
+    faceUrl?: string;
+  }[];
+}
+
 interface ExtractorModalProps {
   isOpen: boolean;
   onClose: () => void;
   sourceImage: string | null; // canvasState.backgroundImage
   onAddAssets: (assets: Asset[]) => void;
   onPlaceLayers: (items: PlacedLayer[]) => void;
+  onPlaceModules: (modules: PlacedModule[]) => void;
   onAddTextures: (textures: Texture[]) => void;
 }
 
@@ -54,9 +76,12 @@ export default function ExtractorModal({
   sourceImage,
   onAddAssets,
   onPlaceLayers,
+  onPlaceModules,
   onAddTextures,
 }: ExtractorModalProps) {
   const [elements, setElements] = useState<ExtractedElement[]>([]);
+  const [panels, setPanels] = useState<ExtractedPanel[]>([]);
+  const [isDetectingPanels, setIsDetectingPanels] = useState(false);
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [isDetecting, setIsDetecting] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -159,6 +184,7 @@ export default function ExtractorModal({
     blobUrlsRef.current.clear();
     imageRef.current = null;
     setElements([]);
+    setPanels([]);
     setImageSize({ width: 0, height: 0 });
     setEditingMaskId(null);
     setIsDetecting(false);
@@ -471,6 +497,139 @@ export default function ExtractorModal({
   };
 
   // ---------------------------------------------------------------------------
+  // Detect Modules — two-pass group extraction. Pass 1: detect titled module
+  // panels. Pass 2: run the EXISTING per-crop control detection inside each
+  // panel, mapping the crop-relative child bounds back to source space and
+  // tagging children with panelId + group=title. Sequential per panel
+  // (rate-limit safety, same as Process Pending).
+  // ---------------------------------------------------------------------------
+  const handleDetectModules = async () => {
+    if (!sourceImage || !imageRef.current) return;
+    setIsDetectingPanels(true);
+    setDetectError(null);
+    try {
+      const base64Data = drawDownscaledDataUrl(
+        imageRef.current,
+        imageSize.width,
+        imageSize.height,
+        2048,
+      );
+      const res = await fetch("/api/extract/detect-panels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: base64Data,
+          mimeType: "image/png",
+          sensitivity,
+          apiKey,
+          model,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error((await res.json())?.error || "Panel detection failed");
+      }
+      const data = await res.json();
+      const found: ExtractedPanel[] = (data.panels || []).map(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (p: any) => ({
+          id: generateId(),
+          title: String(p.title || "Module"),
+          xmin: p.xmin,
+          ymin: p.ymin,
+          xmax: p.xmax,
+          ymax: p.ymax,
+          cropDataUrl: extractCrop(
+            imageRef.current!,
+            p.xmin,
+            p.ymin,
+            p.xmax,
+            p.ymax,
+          ),
+          status: "detected" as const,
+        }),
+      );
+      setPanels((prev) => [...prev, ...found]);
+
+      // Pass 2: scan each panel's crop for its member controls, sequentially.
+      for (const panel of found) {
+        setPanels((prev) =>
+          prev.map((x) =>
+            x.id === panel.id ? { ...x, status: "scanning" } : x,
+          ),
+        );
+        try {
+          const childRes = await fetch("/api/extract/detect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              image: panel.cropDataUrl,
+              mimeType: "image/png",
+              sensitivity,
+              apiKey,
+              model,
+            }),
+          });
+          if (childRes.ok) {
+            const childData = await childRes.json();
+            const children: ExtractedElement[] = (childData.elements || []).map(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (c: any) => {
+                const g = panelLocalToGlobal(c, panel);
+                return {
+                  id: generateId(),
+                  label: c.label,
+                  type: c.type,
+                  xmin: g.xmin,
+                  ymin: g.ymin,
+                  xmax: g.xmax,
+                  ymax: g.ymax,
+                  status: "detected" as const,
+                  displayMode: "rect" as const,
+                  cropDataUrl: extractCrop(
+                    imageRef.current!,
+                    g.xmin,
+                    g.ymin,
+                    g.xmax,
+                    g.ymax,
+                  ),
+                  group: panel.title,
+                  panelId: panel.id,
+                };
+              },
+            );
+            setElements((prev) => [...prev, ...children]);
+          }
+        } catch (err) {
+          console.error("Panel child scan failed", panel.id, err);
+        }
+        setPanels((prev) =>
+          prev.map((x) =>
+            x.id === panel.id ? { ...x, status: "scanned" } : x,
+          ),
+        );
+      }
+    } catch (err) {
+      setDetectError(
+        err instanceof Error ? err.message : "Panel detection failed",
+      );
+    } finally {
+      setIsDetectingPanels(false);
+    }
+  };
+
+  // Remove a panel but KEEP its detected children as loose elements — clear
+  // their panelId so they fall back into the ungrouped list. Children are never
+  // deleted here, only ungrouped.
+  const deletePanel = (id: string) => {
+    setPanels((prev) => prev.filter((p) => p.id !== id));
+    setElements((prev) =>
+      prev.map((el) =>
+        el.panelId === id ? { ...el, panelId: undefined } : el,
+      ),
+    );
+  };
+
+  // ---------------------------------------------------------------------------
   // Mask editing
   // ---------------------------------------------------------------------------
   const handleSaveMask = (id: string, maskDataUrl: string) => {
@@ -637,6 +796,85 @@ export default function ExtractorModal({
     onPlaceLayers(layers);
   };
 
+  // Extracted module → a whole Foundry Group. Uploads the panel crop for a
+  // durable backplate face URL (same uploadCutout flow as handleMakeControls,
+  // fed a synthetic element carrying the panel crop), then builds each member
+  // control exactly like handleMakeControls (mask>cutout>crop → durable face
+  // URL → Asset → chosen controlType). App materializes the panel as a Frame
+  // wearing backplateUrl and the children as face-wearing controls at exact
+  // offsets. The panel crop still lands in the Asset library via onAddAssets.
+  const handlePlaceModule = async (
+    panel: ExtractedPanel,
+    items: { el: ExtractedElement; controlType: ElementType }[],
+  ) => {
+    // Durable backplate URL via the shared upload helper (inline fallback).
+    const backplateEl: ExtractedElement = {
+      id: panel.id,
+      label: `${panel.title} backplate`,
+      cropDataUrl: panel.cropDataUrl,
+      xmin: panel.xmin,
+      ymin: panel.ymin,
+      xmax: panel.xmax,
+      ymax: panel.ymax,
+      displayMode: "rect",
+      status: "detected",
+    };
+    const uploadedBackplate = await uploadCutout(backplateEl);
+    const backplateUrl =
+      uploadedBackplate?.url || panel.cropDataUrl || "";
+    const backplateAsset: Asset = {
+      id: crypto.randomUUID(),
+      name: `${panel.title} backplate`,
+      url: backplateUrl,
+    };
+
+    const childAssets: Asset[] = [];
+    const children: PlacedModule["children"] = [];
+    for (const { el, controlType } of items) {
+      // mask > cutout > crop precedence, matching every other sink.
+      const rawUrl =
+        el.maskDataUrl || el.cutoutDataUrl || el.cropDataUrl || "";
+      if (!rawUrl) continue;
+
+      const uploaded = await uploadCutout(el);
+      let url: string;
+      if (uploaded) {
+        url = uploaded.url;
+      } else {
+        // Hand blob-URL ownership to the design so reset/delete does not revoke
+        // a URL the canvas still renders (same handoff as handleMakeControls).
+        if (blobUrlsRef.current.has(rawUrl)) blobUrlsRef.current.delete(rawUrl);
+        url = rawUrl;
+      }
+
+      const asset: Asset = { id: crypto.randomUUID(), name: el.label, url };
+      childAssets.push(asset);
+      children.push({
+        asset,
+        bounds: { xmin: el.xmin, ymin: el.ymin, xmax: el.xmax, ymax: el.ymax },
+        label: el.label,
+        controlType,
+        faceUrl: url,
+      });
+    }
+
+    const placedModule: PlacedModule = {
+      title: panel.title,
+      bounds: {
+        xmin: panel.xmin,
+        ymin: panel.ymin,
+        xmax: panel.xmax,
+        ymax: panel.ymax,
+      },
+      backplateAsset,
+      backplateUrl,
+      children,
+    };
+
+    onAddAssets([backplateAsset, ...childAssets]);
+    onPlaceModules([placedModule]);
+  };
+
   if (!isOpen) return null;
 
   const hasProcessable = elements.some(
@@ -753,6 +991,20 @@ export default function ExtractorModal({
 
             <button
               type="button"
+              onClick={handleDetectModules}
+              disabled={!sourceImage || isDetectingPanels}
+              className="btn-3d text-white text-sm font-medium py-1.5 px-3 rounded disabled:opacity-50 flex items-center gap-2"
+            >
+              {isDetectingPanels ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Boxes className="w-4 h-4" />
+              )}
+              Detect Modules
+            </button>
+
+            <button
+              type="button"
               aria-label="Close extractor"
               onClick={onClose}
               className="p-1 text-app-muted hover:text-app-main rounded hover:bg-app-surface-hover transition-colors"
@@ -787,12 +1039,15 @@ export default function ExtractorModal({
 
           <ExtractTray
             elements={elements}
+            panels={panels}
             onDelete={deleteElement}
             onUpdate={updateElement}
             onEditMask={(id) => setEditingMaskId(id)}
             onAddToDesign={handleAddToDesign}
             onAddAsTextures={handleAddAsTextures}
             onMakeControls={handleMakeControls}
+            onPlaceModule={handlePlaceModule}
+            onDeletePanel={deletePanel}
             sensitivity={sensitivity}
             onReprocess={handleReprocess}
           />

@@ -95,6 +95,20 @@ handled by `pyproject.toml`.
 
 ---
 
+## VST Foundry tab (Node sidecar)
+
+The **Foundry** center tab (the visual plugin-UI builder) runs as a small Node
+sidecar on **port 5472**. It needs nothing beyond the **Node.js** you already
+installed above. Its JavaScript dependencies install on first launch:
+`theDAW.bat` runs `npm install` for it under `VST-Foundry-UI\VST-UI-FOUNDRY` when
+that folder has no `node_modules`, and the same install runs on demand the first
+time you open the tab — a one-time wait. On each relaunch, `theDAW.bat` also
+clears any stale process still listening on 5472, and the backend shuts the
+sidecar down cleanly when it exits. See the
+[VST Foundry guide](../guides/foundry.md) for what the tab does.
+
+---
+
 ## Verify the install
 
 ```powershell

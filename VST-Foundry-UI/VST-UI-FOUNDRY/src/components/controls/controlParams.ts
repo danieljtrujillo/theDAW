@@ -210,6 +210,16 @@ export const CONTROL_PARAMS: Partial<Record<ElementType, ControlParamDef[]>> = {
     { key: "octaves", label: "Octaves", type: "number", min: 1, max: 4, step: 1, default: 2 },
     { key: "showLabels", label: "Show Labels", type: "toggle", default: false },
   ],
+  Frame: [
+    { key: "frameBorderWidth", label: "Border Width", type: "number", min: 0, max: 8, step: 1, default: 1 },
+    // frameFill flips a Frame between a filled backplate and a hollow frame. Its
+    // default is per-variant (Waveform-amplitude pattern: one def per scope, the
+    // variant-scoped def wins) — filled looks default ON, hollow looks default
+    // OFF — but any variant can be toggled either way.
+    { key: "frameFill", label: "Fill Background", type: "toggle", default: true, variants: ["Backplate", "Plate", "Glass", "Titled"] },
+    { key: "frameFill", label: "Fill Background", type: "toggle", default: false, variants: ["Border", "Bezel"] },
+    { key: "frameTitleHeight", label: "Title Height", type: "number", min: 12, max: 48, step: 1, default: 22, variants: ["Titled"] },
+  ],
 };
 
 /**

@@ -32,7 +32,7 @@ const RELAY_TIMEOUT_MS = 120000
 
 const ELEMENT_TYPES = [
   'Button', 'Knob', 'Slider', 'Label', 'Select', 'Toggle', 'Image',
-  'Group', 'Waveform', 'Meter', 'XYPad', 'Spatial3D', 'CustomCode',
+  'Group', 'Waveform', 'Meter', 'XYPad', 'Spatial3D', 'Frame', 'CustomCode',
 ]
 
 // CSS mix-blend-mode set (16 modes)
