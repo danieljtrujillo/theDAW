@@ -1,0 +1,40 @@
+# theDAW single-container deployment. See docs/DOCKER.md for the full guide.
+#
+# The backend is single-worker by design: generation jobs, model locks, and
+# the JOBS registry live in process memory. Never scale this service beyond
+# one replica.
+
+services:
+  thedaw:
+    build: .
+    image: thedaw
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8600:8600"
+    environment:
+      # This enables the gated SPA mount in backend/server.py so the backend
+      # serves the built UI at http://localhost:8600/.
+      theDAW_SERVE_UI: "1"
+    volumes:
+      # Generated audio, the library database, and local registries persist
+      # under PROJECT_ROOT/data.
+      - thedaw-data:/app/data
+      # Model downloads (SA3 checkpoints, the T5Gemma conditioner, and the
+      # seeded RAG embedder) persist in the Hugging Face cache. The path
+      # matches the runtime HF_HOME baked into the image.
+      - hf-cache:/data/hf-cache
+    # GPU variant: install nvidia-container-toolkit on the host, then
+    # uncomment the block below. The torch cu126 wheels in the image bundle
+    # the CUDA userspace, so only the host driver is needed.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  thedaw-data:
+  hf-cache:

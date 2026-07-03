@@ -97,6 +97,13 @@ export default defineConfig(({mode}) => {
             });
           },
         },
+        // The VJ tab embeds the backend-served static VJ build (vite base
+        // '/vj-app/'). Proxy it to the backend so the iframe loads it
+        // same-origin in dev, exactly as it already is in packaged/Docker.
+        '/vj-app': {
+          target: 'http://localhost:8600',
+          changeOrigin: true,
+        },
       },
       hmr: process.env.ENABLE_HMR === 'true',
       watch: process.env.ENABLE_HMR === 'true' ? undefined : null,

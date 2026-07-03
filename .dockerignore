@@ -1,0 +1,68 @@
+# The Docker build context is the repo root. This file keeps host-only
+# artifacts, caches, and heavyweight media out of the context so builds stay
+# small and fast.
+#
+# Runtime file reads that MUST stay in the context:
+#   - backend/rag.py DOC_PATHS reads CLAUDE.md, docs/**/*.md, and
+#     frontend/public/USER_GUIDE.md at runtime; docs/ (minus audits) and
+#     frontend/public therefore stay included.
+#   - frontend/public/** ships worklets, soundfonts, and test tones that the
+#     Vite build copies into dist; the negation below re-includes it after
+#     the media-extension excludes.
+#   - backend/modules/**/assets (for example backend/modules/plugin/assets)
+#     ships runtime image assets and is not excluded.
+
+# Version control and editor state.
+.git
+.github
+.gitattributes
+.gitmodules
+.claude
+.vscode
+.serena
+.playwright-mcp
+.gradio
+.orb_attachments
+
+# Local caches and build state.
+.pytest_cache
+.ruff_cache
+.vite
+.tmp-shots
+.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.tsbuildinfo
+
+# Host-only apps, artifacts, and archives.
+electron-ui
+data
+exports
+logs
+archive
+showcase
+docs/audits
+audit-reports
+backend/rag_index
+backend/modules/vocal/transcription/.whisper_venv
+sidecars
+frontend/dist
+_RECOVERY_BACKUP
+_loadertest
+ganduit
+sliders
+scripts
+tests
+repomix-output.md
+vj-embedded-snapshot.md
+
+# Model weights and audio media never belong in the image.
+**/*.safetensors
+**/*.ckpt
+**/*.wav
+
+# frontend/public must remain complete (worklets, soundfonts, USER_GUIDE.md,
+# and the test-tone wavs under edit-modules/ and static/), so it is
+# re-included after the media excludes above. The last matching rule wins.
+!frontend/public/**

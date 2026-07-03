@@ -286,4 +286,7 @@ electron-ui/release/
 # Bundled runtime binaries fetched at build time (uv.exe, ffmpeg.exe) — large,
 # downloaded from official sources by scripts/fetch-runtime-tools.mjs.
 electron-ui/resources/tools/
+# Staged VJ production build (gantasmo/VJ-9000 dist), regenerated at package
+# time by scripts/fetch-vj-build.mjs.
+electron-ui/resources/vj-dist/
 logs/

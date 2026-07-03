@@ -79,7 +79,13 @@ function getToolsDir(): string {
 }
 
 function getUvCommand(): string {
-  return app.isPackaged ? path.join(getToolsDir(), 'uv.exe') : 'uv'
+  if (!app.isPackaged) return 'uv'
+  // Packaged builds bundle the uv binary under resources/tools: 'uv.exe' on
+  // Windows, 'uv' on macOS (see scripts/fetch-runtime-tools.mjs).
+  return path.join(
+    getToolsDir(),
+    process.platform === 'win32' ? 'uv.exe' : 'uv',
+  )
 }
 
 function venvPython(pyDir: string): string {

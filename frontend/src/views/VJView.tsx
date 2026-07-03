@@ -185,19 +185,21 @@ export const VJView: React.FC = () => {
 
 
 
-  // VJ is a localhost sibling we control: pin the target origin to the iframe's
-  // URL (fallback '*' if unparseable) instead of a blanket wildcard, and route
-  // to the popped-out window when detached, else the in-tab iframe.
-  const vjOrigin = (() => { try { return url ? new URL(url).origin : '*'; } catch { return '*'; } })();
+  // Pin the target origin to the iframe's URL (fallback '*' if unparseable)
+  // instead of a blanket wildcard, and route to the popped-out window when
+  // detached, else the in-tab iframe. In static mode `url` is a relative
+  // '/vj-app/' served same-origin, so resolve against our own origin.
+  const vjOrigin = (() => { try { return url ? new URL(url, window.location.origin).origin : '*'; } catch { return '*'; } })();
 
   // The VJ uploads media it imports straight to the library so the cue
-  // survives a reload. It can't read our (cross-origin) location, so we
-  // hand it our origin via `?api=`; it serves /api directly (production)
-  // or through the Vite dev proxy (development) either way.
+  // survives a reload. We hand it our origin via `?api=`; it serves /api
+  // directly (same-origin static build / production) or through the Vite dev
+  // proxy (dev server) either way. Resolving against our origin keeps the
+  // relative static path valid while still carrying the query param.
   const vjSrc = useMemo(() => {
     if (!url) return null;
     try {
-      const u = new URL(url);
+      const u = new URL(url, window.location.origin);
       u.searchParams.set('api', window.location.origin);
       return u.toString();
     } catch {
@@ -287,9 +289,25 @@ export const VJView: React.FC = () => {
     try {
       const r = await fetch('/api/vj/url');
       if (!r.ok) throw new Error(`backend returned ${r.status}`);
-      const j = (await r.json()) as { url: string; mobile_url?: string | null };
+      const j = (await r.json()) as {
+        url: string;
+        mode?: string;
+        mobile_url?: string | null;
+        lan_ip?: string | null;
+      };
       setUrl(j.url);
-      setMobileUrl(j.mobile_url ?? null);
+      // Dev mode returns an absolute mobile_url (the Vite server on the LAN).
+      // Static mode serves the build under THIS app's origin at a relative
+      // '/vj-app/', so the phone URL is this page's origin with the LAN IP
+      // swapped in (same port the main app is reachable on).
+      if (j.mobile_url) {
+        setMobileUrl(j.mobile_url);
+      } else if (j.url.startsWith('/') && j.lan_ip) {
+        const port = window.location.port ? `:${window.location.port}` : '';
+        setMobileUrl(`${window.location.protocol}//${j.lan_ip}${port}${j.url}`);
+      } else {
+        setMobileUrl(null);
+      }
       loadRetriesRef.current = 0;
       setStatus('ready');
       setDetail('');

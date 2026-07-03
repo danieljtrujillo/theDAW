@@ -84,6 +84,11 @@ _ENGINE_SCRIPT = _REPO_ROOT / "sidecars" / "magenta" / "server.py"
 _DISTRO_FILE = _REPO_ROOT / "sidecars" / "magenta-rt2-nvidia" / "app" / ".wsl_distro"
 _ENGINE_MODEL = os.getenv("THEDAW_MAGENTA_MODEL", "mrt2_small")
 _WSL_PYTHON = os.getenv("THEDAW_MAGENTA_WSL_PY", "~/mrt2/.venv/bin/python")
+# Native engine interpreter for Linux/macOS auto-spawn (Windows uses WSL). On
+# Linux this is the CUDA JAX venv; on macOS the magenta-rt[mlx] venv. The
+# zero-config cross-platform path is to run the engine yourself and set
+# THEDAW_MAGENTA_URL — then no interpreter is needed here at all.
+_NATIVE_PYTHON = os.getenv("THEDAW_MAGENTA_PYTHON", "~/mrt2/.venv/bin/python")
 # pkill pattern matching BOTH magenta engines (extended + bundled Studio).
 _ENGINE_PKILL_PATTERN = "sidecars/magenta/server.py|studio_server.py"
 
@@ -139,26 +144,43 @@ def setup_state(refresh: bool = False) -> dict:
         "checkpoint": False,
         "ready": False,
     }
+    if sys.platform == "win32":
+        # Windows: probe the install inside WSL2.
+        probe_cmd = [
+            "wsl.exe",
+            "-d",
+            _wsl_distro(),
+            "--",
+            "bash",
+            "-lc",
+            f"echo WSL_OK; test -x {_WSL_PYTHON.replace(chr(39), '')} && echo VENV_OK; "
+            f"{_WSL_PYTHON.replace(chr(39), '')} -c 'import numpy,soundfile,fastapi,uvicorn,multipart' "
+            "2>/dev/null && echo DEPS_OK; "
+            "ls ~/Documents/Magenta/magenta-rt-v2/checkpoints/*.safetensors "
+            ">/dev/null 2>&1 && echo CKPT_OK",
+        ]
+        creationflags = subprocess.CREATE_NO_WINDOW
+    else:
+        # Linux/macOS: probe the native venv directly (no WSL). "wsl" here means
+        # "platform prerequisite satisfied" — always true off Windows.
+        native_py = str(Path(_NATIVE_PYTHON).expanduser())
+        probe_cmd = [
+            "bash",
+            "-lc",
+            f"echo WSL_OK; test -x '{native_py}' && echo VENV_OK; "
+            f"'{native_py}' -c 'import numpy,soundfile,fastapi,uvicorn,multipart' "
+            "2>/dev/null && echo DEPS_OK; "
+            "ls ~/Documents/Magenta/magenta-rt-v2/checkpoints/*.safetensors "
+            ">/dev/null 2>&1 && echo CKPT_OK",
+        ]
+        creationflags = 0
     try:
-        py = _WSL_PYTHON.replace("'", "")
         result = subprocess.run(
-            [
-                "wsl.exe",
-                "-d",
-                _wsl_distro(),
-                "--",
-                "bash",
-                "-lc",
-                f"echo WSL_OK; test -x {py} && echo VENV_OK; "
-                f"{py} -c 'import numpy,soundfile,fastapi,uvicorn,multipart' "
-                "2>/dev/null && echo DEPS_OK; "
-                "ls ~/Documents/Magenta/magenta-rt-v2/checkpoints/*.safetensors "
-                ">/dev/null 2>&1 && echo CKPT_OK",
-            ],
+            probe_cmd,
             capture_output=True,
             text=True,
             timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            creationflags=creationflags,
             shell=False,
         )
         out = result.stdout
@@ -183,14 +205,38 @@ def start_engine() -> dict:
             return {"spawned": False, "reason": "engine process already alive"}
         if not _ENGINE_SCRIPT.is_file():
             raise RuntimeError(f"engine script not found: {_ENGINE_SCRIPT}")
-        distro = _wsl_distro()
         port = SIDECAR_URL.rsplit(":", 1)[-1] or "8777"
-        bash_cmd = (
-            f"MRT2_PORT={port} MRT2_MODEL={_ENGINE_MODEL} "
-            f"exec {_WSL_PYTHON} '{_wsl_path(_ENGINE_SCRIPT)}'"
-        )
-        cmd = ["wsl.exe", "-d", distro, "--", "bash", "-lc", bash_cmd]
+        popen_env = os.environ.copy()
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+        if sys.platform == "win32":
+            # Windows: the JAX/CUDA engine runs inside WSL2 (env passed inline
+            # in the bash command — it does not cross the wsl.exe boundary via
+            # the Windows process environment).
+            distro = _wsl_distro()
+            bash_cmd = (
+                f"MRT2_PORT={port} MRT2_MODEL={_ENGINE_MODEL} "
+                f"exec {_WSL_PYTHON} '{_wsl_path(_ENGINE_SCRIPT)}'"
+            )
+            cmd = ["wsl.exe", "-d", distro, "--", "bash", "-lc", bash_cmd]
+            descriptor: dict = {"distro": distro}
+        else:
+            # Linux/macOS: spawn the engine venv python directly — no WSL, no
+            # path translation. Linux uses the CUDA JAX stack, macOS the
+            # magenta-rt[mlx] backend. The engine reads MRT2_* from the
+            # environment, which native subprocesses inherit.
+            native_py = Path(_NATIVE_PYTHON).expanduser()
+            if not native_py.is_file():
+                raise RuntimeError(
+                    f"Magenta engine python not found at {native_py}. Set "
+                    "THEDAW_MAGENTA_PYTHON to the mrt2 venv interpreter, or run "
+                    "the engine yourself and set THEDAW_MAGENTA_URL to reach it."
+                )
+            popen_env["MRT2_PORT"] = port
+            popen_env["MRT2_MODEL"] = _ENGINE_MODEL
+            cmd = [str(native_py), str(_ENGINE_SCRIPT)]
+            descriptor = {"native": True, "python": str(native_py)}
+
         # Capture the sidecar's output to a logfile instead of DEVNULL — a
         # spawn that dies on a missing dep (e.g. ModuleNotFoundError) would
         # otherwise vanish and surface only as a vague 503 downstream.
@@ -202,46 +248,54 @@ def start_engine() -> dict:
                 cmd,
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
+                env=popen_env,
                 creationflags=creationflags,
                 shell=False,
             )
-        return {"spawned": True, "distro": distro, "model": _ENGINE_MODEL, "port": port}
+        return {"spawned": True, "model": _ENGINE_MODEL, "port": port, **descriptor}
 
 
 def stop_engine() -> dict:
     """Stop every magenta engine: our tracked child plus any engine started
-    outside the app (the .vbs launcher, a manual run), via pkill inside WSL."""
+    outside the app (the .vbs launcher, a manual run). On Windows that reap
+    runs via pkill inside WSL; on Linux/macOS it runs pkill natively."""
     global _engine_proc
     with _engine_lock:
         terminated = False
-        if engine_process_alive():
+        proc = _engine_proc
+        if proc is not None and proc.poll() is None:
             try:
-                _engine_proc.terminate()
-                _engine_proc.wait(timeout=5.0)
+                proc.terminate()
+                proc.wait(timeout=5.0)
                 terminated = True
             except subprocess.TimeoutExpired:
-                _engine_proc.kill()
+                proc.kill()
                 terminated = True
         _engine_proc = None
         pkilled = False
+        if sys.platform == "win32":
+            reap_cmd = [
+                "wsl.exe",
+                "-d",
+                _wsl_distro(),
+                "--",
+                "bash",
+                "-lc",
+                f"pkill -f '{_ENGINE_PKILL_PATTERN}' || true",
+            ]
+        else:
+            reap_cmd = ["pkill", "-f", _ENGINE_PKILL_PATTERN]
         try:
             rc = subprocess.run(
-                [
-                    "wsl.exe",
-                    "-d",
-                    _wsl_distro(),
-                    "--",
-                    "bash",
-                    "-lc",
-                    f"pkill -f '{_ENGINE_PKILL_PATTERN}' || true",
-                ],
+                reap_cmd,
                 timeout=20,
                 capture_output=True,
                 shell=False,
             ).returncode
+            # native pkill returns 1 when nothing matched (not an error here).
             pkilled = rc == 0
         except Exception as e:
-            log.warning("magenta.engine: WSL pkill failed: %s", e)
+            log.warning("magenta.engine: pkill failed: %s", e)
         return {"terminated": terminated, "pkilled": pkilled}
 
 

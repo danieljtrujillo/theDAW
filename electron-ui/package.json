@@ -10,8 +10,12 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "fetch:tools": "node scripts/fetch-runtime-tools.mjs",
+    "fetch:vj": "node scripts/fetch-vj-build.mjs",
     "package": "electron-vite build && electron-builder",
-    "dist:win": "npm run fetch:tools && electron-vite build && electron-builder --win"
+    "dist:win": "npm run fetch:tools && npm run fetch:vj && electron-vite build && electron-builder --win",
+    "dist:mac": "npm run fetch:tools && npm run fetch:vj && electron-vite build && electron-builder --mac",
+    "dist:win:ci": "npm run fetch:tools && npm run fetch:vj && electron-vite build && electron-builder --win --publish never",
+    "dist:mac:ci": "npm run fetch:tools && npm run fetch:vj && electron-vite build && electron-builder --mac --publish never"
   },
   "dependencies": {},
   "devDependencies": {

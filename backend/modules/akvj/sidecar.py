@@ -7,13 +7,18 @@ The VJ ``akvj3d`` source then renders the point cloud natively in three.js, so n
 Unity is needed in the default path.
 
 This module is just process lifecycle + diagnostics, mirroring the questcast
-sidecar: it bootstraps the capture deps on first run (pyk4a-bundle ships its own
-matched k4a/depthengine DLLs, so nothing else has to be installed), spawns the
-script with ``sys.executable``, and parses its structured stdout so the API can
-report device/streaming/error state and a rolling log.
+sidecar: it bootstraps the capture deps on first run (pyk4a-bundle ships the
+matched Azure Kinect runtime — ``k4a.dll`` + depthengine on Windows,
+``libk4a.so`` on Linux — inside the wheel), spawns the script with
+``sys.executable``, and parses its structured stdout so the API can report
+device/streaming/error state and a rolling log.
 
-Windows x64 and Linux x64 only (the Azure Kinect SDK native stack; pyk4a-bundle
-publishes no macOS wheel).
+Windows x64 and Linux x64 only. macOS is unsupported because Microsoft ships no
+Azure Kinect SDK for it (``start()`` returns a clear message there). On Linux,
+if the bundled runtime cannot load, the system Azure Kinect packages
+(``libk4a1.4`` / ``libk4a1.4-dev`` from Microsoft's apt repo) provide it; the
+native preflight below surfaces that as an actionable message rather than a
+cryptic device-open crash.
 """
 
 from __future__ import annotations
@@ -115,6 +120,27 @@ class AkvjSidecar:
         except (subprocess.TimeoutExpired, OSError):
             return False
 
+    def _native_runtime_ok(self) -> tuple[bool, str]:
+        """Confirm the Azure Kinect native runtime actually LOADS, not just that
+        ``import pyk4a`` succeeds (pyk4a imports fine and only touches the native
+        lib when it enumerates/opens a device). ``connected_device_count()``
+        forces the k4a runtime to load, so a missing ``libk4a.so`` / ``k4a.dll``
+        fails here — with a message we can turn into an install hint — instead of
+        crashing later at device-open. Returns ``(ok, error_tail)``."""
+        probe = "import pyk4a; pyk4a.connected_device_count()"
+        try:
+            r = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return False, str(e)
+        if r.returncode == 0:
+            return True, ""
+        return False, (r.stderr or r.stdout or "").strip()[-400:]
+
     def _ensure_deps(self) -> Optional[str]:
         if self._deps_present():
             return None
@@ -201,6 +227,28 @@ class AkvjSidecar:
                 self._status = {"state": "error", "message": err}
                 self._record(f"ABORT: {err}")
                 return {"ok": False, "error": err}
+
+            # Native-runtime preflight: pip deps can be present while the Azure
+            # Kinect native lib still can't load (common on Linux when the
+            # bundled .so is absent for the distro). Turn that into an
+            # actionable message instead of a cryptic device-open crash.
+            native_ok, native_err = self._native_runtime_ok()
+            if not native_ok:
+                if sys.platform == "linux":
+                    msg = (
+                        "the Azure Kinect runtime (libk4a) could not load. Install "
+                        "Microsoft's packages (libk4a1.4 and libk4a1.4-dev, or "
+                        "k4a-tools) from the Microsoft apt repo, then retry. "
+                        f"[{native_err}]"
+                    )
+                else:
+                    msg = (
+                        "the Azure Kinect runtime (k4a) could not load; reinstall "
+                        f"pyk4a-bundle and retry. [{native_err}]"
+                    )
+                self._status = {"state": "error", "message": msg}
+                self._record(f"ABORT: {msg}")
+                return {"ok": False, "error": msg}
 
             env = dict(os.environ)
             env["AKVJ_WS_URL"] = str(overrides.get("ws_url") or _default_ws_url())

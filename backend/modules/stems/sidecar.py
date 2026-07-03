@@ -87,7 +87,33 @@ def _probe_packages(python_exe: Path) -> dict:
         return {"_error": f"probe parse failed: {e}"}
 
 
-DEFAULT_PACKAGE_PATH = Path(r"D:/StableAudio/JoshOG/integration-package/backend")
+# Repo root (…/stable-audio-3): backend/modules/stems/sidecar.py -> parents[3].
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _stems_package_candidates() -> list[Path]:
+    """Portable search order for the integration-package backend when
+    theDAW_STEMS_PACKAGE is unset. Every entry is derived from this file's
+    location, so it resolves the same on any install with no machine-
+    specific paths baked in. The first candidate containing run_backend.py
+    wins; if none do, the first entry is used so diagnostics name a path
+    local to THIS install rather than one from the build machine."""
+    return [
+        _REPO_ROOT / "integration-package" / "backend",  # bundled inside the app
+        _REPO_ROOT.parent / "integration-package" / "backend",  # sibling of repo
+        _REPO_ROOT.parent.parent / "integration-package" / "backend",  # dev layout
+    ]
+
+
+def _default_package_path() -> Path:
+    candidates = _stems_package_candidates()
+    for c in candidates:
+        if (c / "run_backend.py").is_file():
+            return c
+    return candidates[0]
+
+
+DEFAULT_PACKAGE_PATH = _default_package_path()
 PORT_FILENAME = "backend_port.txt"
 # run_backend.py does a dependency check + possible pip install on first
 # spawn — that can take minutes. Give it five before we give up.
