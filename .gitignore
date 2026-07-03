@@ -307,3 +307,12 @@ deprecated/
 
 # Local model weights (multi-GB safetensors + configs) - never commit
 models/
+
+# Underfit is vendored as a git-subrepo (dada-bots/underfit + local mods): its
+# CODE is tracked by theDAW; only its heavy runtime dirs are excluded here (also
+# covered by underfit/.gitignore). state/ is multi-GB — never commit it.
+/underfit/state/
+/underfit/.venv/
+/underfit/.gradio/
+/underfit/**/node_modules/
+/underfit/**/__pycache__/
