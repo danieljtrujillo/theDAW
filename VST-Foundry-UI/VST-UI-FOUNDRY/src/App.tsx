@@ -341,6 +341,57 @@ export default function App() {
       }
     }
 
+    // Whole-module Arsenal drop: when the preset carries a __module payload
+    // (saved from a Group — see the vst-arsenal-save listener), rebuild a real
+    // Group + children instead of a single element. Mirrors
+    // handleExtractorPlaceModules exactly: fresh groupId + fresh child ids;
+    // children keep their STORED group-relative x/y; the Group takes the drop
+    // x/y and the entry's width/height. Backplate/control children ride a
+    // faceSrc URL as-is; Image children get a freshly materialized Asset from
+    // the url captured at save time (__assetUrl) with assetId rewired to it.
+    // Saved order is preserved (backplate first → renders under the controls).
+    const moduleChildren = presetData?.__module?.children as
+      | Array<Record<string, unknown>>
+      | undefined;
+    if (Array.isArray(moduleChildren) && moduleChildren.length > 0) {
+      const groupId = Math.random().toString(36).substring(2, 9);
+      const newAssets: Asset[] = [];
+      const children: UIElement[] = moduleChildren.map((child) => {
+        const { __assetUrl, ...rest } = child as {
+          __assetUrl?: string;
+        } & Record<string, unknown>;
+        const base = {
+          ...(rest as Partial<UIElement>),
+          id: Math.random().toString(36).substring(2, 9),
+          groupId,
+        } as UIElement;
+        if (base.type === "Image" && __assetUrl) {
+          const asset: Asset = {
+            id: crypto.randomUUID(),
+            name: base.name || "module image",
+            url: __assetUrl,
+          };
+          newAssets.push(asset);
+          return { ...base, assetId: asset.id };
+        }
+        return base;
+      });
+      const group: UIElement = {
+        id: groupId,
+        name: (presetData?.name as string) || `${type} ${elements.length + 1}`,
+        type: "Group",
+        x: Math.round(x),
+        y: Math.round(y),
+        width: finalWidth,
+        height: finalHeight,
+        childrenIds: children.map((c) => c.id),
+      };
+      if (newAssets.length > 0) setAssets((prev) => [...prev, ...newAssets]);
+      setElements((prev) => [...prev, ...children, group]);
+      setSelectedElementIds([groupId]);
+      return;
+    }
+
     const newElement: UIElement = {
       ...presetData,
       id: Math.random().toString(36).substring(2, 9),
@@ -508,6 +559,36 @@ export default function App() {
       delete presetData.id;
       delete presetData.x;
       delete presetData.y;
+      // Groups save as WHOLE MODULES: capture the children (their coords are
+      // already group-relative) minus instance identity (id/groupId) and embed
+      // them in the preset so a drop can rebuild the module in any project.
+      // Frame backplates and face-wearing controls carry faceSrc (a URL) and
+      // need nothing more; only Image children reference an Asset by assetId, so
+      // resolve that id to its url NOW and stash it inline as __assetUrl on the
+      // stripped child — the drop path materializes a fresh Asset from it.
+      let previewUrl = el.faceSrc;
+      if (el.type === "Group") {
+        const kids = elements
+          .filter((x) => x.groupId === el.id)
+          .map((child) => {
+            const { id: _id, groupId: _g, ...rest } = child;
+            if (child.type === "Image" && child.assetId) {
+              return {
+                ...rest,
+                __assetUrl: assets.find((a) => a.id === child.assetId)?.url,
+              };
+            }
+            return rest;
+          });
+        delete presetData.childrenIds; // stale instance ids — rebuilt on drop
+        presetData.__module = { children: kids };
+        // Preview = the backplate (first child) face, else the first child's
+        // face/image url.
+        const first = kids[0] as Record<string, unknown> | undefined;
+        previewUrl =
+          (first?.faceSrc as string | undefined) ??
+          (first?.__assetUrl as string | undefined);
+      }
       const entry: ArsenalEntry = {
         id: crypto.randomUUID(),
         name,
@@ -515,7 +596,7 @@ export default function App() {
         defaultWidth: el.width,
         defaultHeight: el.height,
         presetData,
-        previewUrl: el.faceSrc,
+        previewUrl,
         createdAt: Date.now(),
       };
       void addToArsenal(entry).then(setArsenal);
@@ -523,7 +604,7 @@ export default function App() {
     window.addEventListener("vst-arsenal-save", handler as EventListener);
     return () =>
       window.removeEventListener("vst-arsenal-save", handler as EventListener);
-  }, [elements]);
+  }, [elements, assets]);
 
   // Drop an Arsenal entry (Sidebar delete-X). removeFromArsenal returns the
   // updated list, which flows straight back into state.
