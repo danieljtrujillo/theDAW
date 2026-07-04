@@ -165,7 +165,7 @@ export const Shell: React.FC = () => {
       style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))' }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
-          Docs / Mobile / Settings icons (right). G-Search moved to the footer. */}
+          Mobile / Docs / app-menu (right). G-Search moved to the footer. */}
       <header className="h-11 border-b border-white/5 flex items-center gap-3 px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
         <a
           href="https://github.com/gantasmo/theDAW"
@@ -190,6 +190,19 @@ export const Shell: React.FC = () => {
         />
 
         <div className="flex items-center gap-2.5 shrink-0">
+          {/* Order: Mobile, Docs, then the app menu (hamburger) on the far right. */}
+          <TopBarButton
+            onClick={() => setShareOpen(true)}
+            icon={<Smartphone className="w-3.5 h-3.5" />}
+            title="Open mobile access QR/link"
+            accent="emerald"
+          />
+          <TopBarButton
+            onClick={() => setDocsOpen(true)}
+            icon={<BookOpen className="w-3.5 h-3.5" />}
+            title="Open documentation"
+            accent="purple"
+          />
           {/* App menu — project ops, backup/migrate, updates, Settings, Edit
               Layout, DAW import, and .tasmo save/open all live here. It is the
               sole entry point for Settings (the header gear was retired). */}
@@ -207,19 +220,6 @@ export const Shell: React.FC = () => {
               onOpenHome={() => setHomeOpen(true)}
             />
           </span>
-          {/* Docs and Mobile stay as quick-access header icons. */}
-          <TopBarButton
-            onClick={() => setDocsOpen(true)}
-            icon={<BookOpen className="w-3.5 h-3.5" />}
-            title="Open documentation"
-            accent="purple"
-          />
-          <TopBarButton
-            onClick={() => setShareOpen(true)}
-            icon={<Smartphone className="w-3.5 h-3.5" />}
-            title="Open mobile access QR/link"
-            accent="emerald"
-          />
         </div>
       </header>
 

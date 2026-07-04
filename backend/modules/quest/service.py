@@ -21,10 +21,21 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _CONFIG_PATH = PROJECT_ROOT / "data" / "quest.json"
+
+# theDAW-XR publishes the prebuilt Quest APK as a GitHub release asset; the
+# deploy dialog can pull the newest one instead of requiring a local build.
+_XR_REPO_SLUG = "gantasmo/theDAW-XR"
+_XR_LATEST_URL = f"https://api.github.com/repos/{_XR_REPO_SLUG}/releases/latest"
+_HTTP_TIMEOUT_S = 8.0
+# The APK is ~150 MB; allow a slow connection to finish.
+_DOWNLOAD_TIMEOUT_S = 600.0
+_APK_DIR = PROJECT_ROOT / "data" / "quest"
 
 _EXE = "adb.exe" if os.name == "nt" else "adb"
 
@@ -231,6 +242,74 @@ def install_apk(adb: str, apk_path: str, serial: Optional[str]) -> tuple[bool, s
     out = f"{proc.stdout}\n{proc.stderr}".strip()
     ok = proc.returncode == 0 and "Success" in out
     return ok, out
+
+
+# --- theDAW-XR release APK ------------------------------------------------
+
+
+def fetch_latest_apk_info() -> dict:
+    """Metadata for the newest .apk asset on theDAW-XR's latest GitHub release.
+
+    Raises httpx.HTTPError / ValueError on network or payload problems --
+    the router translates those into a soft error, never a 5xx.
+    """
+    with httpx.Client(timeout=_HTTP_TIMEOUT_S, follow_redirects=True) as client:
+        resp = client.get(
+            _XR_LATEST_URL, headers={"Accept": "application/vnd.github+json"}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("unexpected GitHub release payload (not an object)")
+    assets = data.get("assets")
+    apk = next(
+        (
+            a
+            for a in (assets if isinstance(assets, list) else [])
+            if isinstance(a, dict) and str(a.get("name", "")).lower().endswith(".apk")
+        ),
+        None,
+    )
+    if apk is None:
+        raise ValueError(f"the latest {_XR_REPO_SLUG} release has no .apk asset")
+    return {
+        "tag": data.get("tag_name"),
+        "release_name": data.get("name"),
+        "published_at": data.get("published_at"),
+        "apk_name": apk.get("name"),
+        "apk_size": apk.get("size"),
+        "download_url": apk.get("browser_download_url"),
+    }
+
+
+def download_latest_apk() -> dict:
+    """Download the newest release APK into ``data/quest/`` and return its info
+    plus the local path. An existing complete download is reused (size match),
+    so re-clicking never re-pulls 150 MB.
+
+    Raises httpx.HTTPError / ValueError like :func:`fetch_latest_apk_info`.
+    """
+    info = fetch_latest_apk_info()
+    name = str(info["apk_name"])
+    url = str(info["download_url"])
+    expected = info.get("apk_size")
+    dest = _APK_DIR / name
+    if dest.is_file() and isinstance(expected, int) and dest.stat().st_size == expected:
+        return {**info, "path": str(dest), "cached": True}
+    _APK_DIR.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=True) as client:
+        with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with part.open("wb") as fh:
+                for chunk in resp.iter_bytes(1024 * 1024):
+                    fh.write(chunk)
+    if isinstance(expected, int) and part.stat().st_size != expected:
+        size = part.stat().st_size
+        part.unlink(missing_ok=True)
+        raise ValueError(f"download incomplete: got {size} of {expected} bytes")
+    part.replace(dest)
+    return {**info, "path": str(dest), "cached": False}
 
 
 def launch_package(adb: str, package: str, serial: Optional[str]) -> tuple[bool, str]:

@@ -12,6 +12,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ExternalLink, Hammer, RotateCw } from 'lucide-react';
+import { SkreambotCredit } from '../components/ui/Credit';
 
 const MAX_LOAD_RETRIES = 40; // ~80s at 2s spacing — first boot builds the app
 
@@ -76,6 +77,8 @@ export const FoundryView: React.FC = () => {
         <span className="text-[10px] font-mono uppercase tracking-widest text-amber-200/80">
           VST Foundry
         </span>
+        <span className="w-px h-4 bg-white/10 shrink-0" />
+        <SkreambotCredit className="shrink-0" />
         <div className="flex-1" />
         <button
           type="button"
@@ -115,7 +118,7 @@ export const FoundryView: React.FC = () => {
             ) : (
               <div className="max-w-md space-y-3">
                 <p className="text-xs text-red-300/90 font-mono">VST Foundry unavailable</p>
-                <p className="text-[11px] text-zinc-400 whitespace-pre-wrap break-words">{detail}</p>
+                <p className="text-[11px] text-zinc-400 whitespace-pre-wrap wrap-break-word">{detail}</p>
                 <button
                   type="button"
                   onClick={retry}
