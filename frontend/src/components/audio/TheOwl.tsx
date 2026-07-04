@@ -107,11 +107,24 @@ export function TheOwl({ params, onChange, idPrefix }: TheOwlProps) {
   return (
     <div
       className="relative h-full w-full bg-[#07080c] overflow-hidden flex items-center justify-center select-none"
+      style={{ containerType: 'size' }}
       onContextMenu={(e) => menu.open(e, true)}
     >
+      {/* Letterbox the surface to the artwork's native 1672:941 so the PNG is
+          never stretched: the box grows to the largest 1672:941 rectangle that
+          fits the stage, and the percent-positioned controls stay aligned. */}
       <div
-        className="relative aspect-1672/941 w-full h-full max-w-full max-h-full"
-        style={{ backgroundImage: `url(${BG})`, backgroundSize: '100% 100%', backgroundRepeat: 'no-repeat' }}
+        className="relative"
+        style={{
+          width: 'min(100cqw, calc(100cqh * 1672 / 941))',
+          height: 'auto',
+          aspectRatio: '1672 / 941',
+          maxWidth: '100%',
+          maxHeight: '100%',
+          backgroundImage: `url(${BG})`,
+          backgroundSize: '100% 100%',
+          backgroundRepeat: 'no-repeat',
+        }}
       >
         {/* ── left panel: the real Kaoss surface (trails + glowing indicator) ── */}
         <iframe

@@ -261,9 +261,14 @@ def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> s
         "html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;"
         "background:#07080c;}"
         "#gan-stage{position:absolute;inset:0;display:flex;align-items:center;"
-        "justify-content:center;}"
+        "justify-content:center;container-type:size;}"
+        # Letterbox the canvas to the artwork's native aspect: it grows to the
+        # largest W:H rectangle that fits the stage (min of full width vs the
+        # width implied by full height), so background-size:100% 100% no longer
+        # distorts the art and the percent-positioned controls stay aligned.
         f"#gan-canvas{{position:relative;aspect-ratio:{w:.0f}/{h:.0f};"
-        "width:100%;height:100%;max-width:100%;max-height:100%;"
+        f"width:min(100cqw,calc(100cqh*{w:.0f}/{h:.0f}));height:auto;"
+        "max-width:100%;max-height:100%;"
         f"{bg_css}}}"
         ".gan-el{box-sizing:border-box;}"
         ".gan-frame{width:100%;height:100%;border:0;display:block;background:transparent;}"
