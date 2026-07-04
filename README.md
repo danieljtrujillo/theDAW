@@ -210,6 +210,13 @@ The timeline holds many tracks, each clip caches its own waveform peaks, Move dr
 
 A chain of 25 FFmpeg effects covers mastering, compression, filters, vocal processing, lo-fi, stereo widening, reverb, delay, LUFS normalization, pitch shift, and export to FLAC, MP3, AAC, and Opus. Four macro sliders map onto the active effect, and process history keeps the last eight runs. The Edit Tool Stack adds six module families under `/api/edit/*`, whose GUIs iframe into the effect stage. VST3 plugins, scanned from the standard folders and hosted through [pedalboard](https://github.com/spotify/pedalboard), drop into the same chain, and `.gan` web-plugins (including **The Owl**, the front-end for the HRTF spatializer) render in the effect-stage footprint and drive the live rack. Full reference: [User Guide §8](docs/USER_GUIDE.md#8-mix-tab) and [§28](docs/USER_GUIDE.md#28-edit-tool-stack).
 
+<p align="center">
+  <img src="docs/readme/owl.png" alt="The Owl .gan web-plugin: the HRTF spatializer surface with the azimuth-elevation pad and the spatial-room pad" width="410">
+  <img src="docs/readme/ares.png" alt="Ares .gan web-plugin: a reactive multi-effect surface with filter, delay, reverb, grains, and gate" width="410">
+</p>
+
+<sub align="center">The Owl and Ares are `.gan` web-plugins that render in the MIX effect stage. Each is a background image with controls placed on top, so the surface letterboxes to the artwork's native aspect ratio and never stretches.</sub>
+
 ### Perform
 
 The Perform tab imports a project and plays its scenes and clips from a live launch grid. Scenes fire columns of clips together, individual clips trigger on their own, and the grid drives the arrangement while a set runs.
@@ -228,9 +235,13 @@ The VJ tab embeds the [VJ-9000](https://github.com/gantasmo/VJ-9000) engine, whi
 
 ### Foundry
 
+<p align="center"><img src="docs/readme/foundry.png" alt="Foundry plugin-UI builder: an infinite canvas with a control palette, layers, and asset and texture libraries" width="820"></p>
+
 The Foundry tab lays out custom VST and plugin interfaces on an infinite canvas. A finished design exports as a `.gan` web-plugin (GANTASMO's portable plugin format), which then hosts in the MIX chain alongside VST3 plugins and the built-in effects.
 
 ### Underfit
+
+<p align="center"><img src="docs/readme/underfit.png" alt="Underfit LoRA trainer dashboard embedded in the tab, with the GPU meter and run list" width="820"></p>
 
 Underfit fits LoRA adapters. Eight adapter types are available (`lora`, `dora-rows`, `dora-cols`, `bora`, and their `-xs` variants). Layer filtering runs through `--include` and `--exclude` with bracket-range expansion. Inference exposes runtime strength, per-LoRA interval gating within a sigma range, and a per-LoRA layer filter, and adapters stack additively. Full reference: [User Guide §22](docs/USER_GUIDE.md#22-lora-adapter-types).
 
@@ -269,10 +280,10 @@ The Score tab turns a track's MIDI into symbolic music. MAKE SHEET converts the 
   <img src="docs/readme/piano.png" alt="Piano roll with MIDI import and export" width="410">
   <br>
   <img src="docs/readme/visualizer.png" alt="Real-time spectral analyzer" width="410">
-  <img src="docs/readme/slide.png" alt="SLIDE glass control surface" width="410">
+  <img src="docs/readme/draw.png" alt="DRAW tab: draw gestures to play generative music, with Organic, Fibonacci, Neural, and Nebulous modes" width="410">
 </p>
 
-The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS and peak meters. The piano roll edits MIDI-style notes, imports and exports MIDI, and renders to the editor. The step sequencer runs a 16-step drum machine with five synthesized voices. The media bucket holds session audio, SLIDE presents a glass surface of faders and knobs synced with the VJ engine, and Details and Score show the selected entry. Full reference: [User Guide §14](docs/USER_GUIDE.md#14-step-sequencer) through [§16](docs/USER_GUIDE.md#16-bottom-panel-tabs).
+The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS and peak meters. The piano roll edits MIDI-style notes, imports and exports MIDI, and renders to the editor. The step sequencer runs a 16-step drum machine with five synthesized voices. The DRAW tab turns drawn gestures into generative music across Organic, Fibonacci, Neural, and Nebulous modes and records the result to the library or EDIT. The media bucket holds session audio, SLIDE presents a glass surface of faders and knobs synced with the VJ engine, and Details and Score show the selected entry. Full reference: [User Guide §14](docs/USER_GUIDE.md#14-step-sequencer) through [§16](docs/USER_GUIDE.md#16-bottom-panel-tabs).
 
 ### Footer, log, and assistant
 
