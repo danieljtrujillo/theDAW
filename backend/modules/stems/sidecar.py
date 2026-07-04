@@ -1,10 +1,11 @@
 """Manage the stem-separation sidecar process and proxy requests to it.
 
-The integration-package (D:/StableAudio/JoshOG/integration-package by
-default, overridable via theDAW_STEMS_PACKAGE) ships its own FastAPI
-server with Demucs + LARSNET. It needs heavy deps (demucs, torchcrepe,
-audio-separator) that we deliberately keep OUT of the main app's
-environment.
+The integration-package ships its own FastAPI server with Demucs +
+LARSNET. Its code is vendored in this repo at integration-package/backend
+(the first search candidate below; a sibling checkout or the
+theDAW_STEMS_PACKAGE env var override both still win for dev layouts).
+It needs heavy deps (demucs, torchcrepe, torchcodec) that we
+deliberately keep OUT of the main app's environment.
 
 This module:
 
@@ -635,6 +636,132 @@ _FILTERED_REQS = {
 }
 
 
+# FFmpeg shared builds for Windows decode support (BtbN publishes rolling
+# assets under the "latest" release tag; asset names verified 2026-07-04).
+# torchcodec loads avcodec/avformat/avutil/swresample/swscale shared DLLs at
+# import time; the version-pinned FFmpeg 8 build matches torchcodec's
+# supported range today, with the master build as a fallback if the pinned
+# asset is ever retired.
+_FFMPEG_ZIP_URLS = (
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip",
+)
+
+# Auto-loaded by every Python invocation in the sidecar venv. Python 3.8+ on
+# Windows no longer searches %PATH% for ctypes loads, so torchcodec's
+# libtorchcodec_core*.dll can only find the FFmpeg DLLs next to python.exe
+# through an explicit os.add_dll_directory call.
+_SITECUSTOMIZE_SRC = '''"""Auto-loaded by every Python invocation in this venv.
+
+Adds the venv's Scripts/ dir (where FFmpeg shared DLLs live alongside
+python.exe) to the DLL search path so torchcodec's libtorchcodec_core*.dll
+can find avcodec-*.dll / avformat-*.dll / avutil-*.dll / swresample-*.dll /
+swscale-*.dll. Python 3.8+ on Windows no longer searches %PATH% for ctypes
+loads, so this explicit call is required.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        scripts_dir = Path(sys.prefix) / "Scripts"
+        if scripts_dir.is_dir():
+            os.add_dll_directory(str(scripts_dir))
+    except Exception:
+        pass
+'''
+
+
+def _ensure_windows_decode_support(cfg: SidecarConfig) -> dict:
+    """Provision what torchaudio/torchcodec decode needs on Windows.
+
+    Two pieces, both idempotent:
+
+      1. ``sitecustomize.py`` in the venv's site-packages, adding Scripts/
+         to the DLL search path.
+      2. The FFmpeg shared DLLs themselves, extracted into Scripts/ from a
+         BtbN shared build (skipped when an avcodec DLL is already there).
+
+    Non-Windows platforms return ``{ok: True, skipped: True}`` (FFmpeg libs
+    come from the system there). Failures are reported, not raised — the
+    sidecar can still separate stems fed as WAV even when MP3/video decode
+    is unavailable.
+    """
+    if sys.platform != "win32":
+        return {"ok": True, "skipped": True}
+
+    out: dict = {"ok": False, "sitecustomize": False, "ffmpeg_dlls": False}
+    venv_dir = cfg.python_exe.parent.parent
+    scripts_dir = cfg.python_exe.parent
+    site_packages = venv_dir / "Lib" / "site-packages"
+
+    try:
+        if site_packages.is_dir():
+            sc = site_packages / "sitecustomize.py"
+            if not sc.is_file():
+                sc.write_text(_SITECUSTOMIZE_SRC, encoding="utf-8")
+            out["sitecustomize"] = True
+        else:
+            out["error"] = f"site-packages not found at {site_packages}"
+            return out
+    except OSError as e:
+        out["error"] = f"could not write sitecustomize.py: {e}"
+        return out
+
+    if list(scripts_dir.glob("avcodec-*.dll")):
+        out["ffmpeg_dlls"] = True
+        out["ok"] = True
+        return out
+
+    import tempfile
+    import zipfile
+
+    last_err: str | None = None
+    for url in _FFMPEG_ZIP_URLS:
+        tmp_path: Optional[Path] = None
+        try:
+            log.info("stems.sidecar: fetching FFmpeg shared DLLs from %s", url)
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+                with httpx.stream(
+                    "GET", url, follow_redirects=True, timeout=600.0
+                ) as resp:
+                    resp.raise_for_status()
+                    for chunk in resp.iter_bytes(1024 * 1024):
+                        tmp.write(chunk)
+            extracted = 0
+            with zipfile.ZipFile(tmp_path) as zf:
+                for member in zf.namelist():
+                    name = member.rsplit("/", 1)[-1]
+                    if "/bin/" in member and name.lower().endswith(".dll"):
+                        with zf.open(member) as src_fp:
+                            (scripts_dir / name).write_bytes(src_fp.read())
+                        extracted += 1
+            if extracted == 0:
+                last_err = f"no DLLs found inside {url}"
+                continue
+            out["ffmpeg_dlls"] = True
+            out["dll_count"] = extracted
+            out["ok"] = True
+            log.info(
+                "stems.sidecar: placed %d FFmpeg DLLs in %s", extracted, scripts_dir
+            )
+            return out
+        except (httpx.HTTPError, OSError, zipfile.BadZipFile) as e:
+            last_err = f"{url}: {e!r}"
+            log.warning("stems.sidecar: FFmpeg fetch failed: %s", last_err)
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+    out["error"] = last_err or "all FFmpeg sources failed"
+    return out
+
+
 def _materialize_filtered_requirements(cfg: SidecarConfig) -> Path:
     """Read requirements.txt, drop entries in _FILTERED_REQS, write the
     cleaned list to ``<pkg>/.sidecar_venv_requirements.txt`` and return
@@ -706,6 +833,19 @@ def install_dependencies(cfg: Optional[SidecarConfig] = None) -> dict:
     out["stdout"] = result.stdout[-4000:]
     out["stderr"] = result.stderr[-4000:]
     out["ok"] = result.returncode == 0
+
+    # On Windows, torchaudio decodes through torchcodec, which needs FFmpeg
+    # shared DLLs on the venv's DLL search path. Provision them (plus the
+    # sitecustomize hook) right after a successful dep install. A failure
+    # here is surfaced but doesn't fail the install — WAV-only separation
+    # still works without the decoder DLLs.
+    if out["ok"]:
+        out["windows_decode"] = _ensure_windows_decode_support(cfg)
+        if not out["windows_decode"].get("ok"):
+            log.warning(
+                "stems.sidecar: Windows decode support incomplete: %s",
+                out["windows_decode"].get("error"),
+            )
     return out
 
 

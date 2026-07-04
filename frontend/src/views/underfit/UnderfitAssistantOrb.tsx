@@ -2284,12 +2284,12 @@ function PlainToolRow({ tool }: { tool: ToolCallEntry }) {
       </button>
       {open && (
         <div className="border-t border-white/5 bg-black/20">
-          <pre className="p-2.5 m-0 text-zinc-400 max-h-40 overflow-auto whitespace-pre-wrap break-words select-all">
+          <pre className="p-2.5 m-0 text-zinc-400 max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word select-all">
             {prettyInput}
           </pre>
           {resultText && (
             <pre
-              className={`p-2.5 m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words select-all border-t border-white/5 ${
+              className={`p-2.5 m-0 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word select-all border-t border-white/5 ${
                 tool.isError ? "text-red-300" : "text-emerald-200/80"
               }`}
             >
@@ -2340,7 +2340,7 @@ function DiffToolRow({ tool }: { tool: ToolCallEntry }) {
           {shown.map((r, idx) => (
             <div
               key={idx}
-              className={`px-2.5 whitespace-pre-wrap break-words ${
+              className={`px-2.5 whitespace-pre-wrap wrap-break-word ${
                 r.type === "add"
                   ? "bg-emerald-500/10 text-emerald-300"
                   : r.type === "del"
@@ -2356,7 +2356,7 @@ function DiffToolRow({ tool }: { tool: ToolCallEntry }) {
             <div className="px-2.5 py-1 text-[10px] text-zinc-600">… {rows.length - 400} more lines</div>
           )}
           {tool.isError && tool.result && (
-            <pre className="p-2.5 m-0 text-red-300 max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-white/5">
+            <pre className="p-2.5 m-0 text-red-300 max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word border-t border-white/5">
               {tool.result}
             </pre>
           )}
@@ -2451,7 +2451,7 @@ function AgentToolCard({ tool }: { tool: ToolCallEntry }) {
           )}
           {tool.result && (
             <div
-              className={`px-2 py-1.5 rounded text-[10px] whitespace-pre-wrap break-words ${
+              className={`px-2 py-1.5 rounded text-[10px] whitespace-pre-wrap wrap-break-word ${
                 tool.isError ? "text-red-300 bg-red-500/10" : "text-zinc-400 bg-white/5"
               }`}
             >

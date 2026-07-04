@@ -214,6 +214,12 @@ def apply() -> dict:
             sidecar.stop()
             sidecar.ensure_running(wait_for_ready=False)
         except Exception as e:  # noqa: BLE001 — restart is best-effort
-            log.warning("underfit.updater: dashboard restart after update failed: %s", e)
+            log.warning(
+                "underfit.updater: dashboard restart after update failed: %s", e
+            )
 
-        return {"ok": True, "message": "Underfit updated from upstream.", "output": out[-2000:]}
+        return {
+            "ok": True,
+            "message": "Underfit updated from upstream.",
+            "output": out[-2000:],
+        }

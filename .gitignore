@@ -332,3 +332,15 @@ models/
 /underfit/.gradio/
 /underfit/**/node_modules/
 /underfit/**/__pycache__/
+
+# Stems sidecar (integration-package/backend) runtime artifacts.
+# Only the sidecar's code is committed; its venv, logs, results, and the
+# LARSNET weights are created or placed at runtime.
+integration-package/backend/.sidecar_venv/
+integration-package/backend/.sidecar_logs/
+integration-package/backend/.sidecar_venv_requirements.txt
+integration-package/backend/backend_port.txt
+integration-package/backend/logs/
+integration-package/backend/results/
+integration-package/backend/larsnet/pretrained_larsnet_models/
+integration-package/backend/larsnet/pretrained_larsnet_models.zip

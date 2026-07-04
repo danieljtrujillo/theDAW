@@ -181,4 +181,7 @@ exclude = [
     "underfit",
     # Runtime-created isolated venv for the faster-whisper transcription sidecar.
     "backend/modules/vocal/transcription/.whisper_venv",
+    # Vendored stems-separation sidecar (Demucs/LARSNET server); runs in its own
+    # venv with its own deps, keeps its own style — same policy as underfit.
+    "integration-package",
 ]

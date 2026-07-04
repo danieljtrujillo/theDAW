@@ -1,25 +1,33 @@
 /**
- * Capture SA3 feature screenshots — in action, not just the chrome.
+ * Capture SA3 feature screenshots — every feature, in action, around ONE song.
  *
- * Each scene is a real interaction sequence that lands the app on a
- * state worth showing (entry selected, library context menu open,
- * graph node right-click visible, etc). Screenshots write to
- * `docs/screenshots/` so they can be linked from the README / docs.
+ * The whole gallery is built around "Et Tu Machina", one enriched library
+ * entry that already carries six stems, seven MIDI files, and several MusicXML
+ * scores. Every scene that shows media resolves that entry by title (once, via
+ * pickShowcaseTrack against the backend) and loads it as the song, the EDIT
+ * multitrack, the DJ decks, the MIX source, the piano roll, and the score. One
+ * title therefore drives song, stems, MIDI, and score across the gallery.
+ *
+ * Each scene is a real interaction sequence that lands the app on a state worth
+ * showing. Media loaders drive the Zustand stores exactly the way the launch
+ * video harness (frontend/_capture_clips.mjs) does, through page.evaluate and
+ * dynamic imports of /src/state/*. DOM choreography (tab clicks, menus, native
+ * selects, modals) runs on the Playwright side. Screenshots write to
+ * docs/screenshots/ so they can be linked from the README and docs.
  *
  * Prereqs:
  *   1. SA3 backend is up on http://localhost:8600
- *   2. SA3 frontend is up on http://localhost:5173 (theDAW.bat
- *      does both via the supervisor)
- *   3. A library entry titled "Chungus 9003" exists (or override via
- *      `SA3_SHOWCASE_TRACK=...` env var to pick something else)
+ *   2. SA3 frontend is up on http://localhost:5173 (theDAW.bat does both)
+ *   3. A library entry titled "Et Tu Machina" exists (or override via
+ *      SA3_SHOWCASE_TRACK / SA3_NOTATION_TRACK env vars)
  *
  * Usage:
  *   npm --prefix frontend exec -- tsx ../scripts/screenshots/capture.ts
  *
- * One scene, multiple scenes, or all — controlled by the SCENES env
- * var. Empty (default) = run all.
+ * One scene, multiple scenes, or all — controlled by the SCENES env var. Empty
+ * (default) = run all.
  *
- *   SCENES=library-toolbar,graph-right-click \
+ *   SCENES=05-edit-timeline,12-dj-console \
  *     npm --prefix frontend exec -- tsx ../scripts/screenshots/capture.ts
  */
 
@@ -27,7 +35,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import type { Page } from 'playwright';
-import { pickShowcaseTrack, pickCohort } from './pickShowcaseTrack.js';
+import { pickShowcaseTrack, pickCohort, pickNotationTrack } from './pickShowcaseTrack.js';
 import {
   SCREENSHOT_SPECS,
   VIEWPORT,
@@ -43,6 +51,7 @@ const NAV = FRONTEND + (FRONTEND.includes('?') ? '&' : '?') + 'nocinematic=1';
 const BACKEND = process.env.SA3_BACKEND_URL ?? 'http://localhost:8600';
 const requireFromCwd = createRequire(path.join(process.cwd(), 'package.json'));
 const { chromium } = requireFromCwd('playwright') as typeof import('playwright');
+const REPO_ROOT = path.resolve(process.cwd().endsWith('frontend') ? '..' : '.');
 const OUT_DIR = path.resolve(
   process.cwd().endsWith('frontend')
     ? '../docs/screenshots'
@@ -71,7 +80,7 @@ async function snap(page: Page, name: string, clip?: CropRegion): Promise<void> 
       ? { x: clip.x, y: clip.y, width: clip.width, height: clip.height }
       : undefined,
   });
-  log(`✓ ${name}.png${clip ? ` (${clip.purpose})` : ''}`);
+  log(`ok ${name}.png${clip ? ` (${clip.purpose})` : ''}`);
 }
 
 async function captureCroppedRegions(page: Page, sceneName: string): Promise<void> {
@@ -104,50 +113,36 @@ async function writeScreenshotManifest(): Promise<void> {
       `${rows}\n`,
     'utf8',
   );
-  log('✓ manifest.json + manifest.md');
-}
-
-interface Scene {
-  name: string;
-  description: string;
-  run: (page: Page) => Promise<void>;
+  log('ok manifest.json + manifest.md');
 }
 
 /**
- * The app shows a fullscreen LoadingScreen overlay (z-200) until the
- * backend health poll succeeds. Every interaction must wait for it
- * to vanish or clicks land on the overlay instead of the actual UI.
- * Also handles the case where the overlay has a "Skip" button after
- * 15s — we click it as a safety net if the backend never reports
- * ready (e.g. in a test scenario).
+ * The app shows a fullscreen LoadingScreen overlay (z-200) until the backend
+ * health poll succeeds. Every interaction must wait for it to vanish or clicks
+ * land on the overlay instead of the actual UI. Also handles the case where the
+ * overlay exposes a Skip/Continue button as a safety net.
  */
 async function waitForReady(page: Page): Promise<void> {
-  // The boot overlay is the fixed inset-0 z-200 layer (App.tsx wraps LoadingScreen
-  // in it). With ?nocinematic the cinematic is skipped, so this lifts as soon as
-  // the backend health poll succeeds.
   const overlay = page.locator('div.fixed.inset-0.z-200').first();
-  // Wait up to 25s for the overlay to disappear naturally.
   try {
     await overlay.waitFor({ state: 'hidden', timeout: 25000 });
   } catch {
-    // Fallback: click the escape button if it appeared.
     const skip = page.getByRole('button', { name: /continue|skip/i }).first();
     if (await skip.isVisible().catch(() => false)) {
       await skip.click();
       await overlay.waitFor({ state: 'hidden', timeout: 5000 });
     }
   }
-  // Tiny settle delay so the post-loading-screen layout finishes
-  // mounting (Shell's resize observers, persistent stores rehydrating).
   await page.waitForTimeout(300);
 }
 
 /** Click a center-bar tab by its id. The button carries a stable
- *  data-tour="tab-<id>" hook; its title is the tab description, not the label,
- *  so a title/text match would be brittle. */
+ *  data-tour="tab-<id>" hook. Note the id space: PERFORM is the `session` tab
+ *  and TRAIN is retired (aliased to `underfit`), so callers pass `session` and
+ *  `underfit` respectively. */
 async function clickTab(page: Page, id: string): Promise<void> {
   await page.locator(`[data-tour="tab-${id}"]`).first().click({ timeout: 5000 });
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(500);
 }
 
 /** Open the right-side library panel if it isn't already. */
@@ -155,8 +150,8 @@ async function openLibrary(page: Page): Promise<void> {
   const input = page.locator('input[name="library-search"]').first();
   if (await input.isVisible().catch(() => false)) return;
   const lib = page.locator('button[title*="library" i]').first();
-  await lib.click({ timeout: 5000 });
-  await input.waitFor({ state: 'visible', timeout: 5000 });
+  await lib.click({ timeout: 5000 }).catch(() => undefined);
+  await input.waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
   await page.waitForTimeout(300);
 }
 
@@ -173,155 +168,871 @@ function entryRow(page: Page, id: string) {
   return page.locator(`[data-library-entry-id="${id}"]`).first();
 }
 
+/** Click the first button whose visible text matches. Best-effort. */
+async function clickText(page: Page, re: RegExp): Promise<boolean> {
+  return page.evaluate((src) => {
+    const rx = new RegExp(src, 'i');
+    const b = Array.from(document.querySelectorAll('button')).find((x) => rx.test(x.textContent || ''));
+    if (b) { (b as HTMLButtonElement).click(); return true; }
+    return false;
+  }, re.source).catch(() => false);
+}
+
+/** Click the first button whose title attribute matches. Best-effort. */
+async function clickTitle(page: Page, re: RegExp): Promise<boolean> {
+  return page.evaluate((src) => {
+    const rx = new RegExp(src, 'i');
+    const b = Array.from(document.querySelectorAll('button')).find((x) => rx.test(x.getAttribute('title') || ''));
+    if (b) { (b as HTMLButtonElement).click(); return true; }
+    return false;
+  }, re.source).catch(() => false);
+}
+
+/** Open the header app menu and wait for the dropdown. */
+async function openAppMenu(page: Page): Promise<void> {
+  await page.locator('button[aria-label="App menu"]').first().click({ timeout: 5000 });
+  await page.locator('#app-hamburger-menu').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+  await page.waitForTimeout(200);
+}
+
+/** Click an app-menu item by its exact accessible name. */
+async function menuItem(page: Page, name: string): Promise<void> {
+  await page.getByRole('menuitem', { name }).first().click({ timeout: 5000 });
+  await page.waitForTimeout(400);
+}
+
+// ── The resolved showcase context (set once in main() before the scene loop) ──
+interface HeroCtx {
+  heroUrl: string;
+  heroLabel: string;
+  heroId: string;
+  deckBUrl: string;
+  deckBLabel: string;
+  stems: Array<{ name: string; url: string }>;
+  notationId: string;
+  piano: { totalSteps: number; notes: Array<Record<string, number | string>> };
+}
+let heroCtx: HeroCtx | null = null;
+
+// The union of everything a media loader can do in one page.evaluate pass. Every
+// field is optional; the resolved hero base is always merged in first.
+interface MediaSpec extends Partial<HeroCtx> {
+  loadHero?: boolean;
+  play?: boolean;
+  promptText?: string;
+  buildStems?: boolean;
+  editMix?: boolean;
+  cutEdit?: boolean;
+  inpaintRegion?: boolean;
+  automationWrite?: boolean;
+  fxRack?: boolean;
+  studioSource?: boolean;
+  mixChain?: boolean;
+  vstNode?: boolean;
+  ganAres?: boolean;
+  djDecks?: boolean;
+  djStems?: boolean;
+  initAudio?: boolean;
+  chimeraBuild?: boolean;
+  spectro?: boolean;
+  model?: string;
+  magentaCond?: boolean;
+  pianoFill?: boolean;
+  fillBucket?: boolean;
+  slideView?: string;
+  selectEntry?: 'hero' | 'notation' | null;
+  libraryExpanded?: boolean;
+  bottomTab?: string;
+  maximizePanel?: boolean;
+}
+
+/**
+ * Drive the app's Zustand stores for one scene, in the browser context. This is
+ * the still-capture sibling of _capture_clips.mjs applyScene: it fetches the
+ * hero blob, builds the EDIT multitrack from the stems (peak computation
+ * included), loads the DJ decks, sets the MIX source on both source stores,
+ * stages the Chimera stack, loads the piano roll, and selects a library entry,
+ * all from the resolved "Et Tu Machina" id. Every store is reached through a
+ * runtime dynamic import of /src/state/*, exactly as the video harness does.
+ */
+async function applyMedia(spec: MediaSpec): Promise<{ tracks: number; clips: number; log: string[] }> {
+  const out: string[] = [];
+  const imp = (p: string) => import(p);
+  const fetchBlob = async (u: string) => (await fetch(u)).blob();
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const appUi = (await imp('/src/state/appUiStore.ts')).useAppUiStore;
+  const lib = (await imp('/src/state/libraryStore.ts')).useLibraryStore;
+  const pMod = await imp('/src/state/playerStore.ts');
+  const player = pMod.usePlayerStore;
+  const edMod = await imp('/src/state/editorStore.ts');
+  const editor = edMod.useEditorStore;
+  const computePeaks = edMod.computePeaks;
+  const bp = (await imp('/src/state/bottomPanelStore.ts')).useBottomPanelStore;
+
+  try { if (lib.getState().entries.length === 0) await lib.getState().load(); } catch (e) { out.push('lib ' + e.message); }
+
+  // A reusable hero File, built once, for init / mix / bucket / chimera.
+  let srcFile: File | null = null;
+  const getSrcFile = async () => {
+    if (!srcFile) { const b = await fetchBlob(spec.heroUrl!); srcFile = new File([b], 'et-tu-machina.wav', { type: 'audio/wav' }); }
+    return srcFile;
+  };
+
+  if (spec.loadHero) {
+    try { const c = pMod.getEngineCtx && pMod.getEngineCtx(); if (c && c.resume) await c.resume(); } catch (e) {}
+    try {
+      const blob = await fetchBlob(spec.heroUrl!);
+      await player.getState().load(blob, { label: spec.heroLabel, entryId: spec.heroId });
+      if (spec.play && !player.getState().isPlaying) player.getState().play();
+    } catch (e) { out.push('hero ' + e.message); }
+  }
+
+  // A real multitrack arrangement of Et Tu Machina: each stem is a track, clips
+  // are windowed and staggered, a couple are chopped, and a few carry fades.
+  if (spec.buildStems) {
+    const palette = ['#06b6d4', '#f97316', '#ec4899', '#a855f7', '#10b981', '#facc15'];
+    const plan: Record<string, number[]> = {
+      drums: [0, 22, 30], bass: [0, 22, 30], other: [3, 19, 35], vocals: [6, 16, 40], guitar: [9, 14, 20], piano: [12, 12, 18],
+    };
+    let idx = 0;
+    const firstIds: string[] = [];
+    for (const s of (spec.stems || [])) {
+      try {
+        const blob = await fetchBlob(s.url);
+        const { peaks, duration } = await computePeaks(blob, 240);
+        const [st, dur, off] = plan[s.name] || [idx * 2, 18, 30];
+        const tracks = editor.getState().tracks;
+        let trackId: string;
+        if (idx === 0 && tracks.length && editor.getState().clips.filter((c: any) => c.trackId === tracks[0].id).length === 0) trackId = tracks[0].id;
+        else trackId = editor.getState().addTrack({ name: s.name, color: palette[idx % palette.length] });
+        editor.getState().updateTrack(trackId, { name: s.name });
+        const clipId = editor.getState().addClipToTrack({
+          trackId, label: s.name, audioBlob: blob, mimeType: 'audio/wav',
+          sourceDuration: duration, offsetIntoSource: Math.min(off, Math.max(0, duration - dur - 1)),
+          durationSec: Math.min(dur, duration), startSec: st, color: palette[idx % palette.length],
+        });
+        editor.getState().cachePeaks(clipId, peaks);
+        firstIds.push(clipId);
+      } catch (e) { out.push('stem ' + s.name + ' ' + e.message); }
+      idx++;
+    }
+    try {
+      if (firstIds[0]) { editor.getState().splitClipAt(firstIds[0], 8); editor.getState().splitClipAt(firstIds[0], 4); editor.getState().updateClip(firstIds[0], { fadeInSec: 0.8 }); }
+      if (firstIds[2]) editor.getState().splitClipAt(firstIds[2], 12);
+      if (firstIds[3]) editor.getState().updateClip(firstIds[3], { fadeInSec: 1.5 });
+    } catch (e) { out.push('arrange ' + e.message); }
+    try { editor.getState().setBpm(124); editor.getState().setSnap('1/8'); editor.getState().setZoom(34); editor.getState().setScrollSec(0); } catch (e) {}
+  }
+
+  if (spec.editMix) {
+    try {
+      const ts = editor.getState().tracks;
+      if (ts[0]) editor.getState().updateTrack(ts[0].id, { volume: 0.9, pan: -0.4 });
+      if (ts[2]) editor.getState().toggleSolo(ts[2].id);
+      if (ts[1]) editor.getState().updateTrack(ts[1].id, { pan: 0.5, volume: 0.7 });
+    } catch (e) { out.push('editmix ' + e.message); }
+  }
+
+  if (spec.cutEdit) {
+    try {
+      editor.getState().setTool('cut');
+      const clips = editor.getState().clips.slice();
+      const fracs = [0.25, 0.5, 0.7];
+      for (let i = 0; i < Math.min(4, clips.length); i++) { const c = clips[i]; try { editor.getState().splitClipAt(c.id, c.startSec + c.durationSec * fracs[i % fracs.length]); } catch (e) {} }
+    } catch (e) { out.push('cut ' + e.message); }
+  }
+
+  if (spec.inpaintRegion) {
+    try {
+      const c = editor.getState().clips[0];
+      if (c) { editor.getState().setInpaintSelection({ clipId: c.id, startSec: c.startSec + c.durationSec * 0.3, endSec: c.startSec + c.durationSec * 0.62 }); editor.getState().setSelected(c.id); }
+    } catch (e) { out.push('inpaintRegion ' + e.message); }
+  }
+
+  // Automation lane in WRITE mode: draw a real volume curve on the first track.
+  if (spec.automationWrite) {
+    try {
+      editor.getState().setAutomationWrite(true);
+      const t0 = editor.getState().tracks[0];
+      if (t0) {
+        const target = { kind: 'trackVolume', trackId: t0.id };
+        for (let i = 0; i <= 16; i++) {
+          const tt = i * 1.2;
+          const v = Math.max(0, Math.min(1, 0.5 + 0.4 * Math.sin(i * 0.6)));
+          editor.getState().recordAutomationPoint(target, tt, v);
+        }
+      }
+    } catch (e) { out.push('automation ' + e.message); }
+  }
+
+  // Psychoacoustic insert-FX rack on the master bus and the first stem track.
+  if (spec.fxRack) {
+    try {
+      for (const fx of ['crossfeed', 'phantom_bass', 'loudness_contour']) editor.getState().addMasterEffect(fx);
+      const t0 = editor.getState().tracks[0];
+      if (t0) { for (const fx of ['exciter', 'spatializer']) editor.getState().addTrackEffect(t0.id, fx); }
+    } catch (e) { out.push('fxrack ' + e.message); }
+  }
+
+  if (spec.studioSource) {
+    try {
+      const f = await getSrcFile();
+      (await imp('/src/state/studioStore.ts')).useStudioStore.getState().setSourceFile(f);
+      try { (await imp('/src/state/advancedEditorStore.ts')).useAdvancedEditorSourceStore.getState().setSource(f); } catch (e) {}
+    } catch (e) { out.push('studio ' + e.message); }
+  }
+
+  if (spec.mixChain || spec.vstNode) {
+    try {
+      const ec = (await imp('/src/state/effectChainStore.ts')).useEffectChainStore;
+      ec.getState().clearChain();
+      for (const fx of ['mastering_chain', 'reverb_delay', 'sub_exciter', 'stereo_widener', 'compression']) ec.getState().addEffect(fx);
+      if (spec.vstNode) {
+        // No VST3 is scanned at capture time, so stage a representative node so
+        // the MIX chain shows a hosted VST3 slot. addVst pushes a chain entry
+        // with effect vst3 and this VstNode payload.
+        ec.getState().addVst({ plugin_path: 'C:/Program Files/Common Files/VST3/GANTASMO Saturator.vst3', plugin_name: 'GANTASMO Saturator' });
+      }
+    } catch (e) { out.push('mixchain ' + e.message); }
+  }
+
+  if (spec.ganAres) {
+    // Load the bundled Ares web-plugin (.gan) into the MIX effect stage. Ares is
+    // the one .gan that always ships, so it renders without a user-installed
+    // plugin. ensureAres packages then opens it, setting ganStore.activeUrl.
+    try { const gs = (await imp('/src/state/ganStore.ts')).useGanStore; await gs.getState().ensureAres(); } catch (e) { out.push('gan ' + e.message); }
+  }
+
+  if (spec.djDecks) {
+    try {
+      const dj = await imp('/src/state/djEngine.ts');
+      await dj.loadDeck('A', spec.heroUrl, spec.heroLabel);
+      await dj.loadDeck('B', spec.deckBUrl, spec.deckBLabel);
+      try { dj.playDeck('A'); dj.playDeck('B'); } catch (e) {}
+      if (spec.djStems) { try { await dj.loadDeckStems('A', (spec.stems || []).slice(0, 4).map((s) => ({ name: s.name, url: s.url }))); } catch (e) { out.push('djstems ' + e.message); } }
+    } catch (e) { out.push('dj ' + e.message); }
+  }
+
+  try {
+    const gp = (await imp('/src/state/generateParamsStore.ts')).useGenerateParamsStore;
+    if (spec.model) gp.getState().setField('model', spec.model);
+    if (spec.model === 'magenta-small' || spec.magentaCond) { try { gp.getState().setField('magentaAvailable', true); } catch (e) {} }
+    if (spec.magentaCond) {
+      try {
+        gp.getState().setField('magNotes', [48, 55, 60, 63, 67, 70]);
+        gp.getState().setField('magTemperature', 1.1);
+        gp.getState().setField('magTopK', 30);
+        gp.getState().setField('magCfgMusiccoca', 4.0);
+        gp.getState().setField('magCfgNotes', 2.5);
+        gp.getState().setField('magDrums', 1);
+        gp.getState().setField('magSeed', 42);
+      } catch (e) { out.push('magcond ' + e.message); }
+    }
+    if (spec.initAudio) { const f = await getSrcFile(); gp.getState().setField('initAudioFile', f); gp.getState().setField('initAudioEnabled', true); gp.getState().setField('inpaintEnabled', false); }
+    if (spec.chimeraBuild && gp.getState().chimera.clips.length === 0) {
+      const srcs = [{ u: spec.heroUrl!, l: 'Et Tu Machina' }];
+      if (spec.stems && spec.stems[0]) srcs.push({ u: spec.stems[0].url, l: 'Drums' });
+      if (spec.stems && spec.stems[2]) srcs.push({ u: spec.stems[2].url, l: 'Vocals' });
+      for (const s of srcs) { try { const b = await fetchBlob(s.u); gp.getState().addChimeraClip({ blob: b, mimeType: 'audio/wav', label: s.l }); } catch (e) { out.push('chimera ' + e.message); } }
+      try { gp.getState().setChimeraField('targetBpm', 124); gp.getState().setChimeraField('alignMode', 'weave'); } catch (e) {}
+    }
+    if (spec.promptText) { try { gp.getState().setField('prompt', spec.promptText); } catch (e) {} }
+  } catch (e) { out.push('gp ' + e.message); }
+
+  if (spec.spectro) { try { const gs = (await imp('/src/state/generateStore.ts')).useGenerateStore; gs.setState({ lastAudioUrl: spec.heroUrl }); } catch (e) { out.push('spectro ' + e.message); } }
+
+  if (spec.pianoFill && spec.piano) {
+    try {
+      const piano = (await imp('/src/state/pianoRollStore.ts')).usePianoRollStore;
+      piano.getState().setTotalSteps(spec.piano.totalSteps || 64);
+      piano.getState().replaceAll((spec.piano.notes || []).map((x: any) => ({ ...x })));
+      piano.getState().setPlaying(true);
+    } catch (e) { out.push('piano ' + e.message); }
+  }
+
+  if (spec.fillBucket) { try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const f = await getSrcFile(); mb.getState().add(f); } catch (e) { out.push('bucket ' + e.message); } }
+
+  if (spec.slideView) { try { (await imp('/src/state/slideStore.ts')).useSlideStore.getState().setView(spec.slideView); } catch (e) {} }
+
+  if (spec.selectEntry) { try { lib.getState().setSelectedEntry(spec.selectEntry === 'notation' ? spec.notationId : spec.heroId); } catch (e) {} }
+  if (spec.libraryExpanded) { try { appUi.getState().setLibraryExpanded(true); } catch (e) {} }
+
+  if (spec.bottomTab) bp.setState({ activeTab: spec.bottomTab, isOpen: true, multiMaximized: !!spec.maximizePanel, multiHeight: Math.max(380, bp.getState().multiHeight || 0) });
+
+  await sleep(200);
+  return { tracks: editor.getState().tracks.length, clips: editor.getState().clips.length, log: out };
+}
+
+/** Navigate fresh and wait for the app to be interactive. */
+async function boot(page: Page): Promise<void> {
+  await page.goto(NAV);
+  await waitForReady(page);
+  await page.waitForTimeout(400);
+}
+
+/** Drive the media loaders for a scene, merging the resolved hero base in. */
+async function media(page: Page, spec: MediaSpec): Promise<void> {
+  if (!heroCtx) throw new Error('hero context not resolved');
+  const merged: MediaSpec = { ...heroCtx, ...spec };
+  try {
+    const info = await page.evaluate(applyMedia, merged);
+    log(`   media: tracks=${info.tracks} clips=${info.clips}${info.log.length ? ` warn=[${info.log.join(' | ')}]` : ''}`);
+  } catch (e) {
+    log(`   media eval error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+interface Scene {
+  name: string;
+  description: string;
+  run: (page: Page) => Promise<void>;
+}
+
+// The 40 scenes. Every scene that shows media loads Et Tu Machina through the
+// media() loader. Scenes that show only chrome or visuals are marked
+// "chrome/visual — no track needed".
 const SCENES: Scene[] = [
   {
     name: '01-shell-make',
-    description: 'App opened on MAKE tab — top bar + tabs + library closed',
+    description: 'MAKE tab with the Et Tu Machina prompt and spectrogram source loaded',
     run: async (page) => {
-      await page.goto(NAV);
-      await waitForReady(page);
-      await page.waitForTimeout(800);
+      await boot(page);
+      // The spectrogram viewer reads generateStore.lastAudioUrl; pointing it at
+      // the hero makes the COMPARE spectrogram available while the generation
+      // shell stays on screen with the prompt filled.
+      await media(page, { loadHero: true, spectro: true, promptText: 'cinematic downtempo, dusty rhodes, tape saturation, 92 bpm' });
       await clickTab(page, 'make');
       await snapScene(page, '01-shell-make');
     },
   },
   {
-    name: '02-library-with-showcase-selected',
-    description: 'Library panel open with Chungus 9003 selected + details visible',
+    name: '02-make-model-picker',
+    description: 'MAKE model control showing the model roster',
+    // Chrome — the model picker is a native <select id="gen-model">. A browser
+    // screenshot cannot capture the OS-rendered option list, so this frames the
+    // model control (LOAD button + engine status pill); the roster is the
+    // select's options: Small/Medium ARC, Small-RF/Medium-RF, Magenta RT2, Suno.
     run: async (page) => {
-      const seed = await pickShowcaseTrack(BACKEND);
-      if (!seed) throw new Error('no library entries to showcase');
-      log(`showcase track: ${seed.title} (${seed.id.slice(0, 8)})`);
-      await page.goto(NAV);
-      await waitForReady(page);
-      await openLibrary(page);
-      // Search by the showcase title so it scrolls into view.
-      await librarySearch(page, seed.title);
-      const row = entryRow(page, seed.id);
-      await row.click({ timeout: 5000 });
-      await page.waitForTimeout(400);
-      await snapScene(page, '02-library-with-showcase-selected');
-    },
-  },
-  {
-    name: '03-library-actions-toolbar',
-    description: 'Icon-only toolbar above entry list, with selection',
-    run: async (page) => {
-      const seed = await pickShowcaseTrack(BACKEND);
-      if (!seed) throw new Error('no library entries to showcase');
-      await page.goto(NAV);
-      await waitForReady(page);
-      await openLibrary(page);
-      await librarySearch(page, seed.title);
-      const row = entryRow(page, seed.id);
-      await row.click();
+      await boot(page);
+      await clickTab(page, 'make');
+      await page.locator('#gen-model').first().focus().catch(() => undefined);
       await page.waitForTimeout(300);
-      // Hover the DOWNLOAD button so its tooltip shows.
-      await page.locator('button[aria-label="Download menu"]').first().hover();
-      await page.waitForTimeout(200);
-      await snapScene(page, '03-library-actions-toolbar');
+      await snapScene(page, '02-make-model-picker');
     },
   },
   {
-    name: '04-library-download-submenu',
-    description: 'DOWNLOAD submenu open showing Songs/MIDI/JSON/Bundle/Lineage',
+    name: '03-make-init-audio',
+    description: 'MAKE with Et Tu Machina loaded as the init-audio source',
     run: async (page) => {
-      const seed = await pickShowcaseTrack(BACKEND);
-      if (!seed) throw new Error('no library entries to showcase');
-      await page.goto(NAV);
-      await waitForReady(page);
-      await openLibrary(page);
-      await librarySearch(page, seed.title);
-      await entryRow(page, seed.id).click();
-      await page.locator('button[aria-label="Download menu"]').first().click();
-      await page.waitForTimeout(300);
-      await snapScene(page, '04-library-download-submenu');
+      await boot(page);
+      await media(page, { loadHero: true, initAudio: true });
+      await clickTab(page, 'make');
+      await snapScene(page, '03-make-init-audio');
     },
   },
   {
-    name: '05-library-entry-right-click',
-    description: 'Right-clicked an entry to reveal the per-row context menu',
+    name: '04-make-chimera',
+    description: 'Chimera fusion stack with Et Tu Machina-derived clips staged',
     run: async (page) => {
-      const seed = await pickShowcaseTrack(BACKEND);
-      if (!seed) throw new Error('no library entries to showcase');
-      await page.goto(NAV);
-      await waitForReady(page);
-      await openLibrary(page);
-      await librarySearch(page, seed.title);
-      const row = entryRow(page, seed.id);
-      await row.click({ button: 'right' });
-      await page.waitForTimeout(300);
-      await snapScene(page, '05-library-entry-right-click');
-    },
-  },
-  {
-    name: '06-learn-tab-3d-graph',
-    description: 'LEARN tab — 3D lineage graph with showcase node highlighted',
-    run: async (page) => {
-      await page.goto(NAV);
-      await waitForReady(page);
-      await clickTab(page, 'learn');
-      // 3D graph needs a beat to settle the force layout.
-      await page.waitForTimeout(3000);
-      await snapScene(page, '06-learn-tab-3d-graph');
-    },
-  },
-  {
-    name: '07-settings-modal-with-shutdown',
-    description: 'SETTINGS modal open showing pinned Restart + Shutdown footer',
-    run: async (page) => {
-      await page.goto(NAV);
-      await waitForReady(page);
-      // Settings moved into the header hamburger (App menu -> Settings); there
-      // is no longer a standalone gear icon in the top bar.
-      await page.locator('button[aria-label="App menu"]').first().click({ timeout: 5000 });
-      await page.getByRole('menuitem', { name: 'Settings' }).click({ timeout: 5000 });
+      await boot(page);
+      await media(page, { chimeraBuild: true });
+      await clickTab(page, 'make');
+      // The CRISPR hero card defaults to the Chimera stack; make sure it is up.
+      await clickText(page, /^\s*chimera\s*$/i);
       await page.waitForTimeout(500);
-      await snapScene(page, '07-settings-modal-with-shutdown');
+      await snapScene(page, '04-make-chimera');
     },
   },
   {
-    name: '08-vj-tab-loading',
-    description: 'VJ tab — either loading state OR iframe ready (whichever the sidecar is in)',
+    name: '05-edit-timeline',
+    description: 'EDIT multitrack arrangement built from the Et Tu Machina stems',
     run: async (page) => {
-      await page.goto(NAV);
-      await waitForReady(page);
-      await clickTab(page, 'vj');
-      // Give the iframe a beat to either load or show the loading
-      // spinner — whichever state we're in is what's worth capturing.
+      await boot(page);
+      await media(page, { buildStems: true });
+      await clickTab(page, 'edit');
+      await page.waitForTimeout(800);
+      await snapScene(page, '05-edit-timeline');
+    },
+  },
+  {
+    name: '06-edit-automation',
+    description: 'EDIT automation lane in WRITE mode over an Et Tu Machina clip',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { buildStems: true, automationWrite: true });
+      await clickTab(page, 'edit');
+      await page.waitForTimeout(700);
+      await snapScene(page, '06-edit-automation');
+    },
+  },
+  {
+    name: '07-edit-fx-rack',
+    description: 'EDIT psychoacoustic insert-FX rack over Et Tu Machina',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { buildStems: true, fxRack: true });
+      await clickTab(page, 'edit');
+      await page.waitForTimeout(700);
+      await snapScene(page, '07-edit-fx-rack');
+    },
+  },
+  {
+    name: '08-mix-effect-rail',
+    description: 'MIX categorized effect rail with Et Tu Machina loaded',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { studioSource: true });
+      await clickTab(page, 'mix');
+      await page.waitForTimeout(700);
+      await snapScene(page, '08-mix-effect-rail');
+    },
+  },
+  {
+    name: '09-mix-vst-node',
+    description: 'A VST3 node hosted in the MIX chain over Et Tu Machina',
+    // Approximated: no VST3 is scanned at capture time, so media() stages a
+    // representative VstNode in the chain so the hosted-VST3 slot renders.
+    run: async (page) => {
+      await boot(page);
+      await media(page, { studioSource: true, mixChain: true, vstNode: true });
+      await clickTab(page, 'mix');
+      await page.waitForTimeout(700);
+      await snapScene(page, '09-mix-vst-node');
+    },
+  },
+  {
+    name: '10-mix-gan-node',
+    description: 'A .gan web plugin (Ares) loaded in the MIX chain',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { studioSource: true, ganAres: true });
+      await clickTab(page, 'mix');
+      // ensureAres packages the bundled plugin on first run; give the iframe a
+      // beat to mount its stage.
       await page.waitForTimeout(2500);
-      await snapScene(page, '08-vj-tab-loading');
+      await snapScene(page, '10-mix-gan-node');
     },
   },
   {
-    name: '09-chimera-cohort-multi-select',
-    description: 'Library with a multi-track cohort selected (chimera-ready)',
+    name: '11-perform-grid',
+    description: 'PERFORM (session) scene and clip grid',
+    // Chrome — the Perform grid needs an imported .als/.tasmo project to
+    // populate. Without one this captures the Perform workspace shell (the
+    // "No Project Loaded" surface with the import affordance).
     run: async (page) => {
-      const cohort = await pickCohort(BACKEND, 3);
-      if (cohort.length === 0) throw new Error('no library entries');
-      await page.goto(NAV);
-      await waitForReady(page);
+      await boot(page);
+      await clickTab(page, 'session');
+      await page.waitForTimeout(800);
+      await snapScene(page, '11-perform-grid');
+    },
+  },
+  {
+    name: '12-dj-console',
+    description: 'DJ two-deck console, Et Tu Machina on deck A and a second track on deck B',
+    run: async (page) => {
+      await boot(page);
+      await clickTab(page, 'dj');
+      await media(page, { djDecks: true });
+      await page.waitForTimeout(1200);
+      await snapScene(page, '12-dj-console');
+    },
+  },
+  {
+    name: '13-dj-stems',
+    description: 'DJ deck stem controls fed by Et Tu Machina stems',
+    run: async (page) => {
+      await boot(page);
+      await clickTab(page, 'dj');
+      await media(page, { djDecks: true, djStems: true });
+      await page.waitForTimeout(1400);
+      await snapScene(page, '13-dj-stems');
+    },
+  },
+  {
+    name: '14-vj-visualizer',
+    description: 'VJ engine surface (source + effect chain live in the iframe)',
+    // Visual — the VJ engine is an external iframe and needs no track.
+    run: async (page) => {
+      await boot(page);
+      await clickTab(page, 'vj');
+      await page.locator('iframe[title="VJ — Live visuals"]').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      await snapScene(page, '14-vj-visualizer');
+    },
+  },
+  {
+    name: '15-foundry-canvas',
+    description: 'Foundry plugin-UI builder canvas',
+    // Visual — Foundry is an external iframe (VST Foundry) and needs no track.
+    run: async (page) => {
+      await boot(page);
+      await clickTab(page, 'foundry');
+      await page.locator('iframe[title="VST Foundry"]').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      await snapScene(page, '15-foundry-canvas');
+    },
+  },
+  {
+    name: '16-underfit-dashboard',
+    description: 'Underfit trainer dashboard embedded in the tab',
+    // Visual — Underfit is an external iframe (localhost:8791). If the trainer
+    // is not running this captures the connect/install surface instead.
+    run: async (page) => {
+      await boot(page);
+      await clickTab(page, 'underfit');
+      await page.locator('iframe[title="Underfit"]').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      await snapScene(page, '16-underfit-dashboard');
+    },
+  },
+  {
+    name: '17-learn-graph',
+    description: 'LEARN genealogy graph',
+    // Visual — the lineage graph draws from the whole library; no track load.
+    run: async (page) => {
+      await boot(page);
+      await clickTab(page, 'learn');
+      await clickText(page, /genealogy/i);
+      // Wait for the genealogy SVG to render nodes rather than a fixed delay.
+      await page.waitForFunction(() => {
+        let n = 0;
+        for (const g of Array.from(document.querySelectorAll('svg g'))) { const r = g.getBoundingClientRect(); if (r.width > 0 && r.width < 360 && r.height > 0 && r.height < 280) n++; }
+        return n > 12;
+      }, { timeout: 15000 }).catch(() => undefined);
+      await page.waitForTimeout(1200);
+      await snapScene(page, '17-learn-graph');
+    },
+  },
+  {
+    name: '18-library-showcase-selected',
+    description: 'Library with Et Tu Machina selected',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await boot(page);
+      await media(page, { selectEntry: 'hero', libraryExpanded: true });
       await openLibrary(page);
-      // Select via Ctrl+click so multi-select kicks in.
-      for (let i = 0; i < cohort.length; i++) {
-        const row = entryRow(page, cohort[i].id);
-        // First scroll into view via the same custom event the graph
-        // right-click uses.
-        await page.evaluate((id: string) => {
-          window.dispatchEvent(
-            new CustomEvent('thedaw:reveal-library-entry', {
-              detail: { entryId: id },
-            }),
-          );
-        }, cohort[i].id);
-        await page.waitForTimeout(150);
-        await row.click({ modifiers: i === 0 ? [] : ['Control'] });
-      }
+      await librarySearch(page, seed.title);
+      await entryRow(page, seed.id).click({ timeout: 5000 }).catch(() => undefined);
       await page.waitForTimeout(400);
-      await snapScene(page, '09-chimera-cohort-multi-select');
+      await snapScene(page, '18-library-showcase-selected');
+    },
+  },
+  {
+    name: '19-library-right-click',
+    description: 'Library entry right-click actions menu',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await boot(page);
+      await media(page, { libraryExpanded: true });
+      await openLibrary(page);
+      await librarySearch(page, seed.title);
+      await entryRow(page, seed.id).click({ button: 'right', timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      await snapScene(page, '19-library-right-click');
+    },
+  },
+  {
+    name: '20-library-download-submenu',
+    description: 'Library download submenu (Songs / MIDI / JSON / Bundle / Lineage)',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await boot(page);
+      await media(page, { selectEntry: 'hero', libraryExpanded: true });
+      await openLibrary(page);
+      await librarySearch(page, seed.title);
+      await entryRow(page, seed.id).click({ timeout: 5000 }).catch(() => undefined);
+      await page.locator('button[aria-label="Download menu"]').first().click({ timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      await snapScene(page, '20-library-download-submenu');
+    },
+  },
+  {
+    name: '21-piano-roll',
+    description: 'Piano roll loaded from Et Tu Machina MIDI',
+    run: async (page) => {
+      await boot(page);
+      // The MIDI bottom tab always renders the shared PianoRoll surface.
+      await media(page, { pianoFill: true, bottomTab: 'midi', maximizePanel: true });
+      await page.waitForTimeout(700);
+      await snapScene(page, '21-piano-roll');
+    },
+  },
+  {
+    name: '22-step-sequencer',
+    description: 'Step sequencer with a filled pattern',
+    // Feature — the sequencer ships with default tracks and is driven via DOM.
+    run: async (page) => {
+      await boot(page);
+      await media(page, { bottomTab: 'step-seq', maximizePanel: true });
+      await clickTitle(page, /add track/i);
+      await page.waitForTimeout(200);
+      await clickTitle(page, /randomize all step/i);
+      await page.waitForTimeout(300);
+      await clickTitle(page, /^\s*play\s*$/i);
+      await page.waitForTimeout(500);
+      await snapScene(page, '22-step-sequencer');
+    },
+  },
+  {
+    name: '23-score-arrange',
+    description: 'SCORE arrange view rendering Et Tu Machina sheet music',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { selectEntry: 'notation', bottomTab: 'score', maximizePanel: true });
+      // ARRANGE is disabled until the entry's MIDI artifacts finish loading.
+      await page.waitForFunction(() => {
+        const b = Array.from(document.querySelectorAll('button')).find((x) => /^\s*arrange\s*$/i.test(x.textContent || ''));
+        return !!b && !(b as HTMLButtonElement).disabled;
+      }, { timeout: 14000 }).catch(() => undefined);
+      await clickText(page, /^\s*arrange\s*$/i);
+      // music21 piano-reduction then OpenSheetMusicDisplay render.
+      await page.waitForTimeout(9000);
+      await snapScene(page, '23-score-arrange');
+    },
+  },
+  {
+    name: '24-score-tabs',
+    description: 'SCORE tablature view rendering Et Tu Machina guitar tabs',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { selectEntry: 'notation', bottomTab: 'score', maximizePanel: true });
+      await page.waitForFunction(() => {
+        const b = Array.from(document.querySelectorAll('button')).find((x) => /make tabs/i.test(x.textContent || ''));
+        return !!b && !(b as HTMLButtonElement).disabled;
+      }, { timeout: 14000 }).catch(() => undefined);
+      await clickText(page, /make tabs/i);
+      // Fretboard arrange, alphaTab import, Bravura font, layout.
+      await page.waitForTimeout(12000);
+      await snapScene(page, '24-score-tabs');
+    },
+  },
+  {
+    name: '25-audio-to-midi',
+    description: 'Audio-to-MIDI conversion action on Et Tu Machina',
+    run: async (page) => {
+      const seed = await pickShowcaseTrack(BACKEND);
+      if (!seed) throw new Error('no library entries to showcase');
+      await boot(page);
+      await media(page, { libraryExpanded: true });
+      await openLibrary(page);
+      await librarySearch(page, seed.title);
+      await entryRow(page, seed.id).click({ button: 'right', timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      // Hover the Convert to MIDI item so the action reads as the focus.
+      await page.locator('[role="menuitem"]', { hasText: /convert to midi/i }).first().hover().catch(() => undefined);
+      await page.waitForTimeout(400);
+      await snapScene(page, '25-audio-to-midi');
+    },
+  },
+  {
+    name: '26-analyzer',
+    description: 'Analyzer scope populated from Et Tu Machina analysis',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { loadHero: true, play: true, bottomTab: 'spectral', maximizePanel: true });
+      await page.waitForTimeout(1200);
+      await snapScene(page, '26-analyzer');
+    },
+  },
+  {
+    name: '27-details-panel',
+    description: 'Library details panel for Et Tu Machina',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { selectEntry: 'hero', bottomTab: 'details', maximizePanel: true });
+      await page.waitForTimeout(700);
+      await snapScene(page, '27-details-panel');
+    },
+  },
+  {
+    name: '28-settings-modal',
+    description: 'Settings modal with module and model toggles',
+    // Chrome — global settings surface.
+    run: async (page) => {
+      await boot(page);
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('thedaw:open-settings')));
+      await page.waitForTimeout(700);
+      await snapScene(page, '28-settings-modal');
+    },
+  },
+  {
+    name: '29-app-menu',
+    description: 'App menu showing Project, Data, Devices, App, and Help sections',
+    // Chrome — header hamburger menu.
+    run: async (page) => {
+      await boot(page);
+      await openAppMenu(page);
+      await snapScene(page, '29-app-menu');
+    },
+  },
+  {
+    name: '30-home-screen',
+    description: 'HOME overlay with its cards and task row',
+    // Chrome — the shared capture context seeds home-startup-off for the other
+    // 39 scenes, so this scene opens the HOME overlay explicitly through the app
+    // menu (the same overlay the startup default would render).
+    run: async (page) => {
+      await boot(page);
+      await openAppMenu(page);
+      await menuItem(page, 'Home Screen');
+      await page.locator('[role="dialog"][aria-label="Home"]').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      await snapScene(page, '30-home-screen');
+    },
+  },
+  {
+    name: '31-feature-tour',
+    description: 'Onboarding Feature Tour step (the Chimera step)',
+    // Chrome — start the tour and jump to the Chimera step (index 2).
+    run: async (page) => {
+      await boot(page);
+      await page.evaluate(async () => {
+        const imp = (p: string) => import(p);
+        try {
+          const s = (await imp('/src/onboarding/onboardingStore.ts')).useOnboardingStore.getState();
+          s.start();
+          s.goTo(2);
+        } catch (e) { /* store path drift — the menu path below is the fallback */ }
+      });
+      // Fallback: if the store path drifted, start the tour from the menu.
+      await page.waitForTimeout(600);
+      const tourUp = await page.locator('[data-tour]').first().isVisible().catch(() => false);
+      if (!tourUp) { await openAppMenu(page).catch(() => undefined); await menuItem(page, 'Feature Tour').catch(() => undefined); }
+      await page.waitForTimeout(1000);
+      await snapScene(page, '31-feature-tour');
+    },
+  },
+  {
+    name: '32-backup-modal',
+    description: 'Backup / Migrate modal',
+    // Chrome — Data section of the app menu.
+    run: async (page) => {
+      await boot(page);
+      await openAppMenu(page);
+      await menuItem(page, 'Backup / Migrate');
+      await page.getByText('Backup / Migrate').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      await snapScene(page, '32-backup-modal');
+    },
+  },
+  {
+    name: '33-update-modal',
+    description: 'Check for Updates modal',
+    // Chrome — Data section of the app menu (modal header reads "Updates").
+    run: async (page) => {
+      await boot(page);
+      await openAppMenu(page);
+      await menuItem(page, 'Check for Updates');
+      await page.getByText('Updates', { exact: true }).first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      await snapScene(page, '33-update-modal');
+    },
+  },
+  {
+    name: '34-quest-deploy',
+    description: 'Deploy to Quest modal with adb device detection',
+    // Chrome — Devices section of the app menu.
+    run: async (page) => {
+      await boot(page);
+      await openAppMenu(page);
+      await menuItem(page, 'Deploy to Quest');
+      await page.getByText('Deploy to Quest').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+      // adb status fetch populates the Headset section.
+      await page.waitForTimeout(1200);
+      await snapScene(page, '34-quest-deploy');
+    },
+  },
+  {
+    name: '35-suno-cloud',
+    description: 'Suno cloud generation panel',
+    // Chrome — selecting the Suno model swaps the MAKE panel to SunoGenPanel.
+    run: async (page) => {
+      await boot(page);
+      await media(page, { model: 'suno' });
+      await clickTab(page, 'make');
+      await page.waitForTimeout(700);
+      await snapScene(page, '35-suno-cloud');
+    },
+  },
+  {
+    name: '36-magenta-live',
+    description: 'Magenta RealTime 2 generation surface',
+    // Chrome — selecting the Magenta model reveals its conditioning surface.
+    run: async (page) => {
+      await boot(page);
+      await media(page, { model: 'magenta-small', magentaCond: true });
+      await clickTab(page, 'make');
+      await page.waitForTimeout(700);
+      await snapScene(page, '36-magenta-live');
+    },
+  },
+  {
+    name: '37-assistant',
+    description: 'In-app assistant panel answering from the RAG index',
+    // Chrome — the global assistant orb.
+    run: async (page) => {
+      await boot(page);
+      await page.locator('[aria-label="Toggle orb panel"]').first().click({ timeout: 5000 }).catch(() => undefined);
+      const input = page.locator('input[placeholder="Ask anything..."]').first();
+      await input.waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+      await input.fill('How do I separate stems and send them to the editor?').catch(() => undefined);
+      await page.waitForTimeout(500);
+      await snapScene(page, '37-assistant');
+    },
+  },
+  {
+    name: '38-media-bucket',
+    description: 'Media Bucket with the Et Tu Machina file staged',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { fillBucket: true, bottomTab: 'bucket', maximizePanel: true });
+      await page.waitForTimeout(600);
+      await snapScene(page, '38-media-bucket');
+    },
+  },
+  {
+    name: '39-url-import',
+    description: 'URL import panel',
+    // Chrome — the YouTube/SoundCloud import row lives in the Media bucket tab.
+    run: async (page) => {
+      await boot(page);
+      await media(page, { bottomTab: 'bucket', maximizePanel: true });
+      await page.locator('input[name="media-bucket-import-url"]').first().fill('https://www.youtube.com/watch?v=2Vv-BfVoq4g').catch(() => undefined);
+      await page.waitForTimeout(500);
+      await snapScene(page, '39-url-import');
+    },
+  },
+  {
+    name: '40-controller-vision',
+    description: 'Controller Vision layout inference surface',
+    // Chrome — the SLIDE controller view hosts the Set up device flow, which
+    // opens the Controller Vision detect/identify modal.
+    run: async (page) => {
+      await boot(page);
+      await media(page, { bottomTab: 'slide', maximizePanel: true, slideView: 'controller' });
+      await page.waitForTimeout(600);
+      await clickText(page, /set up device/i);
+      await page.waitForTimeout(500);
+      await clickText(page, /identify by photo/i);
+      await page.waitForTimeout(900);
+      await snapScene(page, '40-controller-vision');
     },
   },
 ];
+
+async function loadPianoRoll(): Promise<HeroCtx['piano']> {
+  try {
+    const raw = await fs.readFile(path.join(REPO_ROOT, 'showcase', '_etu_pianoroll.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { totalSteps?: number; notes?: Array<Record<string, number | string>> };
+    return { totalSteps: parsed.totalSteps ?? 64, notes: parsed.notes ?? [] };
+  } catch {
+    return { totalSteps: 64, notes: [] };
+  }
+}
 
 async function main(): Promise<void> {
   validateScreenshotSpecs();
@@ -335,9 +1046,8 @@ async function main(): Promise<void> {
     log(`scenes:   all (${SCENES.length})`);
   }
 
-  // Wait for the backend health endpoint before launching the browser
-  // — saves a wasted run if theDAW.bat is still spinning up.
-  log('waiting for backend health…');
+  // Wait for the backend health endpoint before launching the browser.
+  log('waiting for backend health...');
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
@@ -349,14 +1059,35 @@ async function main(): Promise<void> {
     await new Promise((res) => setTimeout(res, 1000));
   }
 
-  // Headless by default; flip via `HEADED=1` env var to watch the
-  // browser drive through the scenes live (useful for debugging a
-  // flaky scene or just visually verifying the capture sequence).
+  // Resolve the showcase context ONCE, by title, and reuse the resolved id to
+  // drive every media view. Et Tu Machina is one entry that carries the song,
+  // the stems, the MIDI, and the score, so this single resolution feeds them
+  // all. Deck B is a second cohort track so the DJ console shows two songs.
+  const seed = await pickShowcaseTrack(BACKEND);
+  if (!seed) throw new Error('no library entries — cannot resolve the showcase track');
+  const notation = (await pickNotationTrack(BACKEND)) ?? seed;
+  const cohort = await pickCohort(BACKEND, 2);
+  const deckB = cohort.find((e) => e.id !== seed.id) ?? seed;
+  const stemNames = ['drums', 'bass', 'vocals', 'other', 'guitar', 'piano'];
+  heroCtx = {
+    heroUrl: `/api/library/audio/${seed.id}`,
+    heroLabel: seed.title,
+    heroId: seed.id,
+    deckBUrl: `/api/library/audio/${deckB.id}`,
+    deckBLabel: deckB.title,
+    stems: stemNames.map((name) => ({ name, url: `/api/library/stems/${seed.id}__${name}/audio` })),
+    notationId: notation.id,
+    piano: await loadPianoRoll(),
+  };
+  log(`showcase: ${seed.title} (${seed.id.slice(0, 8)}) · notation ${notation.id.slice(0, 8)} · deckB ${deckB.title}`);
+
+  // Headless by default; flip via HEADED=1 to watch the browser drive live.
   const headed = process.env.HEADED === '1' || process.env.HEADED === 'true';
   if (headed) log('headed mode — browser window will be visible');
   const browser = await chromium.launch({
     headless: !headed,
     slowMo: headed ? 250 : 0,
+    args: ['--autoplay-policy=no-user-gesture-required'],
   });
   const context = await browser.newContext({ viewport: VIEWPORT });
   // Seed persisted UI state so first-run overlays never intercept capture
@@ -365,8 +1096,9 @@ async function main(): Promise<void> {
   // default; both are full-screen dialogs that would otherwise sit over every
   // scene. This init script runs before any app code, so the stores rehydrate
   // as already-seen and startup-off. It is purely a capture concern — the
-  // shipped app keeps its normal first-run behavior. The shape matches zustand
-  // persist (state + version 0, the store default).
+  // shipped app keeps its normal first-run behavior. The 30-home-screen scene
+  // opens the overlay explicitly (a single shared context cannot vary this
+  // pre-navigation seed per scene). The shape matches zustand persist.
   await context.addInitScript(() => {
     try {
       localStorage.setItem(
@@ -382,8 +1114,6 @@ async function main(): Promise<void> {
     }
   });
   const page = await context.newPage();
-  // Surface page console errors so we know if a scene is screenshooting
-  // a broken state.
   page.on('pageerror', (err) => log(`PAGE ERROR: ${err.message}`));
   page.on('console', (m) => {
     if (m.type() === 'error') log(`console.error: ${m.text()}`);
@@ -393,14 +1123,13 @@ async function main(): Promise<void> {
   let okCount = 0;
   let failCount = 0;
   for (const scene of toRun) {
-    log(`▶ ${scene.name} — ${scene.description}`);
+    log(`> ${scene.name} — ${scene.description}`);
     try {
       await scene.run(page);
       okCount += 1;
     } catch (e) {
       failCount += 1;
-      log(`✗ ${scene.name} FAILED: ${e instanceof Error ? e.message : String(e)}`);
-      // Still snap whatever state we're in so the user can debug.
+      log(`x ${scene.name} FAILED: ${e instanceof Error ? e.message : String(e)}`);
       try {
         await snap(page, `${scene.name}-FAILED`);
       } catch {
