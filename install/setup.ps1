@@ -42,7 +42,7 @@ function Have($name){ return [bool](Get-Command $name -ErrorAction SilentlyConti
 
 # Re-read PATH from the registry so freshly installed tools are visible to
 # checks later in THIS process (the parent cmd still needs a re-run).
-function Refresh-Path(){
+function Update-Path(){
   $m = [Environment]::GetEnvironmentVariable('Path','Machine')
   $u = [Environment]::GetEnvironmentVariable('Path','User')
   $parts = @()
@@ -57,8 +57,8 @@ function Refresh-Path(){
 # until you set it up. Creating the env is `uv sync --inexact` (the exact step
 # from underfit/install.sh); the trainer backend + model packs are a separate,
 # heavier step the tab installs on demand.
-function Setup-UnderfitVenv(){
-  Refresh-Path
+function Initialize-UnderfitVenv(){
+  Update-Path
   $root  = Split-Path -Parent $PSScriptRoot
   $ufDir = Join-Path $root 'underfit'
   if(-not (Test-Path (Join-Path $ufDir 'pyproject.toml'))){ return }   # not vendored
@@ -108,7 +108,7 @@ function Install-Winget($id, $label){
   return $false
 }
 
-function Bootstrap-Winget(){
+function Install-AppInstaller(){
   # Best-effort install of the Windows App Installer (which provides winget)
   # when it is absent, so Node / FFmpeg / Git can be fetched. Downloads the
   # VCLibs dependency and the App Installer bundle, then registers them.
@@ -122,7 +122,7 @@ function Bootstrap-Winget(){
     $bundle = Join-Path $tmp 'AppInstaller.msixbundle'
     Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $bundle -UseBasicParsing
     Add-AppxPackage -Path $bundle
-    Refresh-Path
+    Update-Path
     return [bool](Get-Command winget -ErrorAction SilentlyContinue)
   } catch {
     WARN ('Could not install winget automatically: ' + $_.Exception.Message)
@@ -132,7 +132,7 @@ function Bootstrap-Winget(){
 
 # Dedicated mode: theDAW.bat calls `setup.ps1 -UnderfitVenv` after the main venv
 # bootstrap to create the optional Underfit trainer env if it's missing.
-if($UnderfitVenv){ Setup-UnderfitVenv; exit 0 }
+if($UnderfitVenv){ Initialize-UnderfitVenv; exit 0 }
 
 Clear-Host
 Write-Host ""
@@ -198,7 +198,7 @@ else { WARN "winget not found - uv still installs via its own installer; Node/FF
 if($todo.Count -eq 0){
   Head "Everything theDAW needs is already installed"
   OK "No downloads needed."
-  Setup-UnderfitVenv
+  Initialize-UnderfitVenv
   exit 0
 }
 
@@ -229,7 +229,7 @@ $installedAny = $false
 # Node / FFmpeg / Git come through winget. If winget is missing, install it first.
 $needsWinget = ($todo | Where-Object { $_.Name -ne 'uv' } | Measure-Object).Count -gt 0
 if($needsWinget -and -not $wingetOk){
-  if(Bootstrap-Winget){ $wingetOk = $true; OK 'winget installed.' }
+  if(Install-AppInstaller){ $wingetOk = $true; OK 'winget installed.' }
   else { WARN 'winget could not be installed; Node/FFmpeg/Git will need a manual download.' }
 }
 
@@ -240,7 +240,7 @@ foreach($t in $todo){
   else { WARN "$($t.Label) was not installed." }
 }
 
-Refresh-Path
+Update-Path
 
 # =========================================================================== #
 #  DONE
