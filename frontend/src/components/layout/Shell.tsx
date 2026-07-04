@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library, FolderInput, Package, LayoutGrid } from 'lucide-react';
+import { BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 
@@ -19,6 +19,12 @@ import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useDawImportStore } from '../../state/dawImportStore';
 import { useProjectStore } from '../../state/projectStore';
 import { useEditLayoutStore } from '../../state/editLayoutStore';
+import { useEditorStore } from '../../state/editorStore';
+import { HamburgerMenu } from '../menu/HamburgerMenu';
+import { HomeScreen, useHomeScreenStore } from '../home/HomeScreen';
+import { OnboardingTour } from '../../onboarding/OnboardingTour';
+import { useOnboardingStore } from '../../onboarding/onboardingStore';
+import FeatureGateNotices from '../../notices/FeatureGateNotices';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -39,6 +45,22 @@ export const Shell: React.FC = () => {
   const openProject = useProjectStore((state) => state.open);
   const editLayoutActive = useEditLayoutStore((state) => state.active);
   const toggleEditLayout = useEditLayoutStore((state) => state.toggle);
+  const loadProject = useEditorStore((state) => state.loadProject);
+  const homeOpen = useHomeScreenStore((state) => state.open);
+  const setHomeOpen = useHomeScreenStore((state) => state.setOpen);
+  const homeShowAtStartup = useHomeScreenStore((state) => state.showAtStartup);
+  const setHomeShowAtStartup = useHomeScreenStore((state) => state.setShowAtStartup);
+  const startTour = useOnboardingStore((state) => state.start);
+
+  // "New Project" clears the current arrangement back to a single empty track
+  // (editorStore.loadProject falls back to a clean track for empty input and
+  // resets undo history). Guarded so unsaved work is not lost silently.
+  const handleNewProject = React.useCallback(() => {
+    const ok = window.confirm(
+      'Start a new project? This clears the current arrangement. Save or back up first if you want to keep it.',
+    );
+    if (ok) loadProject({ tracks: [], clips: [] });
+  }, [loadProject]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {
@@ -168,28 +190,24 @@ export const Shell: React.FC = () => {
         />
 
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Icon-only — the hover tooltip (title) names each one. The library
-              toggle is the right-edge pull handle (below), not a cluster icon.
-              All three carry the colored accent glow. */}
-          <TopBarButton
-            onClick={toggleEditLayout}
-            icon={<LayoutGrid className="w-3.5 h-3.5" />}
-            title="Edit Layout — drag controls and panels to move them, drag borders to resize"
-            accent="purple"
-            active={editLayoutActive}
-          />
-          <TopBarButton
-            onClick={() => openDawImport()}
-            icon={<FolderInput className="w-3.5 h-3.5" />}
-            title="Import a DAW project (.als / .RPP / .flp / …)"
-            accent="sky"
-          />
-          <TopBarButton
-            onClick={() => openProject('save')}
-            icon={<Package className="w-3.5 h-3.5" />}
-            title="Save or open a .tasmo project"
-            accent="sky"
-          />
+          {/* App menu — project ops, backup/migrate, updates, Settings, Edit
+              Layout, DAW import, and .tasmo save/open all live here. It is the
+              sole entry point for Settings (the header gear was retired). */}
+          <span data-tour="app-menu" className="inline-flex">
+            <HamburgerMenu
+              onNewProject={handleNewProject}
+              onOpenProject={() => openProject('open')}
+              onSaveProject={() => openProject('save')}
+              onImportDawProject={() => openDawImport()}
+              onToggleEditLayout={toggleEditLayout}
+              editLayoutActive={editLayoutActive}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenDocs={() => setDocsOpen(true)}
+              onStartTour={startTour}
+              onOpenHome={() => setHomeOpen(true)}
+            />
+          </span>
+          {/* Docs and Mobile stay as quick-access header icons. */}
           <TopBarButton
             onClick={() => setDocsOpen(true)}
             icon={<BookOpen className="w-3.5 h-3.5" />}
@@ -201,12 +219,6 @@ export const Shell: React.FC = () => {
             icon={<Smartphone className="w-3.5 h-3.5" />}
             title="Open mobile access QR/link"
             accent="emerald"
-          />
-          <TopBarButton
-            onClick={() => setSettingsOpen(true)}
-            icon={<Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" />}
-            title="Settings"
-            accent="rose"
           />
         </div>
       </header>
@@ -222,6 +234,7 @@ export const Shell: React.FC = () => {
       {/* Library rail — compact side panel or expanded full-width catalogue. */}
       {isRightPanelOpen && (
         <aside
+          data-tour="library"
           className={`h-full min-h-0 flex flex-col bg-[#0a080f] border-l border-purple-500/20 shadow-[inset_1px_0_0_rgba(168,85,247,0.08)] z-20 relative ${isLibraryExpanded ? 'flex-1' : 'shrink-0'}`}
           style={isLibraryExpanded ? undefined : {
             width: rightPanelWidth,
@@ -357,6 +370,24 @@ export const Shell: React.FC = () => {
           there are no downloads. Mounted once at the app root so it floats over
           every view. */}
       <DownloadDock />
+      {/* Feature-gate notices (bottom-right stack) — offsets itself above the
+          DownloadDock when downloads are active. Renders null when empty. */}
+      <FeatureGateNotices />
+      {/* Startup HOME landing (card grid per workspace). Auto-opened by App on
+          returning launches; also reachable from the app menu. */}
+      {homeOpen && (
+        <HomeScreen
+          showAtStartup={homeShowAtStartup}
+          onToggleShowAtStartup={setHomeShowAtStartup}
+          onNavigate={(tab) => setCenterTab(tab)}
+          onOpenProject={() => openProject('open')}
+          onStartTour={startTour}
+          onClose={() => setHomeOpen(false)}
+        />
+      )}
+      {/* First-run feature tour (spotlight overlay). Reads its own store; the
+          shell only supplies the tab-switch hook so steps can jump workspaces. */}
+      <OnboardingTour onSwitchTab={setCenterTab} />
     </div>
   );
 };

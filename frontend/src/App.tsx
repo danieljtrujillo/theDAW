@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
+import { useEffect, useRef, useState, useCallback, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shell } from './components/layout/Shell';
+import { useOnboardingStore, shouldAutoStart } from './onboarding/onboardingStore';
+import { useHomeScreenStore } from './components/home/HomeScreen';
 import { PlayerFooter } from './components/audio/PlayerFooter';
 import { LoadingScreen } from './components/layout/LoadingScreen';
 import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
@@ -350,6 +352,35 @@ export default function App() {
   // instant the backend port is bound, never on a cosmetic timer. `skipped` is
   // the manual "continue without backend" escape (offered after a real wait).
   const showLoading = (!isBackendReady || !cinematicDone) && !skipped;
+
+  // Once the boot intro lifts, decide the landing experience exactly once:
+  // a genuine first run starts the feature tour (which spotlights the real UI,
+  // so the HOME overlay stays down until it ends); returning users get the
+  // HOME screen straight away when they've left "show at startup" on.
+  const bootDone = !showLoading;
+  const landingHandledRef = useRef(false);
+  const firstRunTourRef = useRef(false);
+  const tourActive = useOnboardingStore((s) => s.active);
+  useEffect(() => {
+    if (!bootDone || landingHandledRef.current) return;
+    landingHandledRef.current = true;
+    if (shouldAutoStart()) {
+      firstRunTourRef.current = true;
+      useOnboardingStore.getState().start();
+    } else if (useHomeScreenStore.getState().showAtStartup) {
+      useHomeScreenStore.getState().setOpen(true);
+    }
+  }, [bootDone]);
+  // After the first-run tour is finished or skipped, surface HOME as the
+  // landing (only for that first-run chain, never for a manually replayed tour).
+  useEffect(() => {
+    if (firstRunTourRef.current && !tourActive) {
+      firstRunTourRef.current = false;
+      if (useHomeScreenStore.getState().showAtStartup) {
+        useHomeScreenStore.getState().setOpen(true);
+      }
+    }
+  }, [tourActive]);
 
   return (
     <>

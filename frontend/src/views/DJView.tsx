@@ -36,6 +36,7 @@ import { useDjSampler } from '../state/djSamplerStore';
 import { useDjSideList } from '../state/djSideListStore';
 import { useFeatureToggleStore } from '../state/featureToggleStore';
 import { ControlSurface } from '../components/surface/ControlSurface';
+import { InfiNightCredit } from '../components/ui/InfiNightCredit';
 import { DJ_TARGETS } from '../state/bindableTargets';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
@@ -1031,6 +1032,9 @@ export const DJView: React.FC = () => {
           }}
         />
       )}
+      <div className="absolute bottom-1.5 right-2 z-10 rounded bg-black/50 backdrop-blur-sm px-2 py-0.5 pointer-events-auto">
+        <InfiNightCredit feature="DJ" />
+      </div>
     </div>
   );
 };

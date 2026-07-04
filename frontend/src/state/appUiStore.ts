@@ -10,11 +10,19 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
     : null;
 }
 
-/** The center-bar tabs in user-locked order MAKE / EDIT / MIX / DJ / VJ /
- *  TRAIN / LEARN. All workspaces live here; the legacy left-side tabs
- *  (CREATE/PROCESS/TRAIN) are subsumed by these. */
-export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'foundry', 'train', 'underfit', 'learn'] as const;
+/** The center-bar tabs in user-locked order MAKE / EDIT / PERFORM / MIX / DJ /
+ *  VJ / FOUNDRY / UNDERFIT / LEARN. All workspaces live here; the legacy
+ *  left-side tabs (CREATE/PROCESS) are subsumed by these. LoRA training is the
+ *  UNDERFIT tab (the standalone TRAIN workspace was retired in its favor). */
+export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'foundry', 'underfit', 'learn'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
+
+/** Tabs that were removed or renamed but may still appear in persisted state or
+ *  in legacy navigate() calls. Each resolves to its current replacement. */
+const CENTER_TAB_ALIASES: Record<string, CenterTab> = {
+  // The standalone Train workspace was replaced by the Underfit trainer tab.
+  train: 'underfit',
+};
 
 /** Translate legacy navigation targets (used by orb-kit, library row
  *  clicks, assistant 'navigate' actions, etc.) into the new center-bar
@@ -24,13 +32,13 @@ const LEGACY_VIEW_TO_CENTER_TAB: Record<string, CenterTab> = {
   advanced: 'make',
   edit: 'mix',
   session: 'session',
-  train: 'train',
+  train: 'underfit',
 };
 
 export function normalizeCenterTab(value: unknown): CenterTab | null {
-  return typeof value === 'string' && (CENTER_TABS as readonly string[]).includes(value)
-    ? (value as CenterTab)
-    : null;
+  if (typeof value !== 'string') return null;
+  if ((CENTER_TABS as readonly string[]).includes(value)) return value as CenterTab;
+  return CENTER_TAB_ALIASES[value] ?? null;
 }
 
 interface AppUiState {
@@ -105,6 +113,14 @@ export const useAppUiStore = create<AppUiState>()(
     }),
     {
       name: 'thedaw-app-ui-v2',
+      // Bumped when a persisted centerTab value could reference a removed tab
+      // (e.g. the retired 'train' workspace). migrate() coerces it to a valid
+      // tab so returning users never rehydrate onto a tab that no longer exists.
+      version: 1,
+      migrate: (persisted, _version) => {
+        const p = (persisted ?? {}) as { centerTab?: unknown; rightPanelWidth?: unknown };
+        return { ...p, centerTab: normalizeCenterTab(p.centerTab) ?? 'make' };
+      },
       // Panel open/expand state is intentionally NOT persisted: every app open
       // starts with the shell chrome collapsed (left panel, right library rail).
       // Only the active center tab and the rail width are remembered.

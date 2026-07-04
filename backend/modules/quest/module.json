@@ -1,0 +1,10 @@
+{
+  "name": "quest",
+  "label": "Quest Deploy",
+  "enabled": true,
+  "icon": "Headset",
+  "sidebar": false,
+  "api_prefix": "/api/quest",
+  "backend": true,
+  "description": "Deploy a prebuilt APK to a connected Meta Quest over adb: detect the headset, install -r the package, and optionally launch it. Deploy-only (no Unity build); resolves adb from the SDK / Unity / Meta locations or a configured path."
+}

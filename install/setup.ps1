@@ -69,6 +69,11 @@ function Setup-UnderfitVenv(){
   Info "This runs 'uv sync' in underfit\ (~a few minutes). Model packs download later, on demand."
   if(-not (Ask 'Create the Underfit trainer env now?')){ WARN 'Skipped - the Underfit tab stays unavailable until you set it up.'; return }
   Info 'Creating underfit\.venv via: uv sync --inexact'
+  # Keep uv's cache on the repo's drive so wheels hardlink into underfit\.venv
+  # instead of falling back to slow full copies across volumes (uv can't
+  # hardlink across drives; its default cache is on the system drive). Honors an
+  # inherited UV_CACHE_DIR (e.g. from theDAW.bat) and only sets a default here.
+  if(-not $env:UV_CACHE_DIR){ $env:UV_CACHE_DIR = Join-Path $root '.uv-cache' }
   Push-Location $ufDir
   try {
     & uv sync --inexact

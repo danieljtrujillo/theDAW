@@ -5,6 +5,17 @@ title theDAW
 :: below resolve .venv / frontend\node_modules relative to the project.
 cd /d "%~dp0"
 
+:: -- uv cache on THIS repo's drive --------------------------------------
+:: uv installs wheels into .venv by hardlinking from its cache, but a hardlink
+:: cannot cross volumes. uv's default cache lives on the system drive, which is
+:: often a different drive than this repo (e.g. app on D:, cache on C:) - so uv
+:: prints "Failed to hardlink files; falling back to full copy" and every wheel
+:: is copied in full (slow, extra disk). Pointing the cache at a same-drive
+:: folder lets the hardlink succeed: fast installs, no fallback. Inherited by
+:: the setup.ps1 child that builds underfit\.venv, so it fixes that sync too.
+:: An explicit user-set UV_CACHE_DIR is respected.
+if not defined UV_CACHE_DIR set "UV_CACHE_DIR=%~dp0.uv-cache"
+
 :: -- Preflight: required tools ------------------------------------------
 :: uv  = Python env manager (creates .venv, installs torch/CUDA + flash-attn)
 :: node/npm = frontend dev server + the VJ sidecar
