@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  Brain,
   Sparkles,
   Scissors,
   Zap,
@@ -36,7 +35,7 @@ const TABS: Array<{
    *  so each workspace gets a recognizable color at a glance. */
   accent: { border: string; bg: string; text: string; iconText: string };
 }> = [
-  // Order locked by user: MAKE, EDIT, SESSION, MIX, DJ, VJ, TRAIN, LEARN.
+  // Order locked by user: MAKE, EDIT, MIX, PERFORM, DJ, VJ, FOUNDRY, UNDERFIT, LEARN.
   {
     id: 'make',
     label: 'Make',
@@ -62,18 +61,6 @@ const TABS: Array<{
     },
   },
   {
-    id: 'session',
-    label: 'Perform',
-    desc: 'Import a project and perform its scene/clip grid live',
-    icon: Rows3,
-    accent: {
-      border: 'border-sky-500/50',
-      bg: 'bg-sky-500/15',
-      text: 'text-sky-100',
-      iconText: 'text-sky-300',
-    },
-  },
-  {
     id: 'mix',
     label: 'Mix',
     desc: 'Process and master audio with the effect and module rack',
@@ -83,6 +70,18 @@ const TABS: Array<{
       bg: 'bg-orange-500/15',
       text: 'text-orange-100',
       iconText: 'text-orange-300',
+    },
+  },
+  {
+    id: 'session',
+    label: 'Perform',
+    desc: 'Import a project and perform its scene/clip grid live',
+    icon: Rows3,
+    accent: {
+      border: 'border-sky-500/50',
+      bg: 'bg-sky-500/15',
+      text: 'text-sky-100',
+      iconText: 'text-sky-300',
     },
   },
   {
@@ -119,18 +118,6 @@ const TABS: Array<{
       bg: 'bg-amber-500/15',
       text: 'text-amber-100',
       iconText: 'text-amber-300',
-    },
-  },
-  {
-    id: 'train',
-    label: 'Train',
-    desc: 'Train and manage LoRA models on your own audio',
-    icon: Brain,
-    accent: {
-      border: 'border-cyan-500/50',
-      bg: 'bg-cyan-500/15',
-      text: 'text-cyan-100',
-      iconText: 'text-cyan-300',
     },
   },
   {
@@ -181,6 +168,7 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
             <button
               key={t.id}
               type="button"
+              data-tour={`tab-${t.id}`}
               onClick={() => onTabChange(t.id)}
               className={[
                 'flex-1 max-w-44 flex items-center justify-center gap-2 px-3 py-1.5',

@@ -27,6 +27,7 @@
 # Local caches and build state.
 .pytest_cache
 .ruff_cache
+.uv-cache
 .vite
 .tmp-shots
 .venv

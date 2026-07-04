@@ -57,6 +57,23 @@ def pick_save_file(
     return _pick_save_tk(title, initial_dir, initial_name, default_ext, filter_spec)
 
 
+def pick_open_file(
+    title: str = "Open file",
+    initial_dir: Optional[str] = None,
+    filter_spec: Optional[str] = None,
+) -> Optional[str]:
+    """Open a native *Open file* dialog and return the chosen absolute path.
+
+    ``None`` means the user cancelled or no picker is available. ``filter_spec``
+    is a Windows-style filter (``"Android package (*.apk)|*.apk|All files
+    (*.*)|*.*"``); the tkinter fallback parses it into filetypes.
+    """
+    plat: str = sys.platform
+    if plat == "win32":
+        return _pick_open_windows(title, initial_dir, filter_spec)
+    return _pick_open_tk(title, initial_dir, filter_spec)
+
+
 def _ps_quote(value: str) -> str:
     """Single-quote a string for safe interpolation into PowerShell."""
     return "'" + value.replace("'", "''") + "'"
@@ -209,4 +226,71 @@ def _pick_folder_tk(title: str, initial: Optional[str]) -> Optional[str]:
         return path or None
     except Exception as e:  # noqa: BLE001 — no display / not main thread
         log.warning("folder_dialog: tkinter picker failed: %s", e)
+        return None
+
+
+def _pick_open_windows(
+    title: str, initial_dir: Optional[str], filter_spec: Optional[str]
+) -> Optional[str]:
+    script = [
+        "Add-Type -AssemblyName System.Windows.Forms;",
+        "$f = New-Object System.Windows.Forms.OpenFileDialog;",
+        f"$f.Title = {_ps_quote(title)};",
+        "$f.Multiselect = $false;",
+        "$f.CheckFileExists = $true;",
+    ]
+    if initial_dir:
+        script.append(f"$f.InitialDirectory = {_ps_quote(initial_dir)};")
+    if filter_spec:
+        script.append(f"$f.Filter = {_ps_quote(filter_spec)};")
+    script.append(
+        "$owner = New-Object System.Windows.Forms.Form -Property @{TopMost=$true};"
+        "$r = $f.ShowDialog($owner);"
+        "if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($f.FileName) }"
+        "$owner.Dispose();"
+    )
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-STA",
+        "-Command",
+        " ".join(script),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=_DIALOG_TIMEOUT_SEC
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("folder_dialog: PowerShell open picker failed: %s", e)
+        return None
+    path = (proc.stdout or "").strip()
+    return path or None
+
+
+def _pick_open_tk(
+    title: str, initial_dir: Optional[str], filter_spec: Optional[str]
+) -> Optional[str]:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as e:  # noqa: BLE001 — headless / no Tk available
+        log.warning("folder_dialog: tkinter unavailable: %s", e)
+        return None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:  # noqa: BLE001 — topmost is cosmetic
+            pass
+        path = filedialog.askopenfilename(
+            title=title,
+            initialdir=initial_dir or None,
+            filetypes=_parse_filetypes(filter_spec) or None,
+        )
+        root.destroy()
+        return path or None
+    except Exception as e:  # noqa: BLE001 — no display / not main thread
+        log.warning("folder_dialog: tkinter open picker failed: %s", e)
         return None

@@ -1,0 +1,10 @@
+{
+  "name": "hfauth",
+  "label": "Hugging Face Auth",
+  "enabled": true,
+  "icon": "Key",
+  "sidebar": false,
+  "api_prefix": "/api/hfauth",
+  "backend": true,
+  "description": "Hugging Face token management: detect/validate an existing token (env or stored), log in with a new token via whoami, and log out by removing the stored token."
+}

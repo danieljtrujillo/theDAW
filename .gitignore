@@ -6,6 +6,10 @@ codegraph/
 data/api_key_pools.json
 # Underfit upstream-update check cache (written by backend/modules/underfit/updater.py)
 data/underfit_update.json
+# App update check cache (written by backend/modules/updates/router.py)
+data/updates_check.json
+# Quest deploy config: adb path override, last APK, default package (user-local)
+data/quest.json
 data/generations/
 data/settings.json
 data/recent_projects.json
@@ -57,7 +61,11 @@ eggs/
 /parts/
 /sdist/
 /var/
-/wheels/
+# Ignore build-artifact wheels, but TRACK the vendored prebuilt aubio wheel:
+# aubio is source-only on PyPI, so this bundled Windows wheel (pinned in
+# pyproject [tool.uv.sources]) is what lets a compiler-less Windows box install.
+/wheels/*
+!/wheels/aubio-0.4.9-cp310-cp310-win_amd64.whl
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -163,6 +171,10 @@ celerybeat.pid
 env/
 venv/
 ENV/
+
+# uv package cache kept on the repo's drive so wheels hardlink into .venv
+# (set by theDAW.bat / install/setup.ps1). Runtime-only, can be multi-GB.
+.uv-cache/
 env.bak/
 venv.bak/
 

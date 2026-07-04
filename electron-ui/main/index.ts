@@ -6,6 +6,7 @@ import {
   protocol,
   net,
   session,
+  shell,
 } from 'electron'
 import { ChildProcess, spawn, execFile } from 'child_process'
 import * as fs from 'fs'
@@ -105,6 +106,16 @@ function buildBackendEnv(): NodeJS.ProcessEnv {
     const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH'
     env[key] = `${toolsDir}${path.delimiter}${env[key] ?? ''}`
   }
+  // Keep uv's package cache on the SAME volume as the venv (getPythonDir()) so
+  // wheels hardlink into .venv on first-run sync instead of falling back to
+  // slow full copies. uv cannot hardlink across volumes, and its default cache
+  // lives on the system drive — which may differ from the drive the app is
+  // installed on (or the repo lives on in dev). Same-volume cache = fast setup,
+  // no "failed to hardlink" fallback, less disk. This also reaches any uv the
+  // backend itself invokes (e.g. the on-demand Underfit trainer env). An
+  // explicit UV_CACHE_DIR (e.g. from theDAW.bat's dev/web launch) is respected.
+  const cacheKey = Object.keys(env).find((k) => k.toLowerCase() === 'uv_cache_dir')
+  if (!cacheKey) env.UV_CACHE_DIR = path.join(getPythonDir(), '.uv-cache')
   return env
 }
 
@@ -438,6 +449,32 @@ function createWindow(): void {
       // autoplay without a user gesture (Chromium blocks this by default).
       autoplayPolicy: 'no-user-gesture-required',
     },
+  })
+
+  // Route outbound http(s) links (update/release pages, the Hugging Face
+  // sign-in) to the user's default browser, where they may already be signed
+  // in. Same-origin http(s) — the dev server's own navigations — stays in-app.
+  const isExternal = (url: string): boolean => {
+    if (!/^https?:\/\//i.test(url)) return false
+    try {
+      const here = mainWindow?.webContents.getURL() || 'app://./'
+      return new URL(url).origin !== new URL(here).origin
+    } catch {
+      return false
+    }
+  }
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternal(url)) {
+      void shell.openExternal(url)
+      return { action: 'deny' }
+    }
+    return { action: 'allow' }
+  })
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isExternal(url)) {
+      event.preventDefault()
+      void shell.openExternal(url)
+    }
   })
 
   // Load the React renderer IMMEDIATELY (no separate spinner page). The renderer

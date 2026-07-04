@@ -10,6 +10,7 @@ import { SESSION_IMPORT_FILTER } from '../lib/fileFilters';
 import { PathInput } from '../components/ui/PathInput';
 import { DawSessionGrid } from '../components/session/DawSessionGrid';
 import { PerformRoutingPanel } from '../components/session/PerformRoutingPanel';
+import { InfiNightCredit } from '../components/ui/InfiNightCredit';
 import { importDawProjectToEditor } from '../lib/dawProjectToEditor';
 
 export const SessionView: React.FC = () => {
@@ -280,6 +281,10 @@ export const SessionView: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="shrink-0 border-t border-white/5 px-3 py-1 flex items-center justify-end">
+        <InfiNightCredit feature="Perform" />
       </div>
     </div>
   );

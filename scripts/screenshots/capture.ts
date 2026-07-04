@@ -142,9 +142,11 @@ async function waitForReady(page: Page): Promise<void> {
   await page.waitForTimeout(300);
 }
 
-/** Click the named center-bar tab. */
-async function clickTab(page: Page, label: string): Promise<void> {
-  await page.locator(`button[title="${label}"]`).first().click({ timeout: 5000 });
+/** Click a center-bar tab by its id. The button carries a stable
+ *  data-tour="tab-<id>" hook; its title is the tab description, not the label,
+ *  so a title/text match would be brittle. */
+async function clickTab(page: Page, id: string): Promise<void> {
+  await page.locator(`[data-tour="tab-${id}"]`).first().click({ timeout: 5000 });
   await page.waitForTimeout(400);
 }
 
@@ -179,7 +181,7 @@ const SCENES: Scene[] = [
       await page.goto(NAV);
       await waitForReady(page);
       await page.waitForTimeout(800);
-      await clickTab(page, 'Make');
+      await clickTab(page, 'make');
       await snapScene(page, '01-shell-make');
     },
   },
@@ -258,7 +260,7 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await page.goto(NAV);
       await waitForReady(page);
-      await clickTab(page, 'Learn');
+      await clickTab(page, 'learn');
       // 3D graph needs a beat to settle the force layout.
       await page.waitForTimeout(3000);
       await snapScene(page, '06-learn-tab-3d-graph');
@@ -270,8 +272,10 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await page.goto(NAV);
       await waitForReady(page);
-      // Click the gear icon top-right.
-      await page.locator('button[title="Settings"]').first().click();
+      // Settings moved into the header hamburger (App menu -> Settings); there
+      // is no longer a standalone gear icon in the top bar.
+      await page.locator('button[aria-label="App menu"]').first().click({ timeout: 5000 });
+      await page.getByRole('menuitem', { name: 'Settings' }).click({ timeout: 5000 });
       await page.waitForTimeout(500);
       await snapScene(page, '07-settings-modal-with-shutdown');
     },
@@ -282,7 +286,7 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await page.goto(NAV);
       await waitForReady(page);
-      await clickTab(page, 'VJ');
+      await clickTab(page, 'vj');
       // Give the iframe a beat to either load or show the loading
       // spinner — whichever state we're in is what's worth capturing.
       await page.waitForTimeout(2500);
@@ -355,6 +359,28 @@ async function main(): Promise<void> {
     slowMo: headed ? 250 : 0,
   });
   const context = await browser.newContext({ viewport: VIEWPORT });
+  // Seed persisted UI state so first-run overlays never intercept capture
+  // clicks. The onboarding tour (thedaw-onboarding) auto-starts on a genuine
+  // first run and the HOME screen (thedaw-home-screen-v1) opens at startup by
+  // default; both are full-screen dialogs that would otherwise sit over every
+  // scene. This init script runs before any app code, so the stores rehydrate
+  // as already-seen and startup-off. It is purely a capture concern — the
+  // shipped app keeps its normal first-run behavior. The shape matches zustand
+  // persist (state + version 0, the store default).
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem(
+        'thedaw-onboarding',
+        JSON.stringify({ state: { seen: true, neverShow: true }, version: 0 }),
+      );
+      localStorage.setItem(
+        'thedaw-home-screen-v1',
+        JSON.stringify({ state: { showAtStartup: false }, version: 0 }),
+      );
+    } catch {
+      /* localStorage unavailable — nothing to seed */
+    }
+  });
   const page = await context.newPage();
   // Surface page console errors so we know if a scene is screenshooting
   // a broken state.

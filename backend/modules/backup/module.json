@@ -1,0 +1,10 @@
+{
+  "name": "backup",
+  "label": "Backup",
+  "enabled": true,
+  "icon": "Archive",
+  "sidebar": false,
+  "api_prefix": "/api/backup",
+  "backend": true,
+  "description": "Backup and migration of user data: exports the library (audio, database, stems, MIDI, scores, video, lineage), .tasmo projects, and settings to a portable zip, and restores them on another install."
+}

@@ -47,6 +47,9 @@ extraResources:
       # target machine rebuilds for itself on first use.
       - "!**/.whisper_venv/**"
       - "!**/.venv/**"
+      # uv's package cache (kept on the repo drive by theDAW.bat for fast
+      # same-drive hardlinks) is a multi-GB runtime artifact, never shipped.
+      - "!**/.uv-cache/**"
   - from: ../stable_audio_3
     to: python/stable_audio_3
     filter:

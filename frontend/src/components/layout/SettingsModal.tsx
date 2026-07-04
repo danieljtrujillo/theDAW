@@ -91,7 +91,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-120 max-h-[78vh] flex flex-col shadow-2xl">
+      <div className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-[min(1200px,95vw)] max-h-[85vh] flex flex-col shadow-2xl">
 
         {/* Header — title + launch-mode + profile + restart/shutdown + close,
             all icon-only (hover tooltips name each one). */}

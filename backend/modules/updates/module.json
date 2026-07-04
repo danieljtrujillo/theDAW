@@ -1,0 +1,10 @@
+{
+  "name": "updates",
+  "label": "Updates",
+  "enabled": true,
+  "icon": "RefreshCw",
+  "sidebar": false,
+  "api_prefix": "/api/updates",
+  "backend": true,
+  "description": "App update checks against GitHub releases: compares the installed version from pyproject.toml with the latest published release, with a 6h on-disk cache."
+}
