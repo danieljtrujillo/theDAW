@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Headset, Loader2, RefreshCw, Rocket, Smartphone, X } from 'lucide-react';
+import { Download, Headset, Loader2, RefreshCw, Rocket, Smartphone, X } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
 /* Types + defensive JSON helpers (quest backend responses)            */
@@ -118,6 +118,10 @@ export const QuestDeployModal: React.FC<{ open: boolean; onClose: () => void }> 
   const [savingAdb, setSavingAdb] = useState(false);
   const [adbError, setAdbError] = useState<string | null>(null);
 
+  const [fetchingApk, setFetchingApk] = useState(false);
+  const [fetchApkError, setFetchApkError] = useState<string | null>(null);
+  const [fetchedTag, setFetchedTag] = useState<string | null>(null);
+
   const [deploying, setDeploying] = useState(false);
   const [deployLog, setDeployLog] = useState<string | null>(null);
   const [deployOk, setDeployOk] = useState<boolean | null>(null);
@@ -171,6 +175,26 @@ export const QuestDeployModal: React.FC<{ open: boolean; onClose: () => void }> 
       if (path) setApkPath(path);
     } catch {
       /* picker unavailable — the user can paste a path */
+    }
+  };
+
+  // Pull the newest APK release asset from theDAW-XR into data/quest/ and use
+  // it as the deploy target. Cached server-side, so re-clicks are instant.
+  const fetchLatestApk = async () => {
+    setFetchingApk(true);
+    setFetchApkError(null);
+    try {
+      const res = await fetch('/api/quest/fetch-apk', { method: 'POST' });
+      if (!res.ok) throw new Error(await errText(res));
+      const j = asRecord(await res.json());
+      const path = asStr(j.path);
+      if (!path) throw new Error('Download finished but no path was returned.');
+      setApkPath(path);
+      setFetchedTag(asStr(j.tag));
+    } catch (e) {
+      setFetchApkError(e instanceof Error ? e.message : 'APK download failed.');
+    } finally {
+      setFetchingApk(false);
     }
   };
 
@@ -370,7 +394,27 @@ export const QuestDeployModal: React.FC<{ open: boolean; onClose: () => void }> 
                 <Smartphone className="w-3 h-3 text-purple-300" />
                 Choose APK
               </button>
+              <button
+                type="button"
+                onClick={() => void fetchLatestApk()}
+                disabled={fetchingApk}
+                title="Download the newest APK release from gantasmo/theDAW-XR"
+                className={`${BTN_GHOST} shrink-0`}
+              >
+                {fetchingApk ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Download className="w-3 h-3 text-purple-300" />
+                )}
+                {fetchingApk ? 'Downloading…' : 'Get Latest'}
+              </button>
             </div>
+            {fetchedTag && !fetchApkError && (
+              <span className="text-[9px] font-mono text-emerald-300">
+                theDAW-XR {fetchedTag} downloaded
+              </span>
+            )}
+            {fetchApkError && <span className={ERR_CLS}>{fetchApkError}</span>}
           </div>
 
           <div className="flex flex-col gap-1">

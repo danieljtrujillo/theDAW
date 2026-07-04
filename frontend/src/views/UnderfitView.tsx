@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { AlertTriangle, ExternalLink, FlaskConical, Loader2, Play, RefreshCw } from 'lucide-react';
+import { DadabotsCredit } from '../components/ui/Credit';
 
 /**
  * Underfit LoRA-trainer tab. Embeds the Underfit dashboard — a standalone
@@ -119,6 +120,8 @@ export const UnderfitView: React.FC = () => {
               LoRA trainer · localhost:8791 · {reachable ? 'connected' : 'waiting for server'}
             </div>
           </div>
+          <span className="w-px h-5 bg-white/10 shrink-0" />
+          <DadabotsCredit className="shrink-0" />
         </div>
         <div className="flex items-center gap-1.5">
           <button

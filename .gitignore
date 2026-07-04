@@ -10,6 +10,8 @@ data/underfit_update.json
 data/updates_check.json
 # Quest deploy config: adb path override, last APK, default package (user-local)
 data/quest.json
+# Quest deploy APK downloads pulled from theDAW-XR releases (~150 MB each)
+data/quest/
 data/generations/
 data/settings.json
 data/recent_projects.json

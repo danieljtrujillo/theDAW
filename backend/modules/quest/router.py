@@ -3,11 +3,13 @@
     GET  /status        adb availability + connected devices (Quest flagged)
     POST /deploy         adb install -r a prebuilt APK, optionally launch it
     GET  /pick-apk       native Open-file dialog filtered to *.apk
+    GET  /latest-apk     newest .apk asset on theDAW-XR's latest GitHub release
+    POST /fetch-apk      download that APK into data/quest/ for deploying
     POST /set-adb-path   persist a manual adb path when it is not auto-found
 
 Deploy-only: this installs an already-built APK onto a connected headset over
 adb (the same bridge theDAW-XR uses). It does not build the APK from Unity.
-Handlers offload the blocking adb/dialog calls to worker threads.
+Handlers offload the blocking adb/dialog/network calls to worker threads.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -93,6 +96,32 @@ async def quest_deploy(req: DeployRequest) -> dict:
         await asyncio.to_thread(service.save_config, {"default_package": req.package})
     result["ok"] = True
     return result
+
+
+@router.get("/latest-apk")
+async def quest_latest_apk() -> dict:
+    """Newest .apk asset on theDAW-XR's latest release. Network failures are a
+    soft error (HTTP 200 with ``ok: false``), matching the updates module."""
+    try:
+        info = await asyncio.to_thread(service.fetch_latest_apk_info)
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("quest: latest-apk lookup failed: %s", exc)
+        return {"ok": False, "error": f"release lookup failed: {exc}"}
+    return {"ok": True, **info}
+
+
+@router.post("/fetch-apk")
+async def quest_fetch_apk() -> dict:
+    """Download the newest release APK into ``data/quest/`` and remember it as
+    the deploy dialog's APK. Re-fetches are skipped when the file is already
+    complete on disk."""
+    try:
+        result = await asyncio.to_thread(service.download_latest_apk)
+    except (httpx.HTTPError, ValueError, OSError) as exc:
+        log.warning("quest: APK download failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"APK download failed: {exc}")
+    await asyncio.to_thread(service.save_config, {"last_apk_path": result["path"]})
+    return {"ok": True, **result}
 
 
 @router.get("/pick-apk")

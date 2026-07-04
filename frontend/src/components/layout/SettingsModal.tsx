@@ -160,7 +160,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-4">
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2.5">
 
           <StorageSettingsSection />
 
@@ -495,7 +495,7 @@ const StorageSettingsSection: React.FC = () => {
           <RefreshCw className="w-3 h-3 animate-spin" /> Checking local models and APIs…
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-1.5 mb-1">
+        <div className="grid grid-cols-3 gap-1.5 mb-1">
           {modelProviders.map((provider) => (
             <ModelProviderCard key={provider.id} provider={provider} />
           ))}
@@ -933,7 +933,7 @@ const ModuleTree: React.FC<{
               <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">{name}</span>
               <span className="text-[9px] font-mono text-zinc-400 ml-auto">{onCount}/{mods.length}</span>
             </div>
-            <div className={`grid ${wide ? 'grid-cols-2' : 'grid-cols-1'} gap-1`}>
+            <div className={`grid ${wide ? 'grid-cols-3' : 'grid-cols-1'} gap-1`}>
               {mods.map((mod) => (
                 <ModuleTile
                   key={mod._dir || mod.name}
@@ -1131,43 +1131,33 @@ interface FeatureToggleGroupProps {
   onGenerate: boolean;
   onPatchImport: (next: boolean) => void;
   onPatchGenerate: (next: boolean) => void;
-  /** Optional extra controls, revealed by an Options chevron (kept off the
-   *  card's default two lines). */
+  /** Optional extra controls, shown inline to the right of the toggles and
+   *  always visible (the Stem options ride here on the double-width card). */
   extra?: React.ReactNode;
   className?: string;
 }
 
+/** One autoprocess card: title, import + generate toggles, and (for Stem) its
+ *  options all on a single row. import/generate sit on the title row; when
+ *  `extra` is present it fills the right of the row and stays visible. */
 const FeatureToggleGroup: React.FC<FeatureToggleGroupProps> = ({
   icon, title, desc, onImport, onGenerate, onPatchImport, onPatchGenerate, extra, className = '',
-}) => {
-  const [showExtra, setShowExtra] = useState(false);
-  return (
-    <div className={`border border-white/5 rounded px-2 py-1.5 bg-white/3 ${className}`}>
-      <div className="flex items-center gap-1.5 mb-1">
+}) => (
+  <div className={`border border-white/5 rounded px-2 py-1.5 bg-white/3 ${className}`}>
+    <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
+      <div className="flex items-center gap-1.5 min-w-0">
         {icon}
         <span className="text-[10px] font-bold text-zinc-100">{title}</span>
         <InfoTip title={title} body={desc} />
-        {extra && (
-          <button
-            type="button"
-            onClick={() => setShowExtra((v) => !v)}
-            aria-expanded={showExtra}
-            title="Options"
-            className="ml-auto flex items-center gap-1 text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:text-zinc-100 transition-colors"
-          >
-            Options
-            <ChevronRight className={`w-3 h-3 transition-transform ${showExtra ? 'rotate-90' : ''}`} />
-          </button>
-        )}
       </div>
-      <div className="flex items-center gap-4">
+      <div className={`flex items-center gap-3 ${extra ? '' : 'ml-auto'}`}>
         <ToggleRow label="import" enabled={onImport} onToggle={() => onPatchImport(!onImport)} />
         <ToggleRow label="generate" enabled={onGenerate} onToggle={() => onPatchGenerate(!onGenerate)} />
       </div>
-      {extra && showExtra && <div className="mt-1.5 pt-1.5 border-t border-white/5">{extra}</div>}
+      {extra && <div className="ml-auto flex items-center">{extra}</div>}
     </div>
-  );
-};
+  </div>
+);
 
 interface ToggleRowProps {
   label: string;

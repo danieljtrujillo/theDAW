@@ -10,7 +10,7 @@ import { SESSION_IMPORT_FILTER } from '../lib/fileFilters';
 import { PathInput } from '../components/ui/PathInput';
 import { DawSessionGrid } from '../components/session/DawSessionGrid';
 import { PerformRoutingPanel } from '../components/session/PerformRoutingPanel';
-import { InfiNightCredit } from '../components/ui/InfiNightCredit';
+import { InfiNightCredit } from '../components/ui/Credit';
 import { importDawProjectToEditor } from '../lib/dawProjectToEditor';
 
 export const SessionView: React.FC = () => {
