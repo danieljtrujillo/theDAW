@@ -31,14 +31,6 @@ theDAW is an all-in-one application for music creation. The generative engine re
 theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, vendored as the [magenta-rt2-nvidia](https://github.com/gantasmo/magenta-rt2-nvidia) sidecar, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. Models stay under the user's control: nothing downloads at startup, **local-only mode is on by default**, and a model loads at the first CREATE that needs it.
 
 <p align="center">
-  <a href="showcase/clips-recorded/_showcase_h.mp4">
-    <img src="docs/readme/showcase-poster.png" alt="Watch the theDAW feature-tour video" width="900">
-  </a>
-  <br>
-  <sub><em>Click to watch the full feature tour, also available <a href="showcase/clips-recorded/_showcase_v.mp4">vertical (9:16)</a>.</em></sub>
-</p>
-
-<p align="center">
   <img src="docs/readme/make.png" alt="theDAW MAKE workspace with prompt-driven generation, the Chimera fusion stack, and the dual live visualizers" width="900">
 </p>
 
