@@ -71,6 +71,79 @@ def resolution_seq() -> int:
         return _resolution_seq
 
 
+# Ungated public mirrors for the gated Stability repos. Post-trained ARC
+# repos are gated on the Hub, so a brand-new user with no token (and no
+# accepted license) gets a 401 on the very first generation. When a download
+# fails on a gating/auth/not-found error we retry from a public mirror that
+# carries the identical weights. cocktailpeanut/stable-audio-3-small-music is
+# the Pinokio maintainer's public copy of stabilityai/stable-audio-3-small-music
+# (verified 2026-07-04: same model_config.json + model.safetensors, ungated,
+# and it even bundles the t5gemma-b-b-ul2 text encoder). This is a mirror of
+# the SAME model, not a smaller/older substitute, so it does not violate the
+# no-downgrade rule. Extend or disable per repo via
+# SA3_MODEL_MIRRORS="official=mirror,other=" (an empty mirror disables one).
+_DEFAULT_MIRRORS: dict[str, str] = {
+    "stabilityai/stable-audio-3-small-music": "cocktailpeanut/stable-audio-3-small-music",
+}
+
+
+def _model_mirrors() -> dict[str, str]:
+    mirrors = dict(_DEFAULT_MIRRORS)
+    env = os.environ.get("SA3_MODEL_MIRRORS", "").strip()
+    for pair in env.split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        official, mirror = (part.strip() for part in pair.split("=", 1))
+        if not official:
+            continue
+        if mirror:
+            mirrors[official] = mirror
+        else:
+            mirrors.pop(official, None)
+    return mirrors
+
+
+def _is_access_error(exc: Exception) -> bool:
+    """Whether ``exc`` from an HF download means the repo is gated, private,
+    missing, or otherwise inaccessible (as opposed to a network/disk fault)."""
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        RepositoryNotFoundError,
+    )
+
+    if isinstance(exc, (GatedRepoError, RepositoryNotFoundError)):
+        return True
+    if isinstance(exc, HfHubHTTPError):
+        resp = getattr(exc, "response", None)
+        return getattr(resp, "status_code", None) in (401, 403, 404)
+    return False
+
+
+def hf_download_with_mirror(repo_id: str, filename: str, **kwargs) -> str:
+    """``hf_hub_download`` that falls back to a public mirror (see
+    ``_DEFAULT_MIRRORS``) when the primary repo is inaccessible. Extra kwargs
+    (e.g. ``tqdm_class`` for progress) pass through to both attempts."""
+    try:
+        return hf_hub_download(repo_id=repo_id, filename=filename, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless a mirror applies
+        mirror = _model_mirrors().get(repo_id)
+        if mirror and _is_access_error(exc):
+            note_resolution(
+                f"{repo_id}/{filename}",
+                "mirror-fallback",
+                repo_id=mirror,
+                detail=(
+                    f"{repo_id} is not accessible ({type(exc).__name__}); "
+                    f"downloading the same weights from the public mirror {mirror}"
+                ),
+                level=logging.WARNING,
+            )
+            return hf_hub_download(repo_id=mirror, filename=filename, **kwargs)
+        raise
+
+
 def _resolve_one_file(repo_id: str, filename: str) -> str:
     """Resolve one repo file local-first, recording every step."""
     local = _local_override(repo_id, filename)
@@ -85,6 +158,20 @@ def _resolve_one_file(repo_id: str, filename: str) -> str:
             f"{repo_id}/{filename}", "hf-cache", path=cached, repo_id=repo_id
         )
         return cached
+    # A previous run may have populated the mirror's cache instead of the
+    # gated original; reuse it before deciding to download anything.
+    mirror = _model_mirrors().get(repo_id)
+    if mirror:
+        mirror_cached = try_to_load_from_cache(mirror, filename)
+        if isinstance(mirror_cached, str):
+            note_resolution(
+                f"{repo_id}/{filename}",
+                "hf-cache",
+                path=mirror_cached,
+                repo_id=mirror,
+                detail=f"reused from the public mirror {mirror}",
+            )
+            return mirror_cached
     note_resolution(
         f"{repo_id}/{filename}",
         "download-start",
@@ -93,7 +180,7 @@ def _resolve_one_file(repo_id: str, filename: str) -> str:
         level=logging.WARNING,
     )
     t0 = time.perf_counter()
-    downloaded = hf_hub_download(repo_id=repo_id, filename=filename)
+    downloaded = hf_download_with_mirror(repo_id=repo_id, filename=filename)
     note_resolution(
         f"{repo_id}/{filename}",
         "downloaded",

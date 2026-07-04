@@ -1635,6 +1635,8 @@ Inside a search folder, each model lives in a **subfolder named after its Huggin
 
 **Repo naming since the June 2026 reorganization.** Stability restructured the Hugging Face repos. The former `stable-audio-3-small` repo was retired in favor of two specialized small models, `stable-audio-3-small-music` and `stable-audio-3-small-sfx`. Every repo now ships exactly two model files, `model_config.json` and `model.safetensors`; the old `stable-audio-3-*-ARC` / `-RF` filenames no longer exist on the Hub. Repos without a suffix hold the post-trained ARC checkpoints and are gated: accepting the license on the repo page grants access automatically, and downloads then need a logged-in Hugging Face token (see the token section below). The `-base` repos hold the RF training bases and download without a token. theDAW's `small` key maps to the music variant.
 
+**Zero-token default for `small`.** So a fresh install generates without a Hugging Face account, `small` automatically falls back to a public ungated mirror of the same weights when the gated official repo is not accessible. The gated repo is still tried first, so a logged-in user with access keeps using the official copy. Point the fallback elsewhere, or turn it off, with `SA3_MODEL_MIRRORS="stabilityai/stable-audio-3-small-music=your-org/your-mirror"` (an empty value after `=` disables it). `medium` has no public mirror, so the higher-quality path still needs an accepted license and a token.
+
 Download table (each links to its Hugging Face repo):
 
 | Key | Use | Hugging Face repo | Files to place in the subfolder |

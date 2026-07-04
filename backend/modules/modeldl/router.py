@@ -32,13 +32,13 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
-from huggingface_hub import hf_hub_download
 from tqdm.auto import tqdm
 
 from stable_audio_3.model_configs import (
     AutoencoderModelConfig,
     ModelConfig,
     all_models,
+    hf_download_with_mirror,
 )
 
 log = logging.getLogger(__name__)
@@ -175,7 +175,10 @@ def _run_job(job_id: str) -> None:
                 )
                 job["current_file"] = len(job["files"]) - 1
 
-            path = hf_hub_download(
+            # Falls back to a public mirror when the gated official repo is
+            # inaccessible, so a tokenless user's Setup-screen download still
+            # succeeds instead of 401-ing (see model_configs._DEFAULT_MIRRORS).
+            path = hf_download_with_mirror(
                 repo_id=repo_id, filename=filename, tqdm_class=bound_tqdm
             )
 
