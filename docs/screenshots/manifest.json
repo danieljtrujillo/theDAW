@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-03T03:06:18.714Z",
+  "generatedAt": "2026-07-04T13:28:52.581Z",
   "entries": [
     {
       "file": "01-shell-make.png",
@@ -12,7 +12,7 @@
       ],
       "docsSections": [
         "§5 UI Shell",
-        "§6 CREATE Tab",
+        "§6 MAKE Tab",
         "§22 Screenshot Manifest"
       ],
       "kind": "full",
@@ -29,7 +29,7 @@
       ],
       "docsSections": [
         "§5 UI Shell",
-        "§6 CREATE Tab",
+        "§6 MAKE Tab",
         "§22 Screenshot Manifest"
       ],
       "kind": "crop",
@@ -45,29 +45,447 @@
       ],
       "docsSections": [
         "§5 UI Shell",
-        "§6 CREATE Tab",
+        "§6 MAKE Tab",
         "§22 Screenshot Manifest"
       ],
       "kind": "crop",
       "sourceScene": "01-shell-make"
     },
     {
-      "file": "02-library-with-showcase-selected.png",
-      "label": "02-library-with-showcase-selected",
+      "file": "02-make-model-picker.png",
+      "label": "02-make-model-picker",
+      "features": [
+        "create-advanced-generation-templates-prompts-spectrograms",
+        "magenta-rt2-generate",
+        "suno-cloud-generation"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "02-make-model-picker"
+    },
+    {
+      "file": "02-make-model-picker__model-control.png",
+      "label": "02-make-model-picker / model-control",
+      "features": [
+        "create-advanced-generation-templates-prompts-spectrograms",
+        "magenta-rt2-generate",
+        "suno-cloud-generation"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "02-make-model-picker"
+    },
+    {
+      "file": "03-make-init-audio.png",
+      "label": "03-make-init-audio",
+      "features": [
+        "create-advanced-generation-templates-prompts-spectrograms",
+        "waveform-editor-inpaint-review"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "03-make-init-audio"
+    },
+    {
+      "file": "03-make-init-audio__init-audio.png",
+      "label": "03-make-init-audio / init-audio",
+      "features": [
+        "create-advanced-generation-templates-prompts-spectrograms",
+        "waveform-editor-inpaint-review"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "03-make-init-audio"
+    },
+    {
+      "file": "04-make-chimera.png",
+      "label": "04-make-chimera",
+      "features": [
+        "create-chimera-fusion-stack"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "04-make-chimera"
+    },
+    {
+      "file": "04-make-chimera__chimera-stack.png",
+      "label": "04-make-chimera / chimera-stack",
+      "features": [
+        "create-chimera-fusion-stack"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "04-make-chimera"
+    },
+    {
+      "file": "05-edit-timeline.png",
+      "label": "05-edit-timeline",
+      "features": [
+        "edit-advanced-effects-chain-analyzer",
+        "edit-timeline-live-midi-soundfont",
+        "library-stems-midi-first-class"
+      ],
+      "docsSections": [
+        "§7 EDIT Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "05-edit-timeline"
+    },
+    {
+      "file": "05-edit-timeline__edit-timeline.png",
+      "label": "05-edit-timeline / edit-timeline",
+      "features": [
+        "edit-advanced-effects-chain-analyzer",
+        "edit-timeline-live-midi-soundfont"
+      ],
+      "docsSections": [
+        "§7 EDIT Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "05-edit-timeline"
+    },
+    {
+      "file": "06-edit-automation.png",
+      "label": "06-edit-automation",
+      "features": [
+        "edit-insert-fx-rack",
+        "edit-advanced-effects-chain-analyzer"
+      ],
+      "docsSections": [
+        "§7 EDIT Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "06-edit-automation"
+    },
+    {
+      "file": "06-edit-automation__automation-lane.png",
+      "label": "06-edit-automation / automation-lane",
+      "features": [
+        "edit-insert-fx-rack",
+        "edit-advanced-effects-chain-analyzer"
+      ],
+      "docsSections": [
+        "§7 EDIT Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "06-edit-automation"
+    },
+    {
+      "file": "07-edit-fx-rack.png",
+      "label": "07-edit-fx-rack",
+      "features": [
+        "edit-insert-fx-rack",
+        "edit-spatializer-teleport-autopilot"
+      ],
+      "docsSections": [
+        "§7 EDIT Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "07-edit-fx-rack"
+    },
+    {
+      "file": "07-edit-fx-rack__fx-rack.png",
+      "label": "07-edit-fx-rack / fx-rack",
+      "features": [
+        "edit-insert-fx-rack",
+        "edit-spatializer-teleport-autopilot"
+      ],
+      "docsSections": [
+        "§7 EDIT Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "07-edit-fx-rack"
+    },
+    {
+      "file": "08-mix-effect-rail.png",
+      "label": "08-mix-effect-rail",
+      "features": [
+        "edit-advanced-effects-chain-analyzer",
+        "edit-tool-stack-modules"
+      ],
+      "docsSections": [
+        "§8 MIX Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "08-mix-effect-rail"
+    },
+    {
+      "file": "08-mix-effect-rail__mix-rail.png",
+      "label": "08-mix-effect-rail / mix-rail",
+      "features": [
+        "edit-advanced-effects-chain-analyzer",
+        "edit-tool-stack-modules"
+      ],
+      "docsSections": [
+        "§8 MIX Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "08-mix-effect-rail"
+    },
+    {
+      "file": "09-mix-vst-node.png",
+      "label": "09-mix-vst-node",
+      "features": [
+        "edit-tool-stack-modules",
+        "edit-advanced-effects-chain-analyzer"
+      ],
+      "docsSections": [
+        "§8 MIX Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "09-mix-vst-node"
+    },
+    {
+      "file": "09-mix-vst-node__vst-node.png",
+      "label": "09-mix-vst-node / vst-node",
+      "features": [
+        "edit-tool-stack-modules"
+      ],
+      "docsSections": [
+        "§8 MIX Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "09-mix-vst-node"
+    },
+    {
+      "file": "10-mix-gan-node.png",
+      "label": "10-mix-gan-node",
+      "features": [
+        "edit-tool-stack-modules"
+      ],
+      "docsSections": [
+        "§8 MIX Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "10-mix-gan-node"
+    },
+    {
+      "file": "10-mix-gan-node__gan-stage.png",
+      "label": "10-mix-gan-node / gan-stage",
+      "features": [
+        "edit-tool-stack-modules"
+      ],
+      "docsSections": [
+        "§8 MIX Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "10-mix-gan-node"
+    },
+    {
+      "file": "11-perform-grid.png",
+      "label": "11-perform-grid",
+      "features": [
+        "session-perform-scene-grid"
+      ],
+      "docsSections": [
+        "§12 PERFORM Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "11-perform-grid"
+    },
+    {
+      "file": "11-perform-grid__perform-grid.png",
+      "label": "11-perform-grid / perform-grid",
+      "features": [
+        "session-perform-scene-grid"
+      ],
+      "docsSections": [
+        "§12 PERFORM Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "11-perform-grid"
+    },
+    {
+      "file": "12-dj-console.png",
+      "label": "12-dj-console",
+      "features": [
+        "dj-two-deck-console"
+      ],
+      "docsSections": [
+        "§10 DJ Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "12-dj-console"
+    },
+    {
+      "file": "12-dj-console__deck-a.png",
+      "label": "12-dj-console / deck-a",
+      "features": [
+        "dj-two-deck-console"
+      ],
+      "docsSections": [
+        "§10 DJ Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "12-dj-console"
+    },
+    {
+      "file": "12-dj-console__deck-b.png",
+      "label": "12-dj-console / deck-b",
+      "features": [
+        "dj-two-deck-console"
+      ],
+      "docsSections": [
+        "§10 DJ Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "12-dj-console"
+    },
+    {
+      "file": "13-dj-stems.png",
+      "label": "13-dj-stems",
+      "features": [
+        "dj-two-deck-console",
+        "library-stems-midi-first-class"
+      ],
+      "docsSections": [
+        "§10 DJ Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "13-dj-stems"
+    },
+    {
+      "file": "13-dj-stems__deck-stems.png",
+      "label": "13-dj-stems / deck-stems",
+      "features": [
+        "dj-two-deck-console",
+        "library-stems-midi-first-class"
+      ],
+      "docsSections": [
+        "§10 DJ Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "13-dj-stems"
+    },
+    {
+      "file": "14-vj-visualizer.png",
+      "label": "14-vj-visualizer",
+      "features": [
+        "vj-sidecar-tab-mobile-share",
+        "vj-camera-sources"
+      ],
+      "docsSections": [
+        "§11 VJ Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "14-vj-visualizer"
+    },
+    {
+      "file": "14-vj-visualizer__vj-surface.png",
+      "label": "14-vj-visualizer / vj-surface",
+      "features": [
+        "vj-sidecar-tab-mobile-share",
+        "vj-camera-sources"
+      ],
+      "docsSections": [
+        "§11 VJ Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "14-vj-visualizer"
+    },
+    {
+      "file": "15-foundry-canvas.png",
+      "label": "15-foundry-canvas",
+      "features": [
+        "foundry-plugin-ui-builder"
+      ],
+      "docsSections": [
+        "§14 Foundry Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "15-foundry-canvas"
+    },
+    {
+      "file": "15-foundry-canvas__foundry-canvas.png",
+      "label": "15-foundry-canvas / foundry-canvas",
+      "features": [
+        "foundry-plugin-ui-builder"
+      ],
+      "docsSections": [
+        "§14 Foundry Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "15-foundry-canvas"
+    },
+    {
+      "file": "16-underfit-dashboard.png",
+      "label": "16-underfit-dashboard",
+      "features": [
+        "underfit-lora-trainer"
+      ],
+      "docsSections": [
+        "§15 Underfit Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "16-underfit-dashboard"
+    },
+    {
+      "file": "16-underfit-dashboard__underfit-dash.png",
+      "label": "16-underfit-dashboard / underfit-dash",
+      "features": [
+        "underfit-lora-trainer"
+      ],
+      "docsSections": [
+        "§15 Underfit Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "16-underfit-dashboard"
+    },
+    {
+      "file": "17-learn-graph.png",
+      "label": "17-learn-graph",
+      "features": [
+        "library-bundle-download-lineage-export"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§17 LEARN Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "17-learn-graph"
+    },
+    {
+      "file": "17-learn-graph__lineage-graph.png",
+      "label": "17-learn-graph / lineage-graph",
+      "features": [
+        "library-bundle-download-lineage-export"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§17 LEARN Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "17-learn-graph"
+    },
+    {
+      "file": "18-library-showcase-selected.png",
+      "label": "18-library-showcase-selected",
       "features": [
         "library-backend-local-storage",
-        "media-bucket-routing"
+        "catalogue-cross-provider-browser"
       ],
       "docsSections": [
         "§9 LIBRARY Tab",
         "§13 Bottom Panel Tabs"
       ],
       "kind": "full",
-      "sourceScene": "02-library-with-showcase-selected"
+      "sourceScene": "18-library-showcase-selected"
     },
     {
-      "file": "02-library-with-showcase-selected__library-details.png",
-      "label": "02-library-with-showcase-selected / library-details",
+      "file": "18-library-showcase-selected__library-details.png",
+      "label": "18-library-showcase-selected / library-details",
       "features": [
         "shell-center-tabs-right-library",
         "library-backend-local-storage"
@@ -77,69 +495,11 @@
         "§13 Bottom Panel Tabs"
       ],
       "kind": "crop",
-      "sourceScene": "02-library-with-showcase-selected"
+      "sourceScene": "18-library-showcase-selected"
     },
     {
-      "file": "03-library-actions-toolbar.png",
-      "label": "03-library-actions-toolbar",
-      "features": [
-        "library-stems-sidecar",
-        "library-midi-conversion",
-        "library-bundle-download-lineage-export",
-        "create-chimera-fusion-stack"
-      ],
-      "docsSections": [
-        "§9 LIBRARY Tab",
-        "§16 Backend API Reference"
-      ],
-      "kind": "full",
-      "sourceScene": "03-library-actions-toolbar"
-    },
-    {
-      "file": "03-library-actions-toolbar__library-toolbar.png",
-      "label": "03-library-actions-toolbar / library-toolbar",
-      "features": [
-        "library-stems-sidecar",
-        "library-midi-conversion",
-        "library-bundle-download-lineage-export",
-        "create-chimera-fusion-stack"
-      ],
-      "docsSections": [
-        "§9 LIBRARY Tab",
-        "§16 Backend API Reference"
-      ],
-      "kind": "crop",
-      "sourceScene": "03-library-actions-toolbar"
-    },
-    {
-      "file": "04-library-download-submenu.png",
-      "label": "04-library-download-submenu",
-      "features": [
-        "library-bundle-download-lineage-export",
-        "library-midi-conversion"
-      ],
-      "docsSections": [
-        "§9 LIBRARY Tab"
-      ],
-      "kind": "full",
-      "sourceScene": "04-library-download-submenu"
-    },
-    {
-      "file": "04-library-download-submenu__download-submenu.png",
-      "label": "04-library-download-submenu / download-submenu",
-      "features": [
-        "library-bundle-download-lineage-export",
-        "library-midi-conversion"
-      ],
-      "docsSections": [
-        "§9 LIBRARY Tab"
-      ],
-      "kind": "crop",
-      "sourceScene": "04-library-download-submenu"
-    },
-    {
-      "file": "05-library-entry-right-click.png",
-      "label": "05-library-entry-right-click",
+      "file": "19-library-right-click.png",
+      "label": "19-library-right-click",
       "features": [
         "library-stems-sidecar",
         "library-midi-conversion",
@@ -151,11 +511,11 @@
         "§16 Backend API Reference"
       ],
       "kind": "full",
-      "sourceScene": "05-library-entry-right-click"
+      "sourceScene": "19-library-right-click"
     },
     {
-      "file": "05-library-entry-right-click__entry-context-menu.png",
-      "label": "05-library-entry-right-click / entry-context-menu",
+      "file": "19-library-right-click__entry-context-menu.png",
+      "label": "19-library-right-click / entry-context-menu",
       "features": [
         "library-stems-sidecar",
         "library-midi-conversion",
@@ -167,35 +527,210 @@
         "§16 Backend API Reference"
       ],
       "kind": "crop",
-      "sourceScene": "05-library-entry-right-click"
+      "sourceScene": "19-library-right-click"
     },
     {
-      "file": "06-learn-tab-3d-graph.png",
-      "label": "06-learn-tab-3d-graph",
+      "file": "20-library-download-submenu.png",
+      "label": "20-library-download-submenu",
       "features": [
-        "library-bundle-download-lineage-export"
+        "library-bundle-download-lineage-export",
+        "library-midi-conversion"
       ],
       "docsSections": [
         "§9 LIBRARY Tab"
       ],
       "kind": "full",
-      "sourceScene": "06-learn-tab-3d-graph"
+      "sourceScene": "20-library-download-submenu"
     },
     {
-      "file": "06-learn-tab-3d-graph__lineage-graph.png",
-      "label": "06-learn-tab-3d-graph / lineage-graph",
+      "file": "20-library-download-submenu__download-submenu.png",
+      "label": "20-library-download-submenu / download-submenu",
       "features": [
-        "library-bundle-download-lineage-export"
+        "library-bundle-download-lineage-export",
+        "library-midi-conversion"
       ],
       "docsSections": [
         "§9 LIBRARY Tab"
       ],
       "kind": "crop",
-      "sourceScene": "06-learn-tab-3d-graph"
+      "sourceScene": "20-library-download-submenu"
     },
     {
-      "file": "07-settings-modal-with-shutdown.png",
-      "label": "07-settings-modal-with-shutdown",
+      "file": "21-piano-roll.png",
+      "label": "21-piano-roll",
+      "features": [
+        "piano-roll-linked-clip-editing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "21-piano-roll"
+    },
+    {
+      "file": "21-piano-roll__piano-roll.png",
+      "label": "21-piano-roll / piano-roll",
+      "features": [
+        "piano-roll-linked-clip-editing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "21-piano-roll"
+    },
+    {
+      "file": "22-step-sequencer.png",
+      "label": "22-step-sequencer",
+      "features": [
+        "sequencer-midi-export-render"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "22-step-sequencer"
+    },
+    {
+      "file": "22-step-sequencer__step-grid.png",
+      "label": "22-step-sequencer / step-grid",
+      "features": [
+        "sequencer-midi-export-render"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "22-step-sequencer"
+    },
+    {
+      "file": "23-score-arrange.png",
+      "label": "23-score-arrange",
+      "features": [
+        "library-midi-conversion",
+        "piano-roll-linked-clip-editing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "23-score-arrange"
+    },
+    {
+      "file": "23-score-arrange__sheet.png",
+      "label": "23-score-arrange / sheet",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "23-score-arrange"
+    },
+    {
+      "file": "24-score-tabs.png",
+      "label": "24-score-tabs",
+      "features": [
+        "library-midi-conversion",
+        "piano-roll-linked-clip-editing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "24-score-tabs"
+    },
+    {
+      "file": "24-score-tabs__tabs.png",
+      "label": "24-score-tabs / tabs",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "24-score-tabs"
+    },
+    {
+      "file": "25-audio-to-midi.png",
+      "label": "25-audio-to-midi",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "25-audio-to-midi"
+    },
+    {
+      "file": "25-audio-to-midi__convert-menu.png",
+      "label": "25-audio-to-midi / convert-menu",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§9 LIBRARY Tab",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "25-audio-to-midi"
+    },
+    {
+      "file": "26-analyzer.png",
+      "label": "26-analyzer",
+      "features": [
+        "edit-advanced-effects-chain-analyzer"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "26-analyzer"
+    },
+    {
+      "file": "26-analyzer__analyzer.png",
+      "label": "26-analyzer / analyzer",
+      "features": [
+        "edit-advanced-effects-chain-analyzer"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "26-analyzer"
+    },
+    {
+      "file": "27-details-panel.png",
+      "label": "27-details-panel",
+      "features": [
+        "library-backend-local-storage",
+        "catalogue-cross-provider-browser"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "27-details-panel"
+    },
+    {
+      "file": "27-details-panel__details.png",
+      "label": "27-details-panel / details",
+      "features": [
+        "library-backend-local-storage"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "27-details-panel"
+    },
+    {
+      "file": "28-settings-modal.png",
+      "label": "28-settings-modal",
       "features": [
         "settings-feature-toggles-modules-admin",
         "backend-module-loader-settings"
@@ -205,11 +740,11 @@
         "§16 Backend API Reference"
       ],
       "kind": "full",
-      "sourceScene": "07-settings-modal-with-shutdown"
+      "sourceScene": "28-settings-modal"
     },
     {
-      "file": "07-settings-modal-with-shutdown__settings-toggles.png",
-      "label": "07-settings-modal-with-shutdown / settings-toggles",
+      "file": "28-settings-modal__settings-toggles.png",
+      "label": "28-settings-modal / settings-toggles",
       "features": [
         "settings-feature-toggles-modules-admin",
         "backend-module-loader-settings"
@@ -219,61 +754,308 @@
         "§16 Backend API Reference"
       ],
       "kind": "crop",
-      "sourceScene": "07-settings-modal-with-shutdown"
+      "sourceScene": "28-settings-modal"
     },
     {
-      "file": "08-vj-tab-loading.png",
-      "label": "08-vj-tab-loading",
+      "file": "29-app-menu.png",
+      "label": "29-app-menu",
       "features": [
-        "vj-sidecar-tab-mobile-share"
+        "shell-center-tabs-right-library",
+        "settings-feature-toggles-modules-admin"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "full",
+      "sourceScene": "29-app-menu"
+    },
+    {
+      "file": "29-app-menu__app-menu.png",
+      "label": "29-app-menu / app-menu",
+      "features": [
+        "shell-center-tabs-right-library",
+        "settings-feature-toggles-modules-admin"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "crop",
+      "sourceScene": "29-app-menu"
+    },
+    {
+      "file": "30-home-screen.png",
+      "label": "30-home-screen",
+      "features": [
+        "shell-center-tabs-right-library"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "full",
+      "sourceScene": "30-home-screen"
+    },
+    {
+      "file": "30-home-screen__home-overlay.png",
+      "label": "30-home-screen / home-overlay",
+      "features": [
+        "shell-center-tabs-right-library"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "crop",
+      "sourceScene": "30-home-screen"
+    },
+    {
+      "file": "31-feature-tour.png",
+      "label": "31-feature-tour",
+      "features": [
+        "create-chimera-fusion-stack",
+        "shell-center-tabs-right-library"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§6 MAKE Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "31-feature-tour"
+    },
+    {
+      "file": "31-feature-tour__tour-step.png",
+      "label": "31-feature-tour / tour-step",
+      "features": [
+        "create-chimera-fusion-stack"
+      ],
+      "docsSections": [
+        "§5 UI Shell",
+        "§6 MAKE Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "31-feature-tour"
+    },
+    {
+      "file": "32-backup-modal.png",
+      "label": "32-backup-modal",
+      "features": [
+        "settings-feature-toggles-modules-admin"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "full",
+      "sourceScene": "32-backup-modal"
+    },
+    {
+      "file": "32-backup-modal__backup.png",
+      "label": "32-backup-modal / backup",
+      "features": [
+        "settings-feature-toggles-modules-admin"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "crop",
+      "sourceScene": "32-backup-modal"
+    },
+    {
+      "file": "33-update-modal.png",
+      "label": "33-update-modal",
+      "features": [
+        "settings-feature-toggles-modules-admin"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "full",
+      "sourceScene": "33-update-modal"
+    },
+    {
+      "file": "33-update-modal__update.png",
+      "label": "33-update-modal / update",
+      "features": [
+        "settings-feature-toggles-modules-admin"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "crop",
+      "sourceScene": "33-update-modal"
+    },
+    {
+      "file": "34-quest-deploy.png",
+      "label": "34-quest-deploy",
+      "features": [
+        "xr-quest-integrations"
       ],
       "docsSections": [
         "§5 UI Shell",
         "§16 Backend API Reference"
       ],
       "kind": "full",
-      "sourceScene": "08-vj-tab-loading"
+      "sourceScene": "34-quest-deploy"
     },
     {
-      "file": "08-vj-tab-loading__vj-panel.png",
-      "label": "08-vj-tab-loading / vj-panel",
+      "file": "34-quest-deploy__quest.png",
+      "label": "34-quest-deploy / quest",
       "features": [
-        "vj-sidecar-tab-mobile-share"
+        "xr-quest-integrations"
       ],
       "docsSections": [
         "§5 UI Shell",
         "§16 Backend API Reference"
       ],
       "kind": "crop",
-      "sourceScene": "08-vj-tab-loading"
+      "sourceScene": "34-quest-deploy"
     },
     {
-      "file": "09-chimera-cohort-multi-select.png",
-      "label": "09-chimera-cohort-multi-select",
+      "file": "35-suno-cloud.png",
+      "label": "35-suno-cloud",
       "features": [
-        "create-chimera-fusion-stack",
-        "library-backend-local-storage"
+        "suno-cloud-generation"
       ],
       "docsSections": [
-        "§6 CREATE Tab",
-        "§9 LIBRARY Tab"
+        "§6 MAKE Tab"
       ],
       "kind": "full",
-      "sourceScene": "09-chimera-cohort-multi-select"
+      "sourceScene": "35-suno-cloud"
     },
     {
-      "file": "09-chimera-cohort-multi-select__chimera-multi-select.png",
-      "label": "09-chimera-cohort-multi-select / chimera-multi-select",
+      "file": "35-suno-cloud__suno-panel.png",
+      "label": "35-suno-cloud / suno-panel",
       "features": [
-        "create-chimera-fusion-stack",
-        "library-backend-local-storage"
+        "suno-cloud-generation"
       ],
       "docsSections": [
-        "§6 CREATE Tab",
-        "§9 LIBRARY Tab"
+        "§6 MAKE Tab"
       ],
       "kind": "crop",
-      "sourceScene": "09-chimera-cohort-multi-select"
+      "sourceScene": "35-suno-cloud"
+    },
+    {
+      "file": "36-magenta-live.png",
+      "label": "36-magenta-live",
+      "features": [
+        "magenta-rt2-generate"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "full",
+      "sourceScene": "36-magenta-live"
+    },
+    {
+      "file": "36-magenta-live__magenta-panel.png",
+      "label": "36-magenta-live / magenta-panel",
+      "features": [
+        "magenta-rt2-generate"
+      ],
+      "docsSections": [
+        "§6 MAKE Tab"
+      ],
+      "kind": "crop",
+      "sourceScene": "36-magenta-live"
+    },
+    {
+      "file": "37-assistant.png",
+      "label": "37-assistant",
+      "features": [
+        "assistant-orb-providers-keys-attachments",
+        "docs-modal-download-print-rag"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "full",
+      "sourceScene": "37-assistant"
+    },
+    {
+      "file": "37-assistant__assistant-panel.png",
+      "label": "37-assistant / assistant-panel",
+      "features": [
+        "assistant-orb-providers-keys-attachments"
+      ],
+      "docsSections": [
+        "§5 UI Shell"
+      ],
+      "kind": "crop",
+      "sourceScene": "37-assistant"
+    },
+    {
+      "file": "38-media-bucket.png",
+      "label": "38-media-bucket",
+      "features": [
+        "media-bucket-routing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "38-media-bucket"
+    },
+    {
+      "file": "38-media-bucket__bucket.png",
+      "label": "38-media-bucket / bucket",
+      "features": [
+        "media-bucket-routing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "crop",
+      "sourceScene": "38-media-bucket"
+    },
+    {
+      "file": "39-url-import.png",
+      "label": "39-url-import",
+      "features": [
+        "ytimport-youtube-import",
+        "media-bucket-routing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "39-url-import"
+    },
+    {
+      "file": "39-url-import__url-import.png",
+      "label": "39-url-import / url-import",
+      "features": [
+        "ytimport-youtube-import"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "39-url-import"
+    },
+    {
+      "file": "40-controller-vision.png",
+      "label": "40-controller-vision",
+      "features": [
+        "controller-vision-detect-identify"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs",
+        "§16 Backend API Reference"
+      ],
+      "kind": "full",
+      "sourceScene": "40-controller-vision"
+    },
+    {
+      "file": "40-controller-vision__cv-modal.png",
+      "label": "40-controller-vision / cv-modal",
+      "features": [
+        "controller-vision-detect-identify"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs",
+        "§16 Backend API Reference"
+      ],
+      "kind": "crop",
+      "sourceScene": "40-controller-vision"
     }
   ]
 }

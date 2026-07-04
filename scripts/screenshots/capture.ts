@@ -1099,6 +1099,14 @@ async function main(): Promise<void> {
   // shipped app keeps its normal first-run behavior. The 30-home-screen scene
   // opens the overlay explicitly (a single shared context cannot vary this
   // pre-navigation seed per scene). The shape matches zustand persist.
+  // tsx runs this file through esbuild with keepNames, which rewrites every
+  // function passed to page.evaluate/addInitScript with __name(...) helper
+  // calls. The helper only exists in the Node bundle, so page-side
+  // evaluations throw "__name is not defined" without this no-op shim. A raw
+  // string bypasses the transform entirely, so it must stay a string.
+  await context.addInitScript(
+    'globalThis.__name = globalThis.__name || ((fn) => fn);',
+  );
   await context.addInitScript(() => {
     try {
       localStorage.setItem(
@@ -1125,6 +1133,10 @@ async function main(): Promise<void> {
   for (const scene of toRun) {
     log(`> ${scene.name} — ${scene.description}`);
     try {
+      // The boot overlay re-mounts whenever a backend health poll hiccups
+      // (heavy media loads can starve a poll), so re-gate every scene rather
+      // than only the initial navigation.
+      await waitForReady(page);
       await scene.run(page);
       okCount += 1;
     } catch (e) {
