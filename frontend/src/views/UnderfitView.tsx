@@ -38,6 +38,9 @@ export const UnderfitView: React.FC = () => {
   // missing checkout/venv shows a fix, never an endless "connecting…".
   const [diag, setDiag] = useState<UnderfitStatus | null>(null);
   const [starting, setStarting] = useState(false);
+  // On-demand venv build state (POST /api/underfit/setup + poll /setup-status).
+  const [setupState, setSetupState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [setupMsg, setSetupMsg] = useState('');
   // Tracks the last known reachability so we only remount the iframe on a
   // down→up transition (not on every successful poll).
   const wasReachable = useRef(false);
@@ -106,6 +109,53 @@ export const UnderfitView: React.FC = () => {
     }
   };
 
+  // Poll the setup job until it finishes, then spawn the dashboard.
+  const pollSetup = async () => {
+    for (;;) {
+      let j: { state?: string; message?: string };
+      try {
+        const res = await fetch('/api/underfit/setup-status', { cache: 'no-store' });
+        j = (await res.json()) as { state?: string; message?: string };
+      } catch {
+        setSetupState('error');
+        setSetupMsg('Lost contact with the backend during setup.');
+        return;
+      }
+      const state = (j.state as typeof setupState) ?? 'idle';
+      setSetupState(state);
+      setSetupMsg(j.message ?? '');
+      if (state === 'done') {
+        void startServer();
+        return;
+      }
+      if (state !== 'running') return;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  };
+
+  // Build underfit/.venv from the app (no terminal). Kicks off the backend job
+  // and polls it, then the dashboard auto-starts once the venv exists.
+  const createEnv = async () => {
+    setSetupState('running');
+    setSetupMsg('Starting the Underfit environment build...');
+    try {
+      const res = await fetch('/api/underfit/setup', { method: 'POST' });
+      const j = (await res.json()) as { state?: string; message?: string };
+      const state = (j.state as typeof setupState) ?? 'error';
+      setSetupState(state);
+      setSetupMsg(j.message ?? '');
+      if (state === 'done') {
+        void startServer();
+        return;
+      }
+      if (state === 'error') return;
+      void pollSetup();
+    } catch {
+      setSetupState('error');
+      setSetupMsg('Could not reach the backend to start setup.');
+    }
+  };
+
   // Install problems the sidecar can name (checkout missing, venv missing).
   const installIssues = !reachable && diag && diag.issues.length > 0 ? diag.issues : null;
 
@@ -159,16 +209,40 @@ export const UnderfitView: React.FC = () => {
               ))}
             </ul>
             <div className="max-w-xl text-center text-[11px] text-zinc-500 leading-relaxed">
-              Run <span className="font-mono text-zinc-300">theDAW.bat</span> — first-run setup installs
-              Underfit's environment automatically. Details: <span className="font-mono text-zinc-300">docs/guides/underfit-propagation.md</span>
+              theDAW can build the trainer environment here. This runs a one-time dependency
+              sync and takes a few minutes. The model packs download later, on demand.
             </div>
-            <button
-              type="button"
-              onClick={() => void fetchDiag()}
-              className="px-3 py-1.5 rounded border border-white/10 hover:bg-white/5 text-[11px] text-zinc-300"
-            >
-              Re-check
-            </button>
+            {setupMsg && (
+              <div
+                className={`max-w-xl text-center text-[11px] font-mono leading-relaxed ${
+                  setupState === 'error' ? 'text-red-300' : 'text-zinc-400'
+                }`}
+              >
+                {setupMsg}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void createEnv()}
+                disabled={setupState === 'running'}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-sky-500/30 hover:bg-sky-500/15 text-[11px] text-sky-200 disabled:opacity-50"
+              >
+                {setupState === 'running' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+                {setupState === 'running' ? 'Building environment...' : 'Create environment'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void fetchDiag()}
+                className="px-3 py-1.5 rounded border border-white/10 hover:bg-white/5 text-[11px] text-zinc-300"
+              >
+                Re-check
+              </button>
+            </div>
           </div>
         )}
         {!reachable && !installIssues && diag && !diag.listening && (

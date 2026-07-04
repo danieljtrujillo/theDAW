@@ -3,8 +3,8 @@ import json
 
 from stable_audio_3 import AutoencoderModel, StableAudioModel
 from backend.server import (
-    GENERATION_MODELS,
     SPECTROGRAM_TYPES,
+    _generation_models,
     _coerce_form_bool,
     _condense_filename_text,
     _extract_lora_form_slots,
@@ -42,8 +42,9 @@ def test_public_model_exports_are_available():
 
 
 def test_generation_model_normalization():
-    assert "small" in GENERATION_MODELS
-    assert "medium-rf" in GENERATION_MODELS
+    generation_models = _generation_models()
+    assert "small" in generation_models
+    assert "medium-rf" in generation_models
     assert _normalize_generation_model("small") == "small"
     assert _normalize_generation_model("SMALL-RF") == "small-rf"
     assert _normalize_generation_model("") == "medium"

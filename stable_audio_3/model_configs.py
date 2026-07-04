@@ -126,31 +126,41 @@ def _local_search_dirs() -> list[Path]:
     return dirs
 
 
+# Folder names users were told to create before the June 2026 HF repo reorg.
+# Searched after the current repo folder so old manual placements keep working.
+_LEGACY_REPO_DIRS: dict[str, list[str]] = {
+    "stable-audio-3-small-music": ["stable-audio-3-small"],
+    "stable-audio-3-small-music-base": ["stable-audio-3-small"],
+    "stable-audio-3-medium-base": ["stable-audio-3-medium"],
+}
+
+
 def _local_override(repo_id: str, filename: str) -> str | None:
     """Look for a model file below each configured local model directory."""
     repo_name = repo_id.split("/", 1)[-1]
-    alt_filenames = [filename]
+    folder_names = [repo_name, *_LEGACY_REPO_DIRS.get(repo_name, [])]
+    # "-base" repos hold the RF base checkpoints, all other repos the ARC
+    # post-trained ones, so only the matching legacy suffix is accepted here
+    # (an RF file must never resolve as an ARC checkpoint or vice versa).
+    legacy_suffix = "-RF" if repo_name.endswith("-base") else "-ARC"
 
-    if filename == "model_config.json":
-        alt_filenames.extend(
-            [
-                f"{repo_name}-ARC.json",
-                f"{repo_name}-RF.json",
-                f"{repo_name}.json",
-            ]
-        )
-    elif filename == "model.safetensors":
-        alt_filenames.extend(
-            [
-                f"{repo_name}-ARC.safetensors",
-                f"{repo_name}-RF.safetensors",
-                f"{repo_name}.safetensors",
-            ]
-        )
+    ext = {"model_config.json": ".json", "model.safetensors": ".safetensors"}.get(
+        filename
+    )
+    candidates: list[tuple[str, str]] = [(repo_name, filename)]
+    if ext:
+        stem = repo_name[: -len("-base")] if repo_name.endswith("-base") else repo_name
+        candidates.append((repo_name, f"{stem}{legacy_suffix}{ext}"))
+        candidates.append((repo_name, f"{repo_name}{ext}"))
+        # Legacy folders held BOTH the ARC and RF files of one size, so only
+        # the suffix-disambiguated old names may match there — a bare
+        # model.safetensors in a legacy folder is ambiguous.
+        for legacy in folder_names[1:]:
+            candidates.append((legacy, f"{legacy}{legacy_suffix}{ext}"))
 
-    for base in _local_search_dirs():
-        for name in alt_filenames:
-            candidate = base / repo_name / name
+    for search_dir in _local_search_dirs():
+        for folder, name in candidates:
+            candidate = search_dir / folder / name
             if candidate.is_file():
                 logger.info("Using local model file: %s", candidate)
                 return str(candidate)
@@ -347,29 +357,36 @@ class AutoencoderModelConfig:
         return local_config, local_ckpt
 
 
+# Stability reorganized the HF repos in June 2026 (verified against the live
+# Hub 2026-07-04): stabilityai/stable-audio-3-small was removed in favor of
+# stable-audio-3-small-music and stable-audio-3-small-sfx, every repo now
+# ships exactly model_config.json + model.safetensors (the old
+# stable-audio-3-*-{ARC,RF}.* names are gone), and the RF base checkpoints
+# live in separate ungated "-base" repos while the post-trained ARC repos
+# are gated (auto-approved after accepting the license, HF token required).
 rf_models: dict[str, ModelConfig] = {
     "small-rf": ModelConfig(
-        "stabilityai/stable-audio-3-small",
-        "stable-audio-3-small-RF.json",
-        "stable-audio-3-small-RF.safetensors",
+        "stabilityai/stable-audio-3-small-music-base",
+        "model_config.json",
+        "model.safetensors",
     ),
     "medium-rf": ModelConfig(
-        "stabilityai/stable-audio-3-medium",
-        "stable-audio-3-medium-RF.json",
-        "stable-audio-3-medium-RF.safetensors",
+        "stabilityai/stable-audio-3-medium-base",
+        "model_config.json",
+        "model.safetensors",
     ),
 }
 
 arc_models: dict[str, ModelConfig] = {
     "small": ModelConfig(
-        "stabilityai/stable-audio-3-small",
-        "stable-audio-3-small-ARC.json",
-        "stable-audio-3-small-ARC.safetensors",
+        "stabilityai/stable-audio-3-small-music",
+        "model_config.json",
+        "model.safetensors",
     ),
     "medium": ModelConfig(
         "stabilityai/stable-audio-3-medium",
-        "stable-audio-3-medium-ARC.json",
-        "stable-audio-3-medium-ARC.safetensors",
+        "model_config.json",
+        "model.safetensors",
     ),
 }
 
@@ -413,17 +430,21 @@ _medium_stable_audio_3: tuple[ModelConfig, ...] = (
     rf_models["medium-rf"],
 )
 
+# The SAME repos were renamed to the canonical layout in the same reorg
+# (verified live 2026-07-04): model_config.json + model.safetensors. The old
+# SAME-S.json / SAME-S.safetensors names still resolve locally via the
+# plain "{repo_name}.*" alternates in _local_override.
 ae_models: dict[str, AutoencoderModelConfig] = {
     "same-s": AutoencoderModelConfig(
         ae_repo_id="stabilityai/SAME-S",
-        ae_config_path="SAME-S.json",
-        ae_ckpt_path="SAME-S.safetensors",
+        ae_config_path="model_config.json",
+        ae_ckpt_path="model.safetensors",
         stable_audio_3=_small_stable_audio_3,
     ),
     "same-l": AutoencoderModelConfig(
         ae_repo_id="stabilityai/SAME-L",
-        ae_config_path="SAME-L.json",
-        ae_ckpt_path="SAME-L.safetensors",
+        ae_config_path="model_config.json",
+        ae_ckpt_path="model.safetensors",
         stable_audio_3=_medium_stable_audio_3,
     ),
 }

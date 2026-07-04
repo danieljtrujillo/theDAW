@@ -1,4 +1,9 @@
 {
     "cmake.sourceDirectory": "D:/StableAudio/JoshOG/stable-audio-3/frontend/node_modules/nan",
-    "cmake.ignoreCMakeListsMissing": true
+    "cmake.ignoreCMakeListsMissing": true,
+    // Vendored stems sidecar: runs in its own venv (integration-package/backend/
+    // .sidecar_venv), so its imports do not resolve against the main venv.
+    "python.analysis.exclude": [
+        "integration-package"
+    ]
 }

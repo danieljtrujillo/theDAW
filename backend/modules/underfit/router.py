@@ -2,6 +2,10 @@
 
 Endpoints:
   * GET  /api/underfit/status — non-spawning health check + diagnostics.
+  * POST /api/underfit/setup  — build underfit/.venv on demand (uv sync),
+                                so a Pinokio or desktop install can create
+                                the environment from the tab with no terminal.
+  * GET  /api/underfit/setup-status — progress of an in-flight setup.
   * POST /api/underfit/start  — explicit spawn; returns the URL once the
                                 dashboard answers.
   * POST /api/underfit/stop   — terminates the sidecar (only a process
@@ -36,6 +40,18 @@ def get_status() -> dict:
     info = sidecar.probe()
     info["ok"] = not info["issues"] and info["listening"]
     return info
+
+
+@router.post("/setup")
+def post_setup() -> dict:
+    """Create underfit/.venv on demand (uv sync) so the tab can build its own
+    environment without a terminal. Returns immediately; poll /setup-status."""
+    return sidecar.start_setup()
+
+
+@router.get("/setup-status")
+def get_setup_status() -> dict:
+    return sidecar.setup_status()
 
 
 @router.post("/start")

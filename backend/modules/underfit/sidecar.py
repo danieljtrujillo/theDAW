@@ -30,13 +30,14 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -187,6 +188,98 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             f"Underfit dashboard didn't open port {cfg.port} within "
             f"{int(PORT_READY_TIMEOUT_SEC)}s. See {LOG_PATH} for its output."
         )
+
+
+# --- On-demand environment setup (create underfit/.venv from the app) ----
+# The dashboard needs its own venv (underfit/.venv). The dev launcher builds it
+# through install/setup.ps1, but a Pinokio install or the packaged desktop app
+# never runs that script, so the tab could report a missing venv with no
+# in-app way to fix it. This runs `uv sync --inexact` in the underfit checkout
+# on a background thread so the tab can create the environment with one click,
+# with no terminal.
+_setup_lock = Lock()
+_setup: dict = {"state": "idle", "returncode": None, "message": "", "log_tail": ""}
+
+
+def setup_status() -> dict:
+    """Snapshot of an on-demand venv setup: state is idle, running, done, or error."""
+    with _setup_lock:
+        return dict(_setup)
+
+
+def _setup_worker(cfg: UnderfitConfig, uv: str) -> None:
+    env = dict(os.environ)
+    # Keep uv's cache on the checkout's drive so wheels hardlink into .venv
+    # rather than falling back to a cross-volume copy, matching install/setup.ps1.
+    env.setdefault("UV_CACHE_DIR", str(_REPO_ROOT / ".uv-cache"))
+    tail: list[str] = []
+    try:
+        proc = subprocess.Popen(
+            [uv, "sync", "--inexact"],
+            cwd=str(cfg.project_path),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as e:
+        with _setup_lock:
+            _setup.update(
+                state="error", returncode=None, message=f"could not run uv: {e}"
+            )
+        return
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            tail.append(line.rstrip())
+            del tail[:-12]
+            with _setup_lock:
+                _setup["log_tail"] = "\n".join(tail)
+    rc = proc.wait()
+    ok = rc == 0 and cfg.python_path.is_file()
+    with _setup_lock:
+        _setup.update(
+            state="done" if ok else "error",
+            returncode=rc,
+            message="Underfit environment ready." if ok else f"uv sync exited {rc}.",
+        )
+
+
+def start_setup() -> dict:
+    """Build underfit/.venv via `uv sync --inexact` on a background thread.
+    Idempotent: reports done when the venv already exists, and never starts a
+    second run while one is in flight."""
+    cfg = resolve_config()
+    with _setup_lock:
+        if cfg.python_path.is_file():
+            _setup.update(state="done", message="Underfit environment already present.")
+            return dict(_setup)
+        if _setup["state"] == "running":
+            return dict(_setup)
+        if not cfg.project_path.is_dir():
+            _setup.update(
+                state="error",
+                message=f"underfit checkout not found at {cfg.project_path}",
+            )
+            return dict(_setup)
+        uv = shutil.which("uv")
+        if not uv:
+            _setup.update(
+                state="error",
+                message="uv was not found on the backend's PATH, so the environment "
+                "cannot be built automatically.",
+            )
+            return dict(_setup)
+        _setup.update(
+            state="running",
+            returncode=None,
+            message="Building the Underfit environment with uv sync. This can take a few minutes.",
+            log_tail="",
+        )
+        Thread(
+            target=_setup_worker, args=(cfg, uv), daemon=True, name="underfit-setup"
+        ).start()
+        return dict(_setup)
 
 
 def stop() -> bool:

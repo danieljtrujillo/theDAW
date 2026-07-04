@@ -1,0 +1,33 @@
+# Core dependencies
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+websockets==13.1
+aiofiles==24.1.0
+
+# Audio processing - Next-Gen Models
+audio-separator>=0.20.0  # BS-RoFormer wrapper with auto-download
+demucs  # Audio source separation
+torchcrepe>=0.0.21  # F0 pitch tracking for vocal separation
+torch>=2.0.0
+torchaudio>=2.0.0
+torchcodec  # torchaudio 2.9+ decodes through torchcodec; needs FFmpeg shared libs on PATH/DLL search path
+numpy==1.24.3
+scipy==1.11.4
+soundfile==0.12.1
+librosa==0.10.2
+
+# LARSNET dependencies
+pyyaml==6.0.1
+tqdm==4.66.5
+
+# Utilities
+python-dotenv==1.0.1
+pydantic==2.9.2
+
+# Optional accelerations
+# For Intel MKL acceleration (optional)
+# intel-extension-for-pytorch
+
+# For AMD ROCm (optional)
+# torch-directml  # Windows AMD GPU support

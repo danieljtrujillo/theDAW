@@ -1598,35 +1598,37 @@ The **Settings → Models** panel in §21.1 is the easiest route, but checkpoint
 
 Inside a search folder, each model lives in a **subfolder named after its Hugging Face repo** (the part after `stabilityai/`). The config JSON and the `.safetensors` go in that subfolder. The original Hugging Face filenames work unchanged, and so do the generic `model_config.json` + `model.safetensors` names.
 
+**Repo naming since the June 2026 reorganization.** Stability restructured the Hugging Face repos. The former `stable-audio-3-small` repo was retired in favor of two specialized small models, `stable-audio-3-small-music` and `stable-audio-3-small-sfx`. Every repo now ships exactly two model files, `model_config.json` and `model.safetensors`; the old `stable-audio-3-*-ARC` / `-RF` filenames no longer exist on the Hub. Repos without a suffix hold the post-trained ARC checkpoints and are gated: accepting the license on the repo page grants access automatically, and downloads then need a logged-in Hugging Face token. The `-base` repos hold the RF training bases and download without a token. theDAW's `small` key maps to the music variant.
+
 Download table (each links to its Hugging Face repo):
 
 | Key | Use | Hugging Face repo | Files to place in the subfolder |
 |---|---|---|---|
-| `small` | Primary inference, CPU-capable | [stable-audio-3-small](https://huggingface.co/stabilityai/stable-audio-3-small) | `stable-audio-3-small-ARC.json`, `stable-audio-3-small-ARC.safetensors` |
-| `medium` | Primary inference, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `stable-audio-3-medium-ARC.json`, `stable-audio-3-medium-ARC.safetensors` |
-| `small-rf` | LoRA training base, CPU | [stable-audio-3-small](https://huggingface.co/stabilityai/stable-audio-3-small) | `stable-audio-3-small-RF.json`, `stable-audio-3-small-RF.safetensors` |
-| `medium-rf` | LoRA training base, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `stable-audio-3-medium-RF.json`, `stable-audio-3-medium-RF.safetensors` |
-| `same-s` | Standalone autoencoder (optional) | [SAME-S](https://huggingface.co/stabilityai/SAME-S) | `SAME-S.json`, `SAME-S.safetensors` |
-| `same-l` | Standalone autoencoder (optional) | [SAME-L](https://huggingface.co/stabilityai/SAME-L) | `SAME-L.json`, `SAME-L.safetensors` |
+| `small` | Primary inference, CPU-capable | [stable-audio-3-small-music](https://huggingface.co/stabilityai/stable-audio-3-small-music) | `model_config.json`, `model.safetensors` |
+| `medium` | Primary inference, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `model_config.json`, `model.safetensors` |
+| `small-rf` | LoRA training base, CPU | [stable-audio-3-small-music-base](https://huggingface.co/stabilityai/stable-audio-3-small-music-base) | `model_config.json`, `model.safetensors` |
+| `medium-rf` | LoRA training base, CUDA GPU | [stable-audio-3-medium-base](https://huggingface.co/stabilityai/stable-audio-3-medium-base) | `model_config.json`, `model.safetensors` |
+| `same-s` | Standalone autoencoder (optional) | [SAME-S](https://huggingface.co/stabilityai/SAME-S) | `model_config.json`, `model.safetensors` |
+| `same-l` | Standalone autoencoder (optional) | [SAME-L](https://huggingface.co/stabilityai/SAME-L) | `model_config.json`, `model.safetensors` |
 
 A typical Small + Medium install under the repo-root `models/` folder looks like this:
 
 ```
 stable-audio-3/
 └── models/
-    ├── stable-audio-3-small/
-    │   ├── stable-audio-3-small-ARC.json
-    │   └── stable-audio-3-small-ARC.safetensors
+    ├── stable-audio-3-small-music/
+    │   ├── model_config.json
+    │   └── model.safetensors
     └── stable-audio-3-medium/
-        ├── stable-audio-3-medium-ARC.json
-        └── stable-audio-3-medium-ARC.safetensors
+        ├── model_config.json
+        └── model.safetensors
 ```
 
-The subfolder name is what matters; inside it, `stable-audio-3-medium-RF.safetensors` + `stable-audio-3-medium-RF.json`, or `model.safetensors` + `model_config.json`, both resolve.
+The subfolder name matches the repo, and the two files inside keep their Hugging Face names. Repo-named copies such as `stable-audio-3-medium-ARC.safetensors` also resolve. Placements that followed the pre-reorg version of this guide keep working too: the resolver still accepts the old folder names (`stable-audio-3-small`, `stable-audio-3-medium`) holding the old suffixed filenames (`stable-audio-3-small-ARC.json`, `stable-audio-3-medium-RF.safetensors`, and so on).
 
-The specialized post-trained and base variants follow the same convention: a subfolder named after the repo (`stable-audio-3-small-music`, `stable-audio-3-small-sfx`, `stable-audio-3-medium-base`, and the matching `-music-base` / `-sfx-base` repos) holding `model_config.json` + `model.safetensors`.
+The sound-effects variant follows the same convention: a subfolder named `stable-audio-3-small-sfx` (or `stable-audio-3-small-sfx-base` for its training base) holding `model_config.json` + `model.safetensors`.
 
-**Which to download.** A CUDA GPU runs `medium` (the higher-quality path, roughly 17 GB). CPU-only machines run `small`. The `-rf` checkpoints are for LoRA training, not normal generation. **SAME-S and SAME-L are optional**: the ARC and RF checkpoints already bundle the autoencoder, and a standalone SAME reuses that bundled copy, so download SAME only for standalone encode/decode without a DiT.
+**Which to download.** A CUDA GPU runs `medium` (a roughly 9 GB checkpoint). CPU-only machines run `small`. The `-rf` checkpoints are for LoRA training rather than normal generation. **SAME-S and SAME-L are optional**: the ARC and RF checkpoints already bundle the autoencoder, and a standalone SAME reuses that bundled copy, so download SAME only for standalone encode/decode without a DiT.
 
 **The T5Gemma text encoder** ([google/t5gemma-b-b-ul2](https://huggingface.co/google/t5gemma-b-b-ul2)) is always required for text conditioning. It does NOT go in the `models/` folder; it loads from the Hugging Face cache under `%USERPROFILE%\.cache\huggingface\hub\`. Let the app fetch it on the first generation, or pre-fetch it with `hf download google/t5gemma-b-b-ul2`. Set `HF_HOME` before launching to relocate the cache.
 

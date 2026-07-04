@@ -4,13 +4,13 @@
   <div style="font-size:22px; font-weight:800; letter-spacing:0.1em; color:#a855f7; text-shadow:0 0 19px rgba(168,85,247,0.45); margin-top:3px;">by GANTASMO</div>
 </div>
 
-theDAW packs most of a music career into one program. It writes original audio from a text prompt, arranges it on a multitrack timeline, masters it through a deep effects chain, splits it into stems, performs it across two beatmatched DJ decks, runs a reactive visual show, transcribes it to sheet music and tablature, and files everything in a searchable library that records how each piece descended from the last. It trains custom models on a collection and answers questions about any of it from a built-in assistant. A separate DAW, audio generator, stem separator, DJ rig, VJ engine, notation editor, sample manager, and model trainer collapse into a single window.
+theDAW combines several music tools in one program. It generates audio from a text prompt, arranges it on a multitrack timeline, masters it through an effects chain, splits it into stems, performs it across two beatmatched DJ decks, runs an audio-reactive visual show, transcribes it to sheet music and tablature, and files everything in a searchable library that records how each piece descended from the last. It trains custom models on a collection and answers questions about the app from a built-in assistant. The DAW, audio generator, stem separator, DJ rig, VJ engine, notation editor, sample manager, and model trainer run in a single window.
 
 Generation runs on Stable Audio 3, the open generative audio model from Stability AI. A prompt becomes finished stereo, and the same model menu reaches Magenta RealTime 2 for streaming text-to-music and Suno for cloud renders. Chimera fusion folds several clips into one tempo-aligned track, while init signals, inpainting, and LoRA adapters steer a render toward a target.
 
 A track then moves through EDIT for waveform surgery and region inpainting, and MIX for the Edit Tool Stack and Quick Master macros. The DJ workspace runs two decks with beatmatch sync, key-lock, live stems, an FX rack, hot cues, and hands-free automix, and the VJ workspace drives WebGL visuals from the audio, a microphone, MIDI, or a phone on the same network.
 
-Nothing is discarded. The Library keeps every piece on disk with its analysis, stems, and MIDI, and LEARN draws the lineage between pieces as a navigable 3D genealogy. A symbolic-music pipeline turns a track into sheet music, tablature, and multi-instrument arrangements, and reads a finished score back into a prompt. TRAIN fits LoRA adapters and runs autoencoder round-trips, an assistant answers from this guide, and a paste-a-URL importer pulls audio from YouTube, SoundCloud, and Bandcamp.
+The Library keeps every piece on disk with its analysis, stems, and MIDI, and LEARN draws the lineage between pieces as a navigable 3D genealogy. A symbolic-music pipeline turns a track into sheet music, tablature, and multi-instrument arrangements, and reads a finished score back into a prompt. TRAIN fits LoRA adapters and runs autoencoder round-trips, an assistant answers from this guide, and a paste-a-URL importer pulls audio from YouTube, SoundCloud, and Bandcamp.
 
 The **Docs** button in the top bar opens this guide as a modal with a filterable table of contents, a Markdown download, and a print-to-PDF in three styles. Every workspace and the full backend API follow below.
 
@@ -28,7 +28,7 @@ The **Docs** button in the top bar opens this guide as a modal with a filterable
 8. [MIX Tab: Effects and Mastering](#8-mix-tab)
 9. [DJ Tab: Performance Mixer](#9-dj-tab)
 10. [VJ Tab: Live Visuals](#10-vj-tab)
-11. [TRAIN Tab: LoRA and Autoencoder](#11-train-tab)
+11. [Underfit Tab: LoRA Training](#11-underfit-tab)
 12. [LEARN Tab: Lineage and Genealogy](#12-learn-tab)
 13. [Library](#13-library)
 14. [Step Sequencer](#14-step-sequencer)
@@ -52,6 +52,11 @@ The **Docs** button in the top bar opens this guide as a modal with a filterable
 32. [Admin, Module, and Assistant-Key APIs](#32-admin-module-and-assistant-key-apis)
 33. [Notation, Score, Tabs, and Arrangements](#33-notation-score-tabs-and-arrangements)
 34. [Quest and XR Integrations](#34-quest-and-xr-integrations)
+35. [Perform Tab: Scene and Clip Grid](#35-perform-tab)
+36. [Foundry Tab: Plugin UI Builder](#36-foundry-tab)
+37. [App Menu and Project Operations](#37-app-menu-and-project-operations)
+38. [HOME Screen and Onboarding Tour](#38-home-screen-and-onboarding-tour)
+39. [Backup, Updates, and Maintenance](#39-backup-updates-and-maintenance)
 
 ---
 
@@ -61,7 +66,7 @@ The **Docs** button in the top bar opens this guide as a modal with a filterable
 |---|---|---|
 | **ML pipeline** | `stable_audio_3/` | Upstream Stability AI code: DiT, SAME autoencoder, all samplers, LoRA parametrization, distribution-shift schedules, T5Gemma conditioner. |
 | **FastAPI backend** | `backend/server.py` | HTTP wrapper around the pipeline. Async job queue for generation; synchronous endpoints for studio effects and model introspection. Port 8600. |
-| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` (name, API prefix, enabled flag) and `router.py` (FastAPI APIRouter). The loader (`backend/modules/loader.py`) discovers and mounts every enabled module at startup; a failed module is logged and skipped without stopping the server. The modules that ship in the repo are: `analysis`, `analyzer` (`/api/edit/analyzer`), `chimera`, `controllervision`, `creative_fx` (`/api/edit/creative-fx`), `creative_neural` (`/api/edit/creative-neural`), `delivery` (`/api/edit/delivery`), `effects` (mounted at `/api/studio`), `enhance` (`/api/edit/enhance`), `library`, `magenta`, `mastering` (`/api/edit/mastering`), `midi`, `restoration` (`/api/edit/restoration`), `settings`, `stems`, `suno`, `vj`, and `ytimport`. The six `/api/edit/*` families form the **Edit Tool Stack** (§28); `suno` (§26) and `magenta` (§27) add cloud and real-time generation. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` (name, API prefix, enabled flag) and `router.py` (FastAPI APIRouter). The loader (`backend/modules/loader.py`) discovers and mounts every enabled module at startup; a failed module is logged and skipped without stopping the server. Forty-two module directories ship in the repo, grouped here by function: generation and models (`chimera`, `magenta`, `suno`, `modeldl` at `/api/models`, `storage` at `/api/storage`); the Edit Tool Stack under `/api/edit/*` (`mastering`, `restoration`, `enhance`, `delivery`, `creative_fx`, `creative_neural`, `analyzer`); processing and plugins (`effects` at `/api/studio`, `vst`, `plugin`, `convert`); library and audio analysis (`library`, `analysis`, `notation`, `sheetimport`, `vocal`, `midi`, `stems`); live visuals (`vj`, `akvj`, `broadcast`, `controllervision`); Quest and XR (`quest`, `questcast`, `queststitch`, `questmidi`, `xrcontrol`); projects and app data (`project`, `dawimport`, `backup`, `updates`, `settings`); credentials and proxies (`hfauth`, `genaiproxy`); builders (`foundry`, `underfit`); and URL import (`ytimport`). The `/api/edit/*` families form the **Edit Tool Stack** (§28); `suno` (§26) and `magenta` (§27) add cloud and real-time generation. |
 | **React app** | `frontend/` | Tailwind 4 + React 19 + Zustand 5 + Vite 6. Multi-tab DAW interface. Proxies `/api/*` to the backend. Port 5173 in development. |
 
 ---
@@ -96,7 +101,7 @@ All in-browser audio (library playback, waveform editor preview, step sequencer,
 
 ### Prerequisites
 
-Put these on your PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path — effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 550+** for the Medium model / Magenta (the Small model runs on CPU). On Windows, `theDAW.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
+Put these on the PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path: effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 550+** for the Medium model and Magenta (the Small model runs on CPU). On Windows, `theDAW.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
 
 ### Base Python environment
 
@@ -181,9 +186,21 @@ The application window has five regions:
 - **Global bottom dock**: the bottom multi-tab panel and the processing log, side by side.
 - **Player footer** (bottom): a fixed transport bar.
 
-**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
+**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, the app menu (§37), and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
-**Center tab switching:** the active workspace is controlled by the center tab bar in the locked order **MAKE / EDIT / PERFORM / MIX / DJ / VJ / TRAIN / LEARN** (`CENTER_TABS`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly.
+**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`) in the locked order **MAKE / EDIT / MIX / Perform / DJ / VJ / Foundry / Underfit / Learn**. Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly. The nine tabs are:
+
+- **MAKE**: generate audio from a text prompt with the AI models (§6).
+- **EDIT**: arrange clips on a timeline, add effects and automation, and export (§7).
+- **MIX**: process and master audio with the effect and module rack (§8).
+- **Perform**: import a project and perform its scene and clip grid live (§35).
+- **DJ**: a two-deck console for mixing, cueing, stems, and automix (§9).
+- **VJ**: the live visuals engine with sources, effects, and output (§10).
+- **Foundry**: design and export custom plugin interfaces on an infinite canvas (§36).
+- **Underfit**: train LoRA finetunes in the embedded Underfit dashboard (§11).
+- **Learn**: lineage, genealogy, and the guides and assistant (§12).
+
+**Shell surfaces from the app menu:** three surfaces sit above the workspaces and open from the header. The **app menu** (§37) is the hamburger button in the header icon cluster; it groups project operations, data operations, device deploy, layout and settings, and help. The **HOME overlay** (§38) is a full-screen launcher with one card per workspace tab, a task row, and a show-at-startup preference; it appears after the boot intro and reopens from the menu. The **Feature Tour** (§38) is a six-step guided walkthrough that spotlights real controls; it starts from the menu or the HOME task row.
 
 **PERFORM tab:** the Perform workspace (`SessionView`) imports a DAW project or a `.tasmo` file and performs its scene/clip grid live. The project controls live in the tab header (a path input, Browse, and Import), so the session grid gets the full remaining height. Clicking or focusing the path input opens a dropdown of recent projects: ArrowDown and ArrowUp move through the list, Enter opens the highlighted entry, Escape closes the dropdown, and one click on an entry imports it immediately. The recent list persists across backend restarts (`data/recent_projects.json`).
 
@@ -193,11 +210,11 @@ The application window has five regions:
 
 **Global bottom dock:** pinned across the bottom of the app are two independent columns, the bottom multi-tab panel on the left (Visualize / Piano / Sequence / Details / Media / SLIDE / Score) and the processing log on the right, aligned under the library rail. Each column has its own height, collapse toggle, and resize handle, so expanding or resizing one does not move the other, and the dock stays put regardless of the library panel's state.
 
-**Docs modal:** click the Docs button in the header to open this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. The assistant RAG index is built from the same guide, so doc updates improve in-app help and assistant context together.
+**Docs modal:** click the Docs button in the header to open this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. This guide is one document in the assistant's RAG corpus (the full list is in `backend/rag.py`), so revising it improves both the in-app manual and the assistant's grounding.
 
 **Mobile access share:** click the QR/link button in the header to copy or scan the current LAN or tunnel URL for mobile performance access. This is useful with the VJ tab and any browser-based controller or viewer.
 
-**AI Assistant panel:** click the orb icon in the header to open the collapsible assistant panel. It streams chat from any configured LLM provider with RAG context sourced from this user guide, supports file attachments and voice input, and exposes provider and key-pool controls. See [§19.11](#1911-assistant) for the API reference.
+**AI Assistant panel:** click the orb icon in the header to open the collapsible assistant panel. It streams chat from any configured LLM provider with RAG context retrieved from the document corpus registered in `backend/rag.py` (this guide plus the other manuals and guides), supports file attachments and voice input, and exposes provider and key-pool controls. See [§19.11](#1911-assistant) for the API reference.
 
 **Viewport scaling:** the UI applies a CSS `zoom` factor based on viewport width (0.85 below 1440 px; 0.95 at 1440 to 1919 px; 1.1 at 1920 px and above). Shell height calculations compensate so the layout tiles cleanly down to the footer.
 
@@ -225,7 +242,7 @@ Six controls arranged in a 3-column grid:
 
 | Control | Type | Notes |
 |---|---|---|
-| **Model** | Dropdown | `small`, `medium`, `small-rf`, `medium-rf`, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). An `-rf` variant raises Steps to 50 and CFG to 7.0. Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel. |
+| **Model** | Dropdown | `small` and `medium` for primary inference, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel. The `small-rf` and `medium-rf` checkpoints are rectified-flow training bases surfaced through the Underfit trainer (§11) rather than inference models; selecting an `-rf` variant for a direct render raises Steps to 50 and CFG to 7.0 to run it, and the ARC `small` and `medium` checkpoints are the intended generation path. |
 | **Duration (s)** | Integer | Total output length in seconds. Small model: max 120 s. Medium and Large: max 380 s. |
 | **Batch** | Integer | Number of simultaneous variations. Each variation produces a distinct library entry with its own seed. |
 | **Steps** | Integer | Sampler denoising steps. ARC default: 8. RF default: 50. |
@@ -245,7 +262,7 @@ Templates and saved prompts are stored in browser local storage for rapid iterat
 
 ### 6.3.1 Chimera Fusion Stack
 
-Chimera fuses two or more audio clips into a single init signal before generation. Source clips can arrive from the Library toolbar and context menu, the Media Bucket, the microphone recorder, or other send targets. This is the engine that turns a folder of loops, a hummed melody, and an imported break into one coherent starting point.
+Chimera fuses two or more audio clips into a single init signal before generation. Source clips can arrive from the Library toolbar and context menu, the Media Bucket, the microphone recorder, or other send targets.
 
 | Control | Description |
 |---|---|
@@ -266,7 +283,7 @@ Rendering posts to `POST /api/chimera/mashup`, normalizes inputs to 44.1 kHz ste
 
 Audio-to-audio mode. Upload a source file through the dropzone to condition the model on existing audio. Any audio works as an init signal: a generated clip, an imported track, a mic take, a stem, or a Chimera fusion.
 
-- **Init Noise (0–1)** controls the ratio of source signal to random noise injected at the start of the denoising trajectory. Lower values preserve more of the source character; higher values grant the model more generative freedom.
+- **Init Noise (0 to 1)** controls the ratio of source signal to random noise injected at the start of the denoising trajectory. Lower values preserve more of the source character; higher values grant the model more generative freedom.
 - **Type** is `Audio` (standard) or `RF-Inv` (RF-Inversion, meaningful only with `-rf` model variants).
 
 Removing the source file returns the form to text-to-audio mode.
@@ -437,9 +454,17 @@ Eight sliders shape the result: **Bleed** (dry host through to full mosaic), **G
 
 ### 7.10 Live MIDI Playback in the Timeline
 
-A clip whose source is a piano-roll part plays its notes live through the soundfont engine during transport, not only as a pre-rendered bounce. Each track maps to one synth channel (up to sixteen), and notes are scheduled against the editor clock at the clip's BPM.
+A clip whose source is a piano-roll part plays its notes live through the soundfont engine during transport rather than only as a pre-rendered bounce. Each track maps to one synth channel (up to sixteen), and notes are scheduled against the editor clock at the clip's BPM.
 
 Live MIDI is opt-in: it activates only when the soundfont is in use, or a per-clip or per-track instrument is set, so projects that never touch instruments keep playing their bounced audio unchanged. A clip's instrument falls back to its track's instrument, then to the globally selected program. Mute and solo are honored by skipping a track's notes. If the synth is not ready, the clip's bounced audio plays instead. The offline export still renders from each clip's last bounce. Choose an instrument as described in §15.8.
+
+### 7.11 Automation Lanes
+
+An automation lane draws one parameter's value curve over a timeline row (`AutomationLane`). Each lane targets a single automatable parameter, so track volume, track pan, and an insert-FX parameter each get their own lane and are edited on their own. Read-only lanes render the curve without accepting pointer input, so clip editing underneath stays unaffected.
+
+An editable lane accepts breakpoint edits directly on the curve. Click an empty area of the curve to add a breakpoint at that time and value. Drag a point to move it; a dragged point is clamped between its neighbors so points never cross in time. Right-click a point, or Alt-click it, to delete it. Pointer math uses bounding-rectangle ratios, so edits stay accurate under the shell's CSS zoom.
+
+**WRITE record mode** captures automation from live moves. With WRITE armed, moving a target parameter during transport writes breakpoints into that parameter's lane, timestamped against the editor transport clock rather than wall time, so a recorded move lines up with the audio on the next pass. Recorded lanes then edit as ordinary breakpoint curves, and they bake into COMMIT EDIT through the same offline graph as the rest of the mix (§7.6).
 
 ---
 
@@ -512,6 +537,22 @@ All effects are dispatched to `ffmpeg` through `subprocess.run`. Server-side bou
 ### 8.5 Process History
 
 The last processing invocations are retained in the store. Any history item can be selected and promoted back to the current source.
+
+### 8.6 Categorized effect rail
+
+The left rail groups everything MIX can add to the chain. **All** lists every processor at once in list or tile view. **Studio** holds the studio module instruments, the Ares XY control surface, and the psychoacoustic effects. **Magenta** holds the Magenta RealTime 2 generative tools. **VST** lists scanned VST3 plugins (§8.7). **Plugins** lists installed `.gan` web-plugins (§8.8). Below those, one entry per backend effect category (mastering, dynamics, EQ, tempo, cleanup, export) filters the library to that category. Each rail row shows a live count. Selecting a category populates the center library; clicking an item in the library appends it to the chain on the right.
+
+### 8.7 VST3 hosting through pedalboard
+
+The VST category scans the standard VST3 folders and lists the plugins it finds; the **Rescan** button re-runs the scan. The `vst` module (`/api/vst`) hosts plugins through pedalboard, so a scanned plugin adds to the chain as a `vst3` node and processes audio in chain order like any other effect. A chain entry for a hosted plugin exposes a control that opens the plugin's native GUI; adjusting and closing that GUI captures the plugin's raw state, so the saved settings ride with the node on the next process. The full walkthrough is [guides/mix-vst-and-gan.md](guides/mix-vst-and-gan.md).
+
+### 8.8 The .gan web-plugin loader
+
+The Plugins category loads `.gan` web-plugins, the browser-based pseudo-VST format produced by the Foundry builder (§36). **Open .gan** loads a `.gan` file, and **Import** wraps a Foundry export (`project.json`) into a `.gan`. The `plugin` module (`/api/plugin`) serves the plugin UI into the effect stage as an iframe and relays the plugin's control output to theDAW targets. Selecting an installed `.gan` opens it in the stage; right-clicking a tile reveals the file in its folder.
+
+### 8.9 How chain nodes process together
+
+Backend effects, studio modules, psychoacoustic effects, hosted VST3 plugins, and `.gan` plugins all become entries in the one MIX chain. The chain runs left to right, and each entry can be bypassed, reordered, or removed. Pressing Process on the footer transport applies the whole chain to the source and returns the processed audio for playback, download, and routing (§8.4).
 
 ---
 
@@ -649,42 +690,31 @@ The visuals lock to a BPM taken from the audio bridge or a DJ deck, driving time
 
 ---
 
-## 11. TRAIN Tab
+## 11. Underfit Tab
 
 ### Purpose
 
-The TRAIN tab (`TrainingView`) is the interface for LoRA fine-tuning configuration and autoencoder round-trip validation. Some endpoints are fully implemented in the backend; others are stubs in this fork pending integration.
+The Underfit tab (`UnderfitView`) hosts LoRA finetuning of the Stable Audio models. It embeds the Underfit dashboard, a vendored trainer that runs as its own process, and drives dataset preparation and training from inside theDAW. The full workflow lives in [guides/underfit.md](guides/underfit.md).
 
-### 11.1 Target Architecture
+### 11.1 The embedded dashboard
 
-| Field | Description |
-|---|---|
-| **Module name** | Output checkpoint filename label. |
-| **Target module** | Which submodule to attach LoRA to (`attn_kv` is the default and most-tested). |
-| **Epochs / Steps** | Training step budget. |
-| **Rank** | LoRA rank. Controls the number of trainable parameters per layer. |
-| **Alpha** | Scaling factor. Effective update scale is alpha divided by rank. Setting alpha equal to rank gives a scale of 1.0. |
-| **Dataset path** | Server-side filesystem path containing audio files and paired text prompts. |
+The Underfit dashboard runs as a standalone server on `http://localhost:8791` and appears in the tab as an iframe. The tab pings the server for reachability every three seconds and mounts the iframe only once the server answers, so a dashboard that is still starting shows a connecting state instead of a dead page. A reload control remounts the iframe, and an open-externally control loads the dashboard in a separate browser tab.
 
-### 11.2 Pre-encode Workflow
+### 11.2 Sidecar lifecycle
 
-Pre-encoding a dataset to latents before training accelerates iteration. Submit a dataset path and output path; the backend job runner calls `pre_encode.py` against the dataset.
+The `underfit` backend module (`/api/underfit`) manages the dashboard process. It spawns the vendored server on `:8791` at backend startup, so the tab loads without launching anything separately. `GET /api/underfit/status` reports the sidecar state (`listening`, `process_alive`, `project_path`, `port`, and any `issues`). When the checkout exists but the server is not running, the tab shows an installed-but-stopped state with a **Start Underfit** button that calls `POST /api/underfit/start` and blocks until the server answers.
 
-> **Backend status:** stub, returns HTTP 501. Use `python -m stable_audio_3.scripts.pre_encode` directly until this is wired.
+### 11.3 Missing-environment state
 
-### 11.3 Autoencoder Round-trip
+When the trainer environment is absent, the status probe returns install issues and the tab shows "Underfit isn't installed on this machine yet" with the specific problems (a missing checkout or a missing venv). A **Create environment** button calls `POST /api/underfit/setup`, which builds `underfit/.venv` with a one-time dependency sync and no terminal. The tab polls `GET /api/underfit/setup-status` until the build finishes, then starts the dashboard. Model packs download later, on demand, when a run needs them. A **Re-check** button re-runs the probe.
 
-Upload an audio file; the backend encodes it to base64-serialized latents, then decodes them back to audio for reconstruction quality verification.
+### 11.4 Dataset-to-LoRA flow
 
-> **Backend status:** `/api/autoencoder/info` returns an empty list, so the TRAIN tab displays "no autoencoders available." Encode and decode endpoints return HTTP 501. The frontend intercepts these responses and shows specific messages in the UI instead of generic network errors.
-
-### 11.4 Job Polling
-
-Long-running training jobs are tracked through `GET /api/jobs/{id}`, polled at 1-second intervals. The `logs` field of the response is rendered as streaming console output.
+Training happens inside the dashboard. Point it at a dataset of audio clips with paired text captions, choose a rectified-flow base checkpoint (`small-rf` or `medium-rf`, §21) and the LoRA settings, and run the finetune. The resulting adapter loads at inference through the Python API (§20.5); the adapter types and training arguments are documented in §22. See [guides/underfit.md](guides/underfit.md) for the end-to-end walkthrough.
 
 ---
 
-![The TRAIN workspace for LoRA adapters](screenshots/train.png)
+![The Underfit LoRA trainer dashboard](screenshots/train.png)
 
 ## 12. LEARN Tab
 
@@ -1056,7 +1086,7 @@ The SLIDE tab is the glass-capsule control surface that mirrors the VJ engine's 
 
 ### 16.7 Score
 
-The Score tab renders a track's symbolic music — sheet music, guitar and bass tabs, and arrangements — from its MIDI artifacts, and exports to MusicXML, ABC, PDF, and SVG. It is documented in full in §33.
+The Score tab renders a track's symbolic music (sheet music, guitar and bass tabs, and arrangements) from its MIDI artifacts, and exports to MusicXML, ABC, PDF, and SVG. It is documented in full in §33.
 
 ---
 
@@ -1354,7 +1384,7 @@ GET /api/assistant/reindex
 → { "status": "ok", "chunks_indexed": N }
 ```
 
-Forces a full re-parse and re-embedding of `USER_GUIDE.md` into the ChromaDB vector store. Called automatically at startup.
+Forces a full re-parse and re-embedding of the document corpus registered in `backend/rag.py` (`DOC_PATHS`, which includes this guide alongside the other manuals and guides) into the ChromaDB vector store. The index also builds lazily on the assistant's first RAG query.
 
 ### 19.12 Module Loader
 
@@ -1556,14 +1586,16 @@ Full parameter reference: `stable_audio_3/model.py:StableAudioModel.generate`.
 
 ARC checkpoints bundle the autoencoder. Standalone SAME checkpoints share weights with the bundled version and reuse the cached full checkpoint when both are available. The Small model runs on modest GPUs; the Medium model needs around 8 GB of VRAM.
 
+The `small-rf` and `medium-rf` rectified-flow checkpoints are training bases rather than primary inference models. They are the starting point for LoRA finetuning and are surfaced through the Underfit trainer (§11) rather than as a recommended MAKE selection. Use ARC `small` or `medium` for generation.
+
 The MAKE Model dropdown also lists two engines beyond these checkpoints. `magenta-small` reaches the Magenta RealTime 2 sidecar for streaming text-to-music (§27). Suno cloud generation sits under `suno` (§26). Both options share the dropdown with the local Stable Audio models, so one session can move across them without leaving MAKE.
 
 ### 21.1 Settings → Models: local checkpoints and the no-download guarantee
 
 Nothing downloads at startup. The backend boots without touching a checkpoint, and a model loads only at the first CREATE that needs it. Resolution runs local-first on every load:
 
-1. **Local model folders** — any directory listed in `local_models.txt` at the repo root or in the `SA3_LOCAL_MODELS_DIR` environment variable, plus a `models/` folder in the repo if present. Each folder holds subfolders named after the HF repo (for example `stable-audio-3-medium/`).
-2. **The Hugging Face cache** — anything a previous session already downloaded.
+1. **Local model folders**: any directory listed in `local_models.txt` at the repo root or in the `SA3_LOCAL_MODELS_DIR` environment variable, plus a `models/` folder in the repo if present. Each folder holds subfolders named after the HF repo (for example `stable-audio-3-medium/`).
+2. **The Hugging Face cache**: anything a previous session already downloaded.
 3. **A one-time download** from the model's HF repo, only when neither local source has the files.
 
 The one-time download runs through the `modeldl` module (`/api/models`), which streams the weights with a live progress registry surfaced in the Settings download dock, so a first fetch shows progress instead of blocking silently.
@@ -1572,7 +1604,7 @@ The **Models** section sits directly below the pinned Restart/Shutdown controls 
 
 - **Local only (never download)** is **ON by default for fresh installs**, so nothing ever downloads until it is explicitly allowed; an existing explicit choice is preserved. With it on, a missing model fails with a clear message instead of downloading. The switch persists across restarts (it drives `SA3_LOCAL_ONLY`).
 - **Installed / Connected cards** cover every engine in one glance: Stable Audio 3 (catalog plus registered checkpoints, with the active/loaded model and a ★ on the recommended option), Magenta RT2 (running / installed / needs Setup-MRT2), Suno API (key configured or not, with the key field right below), Demucs/stems, and the MIDI engines. States read Active, Ready, Cached, Local, Setup, Needs key, Missing config, or Blocked.
-- **Add a checkpoint you already have** registers any checkpoint on disk, with a **Browse** button that opens the native Windows folder picker (typing a path still works). Point it at a folder containing a model config JSON plus one `.safetensors` file, or at the `.safetensors` file itself. Registered checkpoints appear under **LOCAL CHECKPOINTS** in the MAKE model picker and generate exactly like catalog models. Removing an entry never touches the files.
+- **Add a checkpoint** registers any checkpoint already on disk, with a **Browse** button that opens the native Windows folder picker (typing a path still works). Point it at a folder containing a model config JSON plus one `.safetensors` file, or at the `.safetensors` file itself. Registered checkpoints appear under **LOCAL CHECKPOINTS** in the MAKE model picker and generate exactly like catalog models. Removing an entry never touches the files.
 - **When a config JSON is missing**, the failure says exactly what was found (checkpoints, configs, what failed to pair). The config comes from the Hugging Face repo the checkpoint belongs to, or from the training/export run that produced it. When the checkpoint is a recognized built-in variant and the matching config exists locally or in the cache, a **Generate config** button copies the official JSON next to the checkpoint; configs are never guessed for unknown architectures.
 - **Locations** lists every model location with its size and an **Open** button: the HF cache, each local model folder, the generated-audio library, the assistant's RAG index, the Torch hub cache, and the Magenta WSL assets and engine venv (via `\\wsl.localhost\…`). Hovering a size shows what models live in that directory, their exact paths and sizes, and stars the recommended pick when several are present (ARC over RF, medium over small).
 - **Hugging Face cache breakdown** expands to a per-repo size table, each row openable in Explorer.
@@ -1601,39 +1633,43 @@ The **Settings → Models** panel in §21.1 is the easiest route, but checkpoint
 
 Inside a search folder, each model lives in a **subfolder named after its Hugging Face repo** (the part after `stabilityai/`). The config JSON and the `.safetensors` go in that subfolder. The original Hugging Face filenames work unchanged, and so do the generic `model_config.json` + `model.safetensors` names.
 
+**Repo naming since the June 2026 reorganization.** Stability restructured the Hugging Face repos. The former `stable-audio-3-small` repo was retired in favor of two specialized small models, `stable-audio-3-small-music` and `stable-audio-3-small-sfx`. Every repo now ships exactly two model files, `model_config.json` and `model.safetensors`; the old `stable-audio-3-*-ARC` / `-RF` filenames no longer exist on the Hub. Repos without a suffix hold the post-trained ARC checkpoints and are gated: accepting the license on the repo page grants access automatically, and downloads then need a logged-in Hugging Face token (see the token section below). The `-base` repos hold the RF training bases and download without a token. theDAW's `small` key maps to the music variant.
+
 Download table (each links to its Hugging Face repo):
 
 | Key | Use | Hugging Face repo | Files to place in the subfolder |
 |---|---|---|---|
-| `small` | Primary inference, CPU-capable | [stable-audio-3-small](https://huggingface.co/stabilityai/stable-audio-3-small) | `stable-audio-3-small-ARC.json`, `stable-audio-3-small-ARC.safetensors` |
-| `medium` | Primary inference, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `stable-audio-3-medium-ARC.json`, `stable-audio-3-medium-ARC.safetensors` |
-| `small-rf` | LoRA training base, CPU | [stable-audio-3-small](https://huggingface.co/stabilityai/stable-audio-3-small) | `stable-audio-3-small-RF.json`, `stable-audio-3-small-RF.safetensors` |
-| `medium-rf` | LoRA training base, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `stable-audio-3-medium-RF.json`, `stable-audio-3-medium-RF.safetensors` |
-| `same-s` | Standalone autoencoder (optional) | [SAME-S](https://huggingface.co/stabilityai/SAME-S) | `SAME-S.json`, `SAME-S.safetensors` |
-| `same-l` | Standalone autoencoder (optional) | [SAME-L](https://huggingface.co/stabilityai/SAME-L) | `SAME-L.json`, `SAME-L.safetensors` |
+| `small` | Primary inference, CPU-capable | [stable-audio-3-small-music](https://huggingface.co/stabilityai/stable-audio-3-small-music) | `model_config.json`, `model.safetensors` |
+| `medium` | Primary inference, CUDA GPU | [stable-audio-3-medium](https://huggingface.co/stabilityai/stable-audio-3-medium) | `model_config.json`, `model.safetensors` |
+| `small-rf` | LoRA training base, CPU | [stable-audio-3-small-music-base](https://huggingface.co/stabilityai/stable-audio-3-small-music-base) | `model_config.json`, `model.safetensors` |
+| `medium-rf` | LoRA training base, CUDA GPU | [stable-audio-3-medium-base](https://huggingface.co/stabilityai/stable-audio-3-medium-base) | `model_config.json`, `model.safetensors` |
+| `same-s` | Standalone autoencoder (optional) | [SAME-S](https://huggingface.co/stabilityai/SAME-S) | `model_config.json`, `model.safetensors` |
+| `same-l` | Standalone autoencoder (optional) | [SAME-L](https://huggingface.co/stabilityai/SAME-L) | `model_config.json`, `model.safetensors` |
 
 A typical Small + Medium install under the repo-root `models/` folder looks like this:
 
 ```
 stable-audio-3/
 └── models/
-    ├── stable-audio-3-small/
-    │   ├── stable-audio-3-small-ARC.json
-    │   └── stable-audio-3-small-ARC.safetensors
+    ├── stable-audio-3-small-music/
+    │   ├── model_config.json
+    │   └── model.safetensors
     └── stable-audio-3-medium/
-        ├── stable-audio-3-medium-ARC.json
-        └── stable-audio-3-medium-ARC.safetensors
+        ├── model_config.json
+        └── model.safetensors
 ```
 
-The subfolder name is what matters; inside it, `stable-audio-3-medium-RF.safetensors` + `stable-audio-3-medium-RF.json`, or `model.safetensors` + `model_config.json`, both resolve.
+The subfolder name matches the repo, and the two files inside keep their Hugging Face names. Repo-named copies such as `stable-audio-3-medium-ARC.safetensors` also resolve. Placements that followed the pre-reorg version of this guide keep working too: the resolver still accepts the old folder names (`stable-audio-3-small`, `stable-audio-3-medium`) holding the old suffixed filenames (`stable-audio-3-small-ARC.json`, `stable-audio-3-medium-RF.safetensors`, and so on).
 
-The specialized post-trained and base variants follow the same convention: a subfolder named after the repo (`stable-audio-3-small-music`, `stable-audio-3-small-sfx`, `stable-audio-3-medium-base`, and the matching `-music-base` / `-sfx-base` repos) holding `model_config.json` + `model.safetensors`.
+The sound-effects variant follows the same convention: a subfolder named `stable-audio-3-small-sfx` (or `stable-audio-3-small-sfx-base` for its training base) holding `model_config.json` + `model.safetensors`.
 
-**Which to download.** A CUDA GPU runs `medium` (the higher-quality path, roughly 17 GB). CPU-only machines run `small`. The `-rf` checkpoints are for LoRA training, not normal generation. **SAME-S and SAME-L are optional**: the ARC and RF checkpoints already bundle the autoencoder, and a standalone SAME reuses that bundled copy, so download SAME only for standalone encode/decode without a DiT.
+**Which to download.** A CUDA GPU runs `medium` (a roughly 9 GB checkpoint). CPU-only machines run `small`. The `-rf` checkpoints are for LoRA training rather than normal generation. **SAME-S and SAME-L are optional**: the ARC and RF checkpoints already bundle the autoencoder, and a standalone SAME reuses that bundled copy, so download SAME only for standalone encode/decode without a DiT.
 
 **The T5Gemma text encoder** ([google/t5gemma-b-b-ul2](https://huggingface.co/google/t5gemma-b-b-ul2)) is always required for text conditioning. It does NOT go in the `models/` folder; it loads from the Hugging Face cache under `%USERPROFILE%\.cache\huggingface\hub\`. Let the app fetch it on the first generation, or pre-fetch it with `hf download google/t5gemma-b-b-ul2`. Set `HF_HOME` before launching to relocate the cache.
 
-**Already have a checkpoint elsewhere?** Skip the folder convention entirely: open **Settings → Models → Add a checkpoint you already have**, click **Browse**, and point it at the folder (or the `.safetensors` file) directly.
+**Hugging Face token (gated repos).** The `hfauth` module (`/api/hfauth`) manages a Hugging Face token for repos that require authentication. It detects a token already present in the environment or stored on disk and validates it against the Hugging Face `whoami` endpoint, reporting the account it belongs to. Logging in submits a new token, which is validated the same way before it is stored. Logging out removes the stored token. The token affects only authenticated fetches; the cache locations and the local-first resolution order above are unchanged.
+
+**Registering a checkpoint stored elsewhere.** Skip the folder convention entirely: open **Settings → Models → Add a checkpoint**, click **Browse**, and point it at the folder (or the `.safetensors` file) directly.
 
 **Magenta RealTime 2 (optional)** is not a Stable Audio checkpoint and is not placed this way. Its one-time installer is `sidecars/magenta-rt2-nvidia/Setup-MRT2.bat`, which sets up the WSL2 engine and its assets (§27).
 
@@ -1694,9 +1730,9 @@ If the request fails, restart the backend. On Windows, `.\theDAW.bat` kills stal
 
 One or more clip source Blobs are failing to decode. The decode step has a 15-second timeout per Blob; if all clips time out, the render never completes. Check the Processing Log for `decodeAudioData timeout` entries. Likely causes: a corrupted Blob in the library, or an unusually large audio file. Remove the suspect clip and retry.
 
-### TRAIN tab displays "TRAINING METADATA FAILED"
+### Underfit tab reports a missing environment or stays on "connecting"
 
-`/api/autoencoder/info` returned a non-OK status. In this fork, the endpoint is a stub that returns an empty list, which is the expected behavior. The TRAIN tab degrades gracefully; LoRA training is available through the command line.
+The Underfit dashboard runs as a sidecar on port 8791. On a fresh install the tab can report that the trainer environment is missing. Click **Create environment** in the tab to build `underfit/.venv`, which runs once and takes a few minutes. If the tab stays on "connecting" after that, the sidecar started but did not bind the port; check `data/underfit-sidecar.log` for the dashboard output.
 
 ### Vite dev server cannot reach `/api`
 
@@ -2039,7 +2075,7 @@ Operational endpoints used by the Settings modal and shell.
 | `DELETE /api/assistant/keys/{provider}/{hash}` · `DELETE /api/assistant/keys/{provider}` | Remove one key / clear a provider's pool. |
 | `GET /api/assistant/keys/{provider}/raw` | Return raw keys for local-trust convenience, where the backend operates as a trusted-local service. |
 
-The assistant streams chat from any configured provider: Claude Code over the CLI, Gemini, Anthropic, OpenAI, Grok, Groq, OpenRouter, Ollama, LM Studio, llama.cpp, and vLLM. Each provider draws from the hashed multi-key pool above with round-robin distribution and failover, exposes live model lists and attachments, and grounds answers in a ChromaDB RAG index over these docs.
+The assistant streams chat from any configured provider: Claude Code over the CLI, Gemini, Anthropic, OpenAI, Grok, Groq, OpenRouter, Ollama, LM Studio, llama.cpp, and vLLM. Each provider draws from the hashed multi-key pool above with round-robin distribution and failover, exposes live model lists and attachments, and grounds answers in a ChromaDB RAG index over the document corpus registered in `backend/rag.py`, which includes more documents than this guide.
 
 ---
 
@@ -2067,10 +2103,10 @@ The Tabs section turns a MIDI into tablature. Choose the instrument (Guitar or B
 
 The Arrange section produces a playable MusicXML arrangement from a track's MIDIs. The styles are:
 
-- **lead-sheet** — the melody (skyline) with chord symbols above it.
-- **piano-reduction** — a two-staff grand staff split at middle C.
-- **simplified** — a single-staff quantized melody.
-- **band-score** — one staff per separated stem, combined into a full score.
+- **lead-sheet**: the melody (skyline) with chord symbols above it.
+- **piano-reduction**: a two-staff grand staff split at middle C.
+- **simplified**: a single-staff quantized melody.
+- **band-score**: one staff per separated stem, combined into a full score.
 
 Arrangements render in the same in-browser sheet-music viewer as MAKE SHEET and are saved as MusicXML artifacts.
 
@@ -2132,6 +2168,116 @@ Each integration needs USB debugging enabled on the Quest, or a wireless ADB pai
 ### 34.7 MIDI Reactor
 
 The MIDI Reactor is the headset-side visualizer fed by theDAW's return MIDI over the `questmidi` bridge (§34.3). Head-mounted reactive chrome responds to the incoming note and control messages, so the performer sees the DAW's state reflected in the spatial scene. It installs from theDAW-XR's GANTASMO menu.
+
+### 34.8 Deploy to Quest
+
+The **Deploy to Quest** item in the app menu (§37, Devices) installs the theDAW-XR headset app over adb without a Unity build. The `quest` module (`/api/quest`) drives it. The walkthrough is [guides/quest-deploy.md](guides/quest-deploy.md).
+
+- **adb discovery.** The backend resolves an adb executable even when adb is not on PATH. It honors an explicit override saved to `data/quest.json`, then falls back to adb on PATH, then searches the Android SDK, the Unity Hub bundled SDK, and the Meta Quest Developer Hub install locations. The dialog reports where adb came from and lets the operator set the override path once.
+- **Device detection.** The dialog lists connected devices from `adb devices -l`, showing each device's serial, connection state (`device`, `unauthorized`, or `offline`), and model. A headset is flagged as a Quest from its model, product, and device fields, including the hardware codenames, so a terse model string still reads as a Quest. A device is deployable once its state is `device`.
+- **Get Latest.** The dialog can pull the newest release APK instead of requiring a local build. It reads the latest release of `gantasmo/theDAW-XR` on GitHub, downloads the `.apk` asset into `data/quest/`, and reuses an existing complete download when the file size already matches, so re-clicking does not re-download.
+- **Install over adb.** Installing runs `adb install -r` for the selected APK against the chosen device, replacing any prior install while keeping data. An optional launch step starts the installed package's launcher activity so the headset opens straight into theDAW-XR.
+
+Each path needs USB debugging enabled on the headset, or a wireless adb pairing. No Quest Link session and no Meta Quest Developer Hub casting are required.
+
+---
+
+## 35. Perform Tab
+
+### Purpose
+
+The Perform tab (`SessionView`) plays a project as a live scene and clip grid. It imports a DAW project or a `.tasmo` file (§37), lays the project's scenes and clips out on a launch grid, and performs them during a set. The project controls live in the tab header, so the grid takes the remaining height.
+
+### 35.1 Loading a project
+
+The header carries a project path input, a Browse control, and an Import button. Clicking or focusing the path input opens a dropdown of recent projects. ArrowDown and ArrowUp move through the list, Enter opens the highlighted entry, Escape closes the dropdown, and one click on an entry imports it immediately. The recent list persists across backend restarts (`data/recent_projects.json`).
+
+A `.tasmo` path opens directly in the grid. Any other project path goes through detection and import: the backend identifies the DAW that wrote the file and parses it, and the header reports the detected DAW along with any format limitations or per-track warnings. The parser set is covered in §37.
+
+### 35.2 The scene and clip grid
+
+Once a project loads, the grid (`DawSessionGrid`) fills the workspace with the project's scenes and clips laid out for launching. The header shows the project name and tempo, the scene count, and the track count.
+
+### 35.3 Routing panel
+
+A **Routing** toggle in the header opens the routing panel (`PerformRoutingPanel`). It assigns a controller (the Sway control surface or any MIDI controller) to scene launch and to mix modulation, so a live performance drives the grid and the mix from hardware or from tracked motion. The routing is captured into the project when it is saved as `.tasmo`.
+
+### 35.4 DAW project into a scene
+
+Two header actions move an imported project onward. The **.tasmo** action saves the current project, together with its perform routing, as a `.tasmo` file (§37). The **Edit Timeline** action loads the imported project into the editable EDIT timeline (§7), so a session arranged for launching can be opened as clips on tracks for detailed editing.
+
+---
+
+## 36. Foundry Tab
+
+### Purpose
+
+The Foundry tab (`FoundryView`) embeds the VST Foundry plugin-UI builder, a tool for designing plugin interfaces on an infinite canvas and exporting them. The full walkthrough is [guides/foundry.md](guides/foundry.md).
+
+### 36.1 The sidecar
+
+Foundry is a Node application that serves its own interface on its own port. The `foundry` backend module (`/api/foundry`) spawns that sidecar on first request and returns its live URL from `GET /api/foundry/url`; the tab points an iframe at that URL. The first launch installs the Node dependencies and boots the server, so the tab retries the URL fetch and shows a starting state while that runs. When Foundry cannot start (for example when Node.js is not installed), the backend returns its diagnostic message and the tab shows it verbatim. A reload control re-fetches the URL, and a pop-out control opens the same URL in a standalone window for a larger design surface.
+
+### 36.2 Exports into MIX
+
+A Foundry design exports as a `.gan` web-plugin. The MIX `.gan` loader imports that export and runs the plugin in the effect stage (§8.8), so an interface built in Foundry becomes a usable processor in a MIX chain.
+
+---
+
+## 37. App Menu and Project Operations
+
+The app menu (`HamburgerMenu`) is the hamburger button in the header icon cluster. It opens a keyboard-navigable dropdown grouped into five sections. The project and DAW-import workflow is documented in [guides/projects-and-daw-import.md](guides/projects-and-daw-import.md).
+
+### 37.1 Menu items
+
+- **Project**: **New Project** clears the workspace for a fresh session. **Open Project** loads a saved `.tasmo` file. **Save Project** writes the current session to a `.tasmo` file. **Import DAW Project** brings in a project written by another DAW.
+- **Data**: **Backup / Migrate**, **Check for Updates**, and **Restore Previous Version** open the maintenance dialogs described in §39.
+- **Devices**: **Deploy to Quest** opens the headset deploy dialog described in §34.8.
+- **App**: **Edit Layout** toggles Design Mode for the draggable panel layouts (its row shows an accent dot while active). **Settings** opens the Settings modal. **Docs** opens this guide (§5).
+- **Help**: **Feature Tour** starts the guided walkthrough, and **Home Screen** reopens the HOME overlay, both covered in §38.
+
+### 37.2 The .tasmo project format
+
+theDAW saves and loads native projects as `.tasmo` files through the `project` module (`/api/project`). The format is a hybrid of MsgPack and ZIP, with optional embedding of the audio the project references. Open and Save in the Project menu read and write this format, and the Perform tab saves an imported session as `.tasmo` from its header (§35.4).
+
+### 37.3 DAW import parser set
+
+**Import DAW Project** reads a project written by another DAW and converts it for theDAW. The `dawimport` module (`/api/dawimport`) parses Ableton Live (`.als`), Reaper (`.RPP`), and Logic Pro X (`.logicx`) projects. The importer reports the detected DAW and any format limitations. An imported project can open as a Perform scene grid (§35) or load into the EDIT timeline (§7). Per-DAW coverage and limitations are in [guides/projects-and-daw-import.md](guides/projects-and-daw-import.md).
+
+---
+
+## 38. HOME Screen and Onboarding Tour
+
+### 38.1 HOME overlay
+
+The HOME overlay (`HomeScreen`) is a full-screen launcher. It appears after the boot intro finishes and reopens on demand from the app menu's **Home Screen** item (§37). The top row shows the theDAW wordmark and a version chip. Below the hero line sit the workspace cards, one per center tab (MAKE, EDIT, MIX, Perform, DJ, VJ, Foundry, Underfit, Learn); each card shows the tab's name and its one-line description, and clicking a card opens that workspace and dismisses the overlay.
+
+A slim task row sits under the cards with **Open Project**, **Import Audio** (shown when an import handler is available), and **Feature Tour**. A **Show at startup** checkbox controls whether HOME appears on the next launch; the preference persists on its own (the overlay's open state always resets per launch). Escape dismisses the overlay.
+
+### 38.2 Feature Tour
+
+The Feature Tour is a six-step guided walkthrough (`TOUR_STEPS`). It starts from the app menu's **Feature Tour** item or the HOME task row. Each step switches to the relevant tab and spotlights a real on-screen control:
+
+1. **Settings**: open the app menu and go to Settings to enable or download the models and modules a feature needs.
+2. **Make music**: type a prompt in MAKE to generate audio.
+3. **Chimera**: braid two or more sounds into one by adding clips to the Chimera stack in MAKE (§6.3.1), shown with a splice motif.
+4. **Draw sound**: the DRAW panel turns a sketch into generative music.
+5. **Stems anywhere**: right-click a library track and choose Separate stems, or enable auto-stems in Settings.
+6. **Train a custom LoRA**: train on a personal dataset in the Underfit tab (§11).
+
+---
+
+## 39. Backup, Updates, and Maintenance
+
+The app menu's **Data** section (§37) holds backup, restore, and update operations. The full workflow is [guides/backup-and-updates.md](guides/backup-and-updates.md).
+
+### 39.1 Backup and restore
+
+**Backup / Migrate** opens the backup dialog, backed by the `backup` module (`/api/backup`). A backup exports user data to a portable ZIP: the library (audio, the database, stems, MIDI, scores, and video, with lineage), `.tasmo` projects, and settings. Restoring that ZIP on another install brings the same data back, so a setup can move between machines.
+
+### 39.2 Update checks and version restore
+
+**Check for Updates** opens the update dialog, backed by the `updates` module (`/api/updates`). It compares the installed version, read from `pyproject.toml`, against the latest published release on GitHub, and caches the result on disk for six hours. **Restore Previous Version** opens the same dialog on its releases list, so an install can move to an earlier published release.
 
 ---
 

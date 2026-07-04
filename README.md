@@ -61,6 +61,14 @@ cd frontend && npm run dev                                              # fronte
 
 > The full [User Guide](docs/USER_GUIDE.md) is a deep power-user reference. It runs long and parts can lag the current app, so it works best as a reference rather than a first stop. Quick links: [Windows Setup](docs/windows/setup-guide.md), [Prompting](docs/guides/prompting.md), [§3 Installation](docs/USER_GUIDE.md#3-installation).
 
+### Install paths
+
+Three routes install and run theDAW. Pick one.
+
+- **Windows script install.** Double-click `theDAW.bat`. It preflights prerequisites, runs `install/setup.ps1` for consent-based tool installation, then launches the backend and UI. See [docs/windows/setup-guide.md](docs/windows/setup-guide.md).
+- **Packaged desktop app.** The Electron shell wraps the backend and UI in one window and starts them together. See [docs/guides/electron-desktop-app.md](docs/guides/electron-desktop-app.md).
+- **Pinokio launcher.** The Pinokio script installs dependencies and starts theDAW from the Pinokio browser. See [docs/guides/pinokio-launcher.md](docs/guides/pinokio-launcher.md) and [github.com/gantasmo/theDAW-Pinokio](https://github.com/gantasmo/theDAW-Pinokio).
+
 ### Prerequisites
 
 `theDAW.bat` installs these automatically the first time a tool is missing. The list is here for reference and for manual or non-Windows setups.
@@ -83,7 +91,7 @@ theDAW is a React frontend over a FastAPI backend that wraps the Stable Audio 3 
 
 ```mermaid
 flowchart TD
-  UI["theDAW UI<br/>MAKE EDIT PERFORM MIX DJ VJ TRAIN LEARN"]:::in
+  UI["theDAW UI<br/>MAKE EDIT MIX PERFORM DJ VJ FOUNDRY UNDERFIT LEARN"]:::in
   API["FastAPI backend :8600<br/>job queue, FFmpeg, introspection"]:::proc
   SA3["Stable Audio 3<br/>DiT + SAME AE"]:::eng
   MODS["Plugin modules"]:::proc
@@ -161,12 +169,14 @@ Every feature has a full reference in the [User Guide](docs/USER_GUIDE.md). Name
 - **[MAKE](#make)** generates audio from one form. [Text-to-audio](docs/USER_GUIDE.md#6-make-tab), [audio-to-audio](docs/USER_GUIDE.md#6-make-tab), [inpainting](docs/USER_GUIDE.md#6-make-tab), and [continuation](docs/USER_GUIDE.md#6-make-tab) all condition the same generation, alongside the [microphone recorder](docs/USER_GUIDE.md#6-make-tab), [Chimera fusion](docs/USER_GUIDE.md#6-make-tab), the [Spectrogram viewer](docs/USER_GUIDE.md#6-make-tab), [templates and saved prompts](docs/USER_GUIDE.md#6-make-tab), and the [async job queue](docs/USER_GUIDE.md#19-backend-api-reference).
 - **[Generate](#generate)** adds cloud and real-time engines: [Suno](docs/USER_GUIDE.md#26-cloud-generation-suno) in simple, custom, cover, and mashup modes, and [Magenta RealTime 2](docs/USER_GUIDE.md#27-magenta-realtime-2) text-to-music with MIDI-note and audio-style conditioning.
 - **[EDIT](#edit)** is the multi-track timeline: [per-clip waveforms](docs/USER_GUIDE.md#7-edit-tab), [move and cut](docs/USER_GUIDE.md#7-edit-tab), a [snap grid](docs/USER_GUIDE.md#7-edit-tab), a [live per-track mixer](docs/USER_GUIDE.md#7-edit-tab), [trim and fade handles](docs/USER_GUIDE.md#7-edit-tab), [inpaint from editor](docs/USER_GUIDE.md#7-edit-tab), and [commit to one stereo WAV](docs/USER_GUIDE.md#7-edit-tab).
-- **[MIX](#mix)** is the effects and mastering stage: a [24-effect FFmpeg chain](docs/USER_GUIDE.md#8-mix-tab), [Quick Master macros](docs/USER_GUIDE.md#8-mix-tab), [process history](docs/USER_GUIDE.md#8-mix-tab), the six-family [Edit Tool Stack](docs/USER_GUIDE.md#28-edit-tool-stack), in-chain [VST3 hosting](docs/USER_GUIDE.md#8-mix-tab), and [.gan web-plugins](docs/USER_GUIDE.md#8-mix-tab) such as the **The Owl** spatializer.
-- **[TRAIN](#train)** fits [LoRA adapters](docs/USER_GUIDE.md#22-lora-adapter-types): eight [adapter types](docs/USER_GUIDE.md#22-lora-adapter-types), [layer filtering](docs/workflows/lora.md), [interval gating](docs/workflows/lora.md), [SVD bases](docs/workflows/lora.md), and [autoencoder round-trips](docs/workflows/autoencoder.md).
+- **[MIX](#mix)** is the effects and mastering stage: a [25-effect FFmpeg chain](docs/USER_GUIDE.md#8-mix-tab), [Quick Master macros](docs/USER_GUIDE.md#8-mix-tab), [process history](docs/USER_GUIDE.md#8-mix-tab), the six-family [Edit Tool Stack](docs/USER_GUIDE.md#28-edit-tool-stack), in-chain [VST3 hosting](docs/USER_GUIDE.md#8-mix-tab), and [.gan web-plugins](docs/USER_GUIDE.md#8-mix-tab) such as the **The Owl** spatializer.
+- **[Foundry](#foundry)** designs and exports custom VST and plugin interfaces on an infinite canvas, producing the `.gan` web-plugins that host in the MIX chain.
+- **[Underfit](#underfit)** fits [LoRA adapters](docs/USER_GUIDE.md#22-lora-adapter-types): eight [adapter types](docs/USER_GUIDE.md#22-lora-adapter-types), [layer filtering](docs/workflows/lora.md), [interval gating](docs/workflows/lora.md), [SVD bases](docs/workflows/lora.md), and [autoencoder round-trips](docs/workflows/autoencoder.md).
 - **[LEARN](#learn)** renders the [genealogy graph](docs/USER_GUIDE.md#12-learn-tab) in [3D and 2D](docs/USER_GUIDE.md#12-learn-tab) with a [layered SVG DAG](docs/USER_GUIDE.md#12-learn-tab) and [lineage edges](docs/USER_GUIDE.md#12-learn-tab) for every remix, inpaint, stem split, Chimera blend, and Suno cover.
 
 ### Live rig
 
+- **[Perform](#perform)** imports a project and plays its scene and clip grid live, driving the arrangement from a launch surface.
 - **[DJ](#dj)** runs two decks with [beatmatch sync and key-lock](docs/USER_GUIDE.md#9-dj-tab), [EQ, filter, and trim](docs/USER_GUIDE.md#9-dj-tab), [hotcues, loops, slip, and quantize](docs/USER_GUIDE.md#9-dj-tab), a [per-deck FX rack and master limiter](docs/USER_GUIDE.md#9-dj-tab), [live stems](docs/USER_GUIDE.md#9-dj-tab), [cue output](docs/USER_GUIDE.md#9-dj-tab), [Automix and a sampler bank](docs/USER_GUIDE.md#9-dj-tab), [MIDI-learn](docs/USER_GUIDE.md#9-dj-tab), [URL import](docs/USER_GUIDE.md#30-youtube-import), and [Design Mode](docs/USER_GUIDE.md#9-dj-tab).
 - **[VJ](#vj)** drives the [VJ-9000](https://github.com/gantasmo/VJ-9000) visual engine: a [3D reactive terrain](docs/USER_GUIDE.md#10-vj-tab), [camera sources](docs/USER_GUIDE.md#10-vj-tab) including phones and Quest headsets, a [GLSL shader source](https://github.com/gantasmo/VJ-9000) with fractals, materials, and audio-mapped params, an [ASCII effect](https://github.com/gantasmo/VJ-9000), [cymatics](docs/USER_GUIDE.md#10-vj-tab) and depth-cloud sources, [source banks](https://github.com/gantasmo/VJ-9000), a [GPU effect chain](docs/USER_GUIDE.md#10-vj-tab), [Autopilot and BPM sync](docs/USER_GUIDE.md#10-vj-tab), [recording and transcode](docs/USER_GUIDE.md#10-vj-tab), and a [watch-link broadcast](docs/guides/dj-and-genealogy.md).
 - **[Controllers and XR](#controllers-and-xr)** bind hardware and headsets: a [~110-profile library with auto-detect](docs/USER_GUIDE.md#31-controller-vision), [learn-by-capture](docs/USER_GUIDE.md#31-controller-vision), [Controller Vision](docs/USER_GUIDE.md#31-controller-vision), and the [theDAW-XR](docs/USER_GUIDE.md#34-quest-and-xr-integrations) circuit of hand-tracked MIDI, passthrough streaming, co-located multiplayer, and the MIDI Reactor.
@@ -174,7 +184,7 @@ Every feature has a full reference in the [User Guide](docs/USER_GUIDE.md). Name
 ### Library, notation, and tools
 
 - **[Library and Catalogue](#library-and-catalogue)**: a [disk-backed library](docs/USER_GUIDE.md#13-library) with [search, sort, and favorites](docs/USER_GUIDE.md#13-library), [inline playback](docs/USER_GUIDE.md#13-library), [play counts](docs/USER_GUIDE.md#13-library), the [SUGGEST playlist](docs/USER_GUIDE.md#13-library), and the cross-provider [Catalogue gallery](docs/USER_GUIDE.md#29-catalogue) with a lineage panel.
-- **[Projects, plugins, and interchange](docs/USER_GUIDE.md)**: save and load whole sessions as **.tasmo** project files (ZIP + MsgPack with optional audio embedding), **import DAW projects** (Ableton `.als`, Reaper `.rpp`, FL Studio `.flp`, Audacity, Audition, Bitwig, Resolume, plus Logic / Cubase / Pro Tools export hints), host **VST3** plugins in the MIX chain via [pedalboard](https://github.com/spotify/pedalboard), and package web UIs as portable **.gan** plugins (GANTASMO's pseudo-VST format) — the format that ships **The Owl** spatializer front-end.
+- **[Projects, plugins, and interchange](docs/USER_GUIDE.md)**: save and load whole sessions as **.tasmo** project files (ZIP + MsgPack with optional audio embedding), **import DAW projects** (Ableton `.als`, Reaper `.rpp`, FL Studio `.flp`, Audacity, Audition, Bitwig, Resolume, plus Logic / Cubase / Pro Tools export hints), host **VST3** plugins in the MIX chain via [pedalboard](https://github.com/spotify/pedalboard), and package web UIs as portable **.gan** plugins (GANTASMO's pseudo-VST format), the format that ships **The Owl** spatializer front-end.
 - **[Notation and Score](#notation-and-score)**: [MAKE SHEET to MusicXML](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements), [guitar and bass tabs](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements), [arrangements](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements), [ABC, PDF, and SVG export](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements), and [prompt inference](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements).
 - **[Bottom panel](#bottom-panel)**: the [spectral analyzer](docs/USER_GUIDE.md#16-bottom-panel-tabs), [piano roll](docs/USER_GUIDE.md#15-piano-roll), [step sequencer](docs/USER_GUIDE.md#14-step-sequencer), [media bucket](docs/USER_GUIDE.md#16-bottom-panel-tabs), the [SLIDE control surface](docs/USER_GUIDE.md#16-bottom-panel-tabs), and Details.
 - **[Footer, log, and assistant](#footer-log-and-assistant)**: the [player footer](docs/USER_GUIDE.md#17-player-footer), the [processing log](docs/USER_GUIDE.md#18-processing-log), and the [multi-provider assistant](docs/USER_GUIDE.md#32-admin-module-and-assistant-key-apis) with RAG over these docs.
@@ -206,7 +216,11 @@ The timeline holds many tracks, each clip caches its own waveform peaks, Move dr
 
 <p align="center"><img src="docs/readme/mix.png" alt="MIX effects browser, the flowing chain, and the Quick Master macro knobs" width="820"></p>
 
-A chain of 24 FFmpeg effects covers mastering, compression, filters, vocal processing, lo-fi, stereo widening, reverb, delay, LUFS normalization, pitch shift, and export to FLAC, MP3, AAC, and Opus. Four macro sliders map onto the active effect, and process history keeps the last eight runs. The Edit Tool Stack adds six module families under `/api/edit/*`, whose GUIs iframe into the effect stage. VST3 plugins, scanned from the standard folders and hosted through [pedalboard](https://github.com/spotify/pedalboard), drop into the same chain, and `.gan` web-plugins — including **The Owl**, the front-end for the HRTF spatializer — render in the effect-stage footprint and drive the live rack. Full reference: [User Guide §8](docs/USER_GUIDE.md#8-mix-tab) and [§28](docs/USER_GUIDE.md#28-edit-tool-stack).
+A chain of 25 FFmpeg effects covers mastering, compression, filters, vocal processing, lo-fi, stereo widening, reverb, delay, LUFS normalization, pitch shift, and export to FLAC, MP3, AAC, and Opus. Four macro sliders map onto the active effect, and process history keeps the last eight runs. The Edit Tool Stack adds six module families under `/api/edit/*`, whose GUIs iframe into the effect stage. VST3 plugins, scanned from the standard folders and hosted through [pedalboard](https://github.com/spotify/pedalboard), drop into the same chain, and `.gan` web-plugins (including **The Owl**, the front-end for the HRTF spatializer) render in the effect-stage footprint and drive the live rack. Full reference: [User Guide §8](docs/USER_GUIDE.md#8-mix-tab) and [§28](docs/USER_GUIDE.md#28-edit-tool-stack).
+
+### Perform
+
+The Perform tab imports a project and plays its scenes and clips from a live launch grid. Scenes fire columns of clips together, individual clips trigger on their own, and the grid drives the arrangement while a set runs.
 
 ### DJ
 
@@ -220,11 +234,13 @@ Two decks run from a pro layout with jog wheels, a central mixer, and a track br
 
 The VJ tab embeds the [VJ-9000](https://github.com/gantasmo/VJ-9000) engine, which renders a glowing reactive terrain plus a unified set of live sources: cameras (webcam, phone, tablet, or Quest over the LAN), a GLSL shader source with fractals, eight materials, and audio-mapped params, an ASCII effect, cymatics, depth-cloud and spectra sources, and source banks for snapshot and recall. A composable GPU effect chain, Autopilot, BPM sync, and full MIDI mapping sit on top, and the take records to WebM and transcodes through the backend. Full reference: [User Guide §10](docs/USER_GUIDE.md#10-vj-tab).
 
-### TRAIN
+### Foundry
 
-<p align="center"><img src="docs/readme/train.png" alt="TRAIN workshop for LoRA adapters with layer filtering and interval gating" width="820"></p>
+The Foundry tab lays out custom VST and plugin interfaces on an infinite canvas. A finished design exports as a `.gan` web-plugin (GANTASMO's portable plugin format), which then hosts in the MIX chain alongside VST3 plugins and the built-in effects.
 
-Eight adapter types are available (`lora`, `dora-rows`, `dora-cols`, `bora`, and their `-xs` variants). Layer filtering runs through `--include` and `--exclude` with bracket-range expansion. Inference exposes runtime strength, per-LoRA interval gating within a sigma range, and a per-LoRA layer filter, and adapters stack additively. Full reference: [User Guide §11](docs/USER_GUIDE.md#11-train-tab) and [§22](docs/USER_GUIDE.md#22-lora-adapter-types).
+### Underfit
+
+Underfit fits LoRA adapters. Eight adapter types are available (`lora`, `dora-rows`, `dora-cols`, `bora`, and their `-xs` variants). Layer filtering runs through `--include` and `--exclude` with bracket-range expansion. Inference exposes runtime strength, per-LoRA interval gating within a sigma range, and a per-LoRA layer filter, and adapters stack additively. Full reference: [User Guide §22](docs/USER_GUIDE.md#22-lora-adapter-types).
 
 ### LEARN
 
@@ -292,8 +308,8 @@ In-tree sidecars under `sidecars/` (`questcast`, `queststitch`, `magenta`) and t
 |---|---|---|
 | **Upstream ML pipeline** | `stable_audio_3/` | DiT diffusion transformer, SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | Async HTTP wrapper running a generation job queue, FFmpeg audio processing, and model introspection on port 8600. |
-| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships `analysis`, `analyzer`, `chimera`, `controllervision`, `convert`, `effects`, `library`, `midi`, `notation`, `settings`, `stems`, `storage`, `vj`, and `ytimport`, the cloud and real-time engines (`suno`, `magenta`), the XR bridges (`questmidi`, `questcast`, `queststitch`, `xrcontrol`), the `akvj` depth pipeline, `broadcast` for watch-link, `modeldl`, and the Edit Tool Stack under `/api/edit/*`. |
-| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Eight workspaces (MAKE, EDIT, PERFORM, MIX, DJ, VJ, TRAIN, LEARN) plus the library, the Catalogue, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend. |
+| **Backend modules** | `backend/modules/` | Plugin system. Each subdirectory provides `module.json` and `router.py`, and the loader mounts every enabled module and isolates failures. The repo ships 42 modules, including `analysis`, `analyzer`, `chimera`, `controllervision`, `convert`, `effects`, `library`, `midi`, `notation`, `settings`, `stems`, `storage`, `vj`, and `ytimport`, the cloud and real-time engines (`suno`, `magenta`), the XR bridges (`questmidi`, `questcast`, `queststitch`, `xrcontrol`, `quest`), the `foundry` plugin designer, the `underfit` LoRA trainer, the `akvj` depth pipeline, `broadcast` for watch-link, `modeldl`, and the Edit Tool Stack under `/api/edit/*`. |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Nine workspaces (MAKE, EDIT, MIX, Perform, DJ, VJ, Foundry, Underfit, Learn) plus the library, the Catalogue, and the live tools. The dev server on port 5173 proxies `/api/*` to the backend. |
 | **Sidecars** | `sidecars/` | The vendored `magenta-rt2-nvidia` port, the `questcast` and `queststitch` Quest bridges, and the `magenta` studio sidecar. |
 
 ### Folder map
@@ -328,7 +344,7 @@ stable-audio-3/
 **Where do models go?**
 
 - **The built-in models need no manual placement.** Every load resolves local-first: local model folders, then the Hugging Face cache at `%USERPROFILE%\.cache\huggingface\hub\` (relocatable by setting `HF_HOME` before launch), then a one-time download into that cache. **Local only (never download)** is on by default for fresh installs, so nothing fetches until it is allowed in **Settings → Models**; once allowed, the weights download automatically on the first generation that needs them (the `medium` checkpoint is roughly 17 GB), and the T5Gemma text encoder fetches into the same cache.
-- **A checkpoint already on disk** registers through **Settings → Models → Add a checkpoint you already have**: Browse to the folder (or the `.safetensors` file itself) and it appears in the MAKE model picker. Entries persist in `data/local_checkpoints.json`, and removing one never touches the files.
+- **A checkpoint already on disk** registers through the **Add** control in **Settings → Models**: browse to the folder (or the `.safetensors` file itself) and it appears in the MAKE model picker. Entries persist in `data/local_checkpoints.json`, and removing one never touches the files.
 - **The folder convention** works without the UI: create `models/` at the repo root (or list extra directories in `local_models.txt`, one path per line, or in the `SA3_LOCAL_MODELS_DIR` environment variable, `;`-separated on Windows) and give each checkpoint a subfolder named after its Hugging Face repo, for example `models/stable-audio-3-medium/` holding the config JSON and the `.safetensors`. [User Guide §21.2](docs/USER_GUIDE.md#212-manual-model-placement-download-links-and-folder-tree) has the full download table.
 - **Magenta RealTime 2 models are not placed by hand.** `sidecars/magenta-rt2-nvidia/Setup-MRT2.bat` installs the WSL2 engine and its assets in one pass.
 
@@ -361,10 +377,11 @@ audio = pipe.generate(init_audio=torchaudio.load("in.wav"), init_noise_level=0.9
                       prompt="bossa nova bassline", duration=30)
 
 # LoRA stacks additively; runtime strength is adjustable.
-pipe.load_lora("style.safetensors", weight=0.8)
+pipe.load_lora("style.safetensors")
+pipe.set_lora_strength(0.8)
 audio = pipe.generate(
     prompt="...", duration=30,
-    sampler_type="dpmpp_2m_sde",   # euler | rk4 | dpmpp_2m_sde | ping_pong
+    sampler_type="dpmpp",          # euler | rk4 | dpmpp | pingpong
     apg_scale=1.0,                 # Adaptive Projected Guidance
     cfg_interval=(0.0, 1.0),       # apply CFG only within this sigma range
 )

@@ -39,7 +39,7 @@ export class TabErrorBoundary extends React.Component<TabErrorBoundaryProps, Tab
               {this.props.tabName} stopped
             </span>
           </div>
-          <div className="mt-2 rounded bg-black/25 px-2 py-1.5 text-[9px] font-mono text-red-100/80 break-words">
+          <div className="mt-2 rounded bg-black/25 px-2 py-1.5 text-[9px] font-mono text-red-100/80 wrap-break-word">
             {this.state.error.message || 'Unknown error'}
           </div>
           <button

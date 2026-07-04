@@ -293,7 +293,7 @@ export const UpdateModal: React.FC<{
                 )}
               </div>
               {check?.notesExcerpt && (
-                <p className="text-[9px] font-mono leading-snug text-zinc-400 whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
+                <p className="text-[9px] font-mono leading-snug text-zinc-400 whitespace-pre-wrap wrap-break-word max-h-24 overflow-y-auto">
                   {check.notesExcerpt}
                 </p>
               )}
