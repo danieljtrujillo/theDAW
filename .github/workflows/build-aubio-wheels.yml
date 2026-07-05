@@ -1,0 +1,133 @@
+# Build the prebuilt aubio wheels the packaged app installs from.
+#
+# aubio (chimera's primary tempo/beat detector, backend/modules/chimera) ships
+# NO wheels on PyPI (source only since 0.4.9 in 2019) and its C source will not
+# compile on a stock target machine, so the first-run `uv sync` MUST install
+# aubio from a vendored per-platform wheel. Windows already has
+# wheels/aubio-0.4.9-cp310-cp310-win_amd64.whl. This job builds the two
+# remaining targets the project ships to:
+#   - macOS arm64      -> the dmg (electron-builder mac target is arm64-only)
+#   - manylinux x86_64 -> the Docker image (python:3.10-slim-bookworm)
+#
+# AFTER A RUN: download both artifacts, drop the .whl files into wheels/, add
+# the matching path entries to pyproject.toml [tool.uv.sources] aubio (see the
+# comment there), then run `uv lock` and commit wheels/ + pyproject.toml +
+# uv.lock together. electron-builder.yml already ships wheels/ to python/wheels.
+#
+# Recipe notes (aubio 0.4.9 + NumPy 2.x), verified against aubio issue #402 and
+# the NumPy 2.0 C-ABI guidance:
+#   * Build against NumPy 2.x (NUMPY_BUILD_VERSION below). NumPy's ABI is
+#     forward-compatible only, so a wheel built against 2.x runs on >=2.x
+#     (the project's 2.2.6 / 2.4.3); a wheel built against 1.x throws
+#     "compiled using NumPy 1.x cannot run in NumPy 2.x". The existing Windows
+#     wheel importing under NumPy 2.2.6 confirms building against 2.x is right.
+#   * The only NumPy-2-era compile break is the const-npy_intp
+#     PyUFuncGenericFunction mismatch (aubio#402), which clang 16 (Xcode 15)
+#     and gcc 14 promote from warning to hard error. One -Wno-error= flag
+#     clears it with no source patch, but the flag SPELLING differs per
+#     compiler (clang has the -function- variant, gcc does not), so the two
+#     jobs set CFLAGS separately.
+#   * aubio has no pyproject and declares numpy only via setup_requires, so the
+#     build runs with isolation OFF and the build deps pre-installed.
+#   * Install no audio -dev libs: aubio then compiles its vendored src/ tree
+#     self-contained (libc/libm on Linux, system frameworks on macOS), so
+#     auditwheel/delocate repair produce portable wheels with no bundled deps.
+#
+# House style follows .github/workflows/release.yml: first-party actions/* only
+# (cibuildwheel is invoked via pip, never as a third-party Action) and versions
+# pinned via env vars with sync-rule comments.
+
+name: build-aubio-wheels
+
+on:
+  workflow_dispatch:
+  # TEMPORARY: also run on push to the CI branch so the wheels can be produced
+  # before this workflow exists on the default branch (a workflow_dispatch-only
+  # workflow is not dispatchable until it lands on the default branch). Remove
+  # this push trigger before merging; workflow_dispatch is the intended
+  # permanent trigger.
+  push:
+    branches:
+      - "ci/aubio-wheels"
+
+permissions:
+  contents: read
+
+env:
+  # Python that RUNS cibuildwheel on the runner. cibuildwheel 4.x requires a
+  # host Python >= 3.11; this is INDEPENDENT of the wheel target. The target is
+  # cp310 (set per job via CIBW_BUILD), and cibuildwheel provisions its own
+  # CPython 3.10 to build it. The cp310 target is what stays in sync with
+  # .python-version and the wheels/ filenames, NOT this runner version.
+  RUNNER_PYTHON_VERSION: "3.12"
+  # The aubio release pinned across pyproject.toml + wheels/ filenames.
+  AUBIO_VERSION: "0.4.9"
+  # Build-time NumPy. Must be a 2.x (forward-compatible ABI) so the wheel runs
+  # on the project's runtime numpy (>=2.2.6). 2.0.2 is the oldest cp310-capable
+  # 2.x, which maximizes runtime reach. NEVER build against a 1.x numpy.
+  NUMPY_BUILD_VERSION: "2.0.2"
+  # cibuildwheel pinned; bump deliberately.
+  CIBW_VERSION: "4.1.0"
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.RUNNER_PYTHON_VERSION }}
+      - name: Fetch the aubio sdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip download --no-deps --no-binary :all: "aubio==${AUBIO_VERSION}" -d sdist
+      - name: Install cibuildwheel (via pip, not the Action)
+        run: python -m pip install "cibuildwheel==${CIBW_VERSION}"
+      - name: Build the macOS arm64 wheel
+        env:
+          CIBW_BUILD: "cp310-macosx_arm64"
+          CIBW_ARCHS_MACOS: "arm64"
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          CIBW_BEFORE_BUILD: "pip install 'numpy==${{ env.NUMPY_BUILD_VERSION }}' 'setuptools<74' wheel"
+          # clang 16 (Xcode 15) spelling has the -function- variant. The extra
+          # -Wno-error tokens are insurance against gcc/clang default-error
+          # promotions in aubio's older vendored src/*.c; harmless if unused.
+          CIBW_ENVIRONMENT_MACOS: >-
+            CFLAGS="-Wno-error=incompatible-function-pointer-types -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+            MACOSX_DEPLOYMENT_TARGET=11.0
+        run: python -m cibuildwheel --output-dir wheelhouse "sdist/aubio-${AUBIO_VERSION}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aubio-cp310-macos-arm64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.RUNNER_PYTHON_VERSION }}
+      - name: Fetch the aubio sdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip download --no-deps --no-binary :all: "aubio==${AUBIO_VERSION}" -d sdist
+      - name: Install cibuildwheel (via pip, not the Action)
+        run: python -m pip install "cibuildwheel==${CIBW_VERSION}"
+      - name: Build the manylinux x86_64 wheel
+        env:
+          CIBW_BUILD: "cp310-manylinux_x86_64"
+          CIBW_ARCHS_LINUX: "x86_64"
+          # glibc 2.28 floor; installs on the python:3.10-slim-bookworm Docker
+          # base (glibc 2.36). gcc 14 in this image is why CFLAGS is needed.
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          CIBW_BEFORE_BUILD: "pip install 'numpy==${{ env.NUMPY_BUILD_VERSION }}' 'setuptools<74' wheel"
+          # gcc spelling has NO -function- variant; do not reuse the mac string.
+          CIBW_ENVIRONMENT_LINUX: >-
+            CFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+        run: python -m cibuildwheel --output-dir wheelhouse "sdist/aubio-${AUBIO_VERSION}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aubio-cp310-manylinux-x86_64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
