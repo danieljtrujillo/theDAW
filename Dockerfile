@@ -118,6 +118,10 @@ ENV PYTHONUNBUFFERED=1 \
 # the backend boots fine without it. The dependency stays in pyproject/uv.lock
 # with its win32-or-linux-x86_64 marker so bare-metal Linux installs keep it.
 COPY pyproject.toml uv.lock .python-version ./
+# Prebuilt aubio wheels referenced by uv.lock's [tool.uv.sources] path entries.
+# On linux x86_64 the marker-matched manylinux wheel is what this build installs,
+# so it must be present in the context or `uv sync --frozen` fails on the path.
+COPY wheels/ ./wheels/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --no-install-package pyk4a-bundle
 

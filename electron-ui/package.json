@@ -1,6 +1,6 @@
 {
   "name": "thedaw-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "theDAW desktop shell: an Electron front end that bootstraps and supervises the Python audio backend.",
   "author": "GANTASMO",

@@ -63,11 +63,14 @@ eggs/
 /parts/
 /sdist/
 /var/
-# Ignore build-artifact wheels, but TRACK the vendored prebuilt aubio wheel:
-# aubio is source-only on PyPI, so this bundled Windows wheel (pinned in
-# pyproject [tool.uv.sources]) is what lets a compiler-less Windows box install.
+# Ignore build-artifact wheels, but TRACK the vendored prebuilt aubio wheels:
+# aubio is source-only on PyPI, so these bundled per-platform wheels (pinned in
+# pyproject [tool.uv.sources], built by .github/workflows/build-aubio-wheels.yml)
+# are what let a compiler-less Windows / macOS / Linux box install aubio.
 /wheels/*
 !/wheels/aubio-0.4.9-cp310-cp310-win_amd64.whl
+!/wheels/aubio-0.4.9-cp310-cp310-macosx_11_0_arm64.whl
+!/wheels/aubio-0.4.9-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
 share/python-wheels/
 *.egg-info/
 .installed.cfg
