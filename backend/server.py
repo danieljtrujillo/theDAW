@@ -815,6 +815,16 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
 async def _on_startup():
     startup_t0 = time.perf_counter()
 
+    # Attach the in-memory log ring so the LOG panel (VERBOSE mode) can stream
+    # real backend activity. Runs after uvicorn's logging setup and re-attaches
+    # if that dropped the handler. Cheap and torch-free.
+    try:
+        from backend.log_ring import install_log_ring
+
+        install_log_ring()
+    except Exception:
+        logger.debug("log ring install failed", exc_info=True)
+
     # System stats (kept torch-free so server-ready never waits on the ~9.6s
     # torch/stable_audio_3 import; the GPU/torch line is logged by _warm_heavy
     # once the background warm finishes).
@@ -1932,6 +1942,15 @@ async def save_preset(preset: dict):
     # discarded) so callers stay forward-compatible.
     _ = preset
     return {"id": str(uuid.uuid4()), "saved": True}
+
+
+@app.get("/api/log")
+async def get_log(since: int = 0, limit: int = 1000):
+    """Recent backend log records for the LOG panel (VERBOSE mode). Purely
+    in-memory (backend/log_ring.py); the frontend polls with a seq cursor."""
+    from backend.log_ring import read_since
+
+    return read_since(since, limit)
 
 
 app.include_router(assistant_router)

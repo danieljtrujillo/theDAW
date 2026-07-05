@@ -15,7 +15,7 @@ import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
 // the first-paint bundle by lazy-loading it and only mounting it once the user
 // first opens the orb chat (see `assistantMounted` below).
 const AssistantPanel = lazy(() => import('./orb-kit/AssistantPanel'));
-import { logInfo, logWarn } from './state/logStore';
+import { logInfo, logWarn, useLogStore, type LogLevel } from './state/logStore';
 import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
@@ -101,6 +101,40 @@ export default function App() {
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
   }, [refreshHealth]);
+
+  // Stream backend log records into the LOG panel so VERBOSE mode shows real
+  // backend activity (module, sidecar, warning, and error logs + tracebacks),
+  // not only frontend events. Cursor-based; starts once the backend is up.
+  useEffect(() => {
+    if (!isBackendReady) return;
+    let cancelled = false;
+    let since = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`/api/log?since=${since}`);
+        if (res.ok) {
+          const data = (await res.json()) as {
+            seq: number;
+            entries: Array<{ level: LogLevel; source: string; msg: string }>;
+          };
+          for (const e of data.entries) {
+            useLogStore.getState().append(e.level, e.source, e.msg);
+          }
+          if (typeof data.seq === 'number') since = data.seq;
+        }
+      } catch {
+        // backend momentarily unreachable; keep polling
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), 2000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isBackendReady]);
 
   // Populate the library store the moment the backend port is bound — so the
   // right-side Library / DJ source panels are filled on startup, not only when

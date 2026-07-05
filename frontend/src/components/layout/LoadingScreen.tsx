@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { LiquidChromeTitle } from './LiquidChromeTitle';
+import { useBootStatusStore } from '../../state/bootStatusStore';
 
 interface LoadingScreenProps {
   onSkip: () => void;
@@ -19,6 +20,9 @@ interface LoadingScreenProps {
 export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete }) => {
   const [elapsed, setElapsed] = useState(0);
   const [cinematicActive, setCinematicActive] = useState(false);
+  const bootStatus = useBootStatusStore((s) => s.status);
+  const bootLogs = useBootStatusStore((s) => s.logs);
+  const bootError = useBootStatusStore((s) => s.error);
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -77,8 +81,31 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete
         style={{ height: 'clamp(34px, 8vh, 110px)', maxWidth: '70vw', animation: 'bootCreditFade 1.3s ease 2s both' }}
       />
 
-      {/* Real escape only after a genuine wait. */}
-      {elapsed >= 40 && (
+      {/* First-run bootstrap status, so a slow or failed setup is visible
+          instead of a silent hang. Low-key under the logo; errors stand out. */}
+      {(bootError || ((bootStatus || bootLogs.length > 0) && elapsed >= 3)) && (
+        <div className="absolute inset-x-0 bottom-9 flex flex-col items-center gap-1 px-6 text-center">
+          {bootError ? (
+            <div className="max-w-xl text-[11px] font-mono leading-relaxed text-red-300/90">
+              Setup error: {bootError}
+            </div>
+          ) : (
+            <>
+              {bootStatus && (
+                <div className="text-[11px] font-mono tracking-wide text-zinc-400">{bootStatus}</div>
+              )}
+              {bootLogs.length > 0 && (
+                <div className="max-w-xl truncate text-[9px] font-mono text-zinc-600">
+                  {bootLogs[bootLogs.length - 1]}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Real escape after a genuine wait, or immediately on a setup error. */}
+      {(elapsed >= 40 || bootError) && (
         <button
           onClick={onSkip}
           className="absolute bottom-2 right-3 text-[9px] font-mono text-zinc-700 hover:text-zinc-400 transition-colors underline"
