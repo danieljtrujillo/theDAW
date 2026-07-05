@@ -1,6 +1,6 @@
 [project]
 name = "stable-audio-3"
-version = "0.1.0"
+version = "0.1.1"
 description = "Stable Audio 3: A state-of-the-art open platform for fast, high-quality generated audio and music"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -125,14 +125,18 @@ explicit = true
 flash-attn = [
   { url = "https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32'" },
 ]
-# aubio ships NO wheels on PyPI (source-only since 0.4.9 in 2019), so a default
-# install compiles it from C — which needs MSVC Build Tools that a fresh Windows
-# box does not have, breaking the zero-terminal install. Pin a prebuilt Windows
-# wheel (built here, cp310/win_amd64 — the locked Windows Python) so aubio stays
-# a first-class dependency but installs with no compiler. Linux/macOS keep
-# building from the PyPI sdist (they ship a compiler by default).
+# aubio ships NO wheels on PyPI (source-only since 0.4.9 in 2019) and its 2019 C
+# source does not compile on a stock machine (no MSVC on Windows; the aubio#402
+# const-pointer mismatch is a hard error on modern clang/gcc). Pin a prebuilt
+# cp310 wheel per shipped platform so aubio stays a first-class dependency and
+# installs with no compiler anywhere. The mac arm64 and linux x86_64 wheels are
+# built by .github/workflows/build-aubio-wheels.yml (cibuildwheel against NumPy
+# 2.x); the Windows wheel is built the same way. Platforms without a wheel here
+# (e.g. linux aarch64) fall back to the PyPI sdist.
 aubio = [
   { path = "wheels/aubio-0.4.9-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32'" },
+  { path = "wheels/aubio-0.4.9-cp310-cp310-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+  { path = "wheels/aubio-0.4.9-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 torch = [
   { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },

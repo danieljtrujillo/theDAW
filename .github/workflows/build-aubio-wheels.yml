@@ -41,14 +41,6 @@ name: build-aubio-wheels
 
 on:
   workflow_dispatch:
-  # TEMPORARY: also run on push to the CI branch so the wheels can be produced
-  # before this workflow exists on the default branch (a workflow_dispatch-only
-  # workflow is not dispatchable until it lands on the default branch). Remove
-  # this push trigger before merging; workflow_dispatch is the intended
-  # permanent trigger.
-  push:
-    branches:
-      - "ci/aubio-wheels"
 
 permissions:
   contents: read
