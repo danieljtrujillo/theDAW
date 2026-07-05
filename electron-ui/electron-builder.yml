@@ -62,6 +62,18 @@ extraResources:
     to: python/uv.lock
   - from: ../.python-version
     to: python/.python-version
+  # Prebuilt aubio wheels. aubio (chimera's primary tempo/beat detector) ships
+  # NO wheels on PyPI and its 2019 C source will not compile on a stock target
+  # machine (no MSVC on Windows, clang function-pointer error on modern macOS),
+  # so the first-run `uv sync` MUST install it from a vendored wheel. uv.lock's
+  # [tool.uv.sources] references these by a path relative to pyproject.toml,
+  # which lands at python/, so the wheels must land at python/wheels/. Ships the
+  # whole dir; each platform's uv source selects its own wheel by marker. Built
+  # by .github/workflows/build-aubio-wheels.yml.
+  - from: ../wheels
+    to: python/wheels
+    filter:
+      - "**/*.whl"
   - from: ../README.md
     to: python/README.md
   - from: ../docs
