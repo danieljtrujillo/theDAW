@@ -336,7 +336,7 @@ export function resolveEditThemeVars(
       light: false,
     };
   }
-  const theme = editThemeById(id) ?? EDIT_THEMES[0];
+  const theme = editThemeById(id) ?? editThemeById('obsidian') ?? EDIT_THEMES[0];
   return {
     vars: { ...DEFAULT_ET_VARS, ...theme.vars },
     light: !!theme.light,
