@@ -54,6 +54,7 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "electron-desktop-app.md",
     PROJECT_ROOT / "docs" / "guides" / "pinokio-launcher.md",
     PROJECT_ROOT / "docs" / "guides" / "audimate.md",
+    PROJECT_ROOT / "docs" / "guides" / "levels.md",
     # The manual is indexed once, from docs/USER_GUIDE.md. The byte-identical
     # frontend/public/USER_GUIDE.md mirror that Vite serves for the in-app Docs
     # modal is intentionally not indexed here, to avoid embedding the manual twice.

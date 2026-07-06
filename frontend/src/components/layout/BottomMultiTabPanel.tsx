@@ -9,7 +9,7 @@
 import React, { useState, lazy, Suspense } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic, Waves, Brush,
+  FileMusic, Waves, Brush, Gauge,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
@@ -18,6 +18,7 @@ import { ScoreView } from './ScoreView';
 import { MediaBucketView } from './MediaBucketView';
 import { SlidePanel } from './SlidePanel';
 import { SwayPanel } from './SwayPanel';
+import { LevelsPanel } from '../audio/levels/LevelsPanel';
 // Lazy: the MIDI tab (piano roll + vocal2midi) drags in @google/genai
 // (AI compose + gemini vocal services). Keep it out of first paint; the chunk
 // loads only when the user first opens the MIDI tab.
@@ -28,6 +29,7 @@ import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPane
 import { useSlideStore } from '../../state/slideStore';
 
 const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; desc: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
+  { id: 'levels',     label: 'Levels',     desc: 'Master loudness, peak, dynamics and stereo metering (LUFS / true-peak)',  icon: Gauge,      colorActive: 'border-teal-500 text-teal-300' },
   { id: 'spectral',   label: 'Visualize',  desc: 'Live spectrum + waveform visualizer of the playing audio',                 icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
   { id: 'midi',       label: 'MIDI',       desc: 'Piano roll: sing in, record or analyze notes, edit them, export MIDI',     icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
   { id: 'step-seq',   label: 'Sequence',   desc: 'Program drum and note patterns step by step on a grid',                    icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
@@ -128,6 +130,11 @@ export const BottomMultiTabPanel: React.FC = () => {
 
       {/* Tab content */}
       <div className="flex-1 min-h-0 relative">
+        {activeTab === 'levels' && (
+          <div className="absolute inset-0">
+            <LevelsPanel />
+          </div>
+        )}
         {activeTab === 'spectral' && (
           <div className="absolute inset-0 p-1">
             <AdvancedVisualizer />
