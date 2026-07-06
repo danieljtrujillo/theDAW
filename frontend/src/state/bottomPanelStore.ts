@@ -14,6 +14,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type BottomPanelTab =
+  | 'levels'
   | 'spectral'
   | 'details'
   | 'score'
