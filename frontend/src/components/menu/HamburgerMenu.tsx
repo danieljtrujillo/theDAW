@@ -11,6 +11,7 @@ import {
   Home,
   LayoutGrid,
   Menu,
+  Palette,
   RefreshCw,
   Save,
   Settings,
@@ -18,6 +19,7 @@ import {
 import { BackupModal } from './BackupModal';
 import { UpdateModal } from './UpdateModal';
 import { QuestDeployModal } from './QuestDeployModal';
+import { ThemeModal } from './ThemeModal';
 
 export interface HamburgerMenuProps {
   onNewProject: () => void;
@@ -79,6 +81,7 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateShowsReleases, setUpdateShowsReleases] = useState(false);
   const [questOpen, setQuestOpen] = useState(false);
+  const [themeOpen, setThemeOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -148,6 +151,7 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
           onSelect: onToggleEditLayout,
           active: editLayoutActive,
         },
+        { id: 'change-theme', label: 'Change Theme', icon: Palette, iconCls: 'text-teal-300', onSelect: () => setThemeOpen(true) },
         { id: 'settings', label: 'Settings', icon: Settings, iconCls: 'text-rose-300', onSelect: onOpenSettings },
         { id: 'docs', label: 'Docs', icon: BookOpen, iconCls: 'text-purple-300', onSelect: onOpenDocs },
       ],
@@ -288,6 +292,7 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
         initialShowReleases={updateShowsReleases}
       />
       <QuestDeployModal open={questOpen} onClose={() => setQuestOpen(false)} />
+      <ThemeModal open={themeOpen} onClose={() => setThemeOpen(false)} />
     </div>
   );
 };

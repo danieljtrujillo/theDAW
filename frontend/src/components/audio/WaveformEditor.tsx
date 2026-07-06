@@ -46,7 +46,6 @@ import { publishSelectedTracks } from '../../state/editorSelectionBridge';
 import * as liveMixer from '../../state/liveMixer';
 import { useDjAnalysisStore } from '../../state/djAnalysisStore';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
-import { EditThemePicker } from './EditThemePicker';
 import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
 
@@ -2563,8 +2562,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           >
             <Wand2 className="w-3 h-3" /> METAMORPH
           </button>
-
-          <EditThemePicker />
         </div>
 
         <div className="flex items-center gap-3">
