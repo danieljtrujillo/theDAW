@@ -35,7 +35,9 @@ bootBridge.setStatus = (text) => {
 };
 bootBridge.addLog = (text, cls) => {
   useBootStatusStore.getState().pushLog(text);
-  if (cls === 'error') {
+  // The Electron main historically tags failures 'err' (see sendLoadingLog
+  // call sites); accept both spellings so setup failures actually surface.
+  if (cls === 'error' || cls === 'err') {
     useBootStatusStore.getState().setError(text);
     logError('bootstrap', text);
   } else if (cls === 'warn') {

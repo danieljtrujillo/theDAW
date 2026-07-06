@@ -45,10 +45,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 ARG VJ_REPO=https://github.com/gantasmo/VJ-9000.git
-# Active VJ branch carrying the '/vj-app/' build base; switch to main once merged.
+# VJ branch carrying the '/vj-app/' build base, PINNED to a commit so image
+# builds are reproducible and survive the branch being merged/deleted.
+# KEEP IN SYNC with VJ_COMMIT in electron-ui/scripts/fetch-vj-build.mjs.
 ARG VJ_REF=feat/vj-redesign-vfx
+ARG VJ_COMMIT=ff7430b1bf66524cc30e509b56f1e743443798fb
 RUN --mount=type=cache,target=/root/.npm \
-    git clone --depth 1 --branch "${VJ_REF}" "${VJ_REPO}" . \
+    git clone --branch "${VJ_REF}" "${VJ_REPO}" . \
+    && git checkout --detach "${VJ_COMMIT}" \
     && npm ci \
     && npm run build
 

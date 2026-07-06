@@ -59,26 +59,35 @@ class _RingHandler(logging.Handler):
 
 
 def install_log_ring(level: int = logging.INFO) -> None:
-    """Attach the ring handler to the root logger, re-attaching if a logging
-    reconfiguration (e.g. uvicorn startup) dropped it. Idempotent (no duplicate
-    handler). Lowers the root level to ``level`` only if it was higher."""
+    """Attach the ring handler, re-attaching if a logging reconfiguration
+    (e.g. uvicorn startup) dropped it. Idempotent (no duplicate handler).
+    Attaches to BOTH the root logger and the "uvicorn" logger: uvicorn's
+    default config sets propagate=False on its loggers, so ASGI exception
+    tracebacks (uvicorn.error) never reach root — exactly the records the
+    LOG panel exists for. Lowers levels to ``level`` only if higher."""
     global _handler
-    root = logging.getLogger()
-    if root.level == logging.NOTSET or root.level > level:
-        root.setLevel(level)
     if _handler is None:
         _handler = _RingHandler()
         _handler.setLevel(logging.DEBUG)
-    if _handler not in root.handlers:
-        root.addHandler(_handler)
+    for logger_name in ("", "uvicorn"):
+        target = logging.getLogger(logger_name)
+        if target.level == logging.NOTSET or target.level > level:
+            if logger_name == "":
+                target.setLevel(level)
+        if _handler not in target.handlers:
+            target.addHandler(_handler)
 
 
 def read_since(since_seq: int = 0, limit: int = 1000) -> dict:
     """Return records with seq > ``since_seq`` (or the tail when 0), plus the
-    current max seq so the caller can advance its cursor."""
+    cursor the caller should poll from next. When the page is truncated by
+    ``limit`` the cursor is the LAST RETURNED record's seq (not the global
+    max), so a burst larger than one page is paged through instead of the
+    gap being silently skipped."""
     with _lock:
         if since_seq <= 0:
             entries = list(_ring)[-limit:]
         else:
             entries = [e for e in _ring if e["seq"] > since_seq][:limit]
-        return {"seq": _seq, "entries": entries}
+        cursor = entries[-1]["seq"] if entries else _seq
+        return {"seq": cursor, "entries": entries}

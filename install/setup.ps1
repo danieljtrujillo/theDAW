@@ -88,6 +88,13 @@ function Install-Uv(){
   Info "Installing uv (Astral standalone installer, user scope)..."
   try {
     & powershell -NoProfile -ExecutionPolicy ByPass -Command "irm https://astral.sh/uv/install.ps1 | iex"
+    # A failed child powershell (download blocked, TLS error) does NOT throw
+    # here — it just exits non-zero. Without this check the function reported
+    # success, theDAW.bat told the user to re-run, and the loop never ended.
+    if ($LASTEXITCODE -ne 0) {
+      BAD ("uv install failed (exit code " + $LASTEXITCODE + ")")
+      return $false
+    }
     return $true
   } catch {
     BAD ("uv install failed: " + $_.Exception.Message)

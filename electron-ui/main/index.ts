@@ -35,17 +35,38 @@ const repoRoot = getRepoRoot()
 // Logging
 // ---------------------------------------------------------------------------
 
-const logsDir = path.join(repoRoot, 'logs')
-fs.mkdirSync(logsDir, { recursive: true })
+// Guarded: on a read-only mount (AppImage squashfs, running a mac app straight
+// off the dmg) an unguarded mkdirSync here killed the main process before any
+// window existed. Fall back to Electron's per-user logs dir, then to a no-op
+// stream so logging can never take the app down.
+function openLogStream(): fs.WriteStream | null {
+  for (const dir of [path.join(repoRoot, 'logs'), app.getPath('logs')]) {
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      const stream = fs.createWriteStream(path.join(dir, 'backend.log'), {
+        flags: 'a',
+      })
+      // Disk-full or revoked-handle write errors surface as an 'error' event;
+      // without a listener that event crashes the process.
+      stream.on('error', () => {})
+      return stream
+    } catch {
+      // try the next location
+    }
+  }
+  return null
+}
 
-const logStream = fs.createWriteStream(path.join(logsDir, 'backend.log'), {
-  flags: 'a',
-})
+const logStream = openLogStream()
 
 function log(msg: string): void {
   const ts = new Date().toISOString()
   const line = `[${ts}] ${msg}\n`
-  logStream.write(line)
+  try {
+    logStream?.write(line)
+  } catch {
+    // never let logging take the app down
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +76,9 @@ function log(msg: string): void {
 let backendProcess: ChildProcess | null = null
 let weSpawnedBackend = false
 let isQuitting = false
+// First-run `uv sync` child; tracked so before-quit can kill it (an orphaned
+// sync keeps downloading and holds the venv lock against the next launch).
+let uvSyncProcess: ChildProcess | null = null
 
 const BACKEND_BASE = 'http://localhost:8600'
 const HEALTH_URL = `${BACKEND_BASE}/api/health`
@@ -143,6 +167,9 @@ function runUvSync(uvCmd: string, cwd: string): Promise<void> {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
+    // Track the child so quitting mid-setup kills it instead of orphaning a
+    // multi-GB download that holds the venv lock against the next launch.
+    uvSyncProcess = proc
     const emit = (data: Buffer): void => {
       for (const raw of data.toString().split('\n')) {
         const text = raw.replace(/\r$/, '').trimEnd()
@@ -154,9 +181,11 @@ function runUvSync(uvCmd: string, cwd: string): Promise<void> {
     proc.stdout?.on('data', emit)
     proc.stderr?.on('data', emit)
     proc.on('exit', (code) => {
+      uvSyncProcess = null
       if (code === 0) {
         sendLoadingLog('Dependencies installed.', 'load')
       } else {
+        sendLoadingStatus('Setup failed — see the error below')
         sendLoadingLog(
           `Setup step exited with code ${code}. The app may not start until this is resolved.`,
           'err',
@@ -165,6 +194,8 @@ function runUvSync(uvCmd: string, cwd: string): Promise<void> {
       resolve()
     })
     proc.on('error', (err) => {
+      uvSyncProcess = null
+      sendLoadingStatus('Setup failed — see the error below')
       sendLoadingLog(`Setup failed to start: ${err.message}`, 'err')
       resolve()
     })
@@ -453,12 +484,17 @@ function createWindow(): void {
 
   // Route outbound http(s) links (update/release pages, the Hugging Face
   // sign-in) to the user's default browser, where they may already be signed
-  // in. Same-origin http(s) — the dev server's own navigations — stays in-app.
+  // in. Same-origin http(s) — the dev server's own navigations — stays in-app,
+  // and so does the local backend origin (the packaged renderer opens the VJ
+  // pop-out at BACKEND_BASE/vj-app, which must be an in-app child window so
+  // the renderer keeps a window handle for postMessage control).
   const isExternal = (url: string): boolean => {
     if (!/^https?:\/\//i.test(url)) return false
     try {
+      const target = new URL(url)
+      if (target.origin === new URL(BACKEND_BASE).origin) return false
       const here = mainWindow?.webContents.getURL() || 'app://./'
-      return new URL(url).origin !== new URL(here).origin
+      return target.origin !== new URL(here).origin
     } catch {
       return false
     }
@@ -535,13 +571,32 @@ function registerAppProtocol(): void {
   protocol.handle('app', (request) => {
     const url = new URL(request.url)
 
-    // Intercept /api/* requests and proxy to backend
+    // Intercept /api/* requests and proxy to backend. duplex:'half' is
+    // REQUIRED whenever body is a stream — without it the fetch-spec Request
+    // constructor throws and every body-carrying POST/PUT in the packaged app
+    // fails with net::ERR_FAILED. The catch turns backend-down into a clean
+    // 502 instead of an opaque network error.
     if (url.pathname.startsWith('/api/')) {
-      return net.fetch(`${BACKEND_BASE}${url.pathname}${url.search}`, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      })
+      return net
+        .fetch(`${BACKEND_BASE}${url.pathname}${url.search}`, {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+          duplex: 'half',
+        } as RequestInit)
+        .catch(() => new Response('backend unavailable', { status: 502 }))
+    }
+
+    // Proxy the backend-served static VJ build too, so any relative /vj-app/
+    // URL works under the app:// origin (the renderer bundle contains no
+    // vj-app; the build ships beside the backend and is mounted by server.py).
+    if (url.pathname === '/vj-app' || url.pathname.startsWith('/vj-app/')) {
+      return net
+        .fetch(`${BACKEND_BASE}${url.pathname}${url.search}`, {
+          method: request.method,
+          headers: request.headers,
+        })
+        .catch(() => new Response('backend unavailable', { status: 502 }))
     }
 
     // Serve static files from the built renderer output
@@ -714,7 +769,9 @@ if (gotSingleInstanceLock) app.whenReady().then(async () => {
     // Packaged builds bootstrap the Python env on first launch before the
     // backend can start; dev builds no-op here.
     await ensurePythonEnv()
-    spawnBackend()
+    // The await above can resume AFTER the user began quitting mid-setup;
+    // spawning then would launch a backend nothing ever kills.
+    if (!isQuitting) spawnBackend()
   } else {
     log('Backend already running — skipping spawn.')
   }
@@ -727,8 +784,17 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', (event) => {
   if (isQuitting) return
+  isQuitting = true
+  // Kill an in-flight first-run sync so it doesn't outlive the app holding
+  // the venv lock (on Windows the child survives parent death otherwise).
+  if (uvSyncProcess && uvSyncProcess.exitCode === null) {
+    try {
+      uvSyncProcess.kill()
+    } catch {
+      // already gone
+    }
+  }
   if (weSpawnedBackend && backendProcess) {
-    isQuitting = true
     event.preventDefault()
     killBackend().finally(() => {
       app.quit()

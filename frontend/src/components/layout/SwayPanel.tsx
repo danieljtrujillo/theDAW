@@ -88,6 +88,7 @@ const ManualAssign: React.FC<{ u: SwayUnattached }> = ({ u }) => {
       </label>
       <select
         id={`assign-track-${u.channel}-${u.number}`}
+        name={`assign-track-${u.channel}-${u.number}`}
         value={effTrackId}
         onChange={(e) => setTrackId(e.target.value)}
         className="bg-black/60 border border-white/10 rounded px-1 py-0.5 text-[8px] text-zinc-200 max-w-24 outline-none"
@@ -103,6 +104,7 @@ const ManualAssign: React.FC<{ u: SwayUnattached }> = ({ u }) => {
       </label>
       <select
         id={`assign-target-${u.channel}-${u.number}`}
+        name={`assign-target-${u.channel}-${u.number}`}
         value={target}
         onChange={(e) => setTarget(e.target.value)}
         className="bg-black/60 border border-white/10 rounded px-1 py-0.5 text-[8px] text-zinc-200 max-w-28 outline-none"

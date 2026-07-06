@@ -240,7 +240,19 @@ def _unique_path(path: Path) -> Path:
 
 def _run_ffmpeg(cmd: list[str]) -> None:
     log.info("vj.export: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    try:
+        # Timeout so a hung ffmpeg (corrupt input) can't pin a threadpool
+        # worker forever with the export request never returning.
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=600.0,
+        )
+    except subprocess.TimeoutExpired as e:
+        log.error("vj.export: ffmpeg timed out: %s", " ".join(cmd))
+        raise RuntimeError("ffmpeg timed out after 600s") from e
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         # ffmpeg's genuinely useful error line (encoder reject, bad option,

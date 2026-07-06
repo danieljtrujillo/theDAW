@@ -20,11 +20,9 @@ on:
 #
 # See CLAUDE.md → "🚨 HARD RULES" for the canonical version of this rule.
 #
-# We pin to a specific tagged release of actions/checkout rather than
-# the floating `@v4` major-version tag so editor integrations (e.g. the
-# VS Code GitHub Actions extension) can resolve the action without
-# round-tripping to api.github.com. Ruff is installed via the first-
-# party setup-python action + pipx, avoiding the third-party
+# actions/checkout rides its major-version tag (@v5), matching the other
+# workflows in this repo. Ruff is installed via the first-party
+# setup-python action + pipx, avoiding the third-party
 # astral-sh/ruff-action entirely.
 env:
   RUFF_VERSION: "0.15.14"  # ⚠ KEEP IN SYNC WITH pyproject.toml ⚠

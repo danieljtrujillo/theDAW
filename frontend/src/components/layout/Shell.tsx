@@ -25,6 +25,8 @@ import { HomeScreen, useHomeScreenStore } from '../home/HomeScreen';
 import { OnboardingTour } from '../../onboarding/OnboardingTour';
 import { useOnboardingStore } from '../../onboarding/onboardingStore';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
+import { useStatusBarStore } from '../../state/statusBarStore';
+import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -74,25 +76,35 @@ export const Shell: React.FC = () => {
   // of localhost. Falls back to window.location.origin when there's no
   // LAN IP (e.g. offline). Mirrors how the VJ tab builds its mobile QR.
   const [lanUrl, setLanUrl] = React.useState('');
+  const isBackendReadyForLan = useStatusBarStore((s) => s.isBackendReady);
   React.useEffect(() => {
+    // Wait for the backend: on a packaged cold start this fetch used to fire
+    // once before :8600 was bound, fail, and leave the share link on the
+    // app://. origin fallback forever.
+    if (!isBackendReadyForLan || lanUrl) return;
     let cancelled = false;
     void fetch('/api/vj/lan-ip')
       .then((r) => (r.ok ? r.json() : null))
       .then((j: { lan_ip?: string | null } | null) => {
         if (cancelled || !j?.lan_ip || typeof window === 'undefined') return;
-        const port = window.location.port || '5173';
+        // Packaged app has no window port (app://. origin) — phones reach it
+        // on the backend port; browser dev keeps its own port (5173 fallback).
+        const port = lanReachablePort() || '5173';
         setLanUrl(`http://${j.lan_ip}:${port}`);
       })
       .catch(() => {
-        /* no backend / no LAN — keep the origin fallback */
+        /* no backend / no LAN — keep the http fallback */
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isBackendReadyForLan, lanUrl]);
 
+  // Never fall back to window.location.origin blindly: in the packaged app
+  // that is app://., which is useless on a phone AND opens a second copy of
+  // the whole app when clicked. backendHttpBase() is always a real http URL.
   const detectedShareUrl =
-    lanUrl || (typeof window === 'undefined' ? '' : window.location.origin);
+    lanUrl || (typeof window === 'undefined' ? '' : backendHttpBase());
   const shareUrl = shareUrlOverride.trim() || detectedShareUrl;
   const qrImageUrl = useMemo(
     () => `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(shareUrl)}`,

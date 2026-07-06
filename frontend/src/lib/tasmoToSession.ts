@@ -4,8 +4,9 @@
 // A .tasmo has no session-view scenes, so each track's clips are laid into scene
 // rows in start-time order (track = column, clip = scene row). Audio clips keep
 // their absolute on-disk path (the load step relinks embedded audio to disk, and
-// /api/dawimport/audio serves any absolute path). MIDI clips carry step-based
-// notes, converted here to the seconds-based shape the grid renders.
+// /api/project/clip-audio serves any absolute path — see dawImportClient's
+// dawImportAudioUrl). MIDI clips carry step-based notes, converted here to the
+// seconds-based shape the grid renders.
 
 import type { DawProject, DawTrack, DawClip } from './dawImportClient';
 import type { TasmoProjectLoaded } from './projectClient';

@@ -39,6 +39,11 @@ archive/
 # Bundled .gan plugin artwork (Ares) — the VST Foundry export's background.png beside
 # its project.json; required to package ares.gan (without it the surface has no background)
 !backend/modules/plugin/assets/**/*.png
+# The desktop app icon — electron-builder's buildResources auto-discovers it and
+# converts to .ico/.icns. It MUST be tracked: a fresh CI checkout otherwise builds
+# installers with the default Electron icon (local builds mask this because the
+# file exists untracked on the dev machine).
+!electron-ui/resources/icon.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

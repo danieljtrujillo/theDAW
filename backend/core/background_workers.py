@@ -75,6 +75,7 @@ class BackgroundQueue:
         self._jobs: dict[str, BackgroundJob] = {}
         self._stopped = asyncio.Event()
         self._stopped.set()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ---- Lifecycle ----------------------------------------------------------
 
@@ -82,6 +83,10 @@ class BackgroundQueue:
         if self._consumer_task is not None and not self._consumer_task.done():
             return
         self._stopped.clear()
+        # Captured so enqueue() can marshal puts from threadpool threads
+        # (sync routes) onto this loop instead of touching the asyncio.Queue
+        # cross-thread, which races the consumer's wakeup.
+        self._loop = asyncio.get_event_loop()
         self._consumer_task = asyncio.create_task(self._consumer_loop())
         log.info("background_workers: consumer started")
 
@@ -124,8 +129,21 @@ class BackgroundQueue:
             args=args,
             kwargs=kwargs,
         )
+        # Queue FIRST, register after: registering a job that then fails to
+        # queue would leave a phantom "queued" entry that the duplicate check
+        # above returns forever, permanently blocking that name.
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        if on_loop or self._loop is None:
+            self._queue.put_nowait(job)
+        else:
+            # Sync routes run in the threadpool; touching the asyncio.Queue
+            # cross-thread races the consumer, so marshal onto the loop.
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, job)
         self._jobs[job.id] = job
-        self._queue.put_nowait(job)
         log.debug("background_workers: enqueued %s (%s)", name, job.id)
         return job
 

@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -205,7 +206,9 @@ def start_engine() -> dict:
             return {"spawned": False, "reason": "engine process already alive"}
         if not _ENGINE_SCRIPT.is_file():
             raise RuntimeError(f"engine script not found: {_ENGINE_SCRIPT}")
-        port = SIDECAR_URL.rsplit(":", 1)[-1] or "8777"
+        # urlsplit, not rsplit(":"): a SIDECAR_URL without an explicit port
+        # would make rsplit yield "//host" and feed the engine a bogus port.
+        port = str(urlsplit(SIDECAR_URL).port or 8777)
         popen_env = os.environ.copy()
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 

@@ -81,6 +81,7 @@ class AkvjSidecar:
         self._lock = threading.RLock()
         self._status: dict[str, Any] = {"state": "stopped"}
         self._log: deque[str] = deque(maxlen=LOG_RING_SIZE)
+        self._deps_ok = False
 
     def _record(self, line: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -110,13 +111,20 @@ class AkvjSidecar:
     # ---- bootstrap ----------------------------------------------------------
 
     def _deps_present(self) -> bool:
+        # Cached once true: the probe spawns a Python that imports pyk4a/
+        # numpy/PIL (seconds, up to 30s), and status() runs it on EVERY UI
+        # poll otherwise. Deps don't uninstall themselves mid-session; a
+        # False result stays uncached so an install is picked up next poll.
+        if self._deps_ok:
+            return True
         try:
             r = subprocess.run(
                 [sys.executable, "-c", IMPORT_PROBE],
                 capture_output=True,
                 timeout=30,
             )
-            return r.returncode == 0
+            self._deps_ok = r.returncode == 0
+            return self._deps_ok
         except (subprocess.TimeoutExpired, OSError):
             return False
 
@@ -303,6 +311,10 @@ class AkvjSidecar:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
         return {"ok": True, "state": "stopped"}
 
 

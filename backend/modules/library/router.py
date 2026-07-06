@@ -708,6 +708,8 @@ def get_full_graph() -> dict[str, Any]:
             "source": r.get("source"),
             "duration_sec": r.get("duration_sec"),
             "model": r.get("model"),
+            # The genealogy/3D-graph header can highlight most-played nodes.
+            "play_count": int(r.get("play_count") or 0),
         }
         for r in raw_entries
     ]

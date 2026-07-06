@@ -315,6 +315,10 @@ class QuestCastSidecar:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
         return {"ok": True, "state": "stopped"}
 
 

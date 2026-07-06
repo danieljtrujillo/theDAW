@@ -152,7 +152,8 @@ mac:
   category: public.app-category.music
   artifactName: theDAW-${version}-${arch}.${ext}
 
-linux:
-  target:
-    - AppImage
-  category: Audio
+# No linux desktop target: Docker is the linux distribution path (see
+# Dockerfile + docs/RELEASING.md). An AppImage target used to sit here but was
+# dead config — fetch-runtime-tools.mjs exits on linux (no uv/ffmpeg/node
+# would ship) and no dist:linux script exists, so it could never produce a
+# working artifact.

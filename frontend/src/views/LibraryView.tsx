@@ -27,6 +27,7 @@ import { listMedia, importMedia, deleteMedia, MEDIA_ACCEPT } from '../lib/mediaL
 import { setAudioDragData } from '../lib/audioDnD';
 import { renderMidiBufferToBlob } from '../lib/midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from '../lib/fetchRetry';
+import { backendHttpBase } from '../lib/backendBase';
 import { notationArtifactUrl, notationPackUrl } from '../lib/notationClient';
 import { sendTrackToVj } from '../state/vjSetBus';
 import {
@@ -1197,7 +1198,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             onSelect: () => {
               const title = entries.find((e) => e.id === ctxEntryId)?.title ?? ctxEntryId;
               const a = document.createElement('a');
-              a.href = `/api/library/${ctxEntryId}/audio`;
+              a.href = `/api/library/audio/${ctxEntryId}`;
               a.download = title;
               document.body.appendChild(a);
               a.click();
@@ -1315,7 +1316,7 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
       const a = document.createElement('a');
       if (kind === 'song') {
         // The entry's audio blob lives at this server-relative URL.
-        a.href = `/api/library/${entry.id}/audio`;
+        a.href = `/api/library/audio/${entry.id}`;
         a.download = entry.title;
       } else if (kind === 'midi') {
         a.href = `/api/midi/file/${entry.id}`;
@@ -1638,8 +1639,11 @@ const MediaGrid: React.FC<{
           label: 'Copy media link',
           icon: <FileText className="w-3 h-3" />,
           onSelect: () => {
+            // backendHttpBase, not window.location.origin: a copied link is
+            // for OUTSIDE this window, and the packaged app's app://. origin
+            // resolves nowhere else.
             void navigator.clipboard?.writeText(
-              new URL(ctxEntry.mediaUrl ?? ctxEntry.audioUrl, window.location.origin).toString(),
+              new URL(ctxEntry.mediaUrl ?? ctxEntry.audioUrl, backendHttpBase()).toString(),
             );
           },
         },

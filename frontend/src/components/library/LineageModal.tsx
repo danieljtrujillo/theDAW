@@ -15,6 +15,7 @@ export interface GraphNode {
   source?: string;
   duration_sec?: number;
   model?: string;
+  play_count?: number;
 }
 
 export interface GraphEdge {
@@ -121,8 +122,8 @@ const DEFAULT_APPEARANCE: GraphAppearance = {
   controlType: 'trackball',
   wireframe: false,
   clusterColoring: false,
-  colGap: 90,
-  rowGap: 14,
+  colGap: 48,
+  rowGap: 8,
   charge: -90,
   linkDistance: 18,
   hoverDepth: 2,
@@ -136,6 +137,10 @@ function loadStoredAppearance(): GraphAppearance {
     const raw = window.localStorage.getItem(APPEARANCE_STORAGE_KEY);
     if (!raw) return DEFAULT_APPEARANCE;
     const parsed = JSON.parse(raw) as Partial<GraphAppearance>;
+    // One-shot migration: gaps stored at the OLD defaults (90/14) follow the
+    // new tighter defaults; explicitly slider-tuned values are preserved.
+    if (parsed.colGap === 90) delete parsed.colGap;
+    if (parsed.rowGap === 14) delete parsed.rowGap;
     // Merge over defaults so newly-added fields take their default
     // when an older payload is read back.
     return { ...DEFAULT_APPEARANCE, ...parsed };
@@ -292,13 +297,17 @@ function computeLineage(
   return out;
 }
 
-const LINEAGE_HOVER_INTENT_MS = 200;
+// Short intent delay so the highlight lands fast; the leave-side grace timer
+// (see leaveNode) is what absorbs the gap-crossing between adjacent cards.
+const LINEAGE_HOVER_INTENT_MS = 120;
 
 // Genealogy grid geometry (px). Square cards; the gaps come from the sliders.
 const NODE_W = 140;
 const NODE_H = 140;
 const PAD = 24;
 const TOP_MARGIN = 8;
+// Vertical gap between the lineage DAG and the no-lineage band below it.
+const BAND_GAP = 72;
 
 const EDGE_COLOR_BY_KIND: Record<string, string> = {
   chimera_source_of: '#a78bfa',
@@ -337,6 +346,71 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   // Genealogy Fit/Reset live in this header but operate on the GenealogyView.
   const genControls = useRef<{ fit: () => void; reset: () => void } | null>(null);
+
+  // Header highlight controls, shared by Genealogy AND the 3D graph:
+  // MOST/LEAST (connection count), PLAYS (play count), plus a title search.
+  // The computed highlightSet is passed to both views, which render its
+  // members with an amber accent.
+  const [highlightMode, setHighlightMode] = useState<'most' | 'least' | 'plays' | null>(null);
+  const [graphSearch, setGraphSearch] = useState('');
+  const [graphNeedle, setGraphNeedle] = useState('');
+  // Debounced so per-keystroke typing doesn't remount three.js node groups.
+  useEffect(() => {
+    const trimmed = graphSearch.trim().toLowerCase();
+    if (!trimmed) {
+      setGraphNeedle('');
+      return;
+    }
+    const handle = window.setTimeout(() => setGraphNeedle(trimmed), 150);
+    return () => window.clearTimeout(handle);
+  }, [graphSearch]);
+
+  const degreeById = useMemo(() => {
+    const deg: Record<string, number> = {};
+    (libraryGraph?.nodes ?? []).forEach((n) => {
+      deg[n.id] = 0;
+    });
+    (libraryGraph?.edges ?? []).forEach((e) => {
+      deg[e.from_id] = (deg[e.from_id] ?? 0) + 1;
+      deg[e.to_id] = (deg[e.to_id] ?? 0) + 1;
+    });
+    return deg;
+  }, [libraryGraph]);
+
+  const searchMatches = useMemo(() => {
+    if (!graphNeedle) return null;
+    const out = new Set<string>();
+    for (const n of libraryGraph?.nodes ?? []) {
+      if (`${n.title ?? ''} ${n.id}`.toLowerCase().includes(graphNeedle)) out.add(n.id);
+    }
+    return out;
+  }, [graphNeedle, libraryGraph]);
+
+  const highlightSet = useMemo(() => {
+    const out = new Set<string>();
+    const nodes = libraryGraph?.nodes ?? [];
+    if (highlightMode === 'most' || highlightMode === 'least') {
+      const degrees = nodes.map((n) => degreeById[n.id] ?? 0);
+      if (degrees.length) {
+        const tier = highlightMode === 'most' ? Math.max(...degrees) : Math.min(...degrees);
+        // MOST is meaningless when nothing is connected at all.
+        if (highlightMode === 'least' || tier > 0) {
+          nodes.forEach((n) => {
+            if ((degreeById[n.id] ?? 0) === tier) out.add(n.id);
+          });
+        }
+      }
+    } else if (highlightMode === 'plays') {
+      const top = Math.max(0, ...nodes.map((n) => n.play_count ?? 0));
+      if (top > 0) {
+        nodes.forEach((n) => {
+          if ((n.play_count ?? 0) === top) out.add(n.id);
+        });
+      }
+    }
+    searchMatches?.forEach((id) => out.add(id));
+    return out;
+  }, [libraryGraph, highlightMode, degreeById, searchMatches]);
 
   // Persist appearance changes to localStorage (debounced via the
   // natural batching of React state updates — each setAppearance flushes
@@ -467,28 +541,68 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
                 Track
               </TabButton>
             )}
-            <TabButton active={tab === 'genealogy'} onClick={() => setTab('genealogy')} icon={<GitFork className="w-3 h-3" />}>
-              Genealogy
-            </TabButton>
-            <TabButton active={tab === 'graph3d'} onClick={() => setTab('graph3d')} icon={<Workflow className="w-3 h-3" />}>
-              3D graph
-            </TabButton>
             {tab === 'genealogy' && (
               <>
                 <button
                   onClick={() => genControls.current?.fit()}
-                  className="ml-1 flex items-center gap-1 px-2 py-1 rounded text-[9px] font-mono uppercase tracking-widest text-zinc-300 hover:text-purple-200 bg-purple-500/15 border border-purple-500/30 hover:border-purple-400/60"
+                  className="flex items-center gap-1 px-2 py-1 rounded text-[9px] font-mono uppercase tracking-widest text-zinc-300 hover:text-purple-200 bg-purple-500/15 border border-purple-500/30 hover:border-purple-400/60"
                   title="Fit the entire genealogy into the viewport"
                 >
                   <Maximize className="w-2.5 h-2.5" /> Fit
                 </button>
                 <button
                   onClick={() => genControls.current?.reset()}
-                  className="flex items-center px-2 py-1 rounded text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:text-zinc-200 bg-black/40 border border-white/10"
+                  className="mr-1 flex items-center px-2 py-1 rounded text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:text-zinc-200 bg-black/40 border border-white/10"
                   title="Reset to native scale"
                 >
                   Reset
                 </button>
+              </>
+            )}
+            <TabButton active={tab === 'genealogy'} onClick={() => setTab('genealogy')} icon={<GitFork className="w-3 h-3" />}>
+              Genealogy
+            </TabButton>
+            <TabButton active={tab === 'graph3d'} onClick={() => setTab('graph3d')} icon={<Workflow className="w-3 h-3" />}>
+              3D graph
+            </TabButton>
+            {(tab === 'genealogy' || tab === 'graph3d') && (
+              <>
+                <span className="mx-1 w-px h-4 bg-white/10" aria-hidden="true" />
+                {(
+                  [
+                    ['most', 'Most', 'Highlight the node(s) with the most connections'],
+                    ['least', 'Least', 'Highlight the node(s) with the fewest connections'],
+                    ['plays', 'Plays', 'Highlight the most-played node(s)'],
+                  ] as const
+                ).map(([mode, label, tip]) => (
+                  <button
+                    key={mode}
+                    onClick={() => setHighlightMode((cur) => (cur === mode ? null : mode))}
+                    className={`px-2 py-1 rounded text-[9px] font-mono uppercase tracking-widest border ${
+                      highlightMode === mode
+                        ? 'bg-amber-500/20 text-amber-200 border-amber-400/50'
+                        : 'bg-black/40 text-zinc-400 border-white/10 hover:text-zinc-200'
+                    }`}
+                    title={tip}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <input
+                  id="lineage-header-search"
+                  name="lineage-header-search"
+                  type="search"
+                  aria-label="Search node titles"
+                  value={graphSearch}
+                  onChange={(e) => setGraphSearch(e.target.value)}
+                  placeholder="Search titles…"
+                  className="ml-1 w-36 bg-black/60 border border-purple-500/30 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-purple-400/60"
+                />
+                {searchMatches !== null && (
+                  <span className="text-[9px] font-mono text-amber-300/90 px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded">
+                    {searchMatches.size}
+                  </span>
+                )}
               </>
             )}
             {tab === 'graph3d' && (
@@ -546,7 +660,7 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
               <TrackTreeView root={rootEntryId} payload={perTrack} />
             )}
             {tab === 'genealogy' && libraryGraph && (
-              <GenealogyView payload={libraryGraph} appearance={appearance} controlsRef={genControls} />
+              <GenealogyView payload={libraryGraph} appearance={appearance} controlsRef={genControls} highlightSet={highlightSet} />
             )}
             {tab === 'graph3d' && libraryGraph && (
               <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-zinc-500">Loading 3D engine…</div>}>
@@ -555,6 +669,8 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
                   highlight={rootEntryId}
                   appearance={appearance}
                   visible={visible}
+                  highlightSet={highlightSet}
+                  searchNeedle={graphNeedle}
                 />
               </Suspense>
             )}
@@ -696,8 +812,9 @@ const Column: React.FC<{ title: string; nodes: GraphNode[]; accent: string; high
 
 /** Library-wide genealogy: a layered DAG layout (Sugiyama-style).
  *
- *  1. Filter to nodes that participate in at least one relation —
- *     isolated tracks aren't "genealogy", they're just unrelated entries.
+ *  1. Take EVERY library node — tracks without any recorded relation
+ *     included (they render as generation-0 cards with no lines), so the
+ *     view covers the whole library rather than only related entries.
  *  2. Assign each node to a generation = longest path from any root.
  *  3. Within each generation, order nodes via the median heuristic to
  *     minimize parent↔child edge crossings (cheap, gives a clearly
@@ -792,7 +909,10 @@ const GenealogyView: React.FC<{
   appearance: GraphAppearance;
   /** Lets the parent header drive Fit/Reset (moved out of the canvas corner). */
   controlsRef?: React.MutableRefObject<{ fit: () => void; reset: () => void } | null>;
-}> = ({ payload, appearance, controlsRef }) => {
+  /** Nodes to render with the amber accent ring (header MOST/LEAST/PLAYS
+   *  toggles + title search). */
+  highlightSet?: Set<string>;
+}> = ({ payload, appearance, controlsRef, highlightSet }) => {
   // Hover lights up a node's full lineage (uniform brightness both ways).
   const [hovered, setHovered] = useState<string | null>(null);
   // Hover is smoothed: moving the cursor straight from one node to the next
@@ -828,7 +948,7 @@ const GenealogyView: React.FC<{
     hoverClearRef.current = window.setTimeout(() => {
       setHovered(null);
       hoverClearRef.current = null;
-    }, 150);
+    }, 280);
   }, [clearHoverIntent]);
   useEffect(() => () => {
     clearHoverIntent();
@@ -839,19 +959,16 @@ const GenealogyView: React.FC<{
   // Viewport size — the grid uses the panel's aspect ratio to choose its row
   // count so it fills the window (see fillRows).
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
-  // -- Filter to the connected subgraph --------------------------------
+  // -- Graph input: ALL nodes, including lineage-less tracks -----------
+  // Tracks with no recorded relations render too (as generation-0 cards
+  // with no connecting lines) so the genealogy shows the whole library,
+  // not only entries that already participate in an edge.
   const connected = useMemo(() => {
-    const involved = new Set<string>();
     // Defensive: a malformed/empty payload (e.g. backend offline) must degrade
     // to an empty graph, never crash the whole tab.
     const allEdges = payload?.edges ?? [];
-    const allNodes = payload?.nodes ?? [];
-    allEdges.forEach((e) => {
-      involved.add(e.from_id);
-      involved.add(e.to_id);
-    });
-    const nodes = allNodes.filter((n) => involved.has(n.id));
-    // Also keep any edges whose endpoints both still exist (defensive).
+    const nodes = payload?.nodes ?? [];
+    // Keep only edges whose endpoints both exist (defensive).
     const idSet = new Set(nodes.map((n) => n.id));
     const edges = allEdges.filter(
       (e) => idSet.has(e.from_id) && idSet.has(e.to_id),
@@ -879,11 +996,24 @@ const GenealogyView: React.FC<{
     [hovered, parentsOf, childrenOf],
   );
 
+  // Tracks with no relations at all render in their own wrapping band BELOW
+  // the DAG. Mixed into generation 0 they inflated its width by hundreds of
+  // columns (a full library is thousands of standalone tracks), which pushed
+  // the real family tree off the right edge and crushed fit-to-view into
+  // unreadable soup.
+  const isolatedIds = useMemo(() => {
+    const out = new Set<string>();
+    connected.nodes.forEach((n) => {
+      if (!childrenOf[n.id]?.length && !parentsOf[n.id]?.length) out.add(n.id);
+    });
+    return out;
+  }, [connected, childrenOf, parentsOf]);
+
   // -- Step 1: assign layer = longest path from any root --------------
   const layers = useMemo(() => {
     const out: Record<string, number> = {};
     const roots = connected.nodes.filter(
-      (n) => !(parentsOf[n.id] && parentsOf[n.id].length),
+      (n) => !isolatedIds.has(n.id) && !(parentsOf[n.id] && parentsOf[n.id].length),
     );
     // Multi-pass relaxation so that a node at the bottom of a long
     // chain ends up at the deepest layer.
@@ -905,15 +1035,16 @@ const GenealogyView: React.FC<{
       });
     }
     connected.nodes.forEach((n) => {
-      if (out[n.id] == null) out[n.id] = 0;
+      if (!isolatedIds.has(n.id) && out[n.id] == null) out[n.id] = 0;
     });
     return out;
-  }, [connected, parentsOf]);
+  }, [connected, parentsOf, isolatedIds]);
 
   // -- Step 2: order within layer via median heuristic ----------------
   const orderedRows = useMemo(() => {
     const grouped: Record<number, string[]> = {};
     connected.nodes.forEach((n) => {
+      if (isolatedIds.has(n.id)) return; // band-only, not a DAG generation
       const d = layers[n.id] ?? 0;
       (grouped[d] = grouped[d] || []).push(n.id);
     });
@@ -965,7 +1096,7 @@ const GenealogyView: React.FC<{
     }
 
     return layerKeys.map((d) => ({ layer: d, ids: grouped[d] }));
-  }, [connected, nodeMap, layers, parentsOf, childrenOf]);
+  }, [connected, nodeMap, layers, parentsOf, childrenOf, isolatedIds]);
 
   // -- Step 3: coordinate assignment ----------------------------------
   // Square cards pack into a grid that fills the panel; gaps come from sliders.
@@ -979,14 +1110,15 @@ const GenealogyView: React.FC<{
   // R = sqrt(N / A) rows × ~N/R columns (e.g. 144 nodes @ 16:9 → 9×16). Each
   // generation packs its nodes column-major into R rows.
   const fillRows = useMemo(() => {
-    const n = connected.nodes.length;
+    // Sized to the DAG only — the isolated band below wraps independently.
+    const n = connected.nodes.length - isolatedIds.size;
     if (n <= 1) return 1;
     const A = containerSize.w > 0 && containerSize.h > 0 ? containerSize.w / containerSize.h : 16 / 9;
     const cellW = NODE_W + SUBCOL_GAP;
     const cellH = NODE_H + ROW_GAP;
     const r = Math.round(Math.sqrt((n * cellW) / (A * cellH)));
     return Math.max(1, Math.min(n, r));
-  }, [connected.nodes.length, containerSize.w, containerSize.h, SUBCOL_GAP, ROW_GAP]);
+  }, [connected.nodes.length, isolatedIds, containerSize.w, containerSize.h, SUBCOL_GAP, ROW_GAP]);
 
   const generationLayouts = useMemo(() => {
     const layouts: Array<{ layer: number; ids: string[]; subColCount: number; genStartX: number; genEndX: number }> = [];
@@ -1013,8 +1145,35 @@ const GenealogyView: React.FC<{
         };
       });
     });
+    // No-lineage band: wraps below the DAG (grows DOWN, never widens the
+    // generations), at least as wide as the DAG so the overall shape stays
+    // panel-like when the band dominates.
+    if (isolatedIds.size) {
+      const iso = connected.nodes
+        .filter((n) => isolatedIds.has(n.id))
+        .sort((a, b) => (a.title ?? a.id).localeCompare(b.title ?? b.id));
+      const cellW = NODE_W + SUBCOL_GAP;
+      const cellH = NODE_H + ROW_GAP;
+      const hasDag = generationLayouts.length > 0;
+      const dagWidth = hasDag
+        ? generationLayouts[generationLayouts.length - 1].genEndX - PAD
+        : 0;
+      const A = containerSize.w > 0 && containerSize.h > 0 ? containerSize.w / containerSize.h : 16 / 9;
+      const aspectCols = Math.ceil(Math.sqrt((iso.length * A * cellH) / cellW));
+      const cols = Math.max(1, Math.floor((dagWidth + SUBCOL_GAP) / cellW), aspectCols);
+      const dagBottom = hasDag
+        ? TOP_MARGIN + PAD + (fillRows - 1) * cellH + NODE_H
+        : TOP_MARGIN;
+      const startY = dagBottom + (hasDag ? BAND_GAP : PAD);
+      iso.forEach((n, i) => {
+        pos[n.id] = {
+          x: PAD + (i % cols) * cellW,
+          y: startY + Math.floor(i / cols) * cellH,
+        };
+      });
+    }
     return pos;
-  }, [generationLayouts, fillRows, SUBCOL_GAP, ROW_GAP]);
+  }, [generationLayouts, fillRows, SUBCOL_GAP, ROW_GAP, connected, isolatedIds, containerSize]);
 
   // -- Bounds for the SVG ---------------------------------------------
   const bounds = useMemo(() => {
@@ -1029,6 +1188,25 @@ const GenealogyView: React.FC<{
       maxY: Math.max(...ys) + NODE_H + PAD,
     };
   }, [positions]);
+
+  // Backdrop rect for the no-lineage band so it reads as its own region.
+  const bandBounds = useMemo(() => {
+    if (!isolatedIds.size) return null;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    isolatedIds.forEach((id) => {
+      const p = positions[id];
+      if (!p) return;
+      if (p.x < minX) minX = p.x;
+      if (p.x + NODE_W > maxX) maxX = p.x + NODE_W;
+      if (p.y < minY) minY = p.y;
+      if (p.y + NODE_H > maxY) maxY = p.y + NODE_H;
+    });
+    if (!Number.isFinite(minX)) return null;
+    return { minX, maxX, minY, maxY };
+  }, [isolatedIds, positions]);
 
   // -- Pan + zoom -----------------------------------------------------
   // `view` is what renders; `targetRef` is where zoom is heading. A rAF loop
@@ -1094,6 +1272,12 @@ const GenealogyView: React.FC<{
   // Auto-fit on first mount + when bounds change so the whole tree
   // lands visible inside the modal regardless of how wide the widest
   // generation is. The "Fit" button re-runs this on demand.
+  // Read through a ref so opening/closing the inspector doesn't retrigger
+  // the auto-fit effect; a Fit PRESS still accounts for the open panel.
+  const selectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
   const fitToView = React.useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -1102,17 +1286,19 @@ const GenealogyView: React.FC<{
     const gw = bounds.maxX - bounds.minX;
     const gh = bounds.maxY - bounds.minY;
     if (cw <= 0 || ch <= 0 || gw <= 0 || gh <= 0) return;
-    // Reserve a top strip for the generation numbers, then scale to fill the
-    // rest. No 1.0 cap so a small graph zooms up; the grid layout already makes
-    // the aspect ratio match the panel, so both axes fill with little waste.
+    // Reserve a top strip for the generation numbers, and the inspector's
+    // width when it is open (otherwise Fit tucks the rightmost generations
+    // underneath the panel), then scale to fill the rest. No 1.0 cap so a
+    // small graph zooms up.
     const margin = 12;
     const topReserve = 34;
+    const rightReserve = selectedIdRef.current ? 336 : 0;
     const k = Math.min(
-      (cw - margin) / gw,
+      (cw - margin - rightReserve) / gw,
       (ch - margin - topReserve) / gh,
       4,
     );
-    const x = (cw - gw * k) / 2 - bounds.minX * k;
+    const x = (cw - rightReserve - gw * k) / 2 - bounds.minX * k;
     const y = topReserve + (ch - topReserve - gh * k) / 2 - bounds.minY * k;
     setViewImmediate({ x, y, k });
   }, [bounds, setViewImmediate]);
@@ -1167,19 +1353,31 @@ const GenealogyView: React.FC<{
       viewBox={`${bounds.minX} ${bounds.minY} ${bounds.maxX - bounds.minX} ${bounds.maxY - bounds.minY}`}
       style={{ display: 'block' }}
     >
-      {/* Generation bands: plain alternating grey / darker-grey, full height.
-          The gen NUMBER lives in a screen-space strip above the nodes (below the
-          header) — not stamped here. */}
+      {/* Generation bands: plain alternating grey / darker-grey, spanning the
+          DAG only (they stop above the no-lineage band). The gen NUMBER lives
+          in a screen-space strip above the nodes (below the header). */}
       {generationLayouts.map((g) => (
         <rect
           key={`genbg-${g.layer}`}
           x={g.genStartX - GEN_GAP / 2}
           y={bounds.minY}
           width={g.genEndX - g.genStartX + GEN_GAP}
-          height={bounds.maxY - bounds.minY}
+          height={(bandBounds ? bandBounds.minY - BAND_GAP / 2 : bounds.maxY) - bounds.minY}
           fill={g.layer % 2 === 0 ? '#17171c' : '#0d0d11'}
         />
       ))}
+      {/* No-lineage band backdrop: its own region below the family tree. */}
+      {bandBounds && (
+        <rect
+          x={bandBounds.minX - PAD / 2}
+          y={bandBounds.minY - PAD / 2}
+          width={bandBounds.maxX - bandBounds.minX + PAD}
+          height={bandBounds.maxY - bandBounds.minY + PAD}
+          rx={10}
+          ry={10}
+          fill="#101018"
+        />
+      )}
 
       {/* Edges under nodes. Rendered hover-INDEPENDENT: nothing here fades or
           rebuilds when the cursor moves. Hover glow lands imperatively on these
@@ -1217,6 +1415,7 @@ const GenealogyView: React.FC<{
         if (!p) return null;
         const sourceColor = pickNodeColor(n);
         const isSelected = selectedId === n.id;
+        const isHighlighted = highlightSet?.has(n.id) ?? false;
         return (
           <g
             key={n.id}
@@ -1232,12 +1431,24 @@ const GenealogyView: React.FC<{
               setSelectedId((cur) => (cur === n.id ? null : n.id));
             }}
           >
-            <GenNodeBody n={n} title={displayTitle(n)} sourceColor={sourceColor} strong={isSelected} w={NODE_W} h={NODE_H} />
+            <GenNodeBody n={n} title={displayTitle(n)} sourceColor={sourceColor} strong={isSelected || isHighlighted} w={NODE_W} h={NODE_H} />
+            {isHighlighted && (
+              <rect
+                width={NODE_W}
+                height={NODE_H}
+                rx={6}
+                ry={6}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth={2.5}
+                pointerEvents="none"
+              />
+            )}
           </g>
         );
       })}
     </svg>
-  ), [bounds, generationLayouts, GEN_GAP, connected, positions, selectedId, enterNode, leaveNode, displayTitle]);
+  ), [bounds, bandBounds, generationLayouts, GEN_GAP, connected, positions, selectedId, enterNode, leaveNode, displayTitle, highlightSet]);
 
   // Lineage hover glow, applied imperatively. The SVG above is referentially
   // stable across hover changes (hover is NOT in its memo deps), so React never
@@ -1400,7 +1611,7 @@ const GenealogyView: React.FC<{
 
       {/* Help hint */}
       <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
-        drag to pan · wheel to zoom · click a node for details · {connected.nodes.length} connected entries · {connected.edges.length} relationships
+        drag to pan · wheel to zoom · click a node for details · {connected.nodes.length} entries · {connected.edges.length} relationships
       </div>
 
       {/* Detail / analytics inspector (screen-space; outside the pan/zoom transform). */}
@@ -1684,7 +1895,7 @@ let hitProxyMat: import('three').MeshBasicMaterial | null = null;
  *  library-graph refresh toggling `loading`), and any re-render with
  *  fresh accessor prop identities makes the library rebuild scene
  *  objects wholesale — React.memo keeps those renders away entirely. */
-const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, appearance, visible = true }: {
+const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, appearance, visible = true, highlightSet, searchNeedle = '' }: {
   payload: GraphPayload;
   highlight: string | null;
   appearance: GraphAppearance;
@@ -1692,18 +1903,17 @@ const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, ap
    *  hides this view with display:none instead of unmounting it, so the
    *  render loops below must be paused explicitly while hidden. */
   visible?: boolean;
+  /** Nodes to render amber (header MOST/LEAST/PLAYS toggles + search). */
+  highlightSet?: Set<string>;
+  /** Debounced, lowercased title-search needle from the modal header —
+   *  non-matching nodes/edges are dimmed. Empty disables the filter. */
+  searchNeedle?: string;
 }) {
-  // Same filter as Genealogy: drop nodes that don't participate in any
-  // relation, otherwise 100+ disconnected dots dominate the view.
+  // Same input as Genealogy: ALL nodes, including lineage-less tracks —
+  // they float as unlinked dots so the graph shows the whole library.
   const connected = useMemo(() => {
-    const involved = new Set<string>();
     const allEdges = payload?.edges ?? [];
-    const allNodes = payload?.nodes ?? [];
-    allEdges.forEach((e) => {
-      involved.add(e.from_id);
-      involved.add(e.to_id);
-    });
-    const nodes = allNodes.filter((n) => involved.has(n.id));
+    const nodes = payload?.nodes ?? [];
     const idSet = new Set(nodes.map((n) => n.id));
     const edges = allEdges.filter(
       (e) => idSet.has(e.from_id) && idSet.has(e.to_id),
@@ -1711,27 +1921,10 @@ const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, ap
     return { nodes, edges };
   }, [payload]);
 
-  // Graphrag-workbench-style search: when the query is non-empty, nodes
-  // whose name/prompt/model don't substring-match are visually muted
-  // (gray, low alpha) and their incident edges are dimmed. Empty query
-  // disables the filter. Matching is case-insensitive.
-  //
-  // The needle is debounced (~150ms) so per-keystroke typing doesn't
-  // re-mount Three.js node groups via the `data` useMemo below — on
-  // larger graphs that mid-typing churn is what causes the search input
-  // to feel sluggish. Empty query clears immediately so the user sees
-  // the unfiltered graph as soon as they hit backspace through the box.
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchNeedle, setSearchNeedle] = useState('');
-  useEffect(() => {
-    const trimmed = searchQuery.trim().toLowerCase();
-    if (!trimmed) {
-      setSearchNeedle('');
-      return;
-    }
-    const handle = window.setTimeout(() => setSearchNeedle(trimmed), 150);
-    return () => window.clearTimeout(handle);
-  }, [searchQuery]);
+  // Graphrag-workbench-style search: when the needle (debounced in the
+  // modal header, which owns the input) is non-empty, nodes whose
+  // name/prompt/model don't substring-match are visually muted (gray,
+  // low alpha) and their incident edges are dimmed.
   const matchSet = useMemo(() => {
     if (!searchNeedle) return null;
     const out = new Set<string>();
@@ -1746,7 +1939,8 @@ const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, ap
     () => ({
       nodes: connected.nodes.map((n) => {
         const isMatch = matchSet === null || matchSet.has(n.id);
-        const baseColor = n.id === highlight ? '#fbbf24' : pickNodeColor(n);
+        const isAccented = n.id === highlight || (highlightSet?.has(n.id) ?? false);
+        const baseColor = isAccented ? '#fbbf24' : pickNodeColor(n);
         return {
           id: n.id,
           name: n.title ?? n.id,
@@ -1772,7 +1966,7 @@ const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, ap
         };
       }),
     }),
-    [connected, highlight, appearance.nodeSizeScale, matchSet],
+    [connected, highlight, highlightSet, appearance.nodeSizeScale, matchSet],
   );
   // react-force-graph mutates these node objects in place with x/y/z during
   // layout; the flight loop reads them through this ref for the cluster center.
@@ -2998,25 +3192,9 @@ const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, ap
           nodeLabel={labelHtml}
         />
       )}
-      {/* Search overlay — sits above the graph canvas, fixed top-left.
-          Typing filters nodes/edges by dimming non-matching ones; empty
-          query restores everything. Inspired by graphrag-workbench's
-          query box. */}
+      {/* Camera controls overlay — the search input moved to the modal
+          header (one box drives Genealogy AND this view). */}
       <div className="absolute top-2 left-2 z-10 flex items-center gap-2">
-        <input
-          id="lineage-graph-search"
-          name="lineage-graph-search"
-          type="search"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search graph…"
-          className="bg-black/60 backdrop-blur-sm border border-purple-500/30 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 placeholder-zinc-500 w-44 focus:outline-none focus:border-purple-400/60"
-        />
-        {matchSet !== null && (
-          <span className="text-[9px] font-mono text-purple-300/80 px-1.5 py-0.5 bg-purple-500/10 border border-purple-500/20 rounded">
-            {matchSet.size} / {connected.nodes.length}
-          </span>
-        )}
         {appearance.renderMode === '3d' && (
           <>
             <button
@@ -3077,7 +3255,7 @@ const Graph3DView = React.memo(function Graph3DViewBase({ payload, highlight, ap
         {appearance.renderMode === '3d'
           ? 'click-drag rotate · wheel zoom · WASD/arrows fly — hold to accelerate, release to coast (Q/E up-down, ⇧ afterburner) · F = FTL jump · Home button warps back · click node for details'
           : 'click-drag pan · wheel zoom · click node for details · right-click node for actions'}
-        {' · '}{connected.nodes.length} connected nodes · {connected.edges.length} relationships
+        {' · '}{connected.nodes.length} nodes · {connected.edges.length} relationships
       </div>
 
       {/* Right-click context menu for graph nodes (plan step 3d). */}
