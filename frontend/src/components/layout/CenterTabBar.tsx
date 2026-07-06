@@ -9,6 +9,7 @@ import {
   Hammer,
   FlaskConical,
   Rows3,
+  Waypoints,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
@@ -130,6 +131,18 @@ const TABS: Array<{
       bg: 'bg-sky-500/15',
       text: 'text-sky-100',
       iconText: 'text-sky-300',
+    },
+  },
+  {
+    id: 'audimate',
+    label: 'Audimate',
+    desc: 'Build generation pipelines as a wired node graph, then run them',
+    icon: Waypoints,
+    accent: {
+      border: 'border-teal-500/50',
+      bg: 'bg-teal-500/15',
+      text: 'text-teal-100',
+      iconText: 'text-teal-300',
     },
   },
   {
