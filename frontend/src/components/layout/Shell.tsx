@@ -27,6 +27,8 @@ import { useOnboardingStore } from '../../onboarding/onboardingStore';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
+import { useEditThemeStore } from '../../state/editThemeStore';
+import { resolveEditThemeVars } from '../../lib/editThemes';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -171,10 +173,18 @@ export const Shell: React.FC = () => {
     };
   }, [isResizingRail, setRightPanelWidth]);
 
+  const editThemeId = useEditThemeStore((s) => s.themeId);
+  const editThemeImage = useEditThemeStore((s) => s.customImage);
+  const editTheme = useMemo(
+    () => resolveEditThemeVars(editThemeId, editThemeImage),
+    [editThemeId, editThemeImage],
+  );
+
   return (
     <div
-      className="relative flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
-      style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))' }}
+      className="edit-theme-scope relative flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
+      data-et-light={editTheme.light ? '1' : undefined}
+      style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))', ...(editTheme.vars as React.CSSProperties) }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
           Mobile / Docs / app-menu (right). G-Search moved to the footer. */}
