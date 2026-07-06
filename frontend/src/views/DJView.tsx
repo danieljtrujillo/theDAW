@@ -440,7 +440,7 @@ function EditableBpmField({
  * panels (hero waveforms, sampler, FX racks, Next lane, source tree, library)
  * host a whole component; every mixer + deck control is an individual widget the
  * user can relocate in Design Mode. Nothing moves until the user drags. */
-const DJ_LAYOUT_VERSION = 23;
+const DJ_LAYOUT_VERSION = 24;
 
 const defaultDjLayout: SurfaceLayout = {
   version: DJ_LAYOUT_VERSION,
@@ -457,7 +457,7 @@ const defaultDjLayout: SurfaceLayout = {
     center: { id: 'center', type: 'container', axis: 'column', children: ['deckmix', 'fxrow'], fr: { deckmix: 5, fxrow: 2 } },
     deckmix: { id: 'deckmix', type: 'container', axis: 'row', children: ['deckAcont', 'mixer', 'deckBcont'], fr: { deckAcont: 4.17953863997903, mixer: 5.180662235484642, deckBcont: 4.439799124536327 } },
     // ── Deck A (pad-rows wrapped with spacer panels in cont-* containers) ──
-    deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'waveAOverview', 'cont-10-e11250c4', 'cont-A-transport', 'cont-A-stems', 'fxAP', 'perfAP'], fr: { 'pdA-head': 1.12, waveAOverview: 0.72, 'cont-10-e11250c4': 4.9, 'cont-A-transport': 1.02, 'cont-A-stems': 1.1, fxAP: 3.15, perfAP: 1.35 }, framed: true, frameTitle: 'A' },
+    deckAcont: { id: 'deckAcont', type: 'container', axis: 'column', children: ['pdA-head', 'waveAOverview', 'cont-10-e11250c4', 'cont-A-transport', 'cont-A-stems', 'fxAP', 'perfAP'], fr: { 'pdA-head': 1.12, waveAOverview: 0.72, 'cont-10-e11250c4': 4.9, 'cont-A-transport': 1.02, 'cont-A-stems': 1.1, fxAP: 3.15, perfAP: 1.35 }, framed: true },
     'pdA-head': { id: 'pdA-head', type: 'panel', title: 'A', flow: 'row', widgets: ['spacer:s-2-7f6f8905', 'keylockA', 'keyA', 'bpmA', 'headerA'], widgetFr: { keylockA: 0.49871465295629847, keyA: 0.8892624085426142, bpmA: 0.8514435436029266, headerA: 2.255932370970932, 'spacer:s-2-7f6f8905': 0.8892624085426142 }, widgetJustify: { headerA: 'start' }, widgetMargins: { 'spacer:s-2-7f6f8905': { t: 0, r: 8, b: 0, l: 0 } }, mirror: false, uniform: false },
     'pdA-jog': { id: 'pdA-jog', type: 'panel', title: 'A · Jog', flow: 'row', widgets: ['jogA'], widgetMargins: { jogA: { t: 1, r: 4, b: 3, l: 4 } }, mirror: true },
     'pdA-mode': { id: 'pdA-mode', type: 'panel', title: 'A · Mode', flow: 'column', widgets: ['syncLockA', 'headCueA'], mirror: true, uniform: true },
@@ -467,7 +467,7 @@ const defaultDjLayout: SurfaceLayout = {
     'pdA-loop': { id: 'pdA-loop', type: 'panel', title: 'A · Loop', flow: 'row', widgets: ['loopA_0', 'loopA_1', 'loopA_2', 'loopA_3', 'loopA_4', 'loopOutA'], uniform: true, mirror: true },
     'pdA-perf': { id: 'pdA-perf', type: 'panel', title: 'A · Perf', flow: 'row', widgets: ['rollA_0', 'rollA_1', 'rollA_2', 'slipA', 'jumpA_0', 'jumpA_1', 'jumpA_2', 'jumpA_3'], uniform: true, mirror: true },
     // ── Deck B ──
-    deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'waveBOverview', 'cont-2-a0e79010', 'cont-B-transport', 'cont-B-stems', 'fxBP', 'perfBP'], fr: { 'pdB-head': 1.12, waveBOverview: 0.72, 'cont-2-a0e79010': 4.9, 'cont-B-transport': 1.02, 'cont-B-stems': 1.1, fxBP: 3.15, perfBP: 1.35 }, framed: true, frameTitle: 'B' },
+    deckBcont: { id: 'deckBcont', type: 'container', axis: 'column', children: ['pdB-head', 'waveBOverview', 'cont-2-a0e79010', 'cont-B-transport', 'cont-B-stems', 'fxBP', 'perfBP'], fr: { 'pdB-head': 1.12, waveBOverview: 0.72, 'cont-2-a0e79010': 4.9, 'cont-B-transport': 1.02, 'cont-B-stems': 1.1, fxBP: 3.15, perfBP: 1.35 }, framed: true },
     waveAOverview: { id: 'waveAOverview', type: 'panel', title: 'A · Overview', flow: 'row', widgets: [], pinned: 'waveAOverview', mirror: true },
     waveBOverview: { id: 'waveBOverview', type: 'panel', title: 'B · Overview', flow: 'row', widgets: [], pinned: 'waveBOverview' },
     'pdB-head': { id: 'pdB-head', type: 'panel', title: 'B', flow: 'row', widgets: ['spacer:s-1-95993441', 'keylockB', 'keyB', 'bpmB', 'headerB'], widgetFr: { keylockB: 0.5522110739502047, keyB: 1.1040505388331472, bpmB: 1.039483463396507, headerB: 2.209123002601264, 'spacer:s-1-95993441': 0.4797473058342624 }, widgetJustify: { headerB: 'end' }, widgetMargins: { 'spacer:s-1-95993441': { t: 0, r: 0, b: 0, l: 64 } }, mirror: true, uniform: false },
@@ -2836,8 +2836,8 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
 
     reg[`header${d}`] = { id: `header${d}`, label: `Deck ${d} Info`, group: grp, kind: 'fixed', source: 'builtin', render: (_s, opts) => (
       <div className={`h-full w-full flex items-center gap-1.5 px-1 overflow-hidden ${opts?.mirror ? 'flex-row-reverse' : ''}`}>
-        <div className="shrink-0 grid place-items-center rounded border w-7 h-7" style={{ borderColor: rgba(rgbc, 0.4), background: rgba(rgbc, 0.12) }} title={`Deck ${d}`}>
-          <Music2 className="w-3.5 h-3.5" style={{ color: rgb(rgbc) }} />
+        <div className="shrink-0 grid place-items-center rounded border w-7 h-7" style={{ borderColor: rgba(rgbc, 0.6), background: rgba(rgbc, 0.2) }} title={`Deck ${d}`}>
+          <span className="text-[18px] font-black leading-none text-white" style={{ textShadow: `0 0 6px ${rgba(rgbc, 0.9)}, 0 1px 2px rgba(0,0,0,0.9)` }}>{d}</span>
         </div>
         <div className={`min-w-0 flex-1 flex flex-col ${opts?.mirror ? 'items-end text-right' : ''}`}>
           <span

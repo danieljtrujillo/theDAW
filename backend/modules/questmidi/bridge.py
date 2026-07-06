@@ -17,6 +17,7 @@ Wire format on the TCP socket (matches QuestMidiSender / the Node bridge):
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import subprocess
@@ -52,6 +53,7 @@ class _State:
     adb_reverse_ok: bool = False
     started: bool = False
     starting: bool = False
+    port_in_use: bool = False
 
 
 _s = _State()
@@ -155,8 +157,8 @@ def _run_adb_reverse(port: int) -> bool:
             check=True,
         )
         return True
-    except Exception as e:  # noqa: BLE001
-        log.info("questmidi: adb reverse failed: %s", e)
+    except Exception as e:  # noqa: BLE001 — expected when no headset is plugged in
+        log.debug("questmidi: adb reverse failed: %s", e)
         return False
 
 
@@ -176,8 +178,26 @@ async def ensure_started() -> None:
     try:
         port = _port()
         await reattach_adb()
-        _s.server = await asyncio.start_server(_handle_quest, "127.0.0.1", port)
+        try:
+            _s.server = await asyncio.start_server(_handle_quest, "127.0.0.1", port)
+        except OSError as e:
+            # EADDRINUSE (WSAEADDRINUSE 10048 on Windows): the port is already
+            # bound — almost always a second theDAW instance or a --reload
+            # leftover that still owns the listener. Treat it as started so we
+            # don't re-attempt the bind (and re-log) on every WebSocket connect;
+            # the existing listener relays the headset.
+            if e.errno in (errno.EADDRINUSE, 10048):
+                _s.started = True
+                _s.port_in_use = True
+                log.info(
+                    "questmidi: port %d already in use — an existing bridge "
+                    "owns it; not starting a second listener",
+                    port,
+                )
+                return
+            raise
         _s.started = True
+        _s.port_in_use = False
         log.info(
             "questmidi: listening on 127.0.0.1:%d (adb reverse %s)",
             port,
@@ -211,6 +231,7 @@ def status() -> dict:
     return {
         "started": _s.started,
         "port": _port(),
+        "port_in_use": _s.port_in_use,
         "adb_path": _adb_path(),
         "adb_reverse_ok": _s.adb_reverse_ok,
         "quest_connected": _s.quest_writer is not None,
