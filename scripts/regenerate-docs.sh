@@ -81,9 +81,12 @@ else
   warn "Playwright not installed — skipping screenshots. (Run: cd frontend && npm i -D playwright && npx playwright install chromium)"
 fi
 
-# 5. Stage all the files the regen step touches.
+# 5. Stage all the files the regen step touches. NOTE: docs/reports is
+# deliberately EXCLUDED — the feature-coverage report is a local dev artifact
+# (gitignored via /docs/reports/), not user documentation, so it must never be
+# auto-staged into a commit.
 log "Staging docs changes"
-git add docs/USER_GUIDE.md frontend/public/USER_GUIDE.md docs/reports scripts/screenshots/specs.ts scripts/screenshots/featureCoverage.ts 2>/dev/null || true
+git add docs/USER_GUIDE.md frontend/public/USER_GUIDE.md scripts/screenshots/specs.ts scripts/screenshots/featureCoverage.ts 2>/dev/null || true
 if [[ -d docs/UI/screenshots ]]; then
   git add docs/UI/screenshots 2>/dev/null || true
 fi
