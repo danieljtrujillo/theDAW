@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { WaveformPreview } from './WaveformPreview';
+import { SemanticWave } from './SemanticWave';
 import { usePlayerStore } from '../../state/playerStore';
 
 /* FooterScrubWave — an output waveform that scrubs the global FOOTER player.
@@ -35,7 +35,7 @@ export function FooterScrubWave({ src, height }: { src: string; height: number }
 
   return (
     <div ref={wrapRef} className="relative h-full">
-      <WaveformPreview audioUrl={src} height={height} interact={false} />
+      <SemanticWave audioUrl={src} height={height} />
       <div className="absolute inset-0 z-10 cursor-ew-resize touch-none" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} title="Drag to scrub · click to seek (footer)" />
       <div ref={playheadRef} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left: '0%', width: '2px', background: '#ffffff', boxShadow: '0 0 4px rgba(255,255,255,0.8)' }} />
     </div>

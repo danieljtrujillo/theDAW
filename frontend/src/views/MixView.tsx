@@ -351,6 +351,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     >
       <MixVizRow
         label="Input" url={p.sourceUrl} overlayUrl={p.outputUrl} accent="#22d3ee" overlayAccent="#a855f7"
+        playLabel="MIX Input"
         mode={p.inputMode} onMode={p.setInputMode} overlay={p.inputOverlay} onToggleOverlay={p.toggleInputOverlay}
         placeholder="drop audio or click ⬆ to load"
         headerExtra={
@@ -376,6 +377,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     <div className="h-full w-full min-h-0 relative">
       <MixVizRow
         label="Output" url={p.outputUrl} overlayUrl={p.sourceUrl} accent="#a855f7" overlayAccent="#22d3ee"
+        playLabel="MIX Output"
         mode={p.outputMode} onMode={p.setOutputMode} overlay={p.outputOverlay} onToggleOverlay={p.toggleOutputOverlay}
         placeholder="output appears after processing"
         headerExtra={

@@ -16,9 +16,9 @@ import { AudimatePalette } from '../components/audimate/AudimatePalette';
 import { AudimateInspector } from '../components/audimate/AudimateInspector';
 import { logInfo } from '../state/logStore';
 
-const NODE_W = 196;
-const HEADER_H = 28;
-const PORT_GAP = 24;
+// Circular glossy nodes (see NODE_EDITOR reference): a fixed-diameter disc with
+// ports on the rim and the label beneath. Edge endpoints land on the rim.
+const NODE_DIAM = 88;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -27,13 +27,22 @@ interface XY {
   y: number;
 }
 
+/** Vertical offset of port `idx` of `count` down the circle's rim, relative to
+ *  the circle's top (`top`). A single port sits at the middle; multiples spread
+ *  across the vertical span with padding so they stay on the arc. */
+function portY(top: number, count: number, idx: number): number {
+  if (count <= 1) return top + NODE_DIAM / 2;
+  const pad = NODE_DIAM * 0.24;
+  return top + pad + ((NODE_DIAM - 2 * pad) * idx) / (count - 1);
+}
+
 function portWorld(node: GraphNode, portId: string, dir: 'in' | 'out'): XY {
   const def = nodeDef(node.kind);
   const ports = dir === 'out' ? def.outputs : def.inputs;
   const idx = Math.max(0, ports.findIndex((p) => p.id === portId));
   return {
-    x: dir === 'out' ? node.x + NODE_W : node.x,
-    y: node.y + HEADER_H + idx * PORT_GAP + PORT_GAP / 2,
+    x: dir === 'out' ? node.x + NODE_DIAM : node.x,
+    y: portY(node.y, ports.length, idx),
   };
 }
 
@@ -100,74 +109,91 @@ interface NodeCardProps {
 
 function NodeCard({ node, selected, status, previewUrl, onHeaderDown, onPortDown, onSelect }: NodeCardProps): React.ReactElement {
   const def = nodeDef(node.kind);
-  const rows = Math.max(def.inputs.length, def.outputs.length, 1);
-  const portsH = rows * PORT_GAP;
-  const glow = selected ? `0 0 0 1px ${def.accent}, 0 0 18px ${def.accent}66` : status === 'running' ? `0 0 16px ${def.accent}55` : 'none';
+  const D = NODE_DIAM;
+  const ring = selected ? def.accent : `${def.accent}66`;
+  const glow = selected
+    ? `0 0 0 2px ${def.accent}, 0 0 22px ${def.accent}66`
+    : status === 'running'
+      ? `0 0 20px ${def.accent}66`
+      : '0 6px 16px rgba(0,0,0,0.55)';
+  const showFooter = !!previewUrl || status === 'running' || status === 'done' || status === 'error';
 
   return (
     <div
-      className="absolute rounded-lg select-none"
-      style={{
-        left: node.x,
-        top: node.y,
-        width: NODE_W,
-        background: '#141020',
-        border: `1px solid ${selected ? def.accent : '#2a2440'}`,
-        boxShadow: glow,
-      }}
+      className="absolute select-none flex flex-col items-center"
+      style={{ left: node.x, top: node.y, width: D }}
       onMouseDown={(e) => {
         e.stopPropagation();
         onSelect(node.id);
       }}
     >
-      {/* Header (drag handle) */}
+      {/* Glossy disc — the whole circle is the drag handle */}
       <div
-        className="flex items-center gap-1.5 px-2 cursor-grab active:cursor-grabbing"
-        style={{ height: HEADER_H, borderBottom: '1px solid #221d36' }}
+        className="relative cursor-grab active:cursor-grabbing"
+        style={{
+          width: D,
+          height: D,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle at 50% 30%, #332c4d 0%, #191325 46%, #0c0a15 100%)',
+          border: `1px solid ${ring}`,
+          boxShadow: glow,
+        }}
         onMouseDown={(e) => onHeaderDown(e, node.id)}
       >
-        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: def.accent }} />
-        <span className="text-[10px] font-mono text-zinc-200 truncate flex-1">{node.title || def.label}</span>
+        {/* top gloss highlight */}
         <span
-          className="w-1.5 h-1.5 rounded-full shrink-0"
-          style={{ background: STATUS_COLOR[status], boxShadow: status === 'running' ? `0 0 6px ${STATUS_COLOR[status]}` : 'none' }}
+          className="absolute pointer-events-none"
+          style={{ left: '20%', right: '30%', top: '12%', height: '26%', borderRadius: '50%', background: 'linear-gradient(180deg, rgba(255,255,255,0.20), rgba(255,255,255,0))' }}
         />
-      </div>
-
-      {/* Ports */}
-      <div className="relative" style={{ height: portsH }}>
+        {/* inner inset disc, faintly accent-lit */}
+        <span
+          className="absolute rounded-full pointer-events-none"
+          style={{ inset: '22%', background: `radial-gradient(circle at 50% 40%, ${def.accent}26, #0b0912 72%)`, boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.7)' }}
+        />
+        {/* status dot */}
+        <span
+          className="absolute rounded-full"
+          style={{ width: 8, height: 8, top: 6, right: 8, background: STATUS_COLOR[status], boxShadow: status === 'running' ? `0 0 6px ${STATUS_COLOR[status]}` : 'none' }}
+        />
+        {/* input ports on the left rim */}
         {def.inputs.map((p, i) => (
-          <div key={p.id} className="absolute left-0 flex items-center gap-1" style={{ top: i * PORT_GAP, height: PORT_GAP }}>
-            <span
-              data-node={node.id}
-              data-port-in={p.id}
-              className="rounded-full cursor-crosshair"
-              style={{ width: 12, height: 12, marginLeft: -6, border: `2px solid ${def.accent}`, background: '#0b0912' }}
-            />
-            <span className="text-[9px] font-mono text-zinc-500 pl-1">{p.label}</span>
-          </div>
+          <span
+            key={p.id}
+            data-node={node.id}
+            data-port-in={p.id}
+            title={p.label}
+            className="absolute rounded-full cursor-crosshair"
+            style={{ width: 12, height: 12, left: 0, top: portY(0, def.inputs.length, i) - 6, transform: 'translateX(-50%)', border: `2px solid ${def.accent}`, background: '#0b0912' }}
+          />
         ))}
+        {/* output ports on the right rim */}
         {def.outputs.map((p, i) => (
-          <div key={p.id} className="absolute right-0 flex items-center gap-1 flex-row-reverse" style={{ top: i * PORT_GAP, height: PORT_GAP }}>
-            <span
-              data-node={node.id}
-              data-port-out={p.id}
-              onMouseDown={(e) => onPortDown(e, node.id, p.id)}
-              className="rounded-full cursor-crosshair"
-              style={{ width: 12, height: 12, marginRight: -6, border: `2px solid ${def.accent}`, background: '#0b0912' }}
-            />
-            <span className="text-[9px] font-mono text-zinc-500 pr-1">{p.label}</span>
-          </div>
+          <span
+            key={p.id}
+            data-node={node.id}
+            data-port-out={p.id}
+            title={p.label}
+            onMouseDown={(e) => onPortDown(e, node.id, p.id)}
+            className="absolute rounded-full cursor-crosshair"
+            style={{ width: 12, height: 12, left: D, top: portY(0, def.outputs.length, i) - 6, transform: 'translateX(-50%)', border: `2px solid ${def.accent}`, background: '#0b0912' }}
+          />
         ))}
       </div>
 
-      {/* Footer */}
-      <div className="flex items-center gap-2 px-2 py-1 border-t border-[#221d36] min-h-6">
-        {status === 'running' ? <Loader2 className="w-3 h-3 text-amber-400 animate-spin" /> : null}
-        {status === 'done' ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : null}
-        {status === 'error' ? <AlertCircle className="w-3 h-3 text-rose-400" /> : null}
-        {previewUrl ? <PreviewButton url={previewUrl} /> : <span className="text-[9px] font-mono text-zinc-600">{status}</span>}
-      </div>
+      {/* Label beneath the circle */}
+      <span className="mt-1 max-w-35 truncate text-center text-[10px] font-mono leading-tight text-zinc-300">
+        {node.title || def.label}
+      </span>
+
+      {/* Footer — preview / status, only when relevant */}
+      {showFooter && (
+        <div className="mt-0.5 flex items-center gap-1">
+          {status === 'running' ? <Loader2 className="w-3 h-3 text-amber-400 animate-spin" /> : null}
+          {status === 'done' && !previewUrl ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : null}
+          {status === 'error' ? <AlertCircle className="w-3 h-3 text-rose-400" /> : null}
+          {previewUrl ? <PreviewButton url={previewUrl} /> : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -304,7 +330,7 @@ export function AudimateView(): React.ReactElement {
       const cx = ((rect?.width ?? 800) / 2 - vp.x) / vp.zoom;
       const cy = ((rect?.height ?? 500) / 2 - vp.y) / vp.zoom;
       const jitter = (useAudimateStore.getState().nodes.length % 6) * 24;
-      addNode(kind, cx - NODE_W / 2 + jitter, cy - 40 + jitter);
+      addNode(kind, cx - NODE_DIAM / 2 + jitter, cy - NODE_DIAM / 2 + jitter);
     },
     [addNode],
   );
@@ -349,8 +375,9 @@ export function AudimateView(): React.ReactElement {
       const color = nodeDef(from.kind).accent;
       return (
         <g key={e.id}>
-          <path d={edgePath(a, b)} fill="none" stroke={color} strokeOpacity={0.25} strokeWidth={6} />
-          <path d={edgePath(a, b)} fill="none" stroke={color} strokeWidth={2} />
+          {/* faint accent halo + a thin light-grey core, like the reference */}
+          <path d={edgePath(a, b)} fill="none" stroke={color} strokeOpacity={0.22} strokeWidth={5} />
+          <path d={edgePath(a, b)} fill="none" stroke="rgba(206,202,220,0.6)" strokeWidth={1.5} />
         </g>
       );
     });

@@ -10,7 +10,7 @@ import { useGenerateParamsStore, type GenerateParamsState } from '../state/gener
 import { useGenerateStore } from '../state/generateStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
-import { WaveformPreview } from '../components/audio/WaveformPreview';
+import { SemanticWave } from '../components/audio/SemanticWave';
 import { FooterScrubWave } from '../components/audio/FooterScrubWave';
 import { LibraryMidiPicker, type PickerAnchor } from '../components/audio/LibraryMidiPicker';
 import { renderMidiBufferToBlob } from '../lib/midiSynth';
@@ -431,6 +431,9 @@ export const AdvancedGenPanel: React.FC<{
     () => new Set(['output', 'init', 'mel', 'stft', 'chromagram', 'cqt']),
   );
   const [cmpOverlay, setCmpOverlay] = useState(false);
+  // Decoded length of the inpaint audio, so the mask band can convert its
+  // seconds-based maskStart/maskEnd to the 0..1 fractions SemanticWave expects.
+  const [inpaintDur, setInpaintDur] = useState(0);
   const toggleLayer = (k: string) => setCmpLayers((prev) => {
     const next = new Set(prev);
     if (next.has(k)) next.delete(k); else next.add(k);
@@ -630,7 +633,7 @@ export const AdvancedGenPanel: React.FC<{
               }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
-            {initAudioUrl ? <WaveformPreview audioUrl={initAudioUrl} height={88} />
+            {initAudioUrl ? <SemanticWave audioUrl={initAudioUrl} height={88} ariaLabel="Init audio waveform" />
               : <div className="h-full flex items-center justify-center"><span className="text-[9px] text-zinc-600">No init audio</span></div>}
           </div>
         </div>
@@ -657,7 +660,12 @@ export const AdvancedGenPanel: React.FC<{
               onChange={(e) => { if (e.target.files?.[0]) patch({ inpaintAudioFile: e.target.files[0], inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); e.target.value = ''; }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
-            {inpaintAudioUrl ? <WaveformPreview audioUrl={inpaintAudioUrl} height={88} enableRegions regionStart={p.maskStart} regionEnd={p.maskEnd} onRegionChange={(s, e) => patch({ maskStart: s, maskEnd: e })} />
+            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={88} ariaLabel="Inpaint audio waveform" onDuration={setInpaintDur}
+                region={inpaintDur > 0 ? {
+                  start: p.maskStart / inpaintDur,
+                  end: p.maskEnd / inpaintDur,
+                  onChange: (s, e) => patch({ maskStart: s * inpaintDur, maskEnd: e * inpaintDur }),
+                } : undefined} />
               : <div className="h-full flex items-center justify-center"><span className="text-[9px] text-zinc-600">No inpaint audio</span></div>}
           </div>
           </>)}
@@ -926,7 +934,7 @@ export const AdvancedGenPanel: React.FC<{
                 {cmpLayers.has('init') && initAudioUrl && (
                   <div className={cmpOverlay ? 'absolute inset-0 opacity-50 mix-blend-screen pointer-events-none' : 'h-22 shrink-0'}>
                     <div className="h-full rounded overflow-hidden border border-cyan-500/20 bg-black/20">
-                      <WaveformPreview audioUrl={initAudioUrl} height={cmpOverlay ? 220 : 84} />
+                      <SemanticWave audioUrl={initAudioUrl} height={cmpOverlay ? 220 : 84} ariaLabel="Compare init waveform" />
                     </div>
                   </div>
                 )}
