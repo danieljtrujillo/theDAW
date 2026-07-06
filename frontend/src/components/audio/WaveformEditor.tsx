@@ -46,6 +46,9 @@ import { publishSelectedTracks } from '../../state/editorSelectionBridge';
 import * as liveMixer from '../../state/liveMixer';
 import { useDjAnalysisStore } from '../../state/djAnalysisStore';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import { EditThemePicker } from './EditThemePicker';
+import { useEditThemeStore } from '../../state/editThemeStore';
+import { resolveEditThemeVars } from '../../lib/editThemes';
 
 const TRACK_HEADER_PX = 180;
 const TRACK_HEIGHT = 104;
@@ -2363,8 +2366,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   }, []);
 
+  const editThemeId = useEditThemeStore((s) => s.themeId);
+  const editThemeImage = useEditThemeStore((s) => s.customImage);
+  const editTheme = useMemo(
+    () => resolveEditThemeVars(editThemeId, editThemeImage),
+    [editThemeId, editThemeImage],
+  );
+
   return (
-    <div className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
+    <div
+      className="edit-theme-scope hardware-card h-full flex flex-col overflow-hidden"
+      data-et-light={editTheme.light ? '1' : undefined}
+      style={editTheme.vars as React.CSSProperties}
+      ref={containerRef}
+    >
       {/* Editor Toolbar */}
       <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
         <div className="flex items-center gap-3">
@@ -2548,6 +2563,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           >
             <Wand2 className="w-3 h-3" /> METAMORPH
           </button>
+
+          <EditThemePicker />
         </div>
 
         <div className="flex items-center gap-3">

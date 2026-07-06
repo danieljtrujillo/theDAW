@@ -206,3 +206,64 @@ select optgroup {
 .genealogy-svg g.gen-lit-hot[data-node-id] > rect:first-of-type { stroke-width: 4; }
 .genealogy-svg g.gen-lit[data-edge-from] { opacity: 1; }
 .genealogy-svg g.gen-lit[data-edge-from] path { stroke-width: 4.5; }
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * EDIT-LAYOUT THEMING.
+ * The WaveformEditor root carries `.edit-theme-scope` and inline `--et-*`
+ * variables (see lib/editThemes.ts + state/editThemeStore.ts). These UNLAYERED
+ * rules remap the layout's neutral chrome — every black-opacity surface,
+ * white-opacity fill, and white/hex border — onto those variables. Unlayered
+ * beats Tailwind's utilities layer, so no per-element class edits are needed;
+ * the default "Midnight" variables reproduce the original palette exactly, so
+ * an un-themed editor is pixel-identical. Semantic accents (purple/red/amber/…)
+ * are intentionally NOT remapped.
+ * ─────────────────────────────────────────────────────────────────────────── */
+.edit-theme-scope { background: var(--et-root-bg); }
+
+/* Black-opacity surface fills → themed shade (one base preserves the hierarchy). */
+.edit-theme-scope .bg-black\/20 { background-color: rgb(var(--et-shade) / 0.20); }
+.edit-theme-scope .bg-black\/30 { background-color: rgb(var(--et-shade) / 0.30); }
+.edit-theme-scope .bg-black\/40 { background-color: rgb(var(--et-shade) / 0.40); }
+.edit-theme-scope .bg-black\/50 { background-color: rgb(var(--et-shade) / 0.50); }
+.edit-theme-scope .bg-black\/60 { background-color: rgb(var(--et-shade) / 0.60); }
+.edit-theme-scope .bg-black\/80 { background-color: rgb(var(--et-shade) / 0.80); }
+.edit-theme-scope .bg-black\/90 { background-color: rgb(var(--et-shade) / 0.90); }
+.edit-theme-scope .bg-black\/95 { background-color: rgb(var(--et-shade) / 0.95); }
+
+/* Solid hex surfaces. */
+.edit-theme-scope .bg-\[\#07050a\] { background-color: var(--et-canvas); }
+.edit-theme-scope .bg-\[\#0c0a12\] { background-color: var(--et-panel); }
+.edit-theme-scope .bg-\[\#0a080f\] { background-color: var(--et-popup); }
+
+/* White-opacity subtle fills → themed tint. */
+.edit-theme-scope .bg-white\/2 { background-color: rgb(var(--et-tint) / 0.02); }
+.edit-theme-scope .bg-white\/5 { background-color: rgb(var(--et-tint) / 0.05); }
+.edit-theme-scope .bg-white\/10 { background-color: rgb(var(--et-tint) / 0.10); }
+.edit-theme-scope .bg-white\/20 { background-color: rgb(var(--et-tint) / 0.20); }
+.edit-theme-scope .bg-white\/30 { background-color: rgb(var(--et-tint) / 0.30); }
+.edit-theme-scope .bg-white\/40 { background-color: rgb(var(--et-tint) / 0.40); }
+.edit-theme-scope .bg-white\/60 { background-color: rgb(var(--et-tint) / 0.60); }
+.edit-theme-scope .bg-white\/70 { background-color: rgb(var(--et-tint) / 0.70); }
+
+/* Borders. */
+.edit-theme-scope .border-white\/5 { border-color: rgb(var(--et-line) / 0.05); }
+.edit-theme-scope .border-white\/8 { border-color: rgb(var(--et-line) / 0.08); }
+.edit-theme-scope .border-white\/10 { border-color: rgb(var(--et-line) / 0.10); }
+.edit-theme-scope .border-white\/15 { border-color: rgb(var(--et-line) / 0.15); }
+.edit-theme-scope .border-white\/25 { border-color: rgb(var(--et-line) / 0.25); }
+.edit-theme-scope .border-white\/40 { border-color: rgb(var(--et-line) / 0.40); }
+.edit-theme-scope .border-\[\#1a1528\] { border-color: var(--et-line-hex); }
+
+/* Light themes: keep the dim label/value text legible over light surfaces.
+ * Solid semantic text (text-white on colored buttons, text-purple, etc.) is
+ * left alone; only the neutral inherited + dim-utility text is darkened. */
+.edit-theme-scope[data-et-light="1"] { color: rgb(var(--et-ink)); }
+.edit-theme-scope[data-et-light="1"] .text-white\/40 { color: rgb(var(--et-ink) / 0.60); }
+.edit-theme-scope[data-et-light="1"] .text-white\/50 { color: rgb(var(--et-ink) / 0.66); }
+.edit-theme-scope[data-et-light="1"] .text-white\/60 { color: rgb(var(--et-ink) / 0.72); }
+.edit-theme-scope[data-et-light="1"] .text-white\/70 { color: rgb(var(--et-ink) / 0.80); }
+.edit-theme-scope[data-et-light="1"] .text-white\/80 { color: rgb(var(--et-ink) / 0.88); }
+.edit-theme-scope[data-et-light="1"] .text-zinc-300,
+.edit-theme-scope[data-et-light="1"] .text-zinc-400,
+.edit-theme-scope[data-et-light="1"] .text-zinc-500,
+.edit-theme-scope[data-et-light="1"] .text-zinc-600 { color: rgb(var(--et-ink) / 0.70); }
