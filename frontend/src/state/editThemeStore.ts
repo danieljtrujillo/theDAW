@@ -18,13 +18,13 @@ interface EditThemeState {
 export const useEditThemeStore = create<EditThemeState>()(
   persist(
     (set) => ({
-      themeId: 'midnight',
+      themeId: 'obsidian',
       customImage: null,
       setTheme: (id) => set({ themeId: id }),
       setCustomImage: (dataUrl) =>
         set({
           customImage: dataUrl,
-          themeId: dataUrl ? CUSTOM_IMAGE_ID : 'midnight',
+          themeId: dataUrl ? CUSTOM_IMAGE_ID : 'obsidian',
         }),
     }),
     { name: 'thedaw-edit-theme-v1', version: 1 },
