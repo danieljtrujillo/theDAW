@@ -33,7 +33,7 @@ export interface EditTheme {
 
 /** Midnight / default — these values reproduce the original EDIT palette. */
 export const DEFAULT_ET_VARS: Record<string, string> = {
-  '--et-root-bg': 'rgba(0,0,0,0.4)',
+  '--et-root-bg': '#07050a',
   '--et-shade': '0 0 0',
   '--et-canvas': '#07050a',
   '--et-panel': '#0c0a12',

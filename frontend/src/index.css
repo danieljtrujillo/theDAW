@@ -208,15 +208,16 @@ select optgroup {
 .genealogy-svg g.gen-lit[data-edge-from] path { stroke-width: 4.5; }
 
 /* ───────────────────────────────────────────────────────────────────────────
- * EDIT-LAYOUT THEMING.
- * The WaveformEditor root carries `.edit-theme-scope` and inline `--et-*`
- * variables (see lib/editThemes.ts + state/editThemeStore.ts). These UNLAYERED
- * rules remap the layout's neutral chrome — every black-opacity surface,
- * white-opacity fill, and white/hex border — onto those variables. Unlayered
- * beats Tailwind's utilities layer, so no per-element class edits are needed;
- * the default "Midnight" variables reproduce the original palette exactly, so
- * an un-themed editor is pixel-identical. Semantic accents (purple/red/amber/…)
- * are intentionally NOT remapped.
+ * APP THEMING.
+ * The Shell root carries `.edit-theme-scope` and inline `--et-*` variables (see
+ * lib/editThemes.ts + state/editThemeStore.ts), so the theme applies across the
+ * whole app (every tab + chrome). These UNLAYERED rules remap the neutral
+ * chrome — every black-opacity surface, white-opacity fill, and white/hex
+ * border — onto those variables. Unlayered beats Tailwind's utilities layer, so
+ * no per-element class edits are needed; the default "Midnight" variables
+ * reproduce the original palette exactly, so an un-themed app is pixel-identical.
+ * Semantic accents (purple/red/amber/…) are intentionally NOT remapped. Modals
+ * portaled to <body> sit outside the scope and keep the default dark chrome.
  * ─────────────────────────────────────────────────────────────────────────── */
 .edit-theme-scope { background: var(--et-root-bg); }
 
@@ -267,3 +268,6 @@ select optgroup {
 .edit-theme-scope[data-et-light="1"] .text-zinc-400,
 .edit-theme-scope[data-et-light="1"] .text-zinc-500,
 .edit-theme-scope[data-et-light="1"] .text-zinc-600 { color: rgb(var(--et-ink) / 0.70); }
+.edit-theme-scope[data-et-light="1"] .text-zinc-100,
+.edit-theme-scope[data-et-light="1"] .text-zinc-200,
+.edit-theme-scope[data-et-light="1"] .text-\[\#f5f3ff\] { color: rgb(var(--et-ink)); }
