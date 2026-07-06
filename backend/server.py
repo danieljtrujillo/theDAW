@@ -73,6 +73,16 @@ sample_rate = 44100
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODULES_DIR = Path(__file__).parent / "modules"
 
+# Install the LOG-panel ring handler BEFORE modules load, so module-load
+# lines (and failures) are captured; the lifespan re-attaches it in case
+# uvicorn's logging setup replaced root handlers in between.
+try:
+    from backend.log_ring import install_log_ring as _install_log_ring
+
+    _install_log_ring()
+except Exception:  # noqa: BLE001 — logging must never block boot
+    pass
+
 app.state.loaded_modules = load_modules(app, MODULES_DIR)
 DEFAULT_GENERATION_MODEL = "medium"
 _GENERATION_MODELS_CACHE: dict[str, Any] | None = None
@@ -284,7 +294,10 @@ def _ensure_gpu_clear_of_magenta() -> None:
             logger.info("model.swap: stopping resident MRT2 engine before SA3 load")
             magenta_sidecar.stop_engine()
     except Exception:
-        logger.debug("model.swap: magenta engine pre-clear failed", exc_info=True)
+        # WARNING, not debug: if this guard fails, the SA3 load proceeds into
+        # exactly the GPU-commit-exhaustion crash it exists to prevent, and
+        # the user needs to see why.
+        logger.warning("model.swap: magenta engine pre-clear failed", exc_info=True)
 
 
 def _get_or_load_generation_pipeline(model_name: str):
@@ -897,6 +910,13 @@ async def _on_shutdown() -> None:
     except Exception:
         # Shutdown is best-effort; never block process exit.
         pass
+    try:
+        from backend.core.teardown import stop_all_sidecars
+
+        # Off the loop: sidecar stops block on process waits.
+        await asyncio.to_thread(stop_all_sidecars)
+    except Exception:
+        pass
 
 
 @app.get("/api/modules")
@@ -943,7 +963,10 @@ async def set_module_enabled(module_name: str, enabled: bool = Body(..., embed=T
 
 
 @app.get("/api/system-stats")
-async def system_stats():
+def system_stats():
+    # Plain def: runs in the threadpool. The first call may pay the heavy
+    # torch import and every call runs nvidia-smi; neither may block the
+    # event loop (health checks and audio streaming share it).
     import torch
 
     stats: dict = {}
@@ -999,9 +1022,10 @@ async def health():
 
 
 @app.get("/api/model-info")
-async def model_info():
+def model_info():
     # Lazy loading: the server runs model-free until first use, so this
     # endpoint reports metadata instead of erroring when nothing is loaded.
+    # Plain def (threadpool): the first call may pay the heavy torch import.
     import torch
 
     return {
@@ -1524,12 +1548,15 @@ async def _run_generate_job(
     lora_weights: list[float],
     lora_temp_dir: Path | None,
 ):
-    import torchaudio
-
     JOBS[job_id]["status"] = "running"
     loop = asyncio.get_event_loop()
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
     try:
+        # Inside the try: if this import fails the job must reach the except/
+        # finally below (status=failed + idle-gate release), not die unobserved
+        # leaving the job "queued" and the background queue jammed forever.
+        import torchaudio
+
         items = []
         async with _generation_job_lock:
             try:
@@ -1680,6 +1707,9 @@ async def _run_generate_job(
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)
+        # Full traceback to the backend log + LOG panel; the job payload only
+        # carries the one-line message.
+        logger.exception("generate job %s failed", job_id)
     finally:
         if lora_temp_dir is not None:
             shutil.rmtree(lora_temp_dir, ignore_errors=True)
@@ -1976,6 +2006,9 @@ try:
                 StaticFiles(directory=_vj_dist, html=True),
                 name="vj-app",
             )
+            # Freeze the decision: routes return the /vj-app URL only when
+            # this mount really exists (see sidecar.static_mount_active).
+            _vj_sidecar.STATIC_MOUNTED = True
             logger.info(
                 "vj: serving %s at %s (static build)",
                 _vj_dist,

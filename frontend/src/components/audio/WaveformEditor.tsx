@@ -394,6 +394,8 @@ const MarkerFlag: React.FC<{
       {editing ? (
         <input
           autoFocus
+          id={`marker-rename-${marker.t}`}
+          name="marker-rename"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}

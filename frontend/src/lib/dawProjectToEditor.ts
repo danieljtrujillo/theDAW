@@ -66,7 +66,12 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
   if (clip.file_path) {
     const response = await fetch(dawImportAudioUrl(clip.file_path));
     if (!response.ok) throw new Error(`Could not load ${clip.name}`);
-    const blob = await response.blob();
+    // arrayBuffer + new Blob, never response.blob(): blob() spools through
+    // disk and fails outright on a full disk for large media (fetchRetry.ts
+    // documents the same convention).
+    const buf = await response.arrayBuffer();
+    const contentType = response.headers.get('content-type') || 'audio/wav';
+    const blob = new Blob([buf], { type: contentType });
     const { duration } = await computePeaks(blob, 16);
     return { blob, mimeType: blob.type || 'audio/wav', duration };
   }

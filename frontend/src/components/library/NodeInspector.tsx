@@ -197,7 +197,7 @@ export const NodeInspector: React.FC<{
   const copyAll = () => JSON.stringify({ ...node, ...(detail ?? {}), analysis: analysis ?? null }, null, 2);
 
   return (
-    <div className="absolute top-2 right-2 bottom-2 z-20 w-80 bg-[#0c0a14]/97 backdrop-blur-sm border border-purple-500/30 rounded shadow-xl flex flex-col select-text">
+    <div className="absolute top-2 right-2 bottom-2 z-20 w-80 max-w-[calc(100%-16px)] bg-[#0c0a14]/97 backdrop-blur-sm border border-purple-500/30 rounded shadow-xl flex flex-col select-text">
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
         <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Node inspector</span>
         <button

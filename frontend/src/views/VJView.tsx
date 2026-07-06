@@ -30,6 +30,7 @@ import type { VisualControl } from '../state/slideStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useVjSetStatusStore } from '../state/vjSetStatusStore';
 import { logError, logInfo } from '../state/logStore';
+import { backendHttpBase, lanReachablePort } from '../lib/backendBase';
 import { describeQuestCastStatus, type QuestCastStatus } from '../components/vj/QuestCastPreview';
 
 
@@ -188,19 +189,23 @@ export const VJView: React.FC = () => {
   // Pin the target origin to the iframe's URL (fallback '*' if unparseable)
   // instead of a blanket wildcard, and route to the popped-out window when
   // detached, else the in-tab iframe. In static mode `url` is a relative
-  // '/vj-app/' served same-origin, so resolve against our own origin.
-  const vjOrigin = (() => { try { return url ? new URL(url, window.location.origin).origin : '*'; } catch { return '*'; } })();
+  // '/vj-app/'. In the browser/Docker that resolves same-origin; in the
+  // packaged Electron app the page origin is app://. (which cannot serve the
+  // VJ build or its WebSockets), so resolve against the backend's real http
+  // origin instead — backendHttpBase() picks the right one per environment.
+  const vjOrigin = (() => { try { return url ? new URL(url, backendHttpBase()).origin : '*'; } catch { return '*'; } })();
 
   // The VJ uploads media it imports straight to the library so the cue
-  // survives a reload. We hand it our origin via `?api=`; it serves /api
-  // directly (same-origin static build / production) or through the Vite dev
-  // proxy (dev server) either way. Resolving against our origin keeps the
-  // relative static path valid while still carrying the query param.
+  // survives a reload. We hand it an http(s) API origin via `?api=` — the
+  // same base the iframe is resolved against, so its fetches AND WebSockets
+  // (queststitch/questcast sources) reach the backend in every environment
+  // (browser dev via the Vite proxy, Docker same-origin, packaged exe direct
+  // to the backend port).
   const vjSrc = useMemo(() => {
     if (!url) return null;
     try {
-      const u = new URL(url, window.location.origin);
-      u.searchParams.set('api', window.location.origin);
+      const u = new URL(url, backendHttpBase());
+      u.searchParams.set('api', backendHttpBase());
       return u.toString();
     } catch {
       return url;
@@ -303,8 +308,11 @@ export const VJView: React.FC = () => {
       if (j.mobile_url) {
         setMobileUrl(j.mobile_url);
       } else if (j.url.startsWith('/') && j.lan_ip) {
-        const port = window.location.port ? `:${window.location.port}` : '';
-        setMobileUrl(`${window.location.protocol}//${j.lan_ip}${port}${j.url}`);
+        // Phones need a plain-http LAN URL. lanReachablePort() maps the
+        // packaged app (origin app://., no port) to the backend port.
+        const p = lanReachablePort();
+        const port = p ? `:${p}` : '';
+        setMobileUrl(`http://${j.lan_ip}${port}${j.url}`);
       } else {
         setMobileUrl(null);
       }

@@ -49,7 +49,9 @@ def _maybe_auto_spawn() -> None:
             return
         _auto_spawn_started = True
 
-    static = sidecar.is_static_mode()
+    # Key off the ACTUAL mount, not is_static_mode(): a dist that appears
+    # mid-session flips is_static_mode() true while no /vj-app mount exists.
+    static = sidecar.static_mount_active()
 
     def _warm() -> None:
         try:
@@ -76,11 +78,12 @@ def get_url() -> dict:
     code / shareable link for phones on the same Wi-Fi."""
     _maybe_auto_spawn()
     # Static mode: the backend serves the build at STATIC_MOUNT_PATH on its own
-    # origin. Return a relative path so the iframe loads same-origin (the
-    # frontend's Vite proxy forwards /vj-app -> backend in dev; packaged/Docker
-    # is already one origin). The frontend composes the phone URL from lan_ip +
-    # its own port, so mobile_url is left null here.
-    if sidecar.is_static_mode():
+    # origin. Return the relative path ONLY when the mount really exists
+    # (static_mount_active) — is_static_mode() can flip true mid-session when
+    # a dist gets built, but the mount is registered once at boot, and a
+    # mountless /vj-app/ URL 404s in the iframe. The frontend composes the
+    # phone URL from lan_ip + its own port, so mobile_url is left null here.
+    if sidecar.static_mount_active():
         return {
             "url": f"{sidecar.STATIC_MOUNT_PATH}/",
             "mode": "static",

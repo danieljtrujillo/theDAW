@@ -59,6 +59,17 @@ export default defineConfig({
           ws: true,
           timeout: 0,
           proxyTimeout: 0
+        },
+        // Static VJ build served by the backend (matches frontend/vite.config.ts).
+        // Without this the VJ iframe's /vj-app/ request fell through to Vite's
+        // SPA fallback, which served the app's own index.html INTO the iframe —
+        // the whole app nested inside itself (doubled header) in electron dev.
+        '/vj-app': {
+          target: 'http://localhost:8600',
+          changeOrigin: true,
+          ws: true,
+          timeout: 0,
+          proxyTimeout: 0
         }
       }
     }

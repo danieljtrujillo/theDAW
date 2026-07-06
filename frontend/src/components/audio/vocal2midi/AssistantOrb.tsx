@@ -260,6 +260,9 @@ export const AssistantOrb: React.FC<AssistantOrbProps> = ({
                     <div className="flex gap-2">
                         <input
                             type="text"
+                            id="vocal2midi-assistant-input"
+                            name="vocal2midi-assistant-input"
+                            aria-label="Assistant command"
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}

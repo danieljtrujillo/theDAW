@@ -37,9 +37,9 @@ Lifecycle:
   * ``ensure_running()`` — lazy spawn. Returns the live URL once the
     dev server is ready, or raises RuntimeError with a diagnostic.
   * ``stop()`` — terminates the subprocess.
-  * The FastAPI startup hook in router.py calls ensure_running() in
-    the background so the VJ server is warm by the time the user
-    clicks the VJ tab.
+  * Warm-up is request-driven: router.py's ``_maybe_auto_spawn`` kicks a
+    one-time background readiness thread on the first /url, /mobile, or
+    /status call (there is no FastAPI startup hook).
 """
 
 from __future__ import annotations
@@ -51,10 +51,11 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import IO, Iterator, Optional
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +97,34 @@ DEFAULT_PORT = 5187
 PORT_READY_TIMEOUT_SEC = 60.0
 PORT_POLL_INTERVAL_SEC = 0.5
 BUILD_TIMEOUT_SEC = 300.0
+NPM_INSTALL_TIMEOUT_SEC = 600.0
+
+# Child-process output (npm install, vite dev/preview) lands here so failures
+# are diagnosable; previously it went to DEVNULL and a server that died before
+# ready reported only "exited (rc=1)" with no cause anywhere.
+SIDECAR_LOG_PATH = _REPO_ROOT / "data" / "logs" / "vj-sidecar.log"
+
+
+@contextmanager
+def _sidecar_log_handle() -> Iterator[IO[bytes] | int]:
+    """Yield a child-stdout target: the sidecar log file, or DEVNULL when the
+    file can't be opened (read-only disk). Closes the parent's handle on
+    exit; a spawned child keeps its inherited copy."""
+    handle: IO[bytes] | int = subprocess.DEVNULL
+    try:
+        SIDECAR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(SIDECAR_LOG_PATH, "ab")
+    except OSError:
+        handle = subprocess.DEVNULL
+    try:
+        yield handle
+    finally:
+        if not isinstance(handle, int):
+            try:
+                handle.close()
+            except OSError:
+                pass
+
 
 # Inputs to the staleness check: the newest mtime across these (files
 # directly, directories recursively) is compared against dist/index.html,
@@ -186,6 +215,18 @@ def is_static_mode() -> bool:
     if os.getenv("theDAW_VJ_DEV") == "1":
         return False
     return resolve_dist_dir() is not None
+
+
+# Set True by server.py when the /vj-app StaticFiles mount is actually
+# registered (mounting happens once, at server import). Routes must key the
+# "return the static URL" decision off THIS, not is_static_mode(): a dist
+# built later in the session flips is_static_mode() true while no mount
+# exists, which would hand the iframe a /vj-app/ URL that 404s.
+STATIC_MOUNTED = False
+
+
+def static_mount_active() -> bool:
+    return STATIC_MOUNTED
 
 
 def ensure_static_dist() -> Path:
@@ -402,22 +443,33 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             if not node_modules.is_dir():
                 log.info("vj.sidecar: node_modules missing — running npm install")
                 install_cmd = [cfg.npm_path, "install"]
+                rc = -1
                 try:
-                    rc = subprocess.call(
-                        install_cmd,
-                        cwd=str(cfg.project_path),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        shell=False,
-                    )
+                    # Output goes to the sidecar log file so install failures
+                    # are diagnosable; the timeout stops a hung npm (network
+                    # stall) from pinning the state lock forever.
+                    with _sidecar_log_handle() as install_log:
+                        rc = subprocess.call(
+                            install_cmd,
+                            cwd=str(cfg.project_path),
+                            stdout=install_log,
+                            stderr=subprocess.STDOUT,
+                            shell=False,
+                            timeout=NPM_INSTALL_TIMEOUT_SEC,
+                        )
                 except FileNotFoundError as e:
                     raise RuntimeError(
                         f"VJ sidecar: npm not found ({e}). Install Node.js."
                     ) from e
+                except subprocess.TimeoutExpired as e:
+                    raise RuntimeError(
+                        f"npm install timed out after {int(NPM_INSTALL_TIMEOUT_SEC)}s "
+                        f"in {cfg.project_path} — check the network, then retry."
+                    ) from e
                 if rc != 0:
                     raise RuntimeError(
                         f"npm install failed in {cfg.project_path} (rc={rc}). "
-                        "Run it manually to see the full error output, then retry."
+                        f"See {SIDECAR_LOG_PATH} for the full output, then retry."
                     )
                 log.info("vj.sidecar: npm install complete")
             if cfg.dev_mode:
@@ -446,21 +498,24 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 cfg.project_path,
             )
             try:
-                # On Windows, npm is a .cmd shim; CREATE_NO_WINDOW
+                # On Windows, npm is a .cmd shim; CREATE_NEW_PROCESS_GROUP
                 # keeps the spawn quiet inside the SA3 backend console
-                # instead of popping a separate cmd window. We capture
-                # stdout/stderr so they merge into the backend log.
+                # instead of popping a separate cmd window. stdout/stderr go
+                # to the sidecar log file (data/logs/vj-sidecar.log) so a
+                # server that dies before ready leaves its actual error
+                # somewhere findable instead of vanishing into DEVNULL.
                 creationflags = 0
                 if sys.platform == "win32":
                     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-                _proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(cfg.project_path),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=creationflags,
-                    shell=False,
-                )
+                with _sidecar_log_handle() as spawn_out:
+                    _proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(cfg.project_path),
+                        stdout=spawn_out,
+                        stderr=subprocess.STDOUT,
+                        creationflags=creationflags,
+                        shell=False,
+                    )
             except FileNotFoundError as e:
                 raise RuntimeError(
                     f"Failed to launch VJ sidecar: {e}. Is npm on PATH?"
@@ -516,6 +571,12 @@ def stop() -> bool:
                 _proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
             _proc.kill()
+            try:
+                # Reap the killed child so it doesn't linger as a zombie
+                # until interpreter shutdown (POSIX).
+                _proc.wait(timeout=5.0)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
         finally:
             _proc = None
             _resolved_url = None

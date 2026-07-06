@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, Loader2, RefreshCw, Square, Tv2 } from 'lucide-react';
+import { isHttpOrigin } from '../../lib/backendBase';
 
 export type QuestCastDevice = { serial?: string; state?: string };
 
@@ -117,8 +118,11 @@ const h264CodecFromAnnexB = (data: Uint8Array): string | null => {
 };
 
 const wsUrlForPort = (port: number): string => {
+  // Under the packaged app:// origin the page hostname is '.' (truthy, so a
+  // bare || fallback never fires) and WebSockets can't ride the custom
+  // scheme anyway — the sidecar binds locally, so target localhost there.
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.hostname || 'localhost';
+  const host = isHttpOrigin() ? window.location.hostname || 'localhost' : 'localhost';
   return `${protocol}//${host}:${port}`;
 };
 

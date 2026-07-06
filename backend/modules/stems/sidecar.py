@@ -28,12 +28,14 @@ the ``stems`` module + flip an auto-toggle, OR via an explicit
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -305,8 +307,13 @@ class StemsSidecar:
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._client: Optional[httpx.AsyncClient] = None
+        self._client_port: Optional[int] = None
         self._stdout_log: Optional[Path] = None
         self._stderr_log: Optional[Path] = None
+        # Serializes spawn: without it a threadpool route and an event-loop
+        # task racing ensure_running() both pass the `running` check and
+        # double-spawn the sidecar (the loser's process leaks untracked).
+        self._spawn_lock = threading.Lock()
 
     @property
     def stdout_log(self) -> Optional[Path]:
@@ -336,6 +343,10 @@ class StemsSidecar:
         Raises only if the install actually fails or never produces a
         port file.
         """
+        with self._spawn_lock:
+            return self._ensure_running_locked()
+
+    def _ensure_running_locked(self) -> int:
         if self.running and self._port:
             return self._port
 
@@ -495,16 +506,24 @@ class StemsSidecar:
             finally:
                 self._process = None
                 self._port = None
+        # Drop the cached client too: after a crash/stop the next spawn gets a
+        # new auto-assigned port, and a client pinned to the old base_url would
+        # fail with connection-refused forever.
+        self._client = None
 
     # ---- Async proxy -------------------------------------------------------
 
     async def _ensure_client(self) -> httpx.AsyncClient:
-        port = self.ensure_running()
-        if self._client is None:
+        # ensure_running() blocks for MINUTES on a cold start (dep probe,
+        # optional venv install, health polls) — run it off the event loop so
+        # /api/health and every other request keep answering meanwhile.
+        port = await asyncio.to_thread(self.ensure_running)
+        if self._client is None or self._client_port != port:
             self._client = httpx.AsyncClient(
                 base_url=f"http://127.0.0.1:{port}",
                 timeout=httpx.Timeout(30.0, read=300.0),
             )
+            self._client_port = port
         return self._client
 
     async def submit_separation(

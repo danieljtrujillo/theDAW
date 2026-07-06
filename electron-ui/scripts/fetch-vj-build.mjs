@@ -27,10 +27,12 @@ const repoRoot = resolve(__dirname, '..', '..') // stable-audio-3
 const stageDir = resolve(__dirname, '..', 'resources', 'vj-dist')
 
 const VJ_REPO = process.env.VJ_REPO || 'https://github.com/gantasmo/VJ-9000.git'
-// The active VJ branch that carries the '/vj-app/' build base. Update to 'main'
-// once that branch is merged. Only used for the clone fallback (a local VJ
-// checkout, when present, is built directly and this ref is ignored).
+// The VJ branch that carries the '/vj-app/' build base, PINNED to a commit so
+// releases are reproducible and keep building after the branch merges/deletes.
+// Bump VJ_COMMIT deliberately when the VJ app updates. Only used for the clone
+// fallback (a local VJ checkout, when present, is built directly).
 const VJ_REF = process.env.VJ_REF || 'feat/vj-redesign-vfx'
+const VJ_COMMIT = process.env.VJ_COMMIT || 'ff7430b1bf66524cc30e509b56f1e743443798fb'
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const gitCmd = process.platform === 'win32' ? 'git.exe' : 'git'
@@ -64,10 +66,14 @@ function resolveSource() {
   // path escapes the root ("../../..") and rollup rejects it. The .native
   // variant is required: plain realpathSync resolves symlinks and ".." but
   // does NOT expand 8.3 short names, so it would leave RUNNER~1 in place.
-  const dest = join(realpathSync.native(tmpdir()), `vj-9000-${VJ_REF}`)
+  const dest = join(realpathSync.native(tmpdir()), `vj-9000-${VJ_COMMIT.slice(0, 12)}`)
   rmSync(dest, { recursive: true, force: true })
-  console.log(`[fetch-vj] cloning ${VJ_REPO}@${VJ_REF} -> ${dest}`)
-  run(gitCmd, ['clone', '--depth', '1', '--branch', VJ_REF, VJ_REPO, dest])
+  console.log(`[fetch-vj] cloning ${VJ_REPO}@${VJ_REF} -> ${dest} (pin ${VJ_COMMIT.slice(0, 12)})`)
+  // Clone the branch, then hard-pin to the vetted commit: an unpinned clone
+  // makes releases non-reproducible and breaks entirely if the branch is
+  // merged and deleted upstream.
+  run(gitCmd, ['clone', '--branch', VJ_REF, VJ_REPO, dest])
+  run(gitCmd, ['checkout', '--detach', VJ_COMMIT], dest)
   return { path: dest, cloned: true }
 }
 

@@ -31,10 +31,16 @@ SUPERVISOR_ENV_FLAG = "SA3_SUPERVISOR_PRESENT"
 
 def _delayed_exit(delay_seconds: float, code: int) -> None:
     time.sleep(delay_seconds)
+    # os._exit skips atexit handlers (they hang on uvicorn shutdown when
+    # called from a request thread), which used to orphan every sidecar the
+    # backend spawned — stop them explicitly first, best-effort.
+    try:
+        from backend.core.teardown import stop_all_sidecars
+
+        stop_all_sidecars()
+    except Exception:  # noqa: BLE001 — teardown must never block exit
+        pass
     log.info("admin.restart: exiting with code %d (supervisor will respawn)", code)
-    # os._exit avoids running atexit handlers — they tend to hang on
-    # uvicorn shutdown when called from a request thread. The
-    # supervisor catches the rc and respawns.
     os._exit(code)
 
 
