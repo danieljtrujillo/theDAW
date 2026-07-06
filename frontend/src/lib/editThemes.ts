@@ -31,15 +31,18 @@ export interface EditTheme {
   vars: Record<string, string>;
 }
 
-/** Midnight / default — these values reproduce the original EDIT palette. */
+/** Midnight / default. The surface/border values also drive the app design
+ *  tokens (--bg / --panel / --panel-border) so every hardware-card and
+ *  token-built box re-themes, not just the EDIT layout. */
 export const DEFAULT_ET_VARS: Record<string, string> = {
   '--et-root-bg': '#07050a',
   '--et-shade': '0 0 0',
-  '--et-canvas': '#07050a',
-  '--et-panel': '#0c0a12',
-  '--et-popup': '#0a080f',
+  '--et-canvas': '#07050a', // deepest surface -> --bg
+  '--et-panel': '#110e1a', // primary panel -> --panel
+  '--et-elevated': '#202329', // raised surfaces (zinc-600/700, #202329)
+  '--et-popup': '#0a080f', // overlays / near-black panels
   '--et-line': '255 255 255',
-  '--et-line-hex': '#1a1528',
+  '--et-line-hex': '#231e38', // solid borders -> --panel-border
   '--et-tint': '255 255 255',
   '--et-ink': '245 243 255',
 };

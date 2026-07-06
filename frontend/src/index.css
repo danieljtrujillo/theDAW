@@ -219,7 +219,14 @@ select optgroup {
  * Semantic accents (purple/red/amber/…) are intentionally NOT remapped. Modals
  * portaled to <body> sit outside the scope and keep the default dark chrome.
  * ─────────────────────────────────────────────────────────────────────────── */
-.edit-theme-scope { background: var(--et-root-bg); }
+.edit-theme-scope {
+  background: var(--et-root-bg);
+  /* Drive the app design tokens so every hardware-card and token-built box
+     (MAKE / MIX / chrome) re-themes, not only the hardcoded-utility surfaces. */
+  --bg: var(--et-canvas);
+  --panel: var(--et-panel);
+  --panel-border: var(--et-line-hex);
+}
 
 /* Black-opacity surface fills → themed shade (one base preserves the hierarchy). */
 .edit-theme-scope .bg-black\/20 { background-color: rgb(var(--et-shade) / 0.20); }
@@ -231,10 +238,38 @@ select optgroup {
 .edit-theme-scope .bg-black\/90 { background-color: rgb(var(--et-shade) / 0.90); }
 .edit-theme-scope .bg-black\/95 { background-color: rgb(var(--et-shade) / 0.95); }
 
-/* Solid hex surfaces. */
-.edit-theme-scope .bg-\[\#07050a\] { background-color: var(--et-canvas); }
-.edit-theme-scope .bg-\[\#0c0a12\] { background-color: var(--et-panel); }
-.edit-theme-scope .bg-\[\#0a080f\] { background-color: var(--et-popup); }
+/* Solid hex + neutral (zinc/slate) surfaces across the whole app, grouped by
+   depth tier so panels keep their relative elevation under any theme. */
+.edit-theme-scope .bg-\[\#07050a\],
+.edit-theme-scope .bg-\[\#07080c\] { background-color: var(--et-canvas); }
+.edit-theme-scope .bg-\[\#0a080f\],
+.edit-theme-scope .bg-\[\#0a0c14\],
+.edit-theme-scope .bg-\[\#0d0b16\],
+.edit-theme-scope .bg-\[\#0f0f12\],
+.edit-theme-scope .bg-\[\#101215\],
+.edit-theme-scope .bg-\[\#111114\],
+.edit-theme-scope .bg-zinc-950,
+.edit-theme-scope .bg-zinc-900 { background-color: var(--et-popup); }
+.edit-theme-scope .bg-\[\#0c0a12\],
+.edit-theme-scope .bg-\[\#0c0a14\],
+.edit-theme-scope .bg-\[\#15171b\],
+.edit-theme-scope .bg-\[\#150f22\],
+.edit-theme-scope .bg-\[\#140e20\],
+.edit-theme-scope .bg-zinc-800,
+.edit-theme-scope .bg-zinc-700 { background-color: var(--et-panel); }
+.edit-theme-scope .bg-\[\#202329\],
+.edit-theme-scope .bg-\[\#343841\],
+.edit-theme-scope .bg-\[\#3a3d45\],
+.edit-theme-scope .bg-\[\#3b3f47\],
+.edit-theme-scope .bg-\[\#454a54\],
+.edit-theme-scope .bg-\[\#4a4f59\],
+.edit-theme-scope .bg-zinc-600,
+.edit-theme-scope .bg-zinc-500 { background-color: var(--et-elevated, var(--et-panel)); }
+.edit-theme-scope .bg-zinc-950\/95,
+.edit-theme-scope .bg-zinc-900\/95 { background-color: rgb(var(--et-shade) / 0.95); }
+.edit-theme-scope .bg-zinc-500\/10 { background-color: rgb(var(--et-tint) / 0.10); }
+.edit-theme-scope .bg-zinc-500\/20 { background-color: rgb(var(--et-tint) / 0.20); }
+.edit-theme-scope .bg-slate-500\/30 { background-color: rgb(var(--et-tint) / 0.14); }
 
 /* White-opacity subtle fills → themed tint. */
 .edit-theme-scope .bg-white\/2 { background-color: rgb(var(--et-tint) / 0.02); }
@@ -253,12 +288,27 @@ select optgroup {
 .edit-theme-scope .border-white\/15 { border-color: rgb(var(--et-line) / 0.15); }
 .edit-theme-scope .border-white\/25 { border-color: rgb(var(--et-line) / 0.25); }
 .edit-theme-scope .border-white\/40 { border-color: rgb(var(--et-line) / 0.40); }
-.edit-theme-scope .border-\[\#1a1528\] { border-color: var(--et-line-hex); }
+.edit-theme-scope .border-\[\#1a1528\],
+.edit-theme-scope .border-\[\#221d36\],
+.edit-theme-scope .border-\[\#1a1d28\],
+.edit-theme-scope .border-zinc-800,
+.edit-theme-scope .border-zinc-700 { border-color: var(--et-line-hex); }
+.edit-theme-scope .border-zinc-600,
+.edit-theme-scope .border-zinc-500 { border-color: rgb(var(--et-line) / 0.30); }
+.edit-theme-scope .border-zinc-600\/40 { border-color: rgb(var(--et-line) / 0.26); }
+.edit-theme-scope .border-zinc-500\/30 { border-color: rgb(var(--et-line) / 0.20); }
+.edit-theme-scope .border-zinc-500\/20 { border-color: rgb(var(--et-line) / 0.15); }
+.edit-theme-scope .border-slate-500\/60 { border-color: rgb(var(--et-line) / 0.32); }
 
 /* Light themes: keep the dim label/value text legible over light surfaces.
  * Solid semantic text (text-white on colored buttons, text-purple, etc.) is
  * left alone; only the neutral inherited + dim-utility text is darkened. */
-.edit-theme-scope[data-et-light="1"] { color: rgb(var(--et-ink)); }
+.edit-theme-scope[data-et-light="1"] {
+  color: rgb(var(--et-ink));
+  --text-primary: rgb(var(--et-ink));
+  --text-secondary: rgb(var(--et-ink) / 0.62);
+  --muted: rgb(var(--et-ink) / 0.45);
+}
 .edit-theme-scope[data-et-light="1"] .text-white\/40 { color: rgb(var(--et-ink) / 0.60); }
 .edit-theme-scope[data-et-light="1"] .text-white\/50 { color: rgb(var(--et-ink) / 0.66); }
 .edit-theme-scope[data-et-light="1"] .text-white\/60 { color: rgb(var(--et-ink) / 0.72); }
