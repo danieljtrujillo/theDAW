@@ -30,6 +30,8 @@ data/vst_presets/
 CHANGES-LOGS/
 backend/rag_index/
 archive/
+# Generated git-history visualisation (scripts/gen_git_graph.py) — a local artifact
+docs/git-history.html
 *.png
 !docs/UI/**/*.png
 !docs/guides/**/*.png

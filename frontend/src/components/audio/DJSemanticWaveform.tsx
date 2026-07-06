@@ -366,11 +366,14 @@ export function DJSemanticWaveform({
   height = 64,
   viewportStart = 0,
   viewportEnd = 1,
+  onDuration,
 }: {
   audioUrl: string;
   height?: number;
   viewportStart?: number;
   viewportEnd?: number;
+  /** Fires once the audio decodes, reporting its length in seconds. */
+  onDuration?: (seconds: number) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -381,12 +384,16 @@ export function DJSemanticWaveform({
     setBins(EMPTY_BINS);
     decodeAudio(audioUrl, ctrl.signal)
       .then((buffer) => {
-        if (!ctrl.signal.aborted) setBins(analyzeBuffer(buffer));
+        if (ctrl.signal.aborted) return;
+        setBins(analyzeBuffer(buffer));
+        onDuration?.(buffer.duration);
       })
       .catch(() => {
         if (!ctrl.signal.aborted) setBins(EMPTY_BINS);
       });
     return () => ctrl.abort();
+    // onDuration intentionally omitted — a fresh closure each render must not re-decode.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl]);
 
   useEffect(() => {

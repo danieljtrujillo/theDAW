@@ -9,6 +9,7 @@ import {
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
+import { SemanticWave } from './SemanticWave';
 import { FxRack } from './FxRack';
 import { MetamorphPanel } from './MetamorphPanel';
 import { MagentaToolStage } from './MagentaToolStage';
@@ -140,6 +141,27 @@ const cropAudioBlob = async (
  * Y stacks pitches lowest-to-highest across the body. Velocity sets brightness.
  * Read-only — editing happens in the Piano Roll (double-click / context menu).
  */
+/**
+ * ClipWave — the DJ-style semantic waveform for a timeline audio clip. Renders
+ * only the clip's trim window of its source audio (viewport mapped from
+ * offsetIntoSource/sourceDuration). Owns one object URL per clip, revoked on
+ * unmount. No per-clip playhead — the timeline draws a global one over clips.
+ */
+const ClipWave: React.FC<{ clip: AudioClip; height: number; selected: boolean }> = ({ clip, height, selected }) => {
+  const url = useMemo(() => URL.createObjectURL(clip.audioBlob), [clip.audioBlob]);
+  useEffect(() => () => { try { URL.revokeObjectURL(url); } catch { /* ignore */ } }, [url]);
+  const dur = clip.sourceDuration > 0 ? clip.sourceDuration : clip.durationSec || 1;
+  const viewportStart = clampFrac((clip.offsetIntoSource ?? 0) / dur);
+  const viewportEnd = clampFrac(((clip.offsetIntoSource ?? 0) + clip.durationSec) / dur);
+  return (
+    <div className="h-full w-full" style={{ opacity: selected ? 1 : 0.85 }}>
+      <SemanticWave audioUrl={url} height={height} viewportStart={viewportStart} viewportEnd={Math.max(viewportStart + 1e-4, viewportEnd)} transparentBg />
+    </div>
+  );
+};
+
+const clampFrac = (n: number) => (Number.isFinite(n) ? (n < 0 ? 0 : n > 1 ? 1 : n) : 0);
+
 const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean }> = ({ clip, zoom, selected }) => {
   const notes = clip.sourcePianoRoll;
   if (!notes || notes.length === 0) return null;
@@ -3239,7 +3261,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               const top = trackIdx * TRACK_HEIGHT + 6;
               const height = TRACK_HEIGHT - 12;
               const selected = selectedClipIdSet.has(clip.id) || clip.id === selectedClipId;
-              const peaks = clip.peaks;
               const isMidi = clip.sourceKind === 'piano-roll' && !!clip.sourcePianoRoll && clip.sourcePianoRoll.length > 0;
               // Compact BPM/key readout: MIDI clips carry their render BPM; audio
               // clips resolve through the DJ analysis cache. Hidden entirely on
@@ -3317,18 +3338,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       <MidiClipNotes clip={clip} zoom={zoom} selected={selected} />
                     </div>
                   ) : (
-                    <div className={`absolute inset-x-0 bottom-0 top-3.5 flex items-center gap-[0.5px] px-1 ${clip.muted ? 'opacity-30' : ''}`}>
-                      {peaks ? (
-                        Array.from(peaks).map((v, i) => (
-                          <div
-                            key={i}
-                            className="flex-1 rounded-sm"
-                            style={{ height: `${Math.max(2, v * 90)}%`, backgroundColor: clip.color, opacity: selected ? 0.95 : 0.7 }}
-                          />
-                        ))
-                      ) : (
-                        <span className="text-[8px] font-mono text-zinc-600 italic">decoding…</span>
-                      )}
+                    <div className={`absolute inset-x-0 bottom-0 top-3.5 ${clip.muted ? 'opacity-30' : ''}`}>
+                      <ClipWave clip={clip} height={Math.max(8, height - 14)} selected={selected} />
                     </div>
                   )}
                   {/* Inpaint drag target — covers waveform body below header.
