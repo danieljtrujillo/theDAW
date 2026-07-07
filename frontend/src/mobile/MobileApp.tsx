@@ -1,18 +1,20 @@
 /** theDAW companion root (phone). Standalone Library + a transport remote that
  *  rides the control bus. No cinematic, no MIDI/XR/sway boot — just the shell. */
 import { useEffect, useState } from 'react';
-import { Library, SlidersHorizontal, Disc3 } from 'lucide-react';
+import { Library, SlidersHorizontal, Disc3, Sparkles } from 'lucide-react';
 import { MobileScreen } from './ui/MobileScreen';
 import { TabBar, type TabDef } from './ui/TabBar';
 import { MobileLibrary } from './tabs/MobileLibrary';
 import { MobileTransport } from './tabs/MobileTransport';
 import { MobileDj } from './tabs/MobileDj';
+import { MobileMake } from './tabs/MobileMake';
 import { useControlStore } from './net/controlClient';
 
 const TABS: TabDef[] = [
-  { id: 'library', label: 'Library', icon: <Library size={20} /> },
+  { id: 'make', label: 'Make', icon: <Sparkles size={20} /> },
   { id: 'remote', label: 'Remote', icon: <SlidersHorizontal size={20} /> },
   { id: 'dj', label: 'DJ', icon: <Disc3 size={20} /> },
+  { id: 'library', label: 'Library', icon: <Library size={20} /> },
 ];
 
 function statusClass(status: string): string {
@@ -56,6 +58,8 @@ export function MobileApp() {
         <MobileLibrary />
       ) : tab === 'dj' ? (
         <MobileDj />
+      ) : tab === 'make' ? (
+        <MobileMake />
       ) : (
         <MobileTransport />
       )}
