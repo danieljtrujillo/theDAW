@@ -26,7 +26,7 @@
 
 ---
 
-theDAW is an all-in-one music studio and live rig: composition, arrangement, editing, mixing, mastering, DJing, and VJing in one application, covering the whole path from a first idea to a finished render to a live set. Deep MIDI mapping reaches any controller, and [theDAW-XR](https://github.com/gantasmo/theDAW-XR) extends the rig to Meta Quest 3 for hands-only spatial control.
+**theDAW** is an all-in-one music studio and live rig: composition, arrangement, editing, mixing, mastering, DJing, and VJing in **one** application, covering the whole path from a first idea to a finished render to a live set. Deep MIDI mapping reaches any controller, and [theDAW-XR](https://github.com/gantasmo/theDAW-XR) extends the rig to Meta Quest 3 for hands-only spatial control.
 
 **Free here, subscription elsewhere.** Every tool below ships free and runs locally:
 
@@ -34,11 +34,11 @@ theDAW is an all-in-one music studio and live rig: composition, arrangement, edi
 - A full mixing and mastering suite: a 25-effect chain, Quick Master macros, and LUFS loudness metering
 - High quality audio plugins, VST3 hosting, and VST instruments
 - **The Owl**, a high quality HRTF spatializer
-- DJ and VJ decks with beatmatch sync, keylock, and Automix
+- DJ and VJ decks with **beatmatch** sync, keylock, and **Automix**
 - audio2midi transcription, notation, and score engraving
 - Distribution preparation: Smart Export to platform spec, dither, sample-rate conversion, tagging, and batch delivery
 - LoRA training in the Underfit tab
-- Conversion and export across essentially every format: WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML
+- Conversion and export across essentially **every format**: WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML
 
 **Found nowhere else:**
 
@@ -47,14 +47,14 @@ theDAW is an all-in-one music studio and live rig: composition, arrangement, edi
 - **DRAW**, where drawn gestures become generative music
 - Native **Audima Sway** support: the expressive-motion controller's six dimensions map straight onto the rig
 - **The Foundry**, a plugin-interface designer that exports working `.gan` web-plugins
-- Interoperability with the popular DAW formats: Ableton `.als`, Reaper `.rpp`, FL Studio `.flp`, Audacity, Audition, Bitwig, and Resolume
+- **Interoperability** with the popular DAW formats: Ableton `.als`, Reaper `.rpp`, FL Studio `.flp`, Audacity, Audition, Bitwig, and Resolume
 - Library analysis and track lineage: every render, remix, stem split, and blend draws its family tree in LEARN
 - Auto MIDI mapping from a ~110-profile library, learn-by-capture, and controller recognition from a photo
-- Audio analysis, a step sequencer, and a fully customizable interface with sixteen themes
+- **Audio analysis**, a step sequencer, and a fully customizable interface with sixteen themes
 
 **Make it once, open it anywhere.** The [Foundry](#foundry) lays out custom plugin interfaces on an infinite canvas and exports them as `.gan` web-plugins, GANTASMO's portable plugin format. The MIX chain hosts `.gan` plugins and native VST3s side by side, so a Foundry design sits next to a commercial plugin in the same rack, and **The Owl** and **Ares** ship as proof. Whole sessions save and reload as `.tasmo` projects, and existing work comes along too: theDAW imports Ableton `.als`, Reaper `.rpp`, FL Studio `.flp`, Audacity, Audition, Bitwig, and Resolume projects with their media and effects, with export hints for Logic, Cubase, and Pro Tools.
 
-**The engines.** The generative engine renders audio from several inputs: supplied init audio, a text prompt, a painted inpaint region, and the Chimera stack. theDAW also ships the first non-Mac port of Google's Magenta RealTime 2, vendored as the [magenta-rt2-nvidia](https://github.com/gantasmo/magenta-rt2-nvidia) sidecar, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. Models stay under the user's control: nothing downloads at startup, **local-only mode is on by default**, and a model loads at the first CREATE that needs it.
+**The engines.** The generative engine renders audio from several inputs: supplied init audio, a text prompt, a painted inpaint region, and the **Chimera** stack. theDAW also ships **the first non-Mac port** of Google's Magenta RealTime 2, vendored as the [magenta-rt2-nvidia](https://github.com/gantasmo/magenta-rt2-nvidia) sidecar, which runs on Windows with WSL2 and NVIDIA, on native Linux, and on cloud GPUs. Models stay under the user's control: nothing downloads at startup, **local-only mode is on by default**, and a model loads at the first CREATE that needs it.
 
 <p align="center">
   <img src="docs/readme/make.png" alt="theDAW MAKE workspace with prompt-driven generation, the Chimera fusion stack, and the dual live visualizers" width="900">
@@ -190,7 +190,7 @@ The VJ tab embeds the [VJ-9000](https://github.com/gantasmo/VJ-9000) engine, whi
 
 <p align="center"><img src="docs/readme/foundry.png" alt="Foundry plugin-UI builder: an infinite canvas with a control palette, layers, and asset and texture libraries" width="820"></p>
 
-The Foundry tab lays out custom VST and plugin interfaces on an infinite canvas. A finished design exports as a `.gan` web-plugin (GANTASMO's portable plugin format), which then hosts in the MIX chain alongside VST3 plugins and the built-in effects.
+The Foundry tab lays out **custom VST and plugin interfaces** on an infinite canvas. A finished design exports as a `.gan` web-plugin (GANTASMO's portable plugin format), which then hosts in the MIX chain alongside VST3 plugins and the built-in effects.
 
 ### Underfit
 
@@ -202,7 +202,7 @@ Underfit fits LoRA adapters. Eight adapter types are available (`lora`, `dora-ro
 
 <p align="center"><img src="docs/readme/audimate.png" alt="Audimate node canvas with a Library, Generate, Effect, and Output pipeline wired by glowing bezier edges" width="820"></p>
 
-Audimate is a node-graph editor for building generation pipelines. Circular nodes for library sources, generation (Stable Audio or Magenta), effect, merge, and feedback stages, and outputs wire together with bezier edges on a pannable, zoomable canvas. The inspector edits each node's parameters (prompt, model, duration, steps, CFG, seed), and Run drives the graph through the same generate, effect, and library actions the rest of the app uses, saving results back to the library.
+Audimate is a **node-graph editor** for building generation pipelines. Nodes for library sources, generation (Stable Audio or Magenta), effect, merge, and feedback stages, and outputs wire together with bezier edges on a pannable, zoomable canvas. The inspector edits each node's parameters (prompt, model, duration, steps, CFG, seed), and Run drives the graph through the same generate, effect, and library actions the rest of the app uses, saving results back to the library.
 
 ### LEARN
 
@@ -215,7 +215,7 @@ Every track and the relationships between them render as an interactive force-di
 
 ### Controllers and XR
 
-Controller recognition identifies hardware across three tiers: a library of roughly 110 device profiles, a scored auto-detect, and a learn-by-capture mode that binds a control the moment it moves. Controller Vision identifies a controller from a photo through OpenCV and a vision model. The Audima Sway is supported natively: auto-detect recognizes it, its six expressive-motion dimensions arrive as named signals for MAKE, the MIX rack, and the VJ engine, and its control-surface mode mirrors play, volume, pan, and pads onto the EDIT timeline. The [theDAW-XR](https://github.com/gantasmo/theDAW-XR) companion turns a Meta Quest 3 into a hands-only surface: hand-tracked MIDI from floating faders and knobs, passthrough video into VJ, co-located multiplayer, and a head-mounted MIDI Reactor, all over ADB. Full reference: [User Guide §31](docs/USER_GUIDE.md#31-controller-vision) and [§34](docs/USER_GUIDE.md#34-quest-and-xr-integrations).
+Controller recognition identifies hardware across three tiers: a library of roughly 110 device profiles, a scored auto-detect, and a learn-by-capture mode that binds a control the moment it moves. Controller Vision identifies a controller from a photo through OpenCV and a vision model. The Audima Sway is supported natively: auto-detect recognizes it, its six expressive-motion dimensions arrive as named signals for MAKE, the MIX rack, and the VJ engine, and its control-surface mode mirrors play, volume, pan, and pads onto the EDIT timeline. The [theDAW-XR](https://github.com/gantasmo/theDAW-XR) companion turns a Meta Quest 3 into a hands-only surface: **hand-tracked MIDI** from floating faders and knobs, passthrough video into VJ, co-located multiplayer, and a head-mounted MIDI Reactor, all over ADB. Full reference: [User Guide §31](docs/USER_GUIDE.md#31-controller-vision) and [§34](docs/USER_GUIDE.md#34-quest-and-xr-integrations).
 
 ### Library and Catalogue
 
@@ -224,13 +224,13 @@ Controller recognition identifies hardware across three tiers: a library of roug
   <img src="docs/readme/catalogue.png" alt="Cross-provider Catalogue gallery with provider badges and inspector" width="410">
 </p>
 
-The library lives on the backend, with audio on disk, metadata in `data/library.db`, and access over `/api/library/*`. Every render saves automatically with its prompt, model, duration, steps, CFG, seed, and timestamp. SUGGEST builds a continuous playlist ordered by Camelot-wheel harmony and a chosen BPM flow, then plays it through the footer queue or sends it to the DJ tab. The Catalogue view adds a cross-provider gallery with provider badges, an inspector with on-demand spectrograms, and a lineage panel. Full reference: [User Guide §13](docs/USER_GUIDE.md#13-library) and [§29](docs/USER_GUIDE.md#29-catalogue).
+The library lives on the backend, with audio on disk, metadata in `data/library.db`, and access over `/api/library/*`. Every render saves automatically with its prompt, model, duration, steps, CFG, seed, and timestamp. **SUGGEST** builds a continuous playlist ordered by Camelot-wheel harmony and a chosen BPM flow, then plays it through the footer queue or sends it to the DJ tab. The Catalogue view adds a cross-provider gallery with provider badges, an inspector with **on-demand spectrograms**, and a lineage panel. Full reference: [User Guide §13](docs/USER_GUIDE.md#13-library) and [§29](docs/USER_GUIDE.md#29-catalogue).
 
 ### Notation and Score
 
 <p align="center"><img src="docs/readme/score.png" alt="Score panel rendering the piano score from a track's MIDI" width="820"></p>
 
-The Score tab turns a track's MIDI into symbolic music. MAKE SHEET converts the first MIDI to MusicXML with music21 and renders it through OpenSheetMusicDisplay. The Tabs section arranges guitar or bass tablature for a chosen tuning, capo, and difficulty through a dynamic-programming pass and renders with alphaTab. Arrange builds lead-sheet, piano-reduction, simplified, or band-score MusicXML, scores export to ABC, PDF, and SVG, and PROMPT INFERENCE derives a Stable Audio prompt from a track's analysis. Full reference: [User Guide §33](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements).
+The Score tab turns a track's **MIDI into symbolic music**. MAKE SHEET converts the first MIDI to MusicXML with music21 and renders it through OpenSheetMusicDisplay. The Tabs section arranges guitar or bass tablature for a chosen tuning, capo, and difficulty through a dynamic-programming pass and renders with alphaTab. Arrange builds lead-sheet, piano-reduction, simplified, or band-score MusicXML, scores export to ABC, PDF, and SVG, and PROMPT INFERENCE derives a Stable Audio prompt from a track's analysis. Full reference: [User Guide §33](docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements).
 
 ### Bottom panel
 
