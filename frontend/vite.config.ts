@@ -47,6 +47,14 @@ export default defineConfig(({mode}) => {
       // Modern output → less transpilation across the ~3.5k modules.
       target: 'es2022',
       rollupOptions: {
+        // Two entries: the desktop app (index.html) and the phone companion
+        // (mobile.html -> src/mobile/main.tsx). The mobile tree never imports
+        // three/alphaTab/force-graph, so its chunk stays small; the phone never
+        // downloads the desktop bundle.
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          mobile: path.resolve(__dirname, 'mobile.html'),
+        },
         output: {
           // Split the big, stable leaf vendors into their own long-cached
           // chunks so an app-code edit doesn't bust them, and the main chunk

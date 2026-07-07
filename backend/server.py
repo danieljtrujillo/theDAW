@@ -2017,20 +2017,36 @@ try:
 except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
     logger.warning("vj: static mount skipped: %s", _vj_mount_err)
 
-# Optional single-container UI serving (the Docker release image sets
-# theDAW_SERVE_UI=1). Every API route lives under /api and is registered
-# above, BEFORE this mount, so the SPA catch-all can never shadow an
-# endpoint. Without the env var (theDAW.bat, manual dev servers, electron)
-# this block is a no-op and dev behavior is unchanged: Vite serves the UI on
-# :5173 and proxies /api to :8600.
-if os.environ.get("theDAW_SERVE_UI") == "1":
-    _ui_dist = PROJECT_ROOT / "frontend" / "dist"
+# Single-container / companion UI serving. Every API route lives under /api and
+# is registered above, BEFORE this mount, so the SPA catch-all can never shadow
+# an endpoint.
+#
+# This fires when a built frontend/dist exists (Docker sets theDAW_SERVE_UI=1;
+# packaged desktop bundles ship a dist), so the desktop UI AND the phone
+# companion entry (frontend/mobile.html -> /mobile.html, with /assets at root)
+# are both reachable over http on the LAN. In pure dev (no dist) it is a no-op:
+# Vite serves the UI on :5173, proxies /api to :8600, and the phone loads
+# http://<lan-ip>:5173/mobile.html directly.
+_ui_dist = PROJECT_ROOT / "frontend" / "dist"
+_serve_ui = (
+    os.environ.get("theDAW_SERVE_UI") == "1" or (_ui_dist / "index.html").is_file()
+)
+if _serve_ui:
     if (_ui_dist / "index.html").is_file():
+        from fastapi.responses import RedirectResponse
         from fastapi.staticfiles import StaticFiles
 
+        # Short, phone-typeable alias for the companion entry. Registered BEFORE
+        # the "/" mount below so the mount cannot shadow it. Redirects (rather
+        # than serving mobile.html here) so the browser loads /mobile.html and
+        # its root-relative /assets/* resolve.
+        @app.get("/m", include_in_schema=False)
+        async def _mobile_entry() -> "RedirectResponse":
+            return RedirectResponse(url="/mobile.html")
+
         app.mount("/", StaticFiles(directory=_ui_dist, html=True), name="ui")
-        logger.info("ui: serving %s at / (theDAW_SERVE_UI=1)", _ui_dist)
-    else:
+        logger.info("ui: serving %s at / (companion entry at /m)", _ui_dist)
+    elif os.environ.get("theDAW_SERVE_UI") == "1":
         logger.warning(
             "ui: theDAW_SERVE_UI=1 but %s is missing; UI mount skipped", _ui_dist
         )

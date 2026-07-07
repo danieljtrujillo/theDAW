@@ -71,10 +71,16 @@ function wsUrl(): string {
     // Hosted over TLS: same-origin so the deployment's proxy carries it.
     return `wss://${host}/api/xr/control/ws`;
   }
-  // Everywhere else — desktop app:// scheme (its protocol handler proxies
-  // HTTP /api/* but cannot upgrade WebSockets), electron-vite dev
-  // (http://localhost:5173, whose proxy historically lacked ws:true), and
-  // web dev — the backend is always local on :8600, so connect directly.
+  if (protocol === 'http:' && host) {
+    // Served over http from the LAN origin (desktop web dev on
+    // localhost:5173, or a phone/companion on <lan-ip>:5173 in dev /
+    // <lan-ip>:8600 packaged). Derive from the origin so a phone connects to
+    // its host, not to itself; the Vite proxy carries the upgrade in dev
+    // (server.proxy['/api'].ws = true) and it is direct in packaged/Docker.
+    return `ws://${host}/api/xr/control/ws`;
+  }
+  // Desktop app:// renderer — its protocol handler proxies HTTP /api/* but
+  // cannot upgrade WebSockets, and the backend is always local on :8600.
   return 'ws://localhost:8600/api/xr/control/ws';
 }
 
@@ -101,6 +107,77 @@ async function publishManifest(): Promise<void> {
 export function publishControlChanged(id: string, value: XrControlValue): void {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'control-changed', id, value }));
+  }
+}
+
+// ── Pairing posture (host side) ──────────────────────────────────────────────
+// This browser is the HOST. It declares the session pairing posture to the
+// relay: "open" lets any LAN controller in; "code" requires the QR's pair code.
+// The relay gates controllers on it (see docs/companion-control-contract.md).
+
+export type XrPostureMode = 'open' | 'code';
+export interface XrHostPosture {
+  mode: XrPostureMode;
+  code: string | null;
+}
+/** A connected, authenticated controller peer (phone / companion). */
+export interface XrPeer {
+  peerId: number;
+  label: string;
+}
+
+let hostPosture: XrHostPosture = { mode: 'open', code: null };
+let peers: XrPeer[] = [];
+const peerListeners = new Set<(p: XrPeer[]) => void>();
+
+function emitPeers(): void {
+  const snapshot = peers.slice();
+  for (const l of peerListeners) {
+    try {
+      l(snapshot);
+    } catch {
+      /* a listener that throws must not break the others */
+    }
+  }
+}
+
+function sendHostHello(): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'host-hello', posture: hostPosture }));
+  }
+}
+
+/** Set the pairing posture (called from the desktop Phone panel). Persists in
+ *  memory and re-declares to the relay when connected. */
+export function setXrHostPosture(posture: XrHostPosture): void {
+  hostPosture = {
+    mode: posture.mode === 'code' ? 'code' : 'open',
+    code: posture.code || null,
+  };
+  sendHostHello();
+}
+
+export function getXrHostPosture(): XrHostPosture {
+  return hostPosture;
+}
+
+/** Subscribe to the connected-companion list; fires immediately with current. */
+export function onXrPeersChanged(cb: (peers: XrPeer[]) => void): () => void {
+  peerListeners.add(cb);
+  cb(peers.slice());
+  return () => {
+    peerListeners.delete(cb);
+  };
+}
+
+export function getXrPeers(): XrPeer[] {
+  return peers.slice();
+}
+
+/** Revoke a connected companion by id. */
+export function kickXrPeer(peerId: number): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'kick', peerId }));
   }
 }
 
@@ -136,7 +213,9 @@ function connect(): void {
   sock.onopen = () => {
     everConnected = true;
     logInfo('xrcontrol', 'XR control bus connected.');
-    // Seed any controller already waiting on the relay.
+    // Declare this browser the host + its pairing posture, then seed any
+    // controller already waiting on the relay.
+    sendHostHello();
     void publishManifest();
   };
   sock.onmessage = (e) => {
@@ -147,12 +226,31 @@ function connect(): void {
       return; /* ignore malformed frame */
     }
     if (!parsed || typeof parsed !== 'object') return;
-    const m = parsed as { type?: unknown; id?: unknown; value?: unknown };
+    const m = parsed as {
+      type?: unknown;
+      id?: unknown;
+      value?: unknown;
+      peers?: unknown;
+      peerId?: unknown;
+      label?: unknown;
+    };
     if (typeof m.type !== 'string') return;
     if (m.type === 'request-controls') {
       void publishManifest();
     } else if (m.type === 'control-set' && typeof m.id === 'string') {
       void applyControlSet(m.id, m.value as XrControlValue);
+    } else if (m.type === 'host-ack') {
+      peers = Array.isArray(m.peers) ? (m.peers as XrPeer[]) : [];
+      emitPeers();
+    } else if (m.type === 'peer-joined' && typeof m.peerId === 'number') {
+      const label = typeof m.label === 'string' ? m.label : 'device';
+      if (!peers.some((p) => p.peerId === m.peerId)) {
+        peers = [...peers, { peerId: m.peerId as number, label }];
+        emitPeers();
+      }
+    } else if (m.type === 'peer-left' && typeof m.peerId === 'number') {
+      peers = peers.filter((p) => p.peerId !== m.peerId);
+      emitPeers();
     }
   };
   sock.onerror = () => {
@@ -160,6 +258,10 @@ function connect(): void {
   };
   sock.onclose = () => {
     if (ws === sock) ws = null;
+    if (peers.length) {
+      peers = [];
+      emitPeers();
+    }
     if (running && everConnected) logWarn('xrcontrol', 'XR control bus disconnected — retrying…');
     scheduleReconnect();
   };

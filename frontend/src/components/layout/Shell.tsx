@@ -27,6 +27,7 @@ import { useOnboardingStore } from '../../onboarding/onboardingStore';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
+import { setXrHostPosture, onXrPeersChanged, kickXrPeer, type XrPeer } from '../../state/xrControlClient';
 import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
 
@@ -112,6 +113,46 @@ export const Shell: React.FC = () => {
     () => `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(shareUrl)}`,
     [shareUrl],
   );
+
+  // Phone-companion pairing. The host picks the posture (open LAN or a required
+  // code) before handing out the QR; the code rides the URL as ?pair=<code> so
+  // scanning auto-fills it. See docs/companion-control-contract.md.
+  const [postureMode, setPostureMode] = React.useState<'open' | 'code'>('open');
+  const [pairCode, setPairCode] = React.useState('');
+  const [companionPeers, setCompanionPeers] = React.useState<XrPeer[]>([]);
+  const [copiedCompanion, setCopiedCompanion] = React.useState(false);
+
+  React.useEffect(() => onXrPeersChanged(setCompanionPeers), []);
+  React.useEffect(() => {
+    setXrHostPosture({ mode: postureMode, code: postureMode === 'code' ? pairCode : null });
+  }, [postureMode, pairCode]);
+
+  const companionUrl = useMemo(() => {
+    const base = (shareUrl || '').replace(/\/+$/, '');
+    if (!base) return '';
+    const q = postureMode === 'code' && pairCode ? `?pair=${pairCode}` : '';
+    return `${base}/mobile.html${q}`;
+  }, [shareUrl, postureMode, pairCode]);
+  const companionQrUrl = useMemo(
+    () =>
+      companionUrl
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(companionUrl)}`
+        : '',
+    [companionUrl],
+  );
+  const chooseCodePosture = () => {
+    setPairCode((c) => c || Math.floor(1000 + Math.random() * 9000).toString());
+    setPostureMode('code');
+  };
+  const copyCompanionUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(companionUrl);
+      setCopiedCompanion(true);
+      window.setTimeout(() => setCopiedCompanion(false), 1500);
+    } catch {
+      /* clipboard blocked — the URL is still visible to copy manually */
+    }
+  };
 
   const updateShareUrlOverride = (value: string) => {
     setShareUrlOverride(value);
@@ -380,6 +421,95 @@ export const Shell: React.FC = () => {
                 <p className="text-[9px] leading-relaxed text-zinc-500">
                   By default this uses <span className="font-mono text-zinc-400">{detectedShareUrl}</span>. Paste a Cloudflare Tunnel or other public URL here when your phone is not on the same network.
                 </p>
+              </div>
+
+              {/* Phone companion — a lean remote app (library + player control),
+                  separate from opening the full desktop UI above. */}
+              <div className="flex flex-col gap-2 pt-3 border-t border-white/5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Phone companion</span>
+                  <span className="text-[8px] font-mono uppercase tracking-wider text-purple-300/50">library + remote</span>
+                </div>
+                <p className="text-[9px] leading-relaxed text-zinc-500">
+                  A lightweight phone app to browse and play the library and remote-control the player. Choose who may drive this desktop before you share the code.
+                </p>
+
+                {/* Posture: both options shown; the host selects before allowing a peer. */}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    aria-pressed={postureMode === 'open'}
+                    onClick={() => setPostureMode('open')}
+                    className={`flex-1 px-2 py-1.5 rounded border text-[9px] font-black uppercase tracking-widest transition-colors ${postureMode === 'open' ? 'border-purple-400/60 bg-purple-500/20 text-purple-100' : 'border-white/10 bg-black/30 text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    Open LAN
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={postureMode === 'code'}
+                    onClick={chooseCodePosture}
+                    className={`flex-1 px-2 py-1.5 rounded border text-[9px] font-black uppercase tracking-widest transition-colors ${postureMode === 'code' ? 'border-purple-400/60 bg-purple-500/20 text-purple-100' : 'border-white/10 bg-black/30 text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    Require code
+                  </button>
+                </div>
+
+                {postureMode === 'code' && (
+                  <div className="flex items-center justify-between px-3 py-2 rounded bg-black/40 border border-purple-500/20">
+                    <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400">Pair code</span>
+                    <span className="text-[15px] font-mono font-black tracking-[0.35em] text-purple-200">{pairCode}</span>
+                  </div>
+                )}
+
+                {companionQrUrl && (
+                  <div className="flex justify-center pt-1">
+                    <div className="p-3 rounded-lg bg-white shadow-[0_0_24px_rgba(139,92,246,0.16)]">
+                      <img src={companionQrUrl} alt="theDAW phone companion QR code" className="w-44 h-44" />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="shell-companion-url" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Companion URL</label>
+                  <div className="flex gap-2">
+                    <input
+                      id="shell-companion-url"
+                      type="text"
+                      name="shell-companion-url"
+                      value={companionUrl}
+                      readOnly
+                      className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 outline-none"
+                    />
+                    <button
+                      onClick={() => void copyCompanionUrl()}
+                      className="px-2 py-1.5 rounded border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5"
+                      title="Copy companion URL"
+                    >
+                      <Copy className="w-3 h-3" /> {copiedCompanion ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+
+                {companionPeers.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Connected ({companionPeers.length})</span>
+                    <ul className="flex flex-col gap-1">
+                      {companionPeers.map((p) => (
+                        <li key={p.peerId} className="flex items-center justify-between px-2 py-1.5 rounded bg-black/30 border border-white/10">
+                          <span className="text-[10px] font-mono text-zinc-200">{p.label}</span>
+                          <button
+                            type="button"
+                            onClick={() => kickXrPeer(p.peerId)}
+                            aria-label={`Disconnect ${p.label}`}
+                            className="px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-200 text-[8px] font-black uppercase tracking-widest"
+                          >
+                            Kick
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             </div>
           </div>
