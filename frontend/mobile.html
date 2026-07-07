@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover so safe-area insets work under the notch/home bar;
+         no user scaling so the no-scroll layout law holds on the phone. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#07050a" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4" />
+    <title>theDAW companion</title>
+    <style>
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        background: #07050a;
+      }
+      html,
+      body {
+        margin: 0;
+        background: #07050a;
+        overscroll-behavior: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-splash"></div>
+    <div id="root"></div>
+    <script type="module" src="/src/mobile/main.tsx"></script>
+  </body>
+</html>

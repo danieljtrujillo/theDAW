@@ -29,6 +29,7 @@ import { djControlSource } from './state/xrControlDjSource';
 import { makeControlSource } from './state/makeControlSource';
 import { processControlSource } from './state/processControlSource';
 import { liveFxControlSource } from './state/liveFxControlSource';
+import { transportControlSource } from './state/transportControlSource';
 import { swayControlSource, startSwayXrMirror } from './state/swayControlSource';
 import { startSwayBus } from './state/swayBus';
 import { startSwayRouting } from './state/swayRouting';
@@ -311,6 +312,9 @@ export default function App() {
     // LIVE (master FX): always-available, non-destructive sound shaping on the
     // player output — the VST-Foundry demo-mode bind-test surface.
     registerXrControlSource(liveFxControlSource);
+    // Transport: footer play/pause/seek/volume/loop for the phone companion
+    // (Phase 3) and the headset (Phase 7 B1).
+    registerXrControlSource(transportControlSource);
     startXrControl();
     return () => {
       stopXrControl();
