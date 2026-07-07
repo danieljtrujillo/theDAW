@@ -46,6 +46,12 @@ export default defineConfig({
     },
     server: {
       port: 5173,
+      // Bind ALL interfaces (not loopback) so a phone on the LAN can reach the
+      // companion (mobile.html + the /api control-bus proxy) while the DESKTOP
+      // app is the host. electron-vite/Vite default to localhost-only, which is
+      // why the phone got connection-refused whenever the desktop app was open.
+      // Never leave this loopback-only.
+      host: '0.0.0.0',
       fs: {
         allow: [resolve(__dirname, '../frontend'), resolve(__dirname, '..')]
       },

@@ -48,6 +48,9 @@ export const djControlSource: XrControlSource = {
       max: t.max,
       step: t.step,
       unit: t.unit,
+      // Seed true state when the target can report it (e.g. the limiter), so a
+      // consumer's widget does not misrepresent a stateful control.
+      value: t.read ? t.read() : undefined,
     }));
   },
 

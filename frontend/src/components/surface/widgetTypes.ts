@@ -116,6 +116,10 @@ export interface BindableTarget {
   /** Push a value: a number for ranges, a boolean for toggles; triggers (pads)
    *  ignore the argument. */
   invoke: (v: number | boolean) => void;
+  /** Read the current value, when the target can report one. Lets a manifest
+   *  consumer (e.g. the XR / companion bus) seed a widget with true state
+   *  instead of a guess — important for stateful toggles like the limiter. */
+  read?: () => number | boolean;
 }
 
 export type VisualizerKind = 'spectrum';

@@ -35,5 +35,5 @@ const perDeck = (d: dj.DeckId): BindableTarget[] => {
 export const DJ_TARGETS: BindableTarget[] = [
   ...DECKS.flatMap(perDeck),
   { id: 'dj.crossfade', label: 'Crossfader', group: 'Mixer', kind: 'crossfader', min: -1, max: 1, step: 0.01, invoke: (v) => dj.setCrossfade(Number(v)) },
-  { id: 'dj.limiter', label: 'Master Limiter', group: 'Mixer', kind: 'toggle', invoke: (v) => dj.setLimiter(Boolean(v)) },
+  { id: 'dj.limiter', label: 'Master Limiter', group: 'Mixer', kind: 'toggle', invoke: (v) => dj.setLimiter(Boolean(v)), read: () => dj.getLimiter() },
 ];
