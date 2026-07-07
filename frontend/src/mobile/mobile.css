@@ -338,6 +338,82 @@ body {
 .m-state .m-btn {
   margin-top: 16px;
 }
+/* ── DJ remote (static; fits without page scroll) ── */
+.m-dj {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  /* Safety net for very short viewports: the control region (not the page)
+     scrolls only if the decks genuinely cannot fit, instead of clipping. */
+  overflow-y: auto;
+}
+.m-decks {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.m-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  background: var(--m-panel);
+}
+.m-deck-head {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--m-accent);
+}
+.m-deck-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.m-deck-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 4px;
+  border-radius: 10px;
+  border: 1px solid var(--m-border);
+  background: var(--m-panel-2);
+  color: var(--m-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.m-deck-btn:active {
+  transform: scale(0.97);
+}
+.m-field-compact .m-field-label {
+  font-size: 9px;
+  margin-bottom: 2px;
+}
+.m-field-compact .m-range {
+  height: 26px;
+}
+.m-dj-global {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  background: var(--m-panel);
+}
+
 .m-pair {
   margin-top: 12px;
   display: flex;
