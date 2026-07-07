@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { Trash2, Download, X, Zap, Cast } from 'lucide-react';
+import { Trash2, Download, X, Zap, Cast, CircleAlert } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { buildGenerateParamsFromState, useGenerateStore } from '../../state/generateStore';
@@ -85,14 +85,22 @@ export const LogBody: React.FC = () => {
   const verbose = useBottomPanelStore((s) => s.logVerbose);
   const setLogVerbose = useBottomPanelStore((s) => s.setLogVerbose);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Only auto-scroll to the newest line when the user is already parked at the
+  // bottom. Once they scroll up, new entries no longer yank the view back.
+  const pinnedRef = useRef(true);
+
+  // Show only error lines when on, so failures are readable without scrolling.
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const errorCount = useMemo(() => entries.reduce((n, e) => n + (e.level === 'error' ? 1 : 0), 0), [entries]);
 
   // SIMPLE mode hides debug entries and folds consecutive identical
   // level+source+msg runs into one row. The row keeps the FIRST entry of the
   // run so its React key stays stable while the count grows in place.
   const displayRows = useMemo<Array<{ entry: LogEntry; count: number }>>(() => {
-    if (verbose) return entries.map((entry) => ({ entry, count: 1 }));
+    const src = errorsOnly ? entries.filter((e) => e.level === 'error') : entries;
+    if (verbose) return src.map((entry) => ({ entry, count: 1 }));
     const rows: Array<{ entry: LogEntry; count: number }> = [];
-    for (const entry of entries) {
+    for (const entry of src) {
       if (entry.level === 'debug') continue;
       const last = rows[rows.length - 1];
       if (last && last.entry.level === entry.level && last.entry.source === entry.source && last.entry.msg === entry.msg) {
@@ -102,7 +110,7 @@ export const LogBody: React.FC = () => {
       }
     }
     return rows;
-  }, [entries, verbose]);
+  }, [entries, verbose, errorsOnly]);
 
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -143,13 +151,22 @@ export const LogBody: React.FC = () => {
     return () => clearInterval(t);
   }, [fetchStats, isBackendReady]);
 
-  // Keyed on the raw entries (not the folded view) so collapsed repeats still
-  // autoscroll; verbose is included so toggling modes re-pins to the newest
-  // entries after the list height changes.
+  // Auto-scroll to the newest line ONLY when the user is pinned to the bottom;
+  // if they have scrolled up to read, their position is preserved. Keyed on the
+  // raw entries (not the folded view) so collapsed repeats still autoscroll;
+  // verbose/errorsOnly are included so switching modes re-pins after the list
+  // height changes.
   useEffect(() => {
     const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [entries, verbose]);
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [entries, verbose, errorsOnly]);
+
+  // Track whether the view is parked at (or near) the bottom.
+  const onBodyScroll = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }, []);
 
   return (
     <div className="h-full flex flex-col min-h-0 bg-black/40">
@@ -170,6 +187,23 @@ export const LogBody: React.FC = () => {
           {verbose ? 'VERBOSE' : 'SIMPLE'}
         </button>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setErrorsOnly((v) => !v)}
+            aria-pressed={errorsOnly}
+            aria-label={errorsOnly ? 'Show all log entries' : 'Show only errors'}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded uppercase text-[8px] font-mono font-black tracking-widest transition-colors ${
+              errorsOnly
+                ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+                : errorCount > 0
+                  ? 'text-red-400 hover:text-red-300 border border-transparent'
+                  : 'text-zinc-600 hover:text-red-300 border border-transparent'
+            }`}
+            title={errorsOnly ? 'Showing errors only — click to show all entries' : 'Show only error entries'}
+          >
+            <CircleAlert className="w-3 h-3" />
+            Errors{errorCount > 0 ? ` ${errorCount}` : ''}
+          </button>
           <button
             type="button"
             onClick={() => downloadLog(entries)}
@@ -194,10 +228,11 @@ export const LogBody: React.FC = () => {
       <div className="relative flex-1 min-h-0">
         <div
           ref={bodyRef}
-          className="h-full overflow-y-auto px-2 py-1 font-mono text-[9px] space-y-0.5 pr-22"
+          onScroll={onBodyScroll}
+          className="log-scroll h-full overflow-y-auto px-2 py-1 font-mono text-[9px] space-y-0.5 pr-22"
         >
-          {entries.length === 0
-            ? <p className="text-zinc-700 italic">Waiting for signal...</p>
+          {displayRows.length === 0
+            ? <p className="text-zinc-700 italic">{errorsOnly ? 'No errors.' : 'Waiting for signal...'}</p>
             : displayRows.map(({ entry: e, count }) => verbose
                 ? (
                   <p key={e.id} className={`pl-2 ${levelStyles[e.level]}`}>
