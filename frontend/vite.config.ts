@@ -78,6 +78,10 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
+      // Bind ALL interfaces so the phone companion is LAN-reachable even if the
+      // dev server is launched without the --host flag. Must never be
+      // loopback-only. (The npm "dev" script also passes --host=0.0.0.0.)
+      host: '0.0.0.0',
       // Auto-reload is OFF BY DEFAULT so agent edits don't nuke app state.
       // To turn live reload back on: set ENABLE_HMR=true in the environment.
       port: 5173,
