@@ -414,6 +414,122 @@ body {
   background: var(--m-panel);
 }
 
+/* ── Make (standalone generate; fits without page scroll) ── */
+.m-make {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  /* Same safety net as .m-dj: the section (not the page) scrolls only when
+     the controls genuinely cannot fit a very short viewport. */
+  overflow-y: auto;
+}
+.m-make-field {
+  display: block;
+}
+.m-make textarea,
+.m-make select {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--m-border);
+  background: var(--m-panel-2);
+  color: var(--m-text);
+  font: inherit;
+  font-size: 14px;
+}
+.m-make textarea {
+  resize: none;
+}
+.m-make textarea::placeholder {
+  color: var(--m-muted);
+}
+.m-make select:disabled,
+.m-make textarea:disabled {
+  opacity: 0.55;
+}
+.m-btn.m-go {
+  background: var(--m-accent);
+  border-color: var(--m-accent-dim);
+  color: #fff;
+}
+.m-btn.m-go:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+.m-make-run {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  background: var(--m-panel);
+}
+.m-make-runhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--m-accent);
+}
+.m-make-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--m-border);
+  background: var(--m-panel-2);
+  color: var(--m-text-2);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.m-prog {
+  height: 8px;
+  border-radius: 4px;
+  border: 1px solid var(--m-border);
+  background: var(--m-panel-2);
+  overflow: hidden;
+}
+.m-prog > span {
+  display: block;
+  height: 100%;
+  background: var(--m-accent);
+  box-shadow: 0 0 8px var(--m-accent-glow);
+  transition: width 0.3s ease;
+}
+.m-state.is-inline {
+  margin: 0;
+}
+.m-state.is-inline h2 {
+  color: var(--m-bad);
+}
+.m-make-done {
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  background: var(--m-panel);
+  padding: 4px;
+}
+.m-row.is-done {
+  border-color: transparent;
+}
+.m-make-note {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--m-text-2);
+}
+
 .m-pair {
   margin-top: 12px;
   display: flex;

@@ -222,10 +222,15 @@ async def engine_status():
 
 
 @router.get("/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, summary: bool = False):
     job = MAGENTA_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    if summary:
+        # Status-only view for pollers that stream the finished take from the
+        # library instead (the phone companion): a completed job's "result"
+        # carries the whole WAV as base64, which is megabytes per poll.
+        return {k: v for k, v in job.items() if k != "result"}
     return job
 
 
