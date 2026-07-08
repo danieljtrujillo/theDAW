@@ -38,6 +38,7 @@ const DJView = lazy(() => import('../../views/DJView').then((m) => ({ default: m
 const FoundryView = lazy(() => import('../../views/FoundryView').then((m) => ({ default: m.FoundryView })));
 const UnderfitView = lazy(() => import('../../views/UnderfitView').then((m) => ({ default: m.UnderfitView })));
 const AudimateView = lazy(() => import('../../views/AudimateView').then((m) => ({ default: m.AudimateView })));
+const TourView = lazy(() => import('../../views/TourView').then((m) => ({ default: m.TourView })));
 
 const TabFallback: React.FC = () => (
   <div className="absolute inset-0 grid place-items-center">
@@ -55,7 +56,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // and the LEARN genealogy graph's fetch + layout + pan/zoom.
   const [warmedTabs, setWarmedTabs] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'foundry' || centerTab === 'underfit' || centerTab === 'audimate' || centerTab === 'learn') {
+    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'foundry' || centerTab === 'underfit' || centerTab === 'audimate' || centerTab === 'learn' || centerTab === 'tour') {
       setWarmedTabs((prev) => {
         if (prev.has(centerTab)) return prev;
         const next = new Set(prev);
@@ -153,6 +154,14 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               style={{ display: centerTab === 'audimate' ? undefined : 'none' }}
             >
               <Suspense fallback={<TabFallback />}><AudimateView /></Suspense>
+            </div>
+          )}
+          {warmedTabs.has('tour') && (
+            <div
+              className="absolute inset-0"
+              style={{ display: centerTab === 'tour' ? undefined : 'none' }}
+            >
+              <Suspense fallback={<TabFallback />}><TourView /></Suspense>
             </div>
           )}
         </div>

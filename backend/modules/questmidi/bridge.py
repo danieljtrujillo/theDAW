@@ -28,6 +28,11 @@ from backend.core.adb import resolve_adb_path
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
+# The backend's own HTTP port, reversed alongside the MIDI port so a
+# USB-tethered headset reaches the whole API — including the XR control-bus
+# relay at ws://127.0.0.1:8600/api/xr/control/ws — on its own loopback with
+# zero network setup, exactly like MIDI.
+DEFAULT_HTTP_PORT = 8600
 ClientSend = Callable[[list[int]], Awaitable[None]]
 
 
@@ -36,6 +41,13 @@ def _port() -> int:
         return int(os.getenv("theDAW_QUESTMIDI_PORT") or DEFAULT_PORT)
     except ValueError:
         return DEFAULT_PORT
+
+
+def _http_port() -> int:
+    try:
+        return int(os.getenv("theDAW_PORT") or DEFAULT_HTTP_PORT)
+    except ValueError:
+        return DEFAULT_HTTP_PORT
 
 
 def _adb_path() -> Optional[str]:
@@ -164,9 +176,12 @@ def _run_adb_reverse(port: int) -> bool:
 
 async def reattach_adb() -> bool:
     """Re-run ``adb reverse`` (after re-plugging the headset / accepting the
-    USB-debugging prompt) without restarting the listener."""
+    USB-debugging prompt) without restarting the listener. Reverses the MIDI
+    port AND the backend HTTP port (control-bus relay) in one pass; only the
+    MIDI port decides the reported ok state, matching what this bridge owns."""
     loop = asyncio.get_running_loop()
     _s.adb_reverse_ok = await loop.run_in_executor(None, _run_adb_reverse, _port())
+    await loop.run_in_executor(None, _run_adb_reverse, _http_port())
     return _s.adb_reverse_ok
 
 

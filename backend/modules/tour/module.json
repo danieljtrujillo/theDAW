@@ -1,0 +1,10 @@
+{
+  "name": "tour",
+  "label": "Tour",
+  "enabled": true,
+  "icon": "Map",
+  "sidebar": false,
+  "api_prefix": "/api/tour",
+  "backend": true,
+  "description": "TOUR workspace backend: venue/promoter/festival discovery (OSM Overpass + Nominatim), booking-contact enrichment, multi-stop route optimization (VROOM/ORS), EV charger planning (OpenChargeMap), and small-town suggestions. Third-party keys stay server-side (env-first, then data/tour_keys.json)."
+}

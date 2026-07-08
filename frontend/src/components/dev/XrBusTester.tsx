@@ -69,7 +69,16 @@ export function XrBusTester(): React.ReactElement {
       if (!parsed || typeof parsed !== 'object') return;
       const m = parsed as { type?: unknown; id?: unknown; value?: unknown; entries?: unknown };
       if (m.type === 'manifest' && Array.isArray(m.entries)) {
-        setEntries(m.entries as XrManifestEntry[]);
+        const list = m.entries as XrManifestEntry[];
+        setEntries(list);
+        // The manifest is the authoritative resync: seed current values from
+        // entry.value so readonly indicators and selects show real state
+        // instead of blanks (and stale local echo is overwritten).
+        const seed: Record<string, XrControlValue> = {};
+        for (const en of list) {
+          if (en.value !== undefined) seed[en.id] = en.value;
+        }
+        setValues((v) => ({ ...v, ...seed }));
       } else if (m.type === 'control-changed' && typeof m.id === 'string') {
         const id = m.id;
         const value = m.value as XrControlValue;
@@ -214,6 +223,68 @@ function ControlRow({
   onSend: (id: string, value: XrControlValue) => void;
 }): React.ReactElement {
   const fieldId = `xr-${entry.id}`;
+
+  // Readonly entries are host-published state, not inputs: render a status
+  // row so the tester can't send sets the host would just correct.
+  if (entry.readonly) {
+    return (
+      <div className="flex items-center justify-between rounded border border-white/5 bg-white/2 px-2 py-1 text-[10px] text-zinc-400">
+        <span className="truncate" title={entry.label}>{entry.label}</span>
+        <span className="ml-2 min-w-0 shrink truncate text-right text-zinc-300" title={String(value ?? '')}>
+          {value === undefined ? '—' : String(value)}
+        </span>
+      </div>
+    );
+  }
+
+  if (entry.kind === 'select') {
+    const current = typeof value === 'string' ? value : '';
+    return (
+      <label htmlFor={fieldId} className="flex items-center gap-2 text-[10px]">
+        <span className="w-28 shrink-0 truncate text-zinc-300" title={entry.label}>
+          {entry.label}
+        </span>
+        <select
+          id={fieldId}
+          name={fieldId}
+          value={current}
+          onChange={(e) => onSend(entry.id, e.target.value)}
+          className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-900 px-1 py-0.5 text-[10px] text-zinc-200"
+          style={{ colorScheme: 'dark' }}
+        >
+          {current === '' && <option value="">—</option>}
+          {(entry.options ?? []).map((o) => (
+            <option key={o} value={o}>{o}</option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+
+  if (entry.kind === 'text') {
+    const current = typeof value === 'string' ? value : '';
+    return (
+      <label htmlFor={fieldId} className="flex items-center gap-2 text-[10px]">
+        <span className="w-28 shrink-0 truncate text-zinc-300" title={entry.label}>
+          {entry.label}
+        </span>
+        <input
+          id={fieldId}
+          name={fieldId}
+          type="text"
+          defaultValue={current}
+          // Send on commit (blur / Enter), not per keystroke — mirrors how a
+          // headset keyboard commits a whole string.
+          onBlur={(e) => { if (e.target.value !== current) onSend(entry.id, e.target.value); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-200 placeholder:text-zinc-600"
+          placeholder={entry.label}
+        />
+      </label>
+    );
+  }
 
   if (RANGE_KINDS.has(entry.kind)) {
     const min = entry.min ?? 0;

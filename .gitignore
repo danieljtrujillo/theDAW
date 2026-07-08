@@ -4,6 +4,10 @@ codegraph/
 
 # Secrets & user data
 data/api_key_pools.json
+# TOUR third-party keys (ORS, OpenChargeMap), saved filter preset, provider cache
+data/tour_keys.json
+data/tour_filters.json
+data/tour_cache/
 # Underfit upstream-update check cache (written by backend/modules/underfit/updater.py)
 data/underfit_update.json
 # App update check cache (written by backend/modules/updates/router.py)

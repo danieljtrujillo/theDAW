@@ -457,6 +457,24 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       return;
     }
 
+    // Re-entry claim — synchronous, BEFORE the first await. Without it, every
+    // caller pressing again during the pre-flight probes (desktop CREATE
+    // double-click, XR trigger bounce, assistant) saw isGenerating=false and
+    // stacked a duplicate backend job; worse, a press MEANT as cancel during
+    // the SUBMITTING window started a second run instead. Claiming the flag
+    // here makes a second press route to cancelPolling, and the pollRunId
+    // checks after each pre-flight await make that cancel actually abort the
+    // submission before the job is POSTed.
+    if (get().isGenerating) return;
+    const nextRunId = get().pollRunId + 1;
+    set({
+      isGenerating: true,
+      jobStatus: 'submitting',
+      statusLabel: 'SUBMITTING JOB...',
+      error: null,
+      pollRunId: nextRunId,
+    });
+
     // No-model guard: a fresh local-only install has nothing to generate
     // with. Warn and route to Settings → Models instead of failing into a
     // blocked download or an opaque backend error. Probe failures never block.
@@ -480,13 +498,15 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
     } catch {
       // Status endpoint unreachable: let the normal submit path surface errors.
     }
+    // Cancelled while the model probe was in flight (cancelPolling bumps
+    // pollRunId): stop before touching any more state.
+    if (get().pollRunId !== nextRunId) return;
 
     const previousUrl = get().lastAudioUrl;
     if (previousUrl) {
       URL.revokeObjectURL(previousUrl);
     }
 
-    const nextRunId = get().pollRunId + 1;
     // Wall-clock anchor for elapsed-time logging across the whole generate flow.
     const t0 = performance.now();
     const elapsed = () => `+${((performance.now() - t0) / 1000).toFixed(1)}s`;
@@ -551,6 +571,9 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
         return;
       }
     }
+
+    // Cancelled during the chimera render: abort before the job is POSTed.
+    if (get().pollRunId !== nextRunId) return;
 
     // Magenta RT2 routes to its own sidecar-backed module; SA3 uses the main job API.
     const isMagenta = effectiveParams.model.startsWith('magenta-');

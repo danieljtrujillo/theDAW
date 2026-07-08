@@ -14,7 +14,10 @@
  */
 import { logInfo, logWarn } from './logStore';
 
-export type XrControlValue = number | boolean;
+// Strings carry `select` option choices and `text` field contents (e.g. the
+// MAKE prompt typed on a headset keyboard); knobs/faders stay numeric and
+// toggles/buttons boolean.
+export type XrControlValue = number | boolean | string;
 
 /** One self-describing control in the manifest XR consumes. Mirrors the shape
  *  theDAW's own registries already use (DJ_TARGETS, the VJ control manifest). */

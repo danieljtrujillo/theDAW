@@ -1,0 +1,37 @@
+/* TOUR map popup theming. MapLibre's default popup is white-on-white against
+   the app's dark theme; scope an obsidian panel + high-contrast text to the
+   popups this view creates (className 'tour-popup' on each Popup). The tip
+   arrow inherits per-anchor border colors, so all four directions are set. */
+
+.tour-popup .maplibregl-popup-content {
+  background: #17131f;
+  color: #f5f3ff;
+  border: 1px solid rgba(163, 230, 53, 0.35);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+}
+
+.tour-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.tour-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.tour-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+  border-top-color: #17131f;
+}
+
+.tour-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.tour-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.tour-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: #17131f;
+}
+
+.tour-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: #17131f;
+}
+
+.tour-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: #17131f;
+}
