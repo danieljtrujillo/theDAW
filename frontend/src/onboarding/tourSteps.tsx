@@ -134,4 +134,17 @@ export const TOUR_STEPS: TourStep[] = [
     targetSelector: '[data-tour="tab-underfit"]',
     tab: 'underfit',
   },
+  {
+    id: 'tour',
+    title: 'Book the road',
+    body: (
+      <>
+        TOUR finds venues and promoters by region so you can plan a run. Search a city, add stops
+        across as many towns as you like, then optimize the drive order or lay the stops out on a
+        calendar with per-leg drive times.
+      </>
+    ),
+    targetSelector: '[data-tour="tab-tour"]',
+    tab: 'tour',
+  },
 ];

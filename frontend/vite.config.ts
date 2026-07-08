@@ -73,6 +73,7 @@ export default defineConfig(({mode}) => {
             genai: ['@google/genai'],
             markdown: ['react-markdown', 'remark-gfm', 'marked'],
             spessasynth: ['spessasynth_core', 'spessasynth_lib'],
+            maplibre: ['maplibre-gl'],
           },
         },
       },

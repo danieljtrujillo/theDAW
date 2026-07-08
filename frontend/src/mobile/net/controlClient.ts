@@ -11,7 +11,10 @@
  */
 import { create } from 'zustand';
 
-export type ControlValue = number | boolean;
+// Strings carry `select` option choices and `text` field contents; knobs and
+// faders stay numeric, toggles/buttons boolean. Matches the host's
+// XrControlValue in state/xrControlClient.ts.
+export type ControlValue = number | boolean | string;
 
 export interface ManifestEntry {
   id: string;

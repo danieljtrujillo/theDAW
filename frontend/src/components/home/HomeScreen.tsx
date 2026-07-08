@@ -8,10 +8,12 @@ import {
   FlaskConical,
   FolderOpen,
   Hammer,
+  Route,
   Rows3,
   Scissors,
   Sparkles,
   Tv2,
+  Waypoints,
   Workflow,
   X,
   Zap,
@@ -162,6 +164,17 @@ const HOME_TABS: Array<{
     },
   },
   {
+    id: 'audimate',
+    label: 'Audimate',
+    desc: 'Build generation pipelines as a wired node graph, then run them',
+    icon: Waypoints,
+    accent: {
+      borderL: 'border-l-teal-500/50',
+      hoverBorderL: 'hover:border-l-teal-400/90',
+      icon: 'text-teal-300',
+    },
+  },
+  {
     id: 'learn',
     label: 'Learn',
     desc: 'Guides, docs and the in-app assistant',
@@ -170,6 +183,17 @@ const HOME_TABS: Array<{
       borderL: 'border-l-rose-500/50',
       hoverBorderL: 'hover:border-l-rose-400/90',
       icon: 'text-rose-300',
+    },
+  },
+  {
+    id: 'tour',
+    label: 'Tour',
+    desc: 'Find venues and promoters by region, plan multi-stop tour routes',
+    icon: Route,
+    accent: {
+      borderL: 'border-l-lime-500/50',
+      hoverBorderL: 'hover:border-l-lime-400/90',
+      icon: 'text-lime-300',
     },
   },
 ];
@@ -223,7 +247,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       <div className="relative h-full overflow-y-auto">
         <div className="min-h-full flex flex-col items-center justify-center px-6 py-10">
-          <div className="w-[min(880px,94vw)] flex flex-col gap-5">
+          <div className="w-[min(1080px,94vw)] flex flex-col gap-5">
             {/* Top row: wordmark + version chip + close */}
             <div className="flex items-center gap-3">
               <span className="text-[13px] font-black tracking-[0.18em] text-zinc-100">
@@ -250,8 +274,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               Make something new.
             </p>
 
-            {/* Workspace cards: one per center tab */}
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
+            {/* Workspace cards: one per center tab. Larger tiles (fewer per row,
+                bigger icon + type) so the labels/descriptions read clearly and
+                the tiles are not mostly empty space. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {HOME_TABS.map((t) => {
                 const Icon = t.icon;
                 return (
@@ -264,7 +290,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       onClose();
                     }}
                     className={[
-                      'flex flex-col items-start gap-1.5 p-3 rounded text-left',
+                      'flex flex-col items-start gap-2.5 p-5 rounded-lg text-left',
                       'bg-[#0c0a14] border border-white/5 border-l-2',
                       t.accent.borderL,
                       'transition-all hover:-translate-y-0.5 hover:bg-white/3 hover:border-white/15',
@@ -273,11 +299,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       'outline-none focus-visible:ring-2 focus-visible:ring-purple-400/60',
                     ].join(' ')}
                   >
-                    <Icon className={`w-4 h-4 ${t.accent.icon}`} />
-                    <span className="text-[11px] font-black uppercase tracking-widest text-zinc-100">
+                    <Icon className={`w-8 h-8 ${t.accent.icon}`} />
+                    <span className="text-base font-black uppercase tracking-widest text-zinc-100">
                       {t.label}
                     </span>
-                    <span className="text-[9px] font-mono leading-snug text-zinc-500">
+                    <span className="text-sm font-mono leading-relaxed text-zinc-400">
                       {t.desc}
                     </span>
                   </button>

@@ -11,10 +11,10 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
 }
 
 /** The center-bar tabs in user-locked order MAKE / EDIT / PERFORM / MIX / DJ /
- *  VJ / FOUNDRY / UNDERFIT / LEARN. All workspaces live here; the legacy
+ *  VJ / FOUNDRY / UNDERFIT / LEARN / TOUR. All workspaces live here; the legacy
  *  left-side tabs (CREATE/PROCESS) are subsumed by these. LoRA training is the
  *  UNDERFIT tab (the standalone TRAIN workspace was retired in its favor). */
-export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'foundry', 'underfit', 'audimate', 'learn'] as const;
+export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'foundry', 'underfit', 'audimate', 'learn', 'tour'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
 
 /** Tabs that were removed or renamed but may still appear in persisted state or

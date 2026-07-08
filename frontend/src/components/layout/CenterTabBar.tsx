@@ -10,6 +10,7 @@ import {
   FlaskConical,
   Rows3,
   Waypoints,
+  Route,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
@@ -155,6 +156,18 @@ const TABS: Array<{
       bg: 'bg-rose-500/15',
       text: 'text-rose-100',
       iconText: 'text-rose-300',
+    },
+  },
+  {
+    id: 'tour',
+    label: 'Tour',
+    desc: 'Find venues and promoters by region, plan multi-stop tour routes',
+    icon: Route,
+    accent: {
+      border: 'border-lime-500/50',
+      bg: 'bg-lime-500/15',
+      text: 'text-lime-100',
+      iconText: 'text-lime-300',
     },
   },
 ];
