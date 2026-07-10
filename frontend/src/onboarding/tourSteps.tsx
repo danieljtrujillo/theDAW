@@ -7,7 +7,7 @@
  * Chimera step ships a lightweight, self-contained CSS "splice" motif instead
  * of embedding the full WebGL DNA scene — it stays cheap and always animates.
  */
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { type CenterTab } from '../state/appUiStore';
 
 export interface TourStep {
@@ -27,38 +27,90 @@ export interface TourStep {
  * sides and interleave at the center, evoking the Chimera CRISPR splice. Pure
  * CSS, self-contained, and it holds still under prefers-reduced-motion.
  */
+// Two colored strands (purple A slides left->right, emerald B right->left) that
+// interleave at center. Driven by the Web Animations API rather than a CSS
+// @keyframes rule so it CANNOT be silently frozen by a `prefers-reduced-motion`
+// media rule (the earlier CSS version did nothing on machines with reduce-motion
+// on). Cadence per request: play the splice to the end, HOLD, play again, HOLD,
+// forever.
+const SPLICE_MS = 1400;
+const SPLICE_HOLD_MS = 650;
+const FRAMES_A: Keyframe[] = [
+  { transform: 'translateX(-46px)', opacity: 0.15 },
+  { transform: 'translateX(0) translateY(-6px)', opacity: 1, offset: 0.45 },
+  { transform: 'translateX(0) translateY(6px)', opacity: 1, offset: 0.55 },
+  { transform: 'translateX(46px)', opacity: 0.15 },
+];
+const FRAMES_B: Keyframe[] = [
+  { transform: 'translateX(46px)', opacity: 0.15 },
+  { transform: 'translateX(0) translateY(6px)', opacity: 1, offset: 0.45 },
+  { transform: 'translateX(0) translateY(-6px)', opacity: 1, offset: 0.55 },
+  { transform: 'translateX(-46px)', opacity: 0.15 },
+];
+
 const DnaSpliceMotif: React.FC = () => {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const beads = Array.from({ length: 9 });
-  const css = `
-@keyframes tour-splice-a {
-  0%   { transform: translateX(-46px) translateY(0); opacity: 0.15; }
-  45%  { transform: translateX(0) translateY(-6px); opacity: 1; }
-  55%  { transform: translateX(0) translateY(6px); opacity: 1; }
-  100% { transform: translateX(46px) translateY(0); opacity: 0.15; }
-}
-@keyframes tour-splice-b {
-  0%   { transform: translateX(46px) translateY(0); opacity: 0.15; }
-  45%  { transform: translateX(0) translateY(6px); opacity: 1; }
-  55%  { transform: translateX(0) translateY(-6px); opacity: 1; }
-  100% { transform: translateX(-46px) translateY(0); opacity: 0.15; }
-}
-.tour-splice-bead { animation-duration: 2.2s; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }
-@media (prefers-reduced-motion: reduce) {
-  .tour-splice-bead { animation: none !important; opacity: 0.9 !important; transform: none !important; }
-}`;
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const els = Array.from(root.querySelectorAll<HTMLElement>('[data-strand]'));
+    if (!els.length || typeof els[0].animate !== 'function') return; // no WAAPI
+
+    // One paused animation per bead; the last frame is held (fill:both) so the
+    // "hold" between plays shows the completed splice, not a snap back.
+    const anims = els.map((el) => {
+      const a = el.animate(el.dataset.strand === 'a' ? FRAMES_A : FRAMES_B, {
+        duration: SPLICE_MS,
+        easing: 'ease-in-out',
+        fill: 'both',
+      });
+      a.pause();
+      return a;
+    });
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const cycle = () => {
+      if (cancelled) return;
+      anims.forEach((a) => {
+        a.currentTime = 0;
+        a.play();
+      });
+      anims[0]
+        .finished.then(() => {
+          if (cancelled) return;
+          timer = window.setTimeout(cycle, SPLICE_HOLD_MS); // HOLD, then replay
+        })
+        .catch(() => {
+          /* cancelled mid-play on unmount */
+        });
+    };
+    cycle();
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+      anims.forEach((a) => a.cancel());
+    };
+  }, []);
+
   return (
-    <div className="relative h-16 w-full overflow-hidden rounded bg-black/40 border border-white/5">
-      <style>{css}</style>
+    <div
+      ref={rootRef}
+      className="relative h-16 w-full overflow-hidden rounded bg-black/40 border border-white/5"
+    >
       <div className="absolute inset-0 flex items-center justify-center gap-1.5">
         {beads.map((_, i) => (
           <div key={i} className="relative flex flex-col items-center gap-3">
             <span
-              className="tour-splice-bead w-1.5 h-1.5 rounded-full bg-purple-400 shadow-[0_0_6px_rgba(168,85,247,0.7)]"
-              style={{ animationName: 'tour-splice-a', animationDelay: `${i * 0.12}s` }}
+              data-strand="a"
+              className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_6px_rgba(168,85,247,0.7)]"
             />
             <span
-              className="tour-splice-bead w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]"
-              style={{ animationName: 'tour-splice-b', animationDelay: `${i * 0.12}s` }}
+              data-strand="b"
+              className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]"
             />
           </div>
         ))}
