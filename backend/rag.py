@@ -55,6 +55,38 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "pinokio-launcher.md",
     PROJECT_ROOT / "docs" / "guides" / "audimate.md",
     PROJECT_ROOT / "docs" / "guides" / "levels.md",
+    # Code-grounded reference tree (July 2026): one page per subsystem listing
+    # every feature with the exact models/libraries it uses, the full HTTP API by
+    # router cluster, and the offline/performance story. Each page cites its
+    # source as path:line — when a feature changes, update its page in the same
+    # commit so the assistant keeps answering from the current behavior.
+    PROJECT_ROOT / "docs" / "OFFLINE-AND-PERFORMANCE.md",
+    PROJECT_ROOT / "docs" / "reference" / "README.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "00-overview.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "01-generation-core.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "02-make-tab.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "03-chimera.md",
+    PROJECT_ROOT
+    / "docs"
+    / "reference"
+    / "features"
+    / "04-compose-draw-vocal-notation-arp.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "05-edit.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "06-mix-effects-mastering.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "07-dj.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "08-perform-foundry-audimate.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "09-vj-live-visuals.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "10-xr-quest-suite.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "11-underfit-lora.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "12-tour-planner.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "13-assistant-llm-suno.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "14-stems-analysis-convert.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "15-infra-models-offline.md",
+    PROJECT_ROOT / "docs" / "reference" / "api" / "00-conventions.md",
+    PROJECT_ROOT / "docs" / "reference" / "api" / "01-core-and-assistant.md",
+    PROJECT_ROOT / "docs" / "reference" / "api" / "02-audio-dsp-modules.md",
+    PROJECT_ROOT / "docs" / "reference" / "api" / "03-studio-project-plugin-modules.md",
+    PROJECT_ROOT / "docs" / "reference" / "api" / "04-tour-xr-cloud-modules.md",
     # The manual is indexed once, from docs/USER_GUIDE.md. The byte-identical
     # frontend/public/USER_GUIDE.md mirror that Vite serves for the in-app Docs
     # modal is intentionally not indexed here, to avoid embedding the manual twice.

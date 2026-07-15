@@ -14,6 +14,8 @@ The Library keeps every piece on disk with its analysis, stems, and MIDI, and LE
 
 The **Docs** button in the top bar opens this guide as a modal with a filterable table of contents, a Markdown download, and a print-to-PDF in three styles. Every workspace and the full backend API follow below.
 
+This guide is the task-oriented manual: how to *use* each workspace. For the code-grounded reference — a page per subsystem listing every feature with the exact models and libraries it uses, the full HTTP API by module, and how theDAW runs on modest hardware with no cloud — see [`docs/reference/`](reference/README.md) and [Offline and performance](OFFLINE-AND-PERFORMANCE.md). Those pages cite their source as `path:line`.
+
 ---
 
 ## Table of Contents
