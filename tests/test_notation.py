@@ -14,6 +14,7 @@ from pathlib import Path
 import pretty_midi  # type: ignore[import]
 
 from backend.modules.library.db import LibraryDB
+from backend.modules.notation import pdf_render
 from backend.modules.notation.engine import (
     capabilities,
     convert_score,
@@ -103,10 +104,30 @@ def test_convert_score_to_abc_end_to_end(tmp_path: Path):
     )
 
     assert result["ok"] is True, result
-    assert result["engine"] == "music21"
+    # music21 cannot write ABC (ConverterABC is input-only), so this routes to
+    # the local writer in exporters/abc_writer.py.
+    assert result["engine"] == "abc-writer"
     final = Path(result["path"])
     assert final.is_file()
-    assert final.read_text(encoding="utf-8", errors="ignore").strip()
+    text = final.read_text(encoding="utf-8", errors="ignore")
+    assert text.strip()
+
+    # Assert real ABC structure, not merely a non-empty file. The previous
+    # music21 path wrote "<music21.stream.Stream 0x...>" and reported success,
+    # which a non-empty check happily accepted; these lines would have caught it.
+    assert text.startswith("X:"), text[:80]
+    header = {line.split(":", 1)[0] for line in text.splitlines() if ":" in line[:2]}
+    assert {"X", "T", "M", "L", "K"} <= header, header
+    assert "music21" not in text
+    # A C-major scale must engrave actual pitch tokens and a bar line.
+    assert "|" in text
+    assert any(letter in text for letter in ("C", "D", "E", "F", "G", "A", "B"))
+
+    # And it must be readable back as ABC by a real parser.
+    from music21 import converter as m21converter
+
+    reparsed = m21converter.parse(str(final))
+    assert len(list(reparsed.recurse().notes)) > 0
 
     artifacts = db.list_notation_artifacts("track", kind="abc")
     assert len(artifacts) == 1
@@ -130,10 +151,14 @@ def test_convert_score_rejects_unsupported_format(tmp_path: Path):
     assert "unsupported" in result["error"]
 
 
-def test_pdf_export_is_gated_on_musescore(tmp_path: Path):
-    """PDF export requires the MuseScore CLI. Without it the call degrades to
-    ``ok=False`` with an install hint rather than raising; with it installed
-    the export succeeds. The test adapts to whichever environment runs it."""
+def test_pdf_export_no_longer_needs_musescore(tmp_path: Path):
+    """PDF is engraved headlessly by the frontend's OpenSheetMusicDisplay, so it
+    works with no MuseScore install. This previously asserted the opposite: the
+    old music21/MuseScore path returned ok=False with an install hint whenever
+    the CLI was absent, which left a machine without MuseScore unable to export
+    a printable sheet at all. When the Node renderer is unavailable too (no node,
+    or frontend deps not installed) the call must still degrade rather than
+    raise. The test adapts to whichever environment runs it."""
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry({"id": "track"})
     midi_path = tmp_path / "midi" / "scale.mid"
@@ -147,13 +172,20 @@ def test_pdf_export_is_gated_on_musescore(tmp_path: Path):
         output_path=tmp_path / "notation" / "scale.pdf",
     )
 
-    if musescore_binary() is None:
-        assert result["ok"] is False
-        assert result["engine"] == "musescore"
-        assert "MuseScore" in result["error"]
-    else:
+    if pdf_render.available()["ok"]:
         assert result["ok"] is True, result
-        assert Path(result["path"]).is_file()
+        final = Path(result["path"])
+        assert final.is_file()
+        # A real engraved document, not an empty or stub file.
+        assert final.read_bytes()[:5] == b"%PDF-"
+        assert result["engine"] == "osmd"
+        # The staging MusicXML written for a MIDI source must be cleaned up, and
+        # must never leave a DB row pointing at a deleted path.
+        assert not list(final.parent.glob("*__osmd_src.musicxml"))
+    elif musescore_binary() is None:
+        assert result["ok"] is False
+        assert result["engine"] == "osmd"
+        assert result["error"]
 
 
 def test_midi_to_musicxml_missing_input_returns_error(tmp_path: Path):

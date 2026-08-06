@@ -915,7 +915,10 @@ export const MixView: React.FC = () => {
   const [outputOverlay, setOutputOverlay] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [quickMaster, setQuickMaster] = useState<Record<string, number>>(() => ({ ...EFFECT_DEFAULTS.mastering_chain }));
+  // Quick Master knob values BEFORE a mastering_chain entry exists. Once one is
+  // in the chain the entry itself is the source of truth (see quickMaster below),
+  // so this draft only ever seeds the very first add.
+  const [draftMaster, setDraftMaster] = useState<Record<string, number>>(() => ({ ...EFFECT_DEFAULTS.mastering_chain }));
 
   const sourceUrl = useMemo(() => (sourceFile ? URL.createObjectURL(sourceFile) : null), [sourceFile]);
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
@@ -1041,21 +1044,36 @@ export const MixView: React.FC = () => {
   };
 
   const masterEntry = chain.find((e) => e.effect === 'mastering_chain');
+  // The saved chain entry outranks any local value: DAWCenterPanel unmounts
+  // MixView on tab leave, so knobs held only in useState came back as
+  // EFFECT_DEFAULTS after a round-trip and the next Sync Master click wrote
+  // those defaults over the mastering settings the user had dialed in. Reading
+  // the persisted entry instead means a saved chain always wins, while the
+  // defaults spread still fills any knob a pre-existing entry predates (and
+  // gives a first run sensible values through draftMaster).
+  const quickMaster = useMemo(
+    () => ({ ...EFFECT_DEFAULTS.mastering_chain, ...(masterEntry ? masterEntry.params : draftMaster) }),
+    [masterEntry, draftMaster],
+  );
   const setQuickParam = (key: string, v: number) => {
-    setQuickMaster((qm) => ({ ...qm, [key]: v }));
     const m = useEffectChainStore.getState().chain.find((e) => e.effect === 'mastering_chain');
     if (m) updateParams(m.id, { ...m.params, [key]: v });
+    else setDraftMaster((qm) => ({ ...qm, [key]: v }));
   };
   const applyQuickMaster = () => {
     const existing = useEffectChainStore.getState().chain.find((e) => e.effect === 'mastering_chain');
     if (existing) {
-      updateParams(existing.id, { ...quickMaster });
+      // Sync on an existing entry is a focus action: setQuickParam already
+      // wrote every knob edit straight to it. Spreading its own params LAST
+      // keeps the write idempotent and stops it from clobbering params the
+      // four knobs do not expose.
+      updateParams(existing.id, { ...quickMaster, ...existing.params });
       setSelectedChainId(existing.id);
     } else {
       addEffect('mastering_chain');
       const next = useEffectChainStore.getState().chain;
       const added = next[next.length - 1];
-      if (added) { updateParams(added.id, { ...quickMaster }); setSelectedChainId(added.id); }
+      if (added) { updateParams(added.id, { ...added.params, ...draftMaster }); setSelectedChainId(added.id); }
     }
   };
 

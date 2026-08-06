@@ -148,14 +148,30 @@ const cropAudioBlob = async (
  * unmount. No per-clip playhead — the timeline draws a global one over clips.
  */
 const ClipWave: React.FC<{ clip: AudioClip; height: number; selected: boolean }> = ({ clip, height, selected }) => {
-  const url = useMemo(() => URL.createObjectURL(clip.audioBlob), [clip.audioBlob]);
-  useEffect(() => () => { try { URL.revokeObjectURL(url); } catch { /* ignore */ } }, [url]);
+  // The object URL is minted INSIDE the effect that revokes it, so each mount
+  // owns exactly the URL its own cleanup tears down. Creating it in a useMemo
+  // and revoking it from a cleanup keyed on the same value is what left every
+  // clip blank in dev: StrictMode's mount -> cleanup -> remount revoked the URL
+  // before the remount handed that very same (now dead) blob: URL to
+  // SemanticWave, whose fetch then failed with "TypeError: Failed to fetch" and
+  // left the bin list empty. A fresh URL per mount survives the double-invoke.
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(clip.audioBlob);
+    setUrl(objectUrl);
+    return () => {
+      setUrl((current) => (current === objectUrl ? null : current));
+      try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+    };
+  }, [clip.audioBlob]);
   const dur = clip.sourceDuration > 0 ? clip.sourceDuration : clip.durationSec || 1;
   const viewportStart = clampFrac((clip.offsetIntoSource ?? 0) / dur);
   const viewportEnd = clampFrac(((clip.offsetIntoSource ?? 0) + clip.durationSec) / dur);
   return (
     <div className="h-full w-full" style={{ opacity: selected ? 1 : 0.85 }}>
-      <SemanticWave audioUrl={url} height={height} viewportStart={viewportStart} viewportEnd={Math.max(viewportStart + 1e-4, viewportEnd)} transparentBg />
+      {url && (
+        <SemanticWave audioUrl={url} height={height} viewportStart={viewportStart} viewportEnd={Math.max(viewportStart + 1e-4, viewportEnd)} transparentBg />
+      )}
     </div>
   );
 };

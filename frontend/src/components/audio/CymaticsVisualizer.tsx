@@ -31,6 +31,7 @@ import { vs as cymaticsVS } from './cymatics/cymatics-shader';
 import { vs as landscapeVS } from './cymatics/landscape-shader';
 import { plasmaVS, plasmaFS, haloFS } from './cymatics/plasma-shader';
 import { Analyser } from './cymatics/analyser';
+import { effectiveZoom } from '../../lib/canvasScale';
 
 export type CymaticsMode = 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
 
@@ -200,7 +201,11 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 1000);
     camera.position.set(2, -2, 5);
 
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    // setSize below is fed clientWidth/Height, which are local css px, so the
+    // shell zoom belongs in the pixel ratio for the buffer to match the real
+    // device pixels the canvas covers.
+    const capturedDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    renderer.setPixelRatio(capturedDpr * effectiveZoom(container));
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     pmremGenerator.compileEquirectangularShader();
@@ -389,6 +394,8 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
       const h = container.clientHeight || 1;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      // Re-read the zoom here too: the breakpoint tiers change it mid-session.
+      renderer.setPixelRatio(capturedDpr * effectiveZoom(container));
       const dpr = renderer.getPixelRatio();
       (backdrop.material as THREE.RawShaderMaterial).uniforms.resolution.value.set(w * dpr, h * dpr);
       renderer.setSize(w, h, false); // updateStyle=false → CSS keeps the canvas full-bleed

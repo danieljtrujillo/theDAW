@@ -6,6 +6,7 @@ import { usePlayerStore } from './playerStore';
 import { useGenerateParamsStore, type GenerateParamsState } from './generateParamsStore';
 import { getOrRenderChimera } from '../lib/chimeraClient';
 import { fetchModelStatus } from '../lib/storageClient';
+import { CLOUD_MODELS } from '../lib/cloudModels';
 
 export interface GenerateParams {
   prompt: string;
@@ -483,7 +484,7 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       const stable = status.providers.find((p) => p.id === 'stable');
       const selected = stable?.models?.find((m) => m.id === params.model);
       const selectionBlocked =
-        !params.model.startsWith('magenta-') && params.model !== 'suno' && !!selected
+        !params.model.startsWith('magenta-') && !CLOUD_MODELS.has(params.model) && !!selected
         && (selected.source === 'missing' || (selected.source === 'download' && status.local_only));
       if (!status.usable_generation || selectionBlocked) {
         const msg = status.usable_generation

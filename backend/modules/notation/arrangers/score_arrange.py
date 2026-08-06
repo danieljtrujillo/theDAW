@@ -63,6 +63,21 @@ def arrange(sources: list[Path], style: str, *, title: str = "") -> dict[str, An
                 score = _lead_sheet(base, title)
             else:
                 score = _simplified(base, title)
+            # Re-quantize AFTER the merge. These styles all route through
+            # _skyline_chords -> chordify(), which slices a new sonority at every
+            # onset boundary across every part. When the source mixes duple and
+            # triple positions (which the (4, 3) grid above permits by design),
+            # those slice widths are differences between the two grids and are
+            # not representable as a plain note value, so music21 renders them as
+            # nonsense tuplets: 12:7, 24:19, 11:8, 17:16. Snapping the assembled
+            # score back onto the same grid removes the slicing artifacts while
+            # leaving real triplets alone. Measured on a live piano-reduction:
+            # irrational tuplet notes 8 -> 0, total tuplets 690 -> 214, note
+            # count unchanged at 1183.
+            try:
+                score = score.quantize((4, 3), inPlace=False, recurse=True)
+            except Exception as exc:  # noqa: BLE001 - quantize is best-effort
+                log.debug("arrange: post-merge quantize skipped for %s: %s", style, exc)
     except Exception as exc:  # noqa: BLE001
         log.warning("arrange: %s failed: %s", style, exc)
         return {"ok": False, "error": repr(exc)}

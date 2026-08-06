@@ -85,10 +85,6 @@ dependencies = [
     "msgpack>=1.2.1",
     # FL Studio .flp project parsing (Image-Line NEM binary format). PyPI.
     "pyflp>=2.0.0",
-    # Audacity .aup3 project parsing. py-aup3 is GitHub-only (not on PyPI).
-    # The PyPI "aup-parser" package requires Python >=3.11 (we're on 3.10).
-    # Install manually: pip install git+https://github.com/mildsunrise/py-aup3.git
-    # The parser handles ImportError gracefully at runtime if not installed.
 ]
 
 [project.optional-dependencies]

@@ -18,11 +18,15 @@ from pydantic import BaseModel
 
 from backend.modules.vst.scanner import (
     Vst3PluginInfo,
+    carry_over_metadata,
     scan_vst3_directories,
     load_cached_scan,
+    read_cache_entries,
     save_scan_cache,
+    start_background_enrichment,
 )
 from backend.modules.vst.host import (
+    param_key,
     load_plugin,
     unload_plugin,
     get_instance,
@@ -38,6 +42,10 @@ router = APIRouter()
 # Per-plugin captured editor state (from the native-GUI sidecar) lands here.
 _PRESET_DIR = Path(__file__).resolve().parents[3] / "data" / "vst_presets"
 
+# Editor sidecars spawned by this process, so a crashed editor can be detected
+# instead of leaving the frontend polling a status that will never change.
+_editor_procs: dict[str, subprocess.Popen] = {}
+
 
 def _preset_path(plugin_path: str) -> Path:
     h = hashlib.sha1(plugin_path.encode("utf-8")).hexdigest()[:16]
@@ -48,6 +56,58 @@ def _preset_path(plugin_path: str) -> Path:
 
 def _rect_path(plugin_path: str) -> Path:
     return _preset_path(plugin_path).with_suffix(".rect.json")
+
+
+def _size_path(plugin_path: str) -> Path:
+    return _preset_path(plugin_path).with_suffix(".size.json")
+
+
+def _pid_path(plugin_path: str) -> Path:
+    return _preset_path(plugin_path).with_suffix(".pid")
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process id is still running, without signalling it."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        SYNCHRONIZE = 0x00100000
+        WAIT_TIMEOUT = 0x00000102
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not handle:
+            return False
+        try:
+            return ctypes.windll.kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _editor_alive(plugin_path: str) -> bool:
+    """Whether the sidecar owning this plugin's editor is still running.
+
+    The Popen handle is authoritative while the server that spawned it is up;
+    the pid file covers the case where the server restarted underneath a live
+    editor, so a running editor is never declared dead.
+    """
+    proc = _editor_procs.get(plugin_path)
+    if proc is not None:
+        return proc.poll() is None
+    pid_file = _pid_path(plugin_path)
+    if not pid_file.is_file():
+        return False
+    try:
+        return _pid_alive(int(pid_file.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return False
 
 
 # --- Request / Response models ---
@@ -97,22 +157,37 @@ class EditorRectRequest(BaseModel):
 
 
 @router.get("/scan", response_model=ScanResponse)
-def scan_vst3(refresh: bool = False):
-    """Scan standard VST3 directories. Uses cache unless refresh=true."""
+def scan_vst3(
+    refresh: bool = False, enrich: bool = True, include_unloadable: bool = False
+):
+    """Scan standard VST3 directories.
+
+    Serves the cache when it is still valid for the current contents of the scan
+    roots; ``refresh=true`` forces a fresh walk and gives previously failed
+    plugins another chance. Plugins this host cannot load are withheld unless
+    ``include_unloadable`` asks for them, so the UI never offers a dead tile.
+    """
+    plugins: list[Vst3PluginInfo] | None = None
     if not refresh:
-        cached = load_cached_scan()
-        if cached is not None:
-            return ScanResponse(plugins=[_plugin_dict(p) for p in cached])
-    plugins = scan_vst3_directories()
-    save_scan_cache(plugins)
-    return ScanResponse(plugins=[_plugin_dict(p) for p in plugins])
+        plugins = load_cached_scan()
+    if plugins is None:
+        plugins = scan_vst3_directories()
+        carry_over_metadata(plugins, read_cache_entries(), retry_failed=refresh)
+        save_scan_cache(plugins)
+    body = _plugin_dicts(plugins, include_unloadable)
+    if enrich:
+        # Vendor/version/category only come from opening the plugin, which is far
+        # too slow to hold a request; the worker fills the cache in and the next
+        # scan serves it.
+        start_background_enrichment(plugins)
+    return ScanResponse(plugins=body)
 
 
 @router.get("/scan/{path:path}", response_model=ScanResponse)
-def scan_vst3_custom(path: str):
+def scan_vst3_custom(path: str, include_unloadable: bool = False):
     """Scan a custom directory for VST3 plugins (always live, never cached)."""
     plugins = scan_vst3_directories(extra_paths=[path])
-    return ScanResponse(plugins=[_plugin_dict(p) for p in plugins])
+    return ScanResponse(plugins=_plugin_dicts(plugins, include_unloadable))
 
 
 @router.post("/load")
@@ -235,16 +310,19 @@ async def process_file(
             status_code=400, detail=f"Could not read uploaded audio: {e}"
         )
 
+    warnings: list[str] = []
     try:
         param_map = json.loads(params) if params else {}
         if not isinstance(param_map, dict):
+            warnings.append("params was not a JSON object; no parameters applied")
             param_map = {}
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        warnings.append(f"params was not valid JSON ({e}); no parameters applied")
         param_map = {}
 
     try:
         processed = process_with_plugin(
-            plugin_path, signal, sr, param_map, raw_state or None
+            plugin_path, signal, sr, param_map, raw_state or None, warnings
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -252,8 +330,16 @@ async def process_file(
         raise HTTPException(status_code=500, detail=f"VST processing failed: {e}")
 
     buf = io.BytesIO()
-    sf.write(buf, processed, sr, format="WAV")
-    return Response(content=buf.getvalue(), media_type="audio/wav")
+    # Float WAV: this is one stage of a chain, and 16-bit here would requantize
+    # the signal at every plugin it passes through.
+    sf.write(buf, processed, sr, format="WAV", subtype="FLOAT")
+    headers: dict[str, str] = {}
+    if warnings:
+        # The body is audio, so a state or parameter that did not apply has to
+        # ride along in a header, otherwise it renders at defaults in silence.
+        headers["X-Vst-Warnings"] = json.dumps(warnings, ensure_ascii=True)[:4000]
+        headers["Access-Control-Expose-Headers"] = "X-Vst-Warnings"
+    return Response(content=buf.getvalue(), media_type="audio/wav", headers=headers)
 
 
 @router.post("/open-editor")
@@ -278,6 +364,10 @@ def open_editor(req: EditorRequest):
         json.dumps({"status": "launching", "plugin_path": req.plugin_path}),
         encoding="utf-8",
     )
+    # The published editor size belongs to the session too: leaving the old one
+    # in place would size this session's scroll area to the last plugin's window.
+    for stale in (_size_path(req.plugin_path), _pid_path(req.plugin_path)):
+        stale.unlink(missing_ok=True)
 
     preset_in: Path | None = None
     if req.raw_state:
@@ -331,7 +421,7 @@ def open_editor(req: EditorRequest):
     except Exception:
         log_fh = None
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(repo_root),
             stdout=log_fh or None,
@@ -342,6 +432,10 @@ def open_editor(req: EditorRequest):
     finally:
         if log_fh:
             log_fh.close()
+    _editor_procs[req.plugin_path] = proc
+    # Also on disk, so an editor that outlives a server restart is still
+    # recognized as running rather than reported dead.
+    _pid_path(req.plugin_path).write_text(str(proc.pid), encoding="utf-8")
     return {"status": "launched", "preset_path": str(out), "log_path": str(log_path)}
 
 
@@ -379,7 +473,7 @@ def editor_size(plugin_path: str):
     """Natural (physical px) size of the embedded editor window, published by the
     sidecar watcher so the frontend can size its scroll area. ``{status:'none'}``
     until it is known."""
-    size_file = _preset_path(plugin_path).with_suffix(".size.json")
+    size_file = _size_path(plugin_path)
     if not size_file.is_file():
         return {"status": "none"}
     try:
@@ -394,15 +488,58 @@ def editor_result(plugin_path: str):
     """Read the latest captured state from a plugin's editor session.
 
     Returns ``{"status": "none"|"launching"|"opening"|"ok"|"error", ...}``. When
-    ``ok``, includes the base64 ``raw_state`` to store on the chain node.
+    ``ok``, includes the base64 ``raw_state`` to store on the chain node. A
+    sidecar that died before writing its result is reported as an error here,
+    because the in-progress statuses are otherwise terminal and the frontend
+    would poll them forever.
     """
     out = _preset_path(plugin_path)
     if not out.is_file():
         return {"status": "none"}
-    try:
-        return json.loads(out.read_text(encoding="utf-8"))
-    except Exception:
+    payload = _read_json(out)
+    if payload is None:
         return {"status": "none"}
+    if payload.get("status") not in ("launching", "opening"):
+        return payload
+    if _editor_alive(plugin_path):
+        return payload
+    # It may have finished between the read and the liveness check.
+    settled = _read_json(out)
+    if settled is not None and settled.get("status") not in ("launching", "opening"):
+        return settled
+    error = {
+        "status": "error",
+        "plugin_path": plugin_path,
+        "error": _editor_failure_detail(out),
+    }
+    # Persist it so every later poll agrees, and drop the stale pid.
+    try:
+        out.write_text(json.dumps(error), encoding="utf-8")
+    except OSError:
+        pass
+    _pid_path(plugin_path).unlink(missing_ok=True)
+    _editor_procs.pop(plugin_path, None)
+    log.warning("VST3 editor sidecar died for %s: %s", plugin_path, error["error"])
+    return error
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _editor_failure_detail(preset_out: Path) -> str:
+    """Explain a dead sidecar using the tail of the log it wrote, when there is one."""
+    base = "Editor process exited before the plugin state was captured."
+    log_path = preset_out.with_suffix(".log")
+    try:
+        tail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-400:]
+    except OSError:
+        tail = ""
+    return f"{base} {tail}" if tail else base
 
 
 @router.get("/param/{instance_id}")
@@ -422,8 +559,23 @@ def set_param(instance_id: str, req: SetParamRequest):
         inst = get_instance(instance_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=e.args[0])
-    inst.set_parameter(req.name, req.value)
-    return {"instance_id": instance_id, "name": req.name, "value": req.value}
+    try:
+        inst.set_parameter(req.name, req.value)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=e.args[0])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Echo what the plugin actually holds now: it may quantize or clamp.
+    applied = inst.parameters.get(req.name) or inst.parameters.get(
+        param_key(req.name), {}
+    )
+    return {
+        "instance_id": instance_id,
+        "name": req.name,
+        "value": applied.get("value", req.value),
+        "raw_value": applied.get("raw_value"),
+        "label": applied.get("label", ""),
+    }
 
 
 @router.delete("/unload/{instance_id}")
@@ -446,3 +598,14 @@ def _plugin_dict(p: Vst3PluginInfo) -> dict:
     from dataclasses import asdict
 
     return asdict(p)
+
+
+def _plugin_dicts(
+    plugins: list[Vst3PluginInfo], include_unloadable: bool
+) -> list[dict]:
+    if include_unloadable:
+        return [_plugin_dict(p) for p in plugins]
+    hidden = [p.name for p in plugins if not p.loadable]
+    if hidden:
+        log.info("Withholding %d VST3 plugin(s) this host cannot load", len(hidden))
+    return [_plugin_dict(p) for p in plugins if p.loadable]

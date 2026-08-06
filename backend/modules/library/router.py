@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -547,6 +548,15 @@ def download_bundle(entry_id: str) -> Response:
         analysis = store.db.get_analysis(entry_id)
         stems = store.db.list_stems(entry_id)
         midis = store.db.list_midis(entry_id)
+        # Recover scores that exist on disk but lost their DB row, otherwise a
+        # bundle silently ships without notation the entry demonstrably has.
+        if entry_dir is not None:
+            try:
+                from backend.modules.notation.engine import register_on_disk_artifacts
+
+                register_on_disk_artifacts(store.db, entry_dir, entry_id)
+            except Exception as exc:  # noqa: BLE001 - recovery is best-effort
+                log.debug("bundle: artifact recovery skipped for %s: %s", entry_id, exc)
         # Notation artifacts minus raw midi (already bundled under midi/).
         scores = [
             a
@@ -558,17 +568,74 @@ def download_bundle(entry_id: str) -> Response:
             to_id=entry_id
         )
 
-    data = build_bundle_bytes(
-        entry_id=entry_id,
-        record=record.to_dict(),
-        audio_path=audio_path,
-        metadata_path=metadata_path,
-        analysis=analysis,
-        stems=stems,
-        midis=midis,
-        scores=scores,
-        lineage_edges=edges,
-    )
+    # Engrave a printable PDF for every sheet and tab in the bundle. Imported
+    # here rather than at module scope so the library router keeps loading even
+    # if the notation module is disabled or its deps are missing.
+    pdf_renderer = None
+    unity_package: Optional[Path] = None
+    try:
+        from backend.modules.notation.pdf_render import (
+            available,
+            render_musicxml_pdf,
+            unity_package_dir,
+        )
+
+        if available()["ok"]:
+            pdf_renderer = render_musicxml_pdf
+        else:
+            log.info("bundle: PDF engraving unavailable, shipping sources only")
+        unity_package = unity_package_dir()
+    except Exception as exc:  # noqa: BLE001 - a bundle must never fail over extras
+        log.info("bundle: notation extras unavailable (%s)", exc)
+
+    # The Unity flying-notation chart, written to a scratch file for the zip. It
+    # is derived from the first sheet rather than stored, so it always matches
+    # the notation actually in the bundle.
+    with tempfile.TemporaryDirectory() as staging:
+        unity_chart: Optional[Path] = None
+        sheet = next(
+            (
+                Path(s["path"])
+                for s in scores
+                if str(s.get("kind")) == "musicxml"
+                and Path(s.get("path") or "").is_file()
+            ),
+            None,
+        )
+        if sheet is not None:
+            try:
+                from backend.modules.notation.engine import artist_name, clean_title
+                from backend.modules.notation.exporters.notechart import write_notechart
+
+                candidate = Path(staging) / f"{sheet.stem}.notechart.json"
+                result = write_notechart(
+                    sheet,
+                    candidate,
+                    title=clean_title(record.title or ""),
+                    artist=artist_name(),
+                    entry_id=entry_id,
+                )
+                if result.get("ok") and candidate.is_file():
+                    unity_chart = candidate
+                else:
+                    log.info("bundle: note chart skipped (%s)", result.get("error"))
+            except Exception as exc:  # noqa: BLE001 - a bundle must never fail over extras
+                log.info("bundle: note chart unavailable (%s)", exc)
+
+        data = build_bundle_bytes(
+            entry_id=entry_id,
+            record=record.to_dict(),
+            audio_path=audio_path,
+            metadata_path=metadata_path,
+            analysis=analysis,
+            stems=stems,
+            midis=midis,
+            scores=scores,
+            lineage_edges=edges,
+            pdf_renderer=pdf_renderer,
+            unity_chart=unity_chart,
+            unity_package_dir=unity_package,
+        )
 
     safe_title = "".join(
         c if c.isalnum() or c in "-_." else "_" for c in (record.title or "entry")

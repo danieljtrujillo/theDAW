@@ -59,6 +59,9 @@ This guide is the task-oriented manual: how to *use* each workspace. For the cod
 37. [App Menu and Project Operations](#37-app-menu-and-project-operations)
 38. [HOME Screen and Onboarding Tour](#38-home-screen-and-onboarding-tour)
 39. [Backup, Updates, and Maintenance](#39-backup-updates-and-maintenance)
+40. [Audimate Tab: Node-Graph Pipelines](#40-audimate-tab)
+41. [TOUR Tab: Venue Discovery and Route Planning](#41-tour-tab)
+42. [Mobile Companion App](#42-mobile-companion-app)
 
 ---
 
@@ -476,7 +479,7 @@ An editable lane accepts breakpoint edits directly on the curve. Click an empty 
 
 ### Purpose
 
-The MIX tab (`MixPanel`) is the single-screen effects and mastering workspace. It applies one or more of 24 FFmpeg-backed processors to a source file as an ordered chain. Processing is synchronous; the result is returned as binary audio and made available for inline playback, download, and routing back into the app.
+The MIX tab (`MixPanel`) is the single-screen effects and mastering workspace. It applies one or more of 25 FFmpeg-backed processors to a source file as an ordered chain, arranged in six categories: seven mastering and character stacks, six dynamics processors, three EQ filters, two tempo and pitch tools, three cleanup tools, and four export encoders. Processing is synchronous; the result is returned as binary audio and made available for inline playback, download, and routing back into the app.
 
 ![MIX tab: the effect catalog, the categorized rail, the active chain, and the Quick Master macro knobs](screenshots/mix-overview.png)
 
@@ -1010,7 +1013,7 @@ The picker also lists procedural synth voices grouped as **Bass**, **Lead / Chor
 
 ## 16. Bottom Panel Tabs
 
-The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Six tabs are available.
+The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Ten tabs are available, in order: Levels, Visualize, Piano, Sequence, DRAW, Score, Details, Media, SLIDE, and SWAY.
 
 ### 16.1 Visualize: Real-time Spectral Analyzer
 
@@ -1089,6 +1092,27 @@ The SLIDE tab is the glass-capsule control surface that mirrors the VJ engine's 
 ### 16.7 Score
 
 The Score tab renders a track's symbolic music (sheet music, guitar and bass tabs, and arrangements) from its MIDI artifacts, and exports to MusicXML, ABC, PDF, and SVG. It is documented in full in §33.
+
+### 16.8 Levels
+
+The Levels tab is the master-metering panel. It reads the shared playback bus and reports LUFS loudness, true-peak in dBTP, dynamics, and a stereo-image reading, updating continuously during playback. The readings let a mix be checked against a delivery target before it goes through Smart Export (§13.9).
+
+### 16.9 DRAW
+
+The DRAW tab turns drawn gestures into generative music. A pointer stroke on the canvas drives note and texture generation through one of four brushes, each with its own synthesis behavior:
+
+| Brush | Behavior |
+|---|---|
+| **Organic** | An L-system growth that seeds melodic material from the stroke path. |
+| **Fibonacci** | A phyllotaxis spiral whose notes step by Fibonacci intervals under a pulsing amplitude. |
+| **Neural** | A network-styled brush that routes the stroke through a neural-flavored voice. |
+| **Nebulous** | A diffuse cloud brush for pad and texture material. |
+
+The result records to the library or appends to the EDIT timeline. Sound modes cover a drone voice, a SoundFont voice, and a granular voice.
+
+### 16.10 SWAY
+
+The SWAY tab is a pose control surface. It reads camera-tracked body movement and maps six expressive-motion dimensions onto music and effect parameters. This is the same pose bus the VJ engine consumes for pose-driven visuals (§10.9) and the Perform routing panel exposes as a control source (§35.3), surfaced here as a bottom-panel home for driving a set from body motion.
 
 ---
 
@@ -1996,7 +2020,7 @@ The result runs on Windows through WSL2 with NVIDIA, on native Linux with NVIDIA
 
 ## 28. Edit Tool Stack
 
-Beyond the 24-effect MIX chain (§8), theDAW mounts the **Edit Tool Stack**, six backend module families under `/api/edit/*`. Each family provides a focused set of audio processors built on FFmpeg, NumPy, and librosa DSP. The browser GUIs come from `frontend/public/edit-modules/` and iframe into the MIX effect stage.
+Beyond the 25-effect MIX chain (§8), theDAW mounts the **Edit Tool Stack**, six backend module families under `/api/edit/*`. Each family provides a focused set of audio processors built on FFmpeg, NumPy, and librosa DSP. The browser GUIs come from `frontend/public/edit-modules/` and iframe into the MIX effect stage.
 
 | Family | Prefix | Focus |
 |---|---|---|
@@ -2282,6 +2306,70 @@ The app menu's **Data** section (§37) holds backup, restore, and update operati
 ### 39.2 Update checks and version restore
 
 **Check for Updates** opens the update dialog, backed by the `updates` module (`/api/updates`). It compares the installed version, read from `pyproject.toml`, against the latest published release on GitHub, and caches the result on disk for six hours. **Restore Previous Version** opens the same dialog on its releases list, so an install can move to an earlier published release.
+
+---
+
+## 40. Audimate Tab
+
+The Audimate tab (`AudimateView`) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
+
+### 40.1 Node types
+
+| Node | Role |
+|---|---|
+| **Library** | A source that reads an existing entry from the disk-backed library. |
+| **Generate** | A Stable Audio or Magenta generation step with its own prompt, model, duration, steps, CFG, and seed. |
+| **Effect** | An audio processing step applied to its input. |
+| **Merge** | A stage that combines several inputs into one. |
+| **Feedback** | A stage that routes output back into the graph for iterative passes. |
+| **Output** | A terminal that writes the result back to the library. |
+
+### 40.2 Running a graph
+
+Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/audimateRunner.ts`), so an Audimate pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
+
+---
+
+## 41. TOUR Tab
+
+The TOUR tab (`TourView`, `tour` module at `/api/tour`) plans live dates on a map. It discovers venues, promoters, and festivals, enriches them with booking contacts, and builds an optimized multi-stop route with optional EV-charger planning. Every third-party call runs server-side, so no key reaches the browser. Keys resolve env-first, then the in-app data file `data/tour_keys.json` (set through `POST /api/tour/config`). The map renders MapLibre GL against OpenFreeMap, which is keyless, so the map itself needs no configuration.
+
+### 41.1 Discovery
+
+A region search geocodes a place name through Nominatim, and venue discovery queries OpenStreetMap Overpass for music venues in view. The backend annotates each result with a genre and vibe vocabulary, and persistent filter chips narrow the virtualized venue list. Selecting a venue centers the map and scrolls the list to its row. A reverse lookup fills in a venue's city when the source data omits it.
+
+### 41.2 Enrichment and routing
+
+Per-venue enrichment runs a web search through any configured assistant provider to gather booking-contact channels. A route itinerary adds venues as stops, optimizes the drive order through OpenRouteService, and draws the geometry on the map with per-leg drive times, grouped by city while building. A start point and a date window bound the plan. An EV mode overlays charging stations sampled along the drawn route from OpenChargeMap, and a gas mode hides them.
+
+### 41.3 Endpoints
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /api/tour/status` · `GET /api/tour/config` · `POST /api/tour/config` | Report which keys are configured; read and store third-party keys server-side. |
+| `GET /api/tour/geocode` · `GET /api/tour/reverse` | Geocode a region name; reverse-geocode a venue's city. |
+| `POST /api/tour/venues` | Discover venues in view, annotated with genre and vibe labels. |
+| `GET /api/tour/filters` · `PUT /api/tour/filters` | Read and save persistent filter presets. |
+| `POST /api/tour/enrich` | Gather a venue's booking-contact channels via web search. |
+| `POST /api/tour/route` | Optimize the stop order and return the route geometry and per-leg times. |
+| `POST /api/tour/chargers` | Sample EV charging stations along the route. |
+
+---
+
+## 42. Mobile Companion App
+
+theDAW ships a standalone phone web app served from its own Vite entry at `mobile.html` (`frontend/src/mobile/`). The phone pairs to the desktop over the control-bus WebSocket and drives a performance from across the room. The companion boots a lean shell scoped to remote control, so it loads quickly on a phone and leaves the cinematic, MIDI, XR, and pose subsystems to the desktop.
+
+A link indicator reports the pairing state: **linked** when paired, **locked** when the desktop rejected the pairing, and **offline** when the bus is unreachable. Four tabs cover the phone's role:
+
+| Tab | Role |
+|---|---|
+| **Make** | Submit a generation to the desktop remotely. |
+| **Remote** | Transport control for the desktop player. |
+| **DJ** | Drive the DJ console from the phone. |
+| **Library** | Browse and audition the disk-backed library. |
+
+The control contract between the phone and the desktop is documented in [docs/companion-control-contract.md](companion-control-contract.md).
 
 ---
 

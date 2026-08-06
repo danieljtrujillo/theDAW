@@ -1,0 +1,10 @@
+{
+  "name": "lyria",
+  "label": "Lyria 3 Pro",
+  "enabled": true,
+  "icon": "Music4",
+  "sidebar": false,
+  "api_prefix": "/api/lyria",
+  "backend": true,
+  "description": "Lyria 3 Pro (StarskreamEXE/lyria-3-pro) embedded as a sidecar: Google Lyria 3 cloud song generation with vocals and lyrics, which the local SA3/Magenta stack cannot produce. Runs its own Express server on 5188 and is embedded whole. Mock mode is ON by default (real generations cost $0.08 each); set theDAW_LYRIA_MOCK=0 to spend."
+}

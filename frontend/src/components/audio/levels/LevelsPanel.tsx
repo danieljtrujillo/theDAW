@@ -18,6 +18,7 @@ import {
   isWorkletMeter,
   type LevelsView,
 } from '../../../state/levelsStore';
+import { fitCanvas, scaleContextToBox, type CanvasBox } from '../../../lib/canvasScale';
 import {
   drawRadial,
   drawLufs,
@@ -57,6 +58,9 @@ export const LevelsPanel: React.FC = () => {
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Last measured geometry, shared from the resize observer to the rAF loop so
+  // the painters keep working in local css px without re-measuring per frame.
+  const boxRef = useRef<CanvasBox | null>(null);
   const [fallback, setFallback] = useState(false);
 
   // Refs so the rAF loop reads the latest view/target without re-subscribing.
@@ -68,18 +72,16 @@ export const LevelsPanel: React.FC = () => {
     return () => disposeMeter();
   }, []);
 
-  // Size the canvas to its container (DPR-aware).
+  // Size the canvas to its container (DPR- and zoom-aware). The canvas is only
+  // `absolute inset-0`, so it does need an inline size, but that size has to be
+  // written in local css px: a rect width would be zoomed twice and leave the
+  // meters covering a fraction of the panel.
   useEffect(() => {
     const wrap = wrapRef.current;
     const cnv = canvasRef.current;
     if (!wrap || !cnv) return;
-    const dpr = window.devicePixelRatio || 1;
     const ro = new ResizeObserver(() => {
-      const r = wrap.getBoundingClientRect();
-      cnv.width = Math.max(1, Math.round(r.width * dpr));
-      cnv.height = Math.max(1, Math.round(r.height * dpr));
-      cnv.style.width = `${r.width}px`;
-      cnv.style.height = `${r.height}px`;
+      boxRef.current = fitCanvas(cnv, wrap, { style: true });
     });
     ro.observe(wrap);
     return () => ro.disconnect();
@@ -88,15 +90,15 @@ export const LevelsPanel: React.FC = () => {
   // Single rAF paint loop.
   useEffect(() => {
     let raf = 0;
-    const dpr = window.devicePixelRatio || 1;
     const draw = () => {
       const cnv = canvasRef.current;
       const ctx = cnv?.getContext('2d');
-      if (cnv && ctx) {
-        const w = cnv.width / dpr;
-        const h = cnv.height / dpr;
+      const box = boxRef.current;
+      if (cnv && ctx && box) {
+        const w = box.cssWidth;
+        const h = box.cssHeight;
         ctx.save();
-        ctx.scale(dpr, dpr);
+        scaleContextToBox(ctx, box);
         const frame = getLevelsFrame();
         if (frame) {
           const st = stateRef.current;

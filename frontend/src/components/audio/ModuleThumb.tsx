@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { fitCanvas, scaleContextToBox } from '../../lib/canvasScale';
 
 /* ── ModuleThumb ─────────────────────────────────────────────────────────────
    The "badass thumbnail" for a Studio Module tile. Ports the per-module canvas
@@ -266,15 +267,16 @@ export const ModuleThumb: React.FC<{ preview: string; seed?: string; className?:
     const draw = DRAWERS[preview];
 
     const render = () => {
+      // clientWidth is already in the parent's own css px, so it is the logical
+      // size; the backing store still needs the shell zoom folded in on top of
+      // the device pixel ratio or the thumbnail resolves soft.
       const W = parent.clientWidth;
       const H = parent.clientHeight;
       if (W === 0 || H === 0) return;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = W * dpr; canvas.height = H * dpr;
-      canvas.style.width = `${W}px`; canvas.style.height = `${H}px`;
+      const box = fitCanvas(canvas, parent, { cssWidth: W, cssHeight: H, maxDpr: 2, style: true });
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      scaleContextToBox(ctx, box);
       ctx.clearRect(0, 0, W, H);
       // A seed makes the drawer deterministic (used by VST faceplates); without
       // one the legacy drawers keep their Math.random sparkle.

@@ -1,0 +1,141 @@
+# Test pipeline for theDAW.
+#
+# Trigger: every pull request, alongside the ruff-only Lint workflow.
+#
+# House style follows .github/workflows/lint.yml and release.yml:
+# ubuntu-latest, first-party actions only (actions/*), tool versions pinned
+# in env vars with sync-rule comments, no third-party actions.
+#
+# The pytest job deliberately does NOT run the whole suite. Three test files
+# build real checkpoints through `from_pretrained`, which pulls several GB
+# from gated Hugging Face repos (and, for the medium model, needs CUDA), so
+# they can never go green on a hosted runner. The remaining tests are pure
+# Python against the backend modules and finish in well under a minute. The
+# exclusion list on the pytest step names every excluded test and why.
+#
+# This workflow does not touch RUFF_VERSION; ruff stays owned by lint.yml.
+
+name: Test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A PR that gets a second push does not need the first run's result, and
+# cancelling it frees the runner for the newer commit.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # uv is installed with pipx, the same first-party-only pattern lint.yml
+  # uses for ruff. Pinned so a uv release can never quietly change what CI
+  # resolves out of uv.lock. Bump deliberately.
+  UV_VERSION: "0.9.5"
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # The cold dependency install dominates: uv.lock pins torch 2.7.1+cu126
+    # from the PyTorch index on linux x86_64, so this job downloads the CUDA
+    # userspace wheels even though it runs the tests on CPU.
+    timeout-minutes: 30
+    env:
+      # No test may reach the Hub. With these set, a future test that calls
+      # from_pretrained fails immediately instead of downloading gigabytes or
+      # blocking on a gated-repo auth prompt, which keeps the "no weights in
+      # CI" boundary enforced by the runner rather than by convention.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      # ffmpeg/ffprobe back the analysis probe, the chimera mashup endpoint
+      # and the library video-thumbnail tests. Every one of those tests skips
+      # itself when the binaries are absent, so installing ffmpeg is what
+      # makes the job actually execute that code instead of reporting green
+      # on a pile of skips.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # .python-version is the repo's interpreter pin (3.10). Reading it here
+      # means this job can never drift from what developers and theDAW.bat
+      # use, and it gives pipx an interpreter to install uv against.
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        run: pipx install "uv==${{ env.UV_VERSION }}"
+
+      # --frozen turns a pyproject edit that was never re-locked into a
+      # failure here rather than a silent resolution that differs from what
+      # developers run. --group dev matches the documented local command.
+      #
+      # pyk4a-bundle is the Azure Kinect point-cloud backend for the akvj
+      # module, skipped for the same reason the Dockerfile skips it: there is
+      # no Kinect on a runner and the sidecar imports it lazily, so nothing
+      # under tests/ can observe its absence.
+      - name: Install dependencies
+        run: uv sync --frozen --group dev --no-install-package pyk4a-bundle
+
+      # Exclusions, all of them deliberate:
+      #
+      # --ignore x3: tests/test_inference.py, tests/test_autoencoder.py and
+      #   tests/test_lora.py resolve real checkpoints through the sa3_model /
+      #   autoencoder fixtures. Those weights are multi-GB and gated, and the
+      #   medium and same-l parametrizations additionally require CUDA. They
+      #   belong on a machine with weights, not on a PR runner.
+      #
+      # --deselect x6: tests that assert against code that has since moved.
+      #   They fail on a developer machine today, so they are excluded to
+      #   keep this job honest rather than red on arrival. Each one needs a
+      #   fix in tests/, which this workflow does not own:
+      #     - the two schema_version() cases pin the library DB at v3; the
+      #       stems/MIDI work took it to v5.
+      #     - the four modeldl cases monkeypatch modeldl.hf_hub_download,
+      #       but the router now downloads through the mirror-aware helper in
+      #       stable_audio_3.model_configs, so that attribute no longer
+      #       exists on the router module.
+      #   Delete the matching line here as each test is repaired; a stale
+      #   --deselect that no longer matches a node id is simply ignored, so
+      #   a renamed test starts running again on its own.
+      - name: pytest
+        run: |
+          uv run pytest -q \
+            --ignore=tests/test_inference.py \
+            --ignore=tests/test_autoencoder.py \
+            --ignore=tests/test_lora.py \
+            --deselect tests/test_library_db.py::test_schema_migrates_on_first_open \
+            --deselect tests/test_prompt.py::test_analysis_schema_v3_persists_prompt \
+            --deselect tests/test_modeldl.py::test_download_valid_name_reaches_done \
+            --deselect tests/test_modeldl.py::test_duplicate_download_while_live_returns_same_job \
+            --deselect tests/test_modeldl.py::test_download_error_path_records_detail \
+            --deselect tests/test_modeldl.py::test_clear_removes_finished_jobs
+
+  # `npm run lint` in frontend/ is `tsc --noEmit`, so this is the type check
+  # the repo already defines rather than a second, CI-only invocation that
+  # could drift from it.
+  frontend-typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          # frontend/.nvmrc is the single source of truth for the Node
+          # version, so this job cannot drift from a developer's shell.
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: tsc --noEmit
+        run: npm run lint

@@ -29,6 +29,16 @@ interface InferredPrompt {
   semantic_tags: string[];
 }
 
+/** Artist / song as the notation module reads this entry: `auto_*` is what was
+ * parsed out of the filename, `override_*` is what the user typed here (empty
+ * when nothing has been corrected). */
+interface NotationIdentity {
+  override_artist: string;
+  override_title: string;
+  auto_artist: string;
+  auto_title: string;
+}
+
 const fmtDuration = (sec: number): string => {
   if (!Number.isFinite(sec) || sec <= 0) return '--:--';
   const m = Math.floor(sec / 60);
@@ -80,6 +90,10 @@ export const DetailsView: React.FC = () => {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [inferred, setInferred] = useState<InferredPrompt | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
+  const [identity, setIdentity] = useState<NotationIdentity | null>(null);
+  const [artistDraft, setArtistDraft] = useState('');
+  const [titleDraft, setTitleDraft] = useState('');
+  const [identitySaving, setIdentitySaving] = useState(false);
 
   useEffect(() => {
     if (!selectedId) {
@@ -116,6 +130,57 @@ export const DetailsView: React.FC = () => {
       cancelled = true;
     };
   }, [selectedId]);
+
+  // Notation identity is resolved server-side (the filename parser lives in the
+  // notation module), so the drafts are seeded from the stored overrides and the
+  // parsed values ride along as placeholders.
+  useEffect(() => {
+    if (!selectedId) {
+      setIdentity(null);
+      setArtistDraft('');
+      setTitleDraft('');
+      return;
+    }
+    let cancelled = false;
+    void fetchIdentity(selectedId).then((payload) => {
+      if (cancelled) return;
+      setIdentity(payload);
+      setArtistDraft(payload?.override_artist ?? '');
+      setTitleDraft(payload?.override_title ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  const saveIdentity = async () => {
+    if (!selectedId) return;
+    setIdentitySaving(true);
+    try {
+      const res = await fetch(`/api/library/entries/${encodeURIComponent(selectedId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notation_artist: artistDraft.trim(),
+          notation_title: titleDraft.trim(),
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await fetchIdentity(selectedId);
+      setIdentity(payload);
+      setArtistDraft(payload?.override_artist ?? artistDraft.trim());
+      setTitleDraft(payload?.override_title ?? titleDraft.trim());
+      logInfo('details', 'Notation artist/title saved.');
+    } catch (e) {
+      logError('details', `Notation identity save failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIdentitySaving(false);
+    }
+  };
+
+  const identityDirty =
+    artistDraft.trim() !== (identity?.override_artist ?? '') ||
+    titleDraft.trim() !== (identity?.override_title ?? '');
 
   const handleAuditionInEngine = async () => {
     if (!entry) return;
@@ -239,6 +304,61 @@ export const DetailsView: React.FC = () => {
       <div className="mt-3 p-2 rounded border border-white/5 bg-black/40">
         <p className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest mb-1">PROMPT</p>
         <p className="text-[11px] text-zinc-200 leading-relaxed">{entry.prompt || <em className="text-zinc-600">No prompt was used for this generation.</em>}</p>
+      </div>
+
+      {/* Notation identity: which half of the filename is the artist and which
+          is the song. Placeholders show what was parsed; typing overrides it. */}
+      <div className="mt-3 p-2 rounded border border-amber-500/25 bg-amber-500/4">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-[8px] font-mono text-amber-300/80 uppercase tracking-widest flex items-center gap-1.5">
+            <Music className="w-3 h-3" /> NOTATION IDENTITY
+          </p>
+          <button
+            onClick={() => void saveIdentity()}
+            disabled={identitySaving || !identityDirty}
+            className="btn-ghost text-[8px] py-0.5 flex items-center gap-1 disabled:opacity-40"
+            title="Save this artist / title for engraved sheets"
+          >
+            {identitySaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3 text-amber-300" />}
+            SAVE
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-x-6">
+          <div className="flex items-center gap-3 py-1">
+            <label
+              htmlFor="notation-artist"
+              className="w-24 shrink-0 text-[8px] font-mono uppercase tracking-widest text-zinc-500"
+            >
+              Artist
+            </label>
+            <input
+              id="notation-artist"
+              name="notation_artist"
+              type="text"
+              value={artistDraft}
+              onChange={(e) => setArtistDraft(e.target.value)}
+              placeholder={identity?.auto_artist || 'not detected'}
+              className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-1.5 py-0.5 text-[10px] font-mono text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400/40"
+            />
+          </div>
+          <div className="flex items-center gap-3 py-1">
+            <label
+              htmlFor="notation-title"
+              className="w-24 shrink-0 text-[8px] font-mono uppercase tracking-widest text-zinc-500"
+            >
+              Title
+            </label>
+            <input
+              id="notation-title"
+              name="notation_title"
+              type="text"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              placeholder={identity?.auto_title || entry.title}
+              className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-1.5 py-0.5 text-[10px] font-mono text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400/40"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Analysis: BPM / key / pitch / bars / loudness + embedded tags
@@ -366,6 +486,26 @@ export const DetailsView: React.FC = () => {
     </div>
   );
 };
+
+
+/** Ask the notation module how it reads this entry's name. Returns null when
+ * the endpoint is unavailable, which leaves the fields usable and the
+ * placeholders empty rather than surfacing an error the user cannot act on. */
+async function fetchIdentity(entryId: string): Promise<NotationIdentity | null> {
+  try {
+    const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/identity`);
+    if (!res.ok) return null;
+    const payload = (await res.json()) as Partial<NotationIdentity>;
+    return {
+      override_artist: payload.override_artist ?? '',
+      override_title: payload.override_title ?? '',
+      auto_artist: payload.auto_artist ?? '',
+      auto_title: payload.auto_title ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
 
 
 function safeJsonPretty(jsonText: string): string {

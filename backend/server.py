@@ -1182,25 +1182,28 @@ async def preload_model(model: str = Form(...)):
     normalized = _normalize_generation_model(model)
     if normalized != (model or "").strip().lower():
         raise HTTPException(404, f"Unknown generation model {model!r}.")
-    from backend.core.idle import get_idle_manager
+    from backend.core.idle import idle_hold
     from stable_audio_3.model_configs import resolution_events, resolution_seq
 
-    get_idle_manager().bump_activity(tag="model-load")
-    loop = asyncio.get_event_loop()
-    since = resolution_seq()
-    t0 = time.perf_counter()
-    await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
-    await loop.run_in_executor(None, _get_or_load_generation_pipeline, normalized)
-    return {
-        "loaded": True,
-        "model": normalized,
-        "seconds": round(time.perf_counter() - t0, 2),
-        "device": str(pipeline.device) if pipeline else None,
-        "vram_used_gb": _vram_used_gb(),
-        # Exactly where every file came from (local folder / HF cache /
-        # downloaded). Empty when the pipeline was already loaded or parked.
-        "resolution": resolution_events(since),
-    }
+    # Scoped hold: a load that raises (bad checkpoint, OOM, cancelled request)
+    # must not leave the gate shut, or every background worker stays parked for
+    # the rest of the session.
+    with idle_hold("model-load"):
+        loop = asyncio.get_event_loop()
+        since = resolution_seq()
+        t0 = time.perf_counter()
+        await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
+        await loop.run_in_executor(None, _get_or_load_generation_pipeline, normalized)
+        return {
+            "loaded": True,
+            "model": normalized,
+            "seconds": round(time.perf_counter() - t0, 2),
+            "device": str(pipeline.device) if pipeline else None,
+            "vram_used_gb": _vram_used_gb(),
+            # Exactly where every file came from (local folder / HF cache /
+            # downloaded). Empty when the pipeline was already loaded or parked.
+            "resolution": resolution_events(since),
+        }
 
 
 @app.post("/api/spectrogram")
@@ -1783,128 +1786,134 @@ async def generate_jobs(
     # (waking a parked one or loading from disk) on first use.
 
     # Hold the idle gate open until the generation task completes so
-    # background workers don't compete for the GPU.
-    from backend.core.idle import get_idle_manager
+    # background workers don't compete for the GPU. Everything below the model
+    # load can still fail (stale local: checkpoint, bad upload, LoRA write
+    # error) and every one of those paths used to keep the gate shut forever,
+    # so the hold is scoped and only handed to the task once the task exists.
+    from backend.core.idle import idle_hold
 
-    get_idle_manager().bump_activity(tag="generate")
-
-    normalized_model_name = _normalize_generation_model(model_name)
-    # Clear any resident MRT2 engine before the SA3 load/wake — the reverse
-    # swap must hold no matter who drives the model field (UI, assistant,
-    # API callers, capture harnesses).
-    await asyncio.get_event_loop().run_in_executor(None, _ensure_gpu_clear_of_magenta)
-    # Load/wake the model in a worker thread, never on the event loop: a
-    # synchronous from_pretrained here freezes the single uvicorn worker for the
-    # whole load, which is exactly when /health 502s and in-flight FileResponse
-    # streams (MIDI/audio) get truncated ("Invalid MIDI track chunk").
-    generation_pipeline = await asyncio.get_event_loop().run_in_executor(
-        None, _get_or_load_generation_pipeline, normalized_model_name
-    )
-
-    init_audio_tuple = None
-    if init_audio is not None and init_audio.filename:
-        init_audio_tuple = await _load_audio_upload(init_audio)
-
-    normalized_init_audio_type = _validate_init_audio_mode(
-        init_audio_type,
-        has_init_audio=init_audio_tuple is not None,
-    )
-
-    inpaint_audio_tuple = None
-    if inpaint_audio is not None and inpaint_audio.filename:
-        inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
-
-    dist_shift = None
-    if dist_shift_type and dist_shift_type not in ("None", "none", ""):
-        if dist_shift_type == "LogSNR":
-            dist_shift = LogSNRShift(
-                anchor_length=logsnr_anchor_length,
-                anchor_logsnr=logsnr_anchor_logsnr,
-                rate=logsnr_rate,
-                logsnr_end=logsnr_end,
-            )
-        elif dist_shift_type == "Flux":
-            dist_shift = FluxDistributionShift(
-                min_length=flux_min_len,
-                max_length=flux_max_len,
-                alpha_min=flux_alpha_min,
-                alpha_max=flux_alpha_max,
-            )
-        elif dist_shift_type == "Full":
-            dist_shift = DistributionShift(
-                base_shift=full_base_shift,
-                max_shift=full_max_shift,
-                min_length=full_min_len,
-                max_length=full_max_len,
-            )
-
-    base_args: dict = {
-        "prompt": prompt,
-        "negative_prompt": negative_prompt or None,
-        "duration": float(duration),
-        "steps": int(steps),
-        "cfg_scale": float(cfg_scale),
-        "seed": int(seed),
-        "apg_scale": float(apg_scale),
-        "duration_padding_sec": float(duration_padding_sec),
-        "scale_phi": float(cfg_rescale),
-        "cfg_norm_threshold": float(cfg_norm_threshold),
-        "cfg_interval": (float(cfg_interval_min), float(cfg_interval_max)),
-        "truncate_output_to_duration": _coerce_form_bool(cut_to_duration),
-    }
-    base_args["sample_size"] = _compute_request_sample_size(
-        generation_pipeline,
-        float(duration),
-        float(duration_padding_sec),
-    )
-    if sampler_type:
-        base_args["sampler_type"] = sampler_type
-    if sigma_max != 1.0:
-        base_args["sigma_max"] = float(sigma_max)
-    if dist_shift is not None:
-        base_args["dist_shift"] = dist_shift
-    if init_audio_tuple:
-        base_args["init_audio"] = init_audio_tuple
-        base_args["init_noise_level"] = float(init_noise_level)
-    if inpaint_audio_tuple:
-        base_args["inpaint_audio"] = inpaint_audio_tuple
-        if mask_start > 0 or mask_end > 0:
-            base_args["inpaint_mask_start_seconds"] = float(mask_start)
-            base_args["inpaint_mask_end_seconds"] = float(mask_end)
-
-    job_id = str(uuid.uuid4())
-    lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(
-        await request.form(),
-        job_id,
-    )
-    JOBS[job_id] = {
-        "id": job_id,
-        "kind": "generate",
-        "model_name": normalized_model_name,
-        "init_audio_type": normalized_init_audio_type,
-        "lora_count": len(lora_paths),
-        "status": "queued",
-        "progress": {"step": 0, "steps": int(steps)},
-        "created_at": time.time(),
-    }
-    _prune_jobs()
-
-    asyncio.create_task(
-        _run_generate_job(
-            job_id,
-            generation_pipeline,
-            base_args,
-            int(batch_size),
-            file_format,
-            file_naming,
-            custom_name,
-            lora_paths,
-            lora_weights,
-            lora_temp_dir,
+    with idle_hold("generate") as hold:
+        normalized_model_name = _normalize_generation_model(model_name)
+        # Clear any resident MRT2 engine before the SA3 load/wake — the reverse
+        # swap must hold no matter who drives the model field (UI, assistant,
+        # API callers, capture harnesses).
+        await asyncio.get_event_loop().run_in_executor(
+            None, _ensure_gpu_clear_of_magenta
         )
-    )
+        # Load/wake the model in a worker thread, never on the event loop: a
+        # synchronous from_pretrained here freezes the single uvicorn worker for the
+        # whole load, which is exactly when /health 502s and in-flight FileResponse
+        # streams (MIDI/audio) get truncated ("Invalid MIDI track chunk").
+        generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+            None, _get_or_load_generation_pipeline, normalized_model_name
+        )
 
-    return {"job": {"id": job_id}}
+        init_audio_tuple = None
+        if init_audio is not None and init_audio.filename:
+            init_audio_tuple = await _load_audio_upload(init_audio)
+
+        normalized_init_audio_type = _validate_init_audio_mode(
+            init_audio_type,
+            has_init_audio=init_audio_tuple is not None,
+        )
+
+        inpaint_audio_tuple = None
+        if inpaint_audio is not None and inpaint_audio.filename:
+            inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+
+        dist_shift = None
+        if dist_shift_type and dist_shift_type not in ("None", "none", ""):
+            if dist_shift_type == "LogSNR":
+                dist_shift = LogSNRShift(
+                    anchor_length=logsnr_anchor_length,
+                    anchor_logsnr=logsnr_anchor_logsnr,
+                    rate=logsnr_rate,
+                    logsnr_end=logsnr_end,
+                )
+            elif dist_shift_type == "Flux":
+                dist_shift = FluxDistributionShift(
+                    min_length=flux_min_len,
+                    max_length=flux_max_len,
+                    alpha_min=flux_alpha_min,
+                    alpha_max=flux_alpha_max,
+                )
+            elif dist_shift_type == "Full":
+                dist_shift = DistributionShift(
+                    base_shift=full_base_shift,
+                    max_shift=full_max_shift,
+                    min_length=full_min_len,
+                    max_length=full_max_len,
+                )
+
+        base_args: dict = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt or None,
+            "duration": float(duration),
+            "steps": int(steps),
+            "cfg_scale": float(cfg_scale),
+            "seed": int(seed),
+            "apg_scale": float(apg_scale),
+            "duration_padding_sec": float(duration_padding_sec),
+            "scale_phi": float(cfg_rescale),
+            "cfg_norm_threshold": float(cfg_norm_threshold),
+            "cfg_interval": (float(cfg_interval_min), float(cfg_interval_max)),
+            "truncate_output_to_duration": _coerce_form_bool(cut_to_duration),
+        }
+        base_args["sample_size"] = _compute_request_sample_size(
+            generation_pipeline,
+            float(duration),
+            float(duration_padding_sec),
+        )
+        if sampler_type:
+            base_args["sampler_type"] = sampler_type
+        if sigma_max != 1.0:
+            base_args["sigma_max"] = float(sigma_max)
+        if dist_shift is not None:
+            base_args["dist_shift"] = dist_shift
+        if init_audio_tuple:
+            base_args["init_audio"] = init_audio_tuple
+            base_args["init_noise_level"] = float(init_noise_level)
+        if inpaint_audio_tuple:
+            base_args["inpaint_audio"] = inpaint_audio_tuple
+            if mask_start > 0 or mask_end > 0:
+                base_args["inpaint_mask_start_seconds"] = float(mask_start)
+                base_args["inpaint_mask_end_seconds"] = float(mask_end)
+
+        job_id = str(uuid.uuid4())
+        lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(
+            await request.form(),
+            job_id,
+        )
+        JOBS[job_id] = {
+            "id": job_id,
+            "kind": "generate",
+            "model_name": normalized_model_name,
+            "init_audio_type": normalized_init_audio_type,
+            "lora_count": len(lora_paths),
+            "status": "queued",
+            "progress": {"step": 0, "steps": int(steps)},
+            "created_at": time.time(),
+        }
+        _prune_jobs()
+
+        asyncio.create_task(
+            _run_generate_job(
+                job_id,
+                generation_pipeline,
+                base_args,
+                int(batch_size),
+                file_format,
+                file_naming,
+                custom_name,
+                lora_paths,
+                lora_weights,
+                lora_temp_dir,
+            )
+        )
+        # The task now owns the hold and releases "generate" in its own finally.
+        hold.hand_off()
+
+        return {"job": {"id": job_id}}
 
 
 @app.get("/api/jobs")

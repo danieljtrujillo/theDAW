@@ -4,10 +4,17 @@ This is the conversion backbone for the notation module. It makes MIDI
 artifacts first-class notation artifacts and converts between symbolic
 formats:
 
-  - ``musicxml`` and ``abc`` are produced directly by ``music21``.
-  - ``pdf`` and ``svg`` are engraved by the MuseScore CLI when it is
-    installed; without it those targets return ``ok=False`` with an install
-    hint so callers degrade gracefully rather than raising.
+  - ``musicxml`` is produced directly by ``music21``.
+  - ``abc`` is written by :mod:`.exporters.abc_writer`, because music21 parses
+    ABC but cannot write it.
+  - ``pdf`` is engraved headlessly by the frontend's OpenSheetMusicDisplay via
+    :mod:`.pdf_render`, so a downloaded sheet matches the SCORE tab exactly and
+    no MuseScore install is required.
+  - ``svg`` is engraved by the MuseScore CLI when it is installed; without it
+    that target returns ``ok=False`` with an install hint so callers degrade
+    gracefully rather than raising.
+  - ``notechart`` is the Unity flying-notation chart (timecode + spelled
+    notes), written by :mod:`.exporters.notechart`.
 
 Heavier engines (MT3, Audiveris, alphaTab tab export) belong behind the same
 module/sidecar boundary and plug into ``convert_score`` later.
@@ -18,12 +25,15 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.modules.library.db import LibraryDB
+
+from . import pdf_render
 
 log = logging.getLogger(__name__)
 
@@ -62,13 +72,41 @@ _MEDIA_EXTENSIONS = (
 # music21's placeholders for an untitled fragment / unset composer.
 _PLACEHOLDER_TITLES = frozenset({"music21 fragment", "music21"})
 
+# Leading track numbers carried in from ripped/downloaded filenames:
+# "04 - Song", "04. Song", "04_Song", "1-04 - Song", "[04] Song", "A4. Song".
+# A separator after the number is REQUIRED, which is what keeps a title that
+# genuinely opens on a number intact: "99 Luftballons", "7 Nation Army",
+# "24K Magic" and "1979" carry no separator, so none of them match.
+_TRACK_BRACKETED_RE = re.compile(
+    r"^\s*[\[(]\s*(?:\d{1,2}[-.])?\d{1,3}\s*[\])]\s*[-–—._]*\s*"
+)
+_TRACK_NUMBERED_RE = re.compile(
+    r"^\s*(?:(?:\d{1,2}[-.])?\d{1,3}|[A-Ha-h]\d{1,2})\s*[-–—._)]+\s*"
+)
+# A Unicode word character that is neither a digit nor an underscore, i.e. a
+# letter in any script.
+_HAS_LETTER_RE = re.compile(r"[^\W\d_]")
+
+
+def strip_track_prefix(title: str) -> str:
+    """Drop a leading track number from a song title.
+
+    Bails out when the remainder carries no letters, so an all-numeric title
+    survives whole (``1-800-273-8255``, ``24 - 7``).
+    """
+    stripped = _TRACK_NUMBERED_RE.sub("", _TRACK_BRACKETED_RE.sub("", title), count=1)
+    if stripped != title and _HAS_LETTER_RE.search(stripped):
+        return stripped.strip()
+    return title
+
 
 def clean_title(title: str) -> str:
     """Sanitize a song title for display + engraving.
 
     Drops a trailing media file extension (the user never wants ``.wav`` /
-    ``.mp3`` on a sheet) and treats music21's ``Music21 Fragment`` placeholder
-    as empty. Returns ``""`` when nothing meaningful remains.
+    ``.mp3`` on a sheet) and a leading track number ("04 - Song"), and treats
+    music21's ``Music21 Fragment`` placeholder as empty. Returns ``""`` when
+    nothing meaningful remains.
     """
     t = (title or "").strip()
     if not t:
@@ -80,7 +118,7 @@ def clean_title(title: str) -> str:
             break
     if t.strip().lower() in _PLACEHOLDER_TITLES:
         return ""
-    return t.strip()
+    return strip_track_prefix(t.strip())
 
 
 def artist_name() -> str:
@@ -97,12 +135,27 @@ def artist_name() -> str:
     return name or DEFAULT_ARTIST
 
 
-# Targets music21 can write directly from a parsed score.
-_MUSIC21_FORMATS = frozenset({"musicxml", "abc"})
-# Targets that require the MuseScore CLI (engraving to print / vector).
-_MUSESCORE_FORMATS = frozenset({"pdf", "svg"})
+# Targets music21 can write directly from a parsed score. ABC is deliberately
+# NOT here: music21's ConverterABC is input-only (registerOutputExtensions is
+# empty and it defines no write()), so asking music21 for ABC silently wrote
+# repr(stream) to the file and reported success. It routes to the local writer
+# in exporters/abc_writer.py instead.
+_MUSIC21_FORMATS = frozenset({"musicxml"})
+# Targets that require the MuseScore CLI. PDF is deliberately NOT here: it is
+# engraved headlessly by the frontend's OpenSheetMusicDisplay (see pdf_render),
+# which is the same engraver the SCORE tab draws with, so a downloaded sheet
+# matches the one on screen and PDF works on a machine with no MuseScore.
+_MUSESCORE_FORMATS = frozenset({"svg"})
+# The Unity flying-notation chart (timecode + notes), written by exporters/notechart.
+_NOTECHART_FORMATS = frozenset({"notechart"})
 # Map an output format to the artifact ``kind`` stored in the DB.
-_KIND_FOR_FORMAT = {"musicxml": "musicxml", "abc": "abc", "pdf": "pdf", "svg": "svg"}
+_KIND_FOR_FORMAT = {
+    "musicxml": "musicxml",
+    "abc": "abc",
+    "pdf": "pdf",
+    "svg": "svg",
+    "notechart": "notechart",
+}
 
 # MuseScore CLI binary names, newest first, and common Windows install paths.
 _MUSESCORE_NAMES = (
@@ -159,19 +212,31 @@ def capabilities() -> dict[str, Any]:
     from .arrangers.score_arrange import STYLES as ARRANGEMENT_STYLES
 
     musescore = musescore_binary()
-    formats = ["midi", "musicxml", "abc", "json", "alphatex"]
+    osmd = pdf_render.available()
+    formats = ["midi", "musicxml", "abc", "json", "alphatex", "notechart"]
+    # PDF comes from the headless OSMD renderer, so it no longer depends on a
+    # MuseScore install; MuseScore is still what engraves SVG.
+    if osmd["ok"]:
+        formats.append("pdf")
     if musescore is not None:
-        formats += ["pdf", "svg"]
+        formats.append("svg")
+        if not osmd["ok"]:
+            formats.append("pdf")
     return {
         "ok": True,
         "music21": importlib.util.find_spec("music21") is not None,
         "musescore": musescore is not None,
         "musescore_path": musescore,
+        "osmd_pdf": osmd["ok"],
+        "node": osmd["node"],
         "engines": {
             "midi_to_musicxml": "music21",
             "midi_to_tabs": "fretboard-dp",
             "midi_to_arrangement": "music21-arrange",
-            "score_to_pdf": "musescore" if musescore else None,
+            "score_to_pdf": "osmd"
+            if osmd["ok"]
+            else ("musescore" if musescore else None),
+            "score_to_notechart": "notechart",
             "future": ["mt3-sidecar", "audiveris-sidecar", "guitarpro-export"],
         },
         "formats": formats,
@@ -210,6 +275,78 @@ def register_existing_midis(db: LibraryDB, entry_id: str) -> list[dict[str, Any]
     return created
 
 
+# Symbolic + engraved files recoverable from disk, mapped to the artifact
+# ``kind`` the notation API serves them as.
+_KIND_FOR_SUFFIX = {
+    ".mid": "midi",
+    ".midi": "midi",
+    ".musicxml": "musicxml",
+    ".xml": "musicxml",
+    ".alphatex": "alphatex",
+    ".abc": "abc",
+    ".pdf": "pdf",
+    ".svg": "svg",
+}
+
+# Entry sub-directories that hold notation artifacts.
+_ARTIFACT_SUBDIRS = ("notation", "midi")
+
+
+def register_on_disk_artifacts(
+    db: LibraryDB, entry_dir: Path, entry_id: str
+) -> list[dict[str, Any]]:
+    """Register notation artifacts present on disk but missing a DB row.
+
+    Every conversion writes its file AND a ``notation_artifacts`` row, so the
+    two normally stay in step. They come apart whenever a row is lost while the
+    file survives (a rebuilt or restored ``library.db``, a hand-copied entry
+    directory), and nothing recovered from that state: the only re-registration
+    path, :func:`register_existing_midis`, mirrors the legacy ``midis`` table,
+    so an empty table mirrors to nothing while real scores sit on disk and the
+    SCORE tab shows the entry as having none.
+
+    This walks the entry's own directories instead, making the files the source
+    of truth. Artifact ids follow the same scheme ``_register_conversion`` uses
+    and the insert is INSERT OR REPLACE, so repeat runs are a no-op and a later
+    real conversion overwrites the recovered row rather than duplicating it.
+    """
+    # notation_artifacts.entry_id is a FOREIGN KEY onto entries(id), and the
+    # library can surface records that have no row yet (a directory present on
+    # disk that indexing has not committed). Inserting for one of those raises
+    # IntegrityError and would abort a whole-library sweep partway through, so
+    # skip an entry the DB does not know about and let indexing catch it later.
+    if db.get_entry(entry_id) is None:
+        return []
+    recovered: list[dict[str, Any]] = []
+    for sub in _ARTIFACT_SUBDIRS:
+        directory = entry_dir / sub
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.iterdir()):
+            if not path.is_file():
+                continue
+            kind = _KIND_FOR_SUFFIX.get(path.suffix.lower())
+            if kind is None:
+                continue
+            artifact_id = f"{entry_id}__{path.stem}__{kind}"
+            if db.get_notation_artifact(artifact_id) is not None:
+                continue
+            db.add_notation_artifact(
+                artifact_id=artifact_id,
+                entry_id=entry_id,
+                kind=kind,
+                path=str(path),
+                source_ref=str(path),
+                engine="recovered-from-disk",
+                engine_version="1",
+                metadata={"recovered": True, "source_dir": sub},
+            )
+            row = db.get_notation_artifact(artifact_id)
+            if row:
+                recovered.append(row)
+    return recovered
+
+
 def convert_score(
     db: LibraryDB,
     *,
@@ -224,7 +361,8 @@ def convert_score(
     """Convert a symbolic source (MIDI or MusicXML) to another notation format
     and register the result as a notation artifact.
 
-    ``music21`` handles ``musicxml`` and ``abc`` directly. ``pdf`` and ``svg``
+    ``music21`` handles ``musicxml`` directly and ``abc`` is written by
+    :mod:`.exporters.abc_writer` (music21 cannot write ABC). ``pdf`` and ``svg``
     are engraved by the MuseScore CLI when installed; without it they return
     ``ok=False`` with an install hint. When ``title`` is given it is stamped on
     the score so the rendered sheet shows the originating song's name.
@@ -232,12 +370,42 @@ def convert_score(
     fmt = fmt.lower().strip()
     if not source_path.is_file():
         return {"ok": False, "error": f"source not found: {source_path}"}
+    if fmt == "abc":
+        return _convert_to_abc(
+            db,
+            entry_id=entry_id,
+            source_path=source_path,
+            output_path=output_path,
+            source_ref=source_ref,
+            artifact_id=artifact_id,
+            title=title,
+        )
     if fmt in _MUSIC21_FORMATS:
         return _convert_with_music21(
             db,
             entry_id=entry_id,
             source_path=source_path,
             fmt=fmt,
+            output_path=output_path,
+            source_ref=source_ref,
+            artifact_id=artifact_id,
+            title=title,
+        )
+    if fmt == "pdf":
+        return _convert_to_pdf(
+            db,
+            entry_id=entry_id,
+            source_path=source_path,
+            output_path=output_path,
+            source_ref=source_ref,
+            artifact_id=artifact_id,
+            title=title,
+        )
+    if fmt in _NOTECHART_FORMATS:
+        return _convert_to_notechart(
+            db,
+            entry_id=entry_id,
+            source_path=source_path,
             output_path=output_path,
             source_ref=source_ref,
             artifact_id=artifact_id,
@@ -254,6 +422,176 @@ def convert_score(
             artifact_id=artifact_id,
         )
     return {"ok": False, "error": f"unsupported notation format: {fmt!r}"}
+
+
+def _convert_to_pdf(
+    db: LibraryDB,
+    *,
+    entry_id: str,
+    source_path: Path,
+    output_path: Path,
+    source_ref: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    title: str = "",
+) -> dict[str, Any]:
+    """Engrave a PDF with the frontend's OSMD, the engraver the SCORE tab uses.
+
+    OSMD needs MusicXML, so a MIDI source is staged through music21 first. That
+    staging file is written beside the output and removed afterwards, and it is
+    deliberately NOT registered as an artifact: registering it would leave a DB
+    row pointing at a path this function then deletes.
+    """
+    source = source_path
+    scratch: Optional[Path] = None
+    if source_path.suffix.lower() not in (".musicxml", ".xml"):
+        if importlib.util.find_spec("music21") is None:
+            return {"ok": False, "engine": "osmd", "error": "music21 is not installed."}
+        scratch = output_path.with_name(f"{output_path.stem}__osmd_src.musicxml")
+        try:
+            from music21 import converter  # type: ignore[import]
+
+            staged_score = converter.parse(str(source_path))
+            clean = clean_title(title)
+            if clean:
+                try:
+                    from music21.metadata import Metadata  # type: ignore[import]
+
+                    if staged_score.metadata is None:
+                        staged_score.insert(0, Metadata())
+                    staged_score.metadata.title = clean
+                    staged_score.metadata.composer = artist_name()
+                except Exception as exc:  # noqa: BLE001 - titling is best-effort
+                    log.debug("notation: pdf staging title skipped: %s", exc)
+            scratch.parent.mkdir(parents=True, exist_ok=True)
+            staged_score.write("musicxml", fp=str(scratch))
+            source = scratch
+        except Exception as exc:  # noqa: BLE001
+            log.warning("notation: pdf staging failed for %s: %s", source_path, exc)
+            return {"ok": False, "engine": "osmd", "error": repr(exc)}
+
+    result = pdf_render.render_musicxml_pdf(source, output_path, artist=artist_name())
+    if scratch is not None and scratch.is_file():
+        scratch.unlink(missing_ok=True)
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "engine": "osmd",
+            "error": result.get("error") or "render failed",
+        }
+
+    registered = _register_conversion(
+        db,
+        entry_id=entry_id,
+        fmt="pdf",
+        final_path=output_path,
+        source_path=source_path,
+        source_ref=source_ref,
+        artifact_id=artifact_id,
+        engine="osmd",
+        engine_version=pdf_render.renderer_version(),
+    )
+    registered["pages"] = result.get("pages", 0)
+    return registered
+
+
+def _convert_to_notechart(
+    db: LibraryDB,
+    *,
+    entry_id: str,
+    source_path: Path,
+    output_path: Path,
+    source_ref: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    title: str = "",
+) -> dict[str, Any]:
+    """Write the Unity flying-notation chart (timecode + spelled notes)."""
+    try:
+        from .exporters.notechart import write_notechart
+
+        result = write_notechart(
+            source_path,
+            output_path,
+            title=clean_title(title),
+            artist=artist_name(),
+            entry_id=entry_id,
+            source_artifact_id=source_ref or "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("notation: notechart export failed for %s: %s", source_path, exc)
+        return {"ok": False, "engine": "notechart", "error": repr(exc)}
+    if not result.get("ok"):
+        return {"ok": False, "engine": "notechart", **result}
+
+    registered = _register_conversion(
+        db,
+        entry_id=entry_id,
+        fmt="notechart",
+        final_path=output_path,
+        source_path=source_path,
+        source_ref=source_ref,
+        artifact_id=artifact_id,
+        engine="notechart",
+        engine_version="1",
+    )
+    registered["stats"] = result.get("stats", {})
+    return registered
+
+
+def _convert_to_abc(
+    db: LibraryDB,
+    *,
+    entry_id: str,
+    source_path: Path,
+    output_path: Path,
+    source_ref: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    title: str = "",
+) -> dict[str, Any]:
+    """Write ABC from a symbolic source using the local ABC writer.
+
+    music21 parses the source; the text is produced by
+    :func:`.exporters.abc_writer.score_to_abc` because music21 has no ABC
+    writer. A score with no notes raises rather than registering an empty file.
+    """
+    if importlib.util.find_spec("music21") is None:
+        return {
+            "ok": False,
+            "engine": "abc-writer",
+            "error": "music21 is not installed.",
+            "hint": "uv sync --group dev",
+        }
+    try:
+        from music21 import converter  # type: ignore[import]
+
+        from .exporters.abc_writer import score_to_abc
+
+        score = converter.parse(str(source_path))
+        try:
+            score = score.quantize((4, 3), inPlace=False, recurse=True)
+        except Exception as exc:  # noqa: BLE001 - quantize is best-effort
+            log.debug("notation: abc quantize skipped for %s: %s", source_path, exc)
+        text = score_to_abc(
+            score,
+            title=clean_title(title),
+            composer=artist_name(),
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("notation: abc export failed for %s: %s", source_path, exc)
+        return {"ok": False, "engine": "abc-writer", "error": repr(exc)}
+
+    return _register_conversion(
+        db,
+        entry_id=entry_id,
+        fmt="abc",
+        final_path=output_path,
+        source_path=source_path,
+        source_ref=source_ref,
+        artifact_id=artifact_id,
+        engine="abc-writer",
+        engine_version="1",
+    )
 
 
 def _convert_with_music21(
@@ -485,7 +823,11 @@ def midi_to_tabs(
         tuning_name=tuning_name,
         capo=capo,
         difficulty=difficulty,
-        title=title,
+        # Cleaned here rather than in the arranger so alphaTex's \title carries
+        # the same song name the engraved sheet does. Raw entry titles reach
+        # this function straight off the filename, so without this a tab prints
+        # "04 - Song.mp3" while the MusicXML sheet beside it prints "Song".
+        title=clean_title(title),
     )
     if not result.get("ok"):
         return result

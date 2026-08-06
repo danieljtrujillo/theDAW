@@ -12,11 +12,12 @@
     "fetch:tools": "node scripts/fetch-runtime-tools.mjs",
     "fetch:vj": "node scripts/fetch-vj-build.mjs",
     "fetch:foundry": "node scripts/fetch-foundry-build.mjs",
+    "fetch:notation": "node scripts/fetch-notation-renderer.mjs",
     "package": "electron-vite build && electron-builder",
-    "dist:win": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && electron-vite build && electron-builder --win",
-    "dist:mac": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && electron-vite build && electron-builder --mac",
-    "dist:win:ci": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && electron-vite build && electron-builder --win --publish never",
-    "dist:mac:ci": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && electron-vite build && electron-builder --mac --publish never"
+    "dist:win": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && npm run fetch:notation && electron-vite build && electron-builder --win",
+    "dist:mac": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && npm run fetch:notation && electron-vite build && electron-builder --mac",
+    "dist:win:ci": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && npm run fetch:notation && electron-vite build && electron-builder --win --publish never",
+    "dist:mac:ci": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && npm run fetch:notation && electron-vite build && electron-builder --mac --publish never"
   },
   "dependencies": {},
   "devDependencies": {
