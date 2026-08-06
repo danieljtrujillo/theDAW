@@ -19,11 +19,11 @@ below them.
 
 | Priority | Count | Meaning |
 |---|---|---|
-| P0 | 4 | Broken in the user's face, or blocking other work |
-| P1 | 30 | Real defect a user will hit |
+| P0 | 5 | Broken in the user's face, or blocking other work |
+| P1 | 31 | Real defect a user will hit |
 | P2 | 45 | Worth doing, not urgent |
-| P3 | 21 | Cleanup |
-| **Total** | **100** | |
+| P3 | 23 | Cleanup |
+| **Total** | **104** | |
 
 | Area | Prefix | P0 | P1 | P2 | P3 | Total |
 |---|---|---|---|---|---|---|
@@ -38,21 +38,20 @@ below them.
 | Packaging | PKG | 1 | 0 | 0 | 0 | 1 |
 | Tests and CI | CI | 0 | 2 | 2 | 0 | 4 |
 | Docs and RAG | DOC | 0 | 1 | 3 | 2 | 6 |
+| Reported by users | GH | 2 | 1 | 0 | 2 | 5 |
 
 Verified fixed on 2026-08-06 (independently re-checked, not taken from the fixing agents' reports):
-`BE-001`, `BE-002`, `SEC-002`, `FE-001`, `FE-002`, `CI-001`. Still open and NOT ticked: `BE-003`
-(helper `backend/core/probe_cache.py` built and tested but never wired into the router, so the
-endpoint still blocks exactly as before), `SEC-001` (browser vector closed and proven; a request
+`BE-001`, `BE-002`, `BE-003`, `SEC-002`, `FE-001`, `FE-002`, `CI-001`. Still open and NOT ticked: `SEC-001` (browser vector closed and proven; a request
 carrying no `Origin`/`Referer`/`Sec-Fetch-Site` is still forwarded with the server key, so any
 non-browser LAN client still spends it in the default posture), `FX-001` (file untouched),
-`PKG-001` (config is correct and resolves in a simulated packaged tree, but `frontend/scripts/`
-and `unity/` are untracked in git, so a release CI checkout has neither source to stage).
+`PKG-001` (config is correct and resolves in a simulated packaged tree; `frontend/scripts/` and
+`unity/` are now committed so a release checkout has both, but no real package build has been run).
 
 ## Top 10 right now
 
 1. `BE-001` One model preload silently stops every background worker for the rest of the session.
-2. `BE-003` Every CREATE press freezes the whole backend for about five seconds.
-3. `CI-001` 311 pytest tests exist and no CI job runs any of them.
+2. `GH-131` Underfit ships with no Python deps, so the feature is dead in the installed app.
+3. `GH-133` Model downloads fail and the picker is empty, so generation cannot start.
 4. `PKG-001` The installed app has no PDF engraver and no Unity package; both work only on a dev clone.
 5. `SEC-001` Any web page or LAN device can spend the user's Gemini key through the open proxy.
 6. `FE-002` Returning to MIX overwrites a saved mastering chain with defaults.
@@ -335,6 +334,37 @@ for the eight DSP modules, which is where FX-001 and FX-002 live (`tests/`). **C
 any of the thirteen top-level views (~12k lines).
 
 ---
+
+# Reported by users (open GitHub issues)
+
+These came from people running the SHIPPED build, not a dev clone, which is why none of the ten P0s
+above caught them. Three of the five are the same underlying problem: the packaged and Pinokio
+distributions do not provision what the code assumes is present. Ids track the issue number and are
+permanent like every other id here.
+
+- [ ] **GH-131** P0 M Underfit sidecar ships with no Python dependencies, so the feature is dead in the
+  installed app `resources/python/underfit/dashboard/server.py`
+  - `ModuleNotFoundError: No module named 'numpy'`, then torch, then more. The user was told to install
+    every module by hand. Reported against the packaged build with the sidecar log quoted.
+  - Related to `PKG-001`. The dev clone hides this because the repo venv already has everything.
+
+- [ ] **GH-133** P0 M Model downloads fail and the model picker shows nothing, so generation cannot start
+  - Hugging Face access errors repeatedly for SA3 small (eventually succeeded after many retries) and
+    never for medium, despite the user holding access. Then no model appears in Underfit's selector.
+  - Two separate failures worth separating: gated-repo auth handling with no useful error, and a picker
+    that renders empty rather than saying why. Check the HF token path and the gated-repo flow.
+
+- [ ] **GH-132** P1 M Inpainting always errors on the Pinokio install
+  - The reporter attached a full log (`thedaw-log-20260803-005221.txt` on the issue). Start there rather
+    than guessing; it is the one report here with a stack trace already supplied.
+
+- [ ] **GH-127** P3 S Flash Attention 3 wheels now exist and the README does not mention them
+  - Points at `github.com/windreamer/flash-attention3-wheels`. Verify the wheels match the pinned CUDA
+    and Python before recommending anything, and do not downgrade the current pin.
+
+- [ ] **GH-107** P3 S "theDAW" reads as misleading to at least one user
+  - The argument is that it presents as a player for pre-generated music rather than a DAW. Kept on the
+    list deliberately as a product decision, not a defect. Left open on purpose.
 
 # Verified healthy
 
