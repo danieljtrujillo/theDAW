@@ -363,3 +363,6 @@ integration-package/backend/logs/
 integration-package/backend/results/
 integration-package/backend/larsnet/pretrained_larsnet_models/
 integration-package/backend/larsnet/pretrained_larsnet_models.zip
+
+# Untracked video/marketing scripts (local working material, not part of the product).
+video-scripts/
