@@ -16,6 +16,15 @@ export interface DawClip {
   scene_index?: number | null;
   scene_name?: string | null;
   slot_index?: number | null;
+  /** Seconds into the source file where this clip starts (its trim point). */
+  offset_into_source?: number;
+  /** Whether the clip loops when launched; null when the set didn't say. */
+  loop_on?: boolean | null;
+  /** Warping: play rate is project.tempo / source_tempo. */
+  is_warped?: boolean;
+  source_tempo?: number | null;
+  /** Clip colour as #rrggbb, decoded from Live's palette index. */
+  color?: string | null;
 }
 
 export interface DawDevice {

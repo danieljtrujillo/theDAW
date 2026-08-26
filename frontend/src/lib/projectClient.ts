@@ -57,6 +57,12 @@ export interface TasmoClipInput {
   fade_out?: number;
   /** Seconds into the source where the clip starts — the trim point. */
   offset_into_source?: number;
+  /** Session-view (Perform grid) placement; null on an arrangement clip.
+   *  Without these the format could not represent a clip-launch grid, so every
+   *  session clip was dropped on save. */
+  track_index?: number | null;
+  scene_index?: number | null;
+  slot_index?: number | null;
 }
 
 export interface TasmoTrackInput {
@@ -81,6 +87,10 @@ export interface TasmoProjectInput {
   tracks?: TasmoTrackInput[];
   source_daw?: string | null;
   import_warnings?: string[];
+  /** Session-view scene names in row order; empty when there is no grid. */
+  scenes?: string[];
+  locators?: Array<{ id: string; name: string; position: number; color?: string | null }>;
+  source_daw_version?: string | null;
   controller_mappings?: TasmoControllerMappings | null;
   /** Perform-tab scene-launch + modulation routing (see performRouting.ts). */
   perform_routing?: PerformRoutingSnapshot | null;
@@ -107,6 +117,12 @@ export interface TasmoLoadedClip {
   fade_out?: number;
   /** Seconds into the source where the clip starts — the trim point. */
   offset_into_source?: number;
+  /** Session-view (Perform grid) placement; null on an arrangement clip.
+   *  Without these the format could not represent a clip-launch grid, so every
+   *  session clip was dropped on save. */
+  track_index?: number | null;
+  scene_index?: number | null;
+  slot_index?: number | null;
 }
 
 export interface TasmoLoadedTrack {
@@ -126,9 +142,15 @@ export interface TasmoLoadedTrack {
 export interface TasmoProjectLoaded {
   project_name: string;
   tempo: number;
+  /** Declared so a non-4/4 set does not silently reload as 4/4. */
+  time_signature?: number[];
   sample_rate: number;
+  source_daw?: string | null;
+  source_daw_version?: string | null;
   tracks: TasmoLoadedTrack[];
   import_warnings?: string[];
+  /** Session-view scene names in row order; empty when there is no grid. */
+  scenes?: string[];
   controller_mappings?: TasmoControllerMappings | null;
   perform_routing?: PerformRoutingSnapshot | null;
 }
@@ -204,9 +226,14 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
       pan: t.pan,
       mute: t.mute,
       solo: t.solo,
-      // Session-grid clips (scene_index set) are for the Session tab only; the
-      // EDIT timeline / .tasmo uses just the arrangement lane, unchanged.
-      clips: (t.clips ?? []).filter((c) => c.scene_index == null).map((c) => ({
+      // Session (Perform grid) clips are saved ALONGSIDE arrangement clips and
+      // told apart by their scene indices — they used to be filtered out here,
+      // which silently discarded the entire clip-launch grid on save. Worse, the
+      // Perform tab's own .tasmo path stamps scene_index on EVERY clip
+      // (tasmoToSession.ts), so opening a .tasmo in Perform and saving wrote a
+      // project with ZERO clips over the user's file. The EDIT timeline filters
+      // session clips out on LOAD instead, which is where that belongs.
+      clips: (t.clips ?? []).map((c) => ({
         id: uid('c'),
         name: c.name,
         // Per-clip type: a clip with notes is MIDI even on an "audio" track.
@@ -218,6 +245,11 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
         midi_notes: c.midi_notes ?? null,
         loop_start: c.loop_start ?? null,
         loop_end: c.loop_end ?? null,
+        // Carry the grid placement so the Perform tab can be restored exactly
+        // rather than rebuilt from arrangement clips.
+        track_index: c.track_index ?? null,
+        scene_index: c.scene_index ?? null,
+        slot_index: c.slot_index ?? null,
       })),
       // Map the track's device chain into theDAW effect nodes (VST3 -> real,
       // creative FX -> rack, EQ/comp/reverb -> preserved). Order is kept.
@@ -232,6 +264,14 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
     sample_rate: d.sample_rate,
     source_daw: d.source_daw,
     import_warnings: d.warnings,
+    // Scene names in row order, so a saved Perform grid reloads with the
+    // user's own scene names instead of a generic "Scene 1..N" ladder.
+    scenes: d.scenes ?? [],
+    // TasmoProject has had locators and source_daw_version all along; nothing
+    // wrote them, so markers vanished on first save and schema-drift bugs were
+    // undiagnosable after the fact.
+    locators: (d.locators ?? []).map((l) => ({ id: uid("loc"), name: l.name, position: l.position, color: l.color ?? null })),
+    source_daw_version: d.source_version || null,
     tracks,
   };
 }

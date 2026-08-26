@@ -1,7 +1,9 @@
 // Convert a loaded .tasmo project into a DawProject the Session grid can render,
 // so theDAW's own saved projects open in the Session tab alongside Ableton sets.
 //
-// A .tasmo has no session-view scenes, so each track's clips are laid into scene
+// A .tasmo saved FROM a session grid carries real scene indices and scene names,
+// and those are restored verbatim. Only a project with no grid of its own (an
+// arrangement-only .tasmo) falls back to laying each track's clips into scene
 // rows in start-time order (track = column, clip = scene row). Audio clips keep
 // their absolute on-disk path (the load step relinks embedded audio to disk, and
 // /api/project/clip-audio serves any absolute path — see dawImportClient's
@@ -16,7 +18,11 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
   const stepSec = 60 / Math.max(40, bpm) / 4; // one 16th-note step in seconds
 
   const tracks: DawTrack[] = loaded.tracks.map((t, ti) => {
-    const sorted = [...t.clips].sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
+    // A file written from a real grid already knows where every clip goes.
+    const hasGrid = t.clips.some((c) => c.scene_index != null || c.slot_index != null);
+    const sorted = hasGrid
+      ? [...t.clips]
+      : [...t.clips].sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
     const clips: DawClip[] = sorted.map((c, ci) => {
       const isMidi =
         c.clip_type === 'midi' && Array.isArray(c.midi_notes) && c.midi_notes.length > 0;
@@ -33,9 +39,9 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
               velocity: Number(n.velocity ?? 100),
             }))
           : null,
-        track_index: ti,
-        scene_index: ci,
-        slot_index: ci,
+        track_index: c.track_index ?? ti,
+        scene_index: c.scene_index ?? (hasGrid ? null : ci),
+        slot_index: c.slot_index ?? (hasGrid ? null : ci),
         scene_name: null,
       };
     });
@@ -57,12 +63,12 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
     source_version: '',
     name: loaded.project_name || 'theDAW Project',
     tempo: bpm,
-    time_signature: [4, 4],
+    time_signature: (loaded.time_signature?.length === 2 ? loaded.time_signature : [4, 4]) as [number, number],
     sample_rate: loaded.sample_rate || 44100,
     tracks,
     locators: [],
     controller_mappings: [],
-    scenes: [],
+    scenes: loaded.scenes ?? [],
     plugins_used: [],
     warnings: [],
     missing_files: [],

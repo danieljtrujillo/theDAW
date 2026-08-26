@@ -259,6 +259,29 @@ export const SessionView: React.FC = () => {
               {warning}
             </div>
           ))}
+          {/* Samples the importer could not resolve. The parser has always
+              collected these, and nothing rendered them — so a Library/Pack-heavy
+              set imported "successfully" with a full grid that played nothing and
+              named no file. Capped + scrollable: a relocated project can miss
+              hundreds, and this strip has no height limit of its own. */}
+          {project && project.missing_files.length > 0 && (
+            <div className="flex flex-col gap-0.5 max-h-24 overflow-y-auto">
+              <div className="flex items-start gap-1.5 text-[8px] font-mono text-amber-200">
+                <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0 mt-px" />
+                {`${project.missing_files.length} sample${project.missing_files.length === 1 ? '' : 's'} could not be found — those clips will not play. Relink them in Live, or open the set from its Project folder.`}
+              </div>
+              {project.missing_files.slice(0, 40).map((file, index) => (
+                <div key={index} className="pl-4 text-[8px] font-mono text-amber-100/60 truncate" title={file}>
+                  {file}
+                </div>
+              ))}
+              {project.missing_files.length > 40 && (
+                <div className="pl-4 text-[8px] font-mono text-amber-100/40">
+                  {`…and ${project.missing_files.length - 40} more`}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -269,8 +292,15 @@ export const SessionView: React.FC = () => {
       )}
 
       <div className="flex-1 min-h-0 p-2">
+        {/* DawSessionGrid is keyed on project identity: it holds a decoded-buffer
+            cache and per-track refs that are NOT cleared between imports, so
+            without a remount a second import inherits the first one's audio. */}
         {project ? (
-          <DawSessionGrid project={project} fill />
+          <DawSessionGrid
+            key={`${project.source_daw}:${project.name}:${project.tracks.length}`}
+            project={project}
+            fill
+          />
         ) : (
           <div className="h-full rounded border border-dashed border-white/10 bg-black/15 grid place-items-center">
             <div className="flex flex-col items-center gap-2 text-center">

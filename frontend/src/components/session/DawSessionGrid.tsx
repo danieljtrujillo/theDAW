@@ -18,6 +18,9 @@ import { subscribeSwayValue } from '../../state/swayBus';
 import { enableMidi } from '../../state/midiTriggerStore';
 import { usePerformRoutingStore, ctrlMatches } from '../../state/performRouting';
 import { logError } from '../../state/logStore';
+import { dawDeviceToEffectNode } from '../../lib/dawEffectMap';
+import { buildEffectChain, type ChainHandle } from '../../lib/rackEffects';
+import type { ChainEntry } from '../../state/effectChainStore';
 
 type ClipLookup = Map<string, DawClip>;
 
@@ -25,10 +28,14 @@ interface SessionPlayer {
   source: AudioBufferSourceNode;
   analyser?: AnalyserNode;
   gain?: GainNode;
+  panner?: StereoPannerNode;
   trackIndex: number;
   /** The track's index in the mixer/track list (performTracks order), used to
    *  apply live Sway modulation to the right column's gain. */
   mixIndex: number;
+  /** Which scene row this player came from, so the grid can show per-track
+   *  playing state instead of one global "active scene". */
+  sceneIndex: number;
 }
 
 type ClipBufferCache = Map<string, Promise<AudioBuffer>>;
@@ -78,6 +85,19 @@ const CLIP_COLORS = [
 
 const clipKey = (trackIndex: number, sceneIndex: number) => `${trackIndex}:${sceneIndex}`;
 
+/** Clip colour comes from Live's palette when the parser decoded one; the
+ *  position-derived CLIP_COLORS entry is only a fallback now. Colour is how a
+ *  performer navigates a grid at speed, so a set should look like itself. */
+const clipStyle = (clip: DawClip, fallback: string): string =>
+  clip.color ? 'border text-black' : fallback;
+
+/** Tooltip that names WHY a clip can't play, instead of a bare clip name and an
+ *  anonymous "N clips could not be played" banner. */
+const clipTitle = (clip: DawClip): string => {
+  if (isPlayableClip(clip)) return clip.name;
+  return `${clip.name} — sample not found. Relink it in Live, or open the set from its Project folder.`;
+};
+
 const dbToVolume = (db: number): number => {
   if (!Number.isFinite(db)) return 1;
   return Math.min(1, Math.max(0, 10 ** (db / 20)));
@@ -108,7 +128,9 @@ const notesFromDawClip = (clip: DawClip): RenderNote[] => {
       midi,
       startSec: Math.max(0, startSec),
       durationSec: Math.max(0.02, durationSec),
-      velocity: velocityRaw <= 1 ? Math.round(velocityRaw * 127) : Math.round(velocityRaw),
+      // < 1, not <= 1: a raw value of exactly 1 is a legitimate (very quiet)
+      // MIDI velocity, and treating it as normalised 1.0 turned it into 127.
+      velocity: velocityRaw < 1 ? Math.round(velocityRaw * 127) : Math.round(velocityRaw),
     }];
   });
 };
@@ -124,9 +146,101 @@ const stopSessionPlayers = (players: SessionPlayer[]) => {
   players.forEach((player) => {
     try { player.source.onended = null; player.source.stop(); } catch { /* already stopped */ }
     try { player.source.disconnect(); } catch { /* already disconnected */ }
-    player.analyser?.disconnect();
+    // NOT the analyser: it belongs to the track's persistent FX chain and is
+    // shared by every clip on that column. Disconnecting it here would sever the
+    // column's output to the master bus for the rest of the session.
     player.gain?.disconnect();
+    player.panner?.disconnect();
   });
+};
+
+/**
+ * Build and start one clip's audio graph:
+ *   source -> gain (track vol x Sway mod x mute/solo) -> panner -> analyser -> master
+ *
+ * Everything here was previously missing. The old body was a bare
+ * `source.start(startAt)`, which meant: the whole source file played once from
+ * sample zero (ignoring the clip's trim), nothing looped, mute/solo/pan never
+ * reached the graph at all, and a loop recorded at another tempo played at its
+ * own rate so a scene drifted apart within a bar.
+ */
+const startClipPlayer = (
+  context: AudioContext,
+  opts: {
+    buffer: AudioBuffer;
+    clip: DawClip;
+    track: DawTrack;
+    trackIndex: number;
+    mixIndex: number;
+    sceneIndex: number;
+    startAt: number;
+    projectTempo: number;
+    mix?: { vol: number; mute: boolean };
+    anySolo: boolean;
+    /** Where this clip feeds: the track's FX-chain input, so an imported set's
+     *  EQ/compression/reverb is actually in the signal path. */
+    destination: AudioNode;
+    /** The TRACK's analyser (post-FX), shared by every clip on that column. */
+    analyser: AnalyserNode;
+  },
+): SessionPlayer => {
+  const { buffer, clip, track, startAt, projectTempo, mix, anySolo, destination, analyser } = opts;
+  const source = context.createBufferSource();
+  const gain = context.createGain();
+  const panner = context.createStereoPanner();
+  source.buffer = buffer;
+
+  // Warp: play the sample at the ratio between the project tempo and the tempo
+  // it was recorded at. Constant-rate, which is exactly right for the
+  // single-tempo loops a session grid is made of.
+  if (clip.is_warped && clip.source_tempo && clip.source_tempo > 0) {
+    source.playbackRate.value = projectTempo / clip.source_tempo;
+  }
+
+  // The clip is a WINDOW onto its sample: start at the trim point and run for
+  // the clip's own length, not the file's.
+  const maxOffset = Math.max(0, buffer.duration - 0.01);
+  const offset = Math.min(Math.max(0, clip.offset_into_source ?? 0), maxOffset);
+  const span = Math.max(0, (clip.end_time ?? 0) - (clip.start_time ?? 0));
+  const available = Math.max(0, buffer.duration - offset);
+  const duration = span > 0.02 ? Math.min(span, available) : available;
+
+  // Loop when Live says so. `loop_on == null` means the set didn't say, so treat
+  // it as a one-shot rather than looping material never meant to repeat.
+  if (clip.loop_on) {
+    source.loop = true;
+    source.loopStart = offset;
+    source.loopEnd = Math.min(buffer.duration, offset + (duration || available));
+  }
+
+  // Mute/solo are honoured here for the first time: a track muted in Live came
+  // back audible, and a set with any track soloed played everything.
+  const volMul = mix?.vol ?? 1;
+  const modMuted = mix?.mute ?? false;
+  const silencedBySolo = anySolo && !track.solo;
+  const audible = !track.mute && !modMuted && !silencedBySolo;
+  gain.gain.value = dbToVolume(track.volume_db) * volMul * (audible ? 1 : 0);
+  panner.pan.value = Math.max(-1, Math.min(1, track.pan ?? 0));
+
+  source.connect(gain);
+  gain.connect(panner);
+  // -> the track's FX chain (built once per column), which terminates in the
+  // shared track analyser and then the master bus.
+  panner.connect(destination);
+  // A looping source ignores `duration`; a one-shot needs it to stop at the
+  // clip's edge instead of running to the end of the file.
+  if (source.loop) source.start(startAt, offset);
+  else source.start(startAt, offset, duration || undefined);
+
+  return {
+    source,
+    gain,
+    panner,
+    analyser,
+    trackIndex: opts.trackIndex,
+    mixIndex: opts.mixIndex,
+    sceneIndex: opts.sceneIndex,
+  };
 };
 
 interface DawSessionGridProps {
@@ -136,6 +250,12 @@ interface DawSessionGridProps {
 
 export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = false }) => {
   const [activeScene, setActiveScene] = React.useState<number | null>(null);
+  /** Which scene each column is currently playing, keyed by mixIndex. A single
+   *  scalar activeScene could not represent Live's core move — holding a
+   *  bassline while changing drums — so per-clip launch needs this. */
+  const [trackScenes, setTrackScenes] = React.useState<Record<number, number>>({});
+  /** Launch quantization in bars; 0 = launch immediately. */
+  const [quantizeBars, setQuantizeBars] = React.useState(1);
   const [selectedScene, setSelectedScene] = React.useState(0);
   const [launchError, setLaunchError] = React.useState<string | null>(null);
   const [lastAction, setLastAction] = React.useState<string | null>(null);
@@ -185,12 +305,127 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     setTrackLevels(Array.from({ length: tracks.length }, () => 0));
   }, [tracks.length]);
 
+  /* --- Per-track FX chains -------------------------------------------------
+     Perform playback used to be completely dry: `grep device` over this file
+     returned nothing, so an imported set's EQ, compression and reverb were
+     parsed, mapped by dawEffectMap, and then never instantiated. Only the
+     .tasmo conversion path ever called dawDeviceToEffectNode.
+
+     One persistent chain per column, built lazily and reused across launches
+     (rebuilding per clip would re-generate reverb IRs on every cell press). The
+     chain terminates in the track's analyser, so metering is post-FX and every
+     clip on a column shares one meter.
+
+     Instruments are skipped at connect time rather than filtered out of
+     track.devices — swayImportResolve.ts indexes fxChain by the FLATTENED device
+     order, so removing elements would silently misalign controller mappings. */
+  const trackChainsRef = React.useRef<
+    Map<number, { input: GainNode; output: GainNode; analyser: AnalyserNode; handle: ChainHandle | null }>
+  >(new Map());
+
+  const ensureTrackChain = React.useCallback(
+    (mixIndex: number, track: DawTrack) => {
+      const existing = trackChainsRef.current.get(mixIndex);
+      if (existing) return existing;
+      const context = getEngineCtx();
+      const input = context.createGain();
+      const output = context.createGain();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.62;
+      output.connect(analyser);
+      analyser.connect(getMasterGain());
+
+      let handle: ChainHandle | null = null;
+      const entries: ChainEntry[] = (track.devices ?? [])
+        .filter((d) => !d.is_instrument && !d.is_rack)
+        .map((d, i) => {
+          const node = dawDeviceToEffectNode(d);
+          return {
+            id: `perform-${mixIndex}-${i}`,
+            effect: node.effect_name,
+            params: node.parameters ?? {},
+            enabled: !node.bypass,
+          } as ChainEntry;
+        })
+        // VST3/AU cannot run in the live Web Audio graph (buildEffectChain only
+        // knows the rack effects), so they are inert here exactly as they are on
+        // the EDIT timeline.
+        .filter((e) => e.effect !== 'vst3');
+      try {
+        handle = buildEffectChain(context, input, output, entries);
+      } catch (e) {
+        // A chain that fails to build must not take the whole grid down —
+        // fall back to a clean passthrough.
+        logError('perform', `Track FX chain failed for "${track.name}": ${e instanceof Error ? e.message : String(e)}`);
+        try { input.connect(output); } catch { /* already wired */ }
+      }
+      const made = { input, output, analyser, handle };
+      trackChainsRef.current.set(mixIndex, made);
+      return made;
+    },
+    [],
+  );
+
+  const disposeTrackChains = React.useCallback(() => {
+    for (const c of trackChainsRef.current.values()) {
+      try { c.handle?.dispose(); } catch { /* already gone */ }
+      try { c.input.disconnect(); c.output.disconnect(); c.analyser.disconnect(); } catch { /* gone */ }
+    }
+    trackChainsRef.current = new Map();
+  }, []);
+
+  React.useEffect(() => disposeTrackChains, [disposeTrackChains]);
+
   const stopScene = React.useCallback(() => {
     stopSessionPlayers(playersRef.current);
     playersRef.current = [];
     setActiveScene(null);
+    setTrackScenes({});
     stopMeters();
   }, [stopMeters]);
+
+  /* --- Launch quantization -------------------------------------------------
+     Everything used to start at `context.currentTime + 0.01`, so launching
+     against something already playing landed permanently off the grid. A
+     session clock is set on the first launch; later launches snap to the next
+     bar line relative to it, which is what makes layering usable. The toolbar's
+     quantization control feeds `quantizeBars` ('off' = launch immediately). */
+  const sessionStartRef = React.useRef<number | null>(null);
+  const nextLaunchTime = React.useCallback(
+    (context: AudioContext): number => {
+      const now = context.currentTime + 0.01;
+      if (quantizeBars <= 0) return now;
+      const beatSec = 60 / Math.max(20, project.tempo || 120);
+      const barSec = beatSec * (project.time_signature?.[0] || 4) * quantizeBars;
+      if (sessionStartRef.current == null || playersRef.current.length === 0) {
+        sessionStartRef.current = now;
+        return now;
+      }
+      const elapsed = now - sessionStartRef.current;
+      const bars = Math.ceil(elapsed / barSec);
+      return sessionStartRef.current + bars * barSec;
+    },
+    [project.tempo, project.time_signature, quantizeBars],
+  );
+
+  /** Stop just one column, leaving everything else playing. Live puts this on
+   *  the track's stop button and on every empty clip slot. */
+  const stopTrack = React.useCallback((mixIndex: number) => {
+    const [stay, go] = playersRef.current.reduce<[SessionPlayer[], SessionPlayer[]]>(
+      (acc, p) => { acc[p.mixIndex === mixIndex ? 1 : 0].push(p); return acc; },
+      [[], []],
+    );
+    if (go.length === 0) return;
+    stopSessionPlayers(go);
+    playersRef.current = stay;
+    setTrackScenes((prev) => {
+      const next = { ...prev };
+      delete next[mixIndex];
+      return next;
+    });
+    if (stay.length === 0) setActiveScene(null);
+  }, []);
 
   React.useEffect(() => stopScene, [stopScene]);
 
@@ -231,15 +466,19 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   React.useEffect(() => {
     let cancelled = false;
     const seen = new Set<string>();
-    const clips = tracks.flatMap((track) =>
-      track.clips.filter((clip) => {
-        if (!isPlayableClip(clip)) return false;
-        const key = clipCacheKey(clip);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      }),
-    );
+    // Warm only clips the grid can actually LAUNCH. This iterated every clip on
+    // every track — arrangement lane included, which clipLookup can never reach —
+    // so importing a real set decoded hundreds of MB of PCM (~10.6 MB per stereo
+    // minute per clip) and locked the tab for tens of seconds, with no progress
+    // and no cancel, even for an arrangement-only set whose grid is empty.
+    // getClipBuffer memoises, so a cell outside this set costs one decode on use.
+    const clips = Array.from(clipLookup.values()).filter((clip) => {
+      if (!isPlayableClip(clip)) return false;
+      const key = clipCacheKey(clip);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     const warm = async () => {
       for (let index = 0; index < clips.length && !cancelled; index += 2) {
         await Promise.allSettled(clips.slice(index, index + 2).map(getClipBuffer));
@@ -247,7 +486,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     };
     if (clips.length > 0) void warm();
     return () => { cancelled = true; };
-  }, [getClipBuffer, tracks]);
+  }, [getClipBuffer, clipLookup]);
 
   const tickMeters = React.useCallback(() => {
     const players = playersRef.current;
@@ -265,7 +504,12 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
         sum += centered * centered;
       }
       const rms = Math.sqrt(sum / meterDataRef.current.length);
-      next[player.trackIndex] = Math.max(next[player.trackIndex] ?? 0, Math.min(1, rms * 5.5));
+      // mixIndex, not trackIndex. `next` is allocated at performTracks length,
+      // while trackIndex counts ALL tracks including return/master — so any
+      // trackIndex past the mixer columns wrote off the end of the array and the
+      // meter silently died. It only worked because Live emits returns last and
+      // the parser drops groups; admitting a group type mid-list desyncs it.
+      next[player.mixIndex] = Math.max(next[player.mixIndex] ?? 0, Math.min(1, rms * 5.5));
     });
     setTrackLevels((previous) => next.map((level, index) => Math.max(level, (previous[index] ?? 0) * 0.72)));
     setMasterLevel((previous) => {
@@ -295,7 +539,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       const results = await Promise.all(
         clips.map(async ({ clip, track, trackIndex, mixIndex }) => {
           try {
-            return { ok: true as const, buffer: await getClipBuffer(clip), track, trackIndex, mixIndex };
+            return { ok: true as const, buffer: await getClipBuffer(clip), clip, track, trackIndex, mixIndex };
           } catch (e) {
             return { ok: false as const, clip, reason: e instanceof Error ? e.message : String(e) };
           }
@@ -303,40 +547,89 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       );
       if (launchTokenRef.current !== launchToken) return;
       const decoded = results.filter(
-        (r): r is { ok: true; buffer: AudioBuffer; track: DawTrack; trackIndex: number; mixIndex: number } => r.ok,
+        (r): r is { ok: true; buffer: AudioBuffer; clip: DawClip; track: DawTrack; trackIndex: number; mixIndex: number } => r.ok,
       );
       const failedClips = results.filter((r): r is { ok: false; clip: DawClip; reason: string } => !r.ok);
       for (const f of failedClips) {
         logError('perform', `Clip "${f.clip.name}" could not play: ${f.reason}`);
       }
       const failed = failedClips.length;
-      const startAt = context.currentTime + 0.01;
-      const nextPlayers = decoded.map(({ buffer, track, trackIndex, mixIndex }) => {
-        const source = context.createBufferSource();
-        const gain = context.createGain();
-        const analyser = context.createAnalyser();
-        source.buffer = buffer;
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.62;
-        const mix = mixRef.current.get(mixIndex);
-        const volMul = mix?.vol ?? 1;
-        const muted = mix?.mute ?? false;
-        gain.gain.value = dbToVolume(track.volume_db) * volMul * (muted ? 0 : 1);
-        source.connect(gain);
-        gain.connect(analyser);
-        analyser.connect(getMasterGain());
-        source.start(startAt);
-        return { source, gain, analyser, trackIndex, mixIndex };
-      });
+      const startAt = nextLaunchTime(context);
+      const anySolo = tracks.some((t, i) => (trackStateRef.current[i] ?? { solo: !!t.solo }).solo);
+      const nextPlayers = decoded.map(({ buffer, clip, track, trackIndex, mixIndex }) =>
+        startClipPlayer(context, {
+          buffer,
+          clip,
+          track: displayTrack(track, mixIndex),
+          trackIndex,
+          mixIndex,
+          sceneIndex,
+          startAt,
+          projectTempo: project.tempo || 120,
+          mix: mixRef.current.get(mixIndex),
+          destination: ensureTrackChain(mixIndex, track).input,
+          analyser: ensureTrackChain(mixIndex, track).analyser,
+          anySolo,
+        }),
+      );
       playersRef.current = nextPlayers;
       setActiveScene(sceneIndex);
+      setTrackScenes(Object.fromEntries(nextPlayers.map((p) => [p.mixIndex, sceneIndex])));
       startedAtRef.current = performance.now();
       if (animationRef.current == null) animationRef.current = window.requestAnimationFrame(tickMeters);
       setLaunchError(
         failed > 0 ? `${failed} of ${results.length} clip(s) could not be played.` : null,
       );
     },
-    [getClipBuffer, sceneClips, stopScene, tickMeters],
+    [getClipBuffer, sceneClips, stopScene, tickMeters, tracks, project.tempo, nextLaunchTime],
+  );
+
+  /** Launch ONE cell, leaving every other column playing — Live's core move.
+   *  Replaces the old behaviour where clicking any cell relaunched the whole
+   *  row, so there was no way to hold a bassline while changing drums. */
+  const launchClip = React.useCallback(
+    async (mixIndex: number, sceneIndex: number) => {
+      const entry = sceneClips(sceneIndex).find((c) => c.mixIndex === mixIndex);
+      if (!entry) {
+        // An empty slot IS a command in Live: it stops that track.
+        stopTrack(mixIndex);
+        return;
+      }
+      const context = getEngineCtx();
+      if (context.state === 'suspended') await context.resume();
+      let buffer: AudioBuffer;
+      try {
+        buffer = await getClipBuffer(entry.clip);
+      } catch (e) {
+        logError('perform', `Clip "${entry.clip.name}" could not play: ${e instanceof Error ? e.message : String(e)}`);
+        setLaunchError(`"${entry.clip.name}" could not be played.`);
+        return;
+      }
+      // Replace only this column's players.
+      const stay = playersRef.current.filter((p) => p.mixIndex !== mixIndex);
+      const go = playersRef.current.filter((p) => p.mixIndex === mixIndex);
+      stopSessionPlayers(go);
+      const player = startClipPlayer(context, {
+        buffer,
+        clip: entry.clip,
+        track: displayTrack(entry.track, mixIndex),
+        trackIndex: entry.trackIndex,
+        mixIndex,
+        sceneIndex,
+        startAt: nextLaunchTime(context),
+        projectTempo: project.tempo || 120,
+        mix: mixRef.current.get(mixIndex),
+        destination: ensureTrackChain(mixIndex, entry.track).input,
+        analyser: ensureTrackChain(mixIndex, entry.track).analyser,
+        anySolo: tracks.some((t, i) => (trackStateRef.current[i] ?? { solo: !!t.solo }).solo),
+      });
+      playersRef.current = [...stay, player];
+      setTrackScenes((prev) => ({ ...prev, [mixIndex]: sceneIndex }));
+      setLaunchError(null);
+      startedAtRef.current ??= performance.now();
+      if (animationRef.current == null) animationRef.current = window.requestAnimationFrame(tickMeters);
+    },
+    [getClipBuffer, nextLaunchTime, project.tempo, sceneClips, stopTrack, tickMeters, tracks],
   );
 
   // --- Live modulation from the Sway dims ------------------------------------
@@ -352,8 +645,16 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     if (!track) return;
     const mix = mixRef.current.get(mixIndex);
     const vol = mix?.vol ?? 1;
-    const muted = mix?.mute ?? false;
-    const target = dbToVolume(track.volume_db) * vol * (muted ? 0 : 1);
+    const modMuted = mix?.mute ?? false;
+    // Fold in the track's OWN mute/solo (plus any live override from the S/M
+    // buttons). This used to consider only the Sway modulation mute, so a track
+    // muted in Live played anyway and solo did nothing at all.
+    const st = trackStateRef.current[mixIndex] ?? { mute: !!track.mute, solo: !!track.solo };
+    const anySolo = tracksRef.current.some(
+      (t, i) => (trackStateRef.current[i] ?? { solo: !!t.solo }).solo,
+    );
+    const audible = !st.mute && !modMuted && !(anySolo && !st.solo);
+    const target = dbToVolume(track.volume_db) * vol * (audible ? 1 : 0);
     const context = getEngineCtx();
     for (const player of playersRef.current) {
       if (player.mixIndex === mixIndex && player.gain) {
@@ -361,6 +662,48 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       }
     }
   }, []);
+
+  /** Live mute/solo state per mixer column, seeded from the imported project and
+   *  then owned by the S/M buttons. A ref so the audio callbacks read it without
+   *  re-subscribing; mirrored into state purely for rendering. */
+  const trackStateRef = React.useRef<Record<number, { mute: boolean; solo: boolean }>>({});
+  const [trackStateVersion, setTrackStateVersion] = React.useState(0);
+  React.useEffect(() => {
+    trackStateRef.current = Object.fromEntries(
+      tracks.map((t, i) => [i, { mute: !!t.mute, solo: !!t.solo }]),
+    );
+    setTrackStateVersion((v) => v + 1);
+  }, [tracks]);
+
+  /** Re-apply every column: solo is a project-wide decision, so toggling one
+   *  track changes what every other track should be doing. */
+  const applyAllMix = React.useCallback(() => {
+    tracksRef.current.forEach((_, i) => applyMixToTrack(i));
+  }, [applyMixToTrack]);
+
+  const toggleTrackMute = React.useCallback((mixIndex: number) => {
+    const cur = trackStateRef.current[mixIndex] ?? { mute: false, solo: false };
+    trackStateRef.current[mixIndex] = { ...cur, mute: !cur.mute };
+    setTrackStateVersion((v) => v + 1);
+    applyAllMix();
+  }, [applyAllMix]);
+
+  const toggleTrackSolo = React.useCallback((mixIndex: number) => {
+    const cur = trackStateRef.current[mixIndex] ?? { mute: false, solo: false };
+    trackStateRef.current[mixIndex] = { ...cur, solo: !cur.solo };
+    setTrackStateVersion((v) => v + 1);
+    applyAllMix();
+  }, [applyAllMix]);
+
+  /** The track as the mixer should DISPLAY it (base project state + live S/M). */
+  const displayTrack = React.useCallback(
+    (track: DawTrack, mixIndex: number): DawTrack => {
+      void trackStateVersion; // re-read after a toggle
+      const st = trackStateRef.current[mixIndex];
+      return st ? { ...track, mute: st.mute, solo: st.solo } : track;
+    },
+    [trackStateVersion],
+  );
 
   React.useEffect(() => {
     const unsub = subscribeSwayValue((dim, value) => {
@@ -491,6 +834,24 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
 
   if (tracks.length === 0 || scenes.length === 0) return null;
 
+  // An arrangement-only Live Set still ships 8 <Scene> elements, so the header
+  // said "8 scenes / 12 tracks" and the grid below was an entirely empty wall of
+  // greyed-out cells with no explanation. Say what happened and point at the
+  // surface that DOES have the content.
+  if (clipLookup.size === 0) {
+    return (
+      <div className={`border border-white/10 bg-[#2f3238] ${fill ? 'h-full' : ''} grid place-items-center p-6`}>
+        <div className="flex flex-col items-center gap-2 text-center max-w-md">
+          <Square className="w-6 h-6 text-zinc-600" />
+          <div className="text-[11px] font-bold text-zinc-300">No session clips in this project</div>
+          <p className="text-[9px] font-mono text-zinc-500 leading-relaxed">
+            {`This set's ${tracks.length} track${tracks.length === 1 ? '' : 's'} put their clips on the arrangement timeline rather than in Session view, so there is nothing to launch here. Use “Edit Timeline” to open the arrangement.`}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const activeSceneName = activeScene == null ? 'Stopped' : scenes[activeScene];
   const masterDb = linearToDb(masterLevel);
   const masterMeterLabel = masterDb <= -71 ? '-inf' : masterDb.toFixed(1);
@@ -499,11 +860,27 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     <div className={`border border-white/10 bg-[#2f3238] overflow-hidden ${fill ? 'h-full flex flex-col' : ''}`}>
       <div className="shrink-0 flex items-center gap-1 border-b border-black/70 bg-[#202329] px-2 py-1 text-[10px] font-bold text-zinc-200">
         <div className="h-6 px-2 grid place-items-center border border-black/50 bg-[#15171b] text-zinc-300">
-          4 / 4
+          {/* Real time signature from the set, not a hardcoded "4 / 4". */}
+          {`${project.time_signature?.[0] ?? 4} / ${project.time_signature?.[1] ?? 4}`}
         </div>
-        <div className="h-6 px-2 grid place-items-center border border-black/50 bg-[#15171b] text-zinc-300">
-          1 Bar
-        </div>
+        {/* Launch quantization is a real control now — it used to be the literal
+            text "1 Bar" while every launch fired immediately, so layering against
+            something already playing landed permanently off the grid. */}
+        <label htmlFor="perform-quantize" className="sr-only">Launch quantization</label>
+        <select
+          id="perform-quantize"
+          name="perform-quantize"
+          value={quantizeBars}
+          onChange={(e) => setQuantizeBars(Number(e.target.value))}
+          title="Launch quantization — clips start on the next bar line so layered launches stay in time"
+          className="h-6 px-2 border border-black/50 bg-[#15171b] text-zinc-300 text-[10px] font-bold outline-none cursor-pointer"
+          style={{ colorScheme: 'dark' }}
+        >
+          <option value={0}>Off</option>
+          <option value={1}>1 Bar</option>
+          <option value={2}>2 Bars</option>
+          <option value={4}>4 Bars</option>
+        </select>
         <div className="h-6 px-2 grid place-items-center border border-black/50 bg-[#15171b] text-zinc-300">
           {project.tempo.toFixed(2)}
         </div>
@@ -631,26 +1008,37 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
                       key={`${trackIndex}-${sceneIndex}`}
                       className={[
                         'border-r-2 border-b border-black/70 min-h-7 bg-[#30343b]',
-                        activeScene === sceneIndex ? 'ring-1 ring-inset ring-emerald-200' : '',
+                        trackScenes[trackIndex] === sceneIndex ? 'ring-1 ring-inset ring-emerald-200' : '',
                       ].join(' ')}
                     >
                       {clip ? (
                         <button
                           type="button"
-                          onClick={() => selectAndLaunch(sceneIndex)}
-                          disabled={!clip.file_path}
+                          onClick={() => void launchClip(trackIndex, sceneIndex)}
+                          disabled={!isPlayableClip(clip)}
+                          aria-label={`Launch ${clip.name} on ${track.name}`}
                           className={[
                             'h-7 w-full px-1.5 flex items-center gap-1 border text-left',
-                            color.clip,
-                            !clip.file_path ? 'opacity-45 cursor-not-allowed' : 'hover:brightness-110',
+                            clipStyle(clip, color.clip),
+                            !isPlayableClip(clip) ? 'opacity-45 cursor-not-allowed' : 'hover:brightness-110',
                           ].join(' ')}
-                          title={clip.name}
+                          style={clip.color ? { backgroundColor: clip.color, borderColor: clip.color } : undefined}
+                          title={clipTitle(clip)}
                         >
                           <Play className="h-3 w-3 fill-current shrink-0" />
                           <span className="min-w-0 truncate text-[10px] font-bold">{clip.name}</span>
                         </button>
                       ) : (
-                        <div className="h-7 bg-[#262a31] border border-black/20" />
+                        /* An empty slot is a STOP button in Live, not dead space. */
+                        <button
+                          type="button"
+                          onClick={() => stopTrack(trackIndex)}
+                          aria-label={`Stop ${track.name}`}
+                          title={`Stop ${track.name}`}
+                          className="h-7 w-full bg-[#262a31] border border-black/20 flex items-center justify-center text-zinc-700 hover:text-zinc-200 hover:bg-[#2f343c]"
+                        >
+                          <Square className="h-2.5 w-2.5 fill-current" />
+                        </button>
                       )}
                     </div>
                   );
@@ -680,9 +1068,12 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
           {tracks.map((track, trackIndex) => (
             <TrackMixer
               key={`mixer-${track.name}-${trackIndex}`}
-              track={track}
+              track={displayTrack(track, trackIndex)}
               trackNumber={trackIndex + 1}
               level={trackLevels[trackIndex] ?? 0}
+              mixIndex={trackIndex}
+              onToggleMute={toggleTrackMute}
+              onToggleSolo={toggleTrackSolo}
             />
           ))}
           <div className="bg-[#454a54] border-t-2 border-black/70 px-2 py-2">
@@ -718,10 +1109,20 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   );
 };
 
-const TrackMixer: React.FC<{ track: DawTrack; trackNumber: number; level: number }> = ({
+const TrackMixer: React.FC<{
+  track: DawTrack;
+  trackNumber: number;
+  level: number;
+  mixIndex: number;
+  onToggleMute?: (mixIndex: number) => void;
+  onToggleSolo?: (mixIndex: number) => void;
+}> = ({
   track,
   trackNumber,
   level,
+  mixIndex,
+  onToggleMute,
+  onToggleSolo,
 }) => {
   const db = linearToDb(level);
   const label = db <= -71 ? '-inf' : db.toFixed(1);
@@ -752,11 +1153,28 @@ const TrackMixer: React.FC<{ track: DawTrack; trackNumber: number; level: number
           <div className="h-6 w-6 grid place-items-center bg-pink-300 text-[11px] font-black text-black">
             {trackNumber}
           </div>
+          {/* These had no onClick, no aria-label and no aria-pressed — the unmuted
+              state was a bare Headphones SVG with no accessible name at all. They
+              now reflect and drive the imported track's real state. */}
           <div className="flex gap-1">
-            <button type="button" className="h-5 w-6 bg-[#202329] text-[9px] font-bold text-zinc-300">
+            <button
+              type="button"
+              onClick={() => onToggleSolo?.(mixIndex)}
+              aria-label={`Solo ${track.name}`}
+              aria-pressed={!!track.solo}
+              title={`Solo ${track.name}`}
+              className={`h-5 w-6 text-[9px] font-bold ${track.solo ? 'bg-sky-400 text-black' : 'bg-[#202329] text-zinc-300 hover:text-white'}`}
+            >
               S
             </button>
-            <button type="button" className="h-5 w-6 bg-[#202329] text-[9px] font-bold text-zinc-300">
+            <button
+              type="button"
+              onClick={() => onToggleMute?.(mixIndex)}
+              aria-label={`${track.mute ? 'Unmute' : 'Mute'} ${track.name}`}
+              aria-pressed={!!track.mute}
+              title={`${track.mute ? 'Unmute' : 'Mute'} ${track.name}`}
+              className={`h-5 w-6 text-[9px] font-bold ${track.mute ? 'bg-amber-400 text-black' : 'bg-[#202329] text-zinc-300 hover:text-white'}`}
+            >
               {track.mute ? 'M' : <Headphones className="mx-auto h-3 w-3" />}
             </button>
           </div>
