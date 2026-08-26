@@ -18,6 +18,7 @@
 import { subscribeToMidi, type MidiBusMessage } from './midiBus';
 import { useEditorStore, type EditorTrack } from './editorStore';
 import { callEditorPlay, callEditorStop } from './editorPlaybackBridge';
+import { isPlaying as liveMixerIsPlaying } from './liveMixer';
 import { getSelectedTracks } from './editorSelectionBridge';
 import { triggerPianoNoteFromMidi } from '../lib/pianoTrigger';
 import {
@@ -79,7 +80,10 @@ function setBankTrack(stripIdx: number, updates: Partial<EditorTrack>): void {
 }
 
 function toggleTransport(): void {
-  if (useEditorStore.getState().isPlaying) callEditorStop();
+  // Ask the engine, not editorStore.isPlaying — that field has no writer anywhere
+  // in the app (setPlaying has zero callers), so it reads false forever and the
+  // hardware Play button could only ever start playback, never stop it.
+  if (liveMixerIsPlaying()) callEditorStop();
   else callEditorPlay();
 }
 

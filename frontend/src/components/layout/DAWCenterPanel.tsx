@@ -35,6 +35,7 @@ const MixView = lazy(() => import('../../views/MixView').then((m) => ({ default:
 const LineageView = lazy(() => import('../library/LineageModal').then((m) => ({ default: m.LineageView })));
 const VJView = lazy(() => import('../../views/VJView').then((m) => ({ default: m.VJView })));
 const DJView = lazy(() => import('../../views/DJView').then((m) => ({ default: m.DJView })));
+const SwayView = lazy(() => import('../../views/SwayView').then((m) => ({ default: m.SwayView })));
 const FoundryView = lazy(() => import('../../views/FoundryView').then((m) => ({ default: m.FoundryView })));
 const UnderfitView = lazy(() => import('../../views/UnderfitView').then((m) => ({ default: m.UnderfitView })));
 const AudimateView = lazy(() => import('../../views/AudimateView').then((m) => ({ default: m.AudimateView })));
@@ -56,7 +57,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // and the LEARN genealogy graph's fetch + layout + pan/zoom.
   const [warmedTabs, setWarmedTabs] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'foundry' || centerTab === 'underfit' || centerTab === 'audimate' || centerTab === 'learn' || centerTab === 'tour') {
+    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'sway' || centerTab === 'foundry' || centerTab === 'underfit' || centerTab === 'audimate' || centerTab === 'learn' || centerTab === 'tour') {
       setWarmedTabs((prev) => {
         if (prev.has(centerTab)) return prev;
         const next = new Set(prev);
@@ -130,6 +131,18 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               style={{ display: centerTab === 'vj' ? undefined : 'none' }}
             >
               <Suspense fallback={<TabFallback />}><VJView /></Suspense>
+            </div>
+          )}
+          {/* SWAY hosts the embedded SwayCommand cockpit (WebGL + an rAF
+              transport clock), so it follows the DJ/VJ pattern: mount once, then
+              toggle visibility. SwayView pushes visible:false to the child so a
+              backgrounded cockpit stops rendering instead of burning GPU. */}
+          {warmedTabs.has('sway') && (
+            <div
+              className="absolute inset-0"
+              style={{ display: centerTab === 'sway' ? undefined : 'none' }}
+            >
+              <Suspense fallback={<TabFallback />}><SwayView /></Suspense>
             </div>
           )}
           {warmedTabs.has('foundry') && (

@@ -34,6 +34,7 @@ import {
   useEditorStore,
   sampleLane,
   automationTargetKey,
+  clipPeakGain,
   type AudioClip,
   type EditorTrack,
   type AutomationTarget,
@@ -51,6 +52,8 @@ import {
   liveNoteOn,
   liveNoteOff,
   liveAllNotesOff,
+  routeMidiChannel,
+  resetMidiRouting,
   useSoundfontStore,
 } from '../lib/soundfontEngine';
 import { buildEffectChain, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../lib/rackEffects';
@@ -341,23 +344,27 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
     const when = Math.max(now, clipStartCtx);
 
     // Per-clip fade envelope on a dedicated gain (track volume lives on trackGain).
+    // `peak` is the clip's own gain — the envelope rises to it instead of to unity,
+    // so clip gain lands before the track fader and its insert FX, matching the
+    // three offline bounce paths in WaveformEditor.
     const clipGain = ctx.createGain();
     const fadeIn = clip.fadeInSec ?? 0;
     const fadeOut = clip.fadeOutSec ?? 0;
+    const peak = clipPeakGain(clip);
     const g = clipGain.gain;
     if (clipStartCtx >= now) {
       // Clip begins in the future — full envelope.
-      g.setValueAtTime(fadeIn > 0 ? 0 : 1, when);
-      if (fadeIn > 0) g.linearRampToValueAtTime(1, when + Math.min(fadeIn, safeDur));
+      g.setValueAtTime(fadeIn > 0 ? 0 : peak, when);
+      if (fadeIn > 0) g.linearRampToValueAtTime(peak, when + Math.min(fadeIn, safeDur));
     } else {
       // Starting mid-clip — set the current envelope value now.
-      const cur = fadeIn > 0 && into < fadeIn ? into / fadeIn : 1;
+      const cur = fadeIn > 0 && into < fadeIn ? (into / fadeIn) * peak : peak;
       g.setValueAtTime(cur, now);
-      if (fadeIn > 0 && into < fadeIn) g.linearRampToValueAtTime(1, clipStartCtx + fadeIn);
+      if (fadeIn > 0 && into < fadeIn) g.linearRampToValueAtTime(peak, clipStartCtx + fadeIn);
     }
     if (fadeOut > 0) {
       const foStartCtx = clipStartCtx + safeDur - Math.min(fadeOut, safeDur);
-      if (foStartCtx > now) g.setValueAtTime(1, foStartCtx);
+      if (foStartCtx > now) g.setValueAtTime(peak, foStartCtx);
       g.linearRampToValueAtTime(0, clipStartCtx + safeDur);
     }
 
@@ -577,6 +584,15 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
     channelOf.set(clip.trackId, nextCh++);
   }
 
+  // Point each of those channels at its track's gain node, so live MIDI runs
+  // through the same fader -> insert FX -> panner -> master rack path its bounced
+  // audio takes on export. Channels with no MIDI track stay on the engine master,
+  // which is what the piano roll and MIDI panel preview through.
+  for (const [trackId, ch] of channelOf) {
+    const node = trackNodes.get(trackId);
+    if (node) routeMidiChannel(ch, node.gain);
+  }
+
   for (const clip of clips) {
     if (!isMidiClip(clip)) continue;
     // Clips muted before play schedule no notes; mute is ALSO re-checked at
@@ -589,9 +605,20 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
     const program = clip.instrumentProgram ?? track.instrumentProgram ?? globalProgram;
     const bpm = clip.sourceBpm ?? ed.bpm ?? 120;
     const stepSec = 60 / Math.max(40, bpm) / 4;
+    const offsetIntoSource = clip.offsetIntoSource ?? 0;
     for (const n of clip.sourcePianoRoll ?? []) {
-      const onSec = clip.startSec + n.step * stepSec;
-      const offSec = onSec + Math.max(1, n.length) * stepSec;
+      // Notes are positioned in SOURCE time; the clip is a window onto that
+      // source. Subtract the trim offset and clamp to the clip's length, exactly
+      // as MidiClipNotes does when drawing them. Without this, splitClipAt — which
+      // copies the whole sourcePianoRoll into BOTH halves — made a split MIDI clip
+      // play its entire pattern twice, while the on-screen notes showed it once.
+      const relStart = n.step * stepSec - offsetIntoSource;
+      const relEnd = relStart + Math.max(1, n.length) * stepSec;
+      if (relEnd <= 0 || relStart >= clip.durationSec) continue; // outside this clip's window
+      const onSec = clip.startSec + Math.max(0, relStart);
+      // Clamp the note-off to the clip edge so a note running past the trim point
+      // is cut there rather than sustaining beyond the clip.
+      const offSec = clip.startSec + Math.min(clip.durationSec, relEnd);
       if (offSec <= fromSec || onSec < fromSec) continue; // finished, or already sounding
       const onDelay = Math.max(0, (onSec - fromSec) * 1000);
       const offDelay = Math.max(onDelay + 10, (offSec - fromSec) * 1000);
@@ -632,6 +659,10 @@ function clearSources(): void {
   }
   clipMuteGains = new Map();
   clearMidiTimers();
+  // Release per-channel synth routing while the track nodes it points at are
+  // still alive. clearSources() runs at the top of every start() and from
+  // stop/pause/dispose, so this is always ahead of disposeTrackNodes().
+  resetMidiRouting();
   stopFxAutomation();
 }
 
@@ -868,4 +899,13 @@ export function dispose(): void {
   lastMasterSig = '';
   lastMasterFullSig = '';
   setLiveTransport(null);
+  // Mirror stop()/pause() and leave the shared player store consistent. Without
+  // this, a dispose() while rolling left `isPlaying` stuck true: the footer kept
+  // rendering a Pause button forever, and pause() early-returns on `!playing`, so
+  // pressing it could never clear the state — only a full Stop recovered.
+  // Guarded on the entry id so disposing the editor mixer never clobbers the
+  // transport state of a library track playing through the same store.
+  if (usePlayerStore.getState().currentEntryId === EDITOR_ENTRY_ID) {
+    usePlayerStore.setState({ isPlaying: false });
+  }
 }

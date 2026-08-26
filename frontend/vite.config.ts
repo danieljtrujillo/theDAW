@@ -117,6 +117,13 @@ export default defineConfig(({mode}) => {
           target: 'http://localhost:8600',
           changeOrigin: true,
         },
+        // SwayCommand cockpit embed build. Same-origin in dev is REQUIRED, not
+        // cosmetic: Chromium gives a cross-origin hidden iframe zero rAF
+        // callbacks and SwayCommand's transport clock runs on rAF.
+        '/sway-app': {
+          target: 'http://localhost:8600',
+          changeOrigin: true,
+        },
       },
       hmr: process.env.ENABLE_HMR === 'true',
       watch: process.env.ENABLE_HMR === 'true' ? undefined : null,

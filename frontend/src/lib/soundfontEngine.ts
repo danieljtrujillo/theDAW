@@ -184,9 +184,11 @@ async function renderMidiToBlob(
 /** Render absolute-seconds notes to a WAV blob through the soundfont. */
 export async function renderNotesToBlobSF(
   notes: RenderNote[],
-  opts: { sampleRate?: number; tailSec?: number } = {},
+  opts: { sampleRate?: number; tailSec?: number; program?: number } = {},
 ): Promise<{ blob: Blob; duration: number }> {
-  const smf = notesToSmf(notes, getActiveProgram());
+  // Honor an explicit program when the caller knows the clip's instrument; only
+  // fall back to the global picker when it doesn't.
+  const smf = notesToSmf(notes, opts.program ?? getActiveProgram());
   return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts.tailSec ?? 0.6);
 }
 
@@ -200,6 +202,54 @@ export async function renderMidiBufferToBlobSF(
       ? (buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer)
       : buf;
   return renderMidiToBlob(ab, opts.sampleRate ?? 44100, opts.tailSec ?? 1);
+}
+
+/* ── per-channel output routing ────────────────────────────────────────────────
+ * The worklet exposes 17 outputs: output 0 is the shared effects bus (reverb /
+ * chorus returns) and outputs 1-16 are the dry per-MIDI-channel outs.
+ * `synth.connect(node)` wires ALL 17 to one destination, which is why live MIDI
+ * used to land straight on the engine master — bypassing the track fader, pan,
+ * insert FX and the master rack that the very same clip obeys once exported.
+ *
+ * Rerouting a channel is therefore just: detach it from master, attach it to the
+ * track's gain node. `connectChannel(node, ch)` maps to `worklet.connect(node,
+ * ch % 16 + 1)`, so this uses the public API only — no `oneOutput` rebuild of the
+ * synth, which would have changed the topology for the piano roll and MIDI panel
+ * too. Output 0 stays on master: the effects bus is shared across all channels
+ * and cannot be attributed to one track, so a track's synth reverb tail is the
+ * one part that still bypasses its chain.
+ */
+const channelRoutes = new Map<number, AudioNode>();
+
+/** Send MIDI channel `ch` to `dest` (a track's gain node), or back to the engine
+ *  master when `dest` is null. No-op until the live synth exists. */
+export function routeMidiChannel(ch: number, dest: AudioNode | null): void {
+  const synth = liveSynth;
+  if (!synth) return;
+  const master = getMasterGain();
+  const current = channelRoutes.get(ch) ?? master;
+  const next = dest ?? master;
+  if (current === next) return;
+  try { synth.disconnectChannel(current, ch); } catch { /* already detached */ }
+  try { synth.connectChannel(next, ch); } catch { /* node gone */ }
+  if (dest) channelRoutes.set(ch, dest);
+  else channelRoutes.delete(ch);
+}
+
+/** Return every rerouted channel to the engine master. MUST run before the track
+ *  nodes it points at are disposed, or channels stay attached to dead nodes. */
+export function resetMidiRouting(): void {
+  const synth = liveSynth;
+  if (!synth) {
+    channelRoutes.clear();
+    return;
+  }
+  const master = getMasterGain();
+  for (const [ch, node] of channelRoutes) {
+    try { synth.disconnectChannel(node, ch); } catch { /* already detached */ }
+    try { synth.connectChannel(master, ch); } catch { /* master always valid */ }
+  }
+  channelRoutes.clear();
 }
 
 /* ── live multi-channel note API (timeline MIDI scheduler) ─────────────────── */

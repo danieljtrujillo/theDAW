@@ -8,9 +8,13 @@ import { logError, logInfo } from './logStore';
  * always reflect whatever's audible.
  *
  *   HTMLAudioElement ──┐
- *                      ├──▶ master gain ──▶ [master insert] ──▶ [live-FX insert] ──▶ analyser ──▶ destination
- *   editor preview  ───┤
- *   sequencer voices ──┘
+ *                      ├──▶ master bus ──▶ [master insert] ──▶ [live-FX insert] ──▶ analyser ──▶ monitor ──▶ destination
+ *   editor preview  ───┤                                                        ▲
+ *   sequencer voices ──┘                                                        └── meter taps here (getMeterTap)
+ *
+ * `master` is a UNITY summing bus. Listening volume lives on `monitor`, the last
+ * node before the speakers, so metering and visualization are independent of how
+ * loud the user is monitoring.
  *
  * The [master insert] is a passthrough bus (insertIn ─▶ insertOut) sitting on
  * the summed output. A live effect rack (the MIX psychoacoustic rack) splices
@@ -32,6 +36,7 @@ let _insertOut: GainNode | null = null;
 // Live-FX insert bus: insertOut -> fxIn -> [live master FX] -> fxOut -> analyser.
 let _fxIn: GainNode | null = null;
 let _fxOut: GainNode | null = null;
+let _monitor: GainNode | null = null;
 let _audioEl: HTMLAudioElement | null = null;
 let _mediaSrc: MediaElementAudioSourceNode | null = null;
 let _objectUrl: string | null = null;
@@ -90,12 +95,22 @@ export const ensureEngine = (): EngineHandles => {
   // always-available live master FX chain (lib/liveMasterFx) splices itself.
   const fxIn = ctx.createGain();
   const fxOut = ctx.createGain();
+  // Monitor (listening) volume. This is the LAST node before the speakers, not
+  // the first: it used to live on `master` at the head of the chain, which made
+  // every downstream tap post-fader — so the LUFS/true-peak meter moved when you
+  // turned your speakers down, and read pre-master-FX besides. `master` is now a
+  // pure unity summing bus (which is all any getMasterGain() caller ever used it
+  // as — nothing in the app writes its .gain), and turning the monitor down no
+  // longer changes what the meter or the visualizer sees.
+  const monitor = ctx.createGain();
+  monitor.gain.value = 1;
   master.connect(insertIn);
   insertIn.connect(insertOut);
   insertOut.connect(fxIn);
   fxIn.connect(fxOut);
   fxOut.connect(analyser);
-  analyser.connect(ctx.destination);
+  analyser.connect(monitor);
+  monitor.connect(ctx.destination);
 
   const audioEl = new Audio();
   audioEl.crossOrigin = 'anonymous';
@@ -140,6 +155,7 @@ export const ensureEngine = (): EngineHandles => {
   _insertOut = insertOut;
   _fxIn = fxIn;
   _fxOut = fxOut;
+  _monitor = monitor;
   _audioEl = audioEl;
   _mediaSrc = mediaSrc;
   return { ctx, master, analyser, audioEl };
@@ -147,6 +163,18 @@ export const ensureEngine = (): EngineHandles => {
 
 /** Other sources (editor preview, sequencer voices) connect here so they go through the same analyser. */
 export const getMasterGain = (): GainNode => ensureEngine().master;
+
+/**
+ * The correct tap point for metering: the end of the processing chain (after the
+ * MIX rack insert and the live master FX) but BEFORE the monitor fader. This is
+ * the signal that actually gets exported, which is what a LUFS / true-peak meter
+ * must measure. Do not meter `getMasterGain()` — that is the pre-FX summing bus
+ * and, before the monitor node was moved, was also post-listening-volume.
+ */
+export const getMeterTap = (): GainNode => {
+  ensureEngine();
+  return _fxOut!;
+};
 export const getAnalyser = (): AnalyserNode => ensureEngine().analyser;
 export const getEngineCtx = (): AudioContext => ensureEngine().ctx;
 
@@ -380,8 +408,10 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   setMasterGain: (gain) => {
-    const { master, ctx } = ensureEngine();
-    master.gain.setTargetAtTime(Math.max(0, gain), ctx.currentTime, 0.01);
+    // Writes the MONITOR node at the end of the chain, not the `master` summing
+    // bus at the head — so changing listening volume no longer moves the meter.
+    const { ctx } = ensureEngine();
+    _monitor?.gain.setTargetAtTime(Math.max(0, gain), ctx.currentTime, 0.01);
   },
 }));
 

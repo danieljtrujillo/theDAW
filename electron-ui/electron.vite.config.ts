@@ -76,6 +76,18 @@ export default defineConfig({
           ws: true,
           timeout: 0,
           proxyTimeout: 0
+        },
+        // Static SwayCommand cockpit served by the backend (matches
+        // frontend/vite.config.ts). Missing this does NOT 404 — Vite's SPA
+        // fallback serves theDAW's own index.html into the iframe and you
+        // see the entire app nested inside itself, which is the single most
+        // confusing failure in this pattern.
+        '/sway-app': {
+          target: 'http://localhost:8600',
+          changeOrigin: true,
+          ws: true,
+          timeout: 0,
+          proxyTimeout: 0
         }
       }
     }

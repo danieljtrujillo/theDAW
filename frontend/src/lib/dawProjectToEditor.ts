@@ -51,7 +51,11 @@ const pianoNotesFromRenderNotes = (notes: RenderNote[], bpm: number): PianoNote[
     note: note.midi,
     step: Math.max(0, Math.round(note.startSec / stepSec)),
     length: Math.max(1, Math.round(note.durationSec / stepSec)),
-    velocity: Math.max(0, Math.min(1, note.velocity / 127)),
+    // PianoNote.velocity is MIDI 0-127 (pianoRollStore seeds notes at 90 and
+    // notesToSmf clamps to 1..127). notesFromDawClip has already normalised up to
+    // that range, so dividing by 127 here pushed every imported note into 0..1 —
+    // which the downstream Math.max(1, …) then floored to velocity 1, i.e. silence.
+    velocity: Math.max(1, Math.min(127, Math.round(note.velocity))),
   }));
 };
 

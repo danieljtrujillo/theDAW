@@ -119,6 +119,16 @@ extraResources:
     to: python/vj-dist
     filter:
       - "**/*"
+  # SwayCommand cockpit embed build, staged by scripts/fetch-sway-build.mjs
+  # (npm run fetch:sway) before packaging. Lands at python/sway-dist, which the
+  # backend's sway module resolves as _REPO_ROOT/"sway-dist" and mounts at
+  # /sway-app - so the SWAY tab works with no Node.js on the target machine.
+  # SwayCommand also ships as its own standalone desktop app; this is the same
+  # cockpit built for embedding. The dir is gitignored + regenerated.
+  - from: resources/sway-dist
+    to: python/sway-dist
+    filter:
+      - "**/*"
   # VST Foundry production bundle (dist/ + production node_modules + package.json),
   # staged by scripts/fetch-foundry-build.mjs (npm run fetch:foundry). Lands where the
   # foundry sidecar resolves it (_REPO_ROOT/"VST-Foundry-UI"/"VST-UI-FOUNDRY") and runs

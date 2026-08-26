@@ -1,0 +1,10 @@
+{
+  "name": "sway",
+  "label": "SwayCommand",
+  "enabled": true,
+  "icon": "Waves",
+  "sidebar": false,
+  "api_prefix": "/api/sway",
+  "backend": true,
+  "description": "Hosts the SwayCommand cockpit (gesture VJ instrument for the Audima Labs Sway) as an embedded surface in theDAW's SWAY tab. Serves the static embed build at /sway-app; the same sources also ship as a standalone desktop app. Stage a build with 'npm run fetch:sway' in electron-ui/, or set theDAW_SWAY_DIST. Disable to hide the tab's embed and keep only theDAW's own Sway control plumbing."
+}

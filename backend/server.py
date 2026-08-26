@@ -2026,6 +2026,43 @@ try:
 except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
     logger.warning("vj: static mount skipped: %s", _vj_mount_err)
 
+# SwayCommand cockpit served as a static embed build, same shape as the VJ mount
+# above and for the same reasons: one origin, no Node on the target machine,
+# identical behaviour on Windows/macOS/Linux/Docker. Mounted at /sway-app (which
+# the embed build is compiled against as its base href) BEFORE the SPA catch-all
+# below so it cannot be shadowed. In dev the frontend's Vite config proxies
+# /sway-app -> :8600 so the iframe stays same-origin with theDAW; that is
+# required, not cosmetic, because Chromium gives a cross-origin hidden iframe
+# zero rAF callbacks and SwayCommand's transport clock runs on rAF.
+try:
+    from backend.modules.sway import sidecar as _sway_sidecar
+
+    _sway_dist = _sway_sidecar.resolve_dist_dir()
+    if _sway_dist is not None:
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount(
+            _sway_sidecar.STATIC_MOUNT_PATH,
+            StaticFiles(directory=_sway_dist, html=True),
+            name="sway-app",
+        )
+        # Freeze the decision: /api/sway/url hands out the embed URL only when
+        # this mount really exists (see sidecar.static_mount_active).
+        _sway_sidecar.STATIC_MOUNTED = True
+        logger.info(
+            "sway: serving %s at %s (static embed build)",
+            _sway_dist,
+            _sway_sidecar.STATIC_MOUNT_PATH,
+        )
+    else:
+        logger.info(
+            "sway: no embed build staged — the SWAY tab will explain how to "
+            "stage one (%s)",
+            _sway_sidecar.DIST_ENV,
+        )
+except Exception as _sway_mount_err:  # noqa: BLE001 — never block boot on Sway
+    logger.warning("sway: static mount skipped: %s", _sway_mount_err)
+
 # Single-container / companion UI serving. Every API route lives under /api and
 # is registered above, BEFORE this mount, so the SPA catch-all can never shadow
 # an endpoint.

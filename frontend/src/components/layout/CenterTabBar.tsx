@@ -11,6 +11,7 @@ import {
   Rows3,
   Waypoints,
   Route,
+  Waves,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
@@ -103,6 +104,18 @@ const TABS: Array<{
     label: 'VJ',
     desc: 'Live visuals engine: sources, effects and output for performance',
     icon: Tv2,
+    accent: {
+      border: 'border-fuchsia-500/50',
+      bg: 'bg-fuchsia-500/15',
+      text: 'text-fuchsia-100',
+      iconText: 'text-fuchsia-300',
+    },
+  },
+  {
+    id: 'sway',
+    label: 'Sway',
+    desc: 'SwayCommand: gesture VJ cockpit for the Audima Sway, plus theDAW’s Sway routing',
+    icon: Waves,
     accent: {
       border: 'border-fuchsia-500/50',
       bg: 'bg-fuchsia-500/15',

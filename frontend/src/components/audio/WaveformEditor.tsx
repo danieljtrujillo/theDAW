@@ -5,6 +5,7 @@ import {
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
   SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
   Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw, Blocks,
+  Maximize2, Rows3, Keyboard,
 } from 'lucide-react';
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
@@ -17,10 +18,12 @@ import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../../lib/mage
 import { AutomationLane } from './AutomationLane';
 import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule, teleportXYZ, SPATIAL_TELEPORT, type ChainHandle } from '../../lib/rackEffects';
 import { sliceChunks } from '../../lib/audioAnalysis';
+import { effectiveZoom } from '../../lib/canvasScale';
+import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, computePeaks, sampleLane, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, computePeaks, sampleLane, clipPeakGain, snapStepSec, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useVstStore } from '../../state/vstStore';
 import { useVstEditorStore } from '../../state/vstEditorStore';
@@ -49,7 +52,6 @@ import { useDjAnalysisStore } from '../../state/djAnalysisStore';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
 const TRACK_HEADER_PX = 180;
-const TRACK_HEIGHT = 104;
 const DECODE_TIMEOUT_MS = 15000;
 
 const formatTimecode = (sec: number): string => {
@@ -417,6 +419,95 @@ const TimePitchControls: React.FC<{ busy: boolean; onApply: (tempo: number, semi
   );
 };
 
+/** The EDIT tab's keyboard map, rendered by the "?" overlay. Kept next to the
+ *  hotkey handler's own comment block so the two stay in step — if you add a
+ *  binding there, add its row here. */
+const EDIT_SHORTCUTS: Array<{ group: string; keys: Array<[string, string]> }> = [
+  {
+    group: 'Transport',
+    keys: [
+      ['Space', 'Play / pause'],
+      ['Home', 'Playhead to start'],
+      ['End', 'Playhead to end'],
+      ['L', 'Toggle loop'],
+      ['M', 'Marker at playhead'],
+    ],
+  },
+  {
+    group: 'Editing',
+    keys: [
+      ['V', 'Move tool'],
+      ['C', 'Cut tool'],
+      ['S', 'Split selection at playhead'],
+      ['Del', 'Delete selected clips'],
+      ['Ctrl+D', 'Duplicate'],
+      ['Ctrl+C / X / V', 'Copy / cut / paste at playhead'],
+      ['Ctrl+A', 'Select all clips'],
+      ['Ctrl+Z / Ctrl+Shift+Z', 'Undo / redo'],
+    ],
+  },
+  {
+    group: 'Move',
+    keys: [
+      ['← / →', 'Nudge by one grid step'],
+      ['Shift + ← / →', 'Nudge by four steps'],
+      ['↑ / ↓', 'Move a track up / down'],
+    ],
+  },
+  {
+    group: 'View',
+    keys: [
+      ['+ / -', 'Zoom in / out'],
+      ['Shift+F', 'Zoom to fit'],
+      ['Ctrl + wheel', 'Zoom at cursor'],
+      ['Shift + wheel', 'Scroll horizontally'],
+      ['?', 'This list'],
+    ],
+  },
+  {
+    group: 'AI',
+    keys: [['Ctrl+P', 'Inpaint the selected region']],
+  },
+];
+
+/** Per-clip gain, edited in dB and stored as a linear multiplier. Applies live —
+ *  there is no Apply button because nothing is rendered: clip gain is read by the
+ *  scheduler on the next play and by every offline bounce. */
+const ClipGainControls: React.FC<{ gain: number; onChange: (gain: number) => void }> = ({ gain, onChange }) => {
+  const db = gain > 0 ? 20 * Math.log10(gain) : -60;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Gain</span>
+        <SlideTrack
+          value={Math.max(-24, Math.min(12, db))}
+          min={-24}
+          max={12}
+          step={0.5}
+          defaultValue={0}
+          ariaLabel="Clip gain in decibels"
+          className="flex-1"
+          onChange={(v) => onChange(10 ** (v / 20))}
+        />
+        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">
+          {db > -0.05 && db < 0.05 ? '0.0' : `${db > 0 ? '+' : ''}${db.toFixed(1)}`} dB
+        </span>
+      </div>
+      <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+        Sits before the track fader and its insert FX, so gain-staging changes what the
+        track&apos;s compressor hears. Non-destructive — the clip&apos;s audio is untouched.
+      </p>
+      <button
+        onClick={() => onChange(1)}
+        disabled={db > -0.05 && db < 0.05}
+        className="w-full py-1.5 rounded bg-white/5 border border-white/10 text-zinc-300 text-[9px] font-black uppercase tracking-widest hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+      >
+        Reset to unity
+      </button>
+    </div>
+  );
+};
+
 /** A draggable-free timeline marker flag: click to seek, double-click to rename,
  *  Alt-click or right-click to delete. */
 const MarkerFlag: React.FC<{
@@ -477,7 +568,34 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const footerTcRef = useRef<HTMLSpanElement>(null);
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  // Follow-playhead: keep the moving playhead in view during playback. Extends
+  // this same imperative subscription rather than adding a playheadSec selector,
+  // for exactly the reason documented above. Suspended while the user is
+  // scrolling by hand (any wheel/pointer scroll that isn't ours) and resumed on
+  // the next transport start, so it never fights the user for the scrollbar.
+  const followPlayheadRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
   useEffect(() => {
+    const scrollIntoView = (sec: number) => {
+      const el = timelineScrollRef.current;
+      if (!el || !followPlayheadRef.current) return;
+      if (!liveMixer.isPlaying()) return;
+      const x = sec * zoomRef.current;
+      const view = el.clientWidth;
+      if (view <= 0) return;
+      const left = el.scrollLeft;
+      // Page when the playhead leaves a comfortable band, rather than centring
+      // every frame — continuous re-centring makes the waveform crawl sideways
+      // and is far more distracting than a page turn.
+      const lead = view * 0.15;
+      if (x < left + lead || x > left + view - lead) {
+        programmaticScrollRef.current = true;
+        el.scrollLeft = Math.max(0, x - lead);
+        // Cleared on the next frame: the scroll event this triggers must not be
+        // mistaken for the user grabbing the scrollbar.
+        requestAnimationFrame(() => { programmaticScrollRef.current = false; });
+      }
+    };
     const apply = (sec: number) => {
       const z = zoomRef.current;
       const x = `${sec * z}px`;
@@ -487,17 +605,36 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const tc = formatTimecode(sec);
       if (headerTcRef.current) headerTcRef.current.textContent = tc;
       if (footerTcRef.current) footerTcRef.current.textContent = tc;
+      scrollIntoView(sec);
     };
     apply(useEditorStore.getState().playheadSec);
     return useEditorStore.subscribe((s, prev) => {
       if (s.playheadSec !== prev.playheadSec) apply(s.playheadSec);
     });
   }, []);
+
+  // Any scroll the follow logic did not initiate is the user taking over.
+  useEffect(() => {
+    const el = timelineScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (programmaticScrollRef.current) return;
+      followPlayheadRef.current = false;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
   const snap = useEditorStore((s) => s.snap);
+  /** Vertical zoom. Every `index * trackH` in the timeline layout (and the
+   *  drag/drop track-targeting maths) reads this, so lanes stay aligned at any
+   *  height. Uniform across tracks by design — see editorStore.trackHeight. */
+  const trackH = useEditorStore((s) => s.trackHeight);
+  const setTrackHeight = useEditorStore((s) => s.setTrackHeight);
   const setSelected = useEditorStore((s) => s.setSelected);
   const setTool = useEditorStore((s) => s.setTool);
   const setZoom = useEditorStore((s) => s.setZoom);
   const setSnap = useEditorStore((s) => s.setSnap);
+  const setBpm = useEditorStore((s) => s.setBpm);
   const setPlayhead = useEditorStore((s) => s.setPlayhead);
   const addTrack = useEditorStore((s) => s.addTrack);
   const removeTrack = useEditorStore((s) => s.removeTrack);
@@ -524,6 +661,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const addMasterVst = useEditorStore((s) => s.addMasterVst);
   const setMasterVstRawState = useEditorStore((s) => s.setMasterVstRawState);
   const setTrackVstRawState = useEditorStore((s) => s.setTrackVstRawState);
+  const addTrackVst = useEditorStore((s) => s.addTrackVst);
   const removeMasterVst = useEditorStore((s) => s.removeMasterVst);
   const reorderMasterVst = useEditorStore((s) => s.reorderMasterVst);
   const clearMasterVst = useEditorStore((s) => s.clearMasterVst);
@@ -756,6 +894,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
     if (entry) openVstEditor(entry, setMasterVstRawState);
   };
+  // Same contract for a TRACK insert chain: add once, then (re)open the GUI.
+  // Everything downstream already existed — the FxRack VST tile, the raw_state
+  // sink, and renderTrackStem's backend VST pass — this was the missing entry
+  // point, which is also why the per-track freeze button had nothing to enable it.
+  const addAndEditTrackVst = (trackId: string, pl: Vst3PluginInfo) => {
+    const chainOf = (): ChainEntry[] =>
+      useEditorStore.getState().tracks.find((t) => t.id === trackId)?.fxChain ?? [];
+    let entry = chainOf().find((e) => e.vst?.plugin_path === pl.path);
+    if (!entry) {
+      addTrackVst(trackId, { plugin_path: pl.path, plugin_name: pl.name });
+      entry = [...chainOf()].reverse().find((e) => e.vst?.plugin_path === pl.path);
+    }
+    if (entry) openVstEditor(entry, (entryId, raw) => setTrackVstRawState(trackId, entryId, raw));
+  };
   // The Ares .gan control-surface popup and the chain entry (track or master
   // scope) it drives while open.
   const [aresPanel, setAresPanel] = useState<{ scope: { kind: 'master' } | { kind: 'track'; trackId: string }; entryId: string } | null>(null);
@@ -860,6 +1012,116 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       if (attached) { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); }
     };
   }, [timePitchPanel]);
+
+  /** The GM program a MIDI clip actually sounds with: clip override, else track
+   *  default, else the global instrument — the same precedence liveMixer uses. */
+  const effectiveProgramFor = useCallback((clip: AudioClip): number | undefined => {
+    const st = useEditorStore.getState();
+    const track = st.tracks.find((t) => t.id === clip.trackId);
+    const sf = useSoundfontStore.getState();
+    return clip.instrumentProgram ?? track?.instrumentProgram ?? (sf.useSoundfont ? sf.activeProgram : undefined);
+  }, []);
+
+  /** Re-bounce a MIDI clip's audio through its current instrument. Live playback
+   *  synthesises from the note list and already honours the program, but the three
+   *  offline bounce paths read `audioBlob` — so without this, assigning "Cello" to
+   *  a clip made it PLAY cello and EXPORT whatever was selected when it was
+   *  inserted. Re-rendering on change keeps the blob and the program in step, which
+   *  fixes every export path at once instead of patching each bounce. */
+  const rerenderMidiClipAudio = useCallback(async (clipId: string) => {
+    const clip = useEditorStore.getState().clips.find((c) => c.id === clipId);
+    if (!clip || clip.sourceKind !== 'piano-roll' || !clip.sourcePianoRoll?.length) return;
+    const program = effectiveProgramFor(clip);
+    if (program === undefined || program === clip.renderedProgram) return;
+    try {
+      await ensureSoundfontReady();
+      const bpm = clip.sourceBpm ?? useEditorStore.getState().bpm;
+      const totalSteps = clip.sourceTotalSteps
+        ?? Math.max(16, ...clip.sourcePianoRoll.map((n) => n.step + n.length));
+      const rendered = await renderStepNotesToBlob(clip.sourcePianoRoll, bpm, totalSteps, { program });
+      const { peaks } = await computePeaks(rendered.blob, 240);
+      // Re-read: the user may have deleted or re-assigned the clip mid-render.
+      const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
+      if (!live || effectiveProgramFor(live) !== program) return;
+      updateClip(clipId, { audioBlob: rendered.blob, mimeType: 'audio/wav', renderedProgram: program });
+      cachePeaks(clipId, peaks);
+    } catch (e) {
+      logError('editor', `Instrument re-render failed for "${clip.label}": ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [cachePeaks, effectiveProgramFor, updateClip]);
+
+  // Keep every MIDI clip's bounced audio in step with its instrument. Covers clip
+  // overrides, track defaults and the global picker in one place, so no individual
+  // instrument control has to remember to trigger a re-render.
+  // `tracks` and the soundfont store are in the dep list because a clip's
+  // effective program can change without `clips` changing at all — via a track
+  // default or the global instrument picker. Without them, reassigning the
+  // instrument at either of those levels would leave the bounced audio stale.
+  const sfActiveProgram = useSoundfontStore((s) => s.activeProgram);
+  const sfEnabled = useSoundfontStore((s) => s.useSoundfont);
+  const midiClipProgramSig = useMemo(
+    () => clips.filter((c) => c.sourceKind === 'piano-roll')
+      .map((c) => `${c.id}:${effectiveProgramFor(c) ?? 'x'}:${c.renderedProgram ?? 'x'}`)
+      .join('|'),
+    [clips, tracks, sfActiveProgram, sfEnabled, effectiveProgramFor],
+  );
+  useEffect(() => {
+    const stale = useEditorStore.getState().clips.filter(
+      (c) => c.sourceKind === 'piano-roll'
+        && c.sourcePianoRoll?.length
+        && effectiveProgramFor(c) !== undefined
+        && effectiveProgramFor(c) !== c.renderedProgram,
+    );
+    for (const c of stale) void rerenderMidiClipAudio(c.id);
+    // midiClipProgramSig collapses the clip list to just the program pairing, so
+    // this runs when an instrument assignment changes — not on every clip drag.
+  }, [midiClipProgramSig, effectiveProgramFor, rerenderMidiClipAudio]);
+
+  // Tap tempo. Averages the intervals between recent taps and writes the result to
+  // the project BPM. Taps more than 2s apart start a fresh measurement, so an idle
+  // return to the button doesn't average against a stale gap.
+  const tapTimesRef = useRef<number[]>([]);
+  const tapTempo = useCallback(() => {
+    const now = performance.now();
+    const taps = tapTimesRef.current;
+    if (taps.length > 0 && now - taps[taps.length - 1] > 2000) taps.length = 0;
+    taps.push(now);
+    if (taps.length > 8) taps.shift();
+    if (taps.length < 2) return;
+    const spans: number[] = [];
+    for (let i = 1; i < taps.length; i += 1) spans.push(taps[i] - taps[i - 1]);
+    const mean = spans.reduce((a, b) => a + b, 0) / spans.length;
+    if (mean <= 0) return;
+    setBpm(Math.round(60000 / mean));
+  }, [setBpm]);
+
+  // Keyboard-map overlay ("?"). The ref mirrors the flag so the hotkey effect can
+  // read it without listing it as a dependency — otherwise every open/close would
+  // tear down and re-register the window listener.
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const showShortcutsRef = useRef(false);
+  useEffect(() => { showShortcutsRef.current = showShortcuts; }, [showShortcuts]);
+
+  // Clip-gain popover. Unlike Time/Pitch this needs no render pass — clip gain is
+  // a scheduling parameter, so it applies on the next play (and to every bounce)
+  // with no destructive edit to the clip's audio.
+  const [gainPanel, setGainPanel] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  const gainPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!gainPanel) return;
+    const onDown = (e: MouseEvent) => {
+      if (gainPanelRef.current?.contains(e.target as Node)) return;
+      setGainPanel(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setGainPanel(null); };
+    let attached = false;
+    const attach = () => { attached = true; window.addEventListener('mousedown', onDown); window.addEventListener('keydown', onKey); };
+    const timer = window.setTimeout(attach, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); }
+    };
+  }, [gainPanel]);
 
   // Render the clip's current region (offset..offset+duration) to a WAV File so the
   // backend stretches only what the clip actually plays, not the whole source.
@@ -1104,7 +1366,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const ids = selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
     if (ids.length === 0) return;
     const selected = clips.filter((c) => ids.includes(c.id));
-    const newIds = selected.map((clip) => addClipToTrack({
+    // Drop `id` before handing the clip back: addClipToTrack honours an incoming
+    // id (`clip.id ?? uid()`), so spreading the source clip whole made the copy
+    // reuse the ORIGINAL's id — two clips, one id, and every later updateClip /
+    // removeClip on that id silently hit both.
+    const newIds = selected.map(({ id: _sourceId, ...clip }) => addClipToTrack({
       ...clip,
       startSec: clip.startSec + clip.durationSec,
     }));
@@ -1219,7 +1485,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         panner.pan.value = Math.max(-1, Math.min(1, track.pan));
         src.connect(gain).connect(panner).connect(offline.destination);
 
-        const vol = track.volume;
+        // This path folds track volume into the clip gain node, so the envelope
+        // peak is track volume * clip gain.
+        const vol = track.volume * clipPeakGain(clip);
         const fadeIn = clip.fadeInSec ?? 0;
         const fadeOut = clip.fadeOutSec ?? 0;
         const safeOffset = Math.min(clip.offsetIntoSource, Math.max(0, buf.duration - 0.01));
@@ -1296,13 +1564,31 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // --- Multi-track timeline playback (routes through the footer's playerStore) ---
 
+  /** Full stop: halts playback AND rewinds to zero. Wired to the Stop button only. */
   const stopEditorPlayback = useCallback(() => {
     liveMixer.stop();
     stopPreview();
   }, [stopPreview]);
 
+  /** Pause in place. liveMixer.pause() leaves the playhead where it stopped and
+   *  play() resumes from it, so Space toggles play/pause the way every DAW does
+   *  instead of rewinding the arrangement to the top on every tap. */
+  const pauseEditorPlayback = useCallback(() => {
+    liveMixer.pause();
+    stopPreview();
+  }, [stopPreview]);
+
   const playEditorTimeline = useCallback(async () => {
-    if (clips.length === 0) return;
+    // Read the clip count at call time instead of closing over it. `clips.length`
+    // in this dep array changed the callback's identity on every clip add/delete,
+    // which re-ran the attach effect below — cleanup → detach() → dispose() — and
+    // tore the whole mixer graph down mid-playback. Dropping a clip onto a rolling
+    // timeline, or pressing Delete, stopped the transport outright.
+    if (useEditorStore.getState().clips.length === 0) return;
+    // Re-arm follow-playhead: a manual scroll suspends following only for the
+    // pass it happened in. (editorStore.isPlaying can't be used as the signal —
+    // it has no writer anywhere; see swaySurface.)
+    followPlayheadRef.current = true;
     stopPreview();
     setIsRendering(true);
     try {
@@ -1315,23 +1601,35 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     } finally {
       setIsRendering(false);
     }
-  }, [clips.length, stopPreview]);
+  }, [stopPreview]);
 
   // Register with bridge so PlayerFooter can trigger a fresh render+play, AND
   // register liveMixer as the footer's transport so its normal play/pause/seek
   // buttons drive the live multi-track engine. liveMixer.attach() returns a
   // disposer that stops playback + detaches on unmount.
+  //
+  // The transport callbacks are held in refs so this effect can be MOUNT-ONLY.
+  // It previously depended on [playEditorTimeline, stopEditorPlayback], so any
+  // change to either identity disposed and rebuilt the mixer. Fixing
+  // playEditorTimeline's deps alone would work today but leaves the trap armed:
+  // the next dep added to either callback would silently start killing playback
+  // again. Refs make the teardown structurally impossible to trigger by re-render.
+  const playEditorTimelineRef = useRef(playEditorTimeline);
+  const stopEditorPlaybackRef = useRef(stopEditorPlayback);
+  useEffect(() => { playEditorTimelineRef.current = playEditorTimeline; }, [playEditorTimeline]);
+  useEffect(() => { stopEditorPlaybackRef.current = stopEditorPlayback; }, [stopEditorPlayback]);
+
   useEffect(() => {
     registerEditorPlayback(
-      () => void playEditorTimeline(),
-      stopEditorPlayback,
+      () => void playEditorTimelineRef.current(),
+      () => stopEditorPlaybackRef.current(),
     );
     const detach = liveMixer.attach();
     return () => {
       unregisterEditorPlayback();
       detach();
     };
-  }, [playEditorTimeline, stopEditorPlayback]);
+  }, []);
 
   // liveMixer already mirrors its playhead into editorStore.playheadSec, so no
   // footer→playhead bridging is needed for the live engine. (The offline path
@@ -1367,16 +1665,144 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   }, [clips, selectedClipId, masterGain, stopPreview]);
 
+  /* ── Clip clipboard + grid-aware edit actions ────────────────────────────────
+     The clipboard holds the clip records themselves. Blobs (and cached peak
+     arrays) are shared by reference with the source clips, not copied: they are
+     only ever read, and liveMixer's decode cache is keyed by Blob identity, so a
+     pasted clip costs no extra decode and no extra memory. */
+  const clipboardRef = useRef<AudioClip[]>([]);
+
+  /** The clips a keyboard action applies to: the multi-selection if there is one,
+   *  otherwise the single selected clip. Mirrors delete/duplicate's rule. */
+  const getActionClips = useCallback((): AudioClip[] => {
+    const ids = selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
+    if (ids.length === 0) return [];
+    return clips.filter((c) => ids.includes(c.id));
+  }, [clips, selectedClipId, selectedClipIds]);
+
+  const copySelectedClips = useCallback((): number => {
+    const sel = getActionClips();
+    if (sel.length === 0) return 0;
+    clipboardRef.current = sel.map((c) => ({ ...c }));
+    logInfo('editor', `Copied ${sel.length} clip${sel.length === 1 ? '' : 's'}`);
+    return sel.length;
+  }, [getActionClips]);
+
+  const cutSelectedClips = useCallback(() => {
+    if (copySelectedClips() === 0) return;
+    deleteSelectedClips();
+  }, [copySelectedClips, deleteSelectedClips]);
+
+  /** Paste at the playhead, preserving the clips' relative timing and their track
+   *  layout. A clip whose original track is gone lands on the first track. */
+  const pasteClips = useCallback(() => {
+    const buf = clipboardRef.current;
+    if (buf.length === 0) return;
+    const anchor = snapSec(useEditorStore.getState().playheadSec);
+    const earliest = Math.min(...buf.map((c) => c.startSec));
+    const liveTracks = useEditorStore.getState().tracks;
+    const fallbackTrackId = liveTracks[0]?.id;
+    if (!fallbackTrackId) return;
+    const newIds = buf.map((c) => {
+      const trackId = liveTracks.some((t) => t.id === c.trackId) ? c.trackId : fallbackTrackId;
+      const { id: _omit, ...rest } = c;
+      return addClipToTrack({ ...rest, trackId, startSec: Math.max(0, anchor + (c.startSec - earliest)) });
+    });
+    setSelectedClipIds(newIds);
+    setSelectedTrackIds([]);
+    setSelected(newIds[0] ?? null);
+    logInfo('editor', `Pasted ${newIds.length} clip${newIds.length === 1 ? '' : 's'} at ${anchor.toFixed(2)}s`);
+  }, [addClipToTrack, setSelected, snapSec]);
+
+  /** Split every selected clip that straddles the playhead. splitClipAt already
+   *  refuses cuts within 50ms of an edge, so a clip barely overlapping is skipped. */
+  const splitSelectedAtPlayhead = useCallback(() => {
+    const at = useEditorStore.getState().playheadSec;
+    const targets = getActionClips().filter((c) => at > c.startSec && at < c.startSec + c.durationSec);
+    if (targets.length === 0) {
+      logError('editor', 'Move the playhead over a selected clip to split it.');
+      return;
+    }
+    const newIds = targets.map((c) => splitClipAt(c.id, at)).filter((id): id is string => !!id);
+    if (newIds.length > 0) {
+      setSelectedClipIds(newIds);
+      setSelectedTrackIds([]);
+      setSelected(newIds[0]);
+    }
+  }, [getActionClips, setSelected, splitClipAt]);
+
+  /** One nudge step: the snap grid when snapping is on, else a flat 50ms.
+   *  Shift multiplies by 4 for coarse moves. */
+  const nudgeStepSec = useCallback((coarse: boolean): number => {
+    const { snap: s, bpm: b } = useEditorStore.getState();
+    const step = snapStepSec(s, b) ?? 0.05;
+    return coarse ? step * 4 : step;
+  }, []);
+
+  const nudgeSelectedClips = useCallback((dir: -1 | 1, coarse: boolean) => {
+    const sel = getActionClips();
+    if (sel.length === 0) return;
+    const delta = nudgeStepSec(coarse) * dir;
+    // Clamp as a group so a nudge left never collapses the selection's internal
+    // spacing against t=0 — the whole block stops when its earliest clip hits 0.
+    const earliest = Math.min(...sel.map((c) => c.startSec));
+    const applied = Math.max(delta, -earliest);
+    if (applied === 0) return;
+    sel.forEach((c) => updateClip(c.id, { startSec: Math.max(0, c.startSec + applied) }));
+  }, [getActionClips, nudgeStepSec, updateClip]);
+
+  /** Move the selection up/down one track, the way arrow-key track moves work in
+   *  Reaper and Logic. Clamped so the selection keeps its relative track spread. */
+  const moveSelectedClipsByTrack = useCallback((dir: -1 | 1) => {
+    const sel = getActionClips();
+    if (sel.length === 0 || tracks.length === 0) return;
+    const idxOf = new Map(tracks.map((t, i) => [t.id, i]));
+    const indices = sel.map((c) => idxOf.get(c.trackId) ?? 0);
+    const room = dir < 0 ? -Math.min(...indices) : tracks.length - 1 - Math.max(...indices);
+    const shift = dir < 0 ? Math.max(dir, room) : Math.min(dir, room);
+    if (shift === 0) return;
+    sel.forEach((c) => {
+      const target = tracks[(idxOf.get(c.trackId) ?? 0) + shift];
+      if (target) updateClip(c.id, { trackId: target.id });
+    });
+  }, [getActionClips, tracks, updateClip]);
+
+  const selectAllClips = useCallback(() => {
+    if (clips.length === 0) return;
+    const ids = clips.map((c) => c.id);
+    setSelectedClipIds(ids);
+    setSelectedTrackIds([]);
+    setSelected(ids[0]);
+  }, [clips, setSelected]);
+
+  /** Fit the whole arrangement in the viewport, then scroll back to the top. */
+  const zoomToFit = useCallback(() => {
+    const el = timelineScrollRef.current;
+    const dur = getTotalDurationSec();
+    if (!el || dur <= 0) return;
+    const usable = Math.max(200, el.clientWidth - 24);
+    setZoom(usable / dur);
+    el.scrollLeft = 0;
+  }, [getTotalDurationSec, setZoom]);
+
   // --- Keyboard hotkeys ---
-  // v        = move tool
-  // c        = cut tool
-  // Space    = play preview / stop preview
-  // Delete   = remove selected clip
-  // Ctrl/Cmd+D = duplicate selected clip
+  // v          = move tool                 c            = cut tool
+  // s          = split selection at playhead
+  // Space      = play / pause              Delete       = remove selected clip(s)
+  // ←/→        = nudge by grid (Shift ×4)  ↑/↓          = move a track up / down
+  // Home/End   = playhead to start / end   m            = marker at playhead
+  // l          = toggle loop               +/-          = zoom in / out
+  // Shift+F    = zoom to fit               Escape       = clear inpaint selection
+  // Ctrl/Cmd + C/X/V = copy / cut / paste at playhead
+  // Ctrl/Cmd + D = duplicate               Ctrl/Cmd + A = select all clips
+  // Ctrl/Cmd + P = inpaint selection       (Ctrl/Cmd + Z/Y = undo/redo, own effect)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // SELECT is in the exclusion list because the bare-letter hotkeys below
+      // (s / m / l / f) would otherwise steal type-to-jump inside a dropdown such
+      // as the snap-division picker.
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       // No modifier hotkeys.
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         if (e.key === 'v' || e.key === 'V') {
@@ -1389,38 +1815,142 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           setTool('cut');
           return;
         }
+        if (e.key === 's' || e.key === 'S') {
+          e.preventDefault();
+          splitSelectedAtPlayhead();
+          return;
+        }
+        if (e.key === 'm' || e.key === 'M') {
+          e.preventDefault();
+          addMarker(useEditorStore.getState().playheadSec);
+          return;
+        }
+        if (e.key === 'l' || e.key === 'L') {
+          e.preventDefault();
+          setLoopEnabled(!useEditorStore.getState().loopEnabled);
+          return;
+        }
+        // Shift+F fits the arrangement to the viewport; bare f is left free.
+        if ((e.key === 'f' || e.key === 'F') && e.shiftKey) {
+          e.preventDefault();
+          zoomToFit();
+          return;
+        }
+        if (e.key === '+' || e.key === '=') {
+          e.preventDefault();
+          setZoom(useEditorStore.getState().zoom * 1.25);
+          return;
+        }
+        if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          setZoom(useEditorStore.getState().zoom / 1.25);
+          return;
+        }
+        if (e.key === 'Home') {
+          e.preventDefault();
+          setPlayhead(0);
+          return;
+        }
+        if (e.key === 'End') {
+          e.preventDefault();
+          setPlayhead(getTotalDurationSec());
+          return;
+        }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          if (selectedClipCount === 0) return;
+          e.preventDefault();
+          nudgeSelectedClips(e.key === 'ArrowLeft' ? -1 : 1, e.shiftKey);
+          return;
+        }
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          if (selectedClipCount === 0) return;
+          e.preventDefault();
+          moveSelectedClipsByTrack(e.key === 'ArrowUp' ? -1 : 1);
+          return;
+        }
         if (e.key === ' ') {
           e.preventDefault();
-          if (isEditorTimelinePlaying()) stopEditorPlayback();
+          if (isEditorTimelinePlaying()) pauseEditorPlayback();
           else void playEditorTimeline();
           return;
         }
         if (e.key === 'Delete' || e.key === 'Backspace') {
+          // The bottom dock (piano roll / step sequencer) is global chrome and
+          // binds Delete for its own selection. Yield when the pointer or focus
+          // is over it; `fallback: true` keeps the timeline the default owner
+          // when the user hasn't touched either surface. See lib/keyScope.
+          if (!ownsKey('edit-timeline', { fallback: true })) return;
           if (selectedClipCount > 0) {
             e.preventDefault();
             deleteSelectedClips();
           }
           return;
         }
+        if (e.key === '?') {
+          e.preventDefault();
+          setShowShortcuts((v) => !v);
+          return;
+        }
         if (e.key === 'Escape') {
+          if (showShortcutsRef.current) {
+            setShowShortcuts(false);
+            return;
+          }
           clearInpaintSelection();
           return;
         }
       }
-      // Ctrl/Cmd + D = duplicate selected clip.
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
-        e.preventDefault();
-        duplicateSelectedClips();
-      }
-      // Ctrl/Cmd + P = inpaint selected region.
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
-        e.preventDefault();
-        openInpaintPanel();
+      if (e.ctrlKey || e.metaKey) {
+        const k = e.key.toLowerCase();
+        // Ctrl/Cmd + C / X / V = copy / cut / paste-at-playhead. If the user has
+        // actually selected text somewhere on the page (a label, a log line), let
+        // the browser's own copy win instead of hijacking it for clips.
+        const hasTextSelection = !(window.getSelection()?.isCollapsed ?? true);
+        if (k === 'c') {
+          if (hasTextSelection) return;
+          e.preventDefault();
+          copySelectedClips();
+          return;
+        }
+        if (k === 'x') {
+          if (hasTextSelection) return;
+          e.preventDefault();
+          cutSelectedClips();
+          return;
+        }
+        if (k === 'v') {
+          e.preventDefault();
+          pasteClips();
+          return;
+        }
+        // Ctrl/Cmd + A = select every clip on the timeline.
+        if (k === 'a') {
+          e.preventDefault();
+          selectAllClips();
+          return;
+        }
+        // Ctrl/Cmd + D = duplicate selected clip.
+        if (k === 'd') {
+          e.preventDefault();
+          duplicateSelectedClips();
+          return;
+        }
+        // Ctrl/Cmd + P = inpaint selected region.
+        if (k === 'p') {
+          e.preventDefault();
+          openInpaintPanel();
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipCount, setTool, stopEditorPlayback, playEditorTimeline, deleteSelectedClips, duplicateSelectedClips, openInpaintPanel, clearInpaintSelection]);
+  }, [
+    selectedClipCount, setTool, pauseEditorPlayback, playEditorTimeline, deleteSelectedClips,
+    duplicateSelectedClips, openInpaintPanel, clearInpaintSelection, splitSelectedAtPlayhead,
+    addMarker, setLoopEnabled, zoomToFit, setZoom, setPlayhead, getTotalDurationSec,
+    nudgeSelectedClips, moveSelectedClipsByTrack, copySelectedClips, cutSelectedClips,
+    pasteClips, selectAllClips,
+  ]);
 
   // --- Wheel: Ctrl/Cmd + wheel = zoom; plain wheel = horizontal pan ---
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1430,16 +1960,19 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const onWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
-        // Zoom centered on cursor X.
+        // Zoom centered on cursor X. (clientX - rect.left) is viewport px while
+        // scrollLeft is local px, so normalise before mixing them — otherwise the
+        // anchor drifts and the content slides under the cursor as you zoom.
         const rect = el.getBoundingClientRect();
-        const cursorX = e.clientX - rect.left + el.scrollLeft;
+        const localCursorX = (e.clientX - rect.left) / effectiveZoom(el);
+        const cursorX = localCursorX + el.scrollLeft;
         const oldZoom = useEditorStore.getState().zoom;
         const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
         const newZoom = Math.max(5, Math.min(400, oldZoom * factor));
         useEditorStore.getState().setZoom(newZoom);
         // Keep the cursor on the same time after zoom.
         const ratio = newZoom / oldZoom;
-        el.scrollLeft = cursorX * ratio - (e.clientX - rect.left);
+        el.scrollLeft = cursorX * ratio - localCursorX;
         return;
       }
       // Shift + wheel — convert vertical delta to horizontal scroll. Plain wheel remains vertical.
@@ -1556,21 +2089,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         const safeDur = Math.min(c.durationSec, buf.duration - safeOffset);
         if (safeDur <= 0) continue;
 
-        // Per-clip gain carries ONLY the fade envelope (peak 1). Track volume lives
-        // on the track gain so per-track FX process the post-fade signal exactly as
-        // they do live.
+        // Per-clip gain carries the fade envelope scaled to the clip's own gain
+        // (peak = clip gain, unity by default). Track volume lives on the track
+        // gain so per-track FX process the post-fade signal exactly as they do live.
         const src = offline.createBufferSource();
         src.buffer = buf;
         const clipGain = offline.createGain();
         const fadeIn = c.fadeInSec ?? 0;
         const fadeOut = c.fadeOutSec ?? 0;
-        clipGain.gain.setValueAtTime(fadeIn > 0 ? 0 : 1, c.startSec);
+        const peak = clipPeakGain(c);
+        clipGain.gain.setValueAtTime(fadeIn > 0 ? 0 : peak, c.startSec);
         if (fadeIn > 0) {
-          clipGain.gain.linearRampToValueAtTime(1, c.startSec + Math.min(fadeIn, safeDur));
+          clipGain.gain.linearRampToValueAtTime(peak, c.startSec + Math.min(fadeIn, safeDur));
         }
         if (fadeOut > 0) {
           const foStart = c.startSec + safeDur - Math.min(fadeOut, safeDur);
-          clipGain.gain.setValueAtTime(1, foStart);
+          clipGain.gain.setValueAtTime(peak, foStart);
           clipGain.gain.linearRampToValueAtTime(0, c.startSec + safeDur);
         }
         src.connect(clipGain).connect(tn.gain);
@@ -1762,6 +2296,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         form.append('audio', current);
         form.append('plugin_path', node.vst!.plugin_path);
         form.append('params', '{}');
+        // Send the captured plugin state, exactly as renderTrackStem does. Without
+        // it every master VST rendered at its factory defaults, silently discarding
+        // whatever the user dialled in through the plugin's native GUI.
+        if (node.vst!.raw_state) form.append('raw_state', node.vst!.raw_state);
         const res = await fetch('/api/vst/process-file', { method: 'POST', body: form });
         if (!res.ok) {
           let detail = `HTTP ${res.status}`;
@@ -1879,11 +2417,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         const clipGain = offline.createGain();
         const fadeIn = c.fadeInSec ?? 0;
         const fadeOut = c.fadeOutSec ?? 0;
-        clipGain.gain.setValueAtTime(fadeIn > 0 ? 0 : 1, c.startSec);
-        if (fadeIn > 0) clipGain.gain.linearRampToValueAtTime(1, c.startSec + Math.min(fadeIn, safeDur));
+        const peak = clipPeakGain(c);
+        clipGain.gain.setValueAtTime(fadeIn > 0 ? 0 : peak, c.startSec);
+        if (fadeIn > 0) clipGain.gain.linearRampToValueAtTime(peak, c.startSec + Math.min(fadeIn, safeDur));
         if (fadeOut > 0) {
           const fo = c.startSec + safeDur - Math.min(fadeOut, safeDur);
-          clipGain.gain.setValueAtTime(1, fo);
+          clipGain.gain.setValueAtTime(peak, fo);
           clipGain.gain.linearRampToValueAtTime(0, c.startSec + safeDur);
         }
         src.connect(clipGain).connect(trackInput);
@@ -1953,15 +2492,43 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     liveMixer.reactivate();
   }, []);
 
-  // --- Pointer math helpers. ---
+  /* --- Pointer math helpers. ------------------------------------------------
+     TWO COORDINATE SPACES. The shell scales the whole DAW with CSS `zoom` on
+     .dense-layout (0.85 / 0.95 / 1.1 by breakpoint — index.css). So:
+        event.clientX / getBoundingClientRect()  ->  VIEWPORT px  (local * zoom)
+        scrollLeft / clientWidth / style widths  ->  LOCAL px
+     `zoom` here is px-per-second in LOCAL px, so every measurement taken from a
+     pointer event must be divided by the cumulative CSS zoom before it is mixed
+     with a local-space value or handed to pxToSec. Skipping that made every
+     seek, split point, loop edge, marker drop and drag-delta read ~15% short at
+     the default tier. canvasScale.effectiveZoom walks computed `zoom` up the
+     ancestor chain, which also stays correct inside counter-zoomed panels. */
   const pxToSec = useCallback((px: number) => px / zoom, [zoom]);
+
+  /** Cumulative CSS zoom on the timeline subtree (1 when unscaled). */
+  const layoutZoom = useCallback(
+    (): number => effectiveZoom(timelineScrollRef.current ?? timelineRef.current),
+    [],
+  );
+  /** Viewport-px delta (from clientX/clientY arithmetic) -> local px. */
+  const viewportPxToLocal = useCallback((px: number): number => px / layoutZoom(), [layoutZoom]);
+
   const timelineClientXToSec = useCallback((clientX: number): number => {
     const scroller = timelineScrollRef.current;
     const timeline = timelineRef.current;
     const rect = (scroller ?? timeline)?.getBoundingClientRect();
     if (!rect) return 0;
-    return pxToSec(clientX - rect.left + (scroller?.scrollLeft ?? 0));
-  }, [pxToSec]);
+    // (clientX - rect.left) is viewport px; scrollLeft is already local px.
+    return pxToSec((clientX - rect.left) / layoutZoom() + (scroller?.scrollLeft ?? 0));
+  }, [pxToSec, layoutZoom]);
+
+  /** For handlers measuring against the scrolling CONTENT rect (timelineRef),
+   *  whose rect.left already accounts for scroll — scale only, no scrollLeft. */
+  const contentClientXToSec = useCallback((clientX: number): number => {
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    return pxToSec((clientX - rect.left) / layoutZoom());
+  }, [pxToSec, layoutZoom]);
 
   // --- Inpaint drag handlers ---
   const handleInpaintDragStart = (e: React.PointerEvent, clip: AudioClip) => {
@@ -2059,8 +2626,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const onPointerMove = (e: React.PointerEvent) => {
     const op = opRef.current;
     if (!op) return;
-    const dxPx = e.clientX - op.startPxX;
-    const dySec = e.clientY - op.startPxY;
+    // Both are viewport-px deltas; normalise to local px before they meet
+    // pxToSec (local px/sec) and trackH (local px).
+    const dxPx = viewportPxToLocal(e.clientX - op.startPxX);
+    const dySec = viewportPxToLocal(e.clientY - op.startPxY);
 
     if (op.kind === 'ctrl-drag-pending') {
       const dist = Math.hypot(dxPx, dySec);
@@ -2076,7 +2645,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!clip) return;
     if (op.kind === 'move') {
       // Vertical track shift.
-      const trackDelta = Math.round(dySec / TRACK_HEIGHT);
+      const trackDelta = Math.round(dySec / trackH);
       const moveTargets = op.initialClips?.length ? op.initialClips : [{ id: op.clipId, startSec: op.initialStartSec, trackIndex: op.initialTrackIndex }];
       moveTargets.forEach((target) => {
         const newStart = Math.max(0, snapSec(target.startSec + dxSec));
@@ -2135,16 +2704,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       return;
     }
     const rect = timelineRef.current.getBoundingClientRect();
-    const xPx = e.clientX - rect.left;
-    const yPx = e.clientY - rect.top;
-    const droppedBelowAllTracks = yPx >= tracks.length * TRACK_HEIGHT;
+    // Viewport px -> local px: yPx is compared against trackH (local) to pick the
+    // target lane, so an unscaled value dropped clips onto the wrong track.
+    const xPx = viewportPxToLocal(e.clientX - rect.left);
+    const yPx = viewportPxToLocal(e.clientY - rect.top);
+    const droppedBelowAllTracks = yPx >= tracks.length * trackH;
     let targetTrack: typeof tracks[number] | undefined;
     if (droppedBelowAllTracks) {
       const newTrackId = addTrack({ name: entry.title });
       // Re-read tracks from the store after the mutation.
       targetTrack = useEditorStore.getState().tracks.find((t) => t.id === newTrackId);
     } else {
-      const targetTrackIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(yPx / TRACK_HEIGHT)));
+      const targetTrackIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(yPx / trackH)));
       targetTrack = tracks[targetTrackIdx];
     }
     if (!targetTrack) return;
@@ -2190,7 +2761,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!fd) return;
     const clip = clips.find((c) => c.id === fd.clipId);
     if (!clip) return;
-    const dxPx = e.clientX - fd.startX;
+    const dxPx = viewportPxToLocal(e.clientX - fd.startX);
     const dxSec = fd.edge === 'in' ? pxToSec(dxPx) : pxToSec(-dxPx);
     const maxFade = clip.durationSec / 2;
     const newFade = Math.max(0, Math.min(maxFade, fd.initialFade + dxSec));
@@ -2270,19 +2841,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (target.closest('[data-clip="1"]')) return;
     if (target.closest('[data-playhead-handle="1"]')) return;
     clearInpaintSelection();
-    const rect = timelineRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const sec = pxToSec(x);
+    const sec = contentClientXToSec(e.clientX);
     setPlayhead(Math.max(0, sec));
+    // Clear the multi-selection too, not just the single-clip pointer. Clearing
+    // only `selectedClipId` left clips visibly ringed and Delete still armed on a
+    // timeline the user had just clicked away from — so the next Del destroyed
+    // clips they believed were released.
     setSelected(null);
+    setSelectedClipIds([]);
+    setSelectedTrackIds([]);
   };
 
   const onClipClick = (e: React.MouseEvent, clipId: string) => {
     if (tool !== 'cut') return;
     if (!timelineRef.current) return;
-    const rect = timelineRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const sec = pxToSec(x);
+    const sec = contentClientXToSec(e.clientX);
     splitClipAt(clipId, sec);
   };
 
@@ -2311,7 +2884,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     e.preventDefault();
     if (!timelineRef.current) return;
     const rect = timelineRef.current.getBoundingClientRect();
-    setMidiDrop({ sec: Math.max(0, snapSec(pxToSec(e.clientX - rect.left))), x: e.clientX, y: e.clientY });
+    setMidiDrop({ sec: Math.max(0, snapSec(contentClientXToSec(e.clientX))), x: e.clientX, y: e.clientY });
   };
 
   /** Turn picked MIDI bytes into a piano-roll clip on a new track at `startSec`,
@@ -2364,13 +2937,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       void (async () => {
         const started = performance.now();
         try {
-          const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps);
+          const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps, { program });
           const { peaks } = await computePeaks(rendered.blob, 240);
           updateClip(clipId, {
             audioBlob: rendered.blob,
             mimeType: 'audio/wav',
             sourceDuration: rendered.duration,
             durationSec: rendered.duration,
+            // Record what this bounce actually contains so the instrument-sync
+            // effect doesn't immediately re-render a clip that is already correct.
+            renderedProgram: program,
           });
           cachePeaks(clipId, peaks);
           logInfo('editor', `MIDI audio ready for "${label}" in ${(performance.now() - started).toFixed(0)}ms`);
@@ -2402,7 +2978,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, []);
 
   return (
-    <div className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
+    <div data-keyscope="edit-timeline" className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
       {/* Editor Toolbar */}
       <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
         <div className="flex items-center gap-3">
@@ -2456,6 +3032,32 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
           <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 border border-white/5 rounded">
             <Magnet className={`w-3 h-3 ${snap === 'off' ? 'text-zinc-700' : 'text-purple-300'}`} />
+            {/* BPM lives next to the snap picker because the grid divisions are
+                defined in terms of it — a bar/triplet grid is meaningless without
+                a tempo the user can actually set. */}
+            <label htmlFor="editor-bpm" className="text-[9px] font-mono uppercase text-zinc-500">bpm</label>
+            <input
+              id="editor-bpm"
+              name="editor-bpm"
+              type="number"
+              min={40}
+              max={240}
+              step={1}
+              value={Math.round(projectBpm)}
+              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) setBpm(v); }}
+              className="w-10 bg-transparent border-none outline-none text-[9px] font-mono text-zinc-100 tabular-nums"
+              title="Project tempo — defines the snap grid (40-240)"
+            />
+            <button
+              onClick={tapTempo}
+              aria-label="Tap tempo"
+              className="px-1 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider text-zinc-500 hover:text-purple-300 hover:bg-white/5"
+              title="Tap tempo — tap in time to set the BPM"
+            >
+              tap
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <label htmlFor="editor-snap-division" className="sr-only">Snap division</label>
             <select
               id="editor-snap-division"
               name="editor-snap-division"
@@ -2465,21 +3067,59 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               style={{ colorScheme: 'dark' }}
               title="Snap divisions are relative to the editor BPM"
             >
-              <option value="off">Snap off</option>
-              <option value="1/4">1/4</option>
-              <option value="1/8">1/8</option>
-              <option value="1/16">1/16</option>
+              {SNAP_DIVISIONS.map((d) => (
+                <option key={d} value={d}>
+                  {d === 'off' ? 'Snap off' : d === '1/1' ? 'Bar' : d}
+                </option>
+              ))}
             </select>
           </div>
 
           <div className="flex items-center gap-1">
-            <button onClick={() => setZoom(zoom - 5)} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom out">
+            <button onClick={() => setZoom(zoom - 5)} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom out (-)">
               <ZoomOut className="w-3 h-3" />
             </button>
             <span className="text-[9px] font-mono text-zinc-400 w-14 text-center">{zoom.toFixed(2)}px/s</span>
-            <button onClick={() => setZoom(zoom + 5)} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom in">
+            <button onClick={() => setZoom(zoom + 5)} className="p-1 hover:bg-white/5 rounded text-zinc-500" title="Zoom in (+)">
               <ZoomIn className="w-3 h-3" />
             </button>
+            <button
+              onClick={zoomToFit}
+              aria-label="Zoom to fit the whole arrangement"
+              className="p-1 hover:bg-white/5 rounded text-zinc-500"
+              title="Zoom to fit the whole arrangement (Shift+F)"
+            >
+              <Maximize2 className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setShowShortcuts(true)}
+              aria-label="Keyboard shortcuts"
+              aria-haspopup="dialog"
+              aria-expanded={showShortcuts}
+              className="p-1 hover:bg-white/5 rounded text-zinc-500"
+              title="Keyboard shortcuts (?)"
+            >
+              <Keyboard className="w-3 h-3" />
+            </button>
+          </div>
+
+          {/* Vertical zoom — lane height. A native range needs a real label; it is
+              visually hidden so the toolbar stays icon-dense. */}
+          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 border border-white/5 rounded">
+            <Rows3 className="w-3 h-3 text-zinc-500" />
+            <label htmlFor="editor-track-height" className="sr-only">Track lane height</label>
+            <input
+              id="editor-track-height"
+              name="editor-track-height"
+              type="range"
+              min={TRACK_HEIGHT_MIN}
+              max={TRACK_HEIGHT_MAX}
+              step={4}
+              value={trackH}
+              onChange={(e) => setTrackHeight(Number(e.target.value))}
+              className="w-16 accent-purple-400 cursor-pointer"
+              title="Track height — vertical zoom for the timeline lanes"
+            />
           </div>
 
           <div className="h-4 w-px bg-white/10" />
@@ -2593,10 +3233,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <span ref={headerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
           <button
-            onClick={() => isEditorPlaying ? stopEditorPlayback() : void playEditorTimeline()}
+            onClick={() => isEditorPlaying ? pauseEditorPlayback() : void playEditorTimeline()}
             disabled={clips.length === 0 || isRendering}
             className={`p-1.5 rounded transition-colors disabled:opacity-30 ${isEditorPlaying ? 'bg-purple-500/30 text-purple-200 hover:bg-purple-500/20' : 'hover:bg-purple-500/20 text-purple-300'}`}
-            title={isRendering ? 'Rendering…' : isEditorPlaying ? 'Stop (Space)' : 'Play from playhead (Space)'}
+            title={isRendering ? 'Rendering…' : isEditorPlaying ? 'Pause (Space)' : 'Play from playhead (Space)'}
           >
             {isRendering
               ? <div className="w-3.5 h-3.5 border-2 border-purple-400/40 border-t-purple-300 rounded-full animate-spin" />
@@ -2859,6 +3499,44 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onOpenVst={(entry) => openVstEditor(entry, (entryId, raw) => setTrackVstRawState(t.id, entryId, raw))}
               onOpenSurface={(entry) => openAresSurface({ kind: 'track', trackId: t.id }, entry)}
             />
+            {/* VST3 inserts for this track. They are inert in live preview (the
+                live graph only builds rack effects) and are applied on the
+                backend when the track is frozen — the freeze button appears on
+                the track header as soon as one is added. */}
+            <div className="flex flex-col gap-1 border-t border-white/10 pt-2">
+              <div className="flex items-center justify-between">
+                <span className="mono-label">VST3 inserts ({vstPlugins.length})</span>
+                <button
+                  onClick={() => void scanVst(true)}
+                  disabled={vstScanning}
+                  className="btn-ghost inline-flex items-center gap-1 disabled:opacity-40"
+                  title="Rescan VST3 folders"
+                >
+                  <RefreshCw className={`w-3 h-3 ${vstScanning ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+              {vstPlugins.length === 0 ? (
+                <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+                  No VST3 plugins found. Set your plugin folders in Settings, then rescan.
+                </p>
+              ) : (
+                <div className="max-h-32 overflow-y-auto flex flex-col gap-0.5">
+                  {vstPlugins.map((pl) => {
+                    const inChain = (t.fxChain ?? []).some((e) => e.vst?.plugin_path === pl.path);
+                    return (
+                      <button
+                        key={pl.path}
+                        onClick={() => addAndEditTrackVst(t.id, pl)}
+                        title={inChain ? `Open ${pl.name} GUI` : `Insert ${pl.name} on ${t.name}`}
+                        className={`text-left px-1.5 py-1 rounded text-[9px] font-mono truncate transition-colors ${inChain ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30' : 'text-zinc-400 hover:bg-white/5 hover:text-white border border-transparent'}`}
+                      >
+                        {inChain ? '● ' : ''}{pl.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </PopoverPortal>
         );
       })()}
@@ -3056,6 +3734,82 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
+      {/* Keyboard map. Dialog semantics so screen readers announce it as a modal
+          and the close button is reachable; Escape and the backdrop both dismiss. */}
+      {showShortcuts && (
+        <div
+          className="fixed inset-0 z-100 grid place-items-center bg-black/70 p-6"
+          onClick={() => setShowShortcuts(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="editor-shortcuts-title"
+            onClick={(e) => e.stopPropagation()}
+            className="hardware-card bg-[#0c0a12] border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-4 max-w-2xl w-full max-h-full overflow-y-auto"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2 mb-3">
+              <h2 id="editor-shortcuts-title" className="text-[10px] font-mono uppercase tracking-widest text-zinc-300">
+                Edit — keyboard shortcuts
+              </h2>
+              <button
+                onClick={() => setShowShortcuts(false)}
+                aria-label="Close keyboard shortcuts"
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+              {EDIT_SHORTCUTS.map((section) => (
+                <div key={section.group} className="flex flex-col gap-1">
+                  <span className="text-[9px] font-mono uppercase tracking-widest text-purple-300/70">{section.group}</span>
+                  {section.keys.map(([k, desc]) => (
+                    <div key={k} className="flex items-baseline justify-between gap-3">
+                      <kbd className="text-[9px] font-mono text-zinc-200 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 shrink-0">{k}</kbd>
+                      <span className="text-[9px] font-mono text-zinc-500 text-right">{desc}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Per-clip gain popover. Same portal/anchor pattern as Time / Pitch. */}
+      {gainPanel && (() => {
+        const clip = clips.find((c) => c.id === gainPanel.clipId);
+        if (!clip) return null;
+        return (
+          <PopoverPortal
+            x={gainPanel.x}
+            y={gainPanel.y}
+            innerRef={gainPanelRef}
+            className="fixed z-50 w-72 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+                Clip gain — <span style={{ color: clip.color }}>{clip.label}</span>
+              </span>
+              <button
+                onClick={() => setGainPanel(null)}
+                aria-label="Close clip gain panel"
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <ClipGainControls
+              gain={clipPeakGain(clip)}
+              onChange={(g) => updateClip(clip.id, { gain: g })}
+            />
+          </PopoverPortal>
+        );
+      })()}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
@@ -3068,8 +3822,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 key={t.id}
                 onPointerDown={(e) => handleTrackHeaderPointerDown(e, t.id)}
                 onContextMenu={(e) => { selectTrackSingle(t.id); trackMenu.open(e, { trackId: t.id }); }}
-                className={`border-b border-[#1a1528] p-2 flex flex-col gap-1.5 transition-colors ${selectedTrackIds.includes(t.id) ? 'bg-purple-500/10 ring-1 ring-inset ring-purple-500/35' : ''}`}
-                style={{ height: TRACK_HEIGHT }}
+                /* overflow-hidden: shrinking the lane height (vertical zoom) clips the
+                   header's controls rather than letting them spill into the next track. */
+                className={`border-b border-[#1a1528] p-2 flex flex-col gap-1.5 overflow-hidden transition-colors ${selectedTrackIds.includes(t.id) ? 'bg-purple-500/10 ring-1 ring-inset ring-purple-500/35' : ''}`}
+                style={{ height: trackH }}
                 title="Click to select track. Ctrl/Cmd-click to multi-select tracks. Right-click for track FX."
               >
                 <div className="flex justify-between items-center gap-1">
@@ -3151,13 +3907,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Volume2 className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
-                  <SlideTrack min={0} max={1} step={0.01} value={faderDisplay('trackVolume', t.id, t.volume)}
-                    onChange={(v) => writeFader('trackVolume', t.id, v)} className="flex-1" ariaLabel="Track volume" />
+                  {/* defaultValue is what double-click resets to; SlideTrack falls
+                      back to `defaultValue ?? 0`, so omitting it made double-click
+                      SILENCE the track instead of returning it to unity. 0.8 is the
+                      track default in editorStore. ariaLabel carries the track name
+                      so the faders are distinguishable to a screen reader. */}
+                  <SlideTrack min={0} max={1} step={0.01} defaultValue={0.8} value={faderDisplay('trackVolume', t.id, t.volume)}
+                    onChange={(v) => writeFader('trackVolume', t.id, v)} className="flex-1" ariaLabel={`${t.name} volume`} />
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[7px] font-mono text-zinc-600 uppercase w-3">P</span>
-                  <SlideTrack min={-1} max={1} step={0.01} value={faderDisplay('trackPan', t.id, t.pan)}
-                    onChange={(v) => writeFader('trackPan', t.id, v)} className="flex-1" ariaLabel="Track pan" />
+                  <SlideTrack min={-1} max={1} step={0.01} defaultValue={0} value={faderDisplay('trackPan', t.id, t.pan)}
+                    onChange={(v) => writeFader('trackPan', t.id, v)} className="flex-1" ariaLabel={`${t.name} pan`} />
                   <span className="text-[7px] font-mono text-zinc-600 text-right w-5">
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
                   </span>
@@ -3254,7 +4015,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <div
             ref={timelineRef}
             className={`relative ${tool === 'cut' ? 'cursor-crosshair' : 'cursor-default'}`}
-            style={{ width: timelineWidthPx, height: tracks.length * TRACK_HEIGHT + 34 + (automationEdit ? MASTER_STRIP_H : 0) }}
+            style={{ width: timelineWidthPx, height: tracks.length * trackH + 34 + (automationEdit ? MASTER_STRIP_H : 0) }}
             onMouseDown={onTimelineClick}
             onContextMenu={onLanesContextMenu}
             onDragOver={onTimelineDragOver}
@@ -3264,7 +4025,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <div
                 key={track.id}
                 className="absolute left-0 right-0 border-b border-white/5"
-                style={{ top: ti * TRACK_HEIGHT, height: TRACK_HEIGHT, backgroundImage: 'linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px)', backgroundSize: `${zoom * 5}px 100%` }}
+                style={{ top: ti * trackH, height: trackH, backgroundImage: 'linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px)', backgroundSize: `${zoom * 5}px 100%` }}
               />
             ))}
 
@@ -3274,8 +4035,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               if (trackIdx < 0) return null;
               const left = clip.startSec * zoom;
               const width = clip.durationSec * zoom;
-              const top = trackIdx * TRACK_HEIGHT + 6;
-              const height = TRACK_HEIGHT - 12;
+              const top = trackIdx * trackH + 6;
+              const height = trackH - 12;
               const selected = selectedClipIdSet.has(clip.id) || clip.id === selectedClipId;
               const isMidi = clip.sourceKind === 'piano-roll' && !!clip.sourcePianoRoll && clip.sourcePianoRoll.length > 0;
               // Compact BPM/key readout: MIDI clips carry their render BPM; audio
@@ -3459,8 +4220,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   lane={lane}
                   zoom={zoom}
                   width={timelineWidthPx}
-                  height={TRACK_HEIGHT}
-                  top={trackIdx * TRACK_HEIGHT}
+                  height={trackH}
+                  top={trackIdx * trackH}
                   color={vis.color}
                   toNorm={vis.toNorm}
                   fromNorm={vis.fromNorm}
@@ -3474,7 +4235,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             {automationEdit && (
               <div
                 className="absolute left-0 border-t border-amber-500/30 bg-amber-500/4 pointer-events-none"
-                style={{ top: tracks.length * TRACK_HEIGHT + 34, width: timelineWidthPx, height: MASTER_STRIP_H }}
+                style={{ top: tracks.length * trackH + 34, width: timelineWidthPx, height: MASTER_STRIP_H }}
               >
                 <span className="absolute top-1 left-2 text-[8px] font-mono uppercase tracking-widest text-amber-400/70">Master FX</span>
               </div>
@@ -3491,7 +4252,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   zoom={zoom}
                   width={timelineWidthPx}
                   height={MASTER_STRIP_H}
-                  top={tracks.length * TRACK_HEIGHT + 34}
+                  top={tracks.length * trackH + 34}
                   color={vis.color}
                   toNorm={vis.toNorm}
                   fromNorm={vis.fromNorm}
@@ -3518,7 +4279,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             {/* Drop-here-for-new-track strip — directly below the last lane */}
             <div
               className="absolute left-0 right-0 border-t border-dashed border-purple-500/30 bg-purple-500/4 flex items-center justify-center text-[9px] font-mono uppercase tracking-widest text-purple-400/60 pointer-events-none"
-              style={{ top: tracks.length * TRACK_HEIGHT, height: 34 }}
+              style={{ top: tracks.length * trackH, height: 34 }}
             >
               Drop here to create a new track
             </div>
@@ -3582,10 +4343,52 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         });
         items.push({
           type: 'item',
+          label: 'Split at playhead',
+          hint: 'S',
+          onSelect: splitSelectedAtPlayhead,
+        });
+        items.push({
+          type: 'item',
           label: 'Duplicate',
           hint: 'Ctrl+D',
           onSelect: duplicateSelectedClips,
         });
+        items.push({ type: 'separator' });
+        items.push({
+          type: 'item',
+          label: 'Copy',
+          icon: <Copy className="w-3 h-3" />,
+          hint: 'Ctrl+C',
+          onSelect: () => { copySelectedClips(); },
+        });
+        items.push({
+          type: 'item',
+          label: 'Cut',
+          icon: <Scissors className="w-3 h-3" />,
+          hint: 'Ctrl+X',
+          onSelect: cutSelectedClips,
+        });
+        items.push({
+          type: 'item',
+          label: 'Paste at playhead',
+          hint: 'Ctrl+V',
+          disabled: clipboardRef.current.length === 0,
+          onSelect: pasteClips,
+        });
+        items.push({ type: 'separator' });
+        if (clip) {
+          const clipDb = 20 * Math.log10(clipPeakGain(clip));
+          items.push({
+            type: 'item',
+            label: 'Clip Gain…',
+            icon: <Volume2 className="w-3 h-3" />,
+            hint: `${clipDb > -0.05 && clipDb < 0.05 ? '0.0' : `${clipDb > 0 ? '+' : ''}${clipDb.toFixed(1)}`} dB`,
+            onSelect: () => {
+              const pos = clipMenu.position;
+              setGainPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
+            },
+          });
+        }
         items.push({
           type: 'item',
           label: 'Send Selection to Init',
@@ -3759,7 +4562,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {/* Phase: params */}
           {inpaintPanel.kind === 'params' && (
             <>
+              <label htmlFor="inpaint-prompt" className="sr-only">Inpaint prompt</label>
               <textarea
+                id="inpaint-prompt"
                 name="inpaint-prompt"
                 placeholder="Describe what to generate in this region…"
                 value={inpaintPrompt}
@@ -3777,8 +4582,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   onChange={(v) => setInpaintSteps(v)} className="w-full" ariaLabel="Inpaint steps" />
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[9px] font-mono text-zinc-500 shrink-0">Seed</span>
+                <label htmlFor="inpaint-seed" className="text-[9px] font-mono text-zinc-500 shrink-0">Seed</label>
                 <input
+                  id="inpaint-seed"
                   type="number" name="inpaint-seed" value={inpaintSeed}
                   onChange={(e) => setInpaintSeed(parseInt(e.target.value) || -1)}
                   className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-[9px] font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"

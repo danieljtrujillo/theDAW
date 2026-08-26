@@ -13,7 +13,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getEngineCtx, getMasterGain } from './playerStore';
+import { getEngineCtx, getMeterTap } from './playerStore';
 
 export type LevelsView = 'radial' | 'lufs' | 'peak' | 'dr' | 'stereo' | 'bass';
 
@@ -69,7 +69,9 @@ let ensuring: Promise<void> | null = null;
 async function setup(): Promise<void> {
   if (workletNode || fbAnalyser) return;
   const ctx = getEngineCtx();
-  const master = getMasterGain();
+  // Meter the END of the processing chain, pre-monitor-fader — not the pre-FX
+  // summing bus. See getMeterTap() in playerStore.
+  const master = getMeterTap();
   if (ctx.audioWorklet) {
     try {
       if (!moduleAdded) {
@@ -113,12 +115,12 @@ export function ensureMeter(): Promise<void> {
 /** Detach the meter from the master path. */
 export function disposeMeter(): void {
   try {
-    if (workletNode) getMasterGain().disconnect(workletNode);
+    if (workletNode) getMeterTap().disconnect(workletNode);
   } catch {
     /* already gone */
   }
   try {
-    if (fbAnalyser) getMasterGain().disconnect(fbAnalyser);
+    if (fbAnalyser) getMeterTap().disconnect(fbAnalyser);
   } catch {
     /* already gone */
   }
