@@ -128,7 +128,9 @@ const notesFromDawClip = (clip: DawClip): RenderNote[] => {
       midi,
       startSec: Math.max(0, startSec),
       durationSec: Math.max(0.02, durationSec),
-      velocity: velocityRaw <= 1 ? Math.round(velocityRaw * 127) : Math.round(velocityRaw),
+      // < 1, not <= 1: a raw value of exactly 1 is a legitimate (very quiet)
+      // MIDI velocity, and treating it as normalised 1.0 turned it into 127.
+      velocity: velocityRaw < 1 ? Math.round(velocityRaw * 127) : Math.round(velocityRaw),
     }];
   });
 };

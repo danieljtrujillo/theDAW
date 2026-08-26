@@ -178,9 +178,26 @@ def parse_als(path: str) -> DawProject:
     media_index = media.build_media_index(project_dir)
 
     # Tempo (parse first — note timing depends on it).
-    tempo_elem = live_set.find(".//MasterTrack/Mixer/Tempo/Manual")
+    # Resolve the master element ONCE and search inside it. The old primary XPath
+    # `.//MasterTrack/Mixer/Tempo/Manual` is dead in every real Live Set — Live
+    # nests the mixer under DeviceChain — and it had no <MainTrack> (Live 12)
+    # coverage at all, so tempo fell through to a loose document-order
+    # `.//Tempo/Manual` and time signature silently returned 4/4 for any Live-12
+    # set (a 6/8 project parsed as 4/4 with no warning).
+    master_track_elem = live_set.find("MasterTrack")
+    if master_track_elem is None:
+        master_track_elem = live_set.find("MainTrack")
+
+    tempo_elem = None
+    if master_track_elem is not None:
+        tempo_elem = master_track_elem.find(".//Tempo/Manual")
     if tempo_elem is None:
         tempo_elem = live_set.find(".//Tempo/Manual")
+        if tempo_elem is None:
+            project.warnings.append(
+                "No tempo found in the Live Set; defaulting to 120 BPM. "
+                "Clip and note positions may be wrong."
+            )
     if tempo_elem is not None:
         try:
             project.tempo = float(tempo_elem.get("Value", "120"))
@@ -191,8 +208,9 @@ def parse_als(path: str) -> DawProject:
         project.warnings.append("Non-positive tempo; defaulting to 120 BPM.")
 
     # Time signature (best effort).
-    num = live_set.find(".//MasterTrack//TimeSignature//Numerator")
-    den = live_set.find(".//MasterTrack//TimeSignature//Denominator")
+    sig_root = master_track_elem if master_track_elem is not None else live_set
+    num = sig_root.find(".//TimeSignature//Numerator")
+    den = sig_root.find(".//TimeSignature//Denominator")
     try:
         if num is not None and den is not None:
             project.time_signature = (
@@ -418,8 +436,14 @@ def _parse_clips(
             _try_add(clip)
 
     # 3) Session-view clips only when the track is otherwise empty.
+    # Scoped to MainSequencer like steps 1 and 2. `track_elem.iter("ClipSlot")`
+    # walked the WHOLE track element, which also reaches <FreezeSequencer> — so a
+    # frozen track imported its "FROZEN RENDER" as if it were arrangement
+    # content, and those renders polluted missing_files even when rejected.
     if not placed:
-        for slot in track_elem.iter("ClipSlot"):
+        seq = track_elem.find(".//DeviceChain/MainSequencer")
+        slot_source = seq if seq is not None else track_elem
+        for slot in slot_source.iter("ClipSlot"):
             for clip_elem in _iter_clip_elements(slot):
                 _try_add(
                     _build_clip(
