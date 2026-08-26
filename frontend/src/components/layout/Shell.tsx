@@ -61,11 +61,46 @@ export const Shell: React.FC = () => {
   // (editorStore.loadProject falls back to a clean track for empty input and
   // resets undo history). Guarded so unsaved work is not lost silently.
   const handleNewProject = React.useCallback(() => {
-    const ok = window.confirm(
-      'Start a new project? This clears the current arrangement. Save or back up first if you want to keep it.',
-    );
-    if (ok) loadProject({ tracks: [], clips: [] });
+    // Only interrupt when there is actually something to lose.
+    if (useEditorStore.getState().dirty) {
+      const ok = window.confirm(
+        'Start a new project? You have unsaved changes — they will be lost. Save first if you want to keep them.',
+      );
+      if (!ok) return;
+    }
+    loadProject({ tracks: [], clips: [] });
   }, [loadProject]);
+
+  // Unsaved-changes guard. Clip audio lives in in-memory Blobs, so a refresh or a
+  // closed tab destroys the arrangement outright — this is the only thing standing
+  // between the user and silent total loss until real autosave lands. Lives in
+  // Shell, not WaveformEditor, because EDIT unmounts on every tab switch
+  // (DAWCenterPanel) while the document stays at risk.
+  React.useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!useEditorStore.getState().dirty) return;
+      e.preventDefault();
+      // Modern browsers show their own generic wording; returnValue is set for
+      // the older engines that still gate the prompt on it.
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
+  // Ctrl/Cmd+S opens the project save modal. The app's only other Ctrl+S is the
+  // control-surface layout save, which is scoped to design mode.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      openProject('save');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openProject]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareUrlOverride, setShareUrlOverride] = React.useState(() => {

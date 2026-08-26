@@ -22,6 +22,7 @@ def stop_all_sidecars() -> None:
     # (import path, callable name, needs get_sidecar() instance)
     targets = [
         ("backend.modules.vj.sidecar", "stop", False),
+        ("backend.modules.lyria.sidecar", "stop", False),
         ("backend.modules.foundry.sidecar", "stop", False),
         ("backend.modules.underfit.sidecar", "stop", False),
         ("backend.modules.magenta.sidecar", "stop_engine", False),

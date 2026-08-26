@@ -10,6 +10,7 @@ import {
 import type { PerformRoutingSnapshot } from './performRouting';
 import { logError, logInfo } from './logStore';
 import { useStatusBarStore } from './statusBarStore';
+import { useEditorStore } from './editorStore';
 import {
   loadProjectIntoEditor,
   captureEditorSession,
@@ -226,6 +227,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         res = await projectApi.saveSession(project, path, session.files);
       }
       set({ busy: false, lastSaved: { path: res.path, manifest: res.manifest } });
+      // The document now matches what is on disk — clear the unsaved-changes guard.
+      useEditorStore.getState().markSaved();
       status(`PROJECT SAVED (${res.manifest.audio_mode}): ${res.path}`);
       void get().refreshRecent();
     } catch (e) {

@@ -199,8 +199,17 @@ Need (Have 'node')   'node'   'Node.js LTS + npm'        '~30 MB'  $true  'OpenJ
 Need (Have 'ffmpeg') 'ffmpeg' 'FFmpeg (all audio I/O)'   '~80 MB'  $false 'Gyan.FFmpeg'
 Need (Have 'git')    'git'    'Git'                      '~60 MB'  $false 'Git.Git'
 
-if($wingetOk){ OK "winget available (used for Node / FFmpeg / Git)" }
-else { WARN "winget not found - uv still installs via its own installer; Node/FFmpeg/Git would need App Installer or a manual download." }
+# MuseScore engraves SVG score exports. PDF does NOT need it (that renders
+# headlessly through the frontend's OpenSheetMusicDisplay), so this stays
+# optional: without it the SCORE tab simply offers one format fewer.
+# Detected by binary name AND by the default install path, because the
+# installer does not always put MuseScore4.exe on PATH.
+$museScore = (Have 'MuseScore4') -or (Have 'mscore') -or
+             (Test-Path 'C:\Program Files\MuseScore 4\bin\MuseScore4.exe')
+Need $museScore 'musescore' 'MuseScore 4 (SVG score export)' '~500 MB' $false 'Musescore.Musescore'
+
+if($wingetOk){ OK "winget available (used for Node / FFmpeg / Git / MuseScore)" }
+else { WARN "winget not found - uv still installs via its own installer; Node/FFmpeg/Git/MuseScore would need App Installer or a manual download." }
 
 if($todo.Count -eq 0){
   Head "Everything theDAW needs is already installed"

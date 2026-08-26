@@ -7,6 +7,7 @@ import { actionFromAssistantEvent, statusFromAssistantEvent } from './assistantE
 import { buildtheDAWAppContext } from './appContext';
 import { uuid } from './utils';
 import { useStatusBarStore } from '../state/statusBarStore';
+import { useAssistantActivityStore } from '../state/assistantActivityStore';
 
 // Inline clipboard helper (no external util available in theDAW)
 const copyToClipboard = (text: string) => navigator.clipboard.writeText(text).catch(() => {});
@@ -137,6 +138,13 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
     const [input, setInput] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
     const [statusText, setStatusText] = useState<string>('');
+    // Mirror the busy flag into the global activity store so the orb (thinking
+    // visuals, drip trail) tracks it. One effect covers every set point:
+    // sendMessage, the finally-reset, and stopGeneration.
+    useEffect(() => {
+        useAssistantActivityStore.getState().setThinking(isProcessing);
+        return () => useAssistantActivityStore.getState().setThinking(false);
+    }, [isProcessing]);
     const [attachments, setAttachments] = useState<AssistantAttachment[]>([]);
     const [currentHint, setCurrentHint] = useState(0);
     const [showModelInfo, setShowModelInfo] = useState(false);
@@ -414,8 +422,8 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
 
     // Calculate panel position based on orb position
     const panelPosition = useMemo(() => {
-        const orbCenterX = orbPosition.x + 32; // Orb is ~64px wide
-        const orbCenterY = orbPosition.y + 32;
+        const orbCenterX = orbPosition.x + 80; // theDAW's 2x orb: 160px hit box
+        const orbCenterY = orbPosition.y + 80;
 
         // Determine which quadrant the orb is in and position panel accordingly
         const isOnRight = orbCenterX > window.innerWidth / 2;
@@ -428,8 +436,8 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
             // Panel to the left of orb
             x = Math.max(PANEL_MARGIN, orbPosition.x - PANEL_WIDTH - PANEL_MARGIN);
         } else {
-            // Panel to the right of orb
-            x = Math.min(window.innerWidth - PANEL_WIDTH - PANEL_MARGIN, orbPosition.x + 80);
+            // Panel to the right of orb (orb box 160 + a small gap)
+            x = Math.min(window.innerWidth - PANEL_WIDTH - PANEL_MARGIN, orbPosition.x + 168);
         }
 
         if (isOnBottom) {

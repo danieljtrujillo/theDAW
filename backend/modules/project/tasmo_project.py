@@ -60,6 +60,17 @@ class Clip(BaseModel):
     # Per-clip mute (the clip is skipped by playback and bounces). Defaulted so
     # .tasmo files written before this field existed still validate.
     muted: bool = False
+    # Per-clip gain as a linear multiplier (1.0 = unity) and the fade lengths in
+    # seconds. Applied before the track fader by both the live scheduler and every
+    # offline bounce. Defaulted for the same backward-compatibility reason.
+    gain: float = 1.0
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+    # Seconds into the source audio where this clip starts playing. Without this
+    # a trimmed or split clip reloads with the right position and length but the
+    # WRONG audio, because the full untrimmed source is embedded and playback
+    # restarts it from zero. Defaulted so pre-existing .tasmo files still validate.
+    offset_into_source: float = 0.0
     generation_prompt: str | None = None
     generation_seed: int | None = None
     generation_params: dict | None = None

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Zap, Target, Maximize2, Minimize2 } from 'lucide-react';
 import { getAnalyser, getEngineCtx, samplePeakAndRMS } from '../../state/playerStore';
+import { fitCanvas } from '../../lib/canvasScale';
 import { QuantumLatticeView } from './QuantumLatticeView';
 
 type Mode = 'oscilloscope' | 'spectrum' | 'radial' | 'quantum';
@@ -33,18 +34,16 @@ export const AdvancedVisualizer: React.FC = () => {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
-  // Resize the canvas to its container, accounting for device pixel ratio.
+  // Resize the canvas to its container, accounting for device pixel ratio and
+  // the shell's CSS zoom. No inline style is written: `inset-0 w-full h-full`
+  // already stretches the canvas, and a rect-derived width would land in the
+  // zoomed subtree a second time and shrink the scope inside its own frame.
   useEffect(() => {
     const canvas = canvasRef.current;
     const wrap = wrapperRef.current;
     if (!canvas || !wrap) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
     const resize = () => {
-      const rect = wrap.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
+      fitCanvas(canvas, wrap, { maxDpr: 2 });
     };
     resize();
     const ro = new ResizeObserver(resize);

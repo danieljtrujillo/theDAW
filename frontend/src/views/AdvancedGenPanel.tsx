@@ -29,6 +29,7 @@ import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import { swapEngineForModel } from '../lib/magentaEngineClient';
+import { CLOUD_MODELS } from '../lib/cloudModels';
 import { fetchCheckpoints, type RegisteredCheckpoint } from '../lib/storageClient';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import '../components/layout/track-controls.css';
@@ -728,6 +729,7 @@ export const AdvancedGenPanel: React.FC<{
                   <option value="medium-rf">Medium-RF</option>
                   <option value="magenta-small">Magenta RT2 (text→music)</option>
                   <option value="suno">Suno (Cloud)</option>
+                  <option value="lyria">Lyria 3 Pro (Cloud)</option>
                   {localModels.length > 0 && (
                     <optgroup label="Local checkpoints">
                       {localModels.map((l) => (
@@ -736,7 +738,8 @@ export const AdvancedGenPanel: React.FC<{
                     </optgroup>
                   )}
                 </select>
-                {!isMagenta && p.model !== 'suno' && (() => {
+                {/* Cloud providers have nothing to pre-load onto the GPU. */}
+                {!isMagenta && !CLOUD_MODELS.has(p.model) && (() => {
                   const loaded = activeModel === p.model && modelLoadState !== 'loading';
                   const label = modelLoadState === 'loading' ? 'LOADING'
                     : loaded ? 'LOADED'

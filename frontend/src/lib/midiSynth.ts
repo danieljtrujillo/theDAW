@@ -31,6 +31,11 @@ export interface RenderOptions {
   sampleRate?: number;
   /** Silence appended after the last note so tails aren't clipped. */
   tailSec?: number;
+  /** GM program (0-127) to render through. Defaults to the globally selected
+   *  instrument. Pass a clip's effective program so the bounced audio matches the
+   *  instrument the live scheduler plays it with — otherwise a clip assigned an
+   *  instrument after it was created exports as whatever was selected at insert. */
+  program?: number;
 }
 
 /**
@@ -166,6 +171,7 @@ export const renderStepNotesToBlob = async (
   notes: Array<{ note: number; velocity: number; step: number; length: number }>,
   bpm: number,
   totalSteps: number,
+  opts: { program?: number } = {},
 ): Promise<{ blob: Blob; duration: number }> => {
   const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
   const renderNotes: RenderNote[] = notes.map((n) => ({
@@ -175,7 +181,7 @@ export const renderStepNotesToBlob = async (
     durationSec: n.length * stepSec,
   }));
   // Pad to the pattern's nominal length so trailing rests are preserved.
-  const result = await renderNotesToBlob(renderNotes, { tailSec: 0.6 });
+  const result = await renderNotesToBlob(renderNotes, { tailSec: 0.6, program: opts.program });
   const nominal = totalSteps * stepSec;
   return { blob: result.blob, duration: Math.max(result.duration, nominal) };
 };

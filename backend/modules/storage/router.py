@@ -32,6 +32,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.core.probe_cache import CachedProbe
 from stable_audio_3.model_configs import (
     _is_model_config_json,
     _local_override,
@@ -587,6 +588,52 @@ def _suno_provider_status() -> dict:
         return _unavailable_provider("suno", "Suno API", str(e))
 
 
+def _lyria_provider_status() -> dict:
+    """Lyria runs as an embedded sidecar with its own key handling, so
+    "configured" here means the checkout is present and startable, not that a
+    key exists: the app's own Settings modal accepts a key at runtime, and the
+    sidecar also passes GEMINI_API_KEY through when theDAW already holds one.
+    Mock mode needs no key at all, which is the default.
+    """
+    try:
+        from backend.modules.lyria.sidecar import is_mock, probe
+
+        status = probe()
+        issues = status.get("issues") or []
+        ok = not issues
+        mock = is_mock()
+        return {
+            "id": "lyria",
+            "label": "Lyria 3 Pro",
+            "state": "ready" if ok else "needs_setup",
+            "summary": (
+                (
+                    "Mock mode: generations are free and synthesized locally."
+                    if mock
+                    else "Live mode: each generation costs $0.08 (Pro) / $0.04 (Clip)."
+                )
+                if ok
+                else "; ".join(issues)
+            ),
+            "active": ok,
+            "models": [
+                {
+                    "id": "lyria",
+                    "label": "Lyria 3 Pro (songs with vocals)",
+                    "source": "api" if ok else "missing",
+                    "recommended": ok,
+                    "reason": (
+                        "mock mode (free)" if mock else "live — $0.08 per generation"
+                    )
+                    if ok
+                    else "; ".join(issues),
+                }
+            ],
+        }
+    except Exception as e:
+        return _unavailable_provider("lyria", "Lyria 3 Pro", str(e))
+
+
 def _demucs_provider_status() -> dict:
     try:
         from backend.modules.stems.sidecar import probe
@@ -672,17 +719,34 @@ def _unavailable_provider(provider_id: str, label: str, error: str) -> dict:
     }
 
 
+# The demucs and midi probes spawn an interpreter and import torch, which costs
+# seconds. This endpoint is polled on the CREATE path, and being `async def` while
+# calling them inline blocked the whole event loop for as long as they ran: every
+# other request, including the UI's own polling, stalled behind one press.
+# CachedProbe runs them off the loop and coalesces concurrent callers onto a single
+# run. Install and start/stop paths should call .invalidate() so a fresh install
+# shows up immediately instead of waiting out the TTL.
+_DEMUCS_PROBE = CachedProbe(_demucs_provider_status, ttl=30.0)
+_MIDI_PROBE = CachedProbe(_midi_provider_status, ttl=30.0)
+
+
 @router.get("/model-status")
 async def storage_model_status() -> dict:
-    providers = [
-        _stable_provider_status(),
-        await _magenta_provider_status(),
-        _suno_provider_status(),
-        _demucs_provider_status(),
-        _midi_provider_status(),
-    ]
+    # gather keeps the declared order, so the list stays
+    # [stable, magenta, suno, lyria, demucs, midi] for the consumers below.
+    providers = list(
+        await asyncio.gather(
+            asyncio.to_thread(_stable_provider_status),
+            _magenta_provider_status(),
+            asyncio.to_thread(_suno_provider_status),
+            asyncio.to_thread(_lyria_provider_status),
+            _DEMUCS_PROBE.get(),
+            _MIDI_PROBE.get(),
+        )
+    )
     usable_generation = any(
-        p["id"] in {"stable", "magenta", "suno"} and p["state"] in {"active", "ready"}
+        p["id"] in {"stable", "magenta", "suno", "lyria"}
+        and p["state"] in {"active", "ready"}
         for p in providers
     )
     return {

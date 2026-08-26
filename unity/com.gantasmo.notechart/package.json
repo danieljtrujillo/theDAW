@@ -1,0 +1,27 @@
+{
+  "name": "com.gantasmo.notechart",
+  "version": "0.1.0",
+  "displayName": "theDAW XR - Note Chart",
+  "description": "Reads a gantasmo.notechart JSON exported by theDAW's SCORE tab and spawns engraved SMuFL notation glyphs that fly toward the player in time with the audio. Timing runs off AudioSettings.dspTime so spawn and hit instants stay locked to the audio hardware clock; the chart carries both quantized and raw onsets so beams and bar groupings read as notation while hit judging stays true to the recording. Standalone: no dependency on the other GANTASMO packages, so a note-chart scene runs on its own.",
+  "unity": "6000.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gantasmo/theDAW-XR.git",
+    "directory": "Packages/com.gantasmo.notechart"
+  },
+  "dependencies": {},
+  "keywords": [
+    "thedaw",
+    "notation",
+    "smufl",
+    "bravura",
+    "rhythm-game",
+    "dsptime",
+    "xr",
+    "quest"
+  ],
+  "author": {
+    "name": "GANTASMO"
+  }
+}

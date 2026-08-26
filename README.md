@@ -114,6 +114,8 @@ Every feature has a full reference in the [User Guide](docs/USER_GUIDE.md). Name
 - **[DJ](#dj)** runs two decks with [beatmatch sync and key-lock](docs/USER_GUIDE.md#9-dj-tab), [EQ, filter, and trim](docs/USER_GUIDE.md#9-dj-tab), [hotcues, loops, slip, and quantize](docs/USER_GUIDE.md#9-dj-tab), a [per-deck FX rack and master limiter](docs/USER_GUIDE.md#9-dj-tab), [live stems](docs/USER_GUIDE.md#9-dj-tab), [cue output](docs/USER_GUIDE.md#9-dj-tab), [Automix and a sampler bank](docs/USER_GUIDE.md#9-dj-tab), [MIDI-learn](docs/USER_GUIDE.md#9-dj-tab), [URL import](docs/USER_GUIDE.md#30-youtube-import), and [Design Mode](docs/USER_GUIDE.md#9-dj-tab).
 - **[VJ](#vj)** drives the [VJ-9000](https://github.com/gantasmo/VJ-9000) visual engine: a [3D reactive terrain](docs/USER_GUIDE.md#10-vj-tab), [camera sources](docs/USER_GUIDE.md#10-vj-tab) including phones and Quest headsets, a [GLSL shader source](https://github.com/gantasmo/VJ-9000) with fractals, materials, and audio-mapped params, an [ASCII effect](https://github.com/gantasmo/VJ-9000), [cymatics](docs/USER_GUIDE.md#10-vj-tab) and depth-cloud sources, [source banks](https://github.com/gantasmo/VJ-9000), a [GPU effect chain](docs/USER_GUIDE.md#10-vj-tab), [Autopilot and BPM sync](docs/USER_GUIDE.md#10-vj-tab), [recording and transcode](docs/USER_GUIDE.md#10-vj-tab), and a [watch-link broadcast](docs/guides/dj-and-genealogy.md).
 - **[Controllers and XR](#controllers-and-xr)** bind hardware and headsets: a [~110-profile library with auto-detect](docs/USER_GUIDE.md#31-controller-vision), [learn-by-capture](docs/USER_GUIDE.md#31-controller-vision), [Controller Vision](docs/USER_GUIDE.md#31-controller-vision), native **Audima Sway** expressive-motion support, and the [theDAW-XR](docs/USER_GUIDE.md#34-quest-and-xr-integrations) circuit of hand-tracked MIDI, passthrough streaming, co-located multiplayer, and the MIDI Reactor.
+- **[Tour](#tour)** plans live dates on a map: [venue, promoter, and festival discovery](docs/USER_GUIDE.md#41-tour-tab), booking-contact enrichment, and an optimized multi-stop route with EV-charger planning, all through server-side keys.
+- **[Mobile companion](#mobile-companion)** pairs a phone to the desktop over the control bus for [remote Make, transport, DJ, and Library control](docs/USER_GUIDE.md#42-mobile-companion-app).
 
 ### Library, notation, and tools
 
@@ -174,6 +176,10 @@ A chain of 25 FFmpeg effects covers mastering, compression, filters, vocal proce
 
 The Perform tab imports a project and plays its scenes and clips from a live launch grid. Scenes fire columns of clips together, individual clips trigger on their own, and the grid drives the arrangement while a set runs.
 
+### Tour
+
+The Tour tab plans live dates on a map. It discovers venues, promoters, and festivals through OpenStreetMap and geocoding services, annotates each with genre and vibe labels, and enriches a chosen venue with booking-contact channels found through web search. A route itinerary adds venues as stops, optimizes the drive order, and draws the legs on the map with per-leg drive times, and an EV mode overlays charging stations sampled along the route. Every third-party call runs server-side, so no key reaches the browser, and the map renders against a keyless tile source. Full reference: [User Guide §41](docs/USER_GUIDE.md#41-tour-tab).
+
 ### DJ
 
 <p align="center"><img src="docs/readme/dj.png" alt="Two-deck DJ console with jog wheels, the central mixer, and the FX rack" width="820"></p>
@@ -217,6 +223,10 @@ Every track and the relationships between them render as an interactive force-di
 
 Controller recognition identifies hardware across three tiers: a library of roughly 110 device profiles, a scored auto-detect, and a learn-by-capture mode that binds a control the moment it moves. Controller Vision identifies a controller from a photo through OpenCV and a vision model. The Audima Sway is supported natively: auto-detect recognizes it, its six expressive-motion dimensions arrive as named signals for MAKE, the MIX rack, and the VJ engine, and its control-surface mode mirrors play, volume, pan, and pads onto the EDIT timeline. The [theDAW-XR](https://github.com/gantasmo/theDAW-XR) companion turns a Meta Quest 3 into a hands-only surface: **hand-tracked MIDI** from floating faders and knobs, passthrough video into VJ, co-located multiplayer, and a head-mounted MIDI Reactor, all over ADB. Full reference: [User Guide §31](docs/USER_GUIDE.md#31-controller-vision) and [§34](docs/USER_GUIDE.md#34-quest-and-xr-integrations).
 
+### Mobile companion
+
+theDAW serves a phone web app from its own entry point that pairs to the desktop over the control bus. A link indicator reports whether the phone is paired, rejected, or offline, and four tabs cover its role: Make submits a generation remotely, Remote controls the desktop transport, DJ drives the two-deck console, and Library browses and auditions the disk-backed library. The companion boots a lean shell scoped to remote control, so it loads quickly on a phone. Full reference: [User Guide §42](docs/USER_GUIDE.md#42-mobile-companion-app).
+
 ### Library and Catalogue
 
 <p align="center">
@@ -242,7 +252,7 @@ The Score tab turns a track's **MIDI into symbolic music**. MAKE SHEET converts 
   <img src="docs/readme/draw.png" alt="DRAW tab: draw gestures to play generative music, with Organic, Fibonacci, Neural, and Nebulous modes" width="410">
 </p>
 
-The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS and peak meters. The piano roll edits MIDI-style notes, imports and exports MIDI, and renders to the editor. The step sequencer runs a 16-step drum machine with five synthesized voices. The DRAW tab turns drawn gestures into generative music across Organic, Fibonacci, Neural, and Nebulous modes and records the result to the library or EDIT. The media bucket holds session audio, SLIDE presents a glass surface of faders and knobs synced with the VJ engine, and Details and Score show the selected entry. Full reference: [User Guide §14](docs/USER_GUIDE.md#14-step-sequencer) through [§16](docs/USER_GUIDE.md#16-bottom-panel-tabs).
+The Levels tab meters master loudness, true-peak, dynamics, and stereo image against a delivery target. The spectral analyzer shows oscilloscope, spectrum, and radial modes with RMS and peak meters. The piano roll edits MIDI-style notes, imports and exports MIDI, and renders to the editor. The step sequencer runs a 16-step drum machine with five synthesized voices. The DRAW tab turns drawn gestures into generative music across Organic, Fibonacci, Neural, and Nebulous modes and records the result to the library or EDIT. The media bucket holds session audio, SLIDE presents a glass surface of faders and knobs synced with the VJ engine, SWAY drives music and effects from camera-tracked body movement, and Details and Score show the selected entry. Full reference: [User Guide §14](docs/USER_GUIDE.md#14-step-sequencer) through [§16](docs/USER_GUIDE.md#16-bottom-panel-tabs).
 
 ### Footer, log, and assistant
 

@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from backend.modules.project import media_access
 from backend.modules.project.tasmo_project import TasmoProject
 from backend.modules.project.tasmo_file import TasmoFile
 
@@ -74,6 +75,30 @@ def _load_recent() -> list[dict]:
 
 _recent_files: list[dict] = _load_recent()
 
+# Projects opened before this process started still have their folders in the
+# recent list; seeding from it keeps their clips playable when the UI restores
+# a session from its own storage without re-issuing /load.
+media_access.register_paths(r["path"] for r in _recent_files)
+
+
+def _register_project_media(project: TasmoProject, *paths: str) -> None:
+    """Grant /clip-audio the folders an opened project draws from.
+
+    Opening a project is the user's consent for the files it names, so each
+    clip's linked folder joins the allowlist. In-archive relative refs
+    (``audio/kick.wav``) are ignored by register_paths."""
+    media_access.register_paths(
+        [
+            *paths,
+            *(
+                clip.audio_file
+                for track in project.tracks
+                for clip in track.clips
+                if clip.audio_file
+            ),
+        ]
+    )
+
 
 class SaveRequest(BaseModel):
     project: dict  # TasmoProject as JSON dict
@@ -122,6 +147,7 @@ def save_project(req: SaveRequest):
 
     # Track in recent files
     _add_recent(path, project.project_name)
+    _register_project_media(project, path)
     return {"status": "saved", "path": path, "manifest": manifest}
 
 
@@ -163,6 +189,7 @@ async def save_session(
         raise HTTPException(status_code=500, detail=f"Failed to save .tasmo: {e}")
 
     _add_recent(out_path, tasmo.project_name)
+    _register_project_media(tasmo, out_path)
     return {"status": "saved", "path": out_path, "manifest": manifest}
 
 
@@ -179,6 +206,7 @@ def load_project(req: LoadRequest):
         raise HTTPException(status_code=500, detail=f"Failed to load .tasmo: {e}")
 
     _add_recent(req.path, project.project_name)
+    _register_project_media(project, req.path)
     return LoadResponse(project=project.model_dump(), manifest=manifest)
 
 
@@ -234,13 +262,22 @@ async def clip_audio(path: str):
     is opened. ``.tasmo`` clips reference linked files by absolute path (or files
     extracted from an embedded archive); the frontend cannot read those directly,
     so it fetches them here. Browser-native formats are served as-is; DAW-native
-    formats (AIFF/CAF/…) are transcoded to WAV on the fly. Restricted to audio."""
-    p = Path(path).expanduser()
-    if not p.is_file():
-        raise HTTPException(status_code=404, detail=f"Audio file not found: {path}")
+    formats (AIFF/CAF/…) are transcoded to WAV on the fly. Restricted to audio
+    inside theDAW's media roots (see media_access) because the server binds
+    0.0.0.0 and this route would otherwise read any file on the machine."""
+    p = media_access.resolve_media_path(path)
+    if p is None:
+        # Answered before any existence check, and identically for "outside the
+        # roots" and "unparseable", so the route reveals nothing about the
+        # filesystem to a caller that is not entitled to it.
+        raise HTTPException(
+            status_code=403, detail="Path is outside theDAW media roots"
+        )
     ext = p.suffix.lower()
     if ext not in _AUDIO_EXTS:
         raise HTTPException(status_code=400, detail=f"Not an audio file: {p.name}")
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="Audio file not found")
 
     if ext in _TRANSCODE_EXTS:
         try:
@@ -269,6 +306,8 @@ def export_audio(req: ExportAudioRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to extract audio: {e}")
+    # The user picked this destination, so its files are theirs to play back.
+    media_access.register_paths(extracted)
     return {"extracted": extracted, "count": len(extracted)}
 
 

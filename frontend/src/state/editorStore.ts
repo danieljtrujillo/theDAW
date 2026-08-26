@@ -5,7 +5,51 @@ import type { ChainEntry, VstNode } from './effectChainStore';
 import { rackEffectDefaults } from '../lib/rackEffects';
 
 export type ToolMode = 'move' | 'cut' | 'split';
-export type SnapDivision = 'off' | '1/4' | '1/8' | '1/16';
+
+/** Grid divisions for snapping. Straight notes, plus triplet (T) and dotted (D)
+ *  variants. The four original values ('off' | '1/4' | '1/8' | '1/16') are all
+ *  still members, so projects and prefs saved before the grid was widened keep
+ *  resolving to the same step. */
+export type SnapDivision =
+  | 'off'
+  | '1/1' | '1/2' | '1/4' | '1/8' | '1/16' | '1/32'
+  | '1/4T' | '1/8T' | '1/16T'
+  | '1/4D' | '1/8D' | '1/16D';
+
+/** Grid step for each division, in beats (a beat = one 1/4 note). Triplets are
+ *  2/3 of the straight value, dotted are 3/2. '1/1' assumes 4/4 — the editor has
+ *  no time-signature model yet, so a "bar" is four beats. */
+const SNAP_BEATS: Record<Exclude<SnapDivision, 'off'>, number> = {
+  '1/1': 4,
+  '1/2': 2,
+  '1/4': 1,
+  '1/8': 0.5,
+  '1/16': 0.25,
+  '1/32': 0.125,
+  '1/4T': 2 / 3,
+  '1/8T': 1 / 3,
+  '1/16T': 1 / 6,
+  '1/4D': 1.5,
+  '1/8D': 0.75,
+  '1/16D': 0.375,
+};
+
+/** Ordered for the toolbar picker: straight, then triplets, then dotted. */
+export const SNAP_DIVISIONS: SnapDivision[] = [
+  'off',
+  '1/1', '1/2', '1/4', '1/8', '1/16', '1/32',
+  '1/4T', '1/8T', '1/16T',
+  '1/4D', '1/8D', '1/16D',
+];
+
+/** The grid step in seconds, or null when snapping is off (or the stored value
+ *  is not a division we know — e.g. a hand-edited project file). */
+export const snapStepSec = (snap: SnapDivision, bpm: number): number | null => {
+  if (snap === 'off') return null;
+  const beats = SNAP_BEATS[snap];
+  if (!beats) return null;
+  return (60 / bpm) * beats;
+};
 
 export type ClipSourceKind = 'audio' | 'piano-roll';
 
@@ -46,10 +90,22 @@ export interface AudioClip {
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;
+  /** The GM program `audioBlob` was actually rendered with. The live scheduler
+   *  synthesises MIDI clips from `sourcePianoRoll` and honours instrumentProgram,
+   *  but every offline bounce reads the pre-rendered blob — so the two diverge the
+   *  moment an instrument is reassigned after insert. Recording what the blob
+   *  contains lets the editor re-render it on change and keep export == preview. */
+  renderedProgram?: number;
   /** Fade-in duration in seconds (0 = no fade). */
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
   fadeOutSec?: number;
+  /** Linear clip gain (1 = unity, undefined = unity). Multiplies the fade
+   *  envelope's peak, so it sits BEFORE the track fader and the per-track FX —
+   *  gain-staging a loud clip changes what the track's compressor sees, exactly
+   *  as clip gain does in a conventional DAW. Applied identically in live
+   *  playback (liveMixer.scheduleClips) and in every offline bounce. */
+  gain?: number;
   /** Muted: the clip is skipped by playback and every offline bounce. This is
    *  the ONE clip property liveMixer gates live mid-playback; all other clip
    *  edits are structural and take effect on the next play. */
@@ -117,6 +173,14 @@ export interface TimelineMarker {
   label: string;
 }
 
+/** Clip gain as a safe multiplier — unity for undefined, NaN, or negative values.
+ *  Every scheduling path (live + the three offline bounces) reads clip gain through
+ *  this, so a malformed value can never silence or invert a clip. */
+export const clipPeakGain = (clip: Pick<AudioClip, 'gain'>): number => {
+  const g = clip.gain;
+  return typeof g === 'number' && Number.isFinite(g) && g >= 0 ? g : 1;
+};
+
 /** Stable identity for a target, so a control resolves to its one lane. */
 export const automationTargetKey = (target: AutomationTarget): string =>
   `${target.kind}|${target.trackId ?? ''}|${target.entryId ?? ''}|${target.paramKey ?? ''}`;
@@ -174,6 +238,11 @@ interface EditorStoreState {
   selectedClipId: string | null;
   tool: ToolMode;
   zoom: number;             // pixels per second
+  /** Vertical zoom: the on-screen height of every track lane, in px. Uniform
+   *  across tracks (per-track heights would need the timeline's `index * height`
+   *  layout maths replaced with a cumulative offset table). View state, so it is
+   *  deliberately outside undo history. */
+  trackHeight: number;
   scrollSec: number;        // horizontal scroll position in seconds
   playheadSec: number;
   isPlaying: boolean;
@@ -223,6 +292,7 @@ interface EditorStoreState {
   setSelected: (id: string | null) => void;
   setTool: (t: ToolMode) => void;
   setZoom: (z: number) => void;
+  setTrackHeight: (h: number) => void;
   setScrollSec: (s: number) => void;
   setPlayhead: (s: number) => void;
   setPlaying: (p: boolean) => void;
@@ -240,6 +310,11 @@ interface EditorStoreState {
 
   // Per-track FX rack
   addTrackEffect: (trackId: string, effectId: string) => void;
+  /** Append a VST3 plugin to a track's insert chain. VST3 can't run in the live
+   *  Web Audio graph (buildEffectChain only knows the rack effects), so the entry
+   *  is inert during preview and is applied on the backend by renderTrackStem
+   *  when the track is frozen — the same contract as the master VST chain. */
+  addTrackVst: (trackId: string, plugin: VstNode) => void;
   removeTrackEffect: (trackId: string, entryId: string) => void;
   reorderTrackEffect: (trackId: string, from: number, to: number) => void;
   toggleTrackEffect: (trackId: string, entryId: string) => void;
@@ -288,6 +363,14 @@ interface EditorStoreState {
   undo: () => void;
   redo: () => void;
 
+  /** True when the document has changed since the last save (or since a load).
+   *  Drives the unsaved-changes guard and the modified indicator. Set by the same
+   *  subscription that records undo history, so it tracks exactly the slices that
+   *  constitute "the project". */
+  dirty: boolean;
+  /** Clear the dirty flag — call after a successful save. */
+  markSaved: () => void;
+
   // Selectors
   addMasterVst: (plugin: VstNode) => void;
   /** Store a VST entry's captured native-editor state on a master VST chain
@@ -303,15 +386,28 @@ interface EditorStoreState {
   snapSec: (s: number) => number;
 }
 
-/** The document slices tracked by undo / redo. */
+/** The document slices tracked by undo / redo.
+ *  `markers` and `bpm` are document state (they are part of what a project IS),
+ *  so they belong here. The loop region deliberately does NOT — it is transport
+ *  state, and DAWs that put it in the undo stack make undo unusable during a
+ *  loop-edit session. */
 interface EditorHistorySnapshot {
   tracks: EditorTrack[];
   clips: AudioClip[];
   masterFxChain: ChainEntry[];
   automationLanes: AutomationLane[];
+  markers: TimelineMarker[];
+  bpm: number;
 }
 
 const DEFAULT_COLORS = ['#8b5cf6', '#a855f7', '#ec4899', '#06b6d4', '#10b981', '#facc15', '#f97316', '#ef4444'];
+
+/** Track-lane height bounds, in px. The default matches the height the timeline
+ *  was hardcoded to before vertical zoom existed, so an untouched session looks
+ *  exactly as it did. */
+export const TRACK_HEIGHT_MIN = 56;
+export const TRACK_HEIGHT_MAX = 260;
+export const TRACK_HEIGHT_DEFAULT = 104;
 
 const uid = (): string =>
   typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -327,6 +423,8 @@ const docSnapshot = (s: EditorStoreState): EditorHistorySnapshot => ({
   clips: s.clips,
   masterFxChain: s.masterFxChain,
   automationLanes: s.automationLanes,
+  markers: s.markers,
+  bpm: s.bpm,
 });
 
 export const useEditorStore = create<EditorStoreState>()((set, get) => ({
@@ -346,6 +444,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   selectedClipId: null,
   tool: 'move',
   zoom: 30,        // px per second
+  trackHeight: TRACK_HEIGHT_DEFAULT,
   scrollSec: 0,
   playheadSec: 0,
   isPlaying: false,
@@ -364,6 +463,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   markers: [],
   _undo: [],
   _redo: [],
+  dirty: false,
 
   loadProject: ({ tracks, clips, bpm }) => {
     const fallbackTrack: EditorTrack = {
@@ -379,6 +479,12 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     // Suppress undo recording for the bulk swap, then start the loaded project as
     // a fresh document (empty undo/redo) so the user can't undo back into the
     // previous session's tracks.
+    //
+    // Markers, automation lanes and the loop region are cleared with the tracks:
+    // they are per-project document state, and automation lanes in particular key
+    // off trackId/entryId, so carrying them across a load left lanes pointing at
+    // tracks that no longer exist. This also makes "New Project" (Shell.tsx, which
+    // calls loadProject with empty tracks/clips) actually empty.
     historyApplying = true;
     set({
       tracks: tracks.length ? tracks : [fallbackTrack],
@@ -388,8 +494,15 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       scrollSec: 0,
       isPlaying: false,
       bpm: bpm && Number.isFinite(bpm) ? Math.max(40, Math.min(240, bpm)) : get().bpm,
+      markers: [],
+      automationLanes: [],
+      loopEnabled: false,
+      loopStart: 0,
+      loopEnd: 0,
       _undo: [],
       _redo: [],
+      // A freshly loaded project is by definition unmodified.
+      dirty: false,
     });
     historyApplying = false;
     lastDocChangeAt = -Infinity;
@@ -567,6 +680,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   setSelected: (id) => set({ selectedClipId: id }),
   setTool: (t) => set({ tool: t }),
   setZoom: (z) => set({ zoom: Math.max(5, Math.min(400, z)) }),
+  setTrackHeight: (h) => set({ trackHeight: Math.max(TRACK_HEIGHT_MIN, Math.min(TRACK_HEIGHT_MAX, Math.round(h))) }),
   setScrollSec: (s) => set({ scrollSec: Math.max(0, s) }),
   setPlayhead: (s) => set({ playheadSec: Math.max(0, s) }),
   setPlaying: (p) => set({ isPlaying: p }),
@@ -655,6 +769,15 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       tracks: s.tracks.map((t) =>
         t.id === trackId
           ? { ...t, fxChain: [...(t.fxChain ?? []), { id: uid(), effect: effectId, params: rackEffectDefaults(effectId), enabled: true }] }
+          : t,
+      ),
+    })),
+
+  addTrackVst: (trackId, plugin) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? { ...t, fxChain: [...(t.fxChain ?? []), { id: uid(), effect: 'vst3', params: {}, enabled: true, vst: plugin }] }
           : t,
       ),
     })),
@@ -826,8 +949,14 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       clips: prev.clips,
       masterFxChain: prev.masterFxChain,
       automationLanes: prev.automationLanes,
+      markers: prev.markers,
+      bpm: prev.bpm,
       _undo: s._undo.slice(0, -1),
       _redo: [...s._redo, current],
+      // undo/redo run under historyApplying, so the dirty subscription skips
+      // them — but stepping through history still moves the document away from
+      // what is on disk, so mark it here explicitly.
+      dirty: true,
     });
     historyApplying = false;
     lastDocChangeAt = -Infinity; // the next real edit starts a fresh undo step
@@ -844,12 +973,17 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       clips: next.clips,
       masterFxChain: next.masterFxChain,
       automationLanes: next.automationLanes,
+      markers: next.markers,
+      bpm: next.bpm,
       _undo: [...s._undo, current],
       _redo: s._redo.slice(0, -1),
+      dirty: true,
     });
     historyApplying = false;
     lastDocChangeAt = -Infinity;
   },
+
+  markSaved: () => set({ dirty: false }),
 
   getTotalDurationSec: () => {
     const { clips } = get();
@@ -859,10 +993,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
 
   snapSec: (s) => {
     const { snap, bpm } = get();
-    if (snap === 'off') return Math.max(0, s);
-    const beatSec = 60 / bpm;
-    const divisor = snap === '1/4' ? 1 : snap === '1/8' ? 2 : 4;
-    const step = beatSec / divisor;
+    const step = snapStepSec(snap, bpm);
+    if (step === null) return Math.max(0, s);
     return Math.max(0, Math.round(s / step) * step);
   },
 }));
@@ -878,17 +1010,25 @@ useEditorStore.subscribe((state, prev) => {
     state.tracks === prev.tracks &&
     state.clips === prev.clips &&
     state.masterFxChain === prev.masterFxChain &&
-    state.automationLanes === prev.automationLanes
+    state.automationLanes === prev.automationLanes &&
+    state.markers === prev.markers &&
+    state.bpm === prev.bpm
   ) return;
   const now = performance.now();
   const coalesce = now - lastDocChangeAt < HISTORY_COALESCE_MS;
   lastDocChangeAt = now;
-  if (coalesce) return; // mid-burst; the burst start already captured the undo point
+  // The same slices that constitute an undo step constitute "the project", so
+  // this is also where the document becomes dirty. Skip the write entirely when
+  // there is nothing to record AND nothing to flag — otherwise a 50 Hz clip drag
+  // would push a no-op setState (and wake every subscriber) on every frame.
+  const needsDirty = !state.dirty;
+  if (coalesce && !needsDirty) return; // mid-burst; the burst start captured the undo point
   historyApplying = true;
   useEditorStore.setState((s) => {
+    if (coalesce) return { dirty: true };
     const undo = [...s._undo, docSnapshot(prev)];
     if (undo.length > HISTORY_LIMIT) undo.shift();
-    return { _undo: undo, _redo: [] };
+    return needsDirty ? { dirty: true, _undo: undo, _redo: [] } : { _undo: undo, _redo: [] };
   });
   historyApplying = false;
 });

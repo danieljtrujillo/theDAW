@@ -599,6 +599,18 @@ function registerAppProtocol(): void {
         .catch(() => new Response('backend unavailable', { status: 502 }))
     }
 
+    // Same for the SwayCommand cockpit embed. Exact-match-or-slash-prefix, not
+    // a bare startsWith('/sway-app'), which would also swallow paths like
+    // /sway-application.
+    if (url.pathname === '/sway-app' || url.pathname.startsWith('/sway-app/')) {
+      return net
+        .fetch(`${BACKEND_BASE}${url.pathname}${url.search}`, {
+          method: request.method,
+          headers: request.headers,
+        })
+        .catch(() => new Response('backend unavailable', { status: 502 }))
+    }
+
     // Serve static files from the built renderer output
     let filePath = url.pathname
     if (filePath === '/' || filePath === '') {

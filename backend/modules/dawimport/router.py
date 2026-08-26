@@ -48,7 +48,10 @@ def detect_daw(req: PathRequest):
         return DetectResponse(daw="audacity", name=p.stem, format="aup3")
     elif suffix == ".sesx":
         return DetectResponse(daw="audition", name=p.stem, format="sesx")
-    elif suffix == ".bwproject":
+    elif suffix in (".bwproject", ".dawproject"):
+        # bitwig.py parses both (a .dawproject is the same ZIP + XML schema), but
+        # only .bwproject was listed here, so a bare .dawproject detected as
+        # "unknown" and the importer refused a file it can actually read.
         return DetectResponse(daw="bitwig", name=p.stem, format="bwproject")
     elif suffix == ".avc":
         return DetectResponse(daw="resolume", name=p.stem, format="avc")

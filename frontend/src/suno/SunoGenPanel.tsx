@@ -6,6 +6,7 @@ import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { SunoModeFields } from './SunoModeFields';
 import { SunoJobList } from './SunoJobList';
 import { HoverTip, InfoTip } from '../components/ui/Tooltip';
+import { PANEL_MODEL_OPTIONS } from '../lib/cloudModels';
 
 /**
  * SunoGenPanel — the cloud (Suno) generation workspace ("Aurora Cloud Console").
@@ -78,14 +79,10 @@ const OUTPUT_TIP = {
   body: 'Every generation you submit appears here as a job.\n\n• Jobs poll automatically every few seconds until done\n• Play finished tracks through the shared player engine\n• Reuse a finished clip as a Cover or Mashup base\n• Completed tracks are auto-imported into your Library',
 };
 
-// Stable Audio models + Suno, so the user can switch back from the same dropdown.
-const MODEL_OPTIONS = [
-  { value: 'small', label: 'Small (ARC)' },
-  { value: 'medium', label: 'Medium (ARC)' },
-  { value: 'small-rf', label: 'Small-RF' },
-  { value: 'medium-rf', label: 'Medium-RF' },
-  { value: 'suno', label: 'Suno (Cloud)' },
-];
+// Stable Audio models + the cloud providers, so the user can switch back (or
+// across to Lyria) from the same dropdown. Shared with LyriaPanel, which has
+// the identical need — see PANEL_MODEL_OPTIONS for why magenta-* is excluded.
+const MODEL_OPTIONS = PANEL_MODEL_OPTIONS;
 
 /** Slim "key required" notice. The actual key INPUT lives in Settings → Suno API
  *  (SunoKeySettings); this just points the user there and opens it. */

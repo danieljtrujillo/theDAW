@@ -1,0 +1,5 @@
+# Staged headless notation engraver (frontend/scripts + ~49 MB of production
+# node_modules), regenerated at package time by scripts/fetch-notation-renderer.mjs.
+# The sibling staging dirs (resources/tools, resources/vj-dist, resources/foundry-app)
+# are ignored from the repo-root .gitignore; this entry belongs beside them.
+resources/notation-renderer/

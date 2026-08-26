@@ -14,6 +14,7 @@ import { InstrumentPicker } from './InstrumentPicker';
 import { MidiImportPopover } from './MidiImportPopover';
 import { parseSheetFile } from '../../lib/sheetImportClient';
 import { AiComposePopover } from './AiComposePopover';
+import { ownsKey } from '../../lib/keyScope';
 
 const NOTE_HEIGHT = 12;
 const HEADER_HEIGHT = 22;
@@ -149,6 +150,9 @@ export const PianoRoll: React.FC = () => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Only delete a note when the piano roll is the surface the user is on;
+      // otherwise Delete in the EDIT timeline removed a clip AND a note.
+      if (!ownsKey('piano-roll')) return;
       if (selectedNoteId) {
         e.preventDefault();
         removeNote(selectedNoteId);
@@ -447,7 +451,8 @@ export const PianoRoll: React.FC = () => {
   for (let n = highestNote; n >= lowestNote; n -= 1) rows.push(n);
 
   return (
-    <div className="h-full flex flex-col bg-[#07050a] overflow-hidden relative">
+    // data-keyscope: this panel and the EDIT timeline both bind Delete; see lib/keyScope.
+    <div data-keyscope="piano-roll" className="h-full flex flex-col bg-[#07050a] overflow-hidden relative">
       {/* MIDI mapper popup — top-right pill that expands to LEARN UI.
           Mapped CC moves bpm / totalSteps from the user's controller
           without touching the rest of the toolbar. */}

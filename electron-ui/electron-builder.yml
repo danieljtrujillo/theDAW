@@ -90,12 +90,43 @@ extraResources:
       - "!WHERE-WE-STAND.md"
   - from: ../frontend/public/USER_GUIDE.md
     to: python/frontend/public/USER_GUIDE.md
+  # Headless notation engraver: frontend/scripts (renderScorePdf.mjs via OSMD,
+  # renderTabPdf.mjs via alphaTab) plus the production node_modules they import,
+  # staged by scripts/fetch-notation-renderer.mjs (npm run fetch:notation).
+  # backend/modules/notation/pdf_render.py resolves _REPO_ROOT/"frontend", which
+  # in a packaged app is python/frontend, requires scripts/renderScorePdf.mjs to
+  # be there and spawns node with cwd set to it, so the packages must land in a
+  # node_modules BESIDE the scripts. Without this the installed app reports no
+  # "pdf" capability: no SCORE download, and every bundle ships PDF-less.
+  # Gitignored + regenerated; see the staging script for the size accounting.
+  - from: resources/notation-renderer
+    to: python/frontend
+    filter:
+      - "**/*"
+  # The Unity note-chart package every track bundle carries (bundle.py copies the
+  # tree in, and the bundle README tells the user to drop it into Packages/).
+  # pdf_render.unity_package_dir() resolves _REPO_ROOT/"unity"/"com.gantasmo.notechart",
+  # so it has to keep that exact shape under python/. Source, no build step, 89 KB.
+  - from: ../unity/com.gantasmo.notechart
+    to: python/unity/com.gantasmo.notechart
+    filter:
+      - "**/*"
   # Static VJ (gantasmo/VJ-9000) production build, staged by scripts/fetch-vj-build.mjs
   # (npm run fetch:vj) before packaging. Lands at python/vj-dist, which the backend's
   # VJ sidecar resolves as _REPO_ROOT/"vj-dist" and mounts at /vj-app — so the VJ tab
   # works with no Node.js on the target machine. The dir is gitignored + regenerated.
   - from: resources/vj-dist
     to: python/vj-dist
+    filter:
+      - "**/*"
+  # SwayCommand cockpit embed build, staged by scripts/fetch-sway-build.mjs
+  # (npm run fetch:sway) before packaging. Lands at python/sway-dist, which the
+  # backend's sway module resolves as _REPO_ROOT/"sway-dist" and mounts at
+  # /sway-app - so the SWAY tab works with no Node.js on the target machine.
+  # SwayCommand also ships as its own standalone desktop app; this is the same
+  # cockpit built for embedding. The dir is gitignored + regenerated.
+  - from: resources/sway-dist
+    to: python/sway-dist
     filter:
       - "**/*"
   # VST Foundry production bundle (dist/ + production node_modules + package.json),

@@ -1293,7 +1293,12 @@ const makeDelay: RackEffectFactory = (ctx, params) => {
     ramp(delay.delayTime, clamp((p.time ?? 350) / 1000, 0, 5), ctx);
     ramp(fb.gain, clamp(p.feedback ?? 0.35, 0, 0.95), ctx);
     tone.frequency.value = clamp(p.tone ?? 6000, 200, 18000);
-    ramp(wet.gain, clamp(p.wet ?? 0.3, 0, 1), ctx);
+    // Crossfade dry against wet, the way makeReverb does. Dry was pinned at 1.0
+    // and only wet moved, so the shared "Mix" control behaved as a send/volume
+    // knob here and as a true mix one tile down — same label, different law.
+    const mix = clamp(p.wet ?? 0.3, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
   };
   setParams(params);
   return {

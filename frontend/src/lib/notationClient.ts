@@ -39,6 +39,9 @@ export interface NotationCapabilities {
   music21: boolean;
   musescore: boolean;
   musescore_path?: string | null;
+  /** True when PDF can be engraved headlessly through the frontend's OSMD,
+   *  which needs no MuseScore install. */
+  osmd_pdf?: boolean;
   formats: string[];
   tab_tunings?: string[];
   arrangement_styles?: string[];

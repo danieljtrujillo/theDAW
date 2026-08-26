@@ -50,6 +50,13 @@ export interface TasmoClipInput {
   loop_end?: number | null;
   /** Per-clip mute; optional so pre-mute payloads stay valid. */
   muted?: boolean;
+  /** Linear clip gain (1 = unity) and fade lengths in seconds. Optional for the
+   *  same reason: the backend defaults them, so older payloads still validate. */
+  gain?: number;
+  fade_in?: number;
+  fade_out?: number;
+  /** Seconds into the source where the clip starts — the trim point. */
+  offset_into_source?: number;
 }
 
 export interface TasmoTrackInput {
@@ -93,6 +100,13 @@ export interface TasmoLoadedClip {
   instrument_program?: number;
   /** Per-clip mute; absent in .tasmo files written before the field existed. */
   muted?: boolean;
+  /** Linear clip gain (1 = unity) and fade lengths in seconds; absent in .tasmo
+   *  files written before these fields existed. */
+  gain?: number;
+  fade_in?: number;
+  fade_out?: number;
+  /** Seconds into the source where the clip starts — the trim point. */
+  offset_into_source?: number;
 }
 
 export interface TasmoLoadedTrack {

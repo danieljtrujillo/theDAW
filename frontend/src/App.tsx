@@ -15,6 +15,12 @@ import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
 // the first-paint bundle by lazy-loading it and only mounting it once the user
 // first opens the orb chat (see `assistantMounted` below).
 const AssistantPanel = lazy(() => import('./orb-kit/AssistantPanel'));
+// The orb's ferrofluid body pulls in three.js; keep it out of the first-paint
+// bundle and only mount it once the backend is ready (the boot cinematic and
+// splash own the GPU until then). The CSS gradient core renders meanwhile.
+const FerroOrbCore = lazy(() => import('./components/audio/FerroOrbCore'));
+import OrbDripTrail from './components/audio/OrbDripTrail';
+import { useAssistantActivityStore } from './state/assistantActivityStore';
 import { logInfo, logWarn, useLogStore, type LogLevel } from './state/logStore';
 import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
@@ -81,6 +87,7 @@ export default function App() {
   }, []);
 
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
+  const assistantThinking = useAssistantActivityStore((s) => s.thinking);
   const refreshHealth  = useStatusBarStore((s) => s.refreshHealth);
 
   // Health polling lives here so it runs during the loading screen.
@@ -429,11 +436,25 @@ export default function App() {
         isActive={isAssistantOpen}
         onToggle={() => setIsAssistantOpen(prev => !prev)}
         onPositionChange={setOrbPosition}
+        processing={assistantThinking}
+        // Ferrofluid body (three.js, lazy) with the GANTASMO eyes + mouth
+        // composited on top by the orb itself. Held back until the boot
+        // screen clears so the cinematic keeps the GPU to itself.
+        coreOverlay={!showLoading ? (
+          <Suspense fallback={null}>
+            <FerroOrbCore />
+          </Suspense>
+        ) : undefined}
+        // 2x orb: the orb-2x class doubles the CSS stack (160/128/96) and
+        // bounds keeps viewport clamping honest at that size.
+        className="orb-2x"
+        bounds={160}
         // Bottom-left corner, pulled DOWN to overlap the footer (where the
         // music-note icon used to be). v3 key so it resets there once.
-        defaultPosition={{ x: 12, y: typeof window !== 'undefined' ? window.innerHeight - 92 : 500 }}
+        defaultPosition={{ x: 12, y: typeof window !== 'undefined' ? window.innerHeight - 172 : 500 }}
         persistenceKey="thedaw-orb-pos-v3"
       />
+      <OrbDripTrail position={orbPosition} orbBox={160} />
       {assistantMounted && (
         <Suspense fallback={null}>
           <AssistantPanel

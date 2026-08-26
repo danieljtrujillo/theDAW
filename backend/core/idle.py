@@ -24,7 +24,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Literal, Optional
+from contextlib import contextmanager
+from typing import Iterator, Literal, Optional
 
 log = logging.getLogger(__name__)
 
@@ -133,3 +134,51 @@ def get_idle_manager() -> IdleManager:
     if _default is None:
         _default = IdleManager()
     return _default
+
+
+class IdleHold:
+    """Handle for the hold taken by :func:`idle_hold`."""
+
+    __slots__ = ("_tag", "_handed_off")
+
+    def __init__(self, tag: str) -> None:
+        self._tag = tag
+        self._handed_off = False
+
+    @property
+    def tag(self) -> str:
+        return self._tag
+
+    @property
+    def handed_off(self) -> bool:
+        return self._handed_off
+
+    def hand_off(self) -> None:
+        """Pass the release duty to code that outlives the block.
+
+        For the endpoint-spawns-a-task shape: the endpoint takes the hold so
+        the gate stays shut across its own setup work, then the task releases
+        the same tag from its own ``finally``. Without this the block exit
+        would drop the hold while the task is still running.
+        """
+        self._handed_off = True
+
+
+@contextmanager
+def idle_hold(tag: str, manager: Optional[IdleManager] = None) -> Iterator[IdleHold]:
+    """Hold the idle gate for the duration of the block.
+
+    A bare ``bump_activity(tag=...)`` / ``release(tag)`` pair leaks the hold on
+    every early return and every exception raised between them, and one leaked
+    tag pins ``is_idle()`` to False for the rest of the process, which silently
+    stops every background worker. Taking the hold through this manager makes
+    the release structural instead of a thing each caller has to remember.
+    """
+    mgr = manager or get_idle_manager()
+    hold = IdleHold(tag)
+    mgr.bump_activity(tag=tag)
+    try:
+        yield hold
+    finally:
+        if not hold.handed_off:
+            mgr.release(tag)

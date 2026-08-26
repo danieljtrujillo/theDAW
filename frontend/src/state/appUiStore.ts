@@ -14,7 +14,7 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
  *  VJ / FOUNDRY / UNDERFIT / LEARN / TOUR. All workspaces live here; the legacy
  *  left-side tabs (CREATE/PROCESS) are subsumed by these. LoRA training is the
  *  UNDERFIT tab (the standalone TRAIN workspace was retired in its favor). */
-export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'foundry', 'underfit', 'audimate', 'learn', 'tour'] as const;
+export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'sway', 'foundry', 'underfit', 'audimate', 'learn', 'tour'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
 
 /** Tabs that were removed or renamed but may still appear in persisted state or
@@ -30,7 +30,12 @@ const CENTER_TAB_ALIASES: Record<string, CenterTab> = {
 const LEGACY_VIEW_TO_CENTER_TAB: Record<string, CenterTab> = {
   create: 'make',
   advanced: 'make',
-  edit: 'mix',
+  // 'edit' must resolve to the EDIT tab. It mapped to 'mix', so every legacy
+  // navigate('edit') — orb-kit actions, library row clicks, the assistant's own
+  // navigate tool — opened MIX instead. That made the arrangement workspace
+  // unreachable by name and left the assistant unable to open the one tab it is
+  // meant to drive.
+  edit: 'edit',
   session: 'session',
   train: 'underfit',
 };
@@ -41,9 +46,24 @@ export function normalizeCenterTab(value: unknown): CenterTab | null {
   return CENTER_TAB_ALIASES[value] ?? null;
 }
 
+/** Interface modes, applied per-surface starting with the FOUNDRY tab.
+ *  Senpai is the full pro cockpit as it ships today; Kouhai is a secondary
+ *  presentation of the SAME surface: more app-like and simplified in
+ *  appearance with zero functionality removed. Senpai is the default so
+ *  existing users see no change on upgrade. */
+export const UI_MODES = ['kouhai', 'senpai'] as const;
+export type UiMode = typeof UI_MODES[number];
+
+export function normalizeUiMode(value: unknown): UiMode | null {
+  return typeof value === 'string' && (UI_MODES as readonly string[]).includes(value)
+    ? value as UiMode
+    : null;
+}
+
 interface AppUiState {
   activeView: theDAWView;
   centerTab: CenterTab;
+  uiMode: UiMode;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
   isLibraryExpanded: boolean;
@@ -51,6 +71,7 @@ interface AppUiState {
   docsOpen: boolean;
   setActiveView: (view: unknown) => void;
   setCenterTab: (tab: unknown) => void;
+  setUiMode: (mode: unknown) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
   setLibraryExpanded: (expanded: boolean) => void;
@@ -72,6 +93,7 @@ export const useAppUiStore = create<AppUiState>()(
     (set) => ({
       activeView: 'create',
       centerTab: 'make',
+      uiMode: 'senpai',
       // Left panel defaults closed now that the center bar hosts all
       // tab content. It still exists (toggleable from the new
       // CenterTabBar) for future use as a context palette.
@@ -105,6 +127,11 @@ export const useAppUiStore = create<AppUiState>()(
         if (!normalized) return;
         set({ centerTab: normalized });
       },
+      setUiMode: (mode) => {
+        const normalized = normalizeUiMode(mode);
+        if (!normalized) return;
+        set({ uiMode: normalized });
+      },
       setLeftPanelOpen: (open) => set({ isLeftPanelOpen: open }),
       setRightPanelOpen: (open) => set({ isRightPanelOpen: open, ...(open ? {} : { isLibraryExpanded: false }) }),
       setLibraryExpanded: (expanded) => set({ isLibraryExpanded: expanded, ...(expanded ? { isRightPanelOpen: true } : {}) }),
@@ -116,16 +143,23 @@ export const useAppUiStore = create<AppUiState>()(
       // Bumped when a persisted centerTab value could reference a removed tab
       // (e.g. the retired 'train' workspace). migrate() coerces it to a valid
       // tab so returning users never rehydrate onto a tab that no longer exists.
-      version: 1,
+      // v2 added uiMode (Kouhai/Senpai, consumed by the FOUNDRY surface).
+      version: 2,
       migrate: (persisted, _version) => {
-        const p = (persisted ?? {}) as { centerTab?: unknown; rightPanelWidth?: unknown };
-        return { ...p, centerTab: normalizeCenterTab(p.centerTab) ?? 'make' };
+        const p = (persisted ?? {}) as { centerTab?: unknown; rightPanelWidth?: unknown; uiMode?: unknown };
+        return {
+          ...p,
+          uiMode: normalizeUiMode(p.uiMode) ?? 'senpai',
+          centerTab: normalizeCenterTab(p.centerTab) ?? 'make',
+        };
       },
       // Panel open/expand state is intentionally NOT persisted: every app open
       // starts with the shell chrome collapsed (left panel, right library rail).
-      // Only the active center tab and the rail width are remembered.
+      // Only the active center tab, the interface mode, and the rail width are
+      // remembered.
       partialize: (s) => ({
         centerTab: s.centerTab,
+        uiMode: s.uiMode,
         rightPanelWidth: s.rightPanelWidth,
       }),
     },

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import mimetypes
 import zipfile
 from pathlib import Path
@@ -22,7 +23,10 @@ from .engine import (
     midi_to_musicxml,
     midi_to_tabs,
     register_existing_midis,
+    register_on_disk_artifacts,
 )
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -33,6 +37,9 @@ _EXT_FOR_FORMAT = {
     "abc": ".abc",
     "pdf": ".pdf",
     "svg": ".svg",
+    # The Unity flying-notation chart. Double extension so it is obvious on disk
+    # that the payload is JSON while still identifying what kind of JSON.
+    "notechart": ".notechart.json",
 }
 
 
@@ -107,8 +114,63 @@ def list_artifacts(entry_id: str, kind: Optional[str] = None) -> dict[str, Any]:
     if store.get_entry(entry_id) is None:
         raise HTTPException(404, f"entry {entry_id!r} not found")
     register_existing_midis(store.db, entry_id)
+    # Self-heal: the legacy mirror above only replays the ``midis`` table, so an
+    # entry whose rows were lost while its files survived would list as empty
+    # forever. Scanning the entry's own directories recovers those, and it only
+    # runs when the DB really has nothing, so the normal path stays a plain read.
+    if not store.db.list_notation_artifacts(entry_id):
+        entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
+        if entry_dir is not None:
+            recovered = register_on_disk_artifacts(store.db, entry_dir, entry_id)
+            if recovered:
+                log.info(
+                    "notation: recovered %d on-disk artifact(s) for %s",
+                    len(recovered),
+                    entry_id,
+                )
     artifacts = store.db.list_notation_artifacts(entry_id, kind=kind)
     return {"entry_id": entry_id, "artifacts": artifacts, "count": len(artifacts)}
+
+
+@router.post("/reindex")
+def reindex_artifacts() -> dict[str, Any]:
+    """Re-register every notation artifact found on disk across the library.
+
+    Recovers scores and MIDI whose ``notation_artifacts`` rows were lost while
+    the files survived. Idempotent: already-registered artifacts are skipped, so
+    this is safe to run repeatedly.
+    """
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    entries = store.list_entries()
+    scanned = 0
+    recovered_total = 0
+    entries_touched = 0
+    for entry in entries:
+        entry_id = str(getattr(entry, "id", "") or "")
+        if not entry_id:
+            continue
+        entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
+        if entry_dir is None:
+            continue
+        scanned += 1
+        recovered = register_on_disk_artifacts(store.db, entry_dir, entry_id)
+        if recovered:
+            entries_touched += 1
+            recovered_total += len(recovered)
+    log.info(
+        "notation reindex: %d artifact(s) recovered across %d of %d entries scanned",
+        recovered_total,
+        entries_touched,
+        scanned,
+    )
+    return {
+        "ok": True,
+        "entries_scanned": scanned,
+        "entries_recovered": entries_touched,
+        "artifacts_recovered": recovered_total,
+    }
 
 
 @router.post("/{entry_id}/from-midi/{midi_id}")

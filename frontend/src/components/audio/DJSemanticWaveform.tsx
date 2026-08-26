@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { applyCanvasBox, measureCanvasBox, scaleContextToBox, type CanvasBox } from '../../lib/canvasScale';
 
 type WaveBin = {
   peak: number;
@@ -239,22 +240,23 @@ function fillSymmetricBar(ctx: CanvasRenderingContext2D, x: number, center: numb
 
 function drawWaveform(
   canvas: HTMLCanvasElement,
-  width: number,
-  height: number,
+  box: CanvasBox,
   bins: WaveBin[],
   viewportStart: number,
   viewportEnd: number,
 ): void {
-  const dpr = window.devicePixelRatio || 1;
-  const pixelHeight = Math.max(1, Math.floor(height));
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(pixelHeight * dpr);
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${pixelHeight}px`;
+  // The canvas stretches with `absolute inset-0 h-full w-full`, so only the
+  // backing store is set here; an inline width in viewport px would apply the
+  // shell zoom a second time and shrink the wave away from the playhead.
+  applyCanvasBox(canvas, box);
+  // Kept unrounded so the painted extent matches the backing store exactly; the
+  // per-column loop below still steps in whole units.
+  const width = box.cssWidth;
+  const pixelHeight = box.cssHeight;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  scaleContextToBox(ctx, box);
   ctx.clearRect(0, 0, width, pixelHeight);
 
   const bg = ctx.createLinearGradient(0, 0, 0, pixelHeight);
@@ -401,8 +403,10 @@ export function DJSemanticWaveform({
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
     const render = () => {
-      const rect = wrap.getBoundingClientRect();
-      drawWaveform(canvas, Math.max(1, Math.floor(rect.width)), height, bins, viewportStart, viewportEnd);
+      // `height` is the wrapper's inline height, already in local css px, so it
+      // is passed straight through; only the width needs the zoom correction.
+      const box = measureCanvasBox(wrap, { cssHeight: height });
+      drawWaveform(canvas, box, bins, viewportStart, viewportEnd);
     };
     render();
     const ro = new ResizeObserver(render);

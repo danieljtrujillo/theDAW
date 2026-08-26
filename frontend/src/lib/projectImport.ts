@@ -226,7 +226,12 @@ const buildClip = async (
   // timing. Never exceed the decoded source length.
   const startSec = Math.max(0, c.start_time ?? 0);
   const span = (c.end_time ?? 0) - startSec;
-  const durationSec = span > 0.02 ? Math.min(span, duration) : duration;
+  // The trim point into the (full, untrimmed) source. Clamped inside the decoded
+  // length so a corrupt or hand-edited value can't produce a silent clip, and the
+  // available duration is measured from the offset rather than from zero.
+  const offsetIntoSource = Math.max(0, Math.min(c.offset_into_source ?? 0, Math.max(0, duration - 0.01)));
+  const available = Math.max(0, duration - offsetIntoSource);
+  const durationSec = span > 0.02 ? Math.min(span, available) : available;
   return {
     id: c.id || uid('clip'),
     trackId,
@@ -234,7 +239,7 @@ const buildClip = async (
     audioBlob: blob,
     mimeType: blob.type || 'audio/wav',
     sourceDuration: duration,
-    offsetIntoSource: 0,
+    offsetIntoSource,
     durationSec,
     startSec,
     color,
@@ -243,8 +248,12 @@ const buildClip = async (
     sourcePianoRoll,
     sourceBpm: sourceKind ? bpm : undefined,
     // Restore the per-clip mute; omit the field entirely for unmuted clips so
-    // pre-mute projects hydrate exactly as before.
+    // pre-mute projects hydrate exactly as before. Gain and fades follow the same
+    // rule: a unity/zero value stays `undefined` rather than being written back.
     muted: c.muted ? true : undefined,
+    gain: typeof c.gain === 'number' && c.gain !== 1 ? c.gain : undefined,
+    fadeInSec: c.fade_in || undefined,
+    fadeOutSec: c.fade_out || undefined,
   };
 };
 
@@ -392,8 +401,15 @@ export function captureEditorSession(): CapturedSession {
                   velocity: n.velocity,
                 }))
               : null,
-          // Per-clip mute survives the .tasmo round-trip (fades do not yet).
+          // Per-clip mute, gain, fades and the trim point all survive the .tasmo
+          // round-trip. offset_into_source is the load-bearing one: the embedded
+          // audio is the FULL untrimmed source, so without it a split clip reloads
+          // at the right place and length playing the wrong part of the take.
           muted: c.muted ?? false,
+          gain: c.gain ?? 1,
+          fade_in: c.fadeInSec ?? 0,
+          fade_out: c.fadeOutSec ?? 0,
+          offset_into_source: c.offsetIntoSource ?? 0,
         };
       });
     return {

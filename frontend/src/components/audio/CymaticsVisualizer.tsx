@@ -30,74 +30,10 @@ import { vs as sphereVS } from './cymatics/sphere-shader';
 import { vs as cymaticsVS } from './cymatics/cymatics-shader';
 import { vs as landscapeVS } from './cymatics/landscape-shader';
 import { plasmaVS, plasmaFS, haloFS } from './cymatics/plasma-shader';
-import { Analyser } from './cymatics/analyser';
+import { HybridSource, IdleSource, type FreqSource } from './cymatics/hybrid-source';
+import { effectiveZoom } from '../../lib/canvasScale';
 
 export type CymaticsMode = 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
-
-/** Shared shape so the render loop can read real or synthetic frequency data. */
-interface FreqSource {
-  update(): void;
-  readonly data: Uint8Array;
-}
-
-/**
- * Gentle self-driving frequency data for when no audio is audible, so the
- * meshes breathe/ripple/scroll at idle instead of sitting dead flat.
- */
-class IdleSource implements FreqSource {
-  private dataArray = new Uint8Array(16);
-  private seed: number;
-  constructor(seed = 0) {
-    this.seed = seed;
-  }
-  update() {
-    const t = performance.now() / 1000 + this.seed;
-    for (let i = 0; i < 16; i++) {
-      const bandFall = 1 - i / 24; // highs a touch quieter
-      const slow = 0.5 + 0.5 * Math.sin(t * 0.45 + i * 0.55);
-      const fast = 0.5 + 0.5 * Math.sin(t * 1.6 + i * 1.27);
-      const v = (0.4 * slow + 0.28 * fast) * bandFall;
-      this.dataArray[i] = Math.max(0, Math.min(255, Math.round(v * 120)));
-    }
-  }
-  get data() {
-    return this.dataArray;
-  }
-}
-
-/**
- * Real audio (master-gain analyser) crossfaded with idle: when the track is
- * audible the visualizer follows it; when it goes quiet it eases back to gentle
- * idle motion rather than freezing.
- */
-class HybridSource implements FreqSource {
-  private real: Analyser;
-  private idle: IdleSource;
-  private buf = new Uint8Array(16);
-  private activity = 0;
-  constructor(node: AudioNode, seed = 0) {
-    this.real = new Analyser(node);
-    this.idle = new IdleSource(seed);
-  }
-  update() {
-    this.real.update();
-    this.idle.update();
-    const rd = this.real.data;
-    let sum = 0;
-    for (let i = 0; i < 16; i++) sum += rd[i];
-    const target = sum > 16 ? 1 : 0; // audible vs silent
-    this.activity += (target - this.activity) * 0.06; // ~1s ease
-    const a = this.activity;
-    const id = this.idle.data;
-    for (let i = 0; i < 16; i++) this.buf[i] = Math.round((rd[i] || 0) * a + id[i] * (1 - a));
-  }
-  get data() {
-    return this.buf;
-  }
-  dispose() {
-    this.real.dispose();
-  }
-}
 
 interface CymaticsVisualizerProps {
   mode: CymaticsMode;
@@ -200,7 +136,11 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 1000);
     camera.position.set(2, -2, 5);
 
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    // setSize below is fed clientWidth/Height, which are local css px, so the
+    // shell zoom belongs in the pixel ratio for the buffer to match the real
+    // device pixels the canvas covers.
+    const capturedDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    renderer.setPixelRatio(capturedDpr * effectiveZoom(container));
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     pmremGenerator.compileEquirectangularShader();
@@ -389,6 +329,8 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
       const h = container.clientHeight || 1;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      // Re-read the zoom here too: the breakpoint tiers change it mid-session.
+      renderer.setPixelRatio(capturedDpr * effectiveZoom(container));
       const dpr = renderer.getPixelRatio();
       (backdrop.material as THREE.RawShaderMaterial).uniforms.resolution.value.set(w * dpr, h * dpr);
       renderer.setSize(w, h, false); // updateStyle=false → CSS keeps the canvas full-bleed

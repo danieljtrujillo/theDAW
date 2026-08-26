@@ -13,6 +13,8 @@
 
 - [User Guide](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md)
 - [README](https://github.com/gantasmo/theDAW/blob/main/README.md)
+- [Feature + API Reference](https://github.com/gantasmo/theDAW/blob/main/docs/reference/README.md)
+- [Offline and Performance](https://github.com/gantasmo/theDAW/blob/main/docs/OFFLINE-AND-PERFORMANCE.md)
 
 ### Ecosystem
 
