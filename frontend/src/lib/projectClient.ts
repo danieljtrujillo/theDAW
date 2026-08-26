@@ -89,6 +89,8 @@ export interface TasmoProjectInput {
   import_warnings?: string[];
   /** Session-view scene names in row order; empty when there is no grid. */
   scenes?: string[];
+  locators?: Array<{ id: string; name: string; position: number; color?: string | null }>;
+  source_daw_version?: string | null;
   controller_mappings?: TasmoControllerMappings | null;
   /** Perform-tab scene-launch + modulation routing (see performRouting.ts). */
   perform_routing?: PerformRoutingSnapshot | null;
@@ -140,7 +142,11 @@ export interface TasmoLoadedTrack {
 export interface TasmoProjectLoaded {
   project_name: string;
   tempo: number;
+  /** Declared so a non-4/4 set does not silently reload as 4/4. */
+  time_signature?: number[];
   sample_rate: number;
+  source_daw?: string | null;
+  source_daw_version?: string | null;
   tracks: TasmoLoadedTrack[];
   import_warnings?: string[];
   /** Session-view scene names in row order; empty when there is no grid. */
@@ -261,6 +267,11 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
     // Scene names in row order, so a saved Perform grid reloads with the
     // user's own scene names instead of a generic "Scene 1..N" ladder.
     scenes: d.scenes ?? [],
+    // TasmoProject has had locators and source_daw_version all along; nothing
+    // wrote them, so markers vanished on first save and schema-drift bugs were
+    // undiagnosable after the fact.
+    locators: (d.locators ?? []).map((l) => ({ id: uid("loc"), name: l.name, position: l.position, color: l.color ?? null })),
+    source_daw_version: d.source_version || null,
     tracks,
   };
 }

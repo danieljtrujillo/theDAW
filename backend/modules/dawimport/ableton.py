@@ -313,9 +313,15 @@ def _parse_track(
         if mute_elem is not None:
             mute = mute_elem.get("Value", "0") in ("1", "true")
 
-    # Solo.
+    # Solo. `find(...) or find(...)` is a trap here: an ElementTree Element with
+    # no children is FALSY, so a self-closing <Solo Value="true"/> fell through to
+    # the SoloSink branch and parsed as solo=False. Real sets happen to store
+    # solo as <SoloSink>, which is why this never showed up — but it is one Live
+    # version away from silently dropping every solo in a project.
     solo = False
-    solo_elem = track_elem.find(".//Solo") or track_elem.find(".//SoloSink")
+    solo_elem = track_elem.find(".//Solo")
+    if solo_elem is None:
+        solo_elem = track_elem.find(".//SoloSink")
     if solo_elem is not None:
         solo = solo_elem.get("Value", "false").lower() in ("true", "1")
 
@@ -537,12 +543,19 @@ def _build_clip(
         start_beats = _read_attr_or_child_float(clip_elem, "CurrentStart", 0.0)
         end_beats = _read_attr_or_child_float(clip_elem, "CurrentEnd", start_beats)
     else:
-        # Session clip: derive a length from loop region so the clip has size.
+        # Session clip: a WINDOW onto its sample, not a timeline position. Its
+        # length is CurrentEnd - CurrentStart; taking CurrentEnd alone reported a
+        # 4-beat clip starting at beat 2 as 6 beats long (50% too long) and lost
+        # the trim entirely, so playback started from sample zero.
+        session_start = _read_attr_or_child_float(clip_elem, "CurrentStart", 0.0) or 0.0
+        session_end = _read_attr_or_child_float(clip_elem, "CurrentEnd", None)
+        if session_end is None:
+            length = _read_loop_length(clip_elem)
+            session_end = session_start + length if length is not None else None
         start_beats = 0.0
-        loop_end = _read_attr_or_child_float(clip_elem, "CurrentEnd", None)
-        if loop_end is None:
-            loop_end = _read_loop_length(clip_elem)
-        end_beats = loop_end if loop_end is not None else 4.0
+        end_beats = (
+            max(0.0, session_end - session_start) if session_end is not None else 4.0
+        )
 
     start_time = _beats_to_sec(start_beats, tempo)
     end_time = _beats_to_sec(end_beats, tempo)
@@ -576,6 +589,19 @@ def _build_clip(
     else:
         file_path = _resolve_audio_path(clip_elem, project, project_dir, media_index)
 
+    # Where in the sample this clip starts. For a session clip that is its
+    # CurrentStart; both lanes fall back to the loop region's start, which is
+    # what Live uses for a looped clip's play position.
+    if arrangement:
+        offset_into_source = loop_start if loop_start is not None else 0.0
+    else:
+        offset_into_source = _beats_to_sec(session_start, tempo)
+        if offset_into_source <= 0.0 and loop_start is not None:
+            offset_into_source = loop_start
+
+    loop_on = _read_loop_on(clip_elem)
+    is_warped, source_tempo = _read_warp(clip_elem, tempo)
+
     return DawClip(
         name=cname,
         start_time=start_time,
@@ -584,7 +610,76 @@ def _build_clip(
         loop_end=loop_end,
         file_path=file_path,
         midi_notes=midi_notes,
+        offset_into_source=max(0.0, offset_into_source),
+        loop_on=loop_on,
+        is_warped=is_warped,
+        source_tempo=source_tempo,
+        color=_read_color(clip_elem),
     )
+
+
+def _read_loop_on(clip_elem) -> bool | None:
+    """Live's <Loop><LoopOn Value="true"/>, in its attribute and child forms.
+
+    Returns None when the tag is absent so a caller can tell "explicitly a
+    one-shot" from "this Live version didn't say", rather than silently looping
+    material that was never meant to.
+    """
+    for path in ("Loop/LoopOn", "LoopOn"):
+        el = clip_elem.find(path)
+        if el is None:
+            continue
+        raw = el.get("Value")
+        if raw is None:
+            raw = (el.text or "").strip()
+        if raw:
+            return raw.strip().lower() in ("true", "1")
+    return None
+
+
+def _read_warp(clip_elem, project_tempo: float) -> tuple[bool, float | None]:
+    """Whether the clip is warped, and the sample's own recorded tempo.
+
+    Two consecutive warp markers give it directly: each pairs a position in the
+    sample (``SecTime``, seconds) with a position in the song (``BeatTime``,
+    beats), so tempo = beats-elapsed / seconds-elapsed * 60. That is a
+    constant-rate approximation — correct for the single-tempo loops that make up
+    almost all of a session grid, and wrong only for a clip that was warped to
+    follow a performance, which needs offline resampling to reproduce anyway.
+    """
+    warped_el = clip_elem.find("IsWarped")
+    raw = warped_el.get("Value") if warped_el is not None else None
+    is_warped = bool(raw) and raw.strip().lower() in ("true", "1")
+    if not is_warped:
+        return False, None
+
+    markers = clip_elem.find("WarpMarkers")
+    if markers is None:
+        return True, None
+    pairs: list[tuple[float, float]] = []
+    for m in markers.findall("WarpMarker"):
+        sec = m.get("SecTime")
+        beat = m.get("BeatTime")
+        if sec is None or beat is None:
+            continue
+        try:
+            pairs.append((float(sec), float(beat)))
+        except ValueError:
+            continue
+        if len(pairs) == 2:
+            break
+    if len(pairs) < 2:
+        return True, None
+    (s0, b0), (s1, b1) = pairs
+    d_sec = s1 - s0
+    d_beat = b1 - b0
+    if d_sec <= 0 or d_beat <= 0:
+        return True, None
+    tempo = (d_beat / d_sec) * 60.0
+    # Guard against a degenerate marker pair producing an absurd rate.
+    if not (20.0 <= tempo <= 400.0):
+        return True, None
+    return True, tempo
 
 
 def _read_loop_length(clip_elem) -> float | None:
@@ -1149,6 +1244,83 @@ def _read_color(track_elem) -> str | None:
     return None
 
 
+# Live's 70-entry track/clip colour palette, in index order. Colour is how a
+# performer navigates a session grid at speed, so getting these right is what
+# makes an imported set visually recognisable rather than a rainbow by position.
+_LIVE_PALETTE: tuple[str, ...] = (
+    "#ff94a6",
+    "#ffa529",
+    "#cc9927",
+    "#f7f47c",
+    "#bfff00",
+    "#1aff2f",
+    "#25ffa8",
+    "#5cffe8",
+    "#8bc5ff",
+    "#5480e4",
+    "#92a7ff",
+    "#d86ce4",
+    "#e553a0",
+    "#ffffff",
+    "#ff3636",
+    "#f66c03",
+    "#99724b",
+    "#fff034",
+    "#87ff67",
+    "#3dc300",
+    "#00bfaf",
+    "#19e9ff",
+    "#10a4ee",
+    "#007dc0",
+    "#886ce4",
+    "#a53df7",
+    "#bf3fa1",
+    "#ff39d4",
+    "#d0d0d0",
+    "#e3776f",
+    "#a75151",
+    "#a76c4b",
+    "#c8a56b",
+    "#d2c795",
+    "#a8c66b",
+    "#87a556",
+    "#77a582",
+    "#83abbc",
+    "#7b96b4",
+    "#8393cc",
+    "#a289b5",
+    "#bf9fbf",
+    "#bc7f9b",
+    "#c4a3b0",
+    "#a9a9a9",
+    "#c39c9c",
+    "#b58a6c",
+    "#a88f5a",
+    "#c1b56b",
+    "#b7c78b",
+    "#a5c46b",
+    "#8fae7a",
+    "#78a58f",
+    "#8fb0bc",
+    "#8fa3c0",
+    "#95a3d6",
+    "#b09ac0",
+    "#c9a6c9",
+    "#c48fa8",
+    "#cbb0ba",
+    "#3c3c3c",
+    "#a04d3c",
+    "#8f6a3c",
+    "#8f7f3c",
+    "#7f8f3c",
+    "#5c8f3c",
+    "#3c8f6a",
+    "#3c7f8f",
+    "#3c5c8f",
+    "#5c3c8f",
+)
+
+
 def _color_token(v: str | None) -> str | None:
     """Normalize a color value to a hex string when it looks like RGB."""
     if v is None:
@@ -1162,7 +1334,15 @@ def _color_token(v: str | None) -> str | None:
     # Heuristic: large values are packed RGB; small values are palette indices.
     if n > 0xFFFF:
         return f"#{n & 0xFFFFFF:06x}"
-    return f"index:{n}"
+    # Live track/clip colours are palette indices 0-69, so this branch is the
+    # common one — the RGB branch above is effectively dead for real sets. This
+    # used to return the literal string "index:26", which is not a colour: the
+    # grid ignored it and coloured by position instead, and projectImport's
+    # `t.color || FALLBACK` accepted it as truthy and handed the editor an
+    # invalid CSS value that never reached its own fallback.
+    if n < len(_LIVE_PALETTE):
+        return _LIVE_PALETTE[n]
+    return None
 
 
 def _child_value(elem, child_tag: str) -> str | None:

@@ -63,7 +63,7 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
     source_version: '',
     name: loaded.project_name || 'theDAW Project',
     tempo: bpm,
-    time_signature: [4, 4],
+    time_signature: (loaded.time_signature?.length === 2 ? loaded.time_signature : [4, 4]) as [number, number],
     sample_rate: loaded.sample_rate || 44100,
     tracks,
     locators: [],

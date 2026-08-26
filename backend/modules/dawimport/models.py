@@ -63,6 +63,22 @@ class DawClip:
     scene_index: int | None = None
     scene_name: str | None = None
     slot_index: int | None = None
+    # Seconds into the source file where this clip starts. Session clips are a
+    # WINDOW onto their sample, so without this a clip trimmed to bars 1-2 played
+    # from sample zero — the material the performer explicitly cut out.
+    offset_into_source: float = 0.0
+    # Whether the clip loops when launched. Live's <Loop><LoopOn>. A session grid
+    # is mostly loops; treating them as one-shots makes a scene fall apart as
+    # tracks drop out at staggered times. None = unknown (treat as one-shot).
+    loop_on: bool | None = None
+    # Warping: `source_tempo` is the sample's own recorded tempo, derived from the
+    # first two warp markers. A session grid of loops sampled at different BPMs is
+    # the normal Ableton case, and playing each at its recorded rate makes cells
+    # of equal length audibly different. rate = project.tempo / source_tempo.
+    is_warped: bool = False
+    source_tempo: float | None = None
+    # Clip colour as #rrggbb (Live stores a palette index; the parser decodes it).
+    color: str | None = None
 
 
 @dataclass
