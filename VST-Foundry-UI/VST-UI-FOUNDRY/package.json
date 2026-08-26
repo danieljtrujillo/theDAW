@@ -35,6 +35,8 @@
     "@types/express": "^5.0.6",
     "@types/file-saver": "^2.0.7",
     "@types/node": "^22.14.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@types/supertest": "^7.2.0",
     "autoprefixer": "^10.4.21",
     "cross-env": "^10.1.0",

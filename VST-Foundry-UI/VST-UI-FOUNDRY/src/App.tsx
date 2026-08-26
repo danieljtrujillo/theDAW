@@ -111,6 +111,17 @@ export default function App() {
   const [fontScale, setFontScale] = useState(1);
   const [colorblindMode, setColorblindMode] = useState(false);
   const [currentTheme, setCurrentTheme] = useState("default");
+  // Kouhai/Senpai presentation mode. Senpai is the full cockpit as it always
+  // was; Kouhai is the app-like simplified skin of the SAME app: calmer
+  // chrome, larger type, panels tucked into drawers. No feature is removed in
+  // either mode. Boot precedence: host ?uiMode= (theDAW's FOUNDRY tab and its
+  // pop-out set it) > persisted preference > senpai.
+  const [uiMode, setUiMode] = useState<"kouhai" | "senpai">(() => {
+    const q = new URLSearchParams(window.location.search).get("uiMode");
+    if (q === "kouhai" || q === "senpai") return q;
+    const saved = localStorage.getItem("vst-foundry-ui-mode");
+    return saved === "kouhai" ? "kouhai" : "senpai";
+  });
 
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [saveProjectOpen, setSaveProjectOpen] = useState(false);
@@ -135,7 +146,9 @@ export default function App() {
 
   const [isCategoriesOpen, setIsCategoriesOpen] = useState(true);
   const [isExplorerOpen, setIsExplorerOpen] = useState(true);
-  const [isRightPanelOpen, setIsRightPanelOpen] = useState(true);
+  // Kouhai boots with the right stack tucked away; its handlebar stays, so it
+  // behaves as a drawer rather than a fixture.
+  const [isRightPanelOpen, setIsRightPanelOpen] = useState(uiMode !== "kouhai");
   const [isHeaderOpen, setIsHeaderOpen] = useState(true);
 
   const [canvasState, setCanvasState] = useState<CanvasState>({
@@ -861,11 +874,42 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Kouhai multiplies the user's Typography Scale rather than replacing it,
+    // so the Settings slider keeps working identically in both modes.
+    const effective = fontScale * (uiMode === "kouhai" ? 1.15 : 1);
     document.documentElement.style.setProperty(
       "--font-scale",
-      fontScale.toString(),
+      effective.toString(),
     );
-  }, [fontScale]);
+  }, [fontScale, uiMode]);
+
+  // Stamp the mode for CSS (index.css keys the whole Kouhai skin off this) and
+  // remember it as a device preference. NOT part of the project autosave: the
+  // server-state-wins load path would clobber it, and mode is not project data.
+  useEffect(() => {
+    document.body.dataset.uiMode = uiMode;
+    localStorage.setItem("vst-foundry-ui-mode", uiMode);
+  }, [uiMode]);
+
+  // Panel presets per mode: Kouhai tucks the right stack into its drawer,
+  // Senpai restores it. The handlebars remain live in both modes.
+  useEffect(() => {
+    setIsRightPanelOpen(uiMode !== "kouhai");
+  }, [uiMode]);
+
+  // Live mode flips pushed by theDAW's FOUNDRY tab. This is the app's only
+  // parent-frame listener; CustomCode sandboxes post to this window too, so
+  // gate on message type AND source before trusting anything.
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (window.parent === window || e.source !== window.parent) return;
+      const d = e.data as { type?: string; mode?: string } | null;
+      if (!d || d.type !== "foundry/ui-mode") return;
+      if (d.mode === "kouhai" || d.mode === "senpai") setUiMode(d.mode);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   useEffect(() => {
     if (colorblindMode) {

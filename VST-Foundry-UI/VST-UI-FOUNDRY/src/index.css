@@ -81,3 +81,50 @@
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
   }
 }
+
+/* ---------------------------------------------------------------------------
+   KOUHAI mode - the app-like simplified skin. Senpai (no data attribute) is
+   the untouched default. App.tsx stamps body[data-ui-mode] and multiplies
+   --font-scale by 1.15, so this layer only has to (a) calm the chrome by
+   flattening the 3D/glass treatments and (b) lift the arbitrary-px micro type
+   onto the rem scale so it obeys --font-scale like everything else. No rule
+   in here may hide a control: zero functionality is removed in Kouhai.
+   --------------------------------------------------------------------------- */
+@layer utilities {
+  body[data-ui-mode="kouhai"] .neu-panel,
+  body[data-ui-mode="kouhai"] .neu-panel-inset {
+    box-shadow: none;
+  }
+  body[data-ui-mode="kouhai"] .neu-panel-inset {
+    background: rgba(0, 0, 0, 0.15);
+  }
+  body[data-ui-mode="kouhai"] .glass-panel {
+    background: var(--color-app-surface);
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  body[data-ui-mode="kouhai"] .neu-button,
+  body[data-ui-mode="kouhai"] .btn-3d {
+    background: var(--color-app-surface);
+    box-shadow: none;
+    border-radius: 0.5rem;
+  }
+  body[data-ui-mode="kouhai"] .btn-3d:hover {
+    background: var(--color-app-surface-hover);
+    color: var(--color-app-main);
+    border-color: var(--color-app-accent);
+  }
+  body[data-ui-mode="kouhai"] .btn-3d:active,
+  body[data-ui-mode="kouhai"] .neu-button:active,
+  body[data-ui-mode="kouhai"] .neu-button-active {
+    transform: none;
+    box-shadow: none;
+    background: var(--color-app-surface-hover);
+  }
+  /* Micro type joins the rem scale: 8/9/10/11px become 10/11/12/13px
+     equivalents that also grow with the Typography Scale slider. */
+  body[data-ui-mode="kouhai"] .text-\[8px\]  { font-size: 0.625rem; }
+  body[data-ui-mode="kouhai"] .text-\[9px\]  { font-size: 0.6875rem; }
+  body[data-ui-mode="kouhai"] .text-\[10px\] { font-size: 0.75rem; }
+  body[data-ui-mode="kouhai"] .text-\[11px\] { font-size: 0.8125rem; }
+}

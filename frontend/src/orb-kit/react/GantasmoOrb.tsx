@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { EYE_LEFT_D, EYE_RIGHT_D, MOUTH_D, ORB_FACE_VIEWBOX, PUPIL_LEFT_D, PUPIL_RIGHT_D } from './orbFaceShapes';
 
 export interface GantasmoOrbProps {
     /**
@@ -44,6 +45,27 @@ export interface GantasmoOrbProps {
      * fixed=false -> orb can sit inline in a normal layout flow
      */
     fixed?: boolean;
+
+    /**
+     * Optional visual body rendered inside the orb core, beneath the face
+     * overlay (e.g. theDAW's ferrofluid canvas). When present, the ghost body
+     * lobes are omitted from the face SVG so only the eyes and mouth composite
+     * over the body.
+     */
+    coreOverlay?: React.ReactNode;
+
+    /**
+     * Visual busy state (the host's assistant is thinking). Drives the
+     * `processing` CSS hook (face wobble) while true.
+     */
+    processing?: boolean;
+
+    /**
+     * Size of the orb's square hit/clamp box in px. Must match the CSS size
+     * of .aether-orb-toggle for the host's skin (default 80; theDAW's 2x orb
+     * uses 160 via the orb-2x class).
+     */
+    bounds?: number;
 }
 
 // Small mouse movement should still count as a click.
@@ -66,6 +88,9 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
     ariaLabel = 'Toggle orb panel',
     className,
     fixed = true,
+    coreOverlay,
+    processing = false,
+    bounds = ORB_BOUNDS,
 }) => {
     // Default visual placement mirrors the original app: lower-left-ish.
     const initialPosition = defaultPosition ?? {
@@ -93,14 +118,14 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
             return pos;
         }
 
-        const maxX = Math.max(0, window.innerWidth - ORB_BOUNDS);
-        const maxY = Math.max(0, window.innerHeight - ORB_BOUNDS);
+        const maxX = Math.max(0, window.innerWidth - bounds);
+        const maxY = Math.max(0, window.innerHeight - bounds);
 
         return {
             x: Math.max(0, Math.min(maxX, pos.x)),
             y: Math.max(0, Math.min(maxY, pos.y)),
         };
-    }, []);
+    }, [bounds]);
 
     // Restore persisted position on mount when enabled.
     // We still clamp after load in case the viewport changed since last session.
@@ -237,6 +262,7 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
         fixed ? '' : 'is-inline',
         isActive ? 'active' : '',
         isDragging ? 'dragging' : '',
+        processing ? 'processing' : '',
     ].filter(Boolean).join(' ');
 
     return (
@@ -280,19 +306,59 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
                     <div className="orb-swirl-layer" aria-hidden="true" />
 
                     <div className="orb-core-main">
+                        {coreOverlay}
                                             {/*
                                                 The ghost face SVG is part of the orb identity.
                                                 Preserve this unless a human explicitly requests a redesign.
+                                                (2026-08-09: the owner requested exactly that for hosts that
+                                                supply a coreOverlay body — the ghost lobes yield to the body
+                                                and only the eyes + mouth composite on top. Without an
+                                                overlay the classic full ghost face renders unchanged.)
                                             */}
                         <div className="gantasmo-face" aria-hidden="true">
-                            <svg viewBox="0 0 102.28 83.35" xmlns="http://www.w3.org/2000/svg">
-                                <path className="face-base" d="M20.4,9.8l3.71,1.31.62,3.84c4.3,1.57,4.86,2.03,4.69,6.83l4.7,2.8-.8,24.91-4.02.47-.02,5.97h-4.02s.01,7,.01,7l-13,.99-.96-6.56-3.94-.54-1.15-7.85c-.53-.57-4.9,1.07-5.82-1.69-.52-1.57-.53-18.64-.16-20.9l3.06-3.15.4-12.38,5.57-.93L10.35,0l9.49,1.86.56,7.94Z" />
-                                <path className="face-base" d="M102.28,47.92l-4.96.04-1.21,7.78-4.77,1.24v5.47s-13.05,1.47-13.05,1.47l-.44-7.08c-5.46-.92-2.46-2.83-4.51-6.49l-4.02-.46c.28-3.6-.97-6.86-1.08-10.42-.06-1.94.74-14.78,1.18-15.41.36-.51,2.96-.65,3.9-1.59l1.42-5.59c4.55-.65,3.86-3.76,5.55-5.46,1.03-1.04,3.5-1.12,3.86-1.63.81-1.14-.27-6.89.14-8.87h11.01s.12,7.88.12,7.88l3.92,1.78-.07,10.66c.26,1.06,3.03,1.52,3.03,2.19v24.5Z" />
-                                <ellipse className="face-eye" cx="13" cy="30" rx="2.5" ry="3" />
-                                <ellipse className="face-eye" cx="85" cy="30" rx="2.5" ry="3" />
-                                <path className="gantasmo-mouth" d="M 10 40 Q 20 45, 25 40" fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" opacity="0.8" />
-                                <path className="gantasmo-mouth" d="M 77 40 Q 87 45, 92 40" fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" opacity="0.8" />
-                            </svg>
+                            {coreOverlay ? (
+                                /* Cavity face for a body overlay: the EXACT
+                                   GANTASMO eye and mouth geometry (extracted
+                                   verbatim from the brand favicon), rendered as
+                                   glowing violet hollows carved into the fluid.
+                                   Dark rims (paint-order stroke) keep them
+                                   reading as cavities, not stickers. */
+                                <svg viewBox={ORB_FACE_VIEWBOX} xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <radialGradient id="orbCavityGlow">
+                                            <stop offset="0%" stopColor="#f3e8ff" />
+                                            <stop offset="35%" stopColor="#d8b4fe" />
+                                            <stop offset="70%" stopColor="#a855f7" stopOpacity="0.9" />
+                                            <stop offset="100%" stopColor="#7c3aed" stopOpacity="0.25" />
+                                        </radialGradient>
+                                        {/* Feathers every feature edge so the glow melts
+                                            into the fluid instead of cutting a hard rim. */}
+                                        <filter id="orbFaceFeather" x="-20%" y="-20%" width="140%" height="140%">
+                                            <feGaussianBlur stdDeviation="8" />
+                                        </filter>
+                                    </defs>
+                                    <g filter="url(#orbFaceFeather)">
+                                        <g className="orb-cavity-eye">
+                                            <path d={EYE_LEFT_D} fill="url(#orbCavityGlow)" stroke="#08040d" strokeWidth="9" style={{ paintOrder: 'stroke' }} />
+                                            <path d={PUPIL_LEFT_D} fill="#7c3aed" opacity="0.55" />
+                                        </g>
+                                        <g className="orb-cavity-eye">
+                                            <path d={EYE_RIGHT_D} fill="url(#orbCavityGlow)" stroke="#08040d" strokeWidth="9" style={{ paintOrder: 'stroke' }} />
+                                            <path d={PUPIL_RIGHT_D} fill="#7c3aed" opacity="0.55" />
+                                        </g>
+                                        <path className="orb-cavity-mouth" d={MOUTH_D} fill="url(#orbCavityGlow)" stroke="#08040d" strokeWidth="9" style={{ paintOrder: 'stroke' }} />
+                                    </g>
+                                </svg>
+                            ) : (
+                                <svg viewBox="0 0 102.28 83.35" xmlns="http://www.w3.org/2000/svg">
+                                    <path className="face-base" d="M20.4,9.8l3.71,1.31.62,3.84c4.3,1.57,4.86,2.03,4.69,6.83l4.7,2.8-.8,24.91-4.02.47-.02,5.97h-4.02s.01,7,.01,7l-13,.99-.96-6.56-3.94-.54-1.15-7.85c-.53-.57-4.9,1.07-5.82-1.69-.52-1.57-.53-18.64-.16-20.9l3.06-3.15.4-12.38,5.57-.93L10.35,0l9.49,1.86.56,7.94Z" />
+                                    <path className="face-base" d="M102.28,47.92l-4.96.04-1.21,7.78-4.77,1.24v5.47s-13.05,1.47-13.05,1.47l-.44-7.08c-5.46-.92-2.46-2.83-4.51-6.49l-4.02-.46c.28-3.6-.97-6.86-1.08-10.42-.06-1.94.74-14.78,1.18-15.41.36-.51,2.96-.65,3.9-1.59l1.42-5.59c4.55-.65,3.86-3.76,5.55-5.46,1.03-1.04,3.5-1.12,3.86-1.63.81-1.14-.27-6.89.14-8.87h11.01s.12,7.88.12,7.88l3.92,1.78-.07,10.66c.26,1.06,3.03,1.52,3.03,2.19v24.5Z" />
+                                    <ellipse className="face-eye" cx="13" cy="30" rx="2.5" ry="3" />
+                                    <ellipse className="face-eye" cx="85" cy="30" rx="2.5" ry="3" />
+                                    <path className="gantasmo-mouth" d="M 10 40 Q 20 45, 25 40" fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" opacity="0.8" />
+                                    <path className="gantasmo-mouth" d="M 77 40 Q 87 45, 92 40" fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" opacity="0.8" />
+                                </svg>
+                            )}
                         </div>
                     </div>
 

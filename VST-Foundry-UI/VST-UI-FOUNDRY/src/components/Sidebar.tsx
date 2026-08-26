@@ -9,7 +9,6 @@ import {
   Type,
   ToggleLeft,
   ChevronDown,
-  ChevronRight,
   LayoutGrid,
   Activity,
   BarChart2,
@@ -1255,6 +1254,13 @@ interface SidebarProps {
 
 export default function Sidebar({ onDragStart, isCategoriesOpen = true, isExplorerOpen = true, customModules = [], onAddCustomModule, arsenal = [], onRemoveArsenal }: SidebarProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>(CATEGORIES[0].name);
+  // The palette (variants column) opens only when a rail icon is hovered,
+  // focused, or clicked; it closes when the pointer leaves the sidebar.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // True while a variant tile is being dragged to the canvas. Collapsing the
+  // palette mid-drag would remove the drag-source node and abort the HTML5
+  // drag in some browsers, so the mouse-leave collapse is blocked while set.
+  const draggingRef = React.useRef(false);
 
   // Custom Presets for standard elements
   const [customPresets, setCustomPresets] = useState<any[]>(() => {
@@ -1386,34 +1392,47 @@ export default function Sidebar({ onDragStart, isCategoriesOpen = true, isExplor
   const currentVariants = getVariants();
 
   return (
-    <div className="flex h-full min-h-0 bg-app-base z-10 relative">
-      <div className={`flex flex-col border-r border-app-border shrink-0 min-h-0 transition-all duration-300 ${isCategoriesOpen ? 'w-40 md:w-48' : 'w-0 border-r-0 overflow-hidden'}`}>
-        <CollapsiblePanel title="Categories" defaultOpen={true} flex1={true}>
-          <div className="flex-1 overflow-y-auto">
-            {CATEGORIES.map((category) => {
-              const Icon = category.icon;
-              const isSelected = selectedCategory === category.name;
-
-              return (
-                <button
-                  key={category.name}
-                  onClick={() => setSelectedCategory(category.name)}
-                  title={`View ${category.name} elements`}
-                  className={`w-full flex items-center justify-between p-3 text-sm transition-colors border-b border-app-border/50 ${isSelected ? 'bg-app-surface text-white' : 'text-app-main hover:bg-app-surface-hover hover:text-white'}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Icon className="w-4 h-4 text-app-muted shrink-0" />
-                    <span className="whitespace-nowrap overflow-hidden text-ellipsis">{category.name}</span>
-                  </div>
-                  <ChevronRight className={`w-4 h-4 shrink-0 transition-transform ${isSelected ? 'text-white' : 'text-app-muted'}`} />
-                </button>
-              );
-            })}
-          </div>
-        </CollapsiblePanel>
+    <div
+      className="flex h-full min-h-0 bg-app-base z-10 relative"
+      onMouseLeave={() => {
+        if (!draggingRef.current) setPaletteOpen(false);
+      }}
+    >
+      {/* Icon rail: one button per category, icons only, no visible titles.
+          The buttons split the rail's full height between them, so they size
+          themselves to fill the column. Hovering (or keyboard-focusing) an
+          icon reveals its name chip and opens that category's palette. */}
+      <div className={`flex flex-col shrink-0 min-h-0 border-r border-app-border transition-all duration-300 ${isCategoriesOpen ? 'w-16' : 'w-0 border-r-0 overflow-hidden'}`}>
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1 p-1">
+          {CATEGORIES.map((category) => {
+            const Icon = category.icon;
+            const isSelected = selectedCategory === category.name && paletteOpen;
+            const activate = () => {
+              setSelectedCategory(category.name);
+              setPaletteOpen(true);
+            };
+            return (
+              <button
+                key={category.name}
+                type="button"
+                aria-label={category.name}
+                aria-expanded={isSelected}
+                onMouseEnter={activate}
+                onFocus={activate}
+                onClick={activate}
+                className={`group relative flex-1 min-h-10 w-full rounded-2xl flex items-center justify-center transition-colors ${isSelected ? 'bg-app-surface text-white' : 'text-app-muted hover:bg-app-surface-hover hover:text-white'}`}
+              >
+                <Icon className="w-7 h-7" />
+                <span className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2 py-1 rounded-lg bg-app-surface border border-app-border text-app-main text-xs font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-events-none transition-opacity z-50 shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
+                  {category.name}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <div className={`flex flex-col bg-app-base border-r border-app-border shrink-0 min-h-0 transition-all duration-300 ${isExplorerOpen ? 'w-52 md:w-64' : 'w-0 border-r-0 overflow-hidden'}`}>
+      <div className={`flex flex-col bg-app-base border-r border-app-border shrink-0 min-h-0 transition-all duration-300 ${paletteOpen && isExplorerOpen ? 'w-52 md:w-64' : 'w-0 border-r-0 overflow-hidden'}`}>
         {activeCategory && (
           <CollapsiblePanel 
             title={activeCategory.name} 
@@ -1450,6 +1469,7 @@ export default function Sidebar({ onDragStart, isCategoriesOpen = true, isExplor
                   key={`${variant.type}-${variant.variant}-${index}`}
                   draggable
                   onDragStart={(e) => {
+                    draggingRef.current = true;
                     onDragStart(
                       e,
                       variant.type,
@@ -1459,6 +1479,10 @@ export default function Sidebar({ onDragStart, isCategoriesOpen = true, isExplor
                       (variant as any).customCode,
                       (variant as any).presetData
                     );
+                  }}
+                  onDragEnd={() => {
+                    draggingRef.current = false;
+                    setPaletteOpen(false);
                   }}
                   className="flex flex-col items-center justify-between p-3 bg-app-surface border border-app-border rounded cursor-grab hover:bg-app-surface-hover hover:border-app-main/50 hover:shadow-[0_4px_12px_rgba(0,0,0,0.5)] transition-all group relative"
                   title={variant.description || `${variant.label} ${variant.type}`}

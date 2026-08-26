@@ -149,6 +149,85 @@
     transition: transform var(--transition-smooth);
 }
 
+/* 2x orb, opt-in via the className prop (theDAW's ferrofluid orb). Hosts that
+   don't pass the class (Underfit) keep the classic 80/64/48 stack. The bounds
+   prop on GantasmoOrb must match the toggle size here (160). Only the FLUID is
+   bigger: the core (the three.js canvas) fills the box edge to edge while the
+   decorative glow/pulse chrome hugs it instead of framing a small ball. */
+.gantasmo-orb-theme.orb-2x .aether-orb-toggle {
+    width: 160px;
+    height: 160px;
+}
+
+.gantasmo-orb-theme.orb-2x .aether-orb-main {
+    width: 160px;
+    height: 160px;
+}
+
+.gantasmo-orb-theme.orb-2x .orb-core-main {
+    width: 152px;
+    height: 152px;
+    /* No outer shadow rings: the glow lives in .orb-glow-main BEHIND the orb. */
+    box-shadow: none;
+}
+
+.gantasmo-orb-theme.orb-2x .gantasmo-face {
+    inset: 28px;
+}
+
+/* Backlight, not a ring: one soft blurred layer behind the opaque fluid so
+   only its spill past the rim is visible. The literal rings (rotating swirl,
+   expanding pulse) are disabled for this orb. Opacity runs 20% less
+   transparent than the stock glow (0.5/0.8 -> 0.6/0.96). */
+.gantasmo-orb-theme.orb-2x .orb-glow-main {
+    inset: -12px;
+    background: radial-gradient(circle,
+            var(--glow-primary) 0%,
+            var(--glow-secondary) 40%,
+            transparent 68%);
+    filter: blur(10px);
+    animation: gantasmo-glow-nestle-pulse 2s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme.orb-2x .orb-swirl-layer,
+.gantasmo-orb-theme.orb-2x .orb-pulse-main {
+    display: none;
+}
+
+@keyframes gantasmo-glow-nestle-pulse {
+
+    0%,
+    100% {
+        opacity: 0.6;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.96;
+        transform: scale(1.03);
+    }
+}
+
+/* Cavity face — rendered by GantasmoOrb when a coreOverlay body is present:
+   luminous violet eye cavities and a carved glowing grin composited over the
+   ferrofluid. Reuses the classic blink/talk keyframes, with per-feature
+   pivots so each eye blinks in place instead of around the SVG center. */
+.gantasmo-orb-theme .orb-cavity-eye {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: gantasmo-eye-blink 6s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .orb-cavity-mouth {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: gantasmo-mouth-move 3s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme .aether-orb-toggle.active .orb-cavity-mouth {
+    animation: gantasmo-mouth-talk 0.8s ease-in-out infinite;
+}
+
 .gantasmo-orb-theme .orb-core-main {
     position: relative;
     width: 48px;

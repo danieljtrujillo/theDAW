@@ -1,18 +1,25 @@
 # Handoff
 
 Branch: `dev/audit-p0-notation-2026-08`. Read `docs/BACKLOG.md` first. It is the source of truth:
-106 audited items, stable permanent ids, priority and effort on every line.
+106 audited items plus user-requested additions, stable permanent ids, priority and effort on every
+line.
 
 ## Where things stand
 
-`docs/BACKLOG.md` P0 section: 7 ticked, 3 open. Ticked means independently verified, not claimed.
+`docs/BACKLOG.md` P0 section: 7 ticked, 4 open. Ticked means independently verified, not claimed.
 
 Open P0s, in order:
 
-1. `FX-001` Character FX knobs send parameter names the backend does not have. File untouched so far.
-2. `SEC-001` Partial. The browser vector is closed. A header-less LAN client can still spend the
+1. `UX-001` Kouhai / Senpai modes for the FOUNDRY. Added 2026-08-08 at the user's request as the top
+   item; renamed the same day from Apprentice / Sorcerer; scope corrected the same day to
+   Foundry-first. Senpai is the current full Foundry cockpit; Kouhai is a secondary app-like,
+   appearance-simplified face of the SAME Foundry with zero functionality removed. Built
+   incrementally under live user guidance. A shell-level tab filter was built first, rejected, and
+   removed; `uiMode` state in appUiStore remains and feeds the Foundry surface.
+2. `FX-001` Character FX knobs send parameter names the backend does not have. File untouched so far.
+3. `SEC-001` Partial. The browser vector is closed. A header-less LAN client can still spend the
    Gemini key, and `backend/server.py` still has `allow_origins=["*"]` with `allow_credentials=True`.
-3. `PKG-001` Partial. Packaging config is correct, but confirm the shipped tree really contains
+4. `PKG-001` Partial. Packaging config is correct, but confirm the shipped tree really contains
    `frontend/scripts/`, its node_modules, and `unity/`.
 
 ## Never verified by a human

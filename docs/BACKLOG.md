@@ -1,6 +1,6 @@
 # theDAW Backlog
 
-Last updated: 2026-08-06. Regenerate by re-running the full-repo audit sweep (ten parallel area
+Last updated: 2026-08-08. Regenerate by re-running the full-repo audit sweep (ten parallel area
 agents over notation, audio/DSP, integrations, backend core, views, components, state/lib,
 build/tooling) and merging the results into this file by id. Never renumber on regeneration.
 
@@ -19,11 +19,11 @@ below them.
 
 | Priority | Count | Meaning |
 |---|---|---|
-| P0 | 5 | Broken in the user's face, or blocking other work |
-| P1 | 31 | Real defect a user will hit |
+| P0 | 6 | Broken in the user's face, blocking other work, or set as top priority by the user |
+| P1 | 32 | Real defect a user will hit |
 | P2 | 45 | Worth doing, not urgent |
 | P3 | 23 | Cleanup |
-| **Total** | **104** | |
+| **Total** | **106** | |
 
 | Area | Prefix | P0 | P1 | P2 | P3 | Total |
 |---|---|---|---|---|---|---|
@@ -35,6 +35,7 @@ below them.
 | Integrations and sidecars | INT | 0 | 3 | 4 | 0 | 7 |
 | VST3 | VST | 0 | 1 | 2 | 0 | 3 |
 | Frontend | FE | 0 | 10 | 13 | 10 | 33 |
+| Modes and UX | UX | 1 | 1 | 0 | 0 | 2 |
 | Packaging | PKG | 1 | 0 | 0 | 0 | 1 |
 | Tests and CI | CI | 0 | 2 | 2 | 0 | 4 |
 | Docs and RAG | DOC | 0 | 1 | 3 | 2 | 6 |
@@ -49,20 +50,30 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
 
 ## Top 10 right now
 
-1. `BE-001` One model preload silently stops every background worker for the rest of the session.
-2. `GH-131` Underfit ships with no Python deps, so the feature is dead in the installed app.
-3. `GH-133` Model downloads fail and the picker is empty, so generation cannot start.
-4. `PKG-001` The installed app has no PDF engraver and no Unity package; both work only on a dev clone.
-5. `SEC-001` Any web page or LAN device can spend the user's Gemini key through the open proxy.
-6. `FE-002` Returning to MIX overwrites a saved mastering chain with defaults.
-7. `FX-001` Two of the three Character FX modes ignore every knob and render at defaults.
-8. `FE-001` Every waveform is drawn at the wrong scale, so playheads do not mark the right spot.
-9. `SEC-002` `/api/project/clip-audio` streams any audio file on the machine to anything on the LAN.
-10. `BE-002` A failed generation leaks the same idle hold as BE-001, with the same consequence.
+1. `UX-001` Kouhai / Senpai modes for the FOUNDRY: Kouhai is an app-like simplified face of the same tool, zero features lost.
+2. `BE-001` One model preload silently stops every background worker for the rest of the session.
+3. `GH-131` Underfit ships with no Python deps, so the feature is dead in the installed app.
+4. `GH-133` Model downloads fail and the picker is empty, so generation cannot start.
+5. `PKG-001` The installed app has no PDF engraver and no Unity package; both work only on a dev clone.
+6. `SEC-001` Any web page or LAN device can spend the user's Gemini key through the open proxy.
+7. `FE-002` Returning to MIX overwrites a saved mastering chain with defaults.
+8. `FX-001` Two of the three Character FX modes ignore every knob and render at defaults.
+9. `FE-001` Every waveform is drawn at the wrong scale, so playheads do not mark the right spot.
+10. `SEC-002` `/api/project/clip-audio` streams any audio file on the machine to anything on the LAN.
 
 ---
 
 # P0
+
+- [ ] **UX-001** P0 L Kouhai / Senpai modes for the FOUNDRY: a second, app-like face of the same tool
+  - Senpai is the current full Foundry cockpit, unchanged. Kouhai is a secondary presentation of the
+    SAME Foundry: more app-like and simplified in appearance with ZERO functionality removed
+    (progressive disclosure, calmer chrome, larger type). The toggle lives with the Foundry surface,
+    and the mode may extend to other surfaces later.
+  - Requested by the user 2026-08-08 as the top item on this list; names revised the same day from
+    Apprentice / Sorcerer to Kouhai / Senpai; scope corrected the same day to Foundry-first (an
+    earlier shell-level tab filter was built, rejected, and removed). Build proceeds incrementally
+    under live user guidance.
 
 - [x] **BE-001** P0 S Model preload never releases its idle hold, killing all background work `backend/server.py:1188`
   - `bump_activity(tag="model-load")` has no matching `release("model-load")` anywhere in the repo.
@@ -234,6 +245,18 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
 - [ ] **FE-012** P1 S Only the Perform tab has an error boundary `frontend/src/components/layout/DAWCenterPanel.tsx:83`
   - The other ten tabs are wrapped in Suspense alone, which catches neither render errors nor a rejected lazy import.
   - A stale chunk hash after an in-place update of a packaged build blanks the entire Shell instead of one tab.
+
+## Modes and UX
+
+- [ ] **UX-002** P1 L Whole-app legibility pass: body text, menus, Settings, and the micro-type ramps are too small to read `frontend/src/components/layout/Shell.tsx:243`
+  - The shell standardizes on 8px mono meta text, 9px control labels, and 10px tab and body text
+    (Shell.tsx TopBarButton labels, CenterTabBar tab labels, HamburgerMenu section headers), far
+    under the 16px body minimum WCAG recommends.
+  - Requested by the user 2026-08-08: everything tiny and hard to read, whole app, made actually
+    visible. User-supplied reference (iubenda accessible-fonts guide): 16px+ body, 1.5 line height,
+    letter spacing around 0.12x font size, and highly legible faces such as Atkinson Hyperlegible or
+    Lexend. The Settings Text scale zoom is a stopgap; the fix is raising the base type ramp, and
+    Kouhai mode (`UX-001`) should get the larger ramp first.
 
 ## Tests
 
