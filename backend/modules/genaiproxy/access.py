@@ -84,8 +84,9 @@ def is_local_origin(request: Request) -> bool:
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
     if not origin:
         # No browsing context: a native client, or a same-origin GET that the
-        # browser omits the header for. The token gate is the control here.
-        return True
+        # browser omits the header for. Only allow when a proxy token is
+        # configured and was already validated by the caller.
+        return bool(os.environ.get(TOKEN_ENV, "").strip())
 
     parts = urlsplit(origin)
     scheme = (parts.scheme or "").lower()
