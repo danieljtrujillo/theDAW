@@ -269,8 +269,15 @@ export const SessionView: React.FC = () => {
       )}
 
       <div className="flex-1 min-h-0 p-2">
+        {/* DawSessionGrid is keyed on project identity: it holds a decoded-buffer
+            cache and per-track refs that are NOT cleared between imports, so
+            without a remount a second import inherits the first one's audio. */}
         {project ? (
-          <DawSessionGrid project={project} fill />
+          <DawSessionGrid
+            key={`${project.source_daw}:${project.name}:${project.tracks.length}`}
+            project={project}
+            fill
+          />
         ) : (
           <div className="h-full rounded border border-dashed border-white/10 bg-black/15 grid place-items-center">
             <div className="flex flex-col items-center gap-2 text-center">

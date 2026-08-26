@@ -13,6 +13,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.modules.project import media_access
+
 log = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -29,6 +31,36 @@ class DetectResponse(BaseModel):
     daw: str  # "ableton" | "reaper" | "logic" | "unknown"
     name: str
     format: str  # "als" | "rpp" | "logicx"
+
+
+def _finish_import(project, source_path: str) -> dict:
+    """Collapse silent gaps, allowlist the project's media, and serialise.
+
+    Importing a project is the user's consent for the files it names, exactly as
+    opening a .tasmo is (see project/router.py::_register_project_media). Without
+    this every clip the Perform grid tried to play came back 403 from
+    /api/project/clip-audio, because an imported set's Samples/ folder is not one
+    of media_access's static roots.
+
+    That produced the single most confusing symptom in the DAW-import feature:
+    session roots are PERSISTED to data/media_roots.json, so the same .als was
+    silent on a clean install and worked afterwards if any earlier project save
+    or load had happened to name a file in that folder. Registering the source
+    file's own folder covers Samples/Imported and Samples/Recorded in one grant.
+    """
+    project.collapse_silent_gaps()
+    media_access.register_paths(
+        [
+            source_path,
+            *(
+                clip.file_path
+                for track in project.tracks
+                for clip in track.clips
+                if clip.file_path
+            ),
+        ]
+    )
+    return project.to_dict()
 
 
 @router.post("/detect", response_model=DetectResponse)
@@ -74,8 +106,7 @@ def import_ableton(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .als: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.post("/reaper")
@@ -89,8 +120,7 @@ def import_reaper(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .RPP: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.post("/logic")
@@ -104,8 +134,7 @@ def import_logic(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .logicx: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.get("/logic/export-hint")
@@ -130,8 +159,7 @@ def import_fl_studio(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .flp: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.post("/audacity")
@@ -145,8 +173,7 @@ def import_audacity(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .aup3: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.post("/audition")
@@ -160,8 +187,7 @@ def import_audition(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .sesx: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.post("/bitwig")
@@ -175,8 +201,7 @@ def import_bitwig(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .bwproject: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.post("/resolume")
@@ -190,8 +215,7 @@ def import_resolume(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .avc: {e}")
-    project.collapse_silent_gaps()
-    return project.to_dict()
+    return _finish_import(project, req.path)
 
 
 @router.get("/cubase/export-hint")

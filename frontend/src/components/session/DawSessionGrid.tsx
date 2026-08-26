@@ -638,11 +638,11 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
                         <button
                           type="button"
                           onClick={() => selectAndLaunch(sceneIndex)}
-                          disabled={!clip.file_path}
+                          disabled={!isPlayableClip(clip)}
                           className={[
                             'h-7 w-full px-1.5 flex items-center gap-1 border text-left',
                             color.clip,
-                            !clip.file_path ? 'opacity-45 cursor-not-allowed' : 'hover:brightness-110',
+                            !isPlayableClip(clip) ? 'opacity-45 cursor-not-allowed' : 'hover:brightness-110',
                           ].join(' ')}
                           title={clip.name}
                         >

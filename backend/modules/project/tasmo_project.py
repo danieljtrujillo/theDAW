@@ -71,6 +71,14 @@ class Clip(BaseModel):
     # WRONG audio, because the full untrimmed source is embedded and playback
     # restarts it from zero. Defaulted so pre-existing .tasmo files still validate.
     offset_into_source: float = 0.0
+    # Session-view (Perform tab) placement, mirroring dawimport's DawClip. None
+    # on an arrangement clip. Without these the format had no way to represent a
+    # clip-launch grid at all, so every session clip was discarded on save and
+    # the grid was rebuilt from arrangement clips on load. Defaulted, so .tasmo
+    # files written before the grid was representable still validate.
+    track_index: int | None = None
+    scene_index: int | None = None
+    slot_index: int | None = None
     generation_prompt: str | None = None
     generation_seed: int | None = None
     generation_params: dict | None = None
@@ -118,6 +126,11 @@ class TasmoProject(BaseModel):
     source_daw: str | None = None
     source_daw_version: str | None = None
     import_warnings: list[str] = []
+    # Session-view scene names in row order, mirroring DawProject.scenes. Empty
+    # for projects with no clip-launch grid. Paired with the per-clip scene
+    # indices above: without both, a saved Perform grid reloaded as a generic
+    # "Scene 1..N" ladder because the names had nowhere to live.
+    scenes: list[str] = []
     # Persisted controller (MIDI-learn) auto-attach: the resolved Sway bindings +
     # unattached list + source project name, so reopening a saved session re-wires
     # the hardware to the same targets without re-importing the source DAW project.

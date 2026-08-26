@@ -292,6 +292,12 @@ export async function loadProjectIntoEditor(
       fxChain: fxChain.length ? fxChain : undefined,
     });
     for (const c of t.clips || []) {
+      // Session (Perform grid) clips live in the same clips array now that the
+      // format can represent them, but they are NOT arrangement content — they
+      // belong to the clip-launch grid and would otherwise all pile onto the
+      // EDIT timeline. Filtering on LOAD is the correct place for this; it used
+      // to happen on SAVE, which deleted them from the file outright.
+      if (c.scene_index != null || c.slot_index != null) continue;
       try {
         const clip = await buildClip(c, trackId, color, bpm);
         if (clip) outClips.push(clip);

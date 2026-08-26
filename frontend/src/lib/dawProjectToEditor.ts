@@ -133,7 +133,11 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
           audioBlob: loaded.blob,
           mimeType: loaded.mimeType,
           sourceDuration,
-          offsetIntoSource: 0,
+          // The trim point is already parsed — ableton.py stores it as the clip's
+          // loop_start (it handles the attribute, child and Loop/LoopStart forms).
+          // Hardcoding 0 here made every trimmed clip play the head of its source
+          // instead of the region the user actually kept.
+          offsetIntoSource: Math.max(0, Math.min(clip.loop_start ?? 0, Math.max(0, sourceDuration - 0.01))),
           durationSec,
           startSec,
           color: trackColor,

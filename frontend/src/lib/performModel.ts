@@ -24,5 +24,9 @@ export const performSceneCount = (project: DawProject): number => {
 /** Scene display names, one per row, filled with "Scene N" where unnamed. */
 export const performScenes = (project: DawProject): string[] => {
   const count = performSceneCount(project);
-  return Array.from({ length: count }, (_, index) => project.scenes[index] ?? `Scene ${index + 1}`);
+  // || not ??: Ableton's parser emits an EMPTY STRING for an unnamed scene
+  // (ableton.py _parse_scenes uses .get("Value", "")), and ?? only substitutes
+  // for null/undefined — so the fallback was unreachable for every Live set and
+  // rows rendered as "01 " with a trailing space.
+  return Array.from({ length: count }, (_, index) => project.scenes[index] || `Scene ${index + 1}`);
 };
