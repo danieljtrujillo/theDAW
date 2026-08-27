@@ -11,7 +11,51 @@ the user says done or it is verified by build, test, or observed behaviour, and 
 additions, stable permanent ids, priority and effort on every line. Do not duplicate a BACKLOG id
 into IN-THE-WORKS; reference the id.
 
-## Session 2026-08-26 — what just landed
+## Session 2026-08-26 (second session) — what just landed
+
+The video shoot, the boot cinematic, the assistant orb, and the Sway/Perform integration. Verified
+items are in `docs/CHANGELOG.md` under this date; the open remainder was appended to
+`docs/IN-THE-WORKS.md`. Headlines:
+
+- **The Sway works in theDAW now.** Root cause: the master MIDI gate defaulted OFF and theDAW owns
+  the only `requestMIDIAccess()`, so the relay to the embedded SwayCommand cockpit never started
+  (`frontend/src/state/midiTriggerStore.ts`, persisted v2 migrate flips existing installs ON). The
+  cockpit's splash also lied about it (`available` ignored relay mode) — fixed in the staged bundle,
+  in `electron-ui/scripts/fetch-sway-build.mjs` (BUNDLE_PATCHES re-applies on every fetch), and
+  upstream in the SwayCommand source checkout.
+- **PERFORM auto-routes Sway-designed sets.** An imported `.als` carrying MIDI-learn mappings
+  creates direct CC→mix routes on load and seeds the six dim bindings; the factory CC layout from
+  SwayCommand's `swaymap.js` ships as overridable defaults (authority: learned > project > factory)
+  (`frontend/src/state/performRouting.ts`, `frontend/src/state/swayBus.ts`). Verified against the
+  D:\sway DNB template: 110 mappings parsed, volume routes live.
+- **The SwayCommand deck schematic is PERFORM's assignment surface** — `surface.js` ported verbatim
+  (`frontend/src/components/session/swaydeck/`), collapsible, click a pad/knob/XY/gesture/button to
+  assign scenes, volume, mute, any live FX-chain parameter, or transport
+  (`frontend/src/components/session/SwayDeck.tsx`). SWAY tab itself is now the cockpit only.
+- **Perform header is one row of icons** (one Open that imports on pick, one Save to `.tasmo`);
+  detection/hints/warnings collapsed into hover badges (`frontend/src/views/SessionView.tsx`).
+- **Boot cinematic rebuilt**: full-window black-goo sheet and the wordmark share the assistant orb's
+  exact wet-obsidian material; the logo dissolves INTO the sheet and rises out of it; credits are
+  gated on formation so the order is theDAW → by → GANTASMO
+  (`frontend/src/components/layout/LiquidChromeTitle.tsx`).
+- **Orb**: 30% smaller (112px), every ring/halo removed, ferrofluid from first visible frame,
+  welded bottom-left across resizes until first drag (`stickCorner`), slower idle, and a tip bubble
+  in the footer where G-Search was — Ctrl-K now opens the library rail
+  (`frontend/src/orb-kit/react/GantasmoOrb.tsx`, `frontend/src/components/audio/OrbTipBubble.tsx`).
+- **Capture harness hardened** (`frontend/_capture_clips.mjs`): slice marks rescaled by the
+  measured video/wall ratio (long takes drifted a full scene), per-run `_session-<stamp>.webm`
+  (a fixed name got overwritten once — a completed take was destroyed), bounded fetch/decode with
+  concurrent stem loading (285s → 17s), `data-boot-splash` wait, CAPX/CAPY monitor pinning +
+  CDP fullscreen, six new tab scenes incl. driven TOUR map/routing. 67 clips reshot; showcase cuts
+  live on gitignored paths under `showcase/`.
+- **Test loop**: `frontend/_testwin.mjs` keeps one persistent CDP-debuggable window on :9223;
+  `frontend/_probe.mjs` attaches for checks without relaunching. Drive assertions through the UI —
+  vite HMR gives `page.evaluate` dynamic imports a parallel module instance (stores diverge).
+- **Library healed**: hero entry's stems/MIDI/notation rows rebuilt in
+  `data/generations/library.db` and 2,848 rows repointed from a dead `D:` drive to `G:` (runtime
+  data, not in git).
+
+## Session 2026-08-26 (first session) — what landed earlier
 
 Three audits ran (EDIT tab, Ableton `.als` import, a 7-agent sweep of the other tabs). Findings were
 adversarially verified before any fix. Everything shipped is in `docs/CHANGELOG.md`; everything

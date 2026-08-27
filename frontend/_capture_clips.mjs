@@ -92,6 +92,19 @@ const SCENES = [
   // ── VJ / TRAIN ──
   { id: '19_vj-visualizer',  tab: 'vj',    play: true,  vjClip: true, vjTour: true, hold: 12 },
   { id: '20_train',          tab: 'train', play: false, hold: 6 },
+  // ── the center tabs the original 65-scene list predates. CENTER_TABS is the
+  // source of truth for these ids (appUiStore.ts) — note PERFORM is 'session',
+  // and 'train' above is an ALIAS that already resolves to 'underfit', so
+  // 20_train and 81_underfit shoot the same workspace from different entry
+  // points. All are React.lazy chunks: sceneActions waits out the Suspense
+  // fallback before the hold so the clip is the view, not "loading…". ──
+  { id: '78_perform-session', tab: 'session',  play: true,  performUse: true,  hold: 9 },
+  { id: '79_sway-surface',    tab: 'sway',     play: true,  swayUse: true,     hold: 13 },
+  { id: '80_foundry',         tab: 'foundry',  play: false, foundryUse: true,  hold: 12 },
+  { id: '81_underfit',        tab: 'underfit', play: false, underfitUse: true, hold: 10 },
+  { id: '82_audimate',        tab: 'audimate', play: true,  audimateUse: true, hold: 12 },
+  { id: '83_tour',            tab: 'tour',     play: false, tourMap: true,   hold: 10 },
+  { id: '84_tour-routing',    tab: 'tour',     play: false, tourRoutes: true, hold: 11 },
   // ── LEARN: 2D click-a-node, 3D fly-around, per-track lineage ──
   { id: '01a_learn-2d-hero', tab: 'learn', play: false, learn: '2d', lineageFull: true, lineageHover: true, hold: 48 },
   { id: '01b_learn-3d-hero', tab: 'learn', play: false, learn: '3d', lineageFull: true, flyAround: true, hold: 13 },
@@ -164,6 +177,14 @@ const CX = Math.round(VW / 2), CY = Math.round(VH / 2), KX = VW / 1920, KY = VH 
 async function applyScene(spec) {
   const log = [];
   const imp = (p) => import(p);
+  // Nothing in here may await unbounded. page.evaluate has no timeout, so a single
+  // stalled fetch/decode hangs the WHOLE take: the run stops mid-scene, the marks
+  // are only written after the last scene, and the session recording keeps rolling
+  // on a frozen frame. Every network + Web Audio await below is wrapped in this.
+  const withTimeout = (p, ms, what) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + ms + 'ms: ' + what)), ms)),
+  ]);
   const C = (window.__cap = window.__cap || {});
   const appUi = (await imp('/src/state/appUiStore.ts')).useAppUiStore;
   const lib = (await imp('/src/state/libraryStore.ts')).useLibraryStore;
@@ -179,7 +200,7 @@ async function applyScene(spec) {
     try { if (lib.getState().entries.length === 0) await lib.getState().load(); } catch (e) { log.push('lib ' + e.message); }
     try { const c = pMod.getEngineCtx && pMod.getEngineCtx(); if (c && c.resume) await c.resume(); } catch (e) {}
     try {
-      const blob = await (await fetch(spec.heroUrl)).blob();
+      const blob = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero');
       await player.getState().load(blob, { label: spec.heroLabel, entryId: spec.heroId });
       C.heroLoaded = true;
     } catch (e) { log.push('hero ' + e.message); }
@@ -196,10 +217,29 @@ async function applyScene(spec) {
     const plan = { drums: [0, 22, 30], bass: [0, 22, 30], other: [3, 19, 35], vocals: [6, 16, 40] };
     let idx = 0;
     const firstIds = [];
-    for (const s of spec.stems) {
+    // Fetch + decode every stem CONCURRENTLY, then build the tracks in list order.
+    // Serially this cost ~4.5 minutes of the take: each stem is ~28 MB / 160 s and
+    // streams through the vite dev proxy at well under a MB/s, and the slowest one
+    // blew its timeout and got dropped from the arrangement entirely. The build loop
+    // below is unchanged and still runs in order, so the result is deterministic.
+    // computePeaks spins up its own AudioContext per stem; both legs stay bounded so
+    // a stem that will not load is dropped rather than taking the session down.
+    const grab = async (url, what) => {
+      const blob = await withTimeout((await fetch(url)).blob(), 90000, 'fetch ' + what);
+      const { peaks, duration } = await withTimeout(computePeaks(blob, 240), 60000, 'decode ' + what);
+      return { blob, peaks, duration };
+    };
+    // deckB is kicked off here rather than after the loop so it rides along with the
+    // stems instead of adding another serial ~50 s leg of its own.
+    const deckBPromise = grab(spec.deckB.url, 'deckB').catch((e) => { log.push('import-track ' + e.message); return null; });
+    const loaded = await Promise.all(spec.stems.map(async (s) => {
+      try { return { s, ...(await grab(s.url, s.name)) }; }
+      catch (e) { log.push('stem ' + s.name + ' ' + e.message); return null; }
+    }));
+    for (const item of loaded) {
       try {
-        const blob = await (await fetch(s.url)).blob();
-        const { peaks, duration } = await computePeaks(blob, 240);
+        if (!item) continue;              // dropped stem — idx still advances below
+        const { s, blob, peaks, duration } = item;
         const [st, dur, off] = plan[s.name] || [idx * 2, 18, 30];
         const tracks = editor.getState().tracks;
         let trackId;
@@ -213,13 +253,14 @@ async function applyScene(spec) {
         });
         editor.getState().cachePeaks(clipId, peaks);
         firstIds.push(clipId);
-      } catch (e) { log.push('stem ' + s.name + ' ' + e.message); }
+      } catch (e) { log.push('stem build ' + e.message); }
       idx++;
     }
     // a 5th track with a DIFFERENT source (an imported clip) for source variety
     try {
-      const b2 = await (await fetch(spec.deckB.url)).blob();
-      const { peaks, duration } = await computePeaks(b2, 240);
+      const db = await deckBPromise;
+      if (!db) throw new Error('deckB unavailable');
+      const { blob: b2, peaks, duration } = db;
       const tId = editor.getState().addTrack({ name: 'import', color: palette[4] });
       const cId = editor.getState().addClipToTrack({
         trackId: tId, label: 'import', audioBlob: b2, mimeType: 'audio/wav',
@@ -264,7 +305,7 @@ async function applyScene(spec) {
     } catch (e) { log.push('studio ' + e.message); }
   }
   if (spec.fillBucket && !C.bucketFilled) {
-    try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const b = await (await fetch(spec.heroUrl)).blob(); mb.getState().add(new File([b], 'Et-Tu-Machina.wav', { type: 'audio/wav' })); C.bucketFilled = true; } catch (e) { log.push('bucket ' + e.message); }
+    try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const b = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero/bucket'); mb.getState().add(new File([b], 'Et-Tu-Machina.wav', { type: 'audio/wav' })); C.bucketFilled = true; } catch (e) { log.push('bucket ' + e.message); }
   }
 
   // ── per-scene UI state (fully specified every time) ──
@@ -290,7 +331,7 @@ async function applyScene(spec) {
         gp.getState().setField('magSeed', 42);
       } catch (e) { log.push('magcond ' + e.message); }
     }
-    if (!C.srcFile) { const b = await (await fetch(spec.heroUrl)).blob(); C.srcFile = new File([b], 'et-tu-machina.wav', { type: 'audio/wav' }); }
+    if (!C.srcFile) { const b = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero/src'); C.srcFile = new File([b], 'et-tu-machina.wav', { type: 'audio/wav' }); }
     if (spec.inpaint) {
       gp.getState().setField('initAudioFile', C.srcFile);
       gp.getState().setField('inpaintAudioFile', C.srcFile);
@@ -307,7 +348,7 @@ async function applyScene(spec) {
     // stack, and 72_crispr-dna needs a fresh rebuild long after 23_chimera ran.
     if (spec.chimeraBuild && gp.getState().chimera.clips.length === 0) {
       const srcs = [{ u: spec.heroUrl, l: 'Et Tu Machina' }, { u: spec.stems[0].url, l: 'Drums' }, { u: spec.stems[2].url, l: 'Vocals' }];
-      for (const s of srcs) { try { const b = await (await fetch(s.u)).blob(); gp.getState().addChimeraClip({ blob: b, mimeType: 'audio/wav', label: s.l }); } catch (e) { log.push('chimera ' + e.message); } }
+      for (const s of srcs) { try { const b = await withTimeout((await fetch(s.u)).blob(), 30000, 'fetch chimera ' + s.l); gp.getState().addChimeraClip({ blob: b, mimeType: 'audio/wav', label: s.l }); } catch (e) { log.push('chimera ' + e.message); } }
       try { gp.getState().setChimeraField('targetBpm', 124); gp.getState().setChimeraField('alignMode', 'weave'); } catch (e) {}
       C.chimeraBuilt = true;
     } else if (!spec.chimeraBuild) {
@@ -463,17 +504,100 @@ async function realClickByTitle(page, re, nth = 0) {
 }
 
 const waitSplashGone = (page) => page.waitForFunction(() => {
-  // LoadingScreen unmounts (AnimatePresence) once the backend is ready; it is the only
-  // overlay carrying the "Stable Audio 3" wordmark. Test DOM PRESENCE, not offsetParent
-  // — position:fixed elements always report offsetParent === null, so the old check
-  // resolved instantly and the splash bled into the first clip.
-  return ![...document.querySelectorAll('.fixed.inset-0')].some((e) => /Stable Audio 3/i.test(e.textContent || ''));
-}, { timeout: 45000 }).catch(() => {});
+  // LoadingScreen unmounts (AnimatePresence) once the backend is ready AND the boot
+  // cinematic finishes. Keyed off its data-boot-splash attribute: the previous check
+  // matched the "Stable Audio 3" wordmark, which the rebrand to theDAW removed, so it
+  // matched nothing, resolved instantly, and let the splash bleed into the clips.
+  // Test DOM PRESENCE, not offsetParent — position:fixed always reports null there.
+  return !document.querySelector('[data-boot-splash]');
+}, { timeout: 60000 }).catch(() => {});
 
 // Per-scene DOM choreography that the stores can't do (graph fullscreen, analyzer
 // mode buttons, the assistant orb, the VJ source import). Runs after the view mounts.
 async function sceneActions(page, scene) {
   let err = null;
+  // Most center tabs are React.lazy chunks behind <Suspense fallback={<TabFallback/>}>,
+  // which renders a pulsing "loading…" span on first visit. Without this the whole hold
+  // can be that fallback. Resolves instantly for any tab already warmed this session.
+  await page.waitForFunction(() => ![...document.querySelectorAll('span')]
+    .some((e) => (e.textContent || '').trim() === 'loading…' && e.getClientRects().length),
+    { timeout: 25000 }).catch(() => {});
+  // ── the newer workspaces, driven rather than merely opened ──────────────────
+  // A tab held static only proves it exists. Each of these clicks the controls that
+  // are the point of the workspace, so the clip shows what the tab actually DOES.
+  const clickNth = (re, n) => page.evaluate(([src, idx]) => {
+    const rx = new RegExp(src, 'i');
+    const hits = [...document.querySelectorAll('button')]
+      .filter((b) => rx.test((b.textContent || '').trim()) && b.getClientRects().length);
+    if (hits[idx]) hits[idx].click();
+  }, [re.source, n]).catch(() => {});
+  const setSelect = (key, idx) => page.evaluate(([k, n]) => {
+    const s = document.querySelector(`#${k}, [name="${k}"], [id="${k}"]`);
+    if (s && s.options && s.options.length > n) {
+      s.selectedIndex = n;
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }, [key, idx]).catch(() => {});
+
+  if (scene.swayUse) {
+    // SWAY maps gestures and body pose onto parameters: arm MIDI, then re-route
+    // several gesture and pose slots and put two of them into learn mode.
+    await clickByText(page, /enable midi/i); await sleep(700);
+    for (const [k, n] of [['sway-route-strike', 1], ['sway-route-sway', 2], ['sway-route-pulse', 1],
+                          ['pose-route-handLeft', 1], ['pose-route-handRight', 2],
+                          ['pose-route-armSpan', 1], ['sway-pad-mode', 1]]) {
+      await setSelect(k, n); await sleep(520);
+    }
+    await clickNth(/^learn$/i, 0); await sleep(900);
+    await clickNth(/^learn$/i, 2); await sleep(900);
+  }
+  if (scene.foundryUse) {
+    // FOUNDRY hosts plugin front-ends: load one design, then the other.
+    await clickByText(page, /senpai/i); await sleep(2600);
+    await clickByText(page, /kouhai/i); await sleep(2600);
+    await clickByText(page, /senpai/i); await sleep(1500);
+  }
+  if (scene.underfitUse) {
+    await clickByText(page, /start underfit/i); await sleep(3500);
+  }
+  if (scene.audimateUse) {
+    // AUDIMATE is a node graph — build one out of the palette, then run it.
+    for (const label of [/^library$/i, /^generate$/i, /^effect$/i, /merge \/ mix/i, /^feedback$/i, /^output$/i]) {
+      await clickByText(page, label); await sleep(700);
+    }
+    await clickByText(page, /^run$/i); await sleep(2200);
+  }
+  if (scene.performUse) {
+    // No .als/.tasmo ships with the repo, so drive the import affordance itself:
+    // focusing the path field opens the recent-projects list.
+    await page.click('#session-import-path', { timeout: 4000 }).catch(() => {});
+    await sleep(900);
+    await page.keyboard.type('C:\\Sets\\EtTuMachina.als', { delay: 55 }).catch(() => {});
+    await sleep(1400);
+  }
+
+  // TOUR is a venue/routing map. Held static it reads as an empty basemap, so drive
+  // it: pick a genre, run the region search, then pan and zoom so the map is visibly
+  // a map. tourRoutes goes further and opens the VENUES / ROUTES / EV panels.
+  if (scene.tourMap || scene.tourRoutes) {
+    await clickByText(page, /electronic/i);
+    await sleep(400);
+    await clickByText(page, /^\s*search\s*$/i);
+    await sleep(2200);
+    await page.mouse.move(960, 520);
+    await page.mouse.down();
+    for (let i = 0; i < 12; i += 1) { await page.mouse.move(960 - i * 14, 520 - i * 6); await sleep(40); }
+    await page.mouse.up();
+    await sleep(500);
+    await page.mouse.wheel(0, -300);
+    await sleep(900);
+  }
+  if (scene.tourRoutes) {
+    for (const label of [/venues/i, /routes/i, /\bev\b/i]) {
+      await clickByText(page, label);
+      await sleep(1800);
+    }
+  }
   if (scene.learn === '2d') {
     await clickByText(page, /genealogy/i);
     // Wait for the family-tree to actually finish loading (nodes present), not just a
@@ -946,13 +1070,54 @@ async function holdAction(page, scene) {
 
 const launchArgs = ['--autoplay-policy=no-user-gesture-required'];
 if (HEADLESS) launchArgs.push('--use-angle=gl', '--ignore-gpu-blocklist', '--enable-gpu', '--enable-webgl', '--enable-accelerated-2d-canvas');
-else launchArgs.push('--start-fullscreen', '--start-maximized');
+// Headed: CAPX/CAPY pin the window to a specific monitor so the take runs on a
+// screen nobody is using. Chrome's --window-position is in DIP of the desktop's
+// virtual space, and it is IGNORED alongside --start-fullscreen/--start-maximized,
+// so the two paths are exclusive. CAPWINW/CAPWINH size the window to that monitor;
+// the recorded viewport stays SIZE regardless (Playwright overrides device metrics),
+// so a monitor smaller than 1920x1080 still yields a 1920x1080 clip.
+else if (process.env.CAPX !== undefined || process.env.CAPY !== undefined) {
+  const wx = +(process.env.CAPX || 0), wy = +(process.env.CAPY || 0);
+  const ww = +(process.env.CAPWINW || VW), wh = +(process.env.CAPWINH || VH);
+  launchArgs.push(`--window-position=${wx},${wy}`, `--window-size=${ww},${wh}`);
+} else launchArgs.push('--start-fullscreen', '--start-maximized');
 const browser = await chromium.launch({ headless: HEADLESS, args: launchArgs });
 const ctx = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, recordVideo: { dir: OUT, size: REC } });
+// Playwright launches a throwaway profile, so every run looks like a genuine first
+// run: App.tsx auto-starts the onboarding tour, and on dismissing it opens the home
+// screen. Both dim the whole UI and would sit on top of all 65 clips. Seed the two
+// zustand-persist keys before any script runs so neither ever arms.
+// (Shape: zustand/middleware persist -> {state: <partialize output>, version: 0}.)
+await ctx.addInitScript(() => {
+  const seed = (k, state) => {
+    try { localStorage.setItem(k, JSON.stringify({ state, version: 0 })); } catch (e) {}
+  };
+  seed('thedaw-onboarding', { seen: true, neverShow: true });
+  seed('thedaw-home-screen-v1', { showAtStartup: false });
+});
 const page = await ctx.newPage();
 const tRec = Date.now();       // recording starts at context/page creation → this is video t=0.
                                // (Anchoring AFTER the splash wait shifts every slice earlier by
-                               // the boot duration and lands scene 1 inside the splash.)
+                               // the boot duration and lands scene 1 inside the splash. It is
+                               // taken before the fullscreen promotion below for the same reason:
+                               // that CDP round-trip would otherwise shift every slice late.)
+// True fullscreen on the pinned monitor. --start-fullscreen cannot be combined with
+// --window-position (Chrome ignores the position), so the window is placed first and
+// promoted to fullscreen afterwards over CDP. setWindowBounds rejects windowState in
+// the same call as a geometry change, hence the two calls. Purely cosmetic for the
+// operator watching — the recorded frames are SIZE either way.
+if (!HEADLESS && process.env.CAPX !== undefined && process.env.CAPFULL !== '0') {
+  try {
+    const cdp = await ctx.newCDPSession(page);
+    const { windowId } = await cdp.send('Browser.getWindowForTarget');
+    await cdp.send('Browser.setWindowBounds', { windowId, bounds: {
+      left: +(process.env.CAPX || 0), top: +(process.env.CAPY || 0),
+      width: +(process.env.CAPWINW || VW), height: +(process.env.CAPWINH || VH),
+    } });
+    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'fullscreen' } });
+    await cdp.detach();
+  } catch (e) { console.log('fullscreen skipped:', e.message); }
+}
 page.on('filechooser', (fc) => { fc.setFiles(VJ_SOURCE).catch(() => {}); });
 
 const scenes = (onlyIds.length ? SCENES.filter((s) => onlyIds.includes(s.id)) : SCENES)
@@ -964,6 +1129,14 @@ const results = [];
 await page.goto(APP, { waitUntil: 'domcontentloaded' });
 await sleep(2600);
 await waitSplashGone(page);    // the ONLY splash wait — once, up front
+// If it is still up, the boot stalled (no backend, or the WebGL cinematic never
+// completed). LoadingScreen exposes its escape hatch at 40s / on boot error, which
+// the 60s wait above has already outlasted — take it rather than shoot the splash.
+if (await page.$('[data-boot-splash]')) {
+  console.log('splash still up after wait — taking the boot escape hatch');
+  await clickByText(page, /continue without backend/i).catch(() => {});
+  await sleep(1500);
+}
 await page.mouse.click(8, 8);
 
 for (const scene of scenes) {
@@ -994,16 +1167,39 @@ for (const scene of scenes) {
 }
 
 const video = page.video();
+const wallTotal = (Date.now() - tRec) / 1000;   // wall-clock length of the take
 await ctx.close();             // flush the recording
 await browser.close();
-const sessionWebm = path.join(OUT, '_session.webm');
+// Session file is stamped per run: overwriting a fixed name destroyed a completed
+// take once, and with it the ability to re-slice any scene without reshooting.
+const stamp = new Date(tRec).toISOString().replace(/[-:T]/g, '').slice(0, 15);
+const sessionWebm = path.join(OUT, `_session-${stamp}.webm`);
 try { const vp = await video.path(); fs.renameSync(vp, sessionWebm); } catch (e) { console.log('session rename', e.message); }
 
-// Slice the one long recording into per-scene clips (trim the transition edges).
 const { execFileSync } = await import('node:child_process');
+const probe = (f) => {
+  try {
+    return parseFloat(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=nw=1:nk=1', f]).toString().trim());
+  } catch (e) { return NaN; }
+};
+// The recording's own timeline runs SHORTER than wall-clock — Playwright's screencast
+// drops frames under WebGL load, so a mark taken at wall T lands at roughly T*ratio in
+// the file. Slicing by raw wall marks therefore drifts further out of sync the longer
+// the run, and every clip ends up holding an EARLIER scene than its name. Rescale by
+// the measured ratio so marks map onto the video's real timeline.
+const videoDur = probe(sessionWebm);
+let ratio = 1;
+if (Number.isFinite(videoDur) && videoDur > 0 && wallTotal > 0) {
+  ratio = videoDur / wallTotal;
+  console.log(`timeline: wall ${wallTotal.toFixed(1)}s -> video ${videoDur.toFixed(1)}s  ratio ${ratio.toFixed(4)}`);
+  if (ratio < 0.5 || ratio > 1.5) { console.log('  ratio out of range — slicing 1:1 instead'); ratio = 1; }
+}
+
+// Slice the one long recording into per-scene clips (trim the transition edges).
 for (const m of marks) {
-  const ss = (m.start + 0.4).toFixed(2);
-  const dur = Math.max(0.5, m.end - m.start - 0.6).toFixed(2);
+  const ss = (m.start * ratio + 0.4).toFixed(2);
+  const dur = Math.max(0.5, (m.end - m.start) * ratio - 0.6).toFixed(2);
   const out = path.join(OUT, `${m.id}_h.mp4`);
   try {
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', ss, '-t', dur, '-i', sessionWebm,

@@ -432,29 +432,40 @@ export default function App() {
       {/* Main app always mounts so state initializes, but polls are gated on isBackendReady */}
       <Shell />
       <PlayerFooter />
-      <GantasmoOrb
-        isActive={isAssistantOpen}
-        onToggle={() => setIsAssistantOpen(prev => !prev)}
-        onPositionChange={setOrbPosition}
-        processing={assistantThinking}
-        // Ferrofluid body (three.js, lazy) with the GANTASMO eyes + mouth
-        // composited on top by the orb itself. Held back until the boot
-        // screen clears so the cinematic keeps the GPU to itself.
-        coreOverlay={!showLoading ? (
-          <Suspense fallback={null}>
-            <FerroOrbCore />
-          </Suspense>
-        ) : undefined}
-        // 2x orb: the orb-2x class doubles the CSS stack (160/128/96) and
-        // bounds keeps viewport clamping honest at that size.
-        className="orb-2x"
-        bounds={160}
-        // Bottom-left corner, pulled DOWN to overlap the footer (where the
-        // music-note icon used to be). v3 key so it resets there once.
-        defaultPosition={{ x: 12, y: typeof window !== 'undefined' ? window.innerHeight - 172 : 500 }}
-        persistenceKey="thedaw-orb-pos-v3"
-      />
-      <OrbDripTrail position={orbPosition} orbBox={160} />
+      {/* The orb stays out of the boot cinematic entirely — mounting it only
+          once the splash has lifted means it never flashes over the intro AND
+          the cinematic keeps the GPU to itself. Because it first mounts after
+          boot, its ferrofluid body is present from the very first frame the
+          user sees it, so there is no CSS-gradient placeholder stage. */}
+      {!showLoading && (
+        <>
+          <GantasmoOrb
+            isActive={isAssistantOpen}
+            onToggle={() => setIsAssistantOpen(prev => !prev)}
+            onPositionChange={setOrbPosition}
+            processing={assistantThinking}
+            // Ferrofluid body (three.js, lazy) with the GANTASMO eyes + mouth
+            // composited on top by the orb itself.
+            coreOverlay={(
+              <Suspense fallback={null}>
+                <FerroOrbCore />
+              </Suspense>
+            )}
+            // orb-2x is the 112px stack (30% down from the old 160). bounds must
+            // match the CSS toggle size or viewport clamping drifts.
+            className="orb-2x"
+            bounds={112}
+            // Welded to the bottom-left corner — including across window
+            // resizes — until the user drags it out once, which releases it
+            // permanently. defaultPosition is only the pre-release fallback.
+            stickCorner="bottom-left"
+            cornerMargin={16}
+            defaultPosition={{ x: 12, y: typeof window !== 'undefined' ? window.innerHeight - 172 : 500 }}
+            persistenceKey="thedaw-orb-pos-v4"
+          />
+          <OrbDripTrail position={orbPosition} orbBox={112} />
+        </>
+      )}
       {assistantMounted && (
         <Suspense fallback={null}>
           <AssistantPanel

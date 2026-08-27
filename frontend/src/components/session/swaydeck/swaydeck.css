@@ -1,0 +1,50 @@
+/* SwayCommand's surface styles, scoped under .sway-deck so the schematic in
+   PERFORM renders EXACTLY as the standalone cockpit draws it. Variable values
+   are SwayCommand's own (--accent #2de1fc, --accent2 #ff2d95). */
+.sway-deck {
+  --sd-accent: #2de1fc;
+  --sd-accent2: #ff2d95;
+  --sd-line: rgba(160, 190, 220, 0.5);
+  --sd-line-dim: rgba(120, 145, 175, 0.28);
+  --sd-text-dim: #7e8ba0;
+  --sd-display-font: 'Orbitron', 'Segoe UI', sans-serif;
+}
+
+.sway-deck #sway-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.sway-deck #sway-svg .ctl { cursor: pointer; }
+.sway-deck #sway-svg .ctl:hover .hit-ring { stroke: var(--sd-accent); opacity: 1; }
+
+.sway-deck #sway-svg text {
+  font: 300 9px var(--sd-display-font);
+  letter-spacing: 0.08em;
+  fill: var(--sd-text-dim);
+  pointer-events: none;
+  user-select: none;
+}
+
+.sway-deck #sway-svg .etch { stroke: var(--sd-line-dim); fill: none; }
+.sway-deck #sway-svg .lit { stroke: var(--sd-line); fill: none; }
+
+/* The surface's own var names, mapped to the scoped ones. */
+.sway-deck #sway-svg {
+  --accent: var(--sd-accent);
+  --accent2: var(--sd-accent2);
+  --text-dim: var(--sd-text-dim);
+}
+
+.sway-deck #reticle .arm {
+  fill: none;
+  stroke: var(--sd-accent);
+  stroke-width: 1.2;
+  animation: sd-reticle-pulse 1.6s ease-in-out infinite;
+}
+.sway-deck #reticle.armed .arm { stroke: var(--sd-accent2); }
+@keyframes sd-reticle-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+  .sway-deck #reticle .arm { animation: none; }
+}

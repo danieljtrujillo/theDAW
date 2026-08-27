@@ -26,7 +26,7 @@
 // Run:  node scripts/fetch-sway-build.mjs      (npm run fetch:sway)
 
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -73,6 +73,45 @@ function resolveCheckout() {
   return null
 }
 
+// Known-bug patches applied to the staged bundle after every fetch, so pulling
+// a fresh build cannot silently reintroduce them. Each entry must match EXACTLY
+// once; zero matches means upstream fixed it (log + skip), more than once means
+// the bundle changed shape (fail loudly rather than patch blind).
+//
+// available(): in embed mode the cockpit never requests its own MIDIAccess (the
+// host relays raw bytes over postMessage), so `n` stays null and the splash's
+// MIDI row reported "WebMIDI unavailable" forever — while relayed MIDI was
+// audibly playing. `l` is the in-iframe/embed flag in the same scope; embed IS
+// available by construction. Fixed upstream in SwayCommand this stays a no-op.
+const BUNDLE_PATCHES = [
+  {
+    reason: 'embed splash: MIDI row must reflect the host relay, not the absent local MIDIAccess',
+    find: 'supported:c,get available(){return!!n}',
+    replace: 'supported:c,get available(){return l||!!n}',
+  },
+]
+
+function patchStagedBundle() {
+  const bundlePath = join(stageDir, 'embed.bundle.js')
+  if (!existsSync(bundlePath)) return
+  let js = readFileSync(bundlePath, 'utf8')
+  let applied = 0
+  for (const p of BUNDLE_PATCHES) {
+    const n = js.split(p.find).length - 1
+    if (n === 0) {
+      console.log(`[fetch-sway] patch not needed (fixed upstream?): ${p.reason}`)
+      continue
+    }
+    if (n > 1) fail(`bundle patch matched ${n} times, expected 1: ${p.reason}`)
+    js = js.replace(p.find, p.replace)
+    applied += 1
+  }
+  if (applied) {
+    writeFileSync(bundlePath, js, 'utf8')
+    console.log(`[fetch-sway] applied ${applied} bundle patch(es)`)
+  }
+}
+
 function stage(builtDir, provenance) {
   if (!existsSync(join(builtDir, 'index.html'))) {
     fail(`${builtDir} has no index.html - the embed build did not produce a servable bundle.`)
@@ -80,6 +119,7 @@ function stage(builtDir, provenance) {
   rmSync(stageDir, { recursive: true, force: true })
   mkdirSync(dirname(stageDir), { recursive: true })
   cpSync(builtDir, stageDir, { recursive: true })
+  patchStagedBundle()
   // Stamp provenance so a stale artifact is a readable version in the SWAY tab
   // rather than a mystery cockpit that is missing a scene. The backend reads
   // this via sidecar.read_build_stamp().

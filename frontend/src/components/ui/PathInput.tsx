@@ -15,6 +15,10 @@ interface PathInputProps {
   disabled?: boolean;
   onBlur?: () => void;
   onEnter?: () => void;
+  /** Fires after a successful native-picker choice (browse), AFTER onChange has
+   *  committed the path — so a call site can act on the pick immediately
+   *  (e.g. Perform's one-click Open imports the file on selection). */
+  onPicked?: (path: string) => void;
   onFocus?: () => void;
   onClick?: () => void;
   /** Runs before the built-in Enter handling; call e.preventDefault() to
@@ -54,6 +58,7 @@ export const PathInput: React.FC<PathInputProps> = ({
   disabled = false,
   onBlur,
   onEnter,
+  onPicked,
   onFocus,
   onClick,
   onKeyDown,
@@ -89,7 +94,10 @@ export const PathInput: React.FC<PathInputProps> = ({
                 initialDir: saveDir,
               })
             : await pickFile(fileFilter ? { filter: fileFilter } : undefined);
-      if (!result.cancelled && result.path) onChange(result.path);
+      if (!result.cancelled && result.path) {
+        onChange(result.path);
+        onPicked?.(result.path);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

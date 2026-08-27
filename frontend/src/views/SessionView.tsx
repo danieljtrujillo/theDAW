@@ -1,11 +1,11 @@
 import React from 'react';
-import { AlertCircle, AlertTriangle, FolderInput, Layers, Loader2, PackagePlus, Scissors, SlidersHorizontal } from 'lucide-react';
+import { AlertCircle, AlertTriangle, FolderInput, Info, Layers, Loader2, Save, Scissors, SlidersHorizontal } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useDawImportStore } from '../state/dawImportStore';
 import { useProjectStore } from '../state/projectStore';
 import { DAW_LABELS } from '../lib/dawImportClient';
 import { dawProjectToTasmo, type RecentItem } from '../lib/projectClient';
-import { capturePerformRouting } from '../state/performRouting';
+import { capturePerformRouting, autoRoutePerformFromProject, usePerformRoutingStore } from '../state/performRouting';
 import { SESSION_IMPORT_FILTER } from '../lib/fileFilters';
 import { PathInput } from '../components/ui/PathInput';
 import { DawSessionGrid } from '../components/session/DawSessionGrid';
@@ -122,6 +122,24 @@ export const SessionView: React.FC = () => {
     }
   };
 
+  // Automatic routing. A set built FOR the Sway carries its MIDI-learn
+  // mappings in the project file; loading it should make the hardware work
+  // with zero setup. Mixer mappings become direct CC routes on the Perform
+  // mix, and dim-named mappings seed the Sway dimension bindings. Replaced
+  // wholesale per project; cleared on unload.
+  const setCcMods = usePerformRoutingStore((st) => st.setCcMods);
+  React.useEffect(() => {
+    if (!project) {
+      setCcMods([]);
+      return;
+    }
+    const { ccMods } = autoRoutePerformFromProject(project);
+    setCcMods(ccMods);
+    // Surface what just happened: a set with its own Sway mappings opens with
+    // the routing strip visible, so "it works" is also "you can see why".
+    if (ccMods.length > 0) setShowRouting(true);
+  }, [project, setCcMods]);
+
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#0b0b10]">
       <div className="shrink-0 border-b border-white/10 bg-[#111118] px-3 py-2 flex items-center gap-3">
@@ -140,13 +158,18 @@ export const SessionView: React.FC = () => {
           <PathInput
             id="session-import-path"
             name="session_import_path"
-            label="Project"
+            label="Open"
             kind="file"
             inline
             fileFilter={SESSION_IMPORT_FILTER}
             value={sourcePath}
             onChange={setSourcePath}
             onEnter={importSource}
+            onPicked={(picked) => {
+              if (busy) return;
+              if (picked.trim().toLowerCase().endsWith('.tasmo')) void loadTasmoAsSession(picked);
+              else void detectAndImport();
+            }}
             onFocus={openRecent}
             onClick={openRecent}
             onBlur={scheduleCloseRecent}
@@ -156,18 +179,13 @@ export const SessionView: React.FC = () => {
             ariaControls={recentVisible ? 'session-recent-listbox' : undefined}
             ariaAutocomplete="list"
             ariaActiveDescendant={activeIdx >= 0 ? `session-recent-opt-${activeIdx}` : undefined}
-            placeholder=".als / .tasmo"
+            placeholder=".als / .swayproj / .tasmo / any project"
             className="flex-1 min-w-0"
           />
-          <button
-            type="button"
-            onClick={importSource}
-            disabled={busy || !sourcePath.trim()}
-            className="btn-primary h-7 px-2 inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
-          >
-            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <FolderInput className="w-3 h-3" />}
-            Import
-          </button>
+          {/* ONE Open control: the field's browse picker. A picked file imports
+              immediately (onPicked), typing + Enter imports, a recent row
+              imports — there is no separate Import button to click after. */}
+          {busy && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin text-purple-300" aria-label="Importing…" />}
           {recentVisible && (
             <div
               id="session-recent-listbox"
@@ -195,98 +213,96 @@ export const SessionView: React.FC = () => {
             </div>
           )}
         </div>
-        {project && (
-          <div className="ml-auto flex items-center gap-2 text-[8px] font-mono text-zinc-500">
-            <span>{project.scenes.length} scenes</span>
-            <span>{project.tracks.length} tracks</span>
-            <button
-              type="button"
-              onClick={() => setShowRouting((v) => !v)}
-              aria-pressed={showRouting}
-              className={`h-7 px-2 inline-flex items-center gap-1 rounded border ${
-                showRouting
-                  ? 'border-fuchsia-400/40 text-fuchsia-100 bg-fuchsia-400/10'
-                  : 'border-white/10 text-zinc-300 hover:text-white hover:bg-white/5'
-              }`}
-              title="Assign the Sway (or any controller) to scene launch + mix modulation"
+        <div className="ml-auto flex items-center gap-1">
+          {/* Compact status badges — one icon each, detail on mouse-over. */}
+          {project && detected && (
+            <span
+              className="h-7 px-1.5 inline-flex items-center rounded border border-sky-400/25 bg-sky-400/5 text-[8px] font-black uppercase tracking-widest text-sky-200 cursor-help"
+              title={`Detected ${DAW_LABELS[detected.daw] ?? detected.daw}${hint ? ` — ${hint.limitation}` : ''}`}
             >
-              <SlidersHorizontal className="w-3 h-3" />
-              Routing
-            </button>
-            <button
-              type="button"
-              onClick={saveAsTasmo}
-              className="h-7 px-2 inline-flex items-center gap-1 rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
+              {(DAW_LABELS[detected.daw] ?? detected.daw).split(/\s+/).map((w) => w[0]).join('').slice(0, 2)}
+            </span>
+          )}
+          {project && (project.warnings.length > 0 || project.missing_files.length > 0) && (
+            <span
+              className="h-7 px-1.5 inline-flex items-center gap-1 rounded border border-amber-400/25 bg-amber-400/5 text-[9px] font-mono text-amber-200 cursor-help"
+              title={[
+                ...project.warnings,
+                ...(project.missing_files.length
+                  ? [`${project.missing_files.length} sample(s) missing — those clips will not play:`,
+                     ...project.missing_files.slice(0, 20),
+                     ...(project.missing_files.length > 20 ? [`…and ${project.missing_files.length - 20} more`] : [])]
+                  : []),
+              ].join('\n')}
             >
-              <PackagePlus className="w-3 h-3" />
-              .tasmo
-            </button>
-            <button
-              type="button"
-              onClick={() => void editInTimeline()}
-              disabled={timelineBusy}
-              className="h-7 px-2 inline-flex items-center gap-1 rounded border border-emerald-400/30 text-emerald-100 hover:text-white hover:bg-emerald-400/10 disabled:opacity-45"
-              title="Load this imported project into the editable timeline"
-            >
-              {timelineBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3" />}
-              Edit Timeline
-            </button>
-          </div>
-        )}
+              <AlertTriangle className="w-3 h-3" />
+              {project.warnings.length + (project.missing_files.length ? 1 : 0)}
+            </span>
+          )}
+          {project && (
+            <span className="h-7 px-1.5 inline-flex items-center text-[8px] font-mono text-zinc-500 cursor-help" title={`${project.scenes.length} scenes × ${project.tracks.length} tracks`}>
+              {project.scenes.length}×{project.tracks.length}
+            </span>
+          )}
+          {project && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowRouting((v) => !v)}
+                aria-pressed={showRouting}
+                aria-label="Sway routing"
+                className={`h-7 w-7 inline-flex items-center justify-center rounded border ${
+                  showRouting
+                    ? 'border-fuchsia-400/40 text-fuchsia-100 bg-fuchsia-400/10'
+                    : 'border-white/10 text-zinc-300 hover:text-white hover:bg-white/5'
+                }`}
+                title="Sway routing — auto-routed from the project; click to view or edit"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={saveAsTasmo}
+                aria-label="Save as .tasmo"
+                className="h-7 w-7 inline-flex items-center justify-center rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
+                title="Save — writes this session (with its routing) as a .tasmo"
+              >
+                <Save className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void editInTimeline()}
+                disabled={timelineBusy}
+                aria-label="Edit in timeline"
+                className="h-7 w-7 inline-flex items-center justify-center rounded border border-emerald-400/30 text-emerald-100 hover:text-white hover:bg-emerald-400/10 disabled:opacity-45"
+                title="Edit — load this project into the editable timeline"
+              >
+                {timelineBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Scissors className="w-3.5 h-3.5" />}
+              </button>
+            </>
+          )}
+          {/* Credit, one icon: hover for the line, the links live in its popover. */}
+          <span className="relative group/credit h-7 w-7 inline-flex items-center justify-center rounded border border-white/10 text-zinc-500 hover:text-zinc-200">
+            <Info className="w-3.5 h-3.5" aria-label="Perform adapted from InfiNight's fork of theDAW" />
+            <span className="pointer-events-auto absolute right-0 top-full z-50 mt-1 hidden w-max max-w-xs rounded border border-white/10 bg-black/95 p-2 shadow-xl group-hover/credit:block">
+              <InfiNightCredit feature="Perform" />
+            </span>
+          </span>
+        </div>
       </div>
 
-      {(error || detected || hint || project?.warnings.length) && (
-        <div className="shrink-0 px-3 py-2 flex flex-col gap-1.5 bg-black/15 border-b border-white/5">
-          {error && (
-            <div className="flex items-center gap-2 text-[9px] font-mono text-red-200">
-              <AlertCircle className="w-3 h-3 text-red-300 shrink-0" />
-              {error}
-            </div>
-          )}
-          {detected && (
-            <div className="text-[9px] font-mono text-zinc-400">
-              Detected <span className="text-sky-200">{DAW_LABELS[detected.daw] ?? detected.daw}</span>
-            </div>
-          )}
-          {hint && (
-            <div className="text-[9px] font-mono text-amber-100">
-              {hint.limitation}
-            </div>
-          )}
-          {project?.warnings.map((warning, index) => (
-            <div key={index} className="flex items-start gap-1.5 text-[8px] font-mono text-amber-100">
-              <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0 mt-px" />
-              {warning}
-            </div>
-          ))}
-          {/* Samples the importer could not resolve. The parser has always
-              collected these, and nothing rendered them — so a Library/Pack-heavy
-              set imported "successfully" with a full grid that played nothing and
-              named no file. Capped + scrollable: a relocated project can miss
-              hundreds, and this strip has no height limit of its own. */}
-          {project && project.missing_files.length > 0 && (
-            <div className="flex flex-col gap-0.5 max-h-24 overflow-y-auto">
-              <div className="flex items-start gap-1.5 text-[8px] font-mono text-amber-200">
-                <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0 mt-px" />
-                {`${project.missing_files.length} sample${project.missing_files.length === 1 ? '' : 's'} could not be found — those clips will not play. Relink them in Live, or open the set from its Project folder.`}
-              </div>
-              {project.missing_files.slice(0, 40).map((file, index) => (
-                <div key={index} className="pl-4 text-[8px] font-mono text-amber-100/60 truncate" title={file}>
-                  {file}
-                </div>
-              ))}
-              {project.missing_files.length > 40 && (
-                <div className="pl-4 text-[8px] font-mono text-amber-100/40">
-                  {`…and ${project.missing_files.length - 40} more`}
-                </div>
-              )}
-            </div>
-          )}
+      {/* Errors only. Detection, format hints, warnings and missing samples all
+          moved into the header badges (mouse-over for detail) — an import that
+          WORKS no longer costs rows of chrome. */}
+      {error && (
+        <div className="shrink-0 px-3 py-1.5 flex items-center gap-2 text-[9px] font-mono text-red-200 bg-black/15 border-b border-white/5">
+          <AlertCircle className="w-3 h-3 text-red-300 shrink-0" />
+          {error}
         </div>
       )}
 
       {project && showRouting && (
-        <div className="shrink-0 max-h-72 overflow-hidden border-b border-white/5 bg-[#0d0d13]">
+        <div className="shrink-0 border-b border-white/5 bg-[#0d0d13]">
           <PerformRoutingPanel project={project} />
         </div>
       )}
@@ -313,9 +329,6 @@ export const SessionView: React.FC = () => {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-white/5 px-3 py-1 flex items-center justify-end">
-        <InfiNightCredit feature="Perform" />
-      </div>
     </div>
   );
 };

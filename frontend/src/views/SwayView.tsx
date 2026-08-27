@@ -30,10 +30,11 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, Waves } from 'lucide-react';
-import { SwayLinkPanel } from '../components/sway/SwayLinkPanel';
 import { subscribeToMidi } from '../state/midiBus';
 import { getAnalyser } from '../state/playerStore';
 import { logInfo, logWarn } from '../state/logStore';
+import { useMidiDevicesStore } from '../state/midiDevicesStore';
+import { useMidiTriggerStore } from '../state/midiTriggerStore';
 
 /** Where the cockpit is mounted. Must match backend/modules/sway/sidecar.py. */
 const SWAY_SRC = '/sway-app/';
@@ -66,7 +67,6 @@ export const SwayView: React.FC = () => {
   const [detail, setDetail] = useState<string | null>(null);
   const [build, setBuild] = useState<SwayUrlResponse['build']>(null);
   const [audioSource, setAudioSource] = useState<AudioSource>('thedaw');
-  const [railOpen, setRailOpen] = useState(true);
   const [childReady, setChildReady] = useState(false);
 
   // Readiness is a ref, not just state: the analysis and MIDI loops read it on
@@ -264,24 +264,36 @@ export const SwayView: React.FC = () => {
     return [build.version, sha].filter(Boolean).join(' @ ') || null;
   }, [build]);
 
+  // What is ACTUALLY hooked up, from the host's own MIDIAccess — the cockpit
+  // can only ever say "theDAW (relayed)" because raw bytes are relayed to it,
+  // so the real device names have to be surfaced on this side. midiEnabled
+  // matters too: with the master gate off there IS no relay, and saying
+  // "linked" while hardware is silently ignored is exactly the kind of lie
+  // this header used to tell.
+  const midiEnabled = useMidiTriggerStore((s) => s.enabled);
+  const midiInputs = useMidiDevicesStore((s) => s.inputs);
+  const hardwareLabel = useMemo(() => {
+    if (!midiEnabled) return 'MIDI off';
+    if (midiInputs.length === 0) return 'no MIDI device';
+    const sway = midiInputs.find((n) => /sway|audima/i.test(n));
+    if (sway) return `Sway: ${sway}`;
+    return midiInputs.join(', ');
+  }, [midiEnabled, midiInputs]);
+  const hardwareTone = !midiEnabled
+    ? 'text-amber-400'
+    : midiInputs.length === 0
+      ? 'text-zinc-500'
+      : 'text-emerald-400';
+
   return (
     <div ref={hostRef} className="absolute inset-0 flex bg-black">
-      {railOpen && (
-        <aside className="w-80 shrink-0 overflow-y-auto border-r border-white/10 bg-[#0a0910]">
-          <SwayLinkPanel />
-        </aside>
-      )}
-
+      {/* The SWAY tab is the SwayCommand cockpit, nothing else. theDAW's own
+          Sway rail (routing selects, per-dim learn rows, the MIDI enable
+          button) used to sit alongside it and duplicated what the cockpit
+          already does properly. Its plumbing is unchanged and still feeds
+          PERFORM — only the redundant UI is gone. */}
       <div className="relative min-w-0 grow">
         <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-white/10 bg-black/70 px-2 py-1 backdrop-blur">
-          <button
-            type="button"
-            onClick={() => setRailOpen((v) => !v)}
-            aria-expanded={railOpen}
-            className="rounded border border-white/15 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-widest text-zinc-400 hover:border-fuchsia-400/50 hover:text-fuchsia-200"
-          >
-            {railOpen ? 'Hide link' : 'Show link'}
-          </button>
           <Waves className="h-3 w-3 shrink-0 text-fuchsia-300" />
           <span className="text-[9px] font-black uppercase tracking-[0.2em] text-fuchsia-200">SwayCommand</span>
 
@@ -299,8 +311,9 @@ export const SwayView: React.FC = () => {
             <option value="input">Input device</option>
           </select>
 
-          <span className="ml-auto text-[8px] font-mono text-zinc-600">
-            {embedState === 'ready' ? (childReady ? 'linked' : 'loading…') : embedState}
+          <span className={`ml-auto text-[8px] font-mono ${hardwareTone}`}>{hardwareLabel}</span>
+          <span className="text-[8px] font-mono text-zinc-600">
+            · {embedState === 'ready' ? (childReady ? 'linked' : 'loading…') : embedState}
             {buildLabel ? ` · ${buildLabel}` : ''}
           </span>
         </div>
@@ -331,7 +344,7 @@ export const SwayView: React.FC = () => {
                 </p>
                 <p className="max-w-lg text-[10px] font-mono leading-relaxed text-zinc-500">
                   SwayCommand also runs as its own desktop application; this tab embeds the same
-                  cockpit inside theDAW. The controls on the left work either way.
+                  cockpit inside theDAW.
                 </p>
                 <button
                   type="button"

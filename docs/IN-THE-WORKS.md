@@ -133,3 +133,19 @@ Recorded so they are not re-proposed:
 - Real-time multiplayer CRDT editing — gated on the asset layer, and EDIT unmounts on tab switch.
 - Neural restoration marketed as such — SA3 is not a super-resolution model; it hallucinates rather than restores.
 - A bespoke export/encode DSP layer — `/api/edit/delivery` and `/api/convert/file` already do this properly.
+
+## Added 2026-08-26 (second session)
+
+### P1
+
+- [ ] **Perform: 108 of the DNB set's 110 Sway mappings do nothing in PERFORM.** Auto-routing only lifts mixer/volume-named mappings into the mix; the device-FX mappings (DryWet/On/macros) resolve to the editor, not the Perform grid's live chains. Route `target_kind==='device'` mappings onto the grid chains via CcMod `fx` (plumbing exists — the deck already creates fx CcMods by hand). — M — `frontend/src/state/performRouting.ts:243`, `frontend/src/components/session/DawSessionGrid.tsx:713`
+- [ ] **Audimate canvas cursor offset — node ends don't match the pointer.** `screenToWorld` ignores the shell's CSS `zoom` (the same class of bug the EDIT audit fixed with `effectiveZoom`). — S — `frontend/src/views/AudimateView.tsx:234`
+- [ ] **Theme picker: selection happens under the dark overlay, so theme colors can't be judged; several themes have unreadable popups.** Drop the scrim while the picker is open, then contrast-audit every theme's overlays/popups. — M — `frontend/src/components/menu/ThemeModal.tsx:1`, `frontend/src/lib/editThemes.ts:1`
+
+### P2
+
+- [ ] **Boot: sequence the emergence** — still sheet → vibration ramps in → ONE cymatic pattern forms → the wordmark plops forward; today the waves run continuously while it rises. Also verify the GANTASMO logo no longer clips at reveal, and kill the orb's window/mask look outside the corner. — S — `frontend/src/components/layout/LiquidChromeTitle.tsx:200`, `frontend/src/components/layout/LoadingScreen.tsx:78`
+- [ ] **Audimate: standard node-editor/synth tools** (multi-select, box-select, duplicate, delete key, undo, zoom-to-fit, param inspector). — L — `frontend/src/views/AudimateView.tsx:1`
+- [ ] **Lower-panel toggles should read as part of the footer, with the panel emerging from those buttons.** — M — `frontend/src/components/audio/PlayerFooter.tsx:217`
+- [ ] **`.swayproj` import** (binary format, D:\sway examples; strings confirm the six dims + grid modes). — M — `backend/modules/library/router.py:1`
+- [ ] **Sway deck buttons have no factory CC/note map** (SwayCommand doesn't define one) — learn-only today; capture a hardware monitor session and pin them. — XS — `frontend/src/components/session/swaydeck/deckState.ts:13`

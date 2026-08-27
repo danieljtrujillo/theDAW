@@ -705,6 +705,33 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     [trackStateVersion],
   );
 
+  // Direct CC routes (auto-created from the set's own MIDI-learn mappings, or
+  // assigned on the Sway deck). Ref'd so the single MIDI subscription below can
+  // apply them without re-subscribing when the mix callbacks re-create.
+  const applyCcModRef = React.useRef<(cm: import('../../state/performRouting').CcMod, value01: number) => void>(() => {});
+  React.useEffect(() => {
+    applyCcModRef.current = (cm, value01) => {
+      if (cm.target === 'fx') {
+        // Reach the running chain entry. The chain is built lazily on first
+        // launch; ensure it here so a knob works before the first clip fires.
+        const track = tracksRef.current[cm.trackIndex];
+        if (!track || cm.deviceIndex == null || !cm.paramKey) return;
+        const chain = ensureTrackChain(cm.trackIndex, track);
+        const lo = cm.min ?? 0;
+        const hi = cm.max ?? 1;
+        chain.handle?.updateParams(`perform-${cm.trackIndex}-${cm.deviceIndex}`, {
+          [cm.paramKey]: lo + value01 * (hi - lo),
+        });
+        return;
+      }
+      const cur = mixRef.current.get(cm.trackIndex) ?? { vol: 1, mute: false };
+      if (cm.target === 'mute') cur.mute = value01 > 0.5;
+      else cur.vol = value01;
+      mixRef.current.set(cm.trackIndex, cur);
+      applyMixToTrack(cm.trackIndex);
+    };
+  }, [applyMixToTrack, ensureTrackChain]);
+
   React.useEffect(() => {
     const unsub = subscribeSwayValue((dim, value) => {
       const mods = usePerformRoutingStore.getState().trackMods.filter((m) => m.dim === dim);
@@ -723,16 +750,22 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   // Removing a modulation route returns its track to neutral, so a track never
   // stays stuck at the last modulated gain/mute after its mod is deleted.
   const trackMods = usePerformRoutingStore((s) => s.trackMods);
+  const ccMods = usePerformRoutingStore((s) => s.ccMods);
   React.useEffect(() => {
     const modVol = new Set(trackMods.filter((m) => m.target === 'volume').map((m) => m.trackIndex));
     const modMute = new Set(trackMods.filter((m) => m.target === 'mute').map((m) => m.trackIndex));
+    for (const m of ccMods) {
+      if (m.target === 'volume') modVol.add(m.trackIndex);
+      else if (m.target === 'mute') modMute.add(m.trackIndex);
+      // fx routes live in the chain, not the mix layer — nothing to neutralize here
+    }
     for (const [index, mix] of mixRef.current) {
       let changed = false;
       if (!modVol.has(index) && mix.vol !== 1) { mix.vol = 1; changed = true; }
       if (!modMute.has(index) && mix.mute) { mix.mute = false; changed = true; }
       if (changed) applyMixToTrack(index);
     }
-  }, [trackMods, applyMixToTrack]);
+  }, [trackMods, ccMods, applyMixToTrack]);
 
   // --- Live scene control from assigned Sway controls ------------------------
   // Assignments live in performRouting: Scene Select moves the highlighted scene,
@@ -780,6 +813,18 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
         if (st.learn.kind === 'fn') st.bindFn(st.learn.fn, ctrl);
         else st.bindScene(st.learn.scene, ctrl);
         return;
+      }
+
+      // Project-derived direct routes: the imported set's own MIDI-learn
+      // mappings, applied to the live Perform mix with zero setup. Checked
+      // before transport so a fader CC that happens to share a number with a
+      // learned button still moves the fader it was mapped to in the DAW.
+      if (isCc) {
+        for (const cm of st.ccMods) {
+          if (cm.isNote || cm.number !== num) continue;
+          if (cm.channel >= 0 && cm.channel !== ch) continue;
+          applyCcModRef.current(cm, val / 127);
+        }
       }
 
       const count = sceneCountRef.current;

@@ -8,6 +8,50 @@ Newest first.
 
 ## 2026-08-26
 
+### Sway / Perform (second session)
+
+- **A plugged-in Sway is seen by theDAW.** Master MIDI gate now defaults ON
+  (persisted-store v2 migrate flips existing installs); theDAW holds the only
+  `requestMIDIAccess()` and relays to the SwayCommand cockpit, so the old OFF
+  default made hardware invisible here while standalone worked. Verified: relay
+  traffic in the cockpit, playable.
+- **SwayCommand embed splash tells the truth about MIDI.** Its `available`
+  getter ignored relay mode and reported "WebMIDI unavailable" while relayed
+  CCs played. Fixed in the staged bundle, re-applied on every
+  `fetch:sway` (BUNDLE_PATCHES), and upstream in the SwayCommand source.
+- **PERFORM auto-routes projects built for the Sway.** `.als` MIDI-learn
+  mappings become direct CC→mix routes on load; dim-named mappings seed
+  bindings; SwayCommand's factory CC map ships as overridable defaults
+  (learned > project > factory). Verified against the DNB template (110
+  mappings parsed, routes live, deck animating).
+- **The SwayCommand deck is PERFORM's assignment surface** — verbatim port of
+  `surface.js`, collapsible; pads→scenes (chromatic notes), knobs/XY/gestures→
+  volume/mute/any live FX-chain param (`handle.updateParams`), buttons→
+  transport by learn. SWAY tab reduced to the cockpit alone.
+- **Perform header: icons only.** One Open (imports on pick/Enter/recent), one
+  Save (.tasmo); detected-DAW, warnings and missing-samples are hover badges;
+  the InfiNight credit is an info icon; footer strip removed.
+
+### Boot, orb, capture (second session)
+
+- **Boot cinematic**: full-window goo sheet + wordmark in the orb's exact
+  wet-obsidian material (mirror stays a mirror — visibility comes from
+  forward-hemisphere light angles and the bright room env on the sheet); the
+  wordmark sinks into and rises out of the sheet; credits gated on formation
+  (theDAW → by → GANTASMO). Verified by screenshot at three boot phases.
+- **Orb**: 112px (−30%), all rings/halos gone, ferrofluid from the first
+  visible frame (mounts post-boot), sticky bottom-left corner surviving
+  resizes until first drag, ~2.4× slower idle cycles, footer tip bubble
+  (operational tips, greeting dwell, never truncates, fixed width so the
+  now-playing block stops jumping) replacing G-Search; Ctrl-K opens the
+  library rail.
+- **Capture harness**: video/wall-ratio slicing (fixes the one-scene-early
+  drift on long takes), stamped per-run session files (a fixed name destroyed
+  a finished take once), bounded + concurrent stem loading (285s→17s to first
+  hold), `data-boot-splash` wait, monitor pinning + CDP fullscreen, six new
+  tab scenes, driven TOUR map/routing. 67 clips reshot at 1920×1080.
+
+
 ### Ableton `.als` import
 
 - **Imported projects can actually play.** No importer registered its project's
