@@ -56,6 +56,31 @@ distinct strings. The output is alphaTex, rendered as interactive tablature by
 alphaTab. Notes that fall outside the instrument's range are reported as
 unplayable rather than forced.
 
+The tab's tick timeline is real wall-clock time: the arranger emits **rests** for
+silence, clips a note's written duration back to the next onset when durations
+overlap, and always writes an explicit tempo. Without those three, a tab drifted
+progressively out of sync with the audio it came from.
+
+> **Re-run older tabs.** Tab artifacts generated before this change lack the rests
+> and the tempo directive, so they still drift. Press **MAKE TABS** again to
+> regenerate one.
+
+## Following along while it plays
+
+The Score panel follows the audio note by note rather than page by page.
+
+For **sheet music**, the staff strip glides continuously with the playback cursor
+instead of jumping a page at a time, and the notehead (or chord) currently under
+the cursor is highlighted. Centering is zoom-aware, so following stays accurate
+whatever the shell's zoom. Page-at-a-time movement is still available from the
+keyboard and the footer navigation.
+
+For **tabs**, alphaTab runs in external-media player mode: theDAW's transport is
+the clock, and the beat cursor and highlighted elements are driven from it every
+frame with the same latency compensation as the sheet cursor. Tabs carry their own
+**Follow** toggle. The behavior is feature-detected, so an older alphaTab bundle
+degrades to a static tab rather than breaking.
+
 ## Arrangements (lead sheet, piano reduction, band score)
 
 The **Arrange** section produces a playable MusicXML arrangement from a track's

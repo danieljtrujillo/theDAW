@@ -193,7 +193,7 @@ The application window has five regions:
 
 **Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, the app menu (§37), and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
-**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`) in the locked order **MAKE / EDIT / MIX / Perform / DJ / VJ / Foundry / Underfit / Learn**. Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly. The nine tabs are:
+**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly — and the assistant can reach every workspace plus the Library rail, reporting an honest failure rather than a false success if a target does not exist. Alongside the nine below, the bar also carries **Audimate** (§40), **SWAY**, and **Tour**. The nine core tabs are:
 
 - **MAKE**: generate audio from a text prompt with the AI models (§6).
 - **EDIT**: arrange clips on a timeline, add effects and automation, and export (§7).
@@ -426,20 +426,54 @@ During the render, the COMMIT EDIT button shows an animated spinner and is disab
 
 EDIT carries a real-time insert-effect rack that processes audio during preview and bakes into COMMIT EDIT through the same node graph. Two scopes exist: a **master** rack on the editor mix, and a per-track rack on each track. The master rack processes only the EDIT mix, so library, DJ, and sequencer playback stay untouched.
 
-Open the master rack from the **MASTER FX** toolbar toggle. Open a track's rack from the **F** button on its header, or right-click a track header and choose **Open FX rack**. The right-click menu also offers **Add insert** for every effect and **Clear track FX**.
+Built-in effects, VST3 plugins and `.gan` web plugins are **one concept** here. Open the master chain from the **FX** button in the toolbar, and a track's chain from the **FX** button on its header, or right-click a track header and choose **Open FX rack**. The right-click menu also offers **Add insert** for every effect and **Clear track FX**.
 
-Each rack is an ordered chain. The **+ Add effect…** dropdown appends an effect; per-effect controls bypass it, move it earlier or later in the chain, and remove it. Parameters are SLIDE sliders that update the running audio without a rebuild.
+Either button opens a compact chain list in which built-in, VST and GAN rows look and behave identically. Clicking a row opens **that entry's own floating control window** — a plugin's native UI, a `.gan` surface, or the built-in's parameter tiles — which you can drag anywhere and leave open while you work. Windows are keyed to the chain entry, so reopening one focuses the window you already have instead of stacking duplicates.
 
-Six psychoacoustic processors are available:
+Each chain is ordered. The **+ Add effect…** dropdown appends an effect; per-effect controls bypass it, move it earlier or later in the chain, and remove it. Parameters are SLIDE sliders that update the running audio without a rebuild, and moving one parameter never disturbs the others.
+
+Nineteen processors are available, and the same factories run live and in the offline bounce:
 
 | Effect | Group | What it does |
 |---|---|---|
 | **Headphone Crossfeed** | Spatial | Relieves hard-panned headphone "in-head" stereo (Bauer/BS2B). Params: Amount, Cut (Hz). |
 | **Phantom Bass** | Low end | Implies the missing fundamental through synthesized harmonics, so small speakers read deep bass. Params: Drive, Blend, Crossover (Hz). |
+| **Kargyraa Sub** | Low end | Subharmonic throat-growl bass: an octave divider, a period-doubling growl gate, a morphing vowel bank and a sygyt whistle band (see §7.7.1). |
 | **Stereo Widener** | Spatial | True mid/side widening with a mono-safe low end. Params: Width, Bass mono (Hz). |
 | **Aural Exciter** | Tone | Adds harmonic air and presence the ear reads as detail. Params: Freq (Hz), Amount, Mix. |
-| **HRTF Spatializer** | Spatial | Positions the track in 3D around the head with motion presets (see §7.8). |
+| **The Owl (HRTF Spatializer)** | Spatial | Positions the track in 3D around the head with motion presets (see §7.8). |
 | **Loudness Contour** | Tone | Equal-loudness tilt so the balance holds at low volume. Params: Level (phon), Amount. |
+| **OWL-Pad** | Performance | XY performance pad over the spatial engine. Params: Program, X, Y, Mix, Hold, Active. |
+| **Gater** | Performance | Rhythmic gate, free-running or tempo-synced. Params: Rate, Depth, Shape, Sync, Div, BPM. |
+| **Bitcrush** | Performance | Bit-depth reduction against the dry signal. Params: Bits, Mix. |
+| **Ring Mod** | Performance | Metallic/robotic sidebands from a sine carrier. Params: Freq (Hz), Mix. |
+| **Chop** | Performance | MPC-style buffer chop / beat-repeat (AudioWorklet). Params: Program, Rate, Slice, Mix, Latch, Gate. |
+| **Parametric EQ** | EQ & Dynamics | Low shelf, sweepable mid peak, high shelf. Params: Low, Mid freq, Mid, High. |
+| **Compressor** | EQ & Dynamics | Params: Threshold, Ratio, Attack, Release, Knee, Makeup. |
+| **High-Pass Filter** | EQ & Dynamics | Params: Freq (Hz), Resonance. |
+| **Low-Pass Filter** | EQ & Dynamics | Params: Freq (Hz), Resonance. |
+| **Reverb** | Space | Params: Decay (s), Predelay (ms), Tone (Hz), Wet. |
+| **Delay** | Space | Params: Time (ms), Feedback, Tone (Hz), Wet. |
+| **Ares** | Performance | Multi-stage filter → delay → reverb → grains → gate composite driven by the Ares `.gan` surface. 21 normalized params. |
+
+#### 7.7.1 Kargyraa Sub
+
+**Kargyraa Sub** is a subharmonic bass engine modelled on Tuvan *kargyraa* undertone
+singing. In kargyraa the false vocal folds close over every second vocal-fold cycle,
+dropping the perceived pitch an octave, while the vocal tract merges its formants
+into one narrow, very loud peak. The effect reproduces both: an octave-divider
+AudioWorklet produces true f/2 and f/4 layers that follow the source's envelope, an
+amplitude-modulation "growl gate" reproduces the same period doubling as sidebands,
+a three-band morphing vowel filter (a–o–u–e–i) supplies talking-bass motion, and a
+high-Q 0.8–2.4 kHz band is the sygyt-style focused overtone.
+
+Params: Mix, Sub, Deep, Growl (Hz), Growl depth, Drive, Vowel, Motion (Hz), Motion
+depth, Whistle (Hz), Whistle amount.
+
+The one parameter that decides whether it growls or turns to mud is **Growl**: set it
+to *half the fundamental of the bass you feed it* and the sidebands land on the true
+subharmonic series (D♯2 = 77.8 Hz → 38.9; E2 = 82.4 Hz → 41.2). Feed it a bass stem
+rather than a full mix so the divider locks to the fundamental instead of the hats.
 
 ### 7.8 Spatializer, Teleport, and Autopilot
 
@@ -453,7 +487,7 @@ Twelve motion modes are available: Static, Orbit H CW, Orbit H CCW, Orbit Fronta
 
 ### 7.9 Metamorph: Granular Identity-Bleed Morph
 
-Open **Metamorph** from its toolbar toggle to morph one sound into another in real time. Pick a **Donor A (identity)** and a **Host B (structure)** from either the current timeline clips or the library. Metamorph rebuilds Host B out of grains taken from Donor A, so the output keeps B's structure in A's voice.
+Open **Metamorph** from the toolbar's **TOOLS ▾** dropdown to morph one sound into another in real time. Pick a **Donor A (identity)** and a **Host B (structure)** from either the current timeline clips or the library. Metamorph rebuilds Host B out of grains taken from Donor A, so the output keeps B's structure in A's voice.
 
 Eight sliders shape the result: **Bleed** (dry host through to full mosaic), **Grain** (grain size in seconds), **Rate** (grains per second), **Spray** (start and timing jitter), **Match** (selection strictness), **Sync** (lock grains to the host's beat grid), **Favor** (bias toward punchy donor grains), and **Gain** (output trim). **Play** auditions the morph live; **Send to editor** renders one pass and drops it on a new track as an ordinary clip, ready to trim, FX, and export.
 
@@ -470,6 +504,20 @@ An automation lane draws one parameter's value curve over a timeline row (`Autom
 An editable lane accepts breakpoint edits directly on the curve. Click an empty area of the curve to add a breakpoint at that time and value. Drag a point to move it; a dragged point is clamped between its neighbors so points never cross in time. Right-click a point, or Alt-click it, to delete it. Pointer math uses bounding-rectangle ratios, so edits stay accurate under the shell's CSS zoom.
 
 **WRITE record mode** captures automation from live moves. With WRITE armed, moving a target parameter during transport writes breakpoints into that parameter's lane, timestamped against the editor transport clock rather than wall time, so a recorded move lines up with the audio on the next pass. Recorded lanes then edit as ordinary breakpoint curves, and they bake into COMMIT EDIT through the same offline graph as the rest of the mix (§7.6).
+
+### 7.12 Autosave and crash recovery
+
+The arrangement saves itself as you work, so a refresh, a crash, or a closed tab no longer destroys it. Clip audio lives in memory as Blobs, which used to mean a reload lost everything; it is now written into browser storage (OPFS) addressed by content hash, so a clip that was split or duplicated stores its audio exactly once. Alongside it, a debounced manifest records tracks, clips, effects, automation, markers, BPM, and the loop region.
+
+When a recoverable session exists, theDAW offers to restore it at startup. **Autosaving stays paused until you answer**, so opening the app and starting something new cannot overwrite the thing you are trying to recover. Accepting rebuilds the clips and their waveform peaks and drops you on EDIT with the arrangement back.
+
+This is insurance, not a replacement for saving: use **Save Project** (§37) to keep a real `.tasmo` on disk.
+
+### 7.13 Separate a clip into stems
+
+Right-click a clip and choose **Separate Stems → Tracks…** to split it with the Demucs separator and explode the result straight into the arrangement. A dialog picks the stem count, the device, and the quality; a progress banner tracks the run and can abort it.
+
+Each stem returns as its own colour-coded track, placed at exactly the source clip's position and trim, and the source clip is muted so you hear the stems rather than both. Unmuting it is the whole undo. Re-running on the same clip reuses the cached separation instead of paying for it twice. The separation backend and its settings are covered in §13.6.
 
 ---
 
@@ -1013,7 +1061,9 @@ The picker also lists procedural synth voices grouped as **Bass**, **Lead / Chor
 
 ## 16. Bottom Panel Tabs
 
-The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Ten tabs are available, in order: Levels, Visualize, Piano, Sequence, DRAW, Score, Details, Media, SLIDE, and SWAY.
+The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Ten tabs are available, in order: Levels, Visualize, Piano, Sequence, DRAW, Score, Details, Media, SLIDE, and SWAY. Development builds add an eleventh, **XR Bus**, a tester for the XR control bus (§34.4); production builds hide the tab and remap a persisted selection so it can never strand you on a missing tab.
+
+The panel's tab strip reads as part of the footer rather than a separate slab: it carries the footer's tinted-blur treatment and hairline border, the group toggle is a labelled **PANELS** button showing the active tab, and both dock bodies animate outward from the button that opened them.
 
 ### 16.1 Visualize: Real-time Spectral Analyzer
 
@@ -1112,7 +1162,13 @@ The result records to the library or appends to the EDIT timeline. Sound modes c
 
 ### 16.10 SWAY
 
-The SWAY tab is a pose control surface. It reads camera-tracked body movement and maps six expressive-motion dimensions onto music and effect parameters. This is the same pose bus the VJ engine consumes for pose-driven visuals (§10.9) and the Perform routing panel exposes as a control source (§35.3), surfaced here as a bottom-panel home for driving a set from body motion.
+The SWAY tab hosts the **SwayCommand cockpit** — the Audima Sway's own performance app, embedded in theDAW. The tab boots the cockpit straight into a project rather than its splash screen: it opens the most recent project saved from the cockpit, or the bundled `will-i-dream` template on a fresh install, and theDAW registers that project's media so its clips are allowed to load.
+
+Saving inside the cockpit is durable: a save writes a `.sway` file into `data/sway-projects/` through theDAW's backend (`POST /api/sway/project-save`) and its media paths are allowlisted at the same time, so the project reopens intact.
+
+theDAW holds the only `requestMIDIAccess()` and relays MIDI to the cockpit, so a plugged-in Sway is visible to both at once.
+
+The Sway's six expressive-motion dimensions (`strike`, `sway`, `pulse`, `glide`, `press`, `sculpt`) are published on a shared bus that the VJ engine consumes for motion-driven visuals (§10.9) and the Perform tab consumes as a modulation source (§35.3). Playing a set from the hardware is covered end to end in [guides/sway-perform-live.md](guides/sway-perform-live.md).
 
 ---
 
@@ -2224,11 +2280,19 @@ A `.tasmo` path opens directly in the grid. Any other project path goes through 
 
 ### 35.2 The scene and clip grid
 
-Once a project loads, the grid (`DawSessionGrid`) fills the workspace with the project's scenes and clips laid out for launching. The header shows the project name and tempo, the scene count, and the track count.
+Once a project loads, the grid (`DawSessionGrid`) fills the workspace with the project's scenes and clips laid out for launching. The header shows the project name and tempo, the scene count, and the track count. Columns are tracks and rows are scenes: launching a row stops what is playing and fires that whole row, while clicking a single cell layers it over what is already running, so a bassline can hold while the drums change. A launch-quantize control delays launches to the next bar boundary.
 
-### 35.3 Routing panel
+Each column also carries a **live effect chain** built from the project's saved devices, so an imported or authored set arrives with its filters, delays and creative FX already running, and metering is post-FX. Built-in effects are audible live; VST3 plugins stay listed but silent until the track is frozen or rendered.
 
-A **Routing** toggle in the header opens the routing panel (`PerformRoutingPanel`). It assigns a controller (the Sway control surface or any MIDI controller) to scene launch and to mix modulation, so a live performance drives the grid and the mix from hardware or from tracked motion. The routing is captured into the project when it is saved as `.tasmo`.
+### 35.3 Routing panel — the SwayCommand deck
+
+A **Routing** toggle in the header opens the routing panel (`PerformRoutingPanel`), which renders the **SwayCommand deck**: a live schematic of the hardware. Click any control on the deck to bind it, and the right rail shows what that control currently drives.
+
+The factory map is knobs on CC 20–27, the XY pad on CC 50 (X) and CC 38 (Y), the pulse/press/sway gestures on CC 35/36/37, and the sixteen pads on notes 24–39. Buttons have no factory code and are bound by learn: arm a transport function, then press the button.
+
+A control can drive a track's **volume** or **mute**, or any **parameter of any effect** in that track's live chain, with its own value range — an inverted range is how a filter that closes as you turn up is authored. Pads launch scenes, and can also **punch effects**: bound to an effect parameter, a pad pushes it while held and releases it on lift, or latches it on alternate presses. The shipped templates put scenes on pads 1–8 and punches on pads 9–16.
+
+All of it is captured into the project when it is saved as `.tasmo` and restored on open. Full walkthrough: [guides/sway-perform-live.md](guides/sway-perform-live.md).
 
 ### 35.4 DAW project into a scene
 

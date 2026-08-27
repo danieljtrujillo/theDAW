@@ -55,6 +55,10 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "pinokio-launcher.md",
     PROJECT_ROOT / "docs" / "guides" / "audimate.md",
     PROJECT_ROOT / "docs" / "guides" / "levels.md",
+    # Live performance: the Perform grid, the SwayCommand deck, pad scenes vs FX
+    # punches, the routing that travels in a .tasmo, the shipped performance
+    # templates, and the Kargyraa Sub subharmonic bass engine.
+    PROJECT_ROOT / "docs" / "guides" / "sway-perform-live.md",
     # Code-grounded reference tree (July 2026): one page per subsystem listing
     # every feature with the exact models/libraries it uses, the full HTTP API by
     # router cluster, and the offline/performance story. Each page cites its

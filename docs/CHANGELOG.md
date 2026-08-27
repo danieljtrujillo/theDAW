@@ -6,6 +6,47 @@ by build, test, or observed behaviour.
 
 Newest first.
 
+## 2026-08-27
+
+### Per-song Sway performance templates
+
+- **Three per-song Perform sets authored and round-trip verified** —
+  `Sway Perform - {Prologue,EACC,Just Give Up}.tasmo` in
+  `Documents/theDAW Projects`, from the new `scripts/make_sway_song_templates.py`.
+  Each: 6 stem columns, 26 looping clips, 29 devices, 8 scene pads, 29 pad-punch
+  routes, 47 knob/XY routes, real analyzed tempo and key baked in. Verified by
+  loading each file back through `TasmoFile.load` — clip count, route count,
+  `latch` flags and VST state all survive. ("Prelude" resolved to the album's
+  `01 - Prologue.wav`.)
+- **Stems sidecar was dead on this machine and is fixed.** Its venv's
+  `pyvenv.cfg` pointed at a base Python under a stale user profile, so every
+  separation failed with a dependency-install error naming packages that were
+  actually present. Re-pointed at the installed Python of the same minor
+  version; 6-stem separations for Prologue and Just Give Up then completed
+  through `POST /api/stems/{id}/run`, with every stem verified to match its
+  master's duration and sample rate.
+
+### Documentation sweep
+
+- **New guide: [guides/sway-perform-live.md](guides/sway-perform-live.md)** and
+  registered in the RAG index — the Perform grid, the SwayCommand deck and its
+  factory CC/note map, scenes vs FX punches, the four routing layers that travel
+  in a `.tasmo`, the shipped templates, and the Kargyraa Sub engine.
+- **Corrected documentation that was actively wrong.** `USER_GUIDE` §16.10 still
+  described SWAY as a camera-pose bottom-panel tab (it is the embedded
+  SwayCommand cockpit); §35.3 described a generic routing panel (it is the
+  SwayCommand deck); §7.7 advertised "six psychoacoustic processors" and a
+  MASTER FX / `F` button pair that no longer exist (19 effects, one `FX` button,
+  floating per-entry windows); §5 claimed nine center tabs; §16 claimed ten
+  bottom tabs. The effects reference heading said 18 effects.
+- **Documented shipped-but-invisible features** across the reference tree and
+  guides: unified effect control windows, OPFS autosave and crash recovery,
+  clip → stems explode, the 12 `editor_*` assistant tools and the T1/T2 approval
+  tiers, all-workspace navigation, the Audimate node-editor toolset, note-by-note
+  notation follow and the tab-timing migration, `.swayproj` import, the
+  `/api/sway` route family, `POST /api/dawimport/sway`, and the `EffectChainNode`
+  / `perform_routing` schema detail in the project guide.
+
 ## 2026-08-26
 
 ### Sway / Perform (second session)

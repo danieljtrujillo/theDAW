@@ -21,7 +21,28 @@ between Underfit and Learn).
   dropping a new wire there replaces the old one.
 - **Select a node** to edit its parameters in the right inspector; the trash
   icon there (or the toolbar trash) deletes.
+- **Select many** with ctrl-click to toggle nodes in and out of the selection,
+  or shift-drag on empty background for a marquee. Dragging any selected node
+  moves the whole selection.
+- **Select and delete wires.** Wires are clickable (they carry a fat invisible
+  hit path, so you do not have to be precise); double-click one or press Delete
+  with it selected to remove it.
+- **Context menus** — right-click a node or a wire for its actions.
 - **Reset view** re-centers; **Clear** empties the graph.
+
+### Keyboard
+
+| Key | Action |
+|---|---|
+| `Ctrl/Cmd + D` | Duplicate the selection (wires between duplicated nodes are remapped) |
+| `Delete` | Delete the selected nodes or wire |
+| `Ctrl/Cmd + Z` / `Ctrl/Cmd + Y` | Undo / redo |
+| `Ctrl/Cmd + A` | Select all |
+| `F` | Zoom to fit (also on the toolbar) |
+| `Esc` | Clear the selection |
+
+Keyboard scope is arbitrated, so these shortcuts only fire while the canvas has
+focus and never steal a keystroke from a text field or another tab.
 
 The graph (nodes, wires, and pan/zoom) is saved automatically and restored on
 the next launch.

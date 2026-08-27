@@ -19,6 +19,8 @@ data/quest/
 data/generations/
 data/settings.json
 data/recent_projects.json
+# Per-machine media roots (absolute paths to the user's audio folders)
+data/media_roots.json
 data/local_checkpoints.json
 data/library.db
 data/library.db-*

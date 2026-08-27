@@ -149,3 +149,220 @@ Recorded so they are not re-proposed:
 - [ ] **Lower-panel toggles should read as part of the footer, with the panel emerging from those buttons.** — M — `frontend/src/components/audio/PlayerFooter.tsx:217`
 - [ ] **`.swayproj` import** (binary format, D:\sway examples; strings confirm the six dims + grid modes). — M — `backend/modules/library/router.py:1`
 - [ ] **Sway deck buttons have no factory CC/note map** (SwayCommand doesn't define one) — learn-only today; capture a hardware monitor session and pin them. — XS — `frontend/src/components/session/swaydeck/deckState.ts:13`
+
+## Status 2026-08-26 (third session) — implemented, awaiting verification
+
+Everything below is CODED and passes `tsc --noEmit`, `ruff check`, `ruff format --check`
+and a backend import smoke, but has NOT been verified by observed behaviour in the
+running app. Items stay in their sections above until that verification happens.
+
+- **P0 `activeView` cluster** — tab bar now syncs `activeView`; footer action button
+  and PLAY are keyed on `centerTab` (EDIT→PROCESS, UNDERFIT→TRAIN, else CREATE);
+  `navigate('train')` can no longer brick CREATE. New `appUiStore.navigateTo()`
+  reaches all 12 workspaces + library, returns false (reported to the model) on
+  unknown targets. — `frontend/src/state/appUiStore.ts`,
+  `frontend/src/components/layout/ProcessingLog.tsx`,
+  `frontend/src/components/audio/PlayerFooter.tsx`, `frontend/src/orb-kit/actionHandlers.ts`,
+  `backend/assistant_routes.py` (navigate enum + prompt)
+- **P0 approval stack** — wired live: T2 tools (generate/abort/destructive editor ops/
+  unknown) park as `pendingAction` and render the existing confirmation card; inline
+  `<action>` blocks are now allowlist-validated and tier-gated too (and executed
+  outside the setMessages updater — StrictMode-safe). — `frontend/src/orb-kit/AssistantPanel.tsx`,
+  `tool-tiers.ts` (real backend names + editor tiers), `assistantEvents.ts`
+- **Agentic editor vocabulary** — 12 `editor_*` tools (get_state/add_track/remove_track/
+  set_track/move_clip/remove_clip/split_clip/select_clip/set_playhead/set_bpm/set_loop/
+  add_marker) defined backend-side, allowlisted, tiered, and implemented against
+  editorStore with honest error strings; app context now reports the REAL tab plus a
+  bounded arrangement summary (tracks/clips/playhead/selection/loop/bpm). —
+  `backend/assistant_routes.py`, `frontend/src/orb-kit/{actionHandlers,appContext,assistantEvents,tool-tiers}.ts`
+- **Media bucket "Send to INIT"** — navigates to `make` (was the nonexistent 'generate').
+- **Autosave/crash recovery** — content-addressed OPFS asset layer
+  (`assets/<sha256>.bin`, one write per unique Blob — split/duplicate clips share),
+  debounced manifest of tracks/clips/FX/automation/markers/bpm/loop, recovery offer
+  at startup (saving stays paused until answered), restore rebuilds blobs + peaks and
+  lands on EDIT. — `frontend/src/lib/editorAutosave.ts`,
+  `frontend/src/components/layout/AutosaveRecoveryNotice.tsx`, `Shell.tsx`
+- **Audimate node-editor tools** — multi-select (ctrl-click), shift-drag marquee,
+  multi-drag, Ctrl+D duplicate (edge-remapping), Delete, Ctrl+Z/Y undo-redo (history
+  middleware), Ctrl+A, Esc, F/zoom-to-fit + toolbar buttons, clickable/selectable
+  wires (fat hit paths; double-click or Del removes), node + wire context menus,
+  key-scope arbitration. Also fixed here: the cursor-offset bug (`effectiveZoom` in
+  screenToWorld/pan/wheel/spawn), wires-undeletable, and the Effect-node 400 (params
+  seeded at addNode + persist migrate v2 + runner merges defaults). —
+  `frontend/src/views/AudimateView.tsx`, `frontend/src/state/audimateStore.ts`,
+  `frontend/src/lib/audimateRunner.ts`, `frontend/src/components/audimate/AudimateInspector.tsx`
+- **Lower-panel toggles read as part of the footer** — strip restyled in the footer's
+  language (tinted blur + hairline border), the anonymous flex-1 slab is now a
+  labelled PANELS toggle showing the active tab, and both dock bodies emerge from
+  their buttons (`dock-emerge` keyframes). — `frontend/src/components/layout/Shell.tsx`,
+  `BottomMultiTabPanel.tsx`, `frontend/src/index.css`
+- **`.swayproj` import** — binary parser (magic FF 02; presets 231+79·N bytes; zones
+  with rect/CC-slots/notes; 6-slot CC array — the 7th byte is NOT a CC) verified
+  against all four D:\sway projects (36 presets each; PULSE=35/SWAY=37 corroborate the
+  factory swaymap). Wired end-to-end: detect + `POST /api/dawimport/sway`, file
+  filters, PERFORM auto-seeding of dims via preset names, honest "0 tracks" status. —
+  `backend/modules/dawimport/swayproj.py`, `router.py`,
+  `frontend/src/lib/{dawImportClient,fileFilters}.ts`, `frontend/src/state/dawImportStore.ts`,
+  `frontend/src/views/SessionView.tsx`
+- **Stem separation on a timeline clip → explode to tracks** — clip context menu
+  "Separate Stems → Tracks…" (StemsRunModal for count/device/quality), clip blob
+  bridges to the entry-keyed Demucs API via `importEntry` (id written back to the
+  clip so re-runs hit the cache), `ensureStems` progress banner with Abort, one new
+  colour-coded track per stem placed exactly at the source clip's position/trim, and
+  the source clip muted (reversible). — `frontend/src/components/audio/WaveformEditor.tsx`
+- **XR BUS tester moved** (user request, this session) — no longer floats over the
+  footer's Download/More buttons; it is a dev-only "XR Bus" tab in the bottom dock
+  next to MIDI/SLIDE/SWAY, laid out as a multi-column panel; prod builds hide the tab
+  and remap a persisted selection. — `frontend/src/components/dev/XrBusTester.tsx`,
+  `BottomMultiTabPanel.tsx`, `frontend/src/state/bottomPanelStore.ts`, `App.tsx`
+- **EDIT FX/ARES panels + plugin windows** (user request, this session) — Master
+  FX/VST/Metamorph column, Ares popup and automation panel are portaled to
+  document.body (one coordinate space with the track-FX popover; no more zoom
+  clipping), Ares cascades above the VST popup instead of stacking on it; the `.gan`
+  EXPAND now pops the plugin into its OWN window (DetachableWindow; ares bridge +
+  level meter keep working via message forwarding and a frame accessor); the VST
+  expanded overlay is body-portaled at z-100 so Collapse/Close can't be buried, and
+  its native-window geometry now multiplies local px by `effectiveZoom` (MIX sizing
+  was off by the zoom factor); the ARES "weird text scaling" root cause is fixed in
+  the runtime generator — element iframes are zoomed by rendered/native canvas width
+  (repackages automatically on next open). — `frontend/src/components/audio/
+  {GanPluginStage,VstEmbedHost,WaveformEditor}.tsx`, `frontend/src/views/MixView.tsx`,
+  `backend/modules/plugin/owl_import.py`
+
+Still untouched from the P0 list: ABORT is client-side only; footer CREATE silently
+runs local SA3 when Suno/Lyria is selected.
+
+### Batch 2 (same day) — implemented, awaiting verification
+
+- **Unified effect control windows (user mandate: effects/VST/.gan are ONE thing).**
+  New `frontend/src/components/audio/EffectWindows.tsx`: one draggable floating
+  window per chain entry (keyed by entry id — reopening focuses, never
+  duplicates), hosting exactly what MIX renders (VstEmbedHost / GanPluginStage /
+  the shared param tiles). `FxChainList` replaces EDIT's FxRack-popover + separate
+  VST insert list + Master VST panel: ONE FX button per track and ONE master FX
+  button open a compact chain list (FX/VST/GAN rows identical), click a row →
+  its control window. The bespoke centered VST popup, the Ares popup, the
+  aresPanel state and the MASTER FX / VST toolbar-button pair are deleted; the
+  Ares bridge ownership moved into the window host; Live/Frozen moved into the
+  unified master panel. — `WaveformEditor.tsx` (toolbar, master panel, track
+  popover, helpers), `EffectWindows.tsx`
+- **SWAY tab: track add / save / playback made real.**
+  Root causes from the staged-bundle teardown: the cockpit booted onto the
+  SYSTEM splash with no project loaded (`addTrack`/`play` are silent no-ops on a
+  null timeline), and template audio 403'd from `/api/project/clip-audio`
+  (absolute paths outside media roots; decode errors swallowed into an
+  unrendered warnings array). Fixes: SwayView boots the iframe with
+  `?autoplay=` — the most recent cockpit-saved project (`swayproject:/` recents
+  from shared localStorage), else the `will-i-dream` template — which loads a
+  project AND skips the splash; the sway backend registers every staged
+  template's (and saved project's) media paths with media_access before handing
+  out the iframe URL; `will-i-dream` is reordered FIRST in `templates/index.json`
+  (fetch script re-applies on every restage). Saving is now durable: a new
+  count-verified BUNDLE_PATCH mirrors the cockpit's `project.write` to the new
+  `POST /api/sway/project-save` (writes `data/sway-projects/*.sway`, allowlists
+  its media); `GET /api/sway/projects` lists them. Both patches applied to the
+  currently staged bundle. — `frontend/src/views/SwayView.tsx`,
+  `backend/modules/sway/router.py`, `electron-ui/scripts/fetch-sway-build.mjs`,
+  staged `sway-dist/embed.bundle.js` + `templates/index.json`
+- Note from the bundle teardown: the staged build DOES handle `sway/visibility`
+  (the P1 item above claiming it is ignored appears stale — verify and retire).
+
+### Batch 3 (same day) — implemented, awaiting verification
+
+- **Sway performance template + the plumbing it exposed.** New
+  `scripts/make_sway_template.py` authors
+  `C:\Users\Cyboman\Documents\theDAW Projects\Sway Live Template - Madman x Machina.tasmo`
+  (8 stem columns from Madman Returns + Et Tu Machina, 44 looping clips, 16
+  scenes on the 16 pads incl. cross-song CLASH rows, knobs CC20-27 = column
+  volumes, gestures pulse/strike/sway/press on drums/bass/vox/mute, XY pad =
+  resonant low-pass sweep + dub-delay bloom on every column: X amount
+  20 kHz→160 Hz, Y tone resonance→scream + feedback→self-oscillation; transport
+  on notes 40-43 + CC19). Round-trip verified through TasmoFile.load. Three
+  gaps fixed so it actually works: `perform_routing.ccMods` now persist +
+  hydrate (`performRouting.ts`, with `ccModsHydrated` so SessionView's
+  auto-router can't wipe a loaded set's routes), `.tasmo` tracks now hand their
+  `effect_chain` to PERFORM as live devices (`tasmoToSession.ts` — fx routes
+  finally have something to hit), and clip loop/trim fields survive the
+  round-trip so launches SUSTAIN. Deck fx/knob assignments now save with the
+  project too (they were session-only). Deck buttons still have no factory
+  hardware map (existing XS item) — transport is authored on learnable codes.
+- **Notation follow is note-by-note (karaoke) instead of page-by-page.** Sheet:
+  the strip now GLIDES continuously with the OSMD cursor (zoom-aware
+  centering; page snap retired to keyboard/footer nav) and the notehead(s)
+  under the cursor are painted emerald via GNotesUnderCursor →
+  getSVGGElement (`ScoreView.tsx`, `keepCursorVisible`/`applyNoteHighlight`).
+  Tabs: alphaTab now runs in external-media player mode with beat cursor +
+  element highlighting driven per-frame by the same latency-compensated clock,
+  with its own Follow toggle (`TabPreview`); feature-detected so an older
+  bundle degrades to a static tab. Backend: `guitar_tab.py` now emits RESTS
+  for silence, clips overlapping durations to the next onset, and always
+  writes `\tempo 120` — the tab tick timeline finally equals audio wall-clock
+  (existing alphatex artifacts predate this; re-run tabs to regenerate).
+- **EDIT toolbar decluttered.** MAGENTA + METAMORPH collapsed into one TOOLS ▾
+  dropdown (shared ContextMenu anchored under the button); WRITE/AUTO/LOOP/MARK
+  are now an icon-only group styled like the tool/undo clusters; FX and TOOLS
+  are the only labeled buttons left (`WaveformEditor.tsx` toolbar).
+
+### 2026-08-27 — per-song Sway Perform templates (user request)
+
+- **Three per-song Sway Perform templates** authored to
+  `C:\Users\Cyboman\Documents\theDAW Projects\Sway Perform - {Prologue,EACC,Just Give Up}.tasmo`
+  by the new `scripts/make_sway_song_templates.py` (same rig as the Madman x
+  Machina template, one song per file): 6 stem columns from each song's
+  htdemucs_6s split, 45 looping clips, 16 scenes on the pads, knobs CC20-25 =
+  column volumes + CC26/27 = delay time/tone across all columns, gestures
+  pulse/strike/sway/press, XY pad = filter sweep + dub-delay bloom, transport
+  on notes 40-43 + CC19. Real analyzed tempos baked in (134.75 / 129.49 /
+  147.55 BPM) with the delay defaulting to a dotted eighth. All three
+  round-trip verified through `TasmoFile.load`. "Prelude" turned out to be
+  `01 - Prologue.wav` (library `8e02e54d…`), same album as `04 - eacc.wav`
+  (`19e25941…`) and `14 - Just Give Up.wav` (`b59f7029…`).
+- **Stems sidecar venv was dead on this machine** — its `pyvenv.cfg` pointed at
+  a base Python under a stale user profile (`C:\Users\dtruj\…`), so every
+  separation 503'd. Re-pointed `home` to the installed
+  `cpython-3.10.21` (packages were intact); 6-stem separations for Prologue and
+  Just Give Up then ran clean through `POST /api/stems/{id}/run?stems=6`. —
+  `integration-package/backend/.sidecar_venv/pyvenv.cfg`
+
+### 2026-08-27 (second pass) — pad punches, Kargyraa Sub, full-device templates (user request; coded, tsc+ruff clean, NOT yet verified in the running app)
+
+- **PERFORM pads can now punch FX (notes were a dead routing path).** The grid's
+  MIDI handler accepted only CC ccMods and dropped note-offs entirely; note-driven
+  ccMods now fire — momentary (note-on -> max, note-off -> min) or `latch: true`
+  (toggle on press), with latch state cleared when a mod disappears and a
+  note-off guard so learn can't bind a phantom release. New optional `latch`
+  field on `CcMod`. — `frontend/src/components/session/DawSessionGrid.tsx`,
+  `frontend/src/state/performRouting.ts`
+- **Chain param pushes no longer reset sibling params to catalog defaults.**
+  `buildEffectChain` instances keep full sticky param state (seeded from the
+  authored entry params); `updateParams` merges into it. Previously any
+  single-key push (one XY axis, a pad punch) silently reverted every other
+  param of that device to defaults — authored delay times, gater rates etc.
+  All other callers push full param objects, so behavior is unchanged for
+  them. — `frontend/src/lib/rackEffects.ts` (buildEffectChain)
+- **New `kargyraa` builtin rack effect ("Kargyraa Sub", Low end group).**
+  Subharmonic throat-growl bass modeled on the actual kargyraa mechanism:
+  octave-divider worklet (Schmitt flip-flop -> f/2 + f/4, envelope-followed;
+  new `frontend/public/subharmonic.worklet.js`), period-doubling AM growl gate
+  (rate ≈ half the fundamental), morphing 3-band vowel formant bank with an
+  LFO wobble, high-Q sygyt whistle band (0.8–2.4 kHz), drive, wet/dry.
+  Degrades to graph-only (silent sub path) if the worklet module is absent.
+  PERFORM now preloads chop/granular/subharmonic worklets on the engine ctx
+  (Ares grains were silently passthrough in PERFORM before this). —
+  `frontend/src/lib/rackEffects.ts`, `DawSessionGrid.tsx`
+- **.tasmo VST nodes no longer mangle in PERFORM.** `tasmoToSession` hardcoded
+  `plugin_path: null`, so a vst3 node fell into the builtin name-match ("…Verb"
+  -> rack reverb at defaults). It now carries `vst_state.plugin_path`; vst3
+  nodes classify as plugins and stay cleanly inert in the live grid, exactly
+  like EDIT. — `frontend/src/lib/tasmoToSession.ts`
+- **SwayDeck pads show punch labels** (scene name first, else the note-driven
+  route's label). — `frontend/src/components/session/SwayDeck.tsx`
+- **Per-song templates regenerated with the new layout** (pads 0-7 = 8 scenes,
+  pads 8-15 = punches: KARGYRAA latch / THROAT VOX / GATER / CRUSH / ROBOT /
+  THROW / FREEZE latch / SLAM; XY also morphs kargyraa vowel + growl + whistle
+  on bass/vox). Every device kind rides along: builtins live in PERFORM, Ares
+  (.gan surface in EDIT/MIX) on Vox, TAL-Vocoder-2 vst3 with full vst_state on
+  Vox. 6 tracks · 26 clips · 29 devices · 8 scene pads · 29 punch routes · 47
+  knob/XY routes per song; round-trip verified incl. latch flags + vst_state.
+  — `scripts/make_sway_song_templates.py`, `C:\Users\Cyboman\Documents\theDAW
+  Projects\Sway Perform - {Prologue,EACC,Just Give Up}.tasmo`
