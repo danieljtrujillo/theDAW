@@ -4,7 +4,7 @@
  * the special "effect" field that swaps in the chosen effect's own parameters.
  */
 import React, { useEffect, useMemo } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Copy, Trash2 } from 'lucide-react';
 import { useAudimateStore } from '../../state/audimateStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { EFFECT_CATEGORIES, EFFECT_DEFAULTS, EFFECT_LABELS } from '../../state/effectChainStore';
@@ -172,9 +172,12 @@ function EffectField({ node }: { node: GraphNode }): React.ReactElement {
 
 export function AudimateInspector(): React.ReactElement {
   const selectedId = useAudimateStore((s) => s.selectedId);
+  const selectedIds = useAudimateStore((s) => s.selectedIds);
   const node = useAudimateStore((s) => s.nodes.find((n) => n.id === s.selectedId) ?? null);
   const setTitle = useAudimateStore((s) => s.setTitle);
   const removeNode = useAudimateStore((s) => s.removeNode);
+  const removeNodes = useAudimateStore((s) => s.removeNodes);
+  const duplicateNodes = useAudimateStore((s) => s.duplicateNodes);
   const statusMsg = useAudimateStore((s) => (selectedId ? s.statusMsg[selectedId] : undefined));
   const status = useAudimateStore((s) => (selectedId ? s.status[selectedId] : undefined));
 
@@ -189,6 +192,27 @@ export function AudimateInspector(): React.ReactElement {
 
   return (
     <div className="p-3 space-y-3 overflow-y-auto h-full">
+      {selectedIds.length > 1 && (
+        <div className="flex items-center gap-2 rounded border border-purple-500/25 bg-purple-500/8 px-2 py-1.5">
+          <span className="text-[10px] font-mono text-purple-200">{selectedIds.length} nodes selected</span>
+          <button
+            onClick={() => duplicateNodes(selectedIds)}
+            aria-label={`Duplicate ${selectedIds.length} nodes`}
+            title="Duplicate selection (Ctrl+D)"
+            className="ml-auto p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-purple-500/15 transition-colors"
+          >
+            <Copy className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => removeNodes(selectedIds)}
+            aria-label={`Delete ${selectedIds.length} nodes`}
+            title="Delete selection (Del)"
+            className="p-1 rounded text-zinc-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: def.accent }} />
         <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">{def.label}</span>
@@ -226,7 +250,7 @@ export function AudimateInspector(): React.ReactElement {
       })}
 
       {status === 'error' && statusMsg ? (
-        <div className="text-[10px] font-mono text-red-300 bg-red-500/10 border border-red-500/30 rounded p-1.5 break-words">
+        <div className="text-[10px] font-mono text-red-300 bg-red-500/10 border border-red-500/30 rounded p-1.5 wrap-break-word">
           {statusMsg}
         </div>
       ) : null}

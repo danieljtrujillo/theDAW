@@ -1,13 +1,29 @@
 import { useAppUiStore } from '../state/appUiStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
+import { useEditorStore } from '../state/editorStore';
+
+type EditorSummary = {
+    trackCount: number;
+    clipCount: number;
+    bpm: number;
+    playheadSec: number;
+    isPlaying: boolean;
+    selectedClipId: string | null;
+    loop: { enabled: boolean; startSec: number; endSec: number } | null;
+    tracks: Array<{ id: string; name: string; volume: number; pan: number; mute: boolean; solo: boolean; clipCount: number }>;
+    clips: Array<{ id: string; label: string; trackId: string; startSec: number; durationSec: number; muted: boolean }>;
+    clipsTruncated: boolean;
+};
 
 type RuntimeContext = {
     ui: {
-        activeView: string;
+        /** The REAL workspace tab (make/edit/mix/session/dj/vj/sway/foundry/underfit/audimate/learn/tour). */
+        activeTab: string;
         isLeftPanelOpen: boolean;
         docsOpen: boolean;
     };
+    editor: EditorSummary;
     chat: {
         selectedProvider: string;
         selectedModel: string;
@@ -35,6 +51,7 @@ export function formattheDAWAppContext(context: RuntimeContext): string {
             'If a requested UI operation has no available action, explain the limitation and give the closest available action.',
         ],
         currentUI: context.ui,
+        editorState: context.editor,
         chatProvider: context.chat,
         generationState: context.generation,
         currentGenerationParams: context.params,
@@ -52,13 +69,49 @@ export function buildtheDAWAppContext(options: {
     const ui = useAppUiStore.getState();
     const params = useGenerateParamsStore.getState();
     const generation = useGenerateStore.getState();
+    const editor = useEditorStore.getState();
+
+    // Bounded arrangement summary so the model can act on real tracks / clips
+    // / playhead / selection instead of being architecturally blind to EDIT.
+    const CLIP_CAP = 48;
+    const TRACK_CAP = 24;
+    const editorSummary: EditorSummary = {
+        trackCount: editor.tracks.length,
+        clipCount: editor.clips.length,
+        bpm: editor.bpm,
+        playheadSec: Math.round(editor.playheadSec * 100) / 100,
+        isPlaying: editor.isPlaying,
+        selectedClipId: editor.selectedClipId,
+        loop: editor.loopEnabled
+            ? { enabled: true, startSec: editor.loopStart, endSec: editor.loopEnd }
+            : null,
+        tracks: editor.tracks.slice(0, TRACK_CAP).map((t) => ({
+            id: t.id,
+            name: t.name,
+            volume: t.volume,
+            pan: t.pan,
+            mute: t.mute,
+            solo: t.solo,
+            clipCount: editor.clips.filter((c) => c.trackId === t.id).length,
+        })),
+        clips: editor.clips.slice(0, CLIP_CAP).map((c) => ({
+            id: c.id,
+            label: c.label,
+            trackId: c.trackId,
+            startSec: Math.round(c.startSec * 100) / 100,
+            durationSec: Math.round(c.durationSec * 100) / 100,
+            muted: !!c.muted,
+        })),
+        clipsTruncated: editor.clips.length > CLIP_CAP,
+    };
 
     return formattheDAWAppContext({
         ui: {
-            activeView: ui.activeView,
+            activeTab: ui.centerTab,
             isLeftPanelOpen: ui.isLeftPanelOpen,
             docsOpen: ui.docsOpen,
         },
+        editor: editorSummary,
         chat: {
             selectedProvider: options.selectedProvider,
             selectedModel: options.selectedModel,

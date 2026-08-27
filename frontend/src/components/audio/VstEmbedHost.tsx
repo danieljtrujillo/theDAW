@@ -4,13 +4,21 @@
  * plugin's real OS window (owned by Electron, positioned over this box) and CLIPS
  * it to the box, so an oversized editor keeps its natural size and is reachable by
  * SCROLLING this container (the inner spacer is sized to the plugin). EXPAND grows
- * the box to a large overlay for big GUIs. We only REPORT geometry + scroll here;
+ * the box to a large overlay for big GUIs — portaled to document.body so it
+ * escapes the shell's CSS `zoom` (which would otherwise clip it and let sibling
+ * panels bury its Collapse/Close buttons). We only REPORT geometry + scroll here;
  * the editor is closed explicitly (Close / its own window), NEVER on React unmount,
  * so StrictMode / panel re-renders can't kill it.
+ *
+ * Coordinate spaces: getBoundingClientRect() is viewport px (already scaled by
+ * the shell zoom) while clientWidth/scrollLeft are local px — every local value
+ * sent to the native layer is multiplied by effectiveZoom() first.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2, X } from 'lucide-react';
 import { vstApi, getContentBounds } from '../../lib/vstClient';
+import { effectiveZoom } from '../../lib/canvasScale';
 
 // The header label reuses MIX's section-title styling so the host reads the
 // same in every view that mounts it.
@@ -27,8 +35,9 @@ export const VstEmbedHost: React.FC<{
 }> = ({ pluginPath, pluginName, error, onClose, onNaturalSize }) => {
   const ref = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
-  // Plugin's natural size in CSS px (from the backend, which knows the real
-  // window size); drives the scrollable inner spacer.
+  // Plugin's natural size in LOCAL px for the scrollable inner spacer (the
+  // backend reports physical px; divided by dpr AND the ambient CSS zoom of
+  // this mount so the spacer's on-screen size matches the native window).
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   // The callback rides a ref so the polling effect below keeps its
   // [pluginPath, error] dependency list even when the parent re-creates it.
@@ -42,6 +51,9 @@ export const VstEmbedHost: React.FC<{
     const report = () => {
       const r = el.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
+      // clientWidth/scrollLeft are local px; the rect is viewport px. Scale the
+      // local values by the ambient zoom so w/h/sx/sy share the rect's space.
+      const ez = effectiveZoom(el);
       void getContentBounds().then((cb) => {
         if (!alive) return;
         // Viewport origin in absolute physical screen px (content-area screen
@@ -53,10 +65,10 @@ export const VstEmbedHost: React.FC<{
         void vstApi.editorRect(pluginPath, {
           x: (ox + r.left) * dpr,
           y: (oy + r.top) * dpr,
-          w: el.clientWidth * dpr,
-          h: el.clientHeight * dpr,
-          sx: el.scrollLeft * dpr,
-          sy: el.scrollTop * dpr,
+          w: el.clientWidth * ez * dpr,
+          h: el.clientHeight * ez * dpr,
+          sx: el.scrollLeft * ez * dpr,
+          sy: el.scrollTop * ez * dpr,
           dpr: 1, // values are already physical px
         });
       });
@@ -78,7 +90,9 @@ export const VstEmbedHost: React.FC<{
   }, [pluginPath, error, expanded]);
 
   // Poll the plugin's natural size so the scroll area matches it (and tracks a
-  // plugin that resizes its own window).
+  // plugin that resizes its own window). `expanded` is a dep because the mount
+  // moves between the zoomed tree and the body portal, changing the zoom the
+  // spacer must compensate for.
   useEffect(() => {
     if (error) return;
     let alive = true;
@@ -96,7 +110,10 @@ export const VstEmbedHost: React.FC<{
             // popup) for nothing.
             if (!last || last.w !== w || last.h !== h) {
               last = { w, h };
-              setNatural((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+              const ez = effectiveZoom(ref.current);
+              const lw = Math.round(w / ez);
+              const lh = Math.round(h / ez);
+              setNatural((prev) => (prev && prev.w === lw && prev.h === lh ? prev : { w: lw, h: lh }));
               onNaturalSizeRef.current?.(w, h);
             }
           }
@@ -106,14 +123,16 @@ export const VstEmbedHost: React.FC<{
     };
     poll();
     return () => { alive = false; };
-  }, [pluginPath, error]);
+  }, [pluginPath, error, expanded]);
 
-  const shell = expanded
-    ? 'fixed inset-6 z-50 bg-[#0c0a14] border border-teal-500/40 rounded-lg shadow-2xl flex flex-col min-h-0 overflow-hidden p-2 gap-2'
-    : 'h-full w-full flex flex-col min-h-0 overflow-hidden p-2 gap-2';
-
-  return (
-    <div className={shell}>
+  const body = (
+    <div
+      className={
+        expanded
+          ? 'fixed inset-6 z-100 bg-[#0c0a14] border border-teal-500/40 rounded-lg shadow-2xl flex flex-col min-h-0 overflow-hidden p-2 gap-2'
+          : 'h-full w-full flex flex-col min-h-0 overflow-hidden p-2 gap-2'
+      }
+    >
       <div className="flex items-center gap-2 shrink-0">
         <span className={sectionTitle}>{pluginName}</span>
         <span className="text-[8px] font-mono text-zinc-600">{error ? 'plugin error' : 'native VST GUI'}</span>
@@ -152,4 +171,9 @@ export const VstEmbedHost: React.FC<{
       )}
     </div>
   );
+
+  // Expanded: escape .dense-layout entirely (its zoom traps `fixed` descendants
+  // in a scaled, clipped, low-stacking-order box) so the overlay truly covers
+  // the viewport and its header buttons stay on top of every panel.
+  return expanded ? createPortal(body, document.body) : body;
 };

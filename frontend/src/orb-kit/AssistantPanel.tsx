@@ -3,7 +3,8 @@ import { X, Send, Sparkles, Bot, User, Loader2, Command, Play, Zap, RefreshCw, T
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ProviderModelSelector, type ModelInfo } from './ProviderModelSelector';
-import { actionFromAssistantEvent, statusFromAssistantEvent } from './assistantEvents';
+import { actionFromAssistantEvent, sanitizeAssistantAction, statusFromAssistantEvent } from './assistantEvents';
+import { getToolTier, describeToolCall } from './tool-tiers';
 import { buildtheDAWAppContext } from './appContext';
 import { uuid } from './utils';
 import { useStatusBarStore } from '../state/statusBarStore';
@@ -568,6 +569,12 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
 
                 const decoder = new TextDecoder();
                 let buffer = '';
+                // Accumulated assistant prose for THIS reply. Inline <action>
+                // blocks are scraped from it exactly once (offset-keyed), and
+                // executed OUT here — never inside a setMessages updater, which
+                // StrictMode double-invokes.
+                let streamText = '';
+                const scrapedActionOffsets = new Set<number>();
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -590,16 +597,33 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
 
                             const executableAction = actionFromAssistantEvent(event);
                             if (executableAction) {
-                                onExecuteAction(executableAction);
-                                setMessages(prev => prev.map(msg =>
-                                    msg.id === assistantId
-                                        ? {
-                                            ...msg,
-                                            action: executableAction,
-                                            content: msg.content || `Executed action: ${executableAction.type}`,
-                                        }
-                                        : msg
-                                ));
+                                // Tier gate: expensive / irreversible tools (generate,
+                                // abort, destructive editor ops, anything unknown) are
+                                // NOT executed — they park on the message as
+                                // pendingAction and render the confirmation card.
+                                if (getToolTier(executableAction.type) === 'T2_confirm') {
+                                    setMessages(prev => prev.map(msg =>
+                                        msg.id === assistantId
+                                            ? {
+                                                ...msg,
+                                                pendingAction: executableAction,
+                                                content: msg.content
+                                                    || `I want to: ${describeToolCall(executableAction.type, executableAction.payload ?? {})}`,
+                                            }
+                                            : msg
+                                    ));
+                                } else {
+                                    onExecuteAction(executableAction);
+                                    setMessages(prev => prev.map(msg =>
+                                        msg.id === assistantId
+                                            ? {
+                                                ...msg,
+                                                action: executableAction,
+                                                content: msg.content || `Executed action: ${executableAction.type}`,
+                                            }
+                                            : msg
+                                    ));
+                                }
                                 continue;
                             }
 
@@ -610,20 +634,30 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             }
 
                             if (event.type === 'text_delta') {
-                                setMessages(prev => prev.map(msg => {
-                                    if (msg.id !== assistantId) return msg;
-                                    let updated = msg.content + event.delta;
-                                    const actionRx = /<action>([\s\S]*?)<\/action>/g;
-                                    let match: RegExpExecArray | null;
-                                    while ((match = actionRx.exec(updated)) !== null) {
-                                        try {
-                                            const parsed = JSON.parse(match[1]);
-                                            onExecuteAction(parsed);
-                                        } catch {}
-                                    }
-                                    updated = updated.replace(actionRx, '').trim();
-                                    return { ...msg, content: updated };
-                                }));
+                                streamText += event.delta;
+                                const actionRx = /<action>([\s\S]*?)<\/action>/g;
+                                let match: RegExpExecArray | null;
+                                let scrapedPending: ReturnType<typeof sanitizeAssistantAction> = null;
+                                while ((match = actionRx.exec(streamText)) !== null) {
+                                    if (scrapedActionOffsets.has(match.index)) continue;
+                                    scrapedActionOffsets.add(match.index);
+                                    try {
+                                        // Validate through the same allowlist as tool_call
+                                        // frames — an arbitrary type string in prose must
+                                        // not execute — then tier-gate it like any tool.
+                                        const act = sanitizeAssistantAction(JSON.parse(match[1]));
+                                        if (!act) continue;
+                                        if (getToolTier(act.type) === 'T2_confirm') scrapedPending = act;
+                                        else onExecuteAction(act);
+                                    } catch {}
+                                }
+                                const cleaned = streamText.replace(actionRx, '').trim();
+                                const pendingUpdate = scrapedPending;
+                                setMessages(prev => prev.map(msg =>
+                                    msg.id === assistantId
+                                        ? { ...msg, content: cleaned, ...(pendingUpdate ? { pendingAction: pendingUpdate } : {}) }
+                                        : msg
+                                ));
                             } else if (event.type === 'status') {
                                 setStatusText(event.message);
                             } else if (event.type === 'error') {
@@ -1013,6 +1047,9 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                             <div className="flex items-center gap-1.5 text-[11px] text-yellow-400 font-medium">
                                                 <Zap size={12} />
                                                 <span>Requires Confirmation: <span className="font-mono">{msg.pendingAction.type}</span></span>
+                                            </div>
+                                            <div className="text-[11px] text-zinc-300">
+                                                {describeToolCall(msg.pendingAction.type, msg.pendingAction.payload ?? {})}
                                             </div>
 
                                             <div className="flex gap-2 mt-1">

@@ -23,7 +23,8 @@ export type BottomPanelTab =
   | 'draw'
   | 'bucket'
   | 'slide'
-  | 'sway';
+  | 'sway'
+  | 'xrbus'; // dev-only tab; hidden (and remapped on rehydrate) in production builds
 
 interface BottomPanelState {
   activeTab: BottomPanelTab;
@@ -83,6 +84,11 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         const p = (persisted ?? {}) as { activeTab?: string };
         if (p.activeTab === 'piano-roll' || p.activeTab === 'vocal') {
           p.activeTab = 'midi';
+        }
+        // The XR Bus tab only exists in dev builds; a persisted selection must
+        // not leave a production dock with no active tab.
+        if (p.activeTab === 'xrbus' && !import.meta.env.DEV) {
+          p.activeTab = 'spectral';
         }
         return p as unknown as BottomPanelState;
       },

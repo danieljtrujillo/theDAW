@@ -1127,6 +1127,208 @@ const makeChop: RackEffectFactory = (ctx, params) => {
   };
 };
 
+/* ── 12. Kargyraa Sub (subharmonic throat-growl bass, worklet + graph) ─────────
+   Models the two mechanisms of Tuvan undertone singing and welds them to a
+   formant ("talking") dubstep bass:
+
+   1. Period doubling — in kargyraa the ventricular folds cover every second
+      vocal-fold closure. Electronically that is (a) a true octave divider
+      (public/subharmonic.worklet.js: Schmitt flip-flop -> f/2 + f/4 squares,
+      envelope-followed so the sub tracks the source) and (b) an AM "growl
+      gate" at a sub-audio rate — set growlRate near HALF the bass fundamental
+      and the sidebands land exactly on the subharmonic series.
+   2. Overtone focusing — the vocal tract merges formants into narrow
+      high-amplitude peaks. Here a morphing three-band vowel bank (a-o-u-e-i)
+      makes the bass talk, and one extra high-Q "whistle" band (0.8..2.4 kHz)
+      is the sygyt-style focused overtone, sweepable for the melody-on-top
+      scream.
+
+   Signal path: input -> growl AM gate -> drive -> [vowel bank ∥ whistle ∥
+   body tap] -> wet; input -> subLP -> octave-divider worklet -> sub tone ->
+   wet (parallel, so the divider locks to the fundamental, not the mix).
+   The worklet degrades to silence (not passthrough — the dry path already
+   carries the signal) and kicks off the module load for the next build. */
+const subharmonicModuleByCtx = new WeakMap<BaseAudioContext, Promise<void>>();
+export const ensureSubharmonicModule = (ctx: BaseAudioContext): Promise<void> => {
+  let p = subharmonicModuleByCtx.get(ctx);
+  if (!p) {
+    p = ctx.audioWorklet.addModule('/subharmonic.worklet.js').catch((e) => {
+      subharmonicModuleByCtx.delete(ctx);
+      throw e;
+    });
+    subharmonicModuleByCtx.set(ctx, p);
+  }
+  return p;
+};
+
+/** Vowel formant centers (F1, F2, F3 Hz), dark-to-bright morph order. */
+const KARGYRAA_VOWELS: readonly [number, number, number][] = [
+  [700, 1080, 2650], // a
+  [450, 800, 2830], // o
+  [325, 700, 2530], // u
+  [500, 1750, 2450], // e
+  [300, 2150, 2900], // i
+];
+const KARGYRAA_FORMANT_Q = [9, 11, 12];
+const KARGYRAA_FORMANT_GAIN = [1.0, 0.63, 0.32];
+
+const makeKargyraa: RackEffectFactory = (ctx, params) => {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wetSum = ctx.createGain();
+  const wet = ctx.createGain();
+  input.connect(dry).connect(output);
+  wetSum.connect(wet).connect(output);
+
+  // Growl gate: bias + oscillator drive a gain's value (same trick as the
+  // gater/ringmod) — AM at growlRate produces the period-doubled sidebands.
+  const growl = ctx.createGain();
+  growl.gain.value = 0; // intrinsic 0; bias + osc drive the computed value
+  const growlBias = ctx.createConstantSource();
+  const growlOsc = ctx.createOscillator();
+  const growlAmp = ctx.createGain();
+  growlBias.connect(growl.gain);
+  growlOsc.connect(growlAmp).connect(growl.gain);
+  input.connect(growl);
+
+  // Drive: harmonic enrichment before the formant bank (a formant filter only
+  // "talks" when there are harmonics to select).
+  const drive = ctx.createWaveShaper();
+  drive.oversample = '2x';
+  growl.connect(drive);
+
+  // Vowel bank: three parallel band-passes + a low "body" tap so the sound
+  // keeps weight between formant peaks.
+  const formants: BiquadFilterNode[] = [];
+  const formantGains: GainNode[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    const g = ctx.createGain();
+    g.gain.value = KARGYRAA_FORMANT_GAIN[i];
+    drive.connect(f).connect(g).connect(wetSum);
+    formants.push(f);
+    formantGains.push(g);
+  }
+  const body = ctx.createBiquadFilter();
+  body.type = 'lowpass';
+  body.frequency.value = 240;
+  body.Q.value = 0.7;
+  const bodyGain = ctx.createGain();
+  bodyGain.gain.value = 0.5;
+  drive.connect(body).connect(bodyGain).connect(wetSum);
+
+  // Sygyt whistle: one narrow high-Q band — the merged-formant focused overtone.
+  const whistle = ctx.createBiquadFilter();
+  whistle.type = 'bandpass';
+  whistle.Q.value = 28;
+  const whistleGain = ctx.createGain();
+  drive.connect(whistle).connect(whistleGain).connect(wetSum);
+
+  // Vowel motion: one LFO wobbles all three formant centers (±18% at depth 1),
+  // audio-rate modulation of the filter frequency AudioParams.
+  const motion = ctx.createOscillator();
+  const motionAmps: GainNode[] = formants.map((f) => {
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    motion.connect(g).connect(f.frequency);
+    return g;
+  });
+
+  // Sub path: band-limit hard so the divider locks to the bass fundamental,
+  // then the worklet, then tone-shape the square into a round sub.
+  const subLP = ctx.createBiquadFilter();
+  subLP.type = 'lowpass';
+  subLP.frequency.value = 320;
+  subLP.Q.value = 0.5;
+  input.connect(subLP);
+  const subTone = ctx.createBiquadFilter();
+  subTone.type = 'lowpass';
+  subTone.frequency.value = 300;
+  subTone.Q.value = 0.6;
+  const subGain = ctx.createGain();
+  subTone.connect(subGain).connect(wetSum);
+  let subNode: AudioWorkletNode | null = null;
+  try {
+    subNode = new AudioWorkletNode(ctx, 'subharmonic-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+  } catch {
+    subNode = null; // module not registered on this context yet
+  }
+  if (subNode) {
+    subLP.connect(subNode).connect(subTone);
+  } else {
+    void ensureSubharmonicModule(ctx).catch(() => {});
+  }
+
+  const apply = (p: Record<string, number>) => {
+    // Vowel morph across the table (0..4, fractional interpolates).
+    const v = clamp(p.vowel ?? 0.6, 0, KARGYRAA_VOWELS.length - 1);
+    const lo = Math.floor(v);
+    const hi = Math.min(lo + 1, KARGYRAA_VOWELS.length - 1);
+    const frac = v - lo;
+    const depth = clamp(p.motionDepth ?? 0.35, 0, 1);
+    for (let i = 0; i < 3; i += 1) {
+      const centre = KARGYRAA_VOWELS[lo][i] + (KARGYRAA_VOWELS[hi][i] - KARGYRAA_VOWELS[lo][i]) * frac;
+      ramp(formants[i].frequency, centre, ctx);
+      formants[i].Q.value = KARGYRAA_FORMANT_Q[i];
+      ramp(motionAmps[i].gain, centre * 0.18 * depth, ctx);
+    }
+    motion.frequency.setTargetAtTime(clamp(p.motionRate ?? 0.8, 0, 8), ctx.currentTime, 0.02);
+
+    // Growl gate: rate near half the bass fundamental = kargyraa sidebands.
+    const gDepth = clamp(p.growlDepth ?? 0.65, 0, 1);
+    growlOsc.frequency.setTargetAtTime(clamp(p.growlRate ?? 45, 20, 90), ctx.currentTime, 0.02);
+    growlBias.offset.setTargetAtTime(1 - gDepth / 2, ctx.currentTime, 0.02);
+    growlAmp.gain.setTargetAtTime(gDepth / 2, ctx.currentTime, 0.02);
+
+    drive.curve = distCurve(clamp(Math.round(p.drive ?? 14), 1, 40));
+
+    ramp(whistle.frequency, clamp(p.whistleHz ?? 1500, 800, 2400), ctx);
+    ramp(whistleGain.gain, clamp(p.whistleAmt ?? 0.45, 0, 1) * 1.6, ctx);
+
+    ramp(subGain.gain, clamp(p.subLevel ?? 0.9, 0, 1.5), ctx);
+    if (subNode) {
+      const subP = subNode.parameters.get('sub');
+      if (subP) subP.setTargetAtTime(1, ctx.currentTime, 0.02);
+      const deepP = subNode.parameters.get('deep');
+      if (deepP) deepP.setTargetAtTime(clamp(p.deepLevel ?? 0.3, 0, 1), ctx.currentTime, 0.02);
+    }
+
+    const mix = clamp(p.mix ?? 1, 0, 1);
+    ramp(wet.gain, mix, ctx);
+    ramp(dry.gain, 1 - mix, ctx);
+  };
+  apply(params);
+  growlOsc.start();
+  growlBias.start();
+  motion.start();
+
+  return {
+    input,
+    output,
+    setParams: (p) => apply(p),
+    dispose: () => {
+      try {
+        growlOsc.stop();
+        growlBias.stop();
+        motion.stop();
+        input.disconnect();
+        output.disconnect();
+        growl.disconnect();
+        drive.disconnect();
+        subLP.disconnect();
+        subTone.disconnect();
+        if (subNode) subNode.disconnect();
+      } catch { /* gone */ }
+    },
+  };
+};
+
 /* ── Standard mixing effects (real-time native Web Audio) ──────────────────────
    These give the EDIT timeline (and master bus) genuinely-live EQ, dynamics,
    reverb and delay. They are also the landing targets for imported DAW stock
@@ -1473,6 +1675,27 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     make: makePhantomBass,
   },
   {
+    id: 'kargyraa',
+    label: 'Kargyraa Sub',
+    group: 'Low end',
+    description:
+      'Subharmonic throat-growl bass: octave-divider sub, period-doubling growl gate, morphing vowel formants and a sygyt whistle band.',
+    params: [
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+      { key: 'subLevel', label: 'Sub', min: 0, max: 1.5, step: 0.01, default: 0.9 },
+      { key: 'deepLevel', label: 'Deep', min: 0, max: 1, step: 0.01, default: 0.3 },
+      { key: 'growlRate', label: 'Growl', min: 20, max: 90, step: 0.5, default: 45, unit: 'Hz' },
+      { key: 'growlDepth', label: 'Gr Dpth', min: 0, max: 1, step: 0.01, default: 0.65 },
+      { key: 'drive', label: 'Drive', min: 1, max: 40, step: 1, default: 14 },
+      { key: 'vowel', label: 'Vowel', min: 0, max: 4, step: 0.01, default: 0.6 },
+      { key: 'motionRate', label: 'Motion', min: 0, max: 8, step: 0.05, default: 0.8, unit: 'Hz' },
+      { key: 'motionDepth', label: 'Mo Dpth', min: 0, max: 1, step: 0.01, default: 0.35 },
+      { key: 'whistleHz', label: 'Whistle', min: 800, max: 2400, step: 10, default: 1500, unit: 'Hz' },
+      { key: 'whistleAmt', label: 'Wh Amt', min: 0, max: 1, step: 0.01, default: 0.45 },
+    ],
+    make: makeKargyraa,
+  },
+  {
     id: 'stereo_widener',
     label: 'Stereo Widener',
     group: 'Spatial',
@@ -1731,6 +1954,11 @@ export interface ChainHandle {
 interface LiveInstance {
   effect: string;
   inst: RackEffectInstance;
+  /** Complete current param state (defaults + entry params + live pushes).
+   *  updateParams merges into THIS, not into bare defaults — a single-key
+   *  push (a Perform pad punch, one XY axis) must not reset the entry's
+   *  other authored values back to catalog defaults. */
+  params: Record<string, number>;
 }
 
 /**
@@ -1775,10 +2003,12 @@ export function buildEffectChain(
       if (!li || li.effect !== e.effect) {
         if (li) li.inst.dispose();
         const def = RACK_BY_ID.get(e.effect)!;
-        li = { effect: e.effect, inst: def.make(ctx, withDefaults(e.effect, e.params)) };
+        const params = withDefaults(e.effect, e.params);
+        li = { effect: e.effect, inst: def.make(ctx, params), params };
         instances.set(e.id, li);
       } else {
-        li.inst.setParams(withDefaults(e.effect, e.params));
+        li.params = withDefaults(e.effect, e.params);
+        li.inst.setParams(li.params);
       }
       prev.connect(li.inst.input);
       prev = li.inst.output;
@@ -1792,7 +2022,9 @@ export function buildEffectChain(
     rebuild,
     updateParams: (entryId, params) => {
       const li = instances.get(entryId);
-      if (li) li.inst.setParams(withDefaults(li.effect, params));
+      if (!li) return;
+      li.params = { ...li.params, ...params };
+      li.inst.setParams(li.params);
     },
     instances: () =>
       Array.from(instances.entries()).map(([id, li]) => ({ id, effect: li.effect, inst: li.inst })),

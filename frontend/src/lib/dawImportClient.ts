@@ -123,6 +123,7 @@ const IMPORT_ENDPOINT: Record<string, string> = {
   audition: 'audition',
   bitwig: 'bitwig',
   resolume: 'resolume',
+  sway: 'sway',
 };
 
 // DAWs with no direct parser — export-hint guidance only.
@@ -143,6 +144,7 @@ export const DAW_LABELS: Record<string, string> = {
   resolume: 'Resolume Arena',
   cubase: 'Cubase',
   pro_tools: 'Pro Tools',
+  sway: 'Audima Sway',
   unknown: 'Unknown',
 };
 

@@ -33,7 +33,30 @@ const theDAW_ACTION_TYPES = new Set([
     'stop_generation',
     'get_status',
     'status',
+    // EDIT arrangement vocabulary (editor_* tools).
+    'editor_get_state',
+    'editor_add_track',
+    'editor_remove_track',
+    'editor_set_track',
+    'editor_move_clip',
+    'editor_remove_clip',
+    'editor_split_clip',
+    'editor_select_clip',
+    'editor_set_playhead',
+    'editor_set_bpm',
+    'editor_set_loop',
+    'editor_add_marker',
 ]);
+
+/** Validate an arbitrary parsed object (e.g. from a scraped <action> block)
+ *  into an executable action, applying the same allowlist as tool_call frames.
+ *  Anything not in the vocabulary is rejected instead of executed blindly. */
+export function sanitizeAssistantAction(value: unknown): AssistantExecutableAction | null {
+    if (!isRecord(value)) return null;
+    const type = typeof value.type === 'string' ? value.type : null;
+    if (!type || !theDAW_ACTION_TYPES.has(type)) return null;
+    return { type, payload: parsePayload(value.payload ?? value) };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

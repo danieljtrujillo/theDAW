@@ -348,3 +348,17 @@ select optgroup {
 .edit-theme-scope[data-et-light="1"] .text-zinc-100,
 .edit-theme-scope[data-et-light="1"] .text-zinc-200,
 .edit-theme-scope[data-et-light="1"] .text-\[\#f5f3ff\] { color: rgb(var(--et-ink)); }
+
+/* Bottom-dock bodies emerge from their toggle buttons in the strip (see
+ * Shell.tsx ShellBottomDock): a short rise + fade with the origin at the
+ * bottom edge, so the panel visually grows out of the button that opened it. */
+@keyframes dock-emerge {
+  from {
+    transform: translateY(12px);
+    opacity: 0.3;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

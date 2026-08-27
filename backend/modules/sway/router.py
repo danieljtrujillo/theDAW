@@ -3,20 +3,100 @@
 The tab asks this module one question -- "is there a cockpit to show, and at
 what URL?" -- and renders either the iframe or an actionable explanation of
 what is missing. Mounted at /api/sway by backend/modules/loader.py.
+
+This module also owns two glue duties the embedded cockpit needs:
+
+* Template media consent. A staged template (``templates/*.sway``) names its
+  audio by absolute path, and the cockpit fetches that audio through
+  ``/api/project/clip-audio`` -- which 403s anything outside the allowed media
+  roots. Shipping a template in the bundle IS consent for the files it names
+  (the exact model .als import and .tasmo open already use), so the template-
+  referenced paths are registered with media_access before the iframe URL is
+  handed out. Without this, pressing play on a template yields silence: every
+  decode error is swallowed into a warnings array nobody renders.
+
+* Durable saves. The embedded cockpit's ``project.write`` persists to
+  localStorage plus a browser download; the staged bundle additionally mirrors
+  each save to ``POST /api/sway/project-save`` so a real ``.sway`` file lands
+  in ``data/sway-projects`` and survives cleared browser storage.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import json
+import logging
+import re
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from backend.modules.project import media_access
 
 from . import sidecar
 
+log = logging.getLogger(__name__)
 router = APIRouter()
+
+_PROJECTS_DIR = sidecar._REPO_ROOT / "data" / "sway-projects"
+
+_template_media_registered = False
+
+
+def _collect_media_paths(node: object, out: list[str]) -> None:
+    """Walk a .sway document for absolute ``"path"`` values (media refs)."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if (
+                key == "path"
+                and isinstance(value, str)
+                and (re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith("/"))
+            ):
+                out.append(value)
+            else:
+                _collect_media_paths(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_media_paths(value, out)
+
+
+def _register_template_media() -> None:
+    """Allowlist every staged template's media with media_access (once)."""
+    global _template_media_registered
+    if _template_media_registered:
+        return
+    dist = sidecar.resolve_dist_dir()
+    if dist is None:
+        return
+    paths: list[str] = []
+    try:
+        for f in sorted((dist / "templates").glob("*.sway")):
+            try:
+                doc = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            _collect_media_paths(doc, paths)
+    except OSError:
+        return
+    # Saved projects re-reference the same files; grant those too.
+    try:
+        for f in sorted(_PROJECTS_DIR.glob("*.sway")):
+            try:
+                doc = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            _collect_media_paths(doc, paths)
+    except OSError:
+        pass
+    if paths:
+        media_access.register_paths(paths)
+        log.info("sway: registered %d template media path(s)", len(paths))
+    _template_media_registered = True
 
 
 @router.get("/status")
 async def sway_status() -> dict:
     """Whether an embedded SwayCommand build is staged and mounted."""
+    _register_template_media()
     return sidecar.status()
 
 
@@ -47,9 +127,52 @@ async def sway_url() -> dict:
             ),
             "status": sidecar.status(),
         }
+    _register_template_media()
     return {
         "url": f"{sidecar.STATIC_MOUNT_PATH}/",
         "mode": "static",
         "detail": None,
         "build": sidecar.read_build_stamp(),
     }
+
+
+class SwayProjectSave(BaseModel):
+    name: str
+    doc: dict
+
+
+@router.post("/project-save")
+async def sway_project_save(req: SwayProjectSave) -> dict:
+    """Persist a cockpit save as a real .sway file under data/sway-projects."""
+    safe = re.sub(r"[^\w \-.]+", "", req.name).strip().strip(".") or "untitled"
+    if not safe.lower().endswith(".sway"):
+        safe += ".sway"
+    _PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    target = (_PROJECTS_DIR / safe).resolve()
+    if not str(target).startswith(str(_PROJECTS_DIR.resolve())):
+        raise HTTPException(400, f"Invalid project name: {req.name}")
+    try:
+        target.write_text(json.dumps(req.doc, indent=2), encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(500, f"Save failed: {e}")
+    # A saved doc names the same media a template does — keep it playable.
+    paths: list[str] = []
+    _collect_media_paths(req.doc, paths)
+    if paths:
+        media_access.register_paths(paths)
+    return {"status": "ok", "path": str(target)}
+
+
+@router.get("/projects")
+async def sway_projects() -> dict:
+    """List the .sway projects persisted by /project-save, newest first."""
+    if not _PROJECTS_DIR.is_dir():
+        return {"projects": []}
+    rows: list[dict] = []
+    for p in _PROJECTS_DIR.glob("*.sway"):
+        try:
+            rows.append({"name": p.stem, "path": str(p), "mtime": p.stat().st_mtime})
+        except OSError:
+            continue
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return {"projects": rows}

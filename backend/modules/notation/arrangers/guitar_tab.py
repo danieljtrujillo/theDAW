@@ -238,6 +238,17 @@ def _quarter_length_to_duration(ql: float) -> int:
     return min((1, 2, 4, 8, 16, 32), key=lambda d: abs(d - target))
 
 
+"""Rest units largest-first, as (quarter-length, alphaTex duration value)."""
+_REST_UNITS: tuple[tuple[float, int], ...] = (
+    (4.0, 1),
+    (2.0, 2),
+    (1.0, 4),
+    (0.5, 8),
+    (0.25, 16),
+    (0.125, 32),
+)
+
+
 def _build_alphatex(
     beats: list[tuple[float, float, list[tuple[int, int]]]],
     tuning: list[int],
@@ -246,7 +257,15 @@ def _build_alphatex(
     tempo: Optional[int],
 ) -> str:
     """Render chosen beats to alphaTex. ``beats`` carries ``(offset, ql,
-    placement)`` with placement as 1-based alphaTab ``(string, fret)`` pairs."""
+    placement)`` with placement as 1-based alphaTab ``(string, fret)`` pairs.
+
+    The emitted tick timeline is kept WALL-CLOCK ALIGNED with the source MIDI:
+    silences between onsets become explicit rests (previously they collapsed,
+    so bar N of the tab could land minutes away from bar N of the audio and no
+    playback cursor could ever track it), note durations are clipped to the
+    next onset so overlaps cannot stretch the timeline, and a ``\\tempo`` is
+    always written (the transcription pipeline renders MIDI at 120 BPM).
+    """
     lines: list[str] = []
     if title:
         lines.append(f'\\title "{title}"')
@@ -260,23 +279,63 @@ def _build_alphatex(
     tokens: list[str] = []
     current_duration: Optional[int] = None
     current_bar: Optional[int] = None
-    for offset, ql, placement in beats:
-        bar = int(offset // 4.0)
+    cursor = 0.0  # quarters of emitted material — the tab's own clock
+
+    def emit_bar_check(at: float) -> None:
+        nonlocal current_bar
+        bar = int(at // 4.0 + 1e-6)
         if current_bar is None:
             current_bar = bar
         elif bar != current_bar:
             tokens.append("|")
             current_bar = bar
-        duration = _quarter_length_to_duration(ql)
-        if duration != current_duration:
-            tokens.append(f":{duration}")
-            current_duration = duration
+
+    def emit_duration(value: int) -> None:
+        nonlocal current_duration
+        if value != current_duration:
+            tokens.append(f":{value}")
+            current_duration = value
+
+    for i, (offset, ql, placement) in enumerate(beats):
+        # Fill the silence between the last emitted material and this onset
+        # with rests (largest units first, never crossing a bar line).
+        gap = offset - cursor
+        while gap > 0.0625:
+            room = 4.0 - (cursor % 4.0)
+            emitted = False
+            for unit_ql, unit_dur in _REST_UNITS:
+                if unit_ql <= min(gap, room) + 1e-6:
+                    emit_bar_check(cursor)
+                    emit_duration(unit_dur)
+                    tokens.append("r")
+                    cursor += unit_ql
+                    gap = offset - cursor
+                    emitted = True
+                    break
+            if not emitted:
+                # Gap smaller than a 32nd (triplet quantization residue) —
+                # absorb it rather than loop forever.
+                break
+        cursor = max(cursor, offset)
+
+        # Clip the sounding length to the next onset so overlapping events
+        # cannot stretch the sequential timeline past the audio.
+        effective_ql = ql
+        if i + 1 < len(beats):
+            until_next = beats[i + 1][0] - offset
+            if until_next > 1e-6:
+                effective_ql = min(effective_ql, until_next)
+        duration = _quarter_length_to_duration(effective_ql)
+
+        emit_bar_check(cursor)
+        emit_duration(duration)
         if len(placement) == 1:
             string, fret = placement[0]
             tokens.append(f"{fret}.{string}")
         else:
             inner = " ".join(f"{fret}.{string}" for (string, fret) in placement)
             tokens.append(f"({inner})")
+        cursor += 4.0 / duration
 
     lines.append(" ".join(tokens))
     return "\n".join(lines) + "\n"
@@ -291,7 +350,10 @@ def arrange_tabs(
     capo: int = 0,
     difficulty: str = "medium",
     title: str = "",
-    tempo: Optional[int] = None,
+    # The transcription pipeline (basic-pitch / pretty_midi) writes MIDI at a
+    # fixed 120 BPM, so 120 is the tempo that makes the tab's tick timeline
+    # equal audio wall-clock — required for the follow-along cursor.
+    tempo: Optional[int] = 120,
 ) -> dict[str, Any]:
     """Arrange a MIDI file into tablature for a fretted instrument.
 

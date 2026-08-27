@@ -3,16 +3,16 @@
 // so the relevant types show first while "All files" stays available.
 
 export const DAW_PROJECT_FILTER =
-  'DAW projects (*.als;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx;*.cpr;*.ptx)' +
-  '|*.als;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx;*.cpr;*.ptx' +
+  'DAW projects (*.als;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx;*.cpr;*.ptx;*.swayproj)' +
+  '|*.als;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx;*.cpr;*.ptx;*.swayproj' +
   '|All files (*.*)|*.*';
 
 export const TASMO_FILTER = 'theDAW project (*.tasmo)|*.tasmo|All files (*.*)|*.*';
 
 // The Session tab accepts both a saved theDAW project and any DAW project file.
 export const SESSION_IMPORT_FILTER =
-  'Session sources (*.tasmo;*.als;*.rpp;*.flp;*.aup3;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx)' +
-  '|*.tasmo;*.als;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx;*.cpr;*.ptx' +
+  'Session sources (*.tasmo;*.als;*.swayproj;*.rpp;*.flp;*.aup3;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx)' +
+  '|*.tasmo;*.als;*.swayproj;*.rpp;*.rpp-bak;*.flp;*.aup3;*.aup;*.sesx;*.bwproject;*.dawproject;*.avc;*.logicx;*.cpr;*.ptx' +
   '|All files (*.*)|*.*';
 
 export const GAN_FILTER = 'GAN plugin (*.gan)|*.gan|All files (*.*)|*.*';

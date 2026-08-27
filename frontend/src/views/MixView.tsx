@@ -32,7 +32,7 @@ import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory, fxPreview, v
 import { STUDIO_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
 import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../lib/magentaToolCatalog';
 import { MagentaToolStage } from '../components/audio/MagentaToolStage';
-import { GanPluginStage } from '../components/audio/GanPluginStage';
+import { GanPluginStage, getGanStageFrame } from '../components/audio/GanPluginStage';
 import { useGanStore } from '../state/ganStore';
 import { useMixStageStore } from '../state/mixStageStore';
 import { ganApi, type GanPluginSummary } from '../lib/ganClient';
@@ -1007,8 +1007,9 @@ export const MixView: React.FC = () => {
       let sum = 0;
       for (let i = 0; i < buf.length; i += 1) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const level = Math.min(1, Math.sqrt(sum / buf.length) * 3);
-      const fr = document.getElementById('gan-stage-frame') as HTMLIFrameElement | null;
-      fr?.contentWindow?.postMessage({ type: 'level', value: level }, '*');
+      // Resolved via the stage's accessor so the meter keeps feeding the
+      // runtime when the plugin is popped out into its own window.
+      getGanStageFrame()?.contentWindow?.postMessage({ type: 'level', value: level }, '*');
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

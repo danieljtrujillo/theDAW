@@ -25,7 +25,7 @@ export const MediaBucketView: React.FC = () => {
   const addMany = useMediaBucketStore((s) => s.addMany);
   const remove = useMediaBucketStore((s) => s.remove);
   const clear = useMediaBucketStore((s) => s.clear);
-  const setActiveView = useAppUiStore((s) => s.setActiveView);
+  const navigateTo = useAppUiStore((s) => s.navigateTo);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -108,7 +108,8 @@ export const MediaBucketView: React.FC = () => {
     addBlobsToChimera(
       audio.map((it) => ({ blob: it.blob, mimeType: it.mimeType || 'audio/wav', label: it.name })),
     );
-    setActiveView('generate');
+    // 'generate' was never a real view — the INIT/Chimera stack lives on MAKE.
+    navigateTo('make');
   };
 
   const handleSendToInit = (item: BucketItem) => {

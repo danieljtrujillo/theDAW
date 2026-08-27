@@ -56,11 +56,13 @@ export interface TrackMod {
 /**
  * A DIRECT CC -> Perform-mix route, created automatically from an imported
  * project's own MIDI-learn mappings (a set built FOR the Sway carries them in
- * the .als/.swayproj/.tasmo). Unlike TrackMod this does not go through the
- * dim layer at all: the project says "CC 21 ch1 moves track 3's volume", so
- * that exact control moves that exact fader, faithful to the source DAW with
- * zero setup. Session-scoped — derived from the loaded project, never
- * persisted globally (it belongs to the project, not the machine).
+ * the .als/.swayproj/.tasmo) or assigned on the SwayCommand deck. Unlike
+ * TrackMod this does not go through the dim layer at all: the project says
+ * "CC 21 ch1 moves track 3's volume", so that exact control moves that exact
+ * fader, faithful to the source DAW with zero setup. These belong to the
+ * PROJECT, not the machine: never persisted globally (localStorage), but they
+ * DO travel in the .tasmo's perform_routing snapshot so a saved set's knob /
+ * XY / fx routes come back on open.
  */
 export interface CcMod {
   id: string;
@@ -78,6 +80,12 @@ export interface CcMod {
   paramKey?: string;
   min?: number;
   max?: number;
+  /** Note-driven routes only. Default (false) is MOMENTARY: note-on pushes
+   *  `max`, note-off pushes `min` — a punch-in effect that releases with the
+   *  pad. `latch: true` toggles between max and min on each note-on instead
+   *  (note-off ignored), for effects that should stay on while both hands are
+   *  busy. Ignored for CC routes, which are continuous. */
+  latch?: boolean;
   /** Display label, e.g. "03 Bass · Volume". */
   label: string;
 }
@@ -93,6 +101,9 @@ export interface PerformRoutingSnapshot {
   transport: Partial<Record<PerformFn, PerformCtrl>>;
   sceneCtrls: Record<number, PerformCtrl>;
   trackMods: TrackMod[];
+  /** Project-scoped direct routes (knobs / XY / fx params). Absent in .tasmo
+   *  files written before ccMods persisted. */
+  ccMods?: CcMod[];
 }
 
 export const performCtrlLabel = (c: PerformCtrl): string =>
@@ -108,8 +119,12 @@ interface PerformRoutingState {
   sceneCtrls: Record<number, PerformCtrl>;
   /** Sway dim -> Perform-mix modulation targets. */
   trackMods: TrackMod[];
-  /** Project-derived direct CC routes (session only, replaced per project). */
+  /** Project-derived direct CC routes (replaced per project). */
   ccMods: CcMod[];
+  /** True when the current ccMods came from a project's saved snapshot — the
+   *  Session view's auto-router must not wipe them with its (empty) derived
+   *  set right after a .tasmo load. */
+  ccModsHydrated: boolean;
   /** Armed learn (session only). */
   learn: LearnArm;
 
@@ -133,9 +148,10 @@ export const usePerformRoutingStore = create<PerformRoutingState>()(
       sceneCtrls: {},
       trackMods: [],
       ccMods: [],
+      ccModsHydrated: false,
       learn: null,
       arm: (a) => set({ learn: a }),
-      setCcMods: (ccMods) => set({ ccMods }),
+      setCcMods: (ccMods) => set({ ccMods, ccModsHydrated: false }),
       removeCcMod: (id) => set((s) => ({ ccMods: s.ccMods.filter((m) => m.id !== id) })),
       bindFn: (fn, ctrl) => set((s) => ({ transport: { ...s.transport, [fn]: ctrl }, learn: null })),
       bindScene: (scene, ctrl) => set((s) => ({ sceneCtrls: { ...s.sceneCtrls, [scene]: ctrl }, learn: null })),
@@ -158,13 +174,17 @@ export const usePerformRoutingStore = create<PerformRoutingState>()(
           return { trackMods: [...s.trackMods, { id, dim, trackIndex, target }] };
         }),
       removeMod: (id) => set((s) => ({ trackMods: s.trackMods.filter((m) => m.id !== id) })),
-      hydrate: (snapshot) =>
+      hydrate: (snapshot) => {
+        const ccMods = Array.isArray(snapshot.ccMods) ? snapshot.ccMods : [];
         set({
           transport: snapshot.transport ?? {},
           sceneCtrls: snapshot.sceneCtrls ?? {},
           trackMods: Array.isArray(snapshot.trackMods) ? snapshot.trackMods : [],
+          ccMods,
+          ccModsHydrated: ccMods.length > 0,
           learn: null,
-        }),
+        });
+      },
     }),
     {
       name: 'thedaw-perform-routing-v1',
@@ -180,9 +200,15 @@ export function capturePerformRouting(): PerformRoutingSnapshot | null {
   const has =
     Object.keys(s.transport).length > 0 ||
     Object.keys(s.sceneCtrls).length > 0 ||
-    s.trackMods.length > 0;
+    s.trackMods.length > 0 ||
+    s.ccMods.length > 0;
   if (!has) return null;
-  return { transport: s.transport, sceneCtrls: s.sceneCtrls, trackMods: s.trackMods };
+  return {
+    transport: s.transport,
+    sceneCtrls: s.sceneCtrls,
+    trackMods: s.trackMods,
+    ccMods: s.ccMods,
+  };
 }
 
 /** True when an incoming MIDI message matches a stored control. */

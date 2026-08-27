@@ -20,6 +20,7 @@ import {
   type GenerateParams,
 } from '../state/generateStore';
 import { useLibraryStore } from '../state/libraryStore';
+import { EFFECT_DEFAULTS } from '../state/effectChainStore';
 import { getEngineCtx } from '../state/playerStore';
 import { encodeWav } from './wavEncode';
 import type { GraphEdge, GraphNode, NodeRunStatus } from './audimateTypes';
@@ -205,7 +206,10 @@ export function runGraph(
         const input = inputBlob(node.id, 'in');
         if (!input) throw new Error('no input audio');
         const effect = String(node.params.effect || 'mastering_chain');
-        const params: Record<string, number> = {};
+        // Start from the effect's own defaults: the backend 400s on any
+        // missing key, and a node created before the params were seeded (or
+        // whose params were pruned) must still run.
+        const params: Record<string, number> = { ...(EFFECT_DEFAULTS[effect] ?? {}) };
         for (const [k, v] of Object.entries(node.params)) {
           if (k !== 'effect' && typeof v === 'number') params[k] = v;
         }

@@ -46,7 +46,6 @@ import { detectProfileFromNames, AUDIMA_SWAY_ID } from './state/controllerProfil
 import { poseControlSource, startPoseXrMirror } from './state/poseControlSource';
 import { startPoseRouting } from './state/poseRouting';
 import { startXrViz, stopXrViz } from './state/xrViz';
-import { XrBusTester } from './components/dev/XrBusTester';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
 import { useGanStore } from './state/ganStore';
@@ -476,10 +475,6 @@ export default function App() {
           />
         </Suspense>
       )}
-
-      {/* Dev-only: simulated XR controller to drive the control bus without a
-          headset. Stripped from production builds. */}
-      {import.meta.env.DEV && <XrBusTester />}
 
       {/* Loading screen overlays everything until backend is ready */}
       <AnimatePresence>
