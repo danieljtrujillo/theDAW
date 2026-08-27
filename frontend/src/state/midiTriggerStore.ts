@@ -19,11 +19,15 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 interface MidiTriggerState {
-  /** Master Web MIDI gate. Default OFF so the app never calls
-   *  navigator.requestMIDIAccess() at load — that call triggers Chrome's
-   *  Web MIDI permission prompt + a deprecation notice. We only request
-   *  access once the user explicitly turns MIDI on (the "MIDI" toggle, or
-   *  opening a MIDI mapper). */
+  /** Master Web MIDI gate. Default ON.
+   *
+   *  It used to default OFF to avoid Chrome's Web MIDI permission prompt and
+   *  deprecation notice at load. The cost of that was worse than the prompt:
+   *  theDAW owns the ONLY requestMIDIAccess() in the app and relays hardware to
+   *  the SwayCommand cockpit over postMessage, so with the gate off a connected
+   *  Sway was invisible to theDAW even while the standalone app saw it fine —
+   *  the controller simply did nothing until you found an unrelated toggle.
+   *  A hardware surface has to work when it is plugged in. */
   enabled: boolean;
   /** When true, MIDI note-on events do NOT fire the piano synth voice. */
   audioMuted: boolean;
@@ -36,14 +40,26 @@ interface MidiTriggerState {
 export const useMidiTriggerStore = create<MidiTriggerState>()(
   persist(
     (set) => ({
-      enabled: false,
+      enabled: true,
       audioMuted: false,
       setEnabled: (enabled) => set({ enabled }),
       toggleEnabled: () => set((s) => ({ enabled: !s.enabled })),
       setAudioMuted: (audioMuted) => set({ audioMuted }),
       toggleAudioMuted: () => set((s) => ({ audioMuted: !s.audioMuted })),
     }),
-    { name: 'thedaw.midiTrigger.v1' },
+    {
+      name: 'thedaw.midiTrigger.v1',
+      // v1 shipped with enabled:false persisted for everyone who ever loaded the
+      // app, so changing the default alone would leave every existing install
+      // still dark. Bumping the version re-runs migrate, which adopts the new
+      // default once; audioMuted (a real preference) is carried across.
+      version: 2,
+      migrate: (persisted, from) => {
+        const p = (persisted ?? {}) as Partial<MidiTriggerState>;
+        if (from < 2) return { ...p, enabled: true } as MidiTriggerState;
+        return p as MidiTriggerState;
+      },
+    },
   ),
 );
 

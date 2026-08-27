@@ -68,7 +68,11 @@ log "Building frontend"
 
 # 4. Optional Playwright screenshots — only if all preconditions hold.
 screenshot_script="scripts/screenshots/capture.ts"
-if [[ -f "$screenshot_script" ]] && \
+# DISABLED by default (2026-08-26, user request): the 40-scene suite takes tens
+# of minutes and was blocking commits. Opt in per-run with DOCS_SCREENSHOTS=1.
+if [[ "${DOCS_SCREENSHOTS:-0}" != "1" ]]; then
+  warn "Screenshots disabled (set DOCS_SCREENSHOTS=1 to run them)."
+elif [[ -f "$screenshot_script" ]] && \
    ( cd frontend && [[ -d node_modules/playwright || -d node_modules/@playwright/test ]] ); then
   if curl -s -m 2 http://localhost:5173 >/dev/null 2>&1; then
     log "Dev server up — taking Playwright screenshots"

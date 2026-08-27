@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Search } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check } from 'lucide-react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
@@ -7,6 +7,7 @@ import { useLibraryStore } from '../../state/libraryStore';
 import { useAppUiStore } from '../../state/appUiStore';
 import { callEditorPlay, isEditorPlaybackRegistered } from '../../state/editorPlaybackBridge';
 import { SlideTrack } from './SlideTrack';
+import { OrbTipBubble } from './OrbTipBubble';
 import {
   toggleVjPlayback,
   subscribeToVjPlaybackState,
@@ -30,25 +31,22 @@ const formatDuration = (sec: number | null | undefined): string => {
 export const PlayerFooter: React.FC = () => {
   const [isLiked, setIsLiked] = useState(false);
   const progressRef = useRef<HTMLDivElement | null>(null);
-  const searchRef = useRef<HTMLInputElement | null>(null);
 
-  // G-Search lives in the footer now (global on every tab). Drives the library
-  // search store; typing opens the library rail. Ctrl/Cmd-K focuses it.
-  const setLibrarySearch = useLibraryStore((s) => s.setSearchQuery);
-  const librarySearch = useLibraryStore((s) => s.searchQuery);
+  // The footer's G-Search field was replaced by the orb's speech bubble, so
+  // Ctrl/Cmd-K no longer has an inline input to focus. It now opens the library
+  // rail, which carries its own search — the shortcut still lands the user in
+  // front of a search box rather than doing nothing.
   const setRightPanelOpen = useAppUiStore((s) => s.setRightPanelOpen);
-  const isRightPanelOpen = useAppUiStore((s) => s.isRightPanelOpen);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
+        setRightPanelOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [setRightPanelOpen]);
 
   // Volume / mute live in playbackStore; they drive the engine's master gain.
   const volume = usePlaybackStore((s) => s.volume);
@@ -215,35 +213,14 @@ export const PlayerFooter: React.FC = () => {
 
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-20 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center gap-6 group">
-      {/* 1. G-Search + Now Playing. flex-1 (mirrors section 3) so the now-playing
-          readout fills the space between G-Search and the centred transport, and
-          the PLAY button still lands on the true viewport centre. The orb
-          assistant overlaps the bottom-left corner, so pad left to clear it. */}
-      <div className="flex items-center gap-3 flex-1 min-w-0 pl-20">
-        {/* G-Search — global library search, available on every tab. */}
-        <div className="flex items-center gap-2 px-2.5 py-1 bg-white/5 rounded-full border border-white/5 shrink-0">
-          <Search className="w-3 h-3 text-zinc-600" />
-          <input
-            id="global-search"
-            name="global-search"
-            ref={searchRef}
-            type="search"
-            aria-label="Global library search (Ctrl-K / Cmd-K)"
-            placeholder="G-SEARCH (ctrl-k)"
-            className="bg-transparent border-none outline-none text-[9px] text-zinc-300 w-24 font-mono placeholder:text-zinc-500"
-            value={librarySearch}
-            onChange={(e) => {
-              setLibrarySearch(e.target.value);
-              if (e.target.value && !isRightPanelOpen) setRightPanelOpen(true);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                setLibrarySearch('');
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-          />
-        </div>
+      {/* 1. Orb speech bubble + Now Playing. flex-1 (mirrors section 3) so the
+          now-playing readout fills the space between the bubble and the centred
+          transport, and the PLAY button still lands on the true viewport centre.
+          The orb sticks to the bottom-left corner and overlaps the footer, so
+          pad left past it: 16px margin + the 112px orb = 128, plus clearance. */}
+      <div className="flex items-center gap-3 flex-1 min-w-0 pl-36">
+        {/* The orb's speech bubble, in the slot G-Search used to hold. */}
+        <OrbTipBubble />
         <div className="flex flex-col min-w-0 flex-1">
           <h4 className="text-[13px] font-bold text-zinc-100 truncate tracking-tight">
             {displayLabel ?? 'No output loaded'}

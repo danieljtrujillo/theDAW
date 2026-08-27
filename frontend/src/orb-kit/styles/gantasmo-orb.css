@@ -154,44 +154,88 @@
    prop on GantasmoOrb must match the toggle size here (160). Only the FLUID is
    bigger: the core (the three.js canvas) fills the box edge to edge while the
    decorative glow/pulse chrome hugs it instead of framing a small ball. */
+/* Sized down 30% from the original 160 stack (160 -> 112, core 152 -> 106,
+   face inset 28 -> 20). The bounds prop on GantasmoOrb and OrbDripTrail's
+   orbBox must both match the toggle size here (112) or the viewport clamp and
+   the drip trail drift out of alignment with the visible orb. */
 .gantasmo-orb-theme.orb-2x .aether-orb-toggle {
-    width: 160px;
-    height: 160px;
+    width: 112px;
+    height: 112px;
+    /* Glide to a new position instead of snapping — this is what makes a resize
+       re-stick, or a release, read as movement. `.dragging` kills the transition
+       (transition: none !important) so dragging still tracks the cursor 1:1. */
+    transition: transform 900ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .gantasmo-orb-theme.orb-2x .aether-orb-main {
-    width: 160px;
-    height: 160px;
+    width: 112px;
+    height: 112px;
 }
 
 .gantasmo-orb-theme.orb-2x .orb-core-main {
-    width: 152px;
-    height: 152px;
-    /* No outer shadow rings: the glow lives in .orb-glow-main BEHIND the orb. */
+    width: 106px;
+    height: 106px;
+    /* No outer shadow rings — the fluid body is the whole visual. */
     box-shadow: none;
 }
 
 .gantasmo-orb-theme.orb-2x .gantasmo-face {
-    inset: 28px;
+    inset: 20px;
 }
 
-/* Backlight, not a ring: one soft blurred layer behind the opaque fluid so
-   only its spill past the rim is visible. The literal rings (rotating swirl,
-   expanding pulse) are disabled for this orb. Opacity runs 20% less
-   transparent than the stock glow (0.5/0.8 -> 0.6/0.96). */
-.gantasmo-orb-theme.orb-2x .orb-glow-main {
-    inset: -12px;
-    background: radial-gradient(circle,
-            var(--glow-primary) 0%,
-            var(--glow-secondary) 40%,
-            transparent 68%);
-    filter: blur(10px);
-    animation: gantasmo-glow-nestle-pulse 2s ease-in-out infinite;
-}
-
+/* No ring of any kind on this orb. The rotating swirl and the expanding pulse
+   border were already off; the soft radial backlight behind the rim read as a
+   ring too, so it goes as well. The ferrofluid body stands on its own. */
+.gantasmo-orb-theme.orb-2x .orb-glow-main,
 .gantasmo-orb-theme.orb-2x .orb-swirl-layer,
 .gantasmo-orb-theme.orb-2x .orb-pulse-main {
     display: none;
+}
+
+/* Slower idle motion. The stock 2-3s cycles read as jittery at this size; these
+   run roughly 2.4x longer so the orb drifts rather than twitches. The drag
+   transform itself is eased in GantasmoOrb (and disabled mid-drag). */
+.gantasmo-orb-theme.orb-2x .orb-core-main {
+    animation: gantasmo-orb-core-breathe 7.5s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme.orb-2x .gantasmo-face {
+    animation: gantasmo-ghost-float 8s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme.orb-2x .orb-cavity-eye {
+    animation: gantasmo-eye-blink 11s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme.orb-2x .orb-cavity-mouth {
+    animation: gantasmo-mouth-move 7s ease-in-out infinite;
+}
+
+.gantasmo-orb-theme.orb-2x .aether-orb-toggle.active .orb-cavity-mouth {
+    animation: gantasmo-mouth-talk 1.6s ease-in-out infinite;
+}
+
+/* The ferrofluid canvas IS the body for this orb, so the stock purple gradient
+   core underneath it only ever showed as a rim around the canvas edge — another
+   ring by another name. Same for the face's white drop-shadow halo. */
+.gantasmo-orb-theme.orb-2x .orb-core-main {
+    background: #05040a;
+}
+
+.gantasmo-orb-theme.orb-2x .gantasmo-face svg {
+    filter: none;
+}
+
+.gantasmo-orb-theme.orb-2x .aether-orb-toggle:hover .gantasmo-face {
+    filter: none;
+}
+
+.gantasmo-orb-theme.orb-2x .floating-particles .particle {
+    animation-duration: 7s;
+}
+
+.gantasmo-orb-theme.orb-2x .aether-orb-toggle:hover .floating-particles .particle {
+    animation-duration: 4.5s;
 }
 
 @keyframes gantasmo-glow-nestle-pulse {

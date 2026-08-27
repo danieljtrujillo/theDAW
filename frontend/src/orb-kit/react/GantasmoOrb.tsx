@@ -63,9 +63,23 @@ export interface GantasmoOrbProps {
     /**
      * Size of the orb's square hit/clamp box in px. Must match the CSS size
      * of .aether-orb-toggle for the host's skin (default 80; theDAW's 2x orb
-     * uses 160 via the orb-2x class).
+     * uses 112 via the orb-2x class).
      */
     bounds?: number;
+
+    /**
+     * Pin the orb to a viewport corner until the user drags it away.
+     *
+     * While stuck the orb re-solves its corner on every resize, so it cannot be
+     * left stranded mid-screen by a window change — which a saved absolute
+     * position otherwise does. The first drag past the threshold releases it
+     * permanently (persisted alongside the position), after which the orb is
+     * free and resizes only clamp it back into view.
+     */
+    stickCorner?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | false;
+
+    /** Gap in px between the orb box and the viewport edges while stuck. */
+    cornerMargin?: number;
 }
 
 // Small mouse movement should still count as a click.
@@ -91,9 +105,35 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
     coreOverlay,
     processing = false,
     bounds = ORB_BOUNDS,
+    stickCorner = false,
+    cornerMargin = 12,
 }) => {
+    // Where the orb sits while it is still stuck to its corner. Recomputed from
+    // the live viewport rather than stored, so a resize can never strand it.
+    const cornerPosition = useCallback(() => {
+        if (typeof window === 'undefined' || !stickCorner) return null;
+        const right = window.innerWidth - bounds - cornerMargin;
+        const bottom = window.innerHeight - bounds - cornerMargin;
+        switch (stickCorner) {
+            case 'bottom-right': return { x: Math.max(0, right), y: Math.max(0, bottom) };
+            case 'bottom-left': return { x: cornerMargin, y: Math.max(0, bottom) };
+            case 'top-right': return { x: Math.max(0, right), y: cornerMargin };
+            case 'top-left': return { x: cornerMargin, y: cornerMargin };
+            default: return null;
+        }
+    }, [bounds, cornerMargin, stickCorner]);
+
+    const unstuckKey = persistenceKey ? `${persistenceKey}-unstuck` : null;
+    // Read the release flag synchronously so the very first paint is already in
+    // the right place — deferring it to an effect makes the orb visibly jump.
+    const [unstuck, setUnstuck] = useState<boolean>(() => {
+        if (!stickCorner) return true;
+        if (!unstuckKey || typeof window === 'undefined') return false;
+        try { return window.localStorage.getItem(unstuckKey) === '1'; } catch { return false; }
+    });
+
     // Default visual placement mirrors the original app: lower-left-ish.
-    const initialPosition = defaultPosition ?? {
+    const initialPosition = (!unstuck && cornerPosition()) || defaultPosition || {
         x: 20,
         y: typeof window !== 'undefined' ? window.innerHeight - 140 : 500,
     };
@@ -133,6 +173,12 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
         if (!persistenceKey || typeof window === 'undefined') {
             return;
         }
+        // While the orb is still stuck to its corner the saved position is
+        // deliberately ignored — the corner is the source of truth until the
+        // user drags the orb out of it for the first time.
+        if (!unstuck) {
+            return;
+        }
 
         const savedPosition = window.localStorage.getItem(persistenceKey);
         if (!savedPosition) {
@@ -147,31 +193,35 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
         } catch {
             // Ignore invalid persisted state.
         }
-    }, [clampToViewport, persistenceKey]);
+    }, [clampToViewport, persistenceKey, unstuck]);
 
-    // Keep the orb visible after viewport resizes.
-    // Without this, a previously valid saved position could end up off-screen.
+    // Keep the orb visible after viewport resizes. A still-stuck orb re-solves
+    // its corner (so it stays welded to the edge no matter how the window is
+    // resized); a released orb is only clamped back into view.
     useEffect(() => {
         if (typeof window === 'undefined') {
             return;
         }
 
         const onResize = () => {
-            setPosition((current) => clampToViewport(current));
+            const corner = !unstuck && cornerPosition();
+            setPosition((current) => (corner ? corner : clampToViewport(current)));
         };
 
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
-    }, [clampToViewport]);
+    }, [clampToViewport, cornerPosition, unstuck]);
 
-    // Persist the latest settled position after drag completes.
+    // Persist the latest settled position after drag completes. Skipped while
+    // stuck: the corner is recomputed each load, so writing it back would only
+    // bake in one viewport's coordinates.
     useEffect(() => {
-        if (!persistenceKey || isDragging || typeof window === 'undefined') {
+        if (!persistenceKey || isDragging || !unstuck || typeof window === 'undefined') {
             return;
         }
 
         window.localStorage.setItem(persistenceKey, JSON.stringify(position));
-    }, [isDragging, persistenceKey, position]);
+    }, [isDragging, persistenceKey, position, unstuck]);
 
     // Emit position updates outward so the host can anchor a related surface.
     useEffect(() => {
@@ -211,11 +261,19 @@ export const GantasmoOrb: React.FC<GantasmoOrbProps> = ({
         }
 
         setHasDragged(true);
+        // The first drag past the threshold releases the orb from its corner
+        // for good. Persisted, so it stays free across reloads.
+        if (!unstuck) {
+            setUnstuck(true);
+            if (unstuckKey && typeof window !== 'undefined') {
+                try { window.localStorage.setItem(unstuckKey, '1'); } catch { /* non-fatal */ }
+            }
+        }
         setPosition(clampToViewport({
             x: dragRef.current.startPosX + deltaX,
             y: dragRef.current.startPosY + deltaY,
         }));
-    }, [clampToViewport, isDragging]);
+    }, [clampToViewport, isDragging, unstuck, unstuckKey]);
 
     // If the pointer never crossed the drag threshold, treat the interaction as a click.
     const handleMouseUp = useCallback(() => {

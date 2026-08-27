@@ -22,7 +22,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { SwayDim } from './swayBus';
+import { SWAY_DIMS, seedSwayBinding, type SwayDim } from './swayBus';
 
 export type PerformFn = 'select' | 'launch' | 'stop' | 'next' | 'prev';
 
@@ -53,6 +53,35 @@ export interface TrackMod {
   target: ModTarget;
 }
 
+/**
+ * A DIRECT CC -> Perform-mix route, created automatically from an imported
+ * project's own MIDI-learn mappings (a set built FOR the Sway carries them in
+ * the .als/.swayproj/.tasmo). Unlike TrackMod this does not go through the
+ * dim layer at all: the project says "CC 21 ch1 moves track 3's volume", so
+ * that exact control moves that exact fader, faithful to the source DAW with
+ * zero setup. Session-scoped — derived from the loaded project, never
+ * persisted globally (it belongs to the project, not the machine).
+ */
+export interface CcMod {
+  id: string;
+  /** 0-indexed channel; -1 = omni. */
+  channel: number;
+  number: number;
+  isNote: boolean;
+  trackIndex: number;
+  target: 'volume' | 'mute' | 'fx';
+  /** fx only: index into the track's flattened (non-instrument, non-rack)
+   *  device list — the SAME indexing the Perform grid uses for its chain entry
+   *  ids (`perform-<mix>-<i>`), so the route reaches the running effect. */
+  deviceIndex?: number;
+  /** fx only: the rack-effect parameter this CC drives, plus its range. */
+  paramKey?: string;
+  min?: number;
+  max?: number;
+  /** Display label, e.g. "03 Bass · Volume". */
+  label: string;
+}
+
 /** What the panel has armed for learn; captured by the grid's MIDI listener. */
 export type LearnArm =
   | { kind: 'fn'; fn: PerformFn }
@@ -79,10 +108,14 @@ interface PerformRoutingState {
   sceneCtrls: Record<number, PerformCtrl>;
   /** Sway dim -> Perform-mix modulation targets. */
   trackMods: TrackMod[];
+  /** Project-derived direct CC routes (session only, replaced per project). */
+  ccMods: CcMod[];
   /** Armed learn (session only). */
   learn: LearnArm;
 
   arm: (a: LearnArm) => void;
+  setCcMods: (mods: CcMod[]) => void;
+  removeCcMod: (id: string) => void;
   bindFn: (fn: PerformFn, ctrl: PerformCtrl) => void;
   bindScene: (scene: number, ctrl: PerformCtrl) => void;
   clearFn: (fn: PerformFn) => void;
@@ -99,8 +132,11 @@ export const usePerformRoutingStore = create<PerformRoutingState>()(
       transport: {},
       sceneCtrls: {},
       trackMods: [],
+      ccMods: [],
       learn: null,
       arm: (a) => set({ learn: a }),
+      setCcMods: (ccMods) => set({ ccMods }),
+      removeCcMod: (id) => set((s) => ({ ccMods: s.ccMods.filter((m) => m.id !== id) })),
       bindFn: (fn, ctrl) => set((s) => ({ transport: { ...s.transport, [fn]: ctrl }, learn: null })),
       bindScene: (scene, ctrl) => set((s) => ({ sceneCtrls: { ...s.sceneCtrls, [scene]: ctrl }, learn: null })),
       clearFn: (fn) =>
@@ -155,4 +191,80 @@ export function ctrlMatches(c: PerformCtrl, isNote: boolean, channel: number, nu
   if (c.number !== number) return false;
   if (c.channel >= 0 && c.channel !== channel) return false;
   return true;
+}
+
+/**
+ * Build the automatic Perform routing for a freshly loaded project.
+ *
+ * A set designed for the Sway ships its MIDI-learn mappings inside the project
+ * file. Loading it should make the hardware work immediately — not present a
+ * blank routing panel. Two things happen here:
+ *
+ *  1. Every resolvable MIXER mapping becomes a direct CcMod on the Perform mix
+ *     (that exact channel+CC moves that exact track's live volume).
+ *  2. Any mapping whose names mention one of the Sway's six dimensions seeds
+ *     that dim's CC binding on swayBus — so the dim meters, the XR mirror and
+ *     dim-based modulation all light up with the project's own layout instead
+ *     of waiting for a learn (or for auto-bind order to happen to match).
+ *
+ * Non-mixer mappings (device/FX params) are NOT dropped — they are handled by
+ * the editor-side auto-attach (swayImportResolve) which owns FX faithfully.
+ */
+export function autoRoutePerformFromProject(project: {
+  controller_mappings?: {
+    is_note: boolean;
+    channel: number;
+    number: number;
+    target_kind: string;
+    track_name: string;
+    track_index: number;
+    device_name: string;
+    param_name: string;
+  }[] | null;
+  tracks: { name: string }[];
+}): { ccMods: CcMod[]; seededDims: number } {
+  const mods: CcMod[] = [];
+  const seen = new Set<string>();
+  let seededDims = 0;
+  const maps = project.controller_mappings ?? [];
+  for (const m of maps) {
+    // Dim seeding by name: "Strike", "SWAY Pulse Macro", etc.
+    const haystack = `${m.param_name} ${m.device_name} ${m.track_name}`.toLowerCase();
+    if (!m.is_note) {
+      if (trySeedSwayDim(haystack, m.channel, m.number)) seededDims += 1;
+    }
+    // What counts as "this CC is the track's loudness" in real Sway sets:
+    // a true mixer mapping, a Utility gain, OR a device/rack param literally
+    // named Volume/Level/Gain — the Ableton Sway templates put per-part volume
+    // on instrument-rack macros named "Volume", not on the track fader, and a
+    // mixer-only filter routed NOTHING from them.
+    const pn = m.param_name.toLowerCase();
+    const isMixer = m.target_kind === 'mixer' || m.device_name.toLowerCase().replace(/[^a-z]/g, '') === 'utility';
+    const isDeviceVolume = m.target_kind === 'device' && /(^|[^a-z])(volume|level|gain)([^a-z]|$)/.test(pn);
+    if ((!isMixer && !isDeviceVolume) || m.is_note || m.track_index < 0 || m.track_index >= project.tracks.length) continue;
+    if (pn.includes('pan')) continue; // perform mix has no pan lane
+    const id = `cc:${m.channel}:${m.number}:${m.track_index}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const trackName = project.tracks[m.track_index]?.name ?? m.track_name ?? `Track ${m.track_index + 1}`;
+    mods.push({
+      id,
+      channel: m.channel,
+      number: m.number,
+      isNote: false,
+      trackIndex: m.track_index,
+      target: 'volume',
+      label: `${String(m.track_index + 1).padStart(2, '0')} ${trackName} · Vol`,
+    });
+  }
+  return { ccMods: mods, seededDims };
+}
+
+function trySeedSwayDim(haystack: string, channel: number, cc: number): boolean {
+  for (const { id } of SWAY_DIMS) {
+    if (haystack.includes(id)) {
+      return seedSwayBinding(id, channel, cc);
+    }
+  }
+  return false;
 }
