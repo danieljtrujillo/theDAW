@@ -438,12 +438,12 @@ async function applyScene(spec) {
   return { tracks: editor.getState().tracks.length, clips: editor.getState().clips.length, playing: player.getState().isPlaying, log };
 }
 
-const onlyIds = (process.env.ONLY || '').split(',').filter(Boolean);
+const onlyIds = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 // SKIP is the inverse of ONLY, for "capture everything except these". Needed for
 // a no-GPU pass: the handful of scenes that run a real model are excluded, and
 // listing the ~58 that remain in ONLY would be unreadable. SKIP applies after
 // ONLY, so the two compose.
-const skipIds = (process.env.SKIP || '').split(',').filter(Boolean);
+const skipIds = (process.env.SKIP || '').split(',').map((s) => s.trim()).filter(Boolean);
 const VJ_SOURCE = path.join(OUT, '_vjsource.mp4');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clickByTitle = (page, re) => page.evaluate((src) => { const rx = new RegExp(src, 'i'); const b = [...document.querySelectorAll('button')].find((x) => rx.test(x.getAttribute('title') || '')); if (b) b.click(); }, re.source).catch(() => {});
