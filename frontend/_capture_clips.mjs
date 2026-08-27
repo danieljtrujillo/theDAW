@@ -14,6 +14,11 @@
 //
 // Run from frontend/:  node _capture_clips.mjs        (all scenes)
 //                      ONLY=20_train,02_dj-console node _capture_clips.mjs
+//                      SKIP=72_crispr-dna,74_magenta-live-generate node _capture_clips.mjs
+//
+// A scene that throws is logged into _capture-log.json with its error and the
+// run CONTINUES — the recording is one continuous take sliced afterwards, so a
+// failed scene costs only its own clip, never the session.
 // Output: showcase/clips-recorded/<id>_h.mp4  (+ the raw session webm, kept for re-slicing)
 import { chromium } from 'playwright';
 import path from 'node:path';
@@ -433,7 +438,12 @@ async function applyScene(spec) {
   return { tracks: editor.getState().tracks.length, clips: editor.getState().clips.length, playing: player.getState().isPlaying, log };
 }
 
-const onlyIds = (process.env.ONLY || '').split(',').filter(Boolean);
+const onlyIds = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+// SKIP is the inverse of ONLY, for "capture everything except these". Needed for
+// a no-GPU pass: the handful of scenes that run a real model are excluded, and
+// listing the ~58 that remain in ONLY would be unreadable. SKIP applies after
+// ONLY, so the two compose.
+const skipIds = (process.env.SKIP || '').split(',').map((s) => s.trim()).filter(Boolean);
 const VJ_SOURCE = path.join(OUT, '_vjsource.mp4');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clickByTitle = (page, re) => page.evaluate((src) => { const rx = new RegExp(src, 'i'); const b = [...document.querySelectorAll('button')].find((x) => rx.test(x.getAttribute('title') || '')); if (b) b.click(); }, re.source).catch(() => {});
@@ -945,7 +955,9 @@ const tRec = Date.now();       // recording starts at context/page creation → 
                                // the boot duration and lands scene 1 inside the splash.)
 page.on('filechooser', (fc) => { fc.setFiles(VJ_SOURCE).catch(() => {}); });
 
-const scenes = onlyIds.length ? SCENES.filter((s) => onlyIds.includes(s.id)) : SCENES;
+const scenes = (onlyIds.length ? SCENES.filter((s) => onlyIds.includes(s.id)) : SCENES)
+  .filter((s) => !skipIds.includes(s.id));
+if (skipIds.length) console.log('skipping:', skipIds.join(', '));
 const marks = [];
 const results = [];
 
