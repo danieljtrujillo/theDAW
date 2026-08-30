@@ -21,6 +21,8 @@ data/settings.json
 data/recent_projects.json
 # Per-machine media roots (absolute paths to the user's audio folders)
 data/media_roots.json
+# Cockpit-saved Sway projects (contain absolute paths to the user's media)
+data/sway-projects/
 data/local_checkpoints.json
 data/library.db
 data/library.db-*

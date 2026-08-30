@@ -77,16 +77,14 @@ def _register_template_media() -> None:
             _collect_media_paths(doc, paths)
     except OSError:
         return
-    # Saved projects re-reference the same files; grant those too.
-    try:
-        for f in sorted(_PROJECTS_DIR.glob("*.sway")):
-            try:
-                doc = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            _collect_media_paths(doc, paths)
-    except OSError:
-        pass
+    # Only the STAGED templates above are trusted here. Saved projects under
+    # _PROJECTS_DIR are written from a /project-save request body, so reading
+    # them back to widen the allowlist would let a request grant itself access
+    # to any folder — and would re-grant it on every /status after a restart.
+    # media_access's contract is explicit: "Nothing a request body says can
+    # widen the allowlist on its own; only a project the server actually
+    # parsed can." A cockpit save names media the user already opened, which
+    # is therefore already allowlisted, so nothing legitimate needs this.
     if paths:
         media_access.register_paths(paths)
         log.info("sway: registered %d template media path(s)", len(paths))
@@ -155,11 +153,13 @@ async def sway_project_save(req: SwayProjectSave) -> dict:
         target.write_text(json.dumps(req.doc, indent=2), encoding="utf-8")
     except OSError as e:
         raise HTTPException(500, f"Save failed: {e}")
-    # A saved doc names the same media a template does — keep it playable.
-    paths: list[str] = []
-    _collect_media_paths(req.doc, paths)
-    if paths:
-        media_access.register_paths(paths)
+    # Deliberately does NOT call media_access.register_paths(req.doc's media).
+    # The server binds 0.0.0.0 with permissive CORS, so this body is
+    # attacker-reachable; registering paths from it would turn a save into
+    # "allowlist any folder on disk", and /clip-audio would then serve the
+    # audio under it. The media a real cockpit save names was already
+    # allowlisted when the user opened the project, so playback is unaffected.
+    # If a path genuinely is not reachable, add it as a media root instead.
     return {"status": "ok", "path": str(target)}
 
 
