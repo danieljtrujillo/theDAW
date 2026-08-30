@@ -293,11 +293,33 @@ def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> s
         "for(var i=0;i<fr.length;i++){try{fr[i].contentWindow.postMessage(d,'*');}catch(_){}}}"
         "});</script>"
     )
+    # Element iframes carry CustomCode authored against the native canvas size
+    # (hardcoded px fonts and shapes). The percentage layout scales their BOXES
+    # with the letterboxed canvas but nothing scales their CONTENT, so text
+    # renders at design px inside a shrunken box — the "weird text scaling".
+    # Zoom each iframe's document by rendered/native width: the content then
+    # lays out against its design-size viewport and paints scaled to fit.
+    scaler = (
+        "<script>(function(){"
+        f"var W={w:.0f};"
+        "var canvas=document.getElementById('gan-canvas');"
+        "function apply(){var k=canvas.clientWidth/W;if(!isFinite(k)||k<=0)return;"
+        "var fr=document.querySelectorAll('#gan-canvas iframe');"
+        "for(var i=0;i<fr.length;i++){"
+        "try{fr[i].contentDocument.documentElement.style.zoom=k;}catch(_){}}}"
+        "var fr=document.querySelectorAll('#gan-canvas iframe');"
+        "for(var i=0;i<fr.length;i++){fr[i].addEventListener('load',apply);}"
+        "if(typeof ResizeObserver!=='undefined'){new ResizeObserver(apply).observe(canvas);}"
+        "else{window.addEventListener('resize',apply);}"
+        "apply();"
+        "})();</script>"
+    )
     body = (
         '<div id="gan-stage"><div id="gan-canvas">'
         + "".join(body_parts)
         + "</div></div>"
         + relay
+        + scaler
         + "</body></html>"
     )
     return head + body

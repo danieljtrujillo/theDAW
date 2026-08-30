@@ -77,9 +77,11 @@ export const PlayerFooter: React.FC = () => {
   // Editor mode — when the EDIT tab is active and editor bridge is registered,
   // the first play click triggers an offline render into playerStore.
   // After that, all transport (seek, skip, loop, volume) works natively.
-  const activeView = useAppUiStore((s) => s.activeView);
+  // Keyed on centerTab (the state the tab bar actually writes) — the legacy
+  // activeView stayed 'create' when the user clicked EDIT, so footer PLAY
+  // never took the editor render path.
   const centerTab = useAppUiStore((s) => s.centerTab);
-  const inEditorMode = activeView === 'edit' && isEditorPlaybackRegistered();
+  const inEditorMode = centerTab === 'edit' && isEditorPlaybackRegistered();
 
   // Volume → master gain (continuous).
   useEffect(() => {

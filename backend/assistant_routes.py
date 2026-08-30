@@ -121,7 +121,7 @@ Wrap the JSON in `<action>` tags on its own line. The frontend parses these and 
 Format: `<action>{"type":"<action_type>","payload":{...}}</action>`
 
 Available actions:
-- `navigate` — Switch tabs. Payload: `{"tab": "create"|"edit"|"train"|"library"|"advanced"}`
+- `navigate` — Switch workspaces. Payload: `{"tab": "make"|"edit"|"mix"|"perform"|"dj"|"vj"|"sway"|"foundry"|"underfit"|"audimate"|"learn"|"tour"|"library"}`. "library" opens the library rail. Legacy names create/advanced (MAKE) and train (UNDERFIT) still work.
 - `open_docs` / `close_docs` — Open or close the docs modal. Payload: `{}`
 - `open_left_panel` / `close_left_panel` — Open or collapse the left panel. Payload: `{}`
 - `set_prompt` — Set generation prompt. Payload: `{"prompt": "..."}`
@@ -138,13 +138,27 @@ Available actions:
 - `set_shift_mode` — Set shift mode. Payload: `{"mode": "LogSNR"|"Flux"|"Full"|"None"}`
 - `set_init_noise` — Set init noise level. Payload: `{"noise": 0.7}`
 - `set_params` — Set multiple params at once. Payload: key-value pairs of any above, including advanced params like `sampler`, `sigma_max`, `duration_padding_sec`, `apg_scale`, `cfg_rescale`, `cfg_norm_threshold`, `cfg_interval_min`, `cfg_interval_max`, `shift_mode`, `file_format`, `file_naming`, and `cut_to_duration`.
-- `generate` — Start audio generation (uses current params). No payload needed.
-- `abort` — Cancel in-progress generation. No payload needed.
+- `generate` — Start audio generation (uses current params). No payload needed. Requires user confirmation in the UI.
+- `abort` — Cancel in-progress generation. No payload needed. Requires user confirmation in the UI.
 - `get_status` — Query current generation status. No payload needed.
 
-Example: User says "take me to advanced"
-Your response: Sure, switching to the Advanced tab now.
-<action>{"type":"navigate","payload":{"tab":"advanced"}}</action>
+EDIT arrangement actions (the current tracks/clips/playhead are in `editorState` of the app context; use the ids from there):
+- `editor_get_state` — Full track/clip listing with ids. Payload: `{}`
+- `editor_add_track` — Add a track. Payload: `{"name": "optional"}`
+- `editor_remove_track` — Remove a track AND its clips (asks the user to confirm). Payload: `{"track_id": "id or name"}`
+- `editor_set_track` — Update a track. Payload: `{"track_id": "...", "volume?": 0..2, "pan?": -1..1, "mute?": bool, "solo?": bool, "name?": "..."}`
+- `editor_move_clip` — Move a clip in time and/or across tracks. Payload: `{"clip_id": "...", "start_sec?": 12.5, "track_id?": "..."}`
+- `editor_remove_clip` — Delete a clip (asks the user to confirm). Payload: `{"clip_id": "..."}`
+- `editor_split_clip` — Split a clip at a timeline position inside it. Payload: `{"clip_id": "...", "at_sec": 8.0}`
+- `editor_select_clip` — Select a clip. Payload: `{"clip_id": "..."}`
+- `editor_set_playhead` — Move the playhead. Payload: `{"seconds": 0}`
+- `editor_set_bpm` — Set the arrangement BPM (20-400). Payload: `{"bpm": 120}`
+- `editor_set_loop` — Toggle/set the loop region. Payload: `{"enabled": true, "start_sec?": 0, "end_sec?": 8}`
+- `editor_add_marker` — Drop a timeline marker. Payload: `{"seconds": 16, "name": "optional"}`
+
+Example: User says "take me to the mixer"
+Your response: Sure, switching to the MIX workspace now.
+<action>{"type":"navigate","payload":{"tab":"mix"}}</action>
 
 Example: User says "set the prompt to epic orchestral music and generate"
 Your response: Setting your prompt and starting generation.
@@ -1391,14 +1405,36 @@ theDAW_TOOLS = [
         "type": "function",
         "function": {
             "name": "navigate",
-            "description": "Switch the active tab/view in theDAW",
+            "description": (
+                "Switch the active workspace tab in theDAW. 'library' opens the "
+                "library rail; 'perform' is the session/clip-launch grid. Legacy "
+                "names create/advanced (MAKE) and train (UNDERFIT) still resolve."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tab": {
                         "type": "string",
-                        "enum": ["create", "edit", "train", "library", "advanced"],
-                        "description": "Tab to navigate to",
+                        "enum": [
+                            "make",
+                            "edit",
+                            "mix",
+                            "perform",
+                            "session",
+                            "dj",
+                            "vj",
+                            "sway",
+                            "foundry",
+                            "underfit",
+                            "audimate",
+                            "learn",
+                            "tour",
+                            "library",
+                            "create",
+                            "advanced",
+                            "train",
+                        ],
+                        "description": "Workspace to navigate to",
                     }
                 },
                 "required": ["tab"],
@@ -1717,6 +1753,219 @@ theDAW_TOOLS = [
             "name": "get_status",
             "description": "Get current generation status and parameters",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    # ── EDIT arrangement vocabulary (editor_*) ──────────────────────────────
+    # The frontend executes these against the editor store; current tracks /
+    # clips / playhead / selection arrive in the editorState block of the app
+    # context, so the model can reference real ids. Destructive ops
+    # (remove_track / remove_clip) are confirmation-gated client-side.
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_get_state",
+            "description": "List every EDIT track and clip with ids, positions and durations",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_add_track",
+            "description": "Add a new track to the EDIT arrangement",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Track name"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_remove_track",
+            "description": "Remove an EDIT track and all of its clips (user confirms in the UI)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {
+                        "type": "string",
+                        "description": "Track id or exact track name",
+                    },
+                },
+                "required": ["track_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_track",
+            "description": "Update an EDIT track's volume, pan, mute, solo or name",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {
+                        "type": "string",
+                        "description": "Track id or exact name",
+                    },
+                    "volume": {"type": "number", "description": "Linear gain 0..2"},
+                    "pan": {"type": "number", "description": "-1 (left) .. 1 (right)"},
+                    "mute": {"type": "boolean"},
+                    "solo": {"type": "boolean"},
+                    "name": {"type": "string", "description": "New track name"},
+                },
+                "required": ["track_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_move_clip",
+            "description": "Move an EDIT clip to a new start time and/or another track",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                    "start_sec": {
+                        "type": "number",
+                        "description": "New timeline start (seconds)",
+                    },
+                    "track_id": {
+                        "type": "string",
+                        "description": "Destination track id or name",
+                    },
+                },
+                "required": ["clip_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_remove_clip",
+            "description": "Delete an EDIT clip from the arrangement (user confirms in the UI)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                },
+                "required": ["clip_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_split_clip",
+            "description": "Split an EDIT clip at a timeline position inside the clip",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                    "at_sec": {
+                        "type": "number",
+                        "description": "Timeline seconds inside the clip",
+                    },
+                },
+                "required": ["clip_id", "at_sec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_select_clip",
+            "description": "Select an EDIT clip (drives clip-scoped UI actions)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                },
+                "required": ["clip_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_playhead",
+            "description": "Move the EDIT playhead to a timeline position",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Timeline seconds (>= 0)",
+                    },
+                },
+                "required": ["seconds"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_bpm",
+            "description": "Set the EDIT arrangement tempo",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bpm": {
+                        "type": "number",
+                        "description": "Beats per minute, 20-400",
+                    },
+                },
+                "required": ["bpm"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_loop",
+            "description": "Enable/disable the EDIT loop and optionally set its region",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "start_sec": {"type": "number"},
+                    "end_sec": {"type": "number"},
+                },
+                "required": ["enabled"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_add_marker",
+            "description": "Add a named marker to the EDIT timeline",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Timeline seconds (>= 0)",
+                    },
+                    "name": {"type": "string", "description": "Marker label"},
+                },
+                "required": ["seconds"],
+            },
         },
     },
 ]

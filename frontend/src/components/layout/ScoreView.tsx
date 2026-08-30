@@ -25,6 +25,10 @@ import {
   type NotationCapabilities,
 } from '../../lib/notationClient';
 import type { AlphaTabApi } from '@coderline/alphatab';
+import { effectiveZoom } from '../../lib/canvasScale';
+
+/** Karaoke note colour — matches the cursor hairline so they read as one. */
+const NOTE_HIGHLIGHT_COLOR = '#34d399';
 
 const DEFAULT_TUNINGS = [
   'guitar-standard',
@@ -477,7 +481,7 @@ export const ScoreView: React.FC = () => {
           {selectedArtifact?.kind === 'musicxml' ? (
             <MusicXmlPreview artifact={selectedArtifact} entry={entry} />
           ) : selectedArtifact?.kind === 'alphatex' ? (
-            <TabPreview artifact={selectedArtifact} />
+            <TabPreview artifact={selectedArtifact} entry={entry} />
           ) : selectedArtifact ? (
             <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">
               {selectedArtifact.kind.toUpperCase()} artifact selected. Download or send it to MIDI/Score tools.
@@ -767,6 +771,48 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   // Timestamps that keep the auto-scroll and the user out of each other's way.
   const autoScrollUntilRef = useRef(0);
   const manualUntilRef = useRef(0);
+  // SVG elements currently painted in the karaoke highlight colour, so the
+  // previous note can be restored when the cursor advances.
+  const highlightedRef = useRef<Array<SVGElement | HTMLElement>>([]);
+
+  const clearNoteHighlight = useCallback(() => {
+    for (const el of highlightedRef.current) {
+      try {
+        el.style.fill = '';
+        el.style.stroke = '';
+      } catch {
+        /* detached during a re-render */
+      }
+    }
+    highlightedRef.current = [];
+  }, []);
+
+  // Karaoke highlight: paint the notehead(s) under the cursor. OSMD hands the
+  // graphical notes straight to us (GNotesUnderCursor), and VexFlow's notes
+  // expose their rendered <g> (getSVGGElement) — an inline style on every
+  // child out-specifies VexFlow's fill attributes, no OSMD fork needed.
+  const applyNoteHighlight = useCallback(() => {
+    clearNoteHighlight();
+    const cursor = osmdRef.current?.cursor as
+      | { GNotesUnderCursor?: () => Array<{ getSVGGElement?: () => SVGGElement | undefined }> }
+      | undefined;
+    if (!cursor?.GNotesUnderCursor) return;
+    try {
+      for (const gn of cursor.GNotesUnderCursor()) {
+        const g = gn?.getSVGGElement?.();
+        if (!g) continue;
+        const targets: Array<SVGElement | HTMLElement> = [g, ...Array.from(g.querySelectorAll<SVGElement>('*'))];
+        for (const t of targets) {
+          if (!t.style) continue;
+          t.style.fill = NOTE_HIGHLIGHT_COLOR;
+          t.style.stroke = NOTE_HIGHLIGHT_COLOR;
+          highlightedRef.current.push(t);
+        }
+      }
+    } catch {
+      /* renderer swapped mid-frame — the next step repaints */
+    }
+  }, [clearNoteHighlight]);
 
   const engineEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
@@ -853,6 +899,8 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     const map = mapRef.current;
     if (map) driverRef.current?.resync(map);
     lastStepRef.current = -1; // pages moved; re-check the scroll on the next step
+    // render() rebuilt every SVG — the highlighted elements are gone with it.
+    highlightedRef.current = [];
   }, []);
 
   // OSMD reads host.offsetWidth at render() to size one page, then we widen the
@@ -896,11 +944,12 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     setPage(clamped);
   }, []);
 
-  // Scroll the strip so the cursor stays on screen. A page change snaps through
-  // the same goToPage() the footer arrows use, so an automatic page turn and a
-  // manual one look identical; within a page a nudge keeps the cursor off the
-  // edges. Measurements go through getBoundingClientRect because the shell
-  // applies a CSS transform zoom and offset arithmetic drifts under it.
+  // Keep the cursor on screen KARAOKE-style: the strip glides continuously with
+  // the note cursor instead of snapping page by page. The page number is now
+  // only a readout + a keyboard/footer navigation unit. Measurements go through
+  // getBoundingClientRect (viewport px) and are converted to LOCAL px with
+  // effectiveZoom before touching scrollLeft — the shell's CSS zoom makes the
+  // two spaces differ and mixing them drifts the glide.
   const keepCursorVisible = useCallback(() => {
     const scroller = scrollRef.current;
     const cursor = osmdRef.current?.cursor;
@@ -909,26 +958,29 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     const now = performance.now();
     if (now < manualUntilRef.current) return;
 
+    // Track the page readout without snapping the view.
     const pageNumber = cursor.currentPageNumber || 1;
     if (pageNumber !== lastPageRef.current) {
       lastPageRef.current = pageNumber;
-      autoScrollUntilRef.current = now + 900; // covers the smooth scroll
-      goToPage(pageNumber);
-      return;
+      setPage(pageNumber);
     }
 
     const c = el.getBoundingClientRect();
     if (c.width === 0 && c.height === 0) return; // hidden
     const v = scroller.getBoundingClientRect();
-    const padX = v.width * 0.15;
+    // While the cursor sits inside the middle band, do nothing; once it leaves,
+    // glide so it lands at the reading position (38% across, vertically centred).
+    const padX = v.width * 0.28;
     const padY = v.height * 0.2;
-    const dx = c.left < v.left + padX || c.right > v.right - padX ? c.left - v.left - padX : 0;
-    const dy = c.top < v.top + padY || c.bottom > v.bottom - padY ? c.top - v.top - padY : 0;
-    if (dx === 0 && dy === 0) return;
-    autoScrollUntilRef.current = now + 250;
-    scroller.scrollLeft += dx;
-    scroller.scrollTop += dy;
-  }, [goToPage]);
+    const inBandX = c.left >= v.left + padX && c.right <= v.right - padX;
+    const inBandY = c.top >= v.top + padY && c.bottom <= v.bottom - padY;
+    if (inBandX && inBandY) return;
+    const ez = effectiveZoom(scroller);
+    const targetLeft = scroller.scrollLeft + (c.left + c.width / 2 - v.left - v.width * 0.38) / ez;
+    const targetTop = scroller.scrollTop + (c.top + c.height / 2 - v.top - v.height / 2) / ez;
+    autoScrollUntilRef.current = now + 600;
+    scroller.scrollTo({ left: Math.max(0, targetLeft), top: Math.max(0, targetTop), behavior: 'smooth' });
+  }, []);
 
   // One frame of follow-along: read the audible position, find the step it
   // falls in, ask the driver for it. The common case is a binary search over a
@@ -950,9 +1002,10 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     const at = driver.index();
     if (at !== lastStepRef.current) {
       lastStepRef.current = at;
+      applyNoteHighlight();
       keepCursorVisible();
     }
-  }, [entryId, keepCursorVisible]);
+  }, [entryId, keepCursorVisible, applyNoteHighlight]);
 
   // Held in a ref so the artifact load effect can put the fresh cursor under
   // the playhead without taking a dependency that would re-fetch the score.
@@ -1327,13 +1380,30 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   );
 };
 
-const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
+/** Duck-typed handle onto alphaTab's external-media player output — the 1.8
+ *  API for "an external audio source is the time axis" (PlayerMode
+ *  EnabledExternalMedia). Feature-detected at runtime so an older bundle
+ *  degrades to a static tab instead of crashing. */
+interface ExternalMediaOutput {
+  updatePosition?: (timeMs: number) => void;
+  handler?: unknown;
+}
+
+const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | null }> = ({ artifact, entry }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const apiRef = useRef<AlphaTabApi | null>(null);
   const zoomRef = useRef(ZOOM_DEFAULT);
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [status, setStatus] = useState('Loading tab renderer…');
+  const [follow, setFollow] = useState(true);
+  const followRef = useRef(follow);
+  followRef.current = follow;
+
+  const engineEntryId = usePlayerStore((s) => s.currentEntryId);
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const entryId = entry?.id ?? null;
+  const isSameTrack = !!entryId && engineEntryId === entryId;
 
   const applyZoom = useCallback((next: number) => {
     const z = clampZoom(next);
@@ -1367,8 +1437,28 @@ const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
         if (!res.ok) throw new Error(`alphaTex HTTP ${res.status}`);
         const tex = await res.text();
         if (cancelled) return;
+        // Karaoke follow: alphaTab's own beat cursor + element highlighting,
+        // driven by theDAW's audio engine as the time axis (external media
+        // mode). No soundfont, no alphaTab-side audio — position is pushed in
+        // from the same latency-compensated clock the sheet cursor uses.
+        const at = alphaTab as unknown as {
+          PlayerMode?: { EnabledExternalMedia?: number };
+          ScrollMode?: { Continuous?: number };
+        };
+        const externalMode = at.PlayerMode?.EnabledExternalMedia;
         api = new alphaTab.AlphaTabApi(container, {
-          player: { enablePlayer: false },
+          player: {
+            ...(externalMode !== undefined
+              ? {
+                  playerMode: externalMode,
+                  enableCursor: true,
+                  enableAnimatedBeatCursor: true,
+                  enableElementHighlighting: true,
+                  ...(at.ScrollMode?.Continuous !== undefined ? { scrollMode: at.ScrollMode.Continuous } : {}),
+                  scrollElement: scrollRef.current ?? undefined,
+                }
+              : { enablePlayer: false }),
+          } as never,
           display: { scale: zoomRef.current },
         });
         apiRef.current = api;
@@ -1396,11 +1486,73 @@ const TabPreview: React.FC<{ artifact: NotationArtifact }> = ({ artifact }) => {
     };
   }, [artifact.id]);
 
+  // Follow-along: while OUR engine plays THIS entry, push its clock into
+  // alphaTab every frame so the beat cursor + highlighted notes track the
+  // audio like the sheet cursor does. Feature-detected — a build without the
+  // external-media output just renders a static tab.
+  useEffect(() => {
+    if (!follow || !isSameTrack || !isPlaying) {
+      try {
+        apiRef.current?.pause?.();
+      } catch {
+        /* player not initialised */
+      }
+      return;
+    }
+    const clock = createScoreClock();
+    let raf = 0;
+    let alive = true;
+    const out = (): ExternalMediaOutput | null => {
+      const p = (apiRef.current as unknown as { player?: { output?: ExternalMediaOutput } } | null)?.player;
+      return p?.output ?? null;
+    };
+    try {
+      apiRef.current?.play?.();
+    } catch {
+      /* cursor still follows via position pushes */
+    }
+    const tick = () => {
+      if (!alive) return;
+      const ms = clock.read() * 1000;
+      const o = out();
+      try {
+        if (o?.updatePosition) o.updatePosition(ms);
+        else if (apiRef.current) (apiRef.current as unknown as { timePosition?: number }).timePosition = ms;
+      } catch {
+        /* mid-reload */
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      clock.reset();
+    };
+  }, [follow, isSameTrack, isPlaying]);
+
   return (
     <div className="relative h-full">
       <div ref={scrollRef} className="h-full overflow-auto bg-white text-black">
         {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
         <div ref={containerRef} className="min-h-full" />
+      </div>
+      {/* Follow toggle — mirrors the sheet's checkbox. */}
+      <div className="absolute left-2 top-2 flex items-center gap-2 rounded border border-black/10 bg-white/90 px-2 py-1 shadow">
+        <input
+          id="tab-follow"
+          name="tab-follow"
+          type="checkbox"
+          checked={follow}
+          onChange={(e) => setFollow(e.target.checked)}
+          className="h-3 w-3 accent-emerald-500"
+        />
+        <label htmlFor="tab-follow" className="text-[9px] font-mono uppercase tracking-wider text-zinc-700">
+          Follow
+        </label>
+        {follow && entryId && !isSameTrack && (
+          <span className="text-[8px] font-mono uppercase tracking-wider text-amber-600">other track</span>
+        )}
       </div>
       <ZoomControls
         zoom={zoom}

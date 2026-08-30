@@ -300,9 +300,7 @@ export const LogBody: React.FC = () => {
 // the affordance is always one click away.
 
 export const LogActionButton: React.FC = () => {
-  const activeView    = useAppUiStore((s) => s.activeView);
   const centerTab     = useAppUiStore((s) => s.centerTab);
-  const setActiveView = useAppUiStore((s) => s.setActiveView);
   const isGenerating  = useGenerateStore((s) => s.isGenerating);
   const progressPct   = useGenerateStore((s) => s.progressPct);
   const statusLabel   = useGenerateStore((s) => s.statusLabel);
@@ -313,9 +311,14 @@ export const LogActionButton: React.FC = () => {
   const isChainProcessing = useStudioStore((s) => s.isChainProcessing);
   const isTraining    = useTrainingStore((s) => s.isTraining);
 
-  const tab = (activeView in TAB_CONFIG ? activeView : 'create') as TabKey;
+  // The WORKSPACE decides the action: EDIT processes the arrangement, UNDERFIT
+  // trains, everything else CREATEs. Derived from centerTab — the real tab
+  // state — never the legacy activeView, which the tab bar historically did
+  // not write (so the footer fired text-to-audio on EDIT, and one assistant
+  // navigate('train') left a dead TRAIN button for the whole session).
+  const tab: TabKey = centerTab === 'edit' ? 'edit' : centerTab === 'underfit' ? 'train' : 'create';
   const cfg = TAB_CONFIG[tab];
-  const isActive = tab === 'create' ? isGenerating : tab === 'edit' ? isProcessing : tab === 'train' ? isTraining : false;
+  const isActive = tab === 'create' ? isGenerating : tab === 'edit' ? isProcessing : isTraining;
 
   // On the DJ tab the action button is SEND TO VJ (CREATE/PROCESS make no sense
   // there) — pushes the active setlist to the VJ performance.
@@ -367,8 +370,7 @@ export const LogActionButton: React.FC = () => {
   }
 
   const handleAction = () => {
-    if (tab === 'create' || tab === 'library' || tab === 'advanced') {
-      if (tab !== 'create') setActiveView('create');
+    if (tab === 'create') {
       if (isGenerating) { cancelPolling(); return; }
       // Build the full param set (includes Magenta style/notes/seed/extend and
       // initAudioEnabled) via the shared selector so CREATE and the assistant

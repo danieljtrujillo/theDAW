@@ -91,6 +91,8 @@ def detect_daw(req: PathRequest):
         return DetectResponse(daw="cubase", name=p.stem, format="cpr")
     elif suffix in (".ptx", ".pts"):
         return DetectResponse(daw="pro_tools", name=p.stem, format="ptx")
+    elif suffix == ".swayproj":
+        return DetectResponse(daw="sway", name=p.stem, format="swayproj")
     else:
         return DetectResponse(daw="unknown", name=p.stem, format=suffix.lstrip("."))
 
@@ -106,6 +108,23 @@ def import_ableton(req: PathRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse .als: {e}")
+    return _finish_import(project, req.path)
+
+
+@router.post("/sway")
+def import_swayproj(req: PathRequest):
+    """Parse an Audima Sway .swayproj controller layout and return a DawProject
+    dict (controller_mappings only — the format carries no tracks or clips)."""
+    from backend.modules.dawimport.swayproj import parse_swayproj
+
+    try:
+        project = parse_swayproj(req.path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse .swayproj: {e}")
     return _finish_import(project, req.path)
 
 

@@ -6,7 +6,9 @@ import { DAWCenterPanel } from './DAWCenterPanel';
 const CatalogueView = lazy(() => import('../../catalog/CatalogueView').then((m) => ({ default: m.CatalogueView })));
 import { CenterTabBar } from './CenterTabBar';
 import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
-import { BottomMultiTabPanel } from './BottomMultiTabPanel';
+import { BottomMultiTabPanel, BOTTOM_TAB_LABELS } from './BottomMultiTabPanel';
+import { AutosaveRecoveryNotice } from './AutosaveRecoveryNotice';
+import { initEditorAutosave } from '../../lib/editorAutosave';
 // Lazy: the docs modal bundles a markdown/HTML renderer + screenshots; keep it
 // out of first paint and only fetch the chunk when the user opens Docs.
 const DocsModal = lazy(() => import('./DocsModal').then((m) => ({ default: m.DocsModal })));
@@ -35,7 +37,7 @@ const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
 
 export const Shell: React.FC = () => {
-  const setActiveView = useAppUiStore((state) => state.setActiveView);
+  const navigateTo = useAppUiStore((state) => state.navigateTo);
   const centerTab = useAppUiStore((state) => state.centerTab);
   const setCenterTab = useAppUiStore((state) => state.setCenterTab);
   const isRightPanelOpen = useAppUiStore((state) => state.isRightPanelOpen);
@@ -71,11 +73,19 @@ export const Shell: React.FC = () => {
     loadProject({ tracks: [], clips: [] });
   }, [loadProject]);
 
+  // Editor autosave + crash recovery (OPFS asset layer). Started from Shell —
+  // mounted for the app's life, unlike WaveformEditor — and idempotent, so the
+  // StrictMode double-mount is harmless. Publishes a recovery offer (rendered
+  // below as AutosaveRecoveryNotice) when an autosaved arrangement exists.
+  React.useEffect(() => {
+    initEditorAutosave();
+  }, []);
+
   // Unsaved-changes guard. Clip audio lives in in-memory Blobs, so a refresh or a
-  // closed tab destroys the arrangement outright — this is the only thing standing
-  // between the user and silent total loss until real autosave lands. Lives in
-  // Shell, not WaveformEditor, because EDIT unmounts on every tab switch
-  // (DAWCenterPanel) while the document stays at risk.
+  // closed tab could still destroy an arrangement younger than the autosave
+  // debounce — this stays as the last line of defence. Lives in Shell, not
+  // WaveformEditor, because EDIT unmounts on every tab switch (DAWCenterPanel)
+  // while the document stays at risk.
   React.useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!useEditorStore.getState().dirty) return;
@@ -209,7 +219,7 @@ export const Shell: React.FC = () => {
   useEffect(() => {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent).detail?.tab;
-      setActiveView(tab);
+      navigateTo(tab);
     };
     const openDocsHandler = () => setDocsOpen(true);
     const closeDocsHandler = () => setDocsOpen(false);
@@ -225,7 +235,7 @@ export const Shell: React.FC = () => {
       window.removeEventListener('thedaw:close-docs', closeDocsHandler);
       window.removeEventListener('thedaw:open-settings', openSettingsHandler);
     };
-  }, [setActiveView, setDocsOpen]);
+  }, [navigateTo, setDocsOpen]);
 
   // ── Right rail drag-resize. When the Library is open, dragging the
   // rail's left edge widens / narrows the rail. The collapsed-rail
@@ -325,7 +335,7 @@ export const Shell: React.FC = () => {
       {/* Main Canvas — hidden when library is expanded to full view. */}
       {!isLibraryExpanded && (
         <main className="flex-1 h-full overflow-hidden flex flex-col relative bg-[#110e1a]/60">
-          <DAWCenterPanel onSwitchTab={(tab) => setActiveView(tab)} />
+          <DAWCenterPanel onSwitchTab={(tab) => navigateTo(tab)} />
         </main>
       )}
 
@@ -358,7 +368,7 @@ export const Shell: React.FC = () => {
                 <CatalogueView onCollapse={() => setLibraryExpanded(false)} />
               </Suspense>
             ) : (
-              <LibraryView onSwitchTab={(tab: string) => setActiveView(tab)} onExpand={() => setLibraryExpanded(true)} />
+              <LibraryView onSwitchTab={(tab: string) => navigateTo(tab)} onExpand={() => setLibraryExpanded(true)} />
             )}
           </div>
         </aside>
@@ -560,6 +570,9 @@ export const Shell: React.FC = () => {
       {/* Feature-gate notices (bottom-right stack) — offsets itself above the
           DownloadDock when downloads are active. Renders null when empty. */}
       <FeatureGateNotices />
+      {/* Crash-recovery offer for the editor autosave (top-center; renders null
+          when there is nothing to recover). */}
+      <AutosaveRecoveryNotice />
       {/* Startup HOME landing (card grid per workspace). Auto-opened by App on
           returning launches; also reachable from the app menu. */}
       {homeOpen && (
@@ -624,6 +637,7 @@ const ShellBottomDock: React.FC = () => {
   const isLogOpen = useBottomPanelStore((s) => s.isLogOpen);
   const setLogOpen = useBottomPanelStore((s) => s.setLogOpen);
   const multiMaximized = useBottomPanelStore((s) => s.multiMaximized);
+  const activeBottomTab = useBottomPanelStore((s) => s.activeTab);
 
   // Dock-body height — shared by the multi-tab panel (in-flow) and the floating
   // LOG overlay. Maximized fills the work area. The height MUST be computed in
@@ -655,11 +669,12 @@ const ShellBottomDock: React.FC = () => {
   return (
     <div className="relative shrink-0 flex flex-col z-30 pointer-events-none">
       {/* Multi-tab body — in-flow; the global bottom panel legitimately lifts the
-          work area. The LOG no longer shares this row (it floats, below). */}
+          work area. The LOG no longer shares this row (it floats, below).
+          `dock-emerge` rises it out of the strip toggle beneath on open. */}
       {isBottomOpen && (
         <div
           className="relative shrink-0 bg-[#0a080f] overflow-hidden shadow-[0_-1px_0_rgba(168,85,247,0.08)] pointer-events-auto"
-          style={{ height: bodyHeight }}
+          style={{ height: bodyHeight, animation: 'dock-emerge 180ms cubic-bezier(.2,.7,.2,1)' }}
         >
           {!multiMaximized && (
             <ColumnResizeHandle
@@ -679,7 +694,7 @@ const ShellBottomDock: React.FC = () => {
       {isLogOpen && (
         <div
           className="absolute right-0 z-40 pointer-events-auto bg-[#0a080f] overflow-hidden border-l border-purple-500/15 shadow-[-2px_-2px_12px_rgba(0,0,0,0.5)]"
-          style={{ bottom: STRIP_HEIGHT, width: logWidth, height: bodyHeight }}
+          style={{ bottom: STRIP_HEIGHT, width: logWidth, height: bodyHeight, animation: 'dock-emerge 180ms cubic-bezier(.2,.7,.2,1)' }}
         >
           {!multiMaximized && (
             <ColumnResizeHandle
@@ -694,18 +709,31 @@ const ShellBottomDock: React.FC = () => {
       )}
 
       {/* Single horizontal strip — always visible. `relative` anchors the
-          viewport-centred expand chevron. */}
+          viewport-centred expand chevron. Styled in the footer's own language
+          (same tinted-blur background, same hairline border) so the toggles
+          read as the footer's top row rather than a separate dock. */}
       <div className="relative shrink-0 flex items-stretch pointer-events-auto" style={{ height: STRIP_HEIGHT }}>
 
         {/* Multi-tab toggle — flex-1 clickable area (the chevron is centred
-            separately, below, so it lines up with PLAY / DJ / the mirror line). */}
+            separately, below, so it lines up with PLAY / DJ / the mirror line).
+            Labeled like the LOG toggle: PANELS + the active tab's name, so the
+            slab reads as a button instead of empty chrome. */}
         <button
           type="button"
           onClick={() => setBottomOpen(!isBottomOpen)}
-          className="min-w-0 flex-1 bg-[#0a080f] hover:bg-purple-500/8 transition-colors border-t border-r border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]"
+          className="min-w-0 flex-1 flex items-center gap-1.5 px-2 bg-[#0a080f]/95 backdrop-blur-xl hover:bg-purple-500/8 transition-colors border-t border-r border-white/5 shadow-[0_-1px_0_rgba(168,85,247,0.08)] group"
           title={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
           aria-label={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
-        />
+        >
+          {isBottomOpen
+            ? <ChevronDown className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
+            : <ChevronUp className="w-3.5 h-3.5 text-purple-300 group-hover:text-white transition-colors shrink-0" />
+          }
+          <span className="text-[10px] font-black uppercase tracking-widest text-purple-200 shrink-0">Panels</span>
+          <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-500 truncate">
+            {BOTTOM_TAB_LABELS[activeBottomTab] ?? ''}
+          </span>
+        </button>
 
         {/* Expand chevron — centred on the viewport so it lines up with the PLAY
             button, the DJ tab, and the layout-editor mirror line. pointer-events
@@ -720,7 +748,7 @@ const ShellBottomDock: React.FC = () => {
         {/* LOG strip section — CONTENT width: auto-fits the CPU/GPU/TEMP/VRAM/RAM
             readouts (its measured width drives logWidth). The action button is a
             FIXED width and never grows with the LOG. */}
-        <div ref={logSectionRef} className="shrink-0 bg-[#0a080f] flex items-stretch border-t border-purple-500/15 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
+        <div ref={logSectionRef} className="shrink-0 bg-[#0a080f]/95 backdrop-blur-xl flex items-stretch border-t border-white/5 shadow-[0_-1px_0_rgba(168,85,247,0.08)]">
           {/* LOG header — natural width so every readout shows in full. */}
           <button
             type="button"

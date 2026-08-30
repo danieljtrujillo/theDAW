@@ -42,8 +42,18 @@ All import routes take `PathRequest{path}` and return a DawProject dict.
 | POST | `/api/dawimport/audition` | Parse `.sesx` (`:149`) |
 | POST | `/api/dawimport/bitwig` | Parse `.bwproject` (`:164`) |
 | POST | `/api/dawimport/resolume` | Parse `.avc` (`:179`) |
+| POST | `/api/dawimport/sway` | Parse Audima Sway `.swayproj` (`:114`) — a controller layout, not a session: returns 0 tracks by design and seeds Perform dim bindings from preset names |
 | GET | `/api/dawimport/cubase/export-hint` | Cubase export instructions (`:194`) |
 | GET | `/api/dawimport/pro-tools/export-hint` | Pro Tools export instructions (`:208`) |
+
+### sway — `/api/sway` (SwayCommand cockpit)
+Hosts the Audima SwayCommand performance app as an embedded iframe, the same sidecar-iframe pattern as Foundry. Serving a project also registers its media paths with `media_access`, without which every clip fetch 403s.
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/sway/status` | Staged-build health snapshot |
+| GET | `/api/sway/url` | Iframe URL for the staged cockpit build (registers template media) |
+| GET | `/api/sway/projects` | List cockpit-saved projects in `data/sway-projects/` |
+| POST | `/api/sway/project-save` | Persist a cockpit `project.write` as `data/sway-projects/*.sway` and allowlist its media (count-verified) |
 
 ### underfit — `/api/underfit` (Underfit sidecar)
 | Method | Path | Purpose |

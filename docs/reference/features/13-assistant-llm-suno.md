@@ -16,9 +16,15 @@ Default models per provider are configured in the provider catalog (for example 
 
 ### Controlling the app by chat
 
-Ask the assistant to do something ("switch to advanced", "set the prompt to epic orchestral and generate") and it drives the UI directly. Providers with native function calling receive an OpenAI-style tool schema (`theDAW_TOOLS`, converted to Anthropic tool format for Claude); other models emit `<action>{...}</action>` blocks the frontend executes. Actions cover navigation, prompt editing, every generation parameter, and generate/abort/status.
+Ask the assistant to do something ("switch to advanced", "set the prompt to epic orchestral and generate") and it drives the UI directly. Providers with native function calling receive an OpenAI-style tool schema (`theDAW_TOOLS`, converted to Anthropic tool format for Claude); other models emit `<action>{...}</action>` blocks the frontend executes. Actions cover navigation, prompt editing, every generation parameter, generate/abort/status, and a full **timeline-editing vocabulary**.
 
-*Evidence: `backend/assistant_routes.py:1389`, `backend/assistant_routes.py:117`.*
+**Navigation reaches every workspace.** `navigateTo()` resolves all twelve center tabs plus the library rail, and returns false — reported back to the model — on an unknown target, instead of silently no-opping while claiming success (`frontend/src/state/appUiStore.ts`).
+
+**Editor tools.** Twelve `editor_*` tools let the assistant read and modify the EDIT arrangement: `editor_get_state`, `add_track`, `remove_track`, `set_track`, `move_clip`, `remove_clip`, `split_clip`, `select_clip`, `set_playhead`, `set_bpm`, `set_loop`, and `add_marker`. They are implemented against `editorStore` with honest error strings, and the assistant's app context now reports the real active tab plus a bounded arrangement summary (tracks, clips, playhead, selection, loop, BPM) — previously it was architecturally blind to the timeline and was always told the user was on CREATE.
+
+**Approval tiers.** Tools are tiered: T1 runs immediately, while **T2 — anything that spends GPU, destroys work, or is unrecognized** (`generate`, `abort`, destructive editor ops, unknown names) — parks as a `pendingAction` and renders a confirmation card the user must accept. Inline `<action>` blocks from non-function-calling models are allowlist-validated and tier-gated on the same path, and execute outside the `setMessages` updater so React StrictMode cannot double-fire them (`frontend/src/orb-kit/tool-tiers.ts`, `AssistantPanel.tsx`, `assistantEvents.ts`).
+
+*Evidence: `backend/assistant_routes.py:117`, `backend/assistant_routes.py:146`, `backend/assistant_routes.py:1766`.*
 
 ### Claude Code agent mode
 

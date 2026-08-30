@@ -39,6 +39,34 @@ import { useMidiTriggerStore } from '../state/midiTriggerStore';
 /** Where the cockpit is mounted. Must match backend/modules/sway/sidecar.py. */
 const SWAY_SRC = '/sway-app/';
 
+/** The template the cockpit boots into when the user has no saved project. */
+const DEFAULT_TEMPLATE = 'will-i-dream';
+
+/**
+ * The iframe URL, with `?autoplay=` so the cockpit boots STRAIGHT into a
+ * loaded project. This is load-bearing, not cosmetic: without a loaded
+ * project the cockpit's + TRACK button and transport are silent no-ops
+ * (its addTrack/play guard on a null timeline), and without the autoplay
+ * param its boot shows the SYSTEM splash modal over the deck. The cockpit
+ * shares theDAW's localStorage (same origin), so the most recent
+ * cockpit-saved project (`swayproject:/` paths resolve from
+ * localStorage['sway:projects']) wins over the default template; transient
+ * `swaydrop:/` handles die on reload and are skipped.
+ */
+function swayBootSrc(): string {
+  let target: string = DEFAULT_TEMPLATE;
+  try {
+    const recents = JSON.parse(window.localStorage.getItem('sway:recents') ?? '[]') as Array<{ path?: string }>;
+    const saved = Array.isArray(recents)
+      ? recents.find((r) => typeof r?.path === 'string' && r.path.startsWith('swayproject:/'))
+      : null;
+    if (saved?.path) target = saved.path;
+  } catch {
+    /* unreadable recents — boot the default template */
+  }
+  return `${SWAY_SRC}?autoplay=${encodeURIComponent(target)}`;
+}
+
 /** Wire-protocol version for every frame exchanged with the cockpit. */
 const PROTOCOL = 1;
 
@@ -321,7 +349,7 @@ export const SwayView: React.FC = () => {
         {embedState === 'ready' ? (
           <iframe
             ref={iframeRef}
-            src={SWAY_SRC}
+            src={swayBootSrc()}
             title="SwayCommand"
             onLoad={handleIframeLoad}
             // midi: the cockpit's own learn UI reads relayed frames, but the

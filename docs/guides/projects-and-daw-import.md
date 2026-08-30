@@ -25,7 +25,13 @@ Files referenced by more than one clip are stored once. A `.tasmo` larger than 5
 
 The `TasmoProject` model stores, per project: tempo, time signature, sample rate, author, locators, automation lanes, and generation history. Each track carries its name, type (`audio`, `midi`, `return`, `master`, or `bus`), color, volume, pan, mute, solo, arm state, order, input and output routing, send amounts, and a track-level effect chain. Each clip carries its type (`audio`, `midi`, or `generated`), timing, loop points, per-clip mute, the audio or MIDI file reference, MIDI notes, warp markers, a clip-level effect chain, and generation metadata (prompt, seed, and parameters) for generated clips.
 
-Two fields preserve live performance setup across a save and load. `controller_mappings` stores the resolved Sway (MIDI-learn) auto-attach bindings. `perform_routing` stores the Perform-tab scene-launch and Sway-dimension modulation assignments.
+Two fields preserve live performance setup across a save and load. `controller_mappings` stores the resolved Sway (MIDI-learn) auto-attach bindings. `perform_routing` stores the whole Perform-tab control layout in four parts: `transport` (Scene Select / Launch / Stop / Scene +/-), `sceneCtrls` (one control per scene row), `trackMods` (the six Sway motion dimensions driving a track's volume or mute), and `ccMods` (direct routes from a knob, XY axis or pad to a track's volume, mute, or any parameter of any effect in that track's chain — including note-bound **FX punches**, momentary or latching). `ccMods` are project-scoped and live only in the file; the other three also persist locally. Playing a set from this layout is covered in [sway-perform-live.md](sway-perform-live.md).
+
+#### Effect chain nodes
+
+Each track carries an `effect_chain` of nodes, and a node's `node_type` decides how it is hosted. A `builtin` node names one of theDAW's rack effects in `effect_name` and carries a flat `parameters` map of numbers — these run live in EDIT, MIX and the Perform grid. A `vst3` (or `audiounit`) node additionally carries `vst_state` with the plugin's absolute `plugin_path` and `plugin_name`; plugins cannot run in the browser audio graph, so they are hosted natively in EDIT/MIX and applied on freeze or render. Every node also has a `bypass` flag and a stable `id` so controller mappings keyed to that FX slot survive the round-trip. Parameter maps must be flat `string → number`; a non-numeric value fails validation for the whole save.
+
+A clip additionally carries its Perform-grid placement (`track_index`, `scene_index`, `slot_index`) and its loop window, so a launch grid and its sustaining loops survive a save and reload.
 
 ## Saving a project as .tasmo
 
@@ -63,6 +69,7 @@ Detection reports a warnings list for every parsed project. Parsers never abort 
 | Adobe Audition | `.sesx` | Tracks with names, volume, and pan, and audio clips referenced by relative or absolute path from the session XML. |
 | Bitwig Studio | `.bwproject` | Tracks with content type, color, channel role, volume, pan, and mute, plus the device chain (VST3, VST2, CLAP, AU, and built-in devices) and arrangement lanes, read through the open DAWproject schema. |
 | Resolume Arena | `.avc` | Tempo, layers as tracks, audio and video clips with source file paths and best-effort timing, and native or VST effects. MIDI is emitted only when a clip carries note data. |
+| Audima Sway | `.swayproj` | The controller layout, not a session: presets and zones with their rectangles, CC slots and notes. It imports with **zero tracks by design** and reports that honestly. Its value is the Perform routing — preset names seed the six motion-dimension bindings automatically. |
 
 ### Formats with export guidance only
 

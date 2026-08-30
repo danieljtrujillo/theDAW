@@ -117,6 +117,10 @@ export interface TasmoLoadedClip {
   fade_out?: number;
   /** Seconds into the source where the clip starts — the trim point. */
   offset_into_source?: number;
+  /** Loop window in source seconds; loop_end past loop_start makes the clip
+   *  SUSTAIN (loop) when launched from the Perform grid. */
+  loop_start?: number | null;
+  loop_end?: number | null;
   /** Session-view (Perform grid) placement; null on an arrangement clip.
    *  Without these the format could not represent a clip-launch grid, so every
    *  session clip was dropped on save. */

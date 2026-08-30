@@ -89,6 +89,18 @@ const BUNDLE_PATCHES = [
     find: 'supported:c,get available(){return!!n}',
     replace: 'supported:c,get available(){return l||!!n}',
   },
+  // project.write persists to localStorage + a browser download only; mirror
+  // every save to theDAW's backend so a real .sway lands in data/sway-projects
+  // and survives cleared browser storage. Fire-and-forget: a failed mirror
+  // must never break the in-cockpit save.
+  {
+    reason: 'embed save: mirror project.write to POST /api/sway/project-save',
+    find: 'async function YS(i,e){let t=B5();t[i]=e;let n=T2(I5,t);O5(i,i.split("/").pop()||i);',
+    replace:
+      'async function YS(i,e){let t=B5();t[i]=e;let n=T2(I5,t);O5(i,i.split("/").pop()||i);' +
+      'try{void fetch("/api/sway/project-save",{method:"POST",headers:{"content-type":"application/json"},' +
+      'body:JSON.stringify({name:i.split("/").pop()||i,doc:e})})}catch{}',
+  },
 ]
 
 function patchStagedBundle() {
@@ -112,6 +124,25 @@ function patchStagedBundle() {
   }
 }
 
+// The template the SWAY tab boots into (SwayView passes ?autoplay=<id>); keep
+// it FIRST in the cockpit's TEMPLATES popover too, whatever order upstream
+// ships. Re-applied on every fetch like the bundle patches.
+const FIRST_TEMPLATE = 'will-i-dream'
+
+function patchStagedTemplates() {
+  const indexPath = join(stageDir, 'templates', 'index.json')
+  if (!existsSync(indexPath)) return
+  try {
+    const data = JSON.parse(readFileSync(indexPath, 'utf8'))
+    if (!Array.isArray(data.order) || !data.order.includes(FIRST_TEMPLATE)) return
+    data.order = [FIRST_TEMPLATE, ...data.order.filter((id) => id !== FIRST_TEMPLATE)]
+    writeFileSync(indexPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
+    console.log(`[fetch-sway] template order: ${FIRST_TEMPLATE} first`)
+  } catch (err) {
+    console.log(`[fetch-sway] template reorder skipped: ${err && err.message ? err.message : err}`)
+  }
+}
+
 function stage(builtDir, provenance) {
   if (!existsSync(join(builtDir, 'index.html'))) {
     fail(`${builtDir} has no index.html - the embed build did not produce a servable bundle.`)
@@ -120,6 +151,7 @@ function stage(builtDir, provenance) {
   mkdirSync(dirname(stageDir), { recursive: true })
   cpSync(builtDir, stageDir, { recursive: true })
   patchStagedBundle()
+  patchStagedTemplates()
   // Stamp provenance so a stale artifact is a readable version in the SWAY tab
   // rather than a mystery cockpit that is missing a scene. The backend reads
   // this via sidecar.read_build_stamp().

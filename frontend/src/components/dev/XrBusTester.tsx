@@ -1,5 +1,5 @@
 /**
- * XR control-bus tester (dev only).
+ * XR control-bus tester (dev only) — the "XR Bus" tab of the bottom dock.
  *
  * A simulated theDAW-XR controller in the browser: it opens its OWN WebSocket
  * peer to the `xrcontrol` relay (`/api/xr/control/ws`), asks for the live
@@ -8,13 +8,14 @@
  * (controller -> relay -> theDAW host -> the wired setter) with no headset and
  * no console snippet.
  *
- * Mounted only under import.meta.env.DEV (see App.tsx), so it never ships in a
- * production build. The theDAW host peer (xrControlClient, started when MIDI is
- * enabled) must be connected for control-sets to take effect; until it is, this
- * panel connects but receives no manifest.
+ * The tab is registered only under import.meta.env.DEV (see
+ * BottomMultiTabPanel.tsx), so it never ships in a production build. The
+ * theDAW host peer (xrControlClient, started when MIDI is enabled) must be
+ * connected for control-sets to take effect; until it is, this panel connects
+ * but receives no manifest.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Radio, X } from 'lucide-react';
+import { Radio } from 'lucide-react';
 import type { XrManifestEntry, XrControlValue } from '../../state/xrControlClient';
 
 function wsUrl(): string {
@@ -28,8 +29,7 @@ function wsUrl(): string {
 
 const RANGE_KINDS = new Set(['knob', 'fader', 'crossfader', 'xy', 'xyz', 'jog']);
 
-export function XrBusTester(): React.ReactElement {
-  const [open, setOpen] = useState(false);
+export function XrBusPanel(): React.ReactElement {
   const [connected, setConnected] = useState(false);
   const [entries, setEntries] = useState<XrManifestEntry[]>([]);
   const [values, setValues] = useState<Record<string, XrControlValue>>({});
@@ -95,7 +95,7 @@ export function XrBusTester(): React.ReactElement {
     };
   }, []);
 
-  // Close the peer when the panel unmounts.
+  // Close the peer when the tab unmounts (dock closed or another tab picked).
   useEffect(() => () => disconnect(), [disconnect]);
 
   const send = useCallback((id: string, value: XrControlValue) => {
@@ -111,21 +111,6 @@ export function XrBusTester(): React.ReactElement {
     else connect();
   }, [connected, connect, disconnect]);
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="Open the XR control-bus tester"
-        title="XR control-bus tester (dev)"
-        className="fixed bottom-3 right-3 z-200 flex items-center gap-1.5 rounded-full border border-cyan-400/50 bg-cyan-500/15 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-cyan-100 shadow-[0_0_14px_rgba(34,211,238,0.4)] hover:bg-cyan-500/30"
-      >
-        <Radio className="h-3.5 w-3.5" />
-        XR bus
-      </button>
-    );
-  }
-
   // Group entries by their manifest group for tidy clusters.
   const groups: Record<string, XrManifestEntry[]> = {};
   for (const en of entries) {
@@ -133,28 +118,17 @@ export function XrBusTester(): React.ReactElement {
   }
 
   return (
-    <section
-      aria-label="XR control-bus tester"
-      className="fixed bottom-3 right-3 z-200 flex max-h-[70vh] w-80 flex-col rounded-lg border border-cyan-400/40 bg-zinc-950/95 text-zinc-200 shadow-[0_0_24px_rgba(34,211,238,0.35)] backdrop-blur"
-    >
-      <header className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+    <div className="flex h-full min-h-0 flex-col text-zinc-200">
+      <div className="flex shrink-0 items-center gap-3 border-b border-white/5 px-3 py-2">
         <div className="flex items-center gap-2">
           <Radio className="h-4 w-4 text-cyan-300" />
           <span className="text-[11px] font-black uppercase tracking-widest text-cyan-100">
             XR control bus
           </span>
+          <span className="rounded border border-cyan-400/30 bg-cyan-500/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-cyan-300/80">
+            dev
+          </span>
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          aria-label="Close the XR control-bus tester"
-          className="rounded p-1 text-zinc-400 hover:bg-white/10 hover:text-white"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </header>
-
-      <div className="flex items-center justify-between gap-2 px-3 py-2">
         <button
           type="button"
           onClick={toggleConnect}
@@ -162,8 +136,8 @@ export function XrBusTester(): React.ReactElement {
           aria-label={connected ? 'Disconnect the simulated XR controller' : 'Connect the simulated XR controller'}
           className={
             connected
-              ? 'flex items-center gap-2 rounded border border-emerald-400/60 bg-emerald-500/20 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-emerald-100'
-              : 'flex items-center gap-2 rounded border border-white/15 bg-white/5 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-300 hover:bg-white/10'
+              ? 'flex items-center gap-2 rounded border border-emerald-400/60 bg-emerald-500/20 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-100'
+              : 'flex items-center gap-2 rounded border border-white/15 bg-white/5 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-300 hover:bg-white/10'
           }
         >
           <span
@@ -175,41 +149,48 @@ export function XrBusTester(): React.ReactElement {
         <span className="text-[10px] tabular-nums text-zinc-400">
           {entries.length} control{entries.length === 1 ? '' : 's'}
         </span>
+        {lastEcho && (
+          <span className="min-w-0 flex-1 truncate text-right text-[9px] text-zinc-500">
+            last echo: <span className="text-zinc-300">{lastEcho}</span>
+          </span>
+        )}
       </div>
 
+      {!connected && (
+        <p className="shrink-0 px-3 pt-2 text-[10px] leading-snug text-zinc-500">
+          Simulated theDAW-XR controller: connect to drive every published control over the
+          relay, exactly as a headset or phone companion would.
+        </p>
+      )}
       {connected && entries.length === 0 && (
-        <p className="px-3 pb-2 text-[10px] leading-snug text-amber-300/90">
+        <p className="shrink-0 px-3 pt-2 text-[10px] leading-snug text-amber-300/90">
           Connected, but theDAW sent no manifest yet. Enable MIDI in Settings so the
           control host attaches, then reconnect.
         </p>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        {Object.entries(groups).map(([group, items]) => (
-          <fieldset key={group} className="mb-3 border-0 p-0">
-            <legend className="mb-1 text-[9px] font-black uppercase tracking-widest text-cyan-300/80">
-              {group}
-            </legend>
-            <div className="flex flex-col gap-1.5">
-              {items.map((en) => (
-                <ControlRow
-                  key={en.id}
-                  entry={en}
-                  value={values[en.id]}
-                  onSend={send}
-                />
-              ))}
-            </div>
-          </fieldset>
-        ))}
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        <div className="grid items-start gap-x-6 gap-y-3 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
+          {Object.entries(groups).map(([group, items]) => (
+            <fieldset key={group} className="min-w-0 border-0 p-0">
+              <legend className="mb-1 text-[9px] font-black uppercase tracking-widest text-cyan-300/80">
+                {group}
+              </legend>
+              <div className="flex flex-col gap-1.5">
+                {items.map((en) => (
+                  <ControlRow
+                    key={en.id}
+                    entry={en}
+                    value={values[en.id]}
+                    onSend={send}
+                  />
+                ))}
+              </div>
+            </fieldset>
+          ))}
+        </div>
       </div>
-
-      {lastEcho && (
-        <footer className="border-t border-white/10 px-3 py-1.5 text-[9px] text-zinc-500">
-          last echo: <span className="text-zinc-300">{lastEcho}</span>
-        </footer>
-      )}
-    </section>
+    </div>
   );
 }
 

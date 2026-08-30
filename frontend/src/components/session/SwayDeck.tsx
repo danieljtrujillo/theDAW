@@ -121,7 +121,8 @@ export const SwayDeck: React.FC<{ project: DawProject }> = ({ project }) => {
     surfRef.current?.setArmed(!!learn);
   }, [selected, learn]);
 
-  // Pad labels = the scene each pad launches (bound by its chromatic note).
+  // Pad labels = the scene each pad launches (bound by its chromatic note),
+  // else the first note-driven fx punch riding that note.
   React.useEffect(() => {
     const labels: (string | null)[] = new Array(16).fill(null);
     for (let padIdx = 0; padIdx < 16; padIdx++) {
@@ -132,11 +133,15 @@ export const SwayDeck: React.FC<{ project: DawProject }> = ({ project }) => {
           break;
         }
       }
+      if (labels[padIdx] == null) {
+        const punch = ccMods.find((m) => m.isNote && m.number === note);
+        if (punch) labels[padIdx] = punch.label;
+      }
     }
     const lit = PERFORM_FUNCTIONS.map((f) => !!transport[f.id]);
     surfRef.current?.refresh(labels, lit);
     surfRef.current?.setStatus(`${scenes.length} scenes · ${tracks.length} tracks`);
-  }, [sceneCtrls, scenes, tracks.length, transport]);
+  }, [sceneCtrls, scenes, tracks.length, transport, ccMods]);
 
   // ── assignment state for the panel ───────────────────────────────────────
   const cc = selected ? ctlToCc(selected) : null;
@@ -206,8 +211,8 @@ export const SwayDeck: React.FC<{ project: DawProject }> = ({ project }) => {
         {!selected ? (
           <p className="text-[9px] font-mono leading-relaxed text-zinc-500 m-auto px-2 text-center">
             click a control on the deck —<br />
-            pads launch scenes, knobs / XY / gestures drive volume, mute or any
-            FX parameter, buttons bind transport
+            pads launch scenes or punch FX, knobs / XY / gestures drive volume,
+            mute or any FX parameter, buttons bind transport
           </p>
         ) : (
           <>

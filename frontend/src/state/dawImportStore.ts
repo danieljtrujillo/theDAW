@@ -69,7 +69,13 @@ export const useDawImportStore = create<DawImportState>()((set, get) => ({
       if (canImport(detected.daw)) {
         const project = await dawApi.import(detected.daw, path);
         set({ project, busy: false });
-        status(`IMPORTED ${detected.daw.toUpperCase()}: ${project.tracks.length} track(s)`);
+        // A .swayproj is a controller layout, not a session — "0 track(s)"
+        // would read as a failed import, so report what it actually carries.
+        if (detected.daw === 'sway') {
+          status(`IMPORTED SWAY LAYOUT: ${project.controller_mappings?.length ?? 0} controller mapping(s)`);
+        } else {
+          status(`IMPORTED ${detected.daw.toUpperCase()}: ${project.tracks.length} track(s)`);
+        }
       } else if (hasHint(detected.daw)) {
         const hint = await dawApi.hint(detected.daw);
         set({ hint, busy: false });
@@ -97,10 +103,14 @@ export const useDawImportStore = create<DawImportState>()((set, get) => ({
       const loaded = await projectApi.load(p);
       const project = tasmoLoadedToDawProject(loaded.project);
       set({ project, busy: false });
-      // Restore the Perform-tab routing saved with this project, so scene-launch +
-      // Sway-dim modulation assignments come back on Open.
+      // Restore the Perform-tab routing saved with this project, so scene-launch,
+      // Sway-dim modulation AND the project's direct knob/XY/fx routes come back
+      // on Open. A routing-less .tasmo clears any previous project's direct
+      // routes (machine-learned transport/scene bindings are left alone).
       if (loaded.project.perform_routing) {
         usePerformRoutingStore.getState().hydrate(loaded.project.perform_routing);
+      } else {
+        usePerformRoutingStore.getState().setCcMods([]);
       }
       status(`OPENED .tasmo IN SESSION: ${project.tracks.length} track(s)`);
     } catch (e) {

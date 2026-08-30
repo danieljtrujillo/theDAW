@@ -65,8 +65,8 @@ export const DawImportModal: React.FC = () => {
             value={sourcePath}
             onChange={setSourcePath}
             onEnter={() => void detectAndImport()}
-            placeholder=".als .RPP .flp .aup3 .sesx .bwproject .dawproject .avc .logicx"
-            description="Ableton, Reaper, FL Studio, Audacity, Audition, Bitwig and Resolume import directly. Logic / Cubase / Pro Tools show an export-to-audio guide."
+            placeholder=".als .swayproj .RPP .flp .aup3 .sesx .bwproject .dawproject .avc .logicx"
+            description="Ableton, Reaper, FL Studio, Audacity, Audition, Bitwig, Resolume and Sway controller layouts (.swayproj) import directly. Logic / Cubase / Pro Tools show an export-to-audio guide."
           />
 
           <button

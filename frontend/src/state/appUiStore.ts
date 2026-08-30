@@ -46,6 +46,24 @@ export function normalizeCenterTab(value: unknown): CenterTab | null {
   return CENTER_TAB_ALIASES[value] ?? null;
 }
 
+/** Every name a navigation request may use for a workspace: canonical tab ids,
+ *  display labels, and retired legacy view names. */
+const NAVIGATE_ALIASES: Record<string, CenterTab> = {
+  perform: 'session',
+  create: 'make',
+  advanced: 'make',
+  generate: 'make',
+  train: 'underfit',
+};
+
+/** The legacy 5-view enum still hangs off a few readers; keep it loosely in
+ *  step with the real tab so none of them ever sees a stale value again. */
+function legacyViewForTab(tab: CenterTab): theDAWView {
+  if (tab === 'edit') return 'edit';
+  if (tab === 'underfit') return 'train';
+  return 'create';
+}
+
 /** Interface modes, applied per-surface starting with the FOUNDRY tab.
  *  Senpai is the full pro cockpit as it ships today; Kouhai is a secondary
  *  presentation of the SAME surface: more app-like and simplified in
@@ -71,6 +89,10 @@ interface AppUiState {
   docsOpen: boolean;
   setActiveView: (view: unknown) => void;
   setCenterTab: (tab: unknown) => void;
+  /** Navigate to any workspace by canonical tab id, display label, or legacy
+   *  view name ('library' opens the right rail). Returns false when the target
+   *  is unknown, so callers (the assistant) can report failure honestly. */
+  navigateTo: (target: unknown) => boolean;
   setUiMode: (mode: unknown) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
@@ -125,7 +147,24 @@ export const useAppUiStore = create<AppUiState>()(
       setCenterTab: (tab) => {
         const normalized = normalizeCenterTab(tab);
         if (!normalized) return;
-        set({ centerTab: normalized });
+        // Keep the legacy activeView in step: it used to be written only by
+        // assistant navigation, so clicking a tab left it stale ('create'
+        // forever, or stuck on 'train' after one navigate) and the footer
+        // action button / assistant context read the wrong workspace.
+        set({ centerTab: normalized, activeView: legacyViewForTab(normalized) });
+      },
+      navigateTo: (target) => {
+        if (typeof target !== 'string') return false;
+        const key = target.trim().toLowerCase();
+        if (!key) return false;
+        if (key === 'library') {
+          set({ isRightPanelOpen: true });
+          return true;
+        }
+        const tab = normalizeCenterTab(key) ?? NAVIGATE_ALIASES[key] ?? null;
+        if (!tab) return false;
+        set({ centerTab: tab, activeView: legacyViewForTab(tab) });
+        return true;
       },
       setUiMode: (mode) => {
         const normalized = normalizeUiMode(mode);

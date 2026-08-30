@@ -10,7 +10,7 @@
 // dawImportAudioUrl). MIDI clips carry step-based notes, converted here to the
 // seconds-based shape the grid renders.
 
-import type { DawProject, DawTrack, DawClip } from './dawImportClient';
+import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
 import type { TasmoProjectLoaded } from './projectClient';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
@@ -43,6 +43,12 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         scene_index: c.scene_index ?? (hasGrid ? null : ci),
         slot_index: c.slot_index ?? (hasGrid ? null : ci),
         scene_name: null,
+        // Trim + loop survive the round-trip: a stem clip saved as a loop must
+        // SUSTAIN when launched, not one-shot from sample 0.
+        offset_into_source: c.offset_into_source ?? 0,
+        loop_start: c.loop_start ?? null,
+        loop_end: c.loop_end ?? null,
+        loop_on: (c.loop_end ?? 0) > (c.loop_start ?? 0),
       };
     });
     return {
@@ -54,7 +60,26 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
       solo: !!t.solo,
       color: t.color ?? null,
       clips,
-      devices: [],
+      // A .tasmo track's saved FX chain becomes the grid's live device chain,
+      // exactly like an imported .als set's devices: built-in entries build the
+      // live rack; vst3 entries stay listed-but-inert (the same behavior as
+      // EDIT). Without this a saved set reached PERFORM with a bare
+      // passthrough, so nothing existed for fx routes (the Sway XY / deck
+      // assignments) to hit.
+      devices: (t.effect_chain ?? []).map<DawDevice>((n) => ({
+        name: n.effect_name,
+        plugin_type: n.node_type === 'vst3' ? 'vst3' : 'builtin',
+        // Carry the real plugin path: with it null, dawDeviceToEffectNode's
+        // plugin test failed and a VST node fell into the BUILTIN branch,
+        // where its display name could pattern-match a rack effect ("…Verb"
+        // -> reverb at defaults). With the path present it classifies as
+        // vst3 and stays cleanly inert in the live grid, exactly like EDIT.
+        plugin_path: n.vst_state?.plugin_path ?? null,
+        parameters: n.parameters ?? {},
+        bypass: !!n.bypass,
+        is_instrument: false,
+        is_rack: false,
+      })),
     };
   });
 

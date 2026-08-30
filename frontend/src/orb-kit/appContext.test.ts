@@ -4,9 +4,21 @@ import { formattheDAWAppContext } from './appContext.ts';
 
 const context = formattheDAWAppContext({
   ui: {
-    activeView: 'advanced',
+    activeTab: 'make',
     isLeftPanelOpen: true,
     docsOpen: false,
+  },
+  editor: {
+    trackCount: 1,
+    clipCount: 1,
+    bpm: 120,
+    playheadSec: 0,
+    isPlaying: false,
+    selectedClipId: null,
+    loop: null,
+    tracks: [{ id: 't1', name: 'Track 1', volume: 1, pan: 0, mute: false, solo: false, clipCount: 1 }],
+    clips: [{ id: 'c1', label: 'Clip', trackId: 't1', startSec: 0, durationSec: 4, muted: false }],
+    clipsTruncated: false,
   },
   chat: {
     selectedProvider: 'gemini',
@@ -54,7 +66,8 @@ const context = formattheDAWAppContext({
 
 assert.match(context, /<current_app_context>/);
 assert.match(context, /"assistant_is_inside_running_app": true/);
-assert.match(context, /"activeView": "advanced"/);
+assert.match(context, /"activeTab": "make"/);
+assert.match(context, /"trackCount": 1/);
 assert.match(context, /"prompt": "dark cinematic drums"/);
 assert.match(context, /If the user asks to navigate/);
 assert.match(context, /If the user asks for settings help/);

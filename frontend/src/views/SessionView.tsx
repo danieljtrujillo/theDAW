@@ -133,11 +133,18 @@ export const SessionView: React.FC = () => {
       setCcMods([]);
       return;
     }
-    const { ccMods } = autoRoutePerformFromProject(project);
+    // A .tasmo restores its own saved routes via hydrate() BEFORE this effect
+    // runs; the auto-router's derived (usually empty) set must not wipe them.
+    if (usePerformRoutingStore.getState().ccModsHydrated) {
+      if (usePerformRoutingStore.getState().ccMods.length > 0) setShowRouting(true);
+      return;
+    }
+    const { ccMods, seededDims } = autoRoutePerformFromProject(project);
     setCcMods(ccMods);
     // Surface what just happened: a set with its own Sway mappings opens with
     // the routing strip visible, so "it works" is also "you can see why".
-    if (ccMods.length > 0) setShowRouting(true);
+    // Seeded dims count too — a .swayproj import carries ONLY dim/CC layout.
+    if (ccMods.length > 0 || seededDims > 0) setShowRouting(true);
   }, [project, setCcMods]);
 
   return (

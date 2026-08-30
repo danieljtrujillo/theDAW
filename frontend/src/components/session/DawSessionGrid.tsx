@@ -19,7 +19,13 @@ import { enableMidi } from '../../state/midiTriggerStore';
 import { usePerformRoutingStore, ctrlMatches } from '../../state/performRouting';
 import { logError } from '../../state/logStore';
 import { dawDeviceToEffectNode } from '../../lib/dawEffectMap';
-import { buildEffectChain, type ChainHandle } from '../../lib/rackEffects';
+import {
+  buildEffectChain,
+  ensureChopModule,
+  ensureGranularModule,
+  ensureSubharmonicModule,
+  type ChainHandle,
+} from '../../lib/rackEffects';
 import type { ChainEntry } from '../../state/effectChainStore';
 
 type ClipLookup = Map<string, DawClip>;
@@ -272,6 +278,20 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   // + mute), applied on top of the clip's base track gain. Persists across scene
   // launches so a held hand position keeps modulating the next scene.
   const mixRef = React.useRef<Map<number, { vol: number; mute: boolean }>>(new Map());
+  // Note-driven ccMods with `latch: true` that are currently toggled ON,
+  // keyed by mod id. Session-only state, cleared when the mod disappears.
+  const latchedRef = React.useRef<Set<string>>(new Set());
+
+  // The worklet-backed rack stages (chop, Ares grains, the Kargyraa Sub
+  // octave divider) degrade to passthrough/silence when their module is not
+  // registered on the context. EDIT preloads them; PERFORM must too, or a
+  // .tasmo chain using them plays defanged until the user visits EDIT.
+  React.useEffect(() => {
+    const ctx = getEngineCtx();
+    void ensureChopModule(ctx).catch(() => {});
+    void ensureGranularModule(ctx).catch(() => {});
+    void ensureSubharmonicModule(ctx).catch(() => {});
+  }, []);
 
   const tracks = React.useMemo(() => performTracks(project), [project]);
 
@@ -765,6 +785,12 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       if (!modMute.has(index) && mix.mute) { mix.mute = false; changed = true; }
       if (changed) applyMixToTrack(index);
     }
+    // Latch state follows its mod: a removed/replaced punch must not leave a
+    // phantom "on" that inverts the next project's toggle.
+    const ids = new Set(ccMods.map((m) => m.id));
+    for (const id of latchedRef.current) {
+      if (!ids.has(id)) latchedRef.current.delete(id);
+    }
   }, [trackMods, ccMods, applyMixToTrack]);
 
   // --- Live scene control from assigned Sway controls ------------------------
@@ -802,13 +828,17 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       const ch = status & 0x0f;
       const isCc = cmd === 0xb0;
       const isNoteOn = cmd === 0x90 && (data[2] ?? 0) > 0;
-      if (!isCc && !isNoteOn) return; // note-off / aftertouch / etc. ignored
+      // Note-off matters now: momentary note-driven fx punches release on it.
+      const isNoteOff = cmd === 0x80 || (cmd === 0x90 && (data[2] ?? 0) === 0);
+      if (!isCc && !isNoteOn && !isNoteOff) return; // aftertouch / etc. ignored
       const num = data[1] ?? 0;
       const val = data[2] ?? 0;
       const st = usePerformRoutingStore.getState();
 
       // Learn: bind the armed function/scene to this control, then disarm.
+      // Only activations bind — a release must not capture as a phantom CC.
       if (st.learn) {
+        if (isNoteOff) return;
         const ctrl = { isNote: isNoteOn, channel: ch, number: num };
         if (st.learn.kind === 'fn') st.bindFn(st.learn.fn, ctrl);
         else st.bindScene(st.learn.scene, ctrl);
@@ -825,6 +855,29 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
           if (cm.channel >= 0 && cm.channel !== ch) continue;
           applyCcModRef.current(cm, val / 127);
         }
+      }
+
+      // Note-driven routes: pad punches. Momentary (default) pushes max on
+      // press and min on release; `latch` toggles max/min on each press.
+      // Like the CC loop above this does not return — a note shared with a
+      // sceneCtrl fires both, mirroring the CC double-fire semantics.
+      if (isNoteOn || isNoteOff) {
+        for (const cm of st.ccMods) {
+          if (!cm.isNote || cm.number !== num) continue;
+          if (cm.channel >= 0 && cm.channel !== ch) continue;
+          if (cm.latch) {
+            if (!isNoteOn) continue;
+            const on = !latchedRef.current.has(cm.id);
+            if (on) latchedRef.current.add(cm.id);
+            else latchedRef.current.delete(cm.id);
+            applyCcModRef.current(cm, on ? 1 : 0);
+          } else {
+            applyCcModRef.current(cm, isNoteOn ? 1 : 0);
+          }
+        }
+        // A release has no further meaning — scenes/transport fire on
+        // activation only, and falling through would misread vel-0 as one.
+        if (isNoteOff) return;
       }
 
       const count = sceneCountRef.current;

@@ -1,6 +1,8 @@
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { buildGenerateParamsFromState, useGenerateStore } from '../state/generateStore';
 import type { GenerateParamsState } from '../state/generateParamsStore';
+import { useAppUiStore } from '../state/appUiStore';
+import { useEditorStore } from '../state/editorStore';
 import { logInfo } from '../state/logStore';
 
 export interface AssistantActionPayload {
@@ -80,6 +82,46 @@ function buildParamUpdates(payload: Record<string, unknown> | undefined): Partia
     return updates;
 }
 
+/** Resolve a track by id (exact) or name (case-insensitive) from the payload. */
+function findEditorTrack(payload: Record<string, unknown> | undefined) {
+    const tracks = useEditorStore.getState().tracks;
+    const id = payload?.track_id !== undefined ? String(payload.track_id) : '';
+    if (id) {
+        const byId = tracks.find((t) => t.id === id);
+        if (byId) return byId;
+        const byName = tracks.find((t) => t.name.toLowerCase() === id.toLowerCase());
+        if (byName) return byName;
+    }
+    const name = payload?.track_name !== undefined ? String(payload.track_name) : '';
+    if (name) return tracks.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    return undefined;
+}
+
+function editorTrackMiss(payload: Record<string, unknown> | undefined): string {
+    const asked = String(payload?.track_id ?? payload?.track_name ?? '?');
+    const names = useEditorStore.getState().tracks.map((t) => `${t.name} (${t.id})`).join(', ') || 'none';
+    return `No track "${asked}". Tracks: ${names}`;
+}
+
+/** Resolve a clip by id (exact) or label (case-insensitive) from the payload. */
+function findEditorClip(payload: Record<string, unknown> | undefined) {
+    const clips = useEditorStore.getState().clips;
+    const id = payload?.clip_id !== undefined ? String(payload.clip_id) : '';
+    if (id) {
+        const byId = clips.find((c) => c.id === id);
+        if (byId) return byId;
+        const byLabel = clips.find((c) => c.label.toLowerCase() === id.toLowerCase());
+        if (byLabel) return byLabel;
+    }
+    return undefined;
+}
+
+function editorClipMiss(payload: Record<string, unknown> | undefined): string {
+    const asked = String(payload?.clip_id ?? '?');
+    const labels = useEditorStore.getState().clips.slice(0, 20).map((c) => `${c.label} (${c.id})`).join(', ') || 'none';
+    return `No clip "${asked}". Clips: ${labels}`;
+}
+
 export function handletheDAWAction(action: AssistantActionPayload): string {
     const { type, payload } = action;
     const params = useGenerateParamsStore.getState();
@@ -91,9 +133,14 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
         // --- Navigation ---
         case 'navigate':
         case 'navigate_to': {
-            const tab = String(payload?.tab || payload?.view || 'create');
-            window.dispatchEvent(new CustomEvent('thedaw:navigate', { detail: { tab } }));
-            return `Navigated to ${tab}`;
+            const tab = String(payload?.tab || payload?.view || '');
+            // Route through the store directly so the result is HONEST: the
+            // old handler dispatched an event and claimed "Navigated to X"
+            // even when the target silently no-opped (9 of 12 workspaces).
+            const ok = useAppUiStore.getState().navigateTo(tab);
+            return ok
+                ? `Navigated to ${tab}`
+                : `Navigation failed: unknown workspace "${tab}". Valid targets: make, edit, mix, perform, dj, vj, sway, foundry, underfit, audimate, learn, tour, library.`;
         }
 
         case 'open_docs':
@@ -193,6 +240,122 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
         case 'stop_generation':
             gen.cancelPolling();
             return 'Generation aborted';
+
+        // --- EDIT arrangement (editor_* vocabulary) ---
+        case 'editor_get_state': {
+            const ed = useEditorStore.getState();
+            return JSON.stringify({
+                tracks: ed.tracks.map((t) => ({ id: t.id, name: t.name, volume: t.volume, pan: t.pan, mute: t.mute, solo: t.solo })),
+                clips: ed.clips.map((c) => ({ id: c.id, label: c.label, trackId: c.trackId, startSec: c.startSec, durationSec: c.durationSec, muted: !!c.muted })),
+                bpm: ed.bpm,
+                playheadSec: ed.playheadSec,
+                isPlaying: ed.isPlaying,
+                selectedClipId: ed.selectedClipId,
+            });
+        }
+
+        case 'editor_add_track': {
+            const name = payload?.name !== undefined ? String(payload.name) : undefined;
+            const id = useEditorStore.getState().addTrack(name ? { name } : undefined);
+            return `Added track "${name ?? 'Track'}" (id ${id})`;
+        }
+
+        case 'editor_remove_track': {
+            const track = findEditorTrack(payload);
+            if (!track) return editorTrackMiss(payload);
+            useEditorStore.getState().removeTrack(track.id);
+            return `Removed track "${track.name}" and its clips`;
+        }
+
+        case 'editor_set_track': {
+            const track = findEditorTrack(payload);
+            if (!track) return editorTrackMiss(payload);
+            const updates: Record<string, unknown> = {};
+            if (payload?.volume !== undefined) updates.volume = Number(payload.volume);
+            if (payload?.pan !== undefined) updates.pan = Number(payload.pan);
+            if (payload?.mute !== undefined) updates.mute = booleanValue(payload, ['mute'], track.mute);
+            if (payload?.solo !== undefined) updates.solo = booleanValue(payload, ['solo'], track.solo);
+            if (payload?.name !== undefined && payload?.track_id !== undefined) updates.name = String(payload.name);
+            if (!Object.keys(updates).length) return 'editor_set_track: nothing to change (pass volume/pan/mute/solo/name)';
+            useEditorStore.getState().updateTrack(track.id, updates);
+            return `Updated track "${track.name}": ${Object.keys(updates).join(', ')}`;
+        }
+
+        case 'editor_move_clip': {
+            const clip = findEditorClip(payload);
+            if (!clip) return editorClipMiss(payload);
+            const updates: Record<string, unknown> = {};
+            if (payload?.start_sec !== undefined) updates.startSec = Math.max(0, Number(payload.start_sec));
+            if (payload?.track_id !== undefined) {
+                const target = findEditorTrack({ track_id: payload.track_id });
+                if (!target) return editorTrackMiss({ track_id: payload.track_id });
+                updates.trackId = target.id;
+            }
+            if (!Object.keys(updates).length) return 'editor_move_clip: pass start_sec and/or track_id';
+            useEditorStore.getState().updateClip(clip.id, updates);
+            return `Moved clip "${clip.label}"${updates.startSec !== undefined ? ` to ${updates.startSec}s` : ''}`;
+        }
+
+        case 'editor_remove_clip': {
+            const clip = findEditorClip(payload);
+            if (!clip) return editorClipMiss(payload);
+            useEditorStore.getState().removeClip(clip.id);
+            return `Removed clip "${clip.label}"`;
+        }
+
+        case 'editor_split_clip': {
+            const clip = findEditorClip(payload);
+            if (!clip) return editorClipMiss(payload);
+            const at = Number(payload?.at_sec);
+            if (!Number.isFinite(at)) return 'editor_split_clip: pass at_sec (timeline seconds)';
+            if (at <= clip.startSec || at >= clip.startSec + clip.durationSec) {
+                return `editor_split_clip: ${at}s is outside "${clip.label}" (${clip.startSec}–${clip.startSec + clip.durationSec}s)`;
+            }
+            useEditorStore.getState().splitClipAt(clip.id, at);
+            return `Split clip "${clip.label}" at ${at}s`;
+        }
+
+        case 'editor_select_clip': {
+            const clip = findEditorClip(payload);
+            if (!clip) return editorClipMiss(payload);
+            useEditorStore.getState().setSelected(clip.id);
+            return `Selected clip "${clip.label}"`;
+        }
+
+        case 'editor_set_playhead': {
+            const sec = Number(payload?.seconds ?? payload?.sec);
+            if (!Number.isFinite(sec) || sec < 0) return 'editor_set_playhead: pass seconds >= 0';
+            useEditorStore.getState().setPlayhead(sec);
+            return `Playhead at ${sec}s`;
+        }
+
+        case 'editor_set_bpm': {
+            const bpm = Number(payload?.bpm);
+            if (!Number.isFinite(bpm) || bpm < 20 || bpm > 400) return 'editor_set_bpm: pass bpm in 20..400';
+            useEditorStore.getState().setBpm(bpm);
+            return `BPM set to ${bpm}`;
+        }
+
+        case 'editor_set_loop': {
+            const ed = useEditorStore.getState();
+            const enabled = booleanValue(payload, ['enabled'], true);
+            ed.setLoopEnabled(enabled);
+            const start = Number(payload?.start_sec);
+            const end = Number(payload?.end_sec);
+            if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+                ed.setLoopRegion(start, end);
+                return `Loop ${enabled ? 'on' : 'off'} (${start}s–${end}s)`;
+            }
+            return `Loop ${enabled ? 'enabled' : 'disabled'}`;
+        }
+
+        case 'editor_add_marker': {
+            const sec = Number(payload?.seconds ?? payload?.sec);
+            if (!Number.isFinite(sec) || sec < 0) return 'editor_add_marker: pass seconds >= 0';
+            const name = payload?.name !== undefined ? String(payload.name) : undefined;
+            useEditorStore.getState().addMarker(sec, name);
+            return `Marker${name ? ` "${name}"` : ''} added at ${sec}s`;
+        }
 
         // --- Status ---
         case 'get_status':

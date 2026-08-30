@@ -9,7 +9,7 @@
 import React, { useState, lazy, Suspense } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic, Waves, Brush, Gauge,
+  FileMusic, Waves, Brush, Gauge, Radio,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
@@ -25,6 +25,7 @@ import { LevelsPanel } from '../audio/levels/LevelsPanel';
 const MidiPanel = lazy(() => import('./MidiPanel').then((m) => ({ default: m.MidiPanel })));
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
+import { XrBusPanel } from '../dev/XrBusTester';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 import { useSlideStore } from '../../state/slideStore';
 
@@ -39,7 +40,19 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; desc: string; icon: R
   { id: 'bucket',     label: 'Media',      desc: 'Drag-and-drop bucket for staging clips and media files',                   icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
   { id: 'slide',      label: 'SLIDE',      desc: 'Control surface: map sliders and pads to parameters',                      icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
   { id: 'sway',       label: 'SWAY',       desc: 'Pose control: drive music and effects from body movement',                 icon: Waves,      colorActive: 'border-fuchsia-500 text-fuchsia-300' },
+  // Dev-only: the simulated XR/phone controller that drives the control bus.
+  // Registered here (not floating over the footer) so it reads as the
+  // diagnostics tab it is; stripped from production builds with the DEV flag.
+  ...(import.meta.env.DEV
+    ? [{ id: 'xrbus' as BottomPanelTab, label: 'XR Bus', desc: 'Dev: simulated XR/phone controller driving the control bus', icon: Radio, colorActive: 'border-cyan-500 text-cyan-300' }]
+    : []),
 ];
+
+/** Tab id → display label, for surfaces that name the active tab without
+ *  mounting the panel (the dock strip's PANELS toggle). */
+export const BOTTOM_TAB_LABELS: Record<string, string> = Object.fromEntries(
+  TAB_DEFS.map((t) => [t.id, t.label]),
+);
 
 export const BottomMultiTabPanel: React.FC = () => {
   const activeTab = useBottomPanelStore((s) => s.activeTab);
@@ -175,6 +188,11 @@ export const BottomMultiTabPanel: React.FC = () => {
         {activeTab === 'sway' && (
           <div className="absolute inset-0">
             <SwayPanel />
+          </div>
+        )}
+        {activeTab === 'xrbus' && import.meta.env.DEV && (
+          <div className="absolute inset-0">
+            <XrBusPanel />
           </div>
         )}
         {activeTab === 'slide' && (
