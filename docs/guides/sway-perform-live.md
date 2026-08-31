@@ -294,5 +294,5 @@ column, so a single set exercises built-in FX, `.gan` and plugin hosting togethe
   and the importers that feed it
 - [MIX, VST and .gan plugins](mix-vst-and-gan.md) — hosting plugins and effect
   control windows
-- [PERFORM / Foundry / Audimate reference](../reference/features/08-perform-foundry-audimate.md)
+- [PERFORM / Foundry / NodeF.I. reference](../reference/features/08-perform-foundry-audimate.md)
   — the code-grounded subsystem reference
