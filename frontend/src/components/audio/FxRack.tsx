@@ -153,7 +153,7 @@ export function FxRack({
                 aria-pressed={entry.enabled}
                 aria-label={`${def.label} ${entry.enabled ? 'enabled' : 'bypassed'}`}
                 title={entry.enabled ? 'Bypass this effect' : 'Enable this effect'}
-                className={`w-2.5 h-2.5 rounded-full shrink-0 transition-colors ${entry.enabled ? 'bg-purple-400 shadow-[0_0_6px_rgba(168,85,247,0.8)]' : 'bg-zinc-700'}`}
+                className={`w-2.5 h-2.5 rounded-full shrink-0 transition-colors ${entry.enabled ? 'bg-purple-400' : 'bg-zinc-700'}`}
               />
               <span className="text-[10px] font-mono text-zinc-200 flex-1 truncate" title={def.description}>
                 {def.label}

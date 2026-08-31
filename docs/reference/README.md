@@ -41,7 +41,7 @@ inventory.
 | [EDIT](features/05-edit.md) | Timeline, clips, automation, waveform editor, export |
 | [MIX](features/06-mix-effects-mastering.md) | Effect/module rack, mastering, psychoacoustic + creative FX |
 | [DJ](features/07-dj.md) | Two-deck console, cue/scratch/stems/automix, controllers |
-| [Perform, Foundry, Audimate](features/08-perform-foundry-audimate.md) | Live clip grid, plugin UI designer, node-graph pipelines |
+| [Perform, Foundry, NodeF.I.](features/08-perform-foundry-nodefi.md) | Live clip grid, plugin UI designer, node-graph pipelines |
 | [VJ](features/09-vj-live-visuals.md) | Live visuals engine: sources, effects, output |
 | [XR / Quest](features/10-xr-quest-suite.md) | MIDI bridge, video cast, stitch, colocation, XR control |
 | [UNDERFIT](features/11-underfit-lora.md) | LoRA finetune training |

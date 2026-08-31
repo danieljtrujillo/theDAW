@@ -216,7 +216,6 @@ export const AdvancedVisualizer: React.FC = () => {
           <div className="flex-1" />
 
           <div className="flex items-center gap-1">
-            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${peakDb > -60 ? 'bg-purple-400 animate-pulse' : 'bg-zinc-700'}`} />
             <span className={`text-[9px] font-mono font-black uppercase ${peakDb > -60 ? 'text-purple-300' : 'text-zinc-600'}`}
               style={{ textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}>
               {peakDb > -60 ? 'LIVE' : 'SILENT'}

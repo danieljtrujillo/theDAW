@@ -148,9 +148,9 @@ const TABS: Array<{
     },
   },
   {
-    id: 'audimate',
-    label: 'Audimate',
-    desc: 'Build generation pipelines as a wired node graph, then run them',
+    id: 'nodefi',
+    label: 'NodeFI',
+    desc: 'NodeF.I. — wire node graphs: AI pipelines offline, stems + rack FX live',
     icon: Waypoints,
     accent: {
       border: 'border-teal-500/50',
@@ -201,8 +201,9 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
       {/* Centered, fills width */}
       <div className="flex-1 flex items-center justify-center gap-1 px-2">
         {TABS.map((t) => {
-          const Icon = t.icon;
           const active = activeTab === t.id;
+          // Label only — the tabs have names, so no icon (user mandate: icons
+          // stay only where they ARE the control, with no visible name).
           return (
             <button
               key={t.id}
@@ -210,7 +211,7 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
               data-tour={`tab-${t.id}`}
               onClick={() => onTabChange(t.id)}
               className={[
-                'flex-1 max-w-44 flex items-center justify-center gap-2 px-3 py-1.5',
+                'flex-1 max-w-44 flex items-center justify-center px-3 py-1.5',
                 'rounded border transition-colors',
                 'text-[10px] font-black uppercase tracking-widest',
                 active
@@ -219,7 +220,6 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
               ].join(' ')}
               title={t.desc}
             >
-              <Icon className={`w-3.5 h-3.5 ${active ? t.accent.iconText : ''}`} />
               <span>{t.label}</span>
             </button>
           );

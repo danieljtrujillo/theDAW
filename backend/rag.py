@@ -53,7 +53,7 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "backup-and-updates.md",
     PROJECT_ROOT / "docs" / "guides" / "electron-desktop-app.md",
     PROJECT_ROOT / "docs" / "guides" / "pinokio-launcher.md",
-    PROJECT_ROOT / "docs" / "guides" / "audimate.md",
+    PROJECT_ROOT / "docs" / "guides" / "nodefi.md",
     PROJECT_ROOT / "docs" / "guides" / "levels.md",
     # Live performance: the Perform grid, the SwayCommand deck, pad scenes vs FX
     # punches, the routing that travels in a .tasmo, the shipped performance
@@ -78,7 +78,7 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "reference" / "features" / "05-edit.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "06-mix-effects-mastering.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "07-dj.md",
-    PROJECT_ROOT / "docs" / "reference" / "features" / "08-perform-foundry-audimate.md",
+    PROJECT_ROOT / "docs" / "reference" / "features" / "08-perform-foundry-nodefi.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "09-vj-live-visuals.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "10-xr-quest-suite.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "11-underfit-lora.md",

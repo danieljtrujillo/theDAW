@@ -32,6 +32,8 @@ import { getRackEffect, rackEffectDefaults } from './rackEffects';
 import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
 import { logError, logInfo } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
+import { usePerformRoutingStore } from '../state/performRouting';
+import { tasmoLoadedToDawProject } from './tasmoToSession';
 
 const TRACK_COLORS = ['#8b5cf6', '#a855f7', '#ec4899', '#06b6d4', '#10b981', '#facc15', '#f97316', '#ef4444'];
 
@@ -271,6 +273,7 @@ export async function loadProjectIntoEditor(
   let skipped = 0;
   let effects = 0;
   let effectsLive = 0;
+  let gridClips = 0;
 
   for (let i = 0; i < project.tracks.length; i += 1) {
     const t: TasmoLoadedTrack = project.tracks[i];
@@ -297,7 +300,10 @@ export async function loadProjectIntoEditor(
       // belong to the clip-launch grid and would otherwise all pile onto the
       // EDIT timeline. Filtering on LOAD is the correct place for this; it used
       // to happen on SAVE, which deleted them from the file outright.
-      if (c.scene_index != null || c.slot_index != null) continue;
+      if (c.scene_index != null || c.slot_index != null) {
+        gridClips += 1;
+        continue;
+      }
       try {
         const clip = await buildClip(c, trackId, color, bpm);
         if (clip) outClips.push(clip);
@@ -328,10 +334,34 @@ export async function loadProjectIntoEditor(
     useSwayImportStore.getState().clear();
   }
 
-  useAppUiStore.getState().setCenterTab('edit');
+  // Open the project in EVERY surface it applies to, not just EDIT. The Perform
+  // grid gets the same loaded payload converted to a session view (grid clips —
+  // the ones EDIT filters out above — land here), and the project's Perform
+  // routing hydrates or clears exactly as SessionView's own opener does. The
+  // dawImportStore import is dynamic because that store statically imports this
+  // module (loadIntoEditor); a static back-import would create an eval cycle.
+  try {
+    const { useDawImportStore } = await import('../state/dawImportStore');
+    useDawImportStore.setState({ project: tasmoLoadedToDawProject(project) });
+    if (project.perform_routing) {
+      usePerformRoutingStore.getState().hydrate(project.perform_routing);
+    } else {
+      usePerformRoutingStore.getState().setCcMods([]);
+    }
+    logInfo('project', 'Project also opened in PERFORM (session grid seeded from the same load)');
+  } catch (e) {
+    logError('project', `Perform seed failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Land on the surface the project is actually for: a grid-only project (all
+  // clips are scene/slot clips, e.g. the Sway Perform templates) opens onto an
+  // empty EDIT timeline, so send it to PERFORM instead.
+  const landing = outClips.length === 0 && gridClips > 0 ? 'session' : 'edit';
+  useAppUiStore.getState().setCenterTab(landing);
   logInfo(
     'project',
     `Imported into editor: ${outTracks.length} track(s), ${outClips.length} clip(s)` +
+      `${gridClips ? `, ${gridClips} grid clip(s) -> PERFORM` : ''}` +
       `${skipped ? `, ${skipped} clip(s) skipped` : ''}` +
       `${effects ? `, ${effects} effect(s) (${effectsLive} live, ${effects - effectsLive} preserved)` : ''}`,
   );
