@@ -5,7 +5,7 @@ import { DAWCenterPanel } from './DAWCenterPanel';
 
 const CatalogueView = lazy(() => import('../../catalog/CatalogueView').then((m) => ({ default: m.CatalogueView })));
 import { CenterTabBar } from './CenterTabBar';
-import { LogBody, LogActionButton, LogStripCompactInfo } from './ProcessingLog';
+import { LogBody, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel, BOTTOM_TAB_LABELS } from './BottomMultiTabPanel';
 import { AutosaveRecoveryNotice } from './AutosaveRecoveryNotice';
 import { initEditorAutosave } from '../../lib/editorAutosave';
@@ -270,7 +270,7 @@ export const Shell: React.FC = () => {
     <div
       className="edit-theme-scope relative flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
       data-et-light={editTheme.light ? '1' : undefined}
-      style={{ height: 'calc((100vh - 5rem) / var(--layout-zoom))', ...(editTheme.vars as React.CSSProperties) }}
+      style={{ height: 'calc((100vh - 3.5rem) / var(--layout-zoom))', ...(editTheme.vars as React.CSSProperties) }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
           Mobile / Docs / app-menu (right). G-Search moved to the footer. */}
@@ -615,15 +615,12 @@ export const Shell: React.FC = () => {
  *   they stay aligned — one-way: the rail's own handle never changes logWidth.
  * - The strip is fixed-height and always visible. The left `^` collapses the
  *   multi-tab body; the LOG's `^` collapses the LOG body.
- * - The CREATE / PROCESS / TRAIN action button stays pinned in the right 60%
- *   of the LOG strip section so the user's most-used affordance never moves.
+ * - The CREATE / PROCESS / TRAIN action button lives in the footer's
+ *   bottom-right corner (PlayerFooter), not in this strip.
  */
-const STRIP_HEIGHT = 36;
+const STRIP_HEIGHT = 28;
 const DOCK_MIN_HEIGHT = 60;
 const DOCK_MAX_FRACTION = 0.85;
-// CREATE / PROCESS / TRAIN action button — a FIXED width so it never grows when
-// the LOG is drag-resized (the LOG header takes all the slack instead).
-const ACTION_WIDTH = 180;
 const LOG_MIN_WIDTH = 220;
 const LOG_MAX_WIDTH = 720;
 
@@ -642,12 +639,13 @@ const ShellBottomDock: React.FC = () => {
   // Dock-body height — shared by the multi-tab panel (in-flow) and the floating
   // LOG overlay. Maximized fills the work area. The height MUST be computed in
   // the same zoom-aware space as the .dense-layout root (height =
-  // calc((100vh - 5rem) / var(--layout-zoom))); a raw `100vh` calc here ignores
+  // calc((100vh - 3.5rem) / var(--layout-zoom))); a raw `100vh` calc here ignores
   // --layout-zoom and, at zoom > 1, overflows the root's overflow-hidden so the
   // dock's own bottom (e.g. the Score viewer's page/zoom controls) is clipped.
-  // Reserve 5rem inside the root for the header (h-11) + the always-on strip.
+  // Reserve 4.5rem inside the root for the header (h-11 = 44px) + the always-on
+  // 28px strip (72px total).
   const bodyHeight = multiMaximized
-    ? 'calc((100vh - 5rem) / var(--layout-zoom) - 5rem)'
+    ? 'calc((100vh - 3.5rem) / var(--layout-zoom) - 4.5rem)'
     : `${multiHeight}px`;
   // The LOG strip section auto-fits its content (the telemetry readouts + the
   // fixed action button). Mirror its measured width into logWidth so the LOG
@@ -765,10 +763,8 @@ const ShellBottomDock: React.FC = () => {
             {/* Live CPU · GPU · TEMP · VRAM · RAM — shown in full (the section sizes to fit). */}
             <span className="shrink-0"><LogStripCompactInfo /></span>
           </button>
-          {/* Action button (CREATE / PROCESS / TRAIN) — fixed width. */}
-          <div className="flex items-stretch shrink-0" style={{ width: ACTION_WIDTH }}>
-            <LogActionButton />
-          </div>
+          {/* The workspace action button (CREATE / PROCESS / TRAIN) now lives in
+              the footer's bottom-right corner, on every tab — see PlayerFooter. */}
         </div>
       </div>
     </div>

@@ -17,6 +17,7 @@ import { subscribeToMidi } from '../../state/midiBus';
 import { subscribeSwayValue } from '../../state/swayBus';
 import { enableMidi } from '../../state/midiTriggerStore';
 import { usePerformRoutingStore, ctrlMatches } from '../../state/performRouting';
+import { registerPerformChainPush } from '../../state/performRailStore';
 import { logError } from '../../state/logStore';
 import { dawDeviceToEffectNode } from '../../lib/dawEffectMap';
 import {
@@ -396,6 +397,18 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   }, []);
 
   React.useEffect(() => disposeTrackChains, [disposeTrackChains]);
+
+  // The right rail's PARAMS tab edits device params through this bridge —
+  // same entry ids the CC routes drive, same lazily-built live chains.
+  React.useEffect(() => {
+    registerPerformChainPush((trackIndex, deviceIndex, params) => {
+      const track = tracksRef.current[trackIndex];
+      if (!track) return;
+      const chain = ensureTrackChain(trackIndex, track);
+      chain.handle?.updateParams(`perform-${trackIndex}-${deviceIndex}`, params);
+    });
+    return () => registerPerformChainPush(null);
+  }, [ensureTrackChain]);
 
   const stopScene = React.useCallback(() => {
     stopSessionPlayers(playersRef.current);

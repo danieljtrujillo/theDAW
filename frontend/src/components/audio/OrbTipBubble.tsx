@@ -35,7 +35,7 @@ const TIPS: string[] = [
   'pull a stem fader to drop the vocal mid-track',
   'press LEARN in SWAY, then move a control to bind it',
   'drag controls onto the FOUNDRY canvas to build a panel',
-  'click a node in AUDIMATE, then press RUN',
+  'click a node in NODEFI, then press RUN',
   'search a region in TOUR to find venues, then build a route',
   'open LEARN to see what any track was made from',
   'open SCORE to read a track as sheet music or tab',
@@ -115,7 +115,7 @@ export const OrbTipBubble: React.FC<OrbTipBubbleProps> = ({ onOpen, className })
         aria-hidden="true"
         className="absolute -bottom-1 left-2 h-2 w-2 rotate-45 border-b border-l border-purple-500/25 bg-purple-500/8 group-hover/tip:bg-purple-500/15"
       />
-      {/* Wraps and grows DOWNWARD; never truncates. The footer is 80px tall and
+      {/* Wraps and grows DOWNWARD; never truncates. The footer is 56px tall and
           the bubble is vertically centred in it, so extra lines expand evenly
           without pushing the transport off-centre. */}
       <span

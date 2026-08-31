@@ -366,3 +366,239 @@ runs local SA3 when Suno/Lyria is selected.
   knob/XY routes per song; round-trip verified incl. latch flags + vst_state.
   — `scripts/make_sway_song_templates.py`, `C:\Users\Cyboman\Documents\theDAW
   Projects\Sway Perform - {Prologue,EACC,Just Give Up}.tasmo`
+
+### 2026-08-27 (third pass) — open-in-all-surfaces, slim bottom chrome, Audimate premium + Gantasmo templates (user request; tsc+ruff clean, verified in the running app via Playwright)
+
+- **Opening a project now opens it in every surface it applies to.**
+  `loadProjectIntoEditor` seeds PERFORM from the SAME `/api/project/load`
+  payload (session grid via `tasmoLoadedToDawProject` + `perform_routing`
+  hydrate/clear, exactly mirroring SessionView's own opener — no second
+  backend load), and the landing tab is chosen by content: grid-only projects
+  (all clips scene/slot — e.g. the Sway Perform templates) land on PERFORM,
+  anything with linear clips lands on EDIT as before. Sway controller
+  bindings were already restored; VJ/Audimate have no .tasmo concept and are
+  untouched. VERIFIED: opening "Sway Perform — EACC" from the project modal
+  lands on PERFORM with 6 columns, scenes, punch pads and 81 hydrated routes.
+  — `frontend/src/lib/projectImport.ts`
+- **Bottom chrome slimmed ~30 px.** Footer `h-20`→`h-14` (play `w-9`, tighter
+  transport gap) with the coupled `5rem`→`3.5rem` in Shell's root height and
+  the OrbTipBubble comment; dock strip 36→28 px (`STRIP_HEIGHT`) with the
+  maximized-dock reserve recomputed (`4.5rem`); log toolbar `py-1`→`py-0.5`;
+  bottom-panel tab row `py-1.5`→`py-1`; CREATE panel: INIT/INPAINT row
+  128→108 (waves 88→72), bottom grid row 180→156, CRISPR head `h-28`→`h-24`.
+  — `PlayerFooter.tsx`, `Shell.tsx`, `ProcessingLog.tsx`,
+  `BottomMultiTabPanel.tsx`, `OrbTipBubble.tsx`, `AdvancedGenPanel.tsx`
+- **Audimate premium pass.** Header toolbar row DELETED — Run/Stop, undo/redo,
+  fit/reset and clear now live in a floating glass command dock at the
+  canvas's bottom centre; in-view accents unified on the tab's teal (live
+  wire, marquee, selected-wire core, Run button); canvas gets a teal/violet
+  aurora + edge vignette; rail and inspector get glass (`bg-black/30
+  backdrop-blur-xl`). The left rail (now `w-56`) is a node foundry: search
+  box (labelled), grouped rows with glossy mini-orbs sitting in accent goo
+  pools + one-line hints (new `hint` field on NodeDef), and **pull-a-node-
+  out-of-the-goo**: pointer-drag an orb and a gooey metaball strand
+  (SVG blur+contrast filter) stretches from the well until it SNAPS
+  (150 px), then the free ghost orb follows the pointer — release over the
+  canvas drops the node at the pointer, release elsewhere cancels, plain
+  click/Enter still drops at centre (a click-guard stops the double-add the
+  first Playwright pass caught). — `AudimateView.tsx`, `AudimatePalette.tsx`,
+  `audimateTypes.ts`
+- **Audimate template patches (new system) — 7 GANTASMO graphs.** New
+  `frontend/src/data/audimateTemplates.ts` + `audimateStore.loadTemplate`
+  (fresh ids, effect params seeded from EFFECT_DEFAULTS, one undo step) + a
+  TEMPLATE PATCHES rack in the rail. Source songs resolve at load time —
+  known entry id first, then case-insensitive title match — and unresolved
+  songs show an amber "needs import" badge but still load with the Library
+  node unset. Shipped: Dream Cascade (Will I Dream, feedback reverb wash),
+  Accelerator (EACC, sub/wide + Magenta industrial fuse), Surrender Loop
+  (Just Give Up, pitch-down echo spiral), Gravy Boat (Gravy, funk re-roll +
+  squeeze), Signal 18301208 (dark-ambient transmission), Dollar Store (I'd
+  Buy That For A Dollar, crush + detroit re-roll), Renegade Law (Renegade,
+  hot tempo + ping-pong feedback). VERIFIED: Dream Cascade loads wired +
+  framed with its source resolved; Gravy and Dollar correctly flag "needs
+  import" (Gravy exists only as `C:\Users\Cyboman\Music\GANTASMO EP
+  20251109\5 - Gravy.mp3`; no "I'd Buy That For A Dollar" audio exists
+  anywhere on disk — import either into the Library and the templates pick
+  them up by title, no code change needed).
+- **Docs/RAG follow-up (approval needed per CLAUDE.md):**
+  `docs/guides/audimate.md` is now stale (no toolbar row, new rail,
+  templates, goo drag) — proposing a rewrite + RAG re-index next session.
+
+### 2026-08-27 (fourth pass) — Audimate LIVE, de-icon/de-glow sweep, footer action button (user request; tsc+ruff clean, verified in the running app via Playwright)
+
+- **Audimate is now a live performance surface (no AI required to run it).**
+  New real-time engine `frontend/src/lib/audimateLive.ts` + seven node kinds
+  (`audimateTypes.ts`): Stem (any demucs stem of a library song, looping,
+  resolved through `/api/stems/{id}` + `/api/library/stems/{sid}/audio` —
+  registry verified live), Filter/VCA/Echo/Crossfade (Live FX group, native
+  Web Audio), LFO (Automation group; sine/tri/square/saw, free-Hz or
+  beat-synced 1/16…4bar off the Live Out BPM, depth in target units), and
+  Live Out (master + BPM). New `mod` port type: LFO wires render DASHED and
+  connect at audio rate to filter freq / VCA gain / echo mix / crossfade pos;
+  `connect()` now type-checks ports. LIVE button in the dock arms the graph
+  (sources start phase-locked on one clock edge); inspector edits STREAM into
+  the running graph (setTargetAtTime-smoothed); structural edits auto-stop
+  it; Run and LIVE are mutually exclusive. Offline Run keeps every AI node
+  untouched — and the Stem node doubles as an offline source; live-only kinds
+  error with "press LIVE". VERIFIED running: Pressure Rig armed with "LIVE —
+  17 node(s), 12 audio + 4 mod wire(s), 129.49 BPM", live freq edit streamed,
+  clean stop. — `audimateLive.ts`, `audimateTypes.ts`, `audimateStore.ts`,
+  `audimateRunner.ts`, `AudimateInspector.tsx` (new stem picker field),
+  `AudimateView.tsx`
+- **Two live rig templates, denser than anything before** (top of the rack):
+  Pressure Rig (EACC — 17 nodes/16 wires: drum gate 1/8, bass wobble 1bar,
+  tex sweep 4bar, vox dub throw 2bar) and Undertow Rig (Just Give Up — 16
+  nodes/15 wires: 4bar drum dives, 1/4 sidechain duck, gtr↔keys crossfade
+  drift, dotted-8th vox throws in 2bar blocks). Real analyzed BPMs baked in.
+  — `frontend/src/data/audimateTemplates.ts`
+- **De-icon sweep (user mandate: icons only where they ARE the control).**
+  Header tab bar is text-only; HOME cards + task row lost their icons; the
+  assistant quick-command emojis and the Underfit "⚠️ Error" emoji are gone.
+  Icon-only controls (lock, trash, transport, chevrons, ★ ratings, ✓ status)
+  kept. — `CenterTabBar.tsx`, `HomeScreen.tsx`, `AssistantPanel.tsx`,
+  `UnderfitAssistantOrb.tsx`
+- **De-glow sweep.** Removed decorative/duplicative LED dots (template rows,
+  Audimate inspector, ModuleSidebar "Optimized", AdvancedVisualizer
+  LIVE/SILENT, DJ "Automix ●" + pulse) and de-glowed functional ones (FxRack
+  enable toggle, SlidePanel MIDI dot, VJ input dot).
+- **Footer: performant, responsive, and now owns the action button.** The
+  per-frame `currentTime` tick is isolated into `TransportProgressRow` so the
+  footer shell no longer re-renders 60×/s; transport shrinks (min-w-72), Up
+  Next hides below lg, the tip bubble below xl. The CREATE / PROCESS / TRAIN
+  / SEND TO VJ / PROCESS CHAIN button moved OUT of the dock strip into the
+  footer's bottom-right on every tab: rounded 2×1 (80×40), icon-free, idle =
+  muted translucent chip whose classes the footer's new own `edit-theme-scope`
+  remaps (theme-derivative), running = high-contrast inverse (light chip,
+  dark text) with a dark progress fill. Strip is now PANELS + LOG only.
+  — `PlayerFooter.tsx`, `ProcessingLog.tsx`, `Shell.tsx`
+
+### 2026-08-27 (fifth pass) — every-theme contrast, per-song live sets, Rack FX node, square node rail, resizable rails, audimate.md rewrite (user request; tsc+ruff clean, verified live incl. Porcelain theme)
+
+- **Every-theme contrast fix (the real bugs, found and closed).** The
+  header/footer/strip use `/α` hex classes (`bg-[#0a080f]/80`, `/95`, …) that
+  were NOT in the theme remap list — so light themes darkened the text but
+  left the chrome near-black (invisible header buttons, the user's exact
+  complaint). New color-mix remaps for every translucent hex surface in use;
+  light themes also gained hover-state text remaps (`hover:text-white`,
+  `hover:text-zinc-100/200/300/400`, common group-hovers) and pale accent
+  text darkening (`text-{17 hues}-100/200/300→700`, `-400→600`, literal
+  hexes) so active tabs and colored chips stay readable. Audimate's canvas
+  + vignette went var-based so it themes too. VERIFIED on Porcelain: header
+  tabs, footer, MAKE and Audimate all legible. — `frontend/src/index.css`,
+  `AudimateView.tsx`
+- **Rack FX live node (`lrack`).** Any of the 19 rack effects (Kargyraa,
+  Gater, Chop, Ring Mod, Bitcrush, Ares — the .gan grain engine —, The Owl,
+  Phantom Bass, compressor/EQ/reverb/delay…) instantiated per-node in the
+  live graph, worklets preloaded so nothing silently bypasses. LFO→Rack FX
+  mod wires modulate at CONTROL rate (30 Hz ticker off the audio clock)
+  driving the param named in the node's `modParam` field, clamped to its
+  descriptor range; inspector grew a grouped rack-effect picker with each
+  effect's own params. (VST3 still cannot run live in-browser — repo
+  constraint — so "VSTs" stay an EDIT/offline concern.) — `audimateTypes.ts`,
+  `audimateStore.ts`, `audimateLive.ts`, `audimateRunner.ts`,
+  `AudimateInspector.tsx`
+- **Live sets: ONE per song, titled by the SONG only** (replaces the named
+  rigs + the 7 AI templates): Will I Dream (Ares vox + Owl orbit + Phantom
+  low), EACC (bitcrush/kargyraa-vowel/ringmod industrial rack), Just Give Up
+  (dives/duck/drift + Chop + reverb→delay chain), Gravy (parallel
+  squeeze-vs-glitch crossfade), 18301208 (scanner band → ring-mod carrier →
+  echo well vs Owl orbit), I'd Buy That For A Dollar (crush→gate + robot
+  band + dry lane), Renegade (pursuit-vs-growl crossfade into dub). All
+  distinct architectures, 9–18 nodes, heavy LFO automation. VERIFIED: EACC
+  armed "LIVE — 18 node(s), 12 audio + 5 mod wire(s), 129.49 BPM"; the
+  mix-based 18301208 set armed with zero node errors. —
+  `frontend/src/data/audimateTemplates.ts`
+- **Node legibility + rail grid.** Every kind now carries a lucide glyph
+  (new `components/audimate/nodeIcons.ts`) rendered inside the canvas discs
+  and the rail; the rail's node list became a SQUARE tile grid (3-up: orb
+  glyph, name beneath, description on hover). — `AudimatePalette.tsx`,
+  `AudimateView.tsx`
+- **Both side rails drag-resize, collapse and expand** (chevrons; collapsed
+  = slim labeled strip), widths + open state persisted in the audimate
+  store. — `audimateStore.ts`, `AudimateView.tsx`
+- **docs/guides/audimate.md fully rewritten** (approved this session):
+  layout, goo rail, LIVE mode, mod wires, Rack FX, live sets, rails,
+  offline Run. Already registered in `backend/rag.py` DOC_PATHS — the RAG
+  re-indexes it on the next backend restart.
+
+### 2026-08-27 (sixth pass) — NodeF.I. rename, saved sets, Suno cloud node, inspector redesign (user request; tsc+ruff clean, verified live)
+
+- **Renamed Audimate → NodeF.I.** (display-level: tab reads NODEFI; internal
+  ids/keys unchanged so persisted graphs survive). Tab bar + HOME card + orb
+  tip + assistant navigate aliases (`nodefi`, `nodef.i.`) + guide title. —
+  `CenterTabBar.tsx`, `HomeScreen.tsx`, `OrbTipBubble.tsx`, `appUiStore.ts`,
+  `docs/guides/audimate.md`
+- **Saved sets.** New `state/audimateSetsStore.ts` (persist
+  `thedaw-audimate-sets-v1`): the rail's My sets section saves the current
+  canvas under a name, lists/loads (fresh ids via loadTemplate — one undo
+  restores), deletes, exports each set to `.nodefi.json` and imports them
+  back (validated shape). VERIFIED: save → clear → load round-tripped
+  9 nodes/9 edges. — `AudimatePalette.tsx`, `AudimateView.tsx`
+- **Suno (Cloud) node** — cloud generation with ZERO local GPU: submits
+  simple/custom jobs through the existing server-side-key Suno proxy
+  (`/api/suno/*`), polls, and returns the MP3 as the node's output; honest
+  errors when the key is unset. All 7 live sets already run with no AI at
+  all (that is what LIVE mode is). Lyria stays out — it is an embedded
+  iframe app with no plain generate API. — `audimateTypes.ts`,
+  `audimateRunner.ts`, `nodeIcons.ts`
+- **Inspector redesigned** (user: "cooler than number fields"): ranged params
+  are SLIDE glass sliders (drag/wheel/keys/double-click-reset) with a small
+  precise value box — Rack FX descriptors map straight onto them; ≤4-option
+  selects are segmented pills in the node's accent; stem picking is chips;
+  the header is the node's glossy orb + glyph with an accent underline.
+  VERIFIED: Ring Mod node shows FREQ/MIX sliders; Suno node shows
+  Simple/Custom + Yes/No pills. — `AudimateInspector.tsx`
+- Note: the rail collapse state persisting across sessions was incidentally
+  verified (test profile reopened collapsed and expanded cleanly).
+
+### 2026-08-28 — NodeF.I. tendril controls + bold type ramp (user request; tsc+ruff clean, verified live)
+
+- **Tendril controls replace the SLIDE sliders in NodeF.I.** New
+  `components/audimate/NodefiControls.tsx` — an original control language,
+  deliberately outside the SLIDE style guide and its colors: ranged params
+  are a FILAMENT UNDER TENSION (quadratic curve bowing through a bead node,
+  spent portion thickened, root tether to a dashed rest line, growth marks),
+  colored by the node's accent MUTED toward slate (nothing neon) over
+  theme-var neutrals. Full input surface: drag (pointer-capture hardened),
+  wheel ±(shift ×10), arrow keys/Home/End, double-click reset, click-to-type
+  exact value (underline input, no box). Short selects are alternating
+  asymmetric-radius CELLS; stems are cells too; unbounded numbers are quiet
+  underline rows. VERIFIED: Ring Mod freq/mix tendrils render + a click at
+  85% of the filament set 0.85. — `NodefiControls.tsx`,
+  `AudimateInspector.tsx`
+- **NodeF.I. type ramp: bolder + bigger everywhere** (user: "too tiny").
+  Scoped CSS raises `.mono-label` to 11px/700 and `.compact-input` to 12px
+  inside the surface (composes with the app text-scale setting); node canvas
+  labels 10→12px bold, rail tile names 10px semibold, set rows 12px
+  semibold, dock buttons 11px bold, value readouts 12px semibold, empty
+  state 13px. — `index.css`, `AudimateView.tsx`, `AudimatePalette.tsx`,
+  `NodefiControls.tsx`, `AudimateInspector.tsx`
+- **PERFORM: the route chip wall is gone; right rail with ROUTES + PARAMS**
+  (user request; tsc+ruff clean, verified live). The active-route chips that
+  wrapped into a giant wall under the Sway deck (81 rows of grid stolen) are
+  now the right rail's ROUTES tab: a filterable, grouped (CC routes / Sway
+  dims), scrollable list of compact rows — no glyphs in the rows (Zap and ⇢
+  removed). The PARAMS tab is a per-track device browser (VST devices listed
+  but marked inert) whose selected device renders tendril controls pushing
+  straight into the grid's RUNNING chains via a new bridge
+  (`registerPerformChainPush` — same `perform-{t}-{d}` entry ids the CC
+  routes drive, sticky-state merge so single keys are safe). The rail is
+  drag-resizable (208–440), collapsible, **DEFAULT CLOSED** (user mandate;
+  store v2 migration re-closes profiles that saw the brief open default) and
+  contributes ZERO right-edge footprint when closed — it opens from a
+  PanelRight toggle in Perform's header, so the right side stays ONE rail.
+  VERIFIED: EACC set → 76 CC + 5 dim routes listed, 28 live devices, lowpass
+  Freq tendril drove the live chain. — `frontend/src/components/session/
+  {PerformRail.tsx,PerformRoutingPanel.tsx,DawSessionGrid.tsx}`,
+  `frontend/src/state/performRailStore.ts`, `frontend/src/views/SessionView.tsx`
+- **SwayCommand upstreaming + theming** — answered as a plan (no code yet):
+  repo is `danieljtrujillo/SwayCommand` (private; consumed via
+  `electron-ui/scripts/fetch-sway-build.mjs`: SWAY_DIST → SWAY_PROJECT →
+  sibling checkout → pinned release w/ SWAY_REPO_TOKEN). Upstreaming = port
+  the staged BUNDLE_PATCHes into cockpit source in a sibling checkout, PR
+  there, cut an embed release, bump the pin, delete the patches. Theming =
+  (a) Perform deck: swap `swaydeck.css` `--sd-*` values onto theme vars +
+  add optional per-theme `--et-accent`/`--et-accent2`; (b) cockpit iframe is
+  SAME-ORIGIN (/sway-app) so SwayView can inject a style overriding the
+  cockpit's CSS custom props today, with a proper `sway/theme` postMessage
+  upstreamed later.

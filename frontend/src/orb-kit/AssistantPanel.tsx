@@ -59,12 +59,12 @@ interface AssistantAttachment {
 
 
 const QUICK_COMMANDS = [
-    { label: '🎵 Make Beat', command: 'Make me a chill lo-fi beat' },
-    { label: '🔬 Analyze', command: 'Analyze the currently playing song' },
-    { label: '📚 Library', command: 'Go to library' },
-    { label: '🔥 Trending', command: 'Show trending songs' },
-    { label: '⚡ Full Sync', command: 'Start a full sync' },
-    { label: '📊 Stats', command: 'Show my statistics' },
+    { label: 'Make Beat', command: 'Make me a chill lo-fi beat' },
+    { label: 'Analyze', command: 'Analyze the currently playing song' },
+    { label: 'Library', command: 'Go to library' },
+    { label: 'Trending', command: 'Show trending songs' },
+    { label: 'Full Sync', command: 'Start a full sync' },
+    { label: 'Stats', command: 'Show my statistics' },
 ];
 
 const CAPABILITY_HINTS = [

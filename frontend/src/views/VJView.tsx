@@ -1105,7 +1105,7 @@ const InputChip: React.FC<{
     {icon}
     {indicator === 'live' && active && (
       <span
-        className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.9)]"
+        className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400"
         aria-hidden="true"
       />
     )}

@@ -102,10 +102,7 @@ export const ModuleSidebar: React.FC = () => {
          <div className="space-y-2">
             <div className="flex justify-between items-center px-1">
                <span className="text-[8px] font-mono text-zinc-600 uppercase">Engine Status</span>
-               <div className="flex items-center gap-1.5">
-                  <div className="w-1 h-1 rounded-full bg-green-500 animate-pulse" />
-                  <span className="text-[8px] font-mono text-green-500/80 uppercase">Optimized</span>
-               </div>
+               <span className="text-[8px] font-mono text-green-500/80 uppercase">Optimized</span>
             </div>
             <div className="p-2 bg-black/40 rounded border border-white/5">
                 <div className="flex items-center gap-2 mb-1.5">

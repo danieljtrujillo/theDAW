@@ -1468,7 +1468,7 @@ export default function UnderfitAssistantOrb() {
           {
             id: errorMsgId,
             role: "assistant",
-            text: `⚠️ Error during communication: ${err.message || err}`,
+            text: `Error during communication: ${err.message || err}`,
             timestamp: Date.now(),
           },
         ]);
