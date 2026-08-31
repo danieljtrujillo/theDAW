@@ -14,7 +14,7 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
  *  VJ / FOUNDRY / UNDERFIT / LEARN / TOUR. All workspaces live here; the legacy
  *  left-side tabs (CREATE/PROCESS) are subsumed by these. LoRA training is the
  *  UNDERFIT tab (the standalone TRAIN workspace was retired in its favor). */
-export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'sway', 'foundry', 'underfit', 'audimate', 'learn', 'tour'] as const;
+export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'sway', 'foundry', 'underfit', 'nodefi', 'learn', 'tour'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
 
 /** Tabs that were removed or renamed but may still appear in persisted state or
@@ -22,6 +22,9 @@ export type CenterTab = typeof CENTER_TABS[number];
 const CENTER_TAB_ALIASES: Record<string, CenterTab> = {
   // The standalone Train workspace was replaced by the Underfit trainer tab.
   train: 'underfit',
+  // Audimate was renamed to NodeF.I. Anyone whose persisted centerTab still
+  // says 'audimate' rehydrates onto the same workspace instead of 'make'.
+  audimate: 'nodefi',
 };
 
 /** Translate legacy navigation targets (used by orb-kit, library row
@@ -54,6 +57,11 @@ const NAVIGATE_ALIASES: Record<string, CenterTab> = {
   advanced: 'make',
   generate: 'make',
   train: 'underfit',
+  // NodeF.I. spellings the assistant or a legacy caller might use. 'nodefi'
+  // itself is a real tab id now, so it needs no alias; 'audimate' is handled
+  // by CENTER_TAB_ALIASES, which normalizeCenterTab consults first.
+  'nodef.i.': 'nodefi',
+  'node f.i.': 'nodefi',
 };
 
 /** The legacy 5-view enum still hangs off a few readers; keep it loosely in
@@ -183,7 +191,9 @@ export const useAppUiStore = create<AppUiState>()(
       // (e.g. the retired 'train' workspace). migrate() coerces it to a valid
       // tab so returning users never rehydrate onto a tab that no longer exists.
       // v2 added uiMode (Kouhai/Senpai, consumed by the FOUNDRY surface).
-      version: 2,
+      // v3: the 'audimate' tab id became 'nodefi'; CENTER_TAB_ALIASES maps the
+      // old value so a returning user lands back on the same workspace.
+      version: 3,
       migrate: (persisted, _version) => {
         const p = (persisted ?? {}) as { centerTab?: unknown; rightPanelWidth?: unknown; uiMode?: unknown };
         return {

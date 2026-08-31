@@ -18,7 +18,7 @@ type EditorSummary = {
 
 type RuntimeContext = {
     ui: {
-        /** The REAL workspace tab (make/edit/mix/session/dj/vj/sway/foundry/underfit/audimate/learn/tour). */
+        /** The REAL workspace tab (make/edit/mix/session/dj/vj/sway/foundry/underfit/nodefi/learn/tour). */
         activeTab: string;
         isLeftPanelOpen: boolean;
         docsOpen: boolean;

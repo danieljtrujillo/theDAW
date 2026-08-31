@@ -1,5 +1,5 @@
 /**
- * Audimate graph store. The nodes / edges / viewport are persisted so a graph
+ * Nodefi graph store. The nodes / edges / viewport are persisted so a graph
  * survives reloads; run state (per-node status, preview object URLs, running
  * flag) is transient and reset on load.
  *
@@ -11,7 +11,8 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { EFFECT_DEFAULTS } from './effectChainStore';
-import { nodeDef, type GraphEdge, type GraphNode, type NodeKind, type NodeRunStatus } from '../lib/audimateTypes';
+import { rackEffectDefaults } from '../lib/rackEffects';
+import { nodeDef, type GraphEdge, type GraphNode, type NodeKind, type NodeRunStatus } from '../lib/nodefiTypes';
 
 let uidCounter = 0;
 const uid = (p: string): string => `${p}_${Date.now().toString(36)}${(uidCounter++).toString(36)}`;
@@ -30,15 +31,23 @@ interface GraphDoc {
 
 /** Effect nodes must carry their chosen effect's numeric params from birth —
  *  the runner serializes `node.params` straight into `/api/studio/process`,
- *  and the backend 400s on any missing key. (The inspector only seeds them
- *  when the user CHANGES the effect.) */
+ *  and the backend 400s on any missing key. Rack FX (lrack) nodes seed the
+ *  chosen rack effect's full descriptor defaults the same way, so the live
+ *  engine can instantiate them without holes. (The inspector only seeds when
+ *  the user CHANGES the effect.) */
 function seedParams(kind: NodeKind, defaults: Record<string, string | number>): Record<string, string | number> {
-  if (kind !== 'effect') return { ...defaults };
-  const effect = String(defaults.effect || 'mastering_chain');
-  return { ...(EFFECT_DEFAULTS[effect] ?? {}), ...defaults };
+  if (kind === 'effect') {
+    const effect = String(defaults.effect || 'mastering_chain');
+    return { ...(EFFECT_DEFAULTS[effect] ?? {}), ...defaults };
+  }
+  if (kind === 'lrack') {
+    const effect = String(defaults.effect || 'gater');
+    return { ...rackEffectDefaults(effect), ...defaults };
+  }
+  return { ...defaults };
 }
 
-interface AudimateState {
+interface NodefiState {
   nodes: GraphNode[];
   edges: GraphEdge[];
   viewport: Viewport;
@@ -59,7 +68,23 @@ interface AudimateState {
   statusMsg: Record<string, string>;
   previews: Record<string, string | null>;
 
+  // Side-rail UI (persisted): both rails are drag-resizable and collapsible.
+  railWidth: number;
+  inspectorWidth: number;
+  railOpen: boolean;
+  inspectorOpen: boolean;
+  setRailWidth: (w: number) => void;
+  setInspectorWidth: (w: number) => void;
+  setRailOpen: (open: boolean) => void;
+  setInspectorOpen: (open: boolean) => void;
+
   addNode: (kind: NodeKind, x: number, y: number) => string;
+  /** Replace the whole graph with a template document (fresh ids minted from
+   *  the template's local keys). One undo step restores the previous graph. */
+  loadTemplate: (
+    nodes: Array<{ key: string; kind: NodeKind; x: number; y: number; title?: string; params?: Record<string, string | number> }>,
+    edges: Array<[string, string, string, string]>,
+  ) => void;
   moveNode: (id: string, x: number, y: number) => void;
   /** Translate every node in `ids` by the same delta (multi-drag / arrow keys). */
   moveNodesBy: (ids: string[], dx: number, dy: number) => void;
@@ -97,12 +122,25 @@ const HISTORY_LIMIT = 60;
 // undo step, so a continuous node drag (many moveNode calls) is one step.
 const COALESCE_MS = 350;
 
-type BaseStore = Omit<AudimateState, 'past' | 'future' | 'undo' | 'redo'>;
+type BaseStore = Omit<NodefiState, 'past' | 'future' | 'undo' | 'redo'>;
 type AnySet = (partial: unknown, replace?: boolean) => void;
-type AudimatePersist = [['zustand/persist', { nodes: GraphNode[]; edges: GraphEdge[]; viewport: Viewport }]];
+type NodefiPersist = [
+  [
+    'zustand/persist',
+    {
+      nodes: GraphNode[];
+      edges: GraphEdge[];
+      viewport: Viewport;
+      railWidth: number;
+      inspectorWidth: number;
+      railOpen: boolean;
+      inspectorOpen: boolean;
+    },
+  ],
+];
 
 const withHistory =
-  (config: (set: AnySet, get: () => AudimateState, api: unknown) => BaseStore): StateCreator<AudimateState, [], AudimatePersist> =>
+  (config: (set: AnySet, get: () => NodefiState, api: unknown) => BaseStore): StateCreator<NodefiState, [], NodefiPersist> =>
   (set, get, api) => {
     const rawSet = set as unknown as AnySet;
     let lastPush = 0;
@@ -122,7 +160,7 @@ const withHistory =
       }
     };
     /** Restoring a snapshot must drop selection/edge ids that no longer exist. */
-    const applyDoc = (doc: GraphDoc, s: AudimateState) => {
+    const applyDoc = (doc: GraphDoc, s: NodefiState) => {
       const nodeIds = new Set(doc.nodes.map((n) => n.id));
       const edgeIds = new Set(doc.edges.map((e) => e.id));
       const selectedIds = s.selectedIds.filter((id) => nodeIds.has(id));
@@ -161,7 +199,7 @@ const withHistory =
     };
   };
 
-export const useAudimateStore = create<AudimateState>()(
+export const useNodefiStore = create<NodefiState>()(
   persist(
     withHistory((set, get) => ({
       nodes: [],
@@ -175,6 +213,15 @@ export const useAudimateStore = create<AudimateState>()(
       status: {},
       statusMsg: {},
       previews: {},
+
+      railWidth: 224,
+      inspectorWidth: 256,
+      railOpen: true,
+      inspectorOpen: true,
+      setRailWidth: (w) => set({ railWidth: Math.round(Math.max(168, Math.min(400, w))) }),
+      setInspectorWidth: (w) => set({ inspectorWidth: Math.round(Math.max(200, Math.min(440, w))) }),
+      setRailOpen: (railOpen) => set({ railOpen }),
+      setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
 
       addNode: (kind, x, y) => {
         const def = nodeDef(kind);
@@ -193,6 +240,39 @@ export const useAudimateStore = create<AudimateState>()(
           selectedEdgeId: null,
         });
         return id;
+      },
+
+      loadTemplate: (tplNodes, tplEdges) => {
+        for (const url of Object.values(get().previews)) if (url) URL.revokeObjectURL(url);
+        const idByKey = new Map<string, string>();
+        const nodes: GraphNode[] = tplNodes.map((n) => {
+          const id = uid(n.kind);
+          idByKey.set(n.key, id);
+          // Author-time params sit on top of the kind's defaults; effect and
+          // Rack FX nodes additionally seed their chosen effect's full param
+          // set (same rule as addNode — nothing may instantiate with holes).
+          const params = seedParams(n.kind, { ...nodeDef(n.kind).defaults, ...(n.params ?? {}) });
+          return { id, kind: n.kind, x: n.x, y: n.y, title: n.title, params };
+        });
+        const edges: GraphEdge[] = tplEdges
+          .filter(([from, , to]) => idByKey.has(from) && idByKey.has(to))
+          .map(([from, fromPort, to, toPort]) => ({
+            id: uid('e'),
+            from: idByKey.get(from)!,
+            fromPort,
+            to: idByKey.get(to)!,
+            toPort,
+          }));
+        set({
+          nodes,
+          edges,
+          selectedId: null,
+          selectedIds: [],
+          selectedEdgeId: null,
+          status: {},
+          statusMsg: {},
+          previews: {},
+        });
       },
 
       moveNode: (id, x, y) =>
@@ -274,6 +354,11 @@ export const useAudimateStore = create<AudimateState>()(
         if (!target) return;
         const port = nodeDef(target.kind).inputs.find((p) => p.id === toPort);
         if (!port) return;
+        // Port types must match: audio wires carry sound, mod wires carry
+        // automation (LFO) — an LFO can't feed an audio input or vice versa.
+        const source = s.nodes.find((n) => n.id === from);
+        const outPort = source ? nodeDef(source.kind).outputs.find((p) => p.id === fromPort) : undefined;
+        if (!outPort || outPort.type !== port.type) return;
         // Duplicate edge? ignore.
         if (s.edges.some((e) => e.from === from && e.fromPort === fromPort && e.to === to && e.toPort === toPort)) {
           return;
@@ -344,6 +429,9 @@ export const useAudimateStore = create<AudimateState>()(
       },
     })),
     {
+      // Keeps the pre-rename key on purpose: this is a storage contract, not
+      // a name. Renaming it to 'thedaw-nodefi-v1' would strand every saved
+      // graph in localStorage under a key nothing reads.
       name: 'thedaw-audimate-v1',
       version: 2,
       // v2: effect nodes now carry their effect's numeric params from creation.
@@ -357,9 +445,17 @@ export const useAudimateStore = create<AudimateState>()(
             return { ...n, params: { ...(EFFECT_DEFAULTS[effect] ?? {}), ...n.params } };
           });
         }
-        return p as unknown as AudimateState;
+        return p as unknown as NodefiState;
       },
-      partialize: (s) => ({ nodes: s.nodes, edges: s.edges, viewport: s.viewport }),
+      partialize: (s) => ({
+        nodes: s.nodes,
+        edges: s.edges,
+        viewport: s.viewport,
+        railWidth: s.railWidth,
+        inspectorWidth: s.inspectorWidth,
+        railOpen: s.railOpen,
+        inspectorOpen: s.inspectorOpen,
+      }),
     },
   ),
 );

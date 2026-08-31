@@ -29,12 +29,12 @@ The workspace tabs are declared in one place, `CENTER_TABS`
 | MAKE | Generate audio from a text prompt | [02](02-make-tab.md), [03 Chimera](03-chimera.md), [04 compose tools](04-compose-draw-vocal-notation-arp.md) |
 | EDIT | Timeline arrangement, automation, export | [05](05-edit.md) |
 | MIX | Effect/module rack, mastering | [06](06-mix-effects-mastering.md) |
-| PERFORM | Live scene/clip grid | [08](08-perform-foundry-audimate.md) |
+| PERFORM | Live scene/clip grid | [08](08-perform-foundry-nodefi.md) |
 | DJ | Two-deck console | [07](07-dj.md) |
 | VJ | Live visuals engine | [09](09-vj-live-visuals.md) |
-| FOUNDRY | Plugin/VST interface designer | [08](08-perform-foundry-audimate.md) |
+| FOUNDRY | Plugin/VST interface designer | [08](08-perform-foundry-nodefi.md) |
 | UNDERFIT | LoRA finetune trainer | [11](11-underfit-lora.md) |
-| AUDIMATE | Node-graph generation pipelines | [08](08-perform-foundry-audimate.md) |
+| NODEFI | Node-graph generation pipelines | [08](08-perform-foundry-nodefi.md) |
 | LEARN | Guides, docs, in-app assistant | [13](13-assistant-llm-suno.md) |
 | TOUR | Venue discovery and tour routing | [12](12-tour-planner.md) |
 

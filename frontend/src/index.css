@@ -349,6 +349,91 @@ select optgroup {
 .edit-theme-scope[data-et-light="1"] .text-zinc-200,
 .edit-theme-scope[data-et-light="1"] .text-\[\#f5f3ff\] { color: rgb(var(--et-ink)); }
 
+/* Translucent hex chrome (header, footer, dock strip, floating docks). These
+ * `/α` spellings are DISTINCT utility classes from their solid forms, so
+ * without their own remaps they stay near-black under every theme — while the
+ * light-theme text rules above turn their labels dark = invisible text. Mix
+ * the themed surface with transparency at the same opacity the class asked
+ * for, so blur-backed chrome keeps its translucency in every theme. */
+.edit-theme-scope .bg-\[\#0a080f\]\/40 { background-color: color-mix(in srgb, var(--et-popup) 40%, transparent); }
+.edit-theme-scope .bg-\[\#0a080f\]\/60,
+.edit-theme-scope .bg-\[\#08060c\]\/60,
+.edit-theme-scope .bg-\[\#0b0910\]\/60 { background-color: color-mix(in srgb, var(--et-popup) 60%, transparent); }
+.edit-theme-scope .bg-\[\#0a080f\]\/80 { background-color: color-mix(in srgb, var(--et-popup) 80%, transparent); }
+.edit-theme-scope .bg-\[\#0a080f\]\/90 { background-color: color-mix(in srgb, var(--et-popup) 90%, transparent); }
+.edit-theme-scope .bg-\[\#0a080f\]\/95,
+.edit-theme-scope .bg-\[\#050712\]\/95 { background-color: color-mix(in srgb, var(--et-popup) 95%, transparent); }
+.edit-theme-scope .bg-\[\#0c0a12\]\/70 { background-color: color-mix(in srgb, var(--et-panel) 70%, transparent); }
+.edit-theme-scope .bg-\[\#0c0a14\]\/95 { background-color: color-mix(in srgb, var(--et-panel) 95%, transparent); }
+.edit-theme-scope .bg-\[\#0c0a14\]\/97 { background-color: color-mix(in srgb, var(--et-panel) 97%, transparent); }
+
+/* Light themes: hover text states. `hover:text-white` etc. are their own
+ * classes, so the base remaps above never catch them — hovering a ghost
+ * button on a light theme flashed its label to white-on-light (invisible). */
+.edit-theme-scope[data-et-light="1"] .hover\:text-white:hover,
+.edit-theme-scope[data-et-light="1"] .hover\:text-zinc-100:hover,
+.edit-theme-scope[data-et-light="1"] .hover\:text-zinc-200:hover,
+.edit-theme-scope[data-et-light="1"] .hover\:text-zinc-300:hover { color: rgb(var(--et-ink)); }
+.edit-theme-scope[data-et-light="1"] .hover\:text-zinc-400:hover { color: rgb(var(--et-ink) / 0.8); }
+.edit-theme-scope[data-et-light="1"] .group:hover .group-hover\:text-white,
+.edit-theme-scope[data-et-light="1"] .group:hover .group-hover\:text-zinc-100,
+.edit-theme-scope[data-et-light="1"] .group:hover .group-hover\:text-zinc-200 { color: rgb(var(--et-ink)); }
+
+/* Light themes: pale accent text (the *-100/200/300 shades read as glow on a
+ * dark ground but vanish on light surfaces). Darken to the same hue's 700
+ * (600 for the 400 shade) so buttons AND their labels stay visible while the
+ * hue identity — the active tab's color, a chip's meaning — is preserved. */
+.edit-theme-scope[data-et-light="1"] .text-purple-100, .edit-theme-scope[data-et-light="1"] .text-purple-200, .edit-theme-scope[data-et-light="1"] .text-purple-300 { color: #7e22ce; }
+.edit-theme-scope[data-et-light="1"] .text-purple-400 { color: #9333ea; }
+.edit-theme-scope[data-et-light="1"] .text-violet-100, .edit-theme-scope[data-et-light="1"] .text-violet-200, .edit-theme-scope[data-et-light="1"] .text-violet-300 { color: #6d28d9; }
+.edit-theme-scope[data-et-light="1"] .text-violet-400 { color: #7c3aed; }
+.edit-theme-scope[data-et-light="1"] .text-fuchsia-100, .edit-theme-scope[data-et-light="1"] .text-fuchsia-200, .edit-theme-scope[data-et-light="1"] .text-fuchsia-300 { color: #a21caf; }
+.edit-theme-scope[data-et-light="1"] .text-fuchsia-400 { color: #c026d3; }
+.edit-theme-scope[data-et-light="1"] .text-pink-100, .edit-theme-scope[data-et-light="1"] .text-pink-200, .edit-theme-scope[data-et-light="1"] .text-pink-300 { color: #be185d; }
+.edit-theme-scope[data-et-light="1"] .text-pink-400 { color: #db2777; }
+.edit-theme-scope[data-et-light="1"] .text-rose-100, .edit-theme-scope[data-et-light="1"] .text-rose-200, .edit-theme-scope[data-et-light="1"] .text-rose-300 { color: #be123c; }
+.edit-theme-scope[data-et-light="1"] .text-rose-400 { color: #e11d48; }
+.edit-theme-scope[data-et-light="1"] .text-red-100, .edit-theme-scope[data-et-light="1"] .text-red-200, .edit-theme-scope[data-et-light="1"] .text-red-300 { color: #b91c1c; }
+.edit-theme-scope[data-et-light="1"] .text-red-400 { color: #dc2626; }
+.edit-theme-scope[data-et-light="1"] .text-orange-100, .edit-theme-scope[data-et-light="1"] .text-orange-200, .edit-theme-scope[data-et-light="1"] .text-orange-300 { color: #c2410c; }
+.edit-theme-scope[data-et-light="1"] .text-orange-400 { color: #ea580c; }
+.edit-theme-scope[data-et-light="1"] .text-amber-100, .edit-theme-scope[data-et-light="1"] .text-amber-200, .edit-theme-scope[data-et-light="1"] .text-amber-300 { color: #b45309; }
+.edit-theme-scope[data-et-light="1"] .text-amber-400 { color: #d97706; }
+.edit-theme-scope[data-et-light="1"] .text-yellow-100, .edit-theme-scope[data-et-light="1"] .text-yellow-200, .edit-theme-scope[data-et-light="1"] .text-yellow-300 { color: #a16207; }
+.edit-theme-scope[data-et-light="1"] .text-yellow-400 { color: #ca8a04; }
+.edit-theme-scope[data-et-light="1"] .text-lime-100, .edit-theme-scope[data-et-light="1"] .text-lime-200, .edit-theme-scope[data-et-light="1"] .text-lime-300 { color: #4d7c0f; }
+.edit-theme-scope[data-et-light="1"] .text-lime-400 { color: #65a30d; }
+.edit-theme-scope[data-et-light="1"] .text-green-100, .edit-theme-scope[data-et-light="1"] .text-green-200, .edit-theme-scope[data-et-light="1"] .text-green-300 { color: #15803d; }
+.edit-theme-scope[data-et-light="1"] .text-green-400 { color: #16a34a; }
+.edit-theme-scope[data-et-light="1"] .text-emerald-100, .edit-theme-scope[data-et-light="1"] .text-emerald-200, .edit-theme-scope[data-et-light="1"] .text-emerald-300 { color: #047857; }
+.edit-theme-scope[data-et-light="1"] .text-emerald-400 { color: #059669; }
+.edit-theme-scope[data-et-light="1"] .text-teal-100, .edit-theme-scope[data-et-light="1"] .text-teal-200, .edit-theme-scope[data-et-light="1"] .text-teal-300 { color: #0f766e; }
+.edit-theme-scope[data-et-light="1"] .text-teal-400 { color: #0d9488; }
+.edit-theme-scope[data-et-light="1"] .text-cyan-100, .edit-theme-scope[data-et-light="1"] .text-cyan-200, .edit-theme-scope[data-et-light="1"] .text-cyan-300 { color: #0e7490; }
+.edit-theme-scope[data-et-light="1"] .text-cyan-400 { color: #0891b2; }
+.edit-theme-scope[data-et-light="1"] .text-sky-100, .edit-theme-scope[data-et-light="1"] .text-sky-200, .edit-theme-scope[data-et-light="1"] .text-sky-300 { color: #0369a1; }
+.edit-theme-scope[data-et-light="1"] .text-sky-400 { color: #0284c7; }
+.edit-theme-scope[data-et-light="1"] .text-blue-100, .edit-theme-scope[data-et-light="1"] .text-blue-200, .edit-theme-scope[data-et-light="1"] .text-blue-300 { color: #1d4ed8; }
+.edit-theme-scope[data-et-light="1"] .text-blue-400 { color: #2563eb; }
+.edit-theme-scope[data-et-light="1"] .text-indigo-100, .edit-theme-scope[data-et-light="1"] .text-indigo-200, .edit-theme-scope[data-et-light="1"] .text-indigo-300 { color: #4338ca; }
+.edit-theme-scope[data-et-light="1"] .text-indigo-400 { color: #4f46e5; }
+
+/* NodeF.I. runs a LARGER, BOLDER type ramp than the rest of the chrome (user
+ * mandate: the 9px mono labels were unreadable). Scoped to the surface via its
+ * key-scope attribute; !important + calc keeps the app-wide text-scale
+ * setting composing on top. */
+[data-keyscope="nodefi"] .mono-label {
+  font-size: calc(11px * var(--text-scale, 1)) !important;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+[data-keyscope="nodefi"] .compact-input {
+  font-size: calc(12px * var(--text-scale, 1)) !important;
+}
+[data-keyscope="nodefi"] .form-select {
+  font-weight: 600;
+}
+
 /* Bottom-dock bodies emerge from their toggle buttons in the strip (see
  * Shell.tsx ShellBottomDock): a short rise + fade with the origin at the
  * bottom edge, so the panel visually grows out of the button that opened it. */

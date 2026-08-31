@@ -206,7 +206,7 @@ Underfit fits LoRA adapters. Eight adapter types are available (`lora`, `dora-ro
 
 ### Audimate
 
-<p align="center"><img src="docs/readme/audimate.png" alt="Audimate node canvas with a Library, Generate, Effect, and Output pipeline wired by glowing bezier edges" width="820"></p>
+<p align="center"><img src="docs/readme/nodefi.png" alt="NodeF.I. node canvas with a Library, Generate, Effect, and Output pipeline wired by glowing bezier edges" width="820"></p>
 
 Audimate is a node-graph editor for building generation pipelines. Circular nodes for library sources, generation (Stable Audio or Magenta), effect, merge, and feedback stages, and outputs wire together with bezier edges on a pannable, zoomable canvas. The inspector edits each node's parameters (prompt, model, duration, steps, CFG, seed), and Run drives the graph through the same generate, effect, and library actions the rest of the app uses, saving results back to the library.
 

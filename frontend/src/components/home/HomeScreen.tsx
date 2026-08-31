@@ -2,11 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import {
-  Compass,
   Disc,
-  FileAudio,
   FlaskConical,
-  FolderOpen,
   Hammer,
   Route,
   Rows3,
@@ -164,9 +161,9 @@ const HOME_TABS: Array<{
     },
   },
   {
-    id: 'audimate',
-    label: 'Audimate',
-    desc: 'Build generation pipelines as a wired node graph, then run them',
+    id: 'nodefi',
+    label: 'NodeFI',
+    desc: 'NodeF.I. — wire node graphs: AI pipelines offline, stems + rack FX live',
     icon: Waypoints,
     accent: {
       borderL: 'border-l-teal-500/50',
@@ -279,7 +276,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 the tiles are not mostly empty space. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {HOME_TABS.map((t) => {
-                const Icon = t.icon;
+                // Name + description only — no icon next to a visible name
+                // (icons stay only where they ARE the control, unlabeled).
                 return (
                   <button
                     key={t.id}
@@ -299,7 +297,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       'outline-none focus-visible:ring-2 focus-visible:ring-purple-400/60',
                     ].join(' ')}
                   >
-                    <Icon className={`w-8 h-8 ${t.accent.icon}`} />
                     <span className="text-base font-black uppercase tracking-widest text-zinc-100">
                       {t.label}
                     </span>
@@ -322,7 +319,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 }}
                 className={TASK_BUTTON_CLASSES}
               >
-                <FolderOpen className="w-3.5 h-3.5 shrink-0 text-sky-300" />
                 <span>Open Project</span>
               </button>
               {onImportAudio && (
@@ -335,7 +331,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   }}
                   className={TASK_BUTTON_CLASSES}
                 >
-                  <FileAudio className="w-3.5 h-3.5 shrink-0 text-emerald-300" />
                   <span>Import Audio</span>
                 </button>
               )}
@@ -348,7 +343,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 }}
                 className={TASK_BUTTON_CLASSES}
               >
-                <Compass className="w-3.5 h-3.5 shrink-0 text-purple-300" />
                 <span>Feature Tour</span>
               </button>
             </div>
