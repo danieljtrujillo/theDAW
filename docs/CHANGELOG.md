@@ -42,7 +42,7 @@ Newest first.
 - **Documented shipped-but-invisible features** across the reference tree and
   guides: unified effect control windows, OPFS autosave and crash recovery,
   clip → stems explode, the 12 `editor_*` assistant tools and the T1/T2 approval
-  tiers, all-workspace navigation, the Audimate node-editor toolset, note-by-note
+  tiers, all-workspace navigation, the NodeF.I. (formerly Audimate) node-editor toolset, note-by-note
   notation follow and the tab-timing migration, `.swayproj` import, the
   `/api/sway` route family, `POST /api/dawimport/sway`, and the `EffectChainNode`
   / `perform_routing` schema detail in the project guide.
