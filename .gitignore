@@ -17,6 +17,7 @@ data/quest.json
 # Quest deploy APK downloads pulled from theDAW-XR releases (~150 MB each)
 data/quest/
 data/generations/
+data/performance-sets/
 data/settings.json
 data/recent_projects.json
 # Per-machine media roots (absolute paths to the user's audio folders)

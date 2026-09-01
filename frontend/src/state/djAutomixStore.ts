@@ -14,14 +14,35 @@ import { useAppUiStore } from './appUiStore';
 interface DjAutomixState {
   /** Set true to ask the DJ tab to begin automixing the active set. */
   pendingStart: boolean;
+  /** Set true to ask the DJ tab to stop automixing (assistant control). */
+  pendingStop: boolean;
+  /** Set true to ask the running automix to blend into the next track NOW
+   *  instead of waiting for the prepared mix-out point. */
+  pendingTransition: boolean;
+  /** The setlist entryId automix is currently playing, published by DJView so
+   *  outside callers (assistant actions) can reason about "what's on now". */
+  nowPlayingEntryId: string | null;
   requestStart: () => void;
   consumeStart: () => void;
+  requestStop: () => void;
+  consumeStop: () => void;
+  requestTransition: () => void;
+  consumeTransition: () => void;
+  setNowPlaying: (entryId: string | null) => void;
 }
 
 export const useDjAutomix = create<DjAutomixState>()((set) => ({
   pendingStart: false,
-  requestStart: () => set({ pendingStart: true }),
+  pendingStop: false,
+  pendingTransition: false,
+  nowPlayingEntryId: null,
+  requestStart: () => set({ pendingStart: true, pendingStop: false }),
   consumeStart: () => set({ pendingStart: false }),
+  requestStop: () => set({ pendingStop: true, pendingStart: false }),
+  consumeStop: () => set({ pendingStop: false }),
+  requestTransition: () => set({ pendingTransition: true }),
+  consumeTransition: () => set({ pendingTransition: false }),
+  setNowPlaying: (entryId) => set({ nowPlayingEntryId: entryId }),
 }));
 
 /** The reserved set name reused for suggester sends, so repeated sends update

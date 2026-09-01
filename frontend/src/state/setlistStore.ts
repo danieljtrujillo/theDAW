@@ -24,6 +24,17 @@ export interface SetlistEntry {
   /** 'audio' | 'video' | 'image' — what kind of media this slot
    *  expects. */
   kind?: 'audio' | 'video' | 'image';
+  /** Optional prepared-performance data (imported from Z-AutoDJ sets).
+   *  When present the DJ automix uses these instead of its fixed
+   *  constants; absent = classic automix behavior. All in seconds. */
+  perf?: {
+    /** Where the incoming deck should start playing this track. */
+    cueIn?: number;
+    /** Track position at which the blend OUT of this track begins. */
+    mixOut?: number;
+    /** Crossfade length for the transition out of this track. */
+    transitionSec?: number;
+  };
 }
 
 export interface Setlist {
