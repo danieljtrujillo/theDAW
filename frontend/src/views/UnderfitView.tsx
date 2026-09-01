@@ -175,8 +175,11 @@ export const UnderfitView: React.FC = () => {
     }
   };
 
-  // Install problems the sidecar can name (checkout missing, venv missing).
+  // Install problems the sidecar can name (checkout missing, venv missing or
+  // incomplete). Any of these routes the user to the build/repair button.
   const installIssues = !reachable && diag && diag.issues.length > 0 ? diag.issues : null;
+  /** The venv exists but its packages don't — a rerun repairs rather than creates. */
+  const needsRepair = !!installIssues?.some((i) => i.includes('venv is incomplete'));
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#050507] border border-white/5 rounded-lg overflow-hidden">
@@ -219,7 +222,11 @@ export const UnderfitView: React.FC = () => {
         {!reachable && installIssues && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-zinc-300">
             <AlertTriangle className="w-6 h-6 text-amber-400" />
-            <span className="text-sm font-semibold text-amber-100">Underfit isn't installed on this machine yet</span>
+            <span className="text-sm font-semibold text-amber-100">
+              {needsRepair
+                ? "Underfit's environment is incomplete"
+                : "Underfit isn't installed on this machine yet"}
+            </span>
             <ul className="max-w-xl space-y-1.5">
               {installIssues.map((issue) => (
                 <li key={issue} className="text-[11px] font-mono text-zinc-400 leading-relaxed">
@@ -228,8 +235,12 @@ export const UnderfitView: React.FC = () => {
               ))}
             </ul>
             <div className="max-w-xl text-center text-[11px] text-zinc-500 leading-relaxed">
-              theDAW can build the trainer environment here. This runs a one-time dependency
-              sync and takes a few minutes. The model packs download later, on demand.
+              {needsRepair
+                ? 'A previous setup did not finish, so the environment has an interpreter but no packages. Rerunning it installs only what is missing.'
+                : 'theDAW can build the trainer environment here. This runs a one-time dependency sync. The model packs download later, on demand.'}
+              {' '}It downloads roughly 2.5 GB (torch + torchaudio), so expect 10–30 minutes on a
+              first run. Leave theDAW open while it works — quitting midway is what leaves the
+              environment half-built.
             </div>
             {setupMsg && (
               <div
@@ -252,7 +263,11 @@ export const UnderfitView: React.FC = () => {
                 ) : (
                   <Play className="w-3.5 h-3.5" />
                 )}
-                {setupState === 'running' ? 'Building environment...' : 'Create environment'}
+                {setupState === 'running'
+                  ? 'Building environment...'
+                  : needsRepair
+                    ? 'Repair environment'
+                    : 'Create environment'}
               </button>
               <button
                 type="button"
