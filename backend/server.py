@@ -1728,7 +1728,11 @@ async def _run_generate_job(
 @app.post("/api/generate-jobs")
 async def generate_jobs(
     request: Request,
-    model_name: str = Form("medium"),
+    # No hardcoded default. A caller that omits this (EDIT's inpaint panel did)
+    # used to silently request 'medium' — the gated checkpoint — regardless of
+    # what the user had selected, so inpaint failed on any install that only
+    # has 'small'. Fall back to the resident model, matching /api/generate.
+    model_name: Optional[str] = Form(None),
     prompt: str = Form(...),
     negative_prompt: str = Form(""),
     duration: float = Form(30.0),
@@ -1793,7 +1797,9 @@ async def generate_jobs(
     from backend.core.idle import idle_hold
 
     with idle_hold("generate") as hold:
-        normalized_model_name = _normalize_generation_model(model_name)
+        normalized_model_name = _normalize_generation_model(
+            model_name if model_name else _active_model_name
+        )
         # Clear any resident MRT2 engine before the SA3 load/wake — the reverse
         # swap must hold no matter who drives the model field (UI, assistant,
         # API callers, capture harnesses).

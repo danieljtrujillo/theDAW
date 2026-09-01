@@ -38,6 +38,8 @@ export const UnderfitView: React.FC = () => {
   // missing checkout/venv shows a fix, never an endless "connecting…".
   const [diag, setDiag] = useState<UnderfitStatus | null>(null);
   const [starting, setStarting] = useState(false);
+  /** Detail from a failed POST /start, rendered next to the button. */
+  const [startError, setStartError] = useState<string | null>(null);
   // On-demand venv build state (POST /api/underfit/setup + poll /setup-status).
   const [setupState, setSetupState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [setupMsg, setSetupMsg] = useState('');
@@ -98,10 +100,27 @@ export const UnderfitView: React.FC = () => {
   // when auto-spawn was disabled). POST /start blocks until :8791 answers.
   const startServer = async () => {
     setStarting(true);
+    setStartError(null);
     try {
-      await fetch('/api/underfit/start', { method: 'POST' });
-    } catch {
-      // Failure shows up in the next diag poll; nothing extra to do here.
+      const res = await fetch('/api/underfit/start', { method: 'POST' });
+      // A 503 RESOLVES — it does not throw — so the old bare `await` dropped the
+      // one message that explains the failure ("Underfit dashboard exited before
+      // becoming ready (rc=…). See …underfit-sidecar.log"). That silence is why
+      // GH-131 arrived as "why do I need to install modules by hand?".
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const body = await res.json() as { detail?: unknown };
+          detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? '');
+        } catch {
+          try { detail = await res.text(); } catch { /* body already consumed */ }
+        }
+        setStartError(detail || `Start failed with HTTP ${res.status}.`);
+      }
+    } catch (e) {
+      setStartError(
+        `Could not reach the backend to start Underfit: ${e instanceof Error ? e.message : String(e)}`,
+      );
     } finally {
       setStarting(false);
       void ping();
@@ -259,6 +278,14 @@ export const UnderfitView: React.FC = () => {
               {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
               {starting ? 'Starting…' : 'Start Underfit'}
             </button>
+            {startError && (
+              <p
+                role="alert"
+                className="max-w-lg rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-[10px] font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word text-left"
+              >
+                {startError}
+              </p>
+            )}
           </div>
         )}
         {!reachable && !installIssues && (!diag || diag.listening) && (

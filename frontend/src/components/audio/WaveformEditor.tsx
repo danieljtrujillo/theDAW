@@ -1257,7 +1257,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // --- Inpaint panel state ---
   type InpaintPhase =
-    | { kind: 'params' }
+    // `error` carries the reason a previous attempt failed back into the params
+    // panel. Without it every failure path just snapped the panel back with no
+    // visible message, which is what made GH-132 undiagnosable.
+    | { kind: 'params'; error?: string }
     | { kind: 'generating'; jobId: string }
     | { kind: 'review'; blob: Blob; blobUrl: string };
   const [inpaintPanel, setInpaintPanel] = useState<InpaintPhase | null>(null);
@@ -1316,8 +1319,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             const blob = new Blob([arr], { type: mime_type });
             setInpaintPanel({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob) });
           } else if (job.status === 'failed') {
-            logError('editor', `Inpaint job failed: ${job.error ?? 'unknown'}`);
-            setInpaintPanel({ kind: 'params' });
+            const msg = job.error ?? 'unknown';
+            logError('editor', `Inpaint job failed: ${msg}`);
+            setInpaintPanel({ kind: 'params', error: msg });
           }
         } catch (e) {
           logError('editor', `Inpaint poll error: ${e instanceof Error ? e.message : e}`);
@@ -1346,7 +1350,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     try {
       croppedAudio = await cropAudioBlob(clip.audioBlob, clip.offsetIntoSource, clip.durationSec);
     } catch (e) {
-      logError('editor', `Inpaint: failed to crop audio: ${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      logError('editor', `Inpaint: failed to crop audio: ${msg}`);
+      setInpaintPanel({ kind: 'params', error: `Could not read the clip's audio: ${msg}` });
       return;
     }
 
@@ -1355,6 +1361,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const maskEnd   = sel.endSec   - clip.startSec;
 
     const fd = new FormData();
+    // Send the model the user actually selected. Without this the endpoint's
+    // own default won, which meant INPAINT REGION always asked for the gated
+    // 'medium' checkpoint no matter what MAKE was set to (GH-132).
+    fd.append('model_name', useGenerateParamsStore.getState().model);
     fd.append('prompt', inpaintPrompt);
     fd.append('steps', String(inpaintSteps));
     fd.append('seed', String(inpaintSeed));
@@ -1366,7 +1376,19 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     try {
       const res = await fetch('/api/generate-jobs', { method: 'POST', body: fd });
       if (!res.ok) {
-        logError('editor', `Inpaint submit HTTP ${res.status}`);
+        // The backend's `detail` is the actionable part (a gated-model fetch, a
+        // missing checkpoint, CUDA OOM). Throwing it away is what left GH-132
+        // with nothing but a panel that snapped back.
+        let detail = '';
+        try {
+          const body = await res.json() as { detail?: unknown };
+          detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? '');
+        } catch {
+          try { detail = await res.text(); } catch { /* body already consumed */ }
+        }
+        const msg = `HTTP ${res.status}${detail ? ` — ${detail}` : ''}`;
+        logError('editor', `Inpaint submit ${msg}`);
+        setInpaintPanel({ kind: 'params', error: msg });
         return;
       }
       const data = await res.json() as { job?: { id: string } };
@@ -4541,6 +4563,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {/* Phase: params */}
           {inpaintPanel.kind === 'params' && (
             <>
+              {inpaintPanel.error && (
+                <p
+                  role="alert"
+                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-[9px] font-mono leading-relaxed text-rose-200 wrap-break-word"
+                >
+                  {inpaintPanel.error}
+                </p>
+              )}
               <label htmlFor="inpaint-prompt" className="sr-only">Inpaint prompt</label>
               <textarea
                 id="inpaint-prompt"
