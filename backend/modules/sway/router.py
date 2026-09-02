@@ -117,11 +117,12 @@ async def sway_url() -> dict:
         return {
             "url": None,
             "mode": "unavailable",
+            # No commands in user-facing copy. Staging a cockpit build has no
+            # API behind it, so this states the fact and stops — an instruction
+            # to go and run something is not a fix theDAW can offer.
             "detail": (
-                "No SwayCommand build is staged. Run 'npm run fetch:sway' in "
-                "electron-ui/, or point "
-                f"{sidecar.DIST_ENV} at a SwayCommand dist-embed directory, "
-                "then restart the backend."
+                "The SwayCommand cockpit build is not staged in this install, "
+                "so there is nothing for the SWAY tab to show yet."
             ),
             "status": sidecar.status(),
         }

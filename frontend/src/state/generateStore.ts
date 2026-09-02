@@ -5,7 +5,9 @@ import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
 import { useGenerateParamsStore, type GenerateParamsState } from './generateParamsStore';
 import { getOrRenderChimera } from '../lib/chimeraClient';
-import { fetchModelStatus } from '../lib/storageClient';
+import { fetchModelStatus, setLocalOnly } from '../lib/storageClient';
+import { classifyModelGate } from '../lib/modelDownloadClient';
+import { requireFeature } from '../notices/featureGateStore';
 import { CLOUD_MODELS } from '../lib/cloudModels';
 
 export interface GenerateParams {
@@ -801,6 +803,60 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       });
       useStatusBarStore.getState().setText(`GENERATION FAILED: ${message}`);
       logError('generate', message);
+      // A Hugging Face gate is fixable without leaving the app, so raise the
+      // card that carries the fix rather than leaving a raw traceback in the
+      // status bar. Which fix depends on which gate: a missing token gets the
+      // token field, an account that is not on the allow list gets the model
+      // page, because no token will ever open that one.
+      const gate = classifyModelGate(message);
+      if (gate?.kind === 'local-only') {
+        requireFeature({
+          id: 'model:local-only',
+          kind: 'model',
+          title: 'Downloads are turned off',
+          message:
+            'This model is not on the machine, and local-only mode blocks fetching it. Allowing downloads gets it now.',
+          action: {
+            label: 'Allow downloads & retry',
+            run: async () => {
+              await setLocalOnly(false);
+              void get().submitGeneration(params);
+            },
+          },
+        });
+      } else if (gate?.kind === 'sign-in') {
+        requireFeature({
+          id: 'hf:generate',
+          kind: 'hf',
+          title: 'Hugging Face sign-in needed',
+          message: 'This model is gated — paste a token and it runs again.',
+          action: {
+            label: 'Retry generation',
+            // Deliberately not awaited: the retry has its own status bar and
+            // progress, and the card should clear rather than hang on it.
+            run: () => {
+              void get().submitGeneration(params);
+            },
+          },
+        });
+      } else if (gate?.kind === 'no-access') {
+        const repoUrl = gate.repoUrl;
+        requireFeature({
+          id: 'hf:no-access',
+          kind: 'model',
+          title: 'Access not granted',
+          message:
+            'Your token works — this Hugging Face account is not on the model\'s allow list. Open the model page, click "Agree and access", then generate again.',
+          action: repoUrl
+            ? {
+                label: 'Open model page',
+                run: () => {
+                  window.open(repoUrl, '_blank', 'noopener');
+                },
+              }
+            : undefined,
+        });
+      }
     }
   },
 

@@ -10,8 +10,10 @@ import {
 import { useLayoutPrefs, UI_SCALE_MIN, UI_SCALE_MAX } from '../../state/layoutPrefsStore';
 import { SlideTrack } from '../audio/SlideTrack';
 import { PathInput } from '../ui/PathInput';
+import { HfTokenField } from '../ui/HfTokenField';
 import { InfoTip } from '../ui/Tooltip';
 import { useSunoStore } from '../../suno/sunoStore';
+import { installMagentaEngine } from '../../lib/magentaEngineClient';
 import { useModuleStore, type ModuleConfig } from '../../state/moduleStore';
 import { useDownloadStore } from '../../state/downloadStore';
 
@@ -497,10 +499,19 @@ const StorageSettingsSection: React.FC = () => {
       ) : (
         <div className="grid grid-cols-3 gap-1.5 mb-1">
           {modelProviders.map((provider) => (
-            <ModelProviderCard key={provider.id} provider={provider} />
+            <ModelProviderCard key={provider.id} provider={provider} onFixed={reloadModelStatus} />
           ))}
         </div>
       )}
+
+      {/* Hugging Face token — the one field that unblocks gated downloads.
+          Always present, so it is where you would look for it rather than
+          something you have to be told about. Full width: a field, a reveal
+          toggle and a Save button do not fit a third-width provider card.
+          Signing in re-checks model status, so the pills above stop lying. */}
+      <div className="mb-1 rounded border border-white/8 bg-white/3 px-1.5 py-1">
+        <HfTokenField idPrefix="settings-models" onSignedIn={reloadModelStatus} />
+      </div>
 
       {/* Add-a-checkpoint form (collapsed; opened from the header) */}
       {addOpen && (
@@ -694,25 +705,36 @@ const modelTooltip = (model: ModelOptionStatus) => [
 
 /** A provider card — two lines max: name + state, then model chips (or, for
  *  Suno, an inline API-key input). The long summary lives in the hover title. */
-const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provider }) => {
+const ModelProviderCard: React.FC<{ provider: ModelProviderStatus; onFixed: () => void }> = ({ provider, onFixed }) => {
   const isSuno = provider.id === 'suno';
   const models = provider.models ?? [];
-  const ordered = [...models].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)));
-  const visible = ordered.slice(0, 3);
-  const hidden = Math.max(0, ordered.length - visible.length);
+  // Every option is shown. This used to slice to three, which permanently hid
+  // at least one Stable Audio model behind a "+N" chip — and with it that
+  // model's download button, the only way to get the thing.
+  const visible = [...models].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)));
   // Stable Audio "download" chips become live download triggers. The dock owns
   // all progress/error state — these chips only fire the request and read job
   // status for a compact in-place indicator.
   const downloadJobs = useDownloadStore((s) => s.jobs);
   const startDownload = useDownloadStore((s) => s.startDownload);
   return (
-    <article className={`min-w-0 rounded border border-white/8 bg-white/3 px-1.5 py-1 ${isSuno ? 'col-span-2' : ''}`} title={provider.summary}>
+    <article className={`min-w-0 rounded border border-white/8 bg-white/3 px-1.5 py-1 ${isSuno ? 'col-span-2' : ''}`}>
       <div className="flex items-center gap-1.5">
         <span className="text-[10px] font-bold text-zinc-100 truncate flex-1 min-w-0">{provider.label}</span>
         <span className={`shrink-0 rounded border px-1 py-px text-[9px] font-mono uppercase tracking-wide ${modelStateClass(provider.state)}`}>
           {MODEL_STATE_LABELS[provider.state] ?? provider.state}
         </span>
       </div>
+      {/* Visible, never a tooltip. A capability that needs setup has to SAY so
+          on sight — hiding it in a hover is how it stays undiscovered until a
+          generation fails. */}
+      {provider.summary && (
+        <p className="mt-0.5 text-[9px] leading-snug text-zinc-400">{provider.summary}</p>
+      )}
+      {/* Every fixable state gets its button here, on the card, before anything
+          is run — a provider that needs setup must never be discovered by a
+          failed generation. */}
+      <ProviderFixButton provider={provider} onFixed={onFixed} />
       {isSuno ? (
         <div className="mt-1"><SunoKeyInput /></div>
       ) : visible.length > 0 ? (
@@ -747,10 +769,133 @@ const ModelProviderCard: React.FC<{ provider: ModelProviderStatus }> = ({ provid
               </span>
             );
           })}
-          {hidden > 0 && <span className="rounded border border-white/10 px-1 py-px text-[9px] font-mono text-zinc-400">+{hidden}</span>}
         </div>
       ) : null}
     </article>
+  );
+};
+
+/**
+ * The one-click fix for a provider's blocked state, rendered on its own card.
+ *
+ * This is where a blocked capability gets resolved — in Settings, before
+ * anything is run — rather than being discovered by a failed generation and
+ * answered with instructions to go run something.
+ *
+ * Providers whose setup has no API behind it get NO button: an honest summary
+ * beats a control that cannot deliver. Add the route first, then the entry.
+ */
+interface ProviderFix {
+  label: string;
+  title: string;
+  /** Runs pip and can take minutes — the button says so instead of just hanging. */
+  slow?: boolean;
+  run: () => Promise<unknown>;
+}
+
+/** POST a fix endpoint, surfacing the backend's own detail on failure. */
+const postFix = async (url: string): Promise<void> => {
+  const r = await fetch(url, { method: 'POST' });
+  if (!r.ok) {
+    const detail = await r.json().then((j) => j?.detail).catch(() => null);
+    throw new Error(
+      (typeof detail === 'string' ? detail : detail?.message) || `HTTP ${r.status}`,
+    );
+  }
+};
+
+/** The action that clears a provider's blocked state, or null when none exists. */
+const providerFix = ({ id, state }: ModelProviderStatus): ProviderFix | null => {
+  if (id === 'stable' && state === 'download_blocked')
+    return {
+      label: 'Allow downloads',
+      title: 'Turn off local-only so missing Stable Audio models can download on first use.',
+      run: () => setLocalOnly(false),
+    };
+  if (id === 'magenta' && state === 'needs_setup')
+    return {
+      label: 'Install',
+      title:
+        'Install the Magenta RT2 engine. It opens its own window, checks the PC, says how large the downloads are, and asks before installing anything.',
+      run: installMagentaEngine,
+    };
+  if (id === 'magenta' && state === 'ready')
+    return {
+      label: 'Start engine',
+      title: 'Start the Magenta engine now. Stable Audio parks in RAM to free the GPU.',
+      run: () => postFix('/api/magenta/engine/start'),
+    };
+  if (id === 'demucs' && state === 'needs_setup')
+    return {
+      label: 'Install dependencies',
+      title: 'Install the stem-separation dependencies into the sidecar.',
+      slow: true,
+      run: () => postFix('/api/stems/install'),
+    };
+  if (id === 'demucs' && state === 'ready')
+    return {
+      label: 'Start sidecar',
+      title: 'Start the stem-separation sidecar now.',
+      run: () => postFix('/api/stems/start'),
+    };
+  if (id === 'midi' && state === 'needs_setup')
+    return {
+      label: 'Install Basic Pitch',
+      title: 'Install the Basic Pitch engine so audio can be converted to MIDI.',
+      slow: true,
+      run: () => postFix('/api/midi/install?engine=basic_pitch'),
+    };
+  return null;
+};
+
+const ProviderFixButton: React.FC<{ provider: ModelProviderStatus; onFixed: () => void }> = ({
+  provider,
+  onFixed,
+}) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fix = providerFix(provider);
+
+  if (!fix) return null;
+
+  const onClick = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fix.run();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'That did not work.');
+    } finally {
+      setBusy(false);
+      // Re-probe even after a failure: the slow installs are synchronous and
+      // can outlive the request, so the response is not the source of truth
+      // about whether the thing is now installed. The probe is.
+      onFixed();
+    }
+  };
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => void onClick()}
+        disabled={busy}
+        title={fix.title}
+        className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-amber-200 hover:bg-amber-500/20 hover:text-amber-100 transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/70"
+      >
+        {busy && <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />}
+        {busy ? 'Working' : fix.label}
+      </button>
+      {fix.slow && busy && (
+        <p className="mt-0.5 text-[9px] text-zinc-400">This can take a few minutes.</p>
+      )}
+      {error && (
+        <p role="alert" className="mt-0.5 text-[9px] text-rose-300">
+          {error}
+        </p>
+      )}
+    </div>
   );
 };
 
@@ -799,11 +944,14 @@ const SunoKeyInput: React.FC = () => {
 
   return (
     <form className="flex gap-1" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-      <label htmlFor="suno-api-key" className="sr-only">Suno API key</label>
+      {/* id is scoped to this modal: SunoKeySettings.tsx renders a second Suno
+          key field with its own id, and the two can be on screen at once —
+          a duplicate id would point both labels at whichever came first. */}
+      <label htmlFor="settings-suno-api-key" className="sr-only">Suno API key</label>
       <div className="relative flex-1 min-w-0">
         <input
-          id="suno-api-key"
-          name="suno-api-key"
+          id="settings-suno-api-key"
+          name="settings-suno-api-key"
           type={show ? 'text' : 'password'}
           autoComplete="off"
           value={val}

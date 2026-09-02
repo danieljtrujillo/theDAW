@@ -26,6 +26,7 @@ import { handletheDAWAction } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
 import { useModuleStore } from './state/moduleStore';
+import { useDownloadStore } from './state/downloadStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
 import { triggerPianoNoteFromMidi } from './lib/pianoTrigger';
 import { publishMidi } from './state/midiBus';
@@ -88,6 +89,16 @@ export default function App() {
   const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
   const assistantThinking = useAssistantActivityStore((s) => s.thinking);
   const refreshHealth  = useStatusBarStore((s) => s.refreshHealth);
+
+  // Re-attach to downloads the backend is still tracking. The dock's state is
+  // per page session but the backend's job registry is not, so without this a
+  // reload orphans a failed download — along with the Retry button and token
+  // field on its row, which are the only way to fix it.
+  const rehydrateDownloads = useDownloadStore((s) => s.rehydrate);
+  useEffect(() => {
+    if (!isBackendReady) return;
+    void rehydrateDownloads();
+  }, [isBackendReady, rehydrateDownloads]);
 
   // Health polling lives here so it runs during the loading screen.
   // Exponential backoff: 1s → 2s → 4s → 8s → 16s until ready, then 30s steady.

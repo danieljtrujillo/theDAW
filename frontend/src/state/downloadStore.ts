@@ -10,8 +10,10 @@
  *   - The poll loop (~1s) calls `refresh()` while ANY job is queued/downloading.
  *   - When no job is active it STOPS the interval but KEEPS the jobs in state,
  *     so finished/errored rows persist for the user to read and clear.
- *   - A page reload naturally drops the store (= a fresh session): the dock is
- *     empty again until the next download starts.
+ *   - A page reload drops this store, but NOT the backend's job registry, so
+ *     `rehydrate()` re-attaches on startup (App.tsx). Without it a failed
+ *     download — and the Retry / token controls on its row — becomes
+ *     unreachable the moment the page refreshes.
  */
 import { create } from 'zustand';
 import {
@@ -39,6 +41,8 @@ interface DownloadStore {
   startDownload: (name: string) => Promise<void>;
   /** Pull the latest jobs from the backend into state. */
   refresh: () => Promise<void>;
+  /** Re-attach to the backend's jobs after a page load, resuming any live one. */
+  rehydrate: () => Promise<void>;
   /** Clear finished/errored jobs on the backend, then refresh. */
   clear: () => Promise<void>;
   setExpanded: (expanded: boolean) => void;
@@ -73,6 +77,13 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       // Transient fetch failure (e.g. backend restarting) — keep the last
       // known jobs and let the next tick retry. Don't tear down the dock.
     }
+  },
+
+  rehydrate: async () => {
+    await get().refresh();
+    // A download can outlive the page that started it, so pick the poll loop
+    // back up rather than leaving a live job frozen at its last known bytes.
+    if (get().jobs.some(isActive)) get()._ensurePolling();
   },
 
   clear: async () => {

@@ -537,7 +537,9 @@ async def _magenta_provider_status() -> dict:
             )
         else:
             state = "needs_setup"
-            summary = "Run Setup-MRT2.bat to install the WSL engine and checkpoints."
+            # No script names here: Settings renders an Install button on this
+            # card that launches the installer via /api/magenta/engine/install.
+            summary = "Not installed yet. Install sets up the engine and checkpoints."
         return {
             "id": "magenta",
             "label": "Magenta RT2",
@@ -689,9 +691,11 @@ def _midi_provider_status() -> dict:
             "id": "midi",
             "label": "MIDI Engines",
             "state": "ready" if ready else "needs_setup",
+            # No package names: Settings renders an Install button on this card
+            # that calls /api/midi/install for the user.
             "summary": ", ".join(engines)
             if ready
-            else "Install basic-pitch or piano-transcription-inference for MIDI conversion.",
+            else "No MIDI engine installed yet. Install one to convert audio to MIDI.",
             "active": ready,
             "models": [
                 {

@@ -17,6 +17,7 @@ import { sendAudioToEditor, type SendableAudio } from '../../lib/sendToTargets';
 import { useDrawFxStore } from '../../state/drawEffectChainStore';
 import { useDrawModeStore } from '../../state/drawModeStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { raiseMagentaSetupGate } from '../../lib/magentaEngineClient';
 import { logError, logInfo } from '../../state/logStore';
 import { pollMagentaJob } from '../../state/instrumentStore';
 import { FxRack } from '../audio/FxRack';
@@ -281,7 +282,11 @@ export const DrawPanel: React.FC = () => {
       form.append('notes', JSON.stringify(melody));
       const res = await fetch('/api/magenta/generate', { method: 'POST', body: form });
       if (res.status === 412) {
-        setStatus('Magenta is not installed - run Setup-MRT2 once (see Settings)');
+        // Guided, not an error: the card carries the Install button, so this
+        // never has to name a script or send the user hunting.
+        const detail = await res.json().then((j) => j?.detail).catch(() => null);
+        raiseMagentaSetupGate(detail?.message, detail?.installable !== false);
+        setStatus('Magenta is not installed yet — use Install on the card.');
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

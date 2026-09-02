@@ -1192,8 +1192,22 @@ async def preload_model(model: str = Form(...)):
         loop = asyncio.get_event_loop()
         since = resolution_seq()
         t0 = time.perf_counter()
-        await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
-        await loop.run_in_executor(None, _get_or_load_generation_pipeline, normalized)
+        try:
+            await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
+            await loop.run_in_executor(
+                None, _get_or_load_generation_pipeline, normalized
+            )
+        except HTTPException:
+            # Deliberate 404/409 answers pass through untouched.
+            raise
+        except Exception as exc:
+            # An unhandled raise here becomes a bare 500 whose body is not JSON,
+            # so the UI can only report "HTTP 500". Passing the real text
+            # through is what lets the frontend recognise a gated-repo failure
+            # and offer the Hugging Face token field instead of a dead end.
+            raise HTTPException(
+                status_code=502, detail=f"{type(exc).__name__}: {exc}"
+            ) from exc
         return {
             "loaded": True,
             "model": normalized,
@@ -1804,9 +1818,20 @@ async def generate_jobs(
         # synchronous from_pretrained here freezes the single uvicorn worker for the
         # whole load, which is exactly when /health 502s and in-flight FileResponse
         # streams (MIDI/audio) get truncated ("Invalid MIDI track chunk").
-        generation_pipeline = await asyncio.get_event_loop().run_in_executor(
-            None, _get_or_load_generation_pipeline, normalized_model_name
-        )
+        try:
+            generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+                None, _get_or_load_generation_pipeline, normalized_model_name
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # Without this the resolver's own explanation ("local-only mode is
+            # ON", "Cannot access gated repo") dies as a bare 500 whose body is
+            # not JSON, and the UI can only say "HTTP 500 Internal Server
+            # Error". The text IS the fix, so it has to reach the client.
+            raise HTTPException(
+                status_code=502, detail=f"{type(exc).__name__}: {exc}"
+            ) from exc
 
         init_audio_tuple = None
         if init_audio is not None and init_audio.filename:

@@ -4,7 +4,9 @@
  * Renders the featureGateStore queue: newest card nearest the corner, at most
  * three visible, older ones collapsed into a "+N more" chip. Module/model
  * gates get an amber left edge plus an optional primary action button; the
- * 'hf' kind renders an inline Hugging Face token sign-in against /api/hfauth.
+ * 'hf' kind renders the shared <HfTokenField /> inline, so the card that says
+ * "you need a token" is also where the token goes in. On a successful sign-in
+ * the notice's own action runs as the retry, then the card dismisses itself.
  * Nothing polls here — every network request is user-initiated.
  *
  * Coexistence with DownloadDock (same corner, default bottom-28 right-4):
@@ -12,8 +14,9 @@
  * dock pill and the notice cards never overlap.
  */
 import React from 'react';
-import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, X } from 'lucide-react';
+import { AlertTriangle, KeyRound, Loader2, X } from 'lucide-react';
 import { useDownloadStore } from '../state/downloadStore';
+import { HfTokenField } from '../components/ui/HfTokenField';
 import { useFeatureGateStore, type FeatureGateKind, type FeatureGateNotice } from './featureGateStore';
 
 const MAX_VISIBLE = 3;
@@ -85,6 +88,7 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
   const style = KIND_STYLES[notice.kind];
   const { Icon } = style;
   const [running, setRunning] = React.useState(false);
+  const [signedIn, setSignedIn] = React.useState(false);
 
   const runAction = async () => {
     if (!notice.action || running) return;
@@ -99,6 +103,14 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
     }
   };
 
+  // A successful sign-in already ran the retry; leave the confirmation up long
+  // enough to read, then clear the card the user has finished with.
+  React.useEffect(() => {
+    if (!signedIn) return;
+    const timer = window.setTimeout(() => dismiss(notice.id), 4000);
+    return () => window.clearTimeout(timer);
+  }, [signedIn, dismiss, notice.id]);
+
   return (
     <div
       className={`pointer-events-auto w-full rounded-lg border bg-[#0a080f]/95 shadow-[0_8px_32px_rgba(0,0,0,0.75)] backdrop-blur-md ${style.card}`}
@@ -109,7 +121,13 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
           <div className={`text-[10px] font-black uppercase tracking-widest ${style.title}`}>
             {notice.title}
           </div>
-          <p className="mt-0.5 text-[10px] leading-snug text-zinc-400 truncate" title={notice.message}>
+          {/* Clamped, not truncated: these messages are the instructions for
+              the control right below them, and a one-line ellipsis throws the
+              instruction away. The title still carries the full text. */}
+          <p
+            className="mt-0.5 text-[10px] leading-snug text-zinc-400 line-clamp-3"
+            title={notice.message}
+          >
             {notice.message}
           </p>
           {notice.docsHint && (
@@ -118,7 +136,18 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
             </p>
           )}
           {notice.kind === 'hf' ? (
-            <HfSignIn notice={notice} onDismiss={() => dismiss(notice.id)} />
+            // The token goes in right here. `notice.action` is the retry — it
+            // runs on a good token instead of needing a second click, and a
+            // throw surfaces inside the field rather than losing the card.
+            <HfTokenField
+              idPrefix={`gate-${notice.id.replace(/[^a-zA-Z0-9_-]+/g, '-')}`}
+              accent="yellow"
+              className="mt-1.5"
+              onSignedIn={async () => {
+                if (notice.action) await notice.action.run();
+                setSignedIn(true);
+              }}
+            />
           ) : (
             notice.action && (
               <button
@@ -143,141 +172,6 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
         </button>
       </div>
     </div>
-  );
-};
-
-/**
- * Inline Hugging Face token flow for kind 'hf'. Posts the token to
- * /api/hfauth/login on submit; a 401 shows an inline rejection message. The
- * secondary button fetches /api/hfauth/login-url and opens it in a new tab.
- * On success the body swaps to "Signed in as <username>" and the card
- * auto-dismisses after 4 seconds.
- */
-const HfSignIn: React.FC<{ notice: FeatureGateNotice; onDismiss: () => void }> = ({
-  notice,
-  onDismiss,
-}) => {
-  const [token, setToken] = React.useState('');
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [signedInAs, setSignedInAs] = React.useState<string | null>(null);
-  const inputId = `hf-token-${notice.id.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
-
-  React.useEffect(() => {
-    if (!signedInAs) return;
-    const timer = window.setTimeout(onDismiss, 4000);
-    return () => window.clearTimeout(timer);
-  }, [signedInAs, onDismiss]);
-
-  const submit = async () => {
-    const trimmed = token.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/hfauth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: trimmed }),
-      });
-      if (res.status === 401) {
-        setError('Token rejected. Check it and try again.');
-        return;
-      }
-      if (!res.ok) {
-        setError(`Sign-in failed (HTTP ${res.status}).`);
-        return;
-      }
-      const data: unknown = await res.json().catch(() => null);
-      const rec = (data ?? {}) as Record<string, unknown>;
-      const username =
-        typeof rec.username === 'string' && rec.username
-          ? rec.username
-          : typeof rec.name === 'string' && rec.name
-            ? rec.name
-            : 'Hugging Face user';
-      setSignedInAs(username);
-    } catch {
-      setError('Could not reach the backend.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const openHf = async () => {
-    let url = 'https://huggingface.co/settings/tokens';
-    try {
-      const res = await fetch('/api/hfauth/login-url');
-      if (res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        const rec = (data ?? {}) as Record<string, unknown>;
-        if (typeof rec.url === 'string' && rec.url) url = rec.url;
-        else if (typeof rec.login_url === 'string' && rec.login_url) url = rec.login_url;
-      }
-    } catch {
-      // Fall through to the default token page.
-    }
-    window.open(url, '_blank', 'noopener');
-  };
-
-  if (signedInAs) {
-    return (
-      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-emerald-300">
-        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-        <span className="truncate">Signed in as {signedInAs}</span>
-      </div>
-    );
-  }
-
-  return (
-    <form
-      className="mt-1.5 flex flex-col gap-1.5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      <label
-        htmlFor={inputId}
-        className="text-[8px] font-mono uppercase tracking-widest text-zinc-500"
-      >
-        Hugging Face token
-      </label>
-      <input
-        id={inputId}
-        name="hf-token"
-        type="password"
-        autoComplete="off"
-        spellCheck={false}
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-        placeholder="hf_..."
-        className="w-full rounded border border-white/10 bg-black/40 px-2 py-1 text-[10px] font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-yellow-400/50"
-      />
-      {error && (
-        <p role="alert" className="text-[9px] text-rose-300">
-          {error}
-        </p>
-      )}
-      <div className="flex items-center gap-1.5">
-        <button
-          type="submit"
-          disabled={busy || token.trim().length === 0}
-          className="inline-flex items-center gap-1.5 rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-yellow-200 hover:bg-yellow-400/20 hover:text-yellow-100 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-yellow-400/70 disabled:opacity-50"
-        >
-          {busy && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
-          Sign in
-        </button>
-        <button
-          type="button"
-          onClick={() => void openHf()}
-          className="inline-flex items-center gap-1 rounded border border-white/10 px-2 py-1 text-[9px] font-mono uppercase tracking-widest text-zinc-400 hover:bg-white/5 hover:text-zinc-200 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
-        >
-          <ExternalLink className="w-3 h-3 shrink-0" />
-          Open huggingface.co
-        </button>
-      </div>
-    </form>
   );
 };
 

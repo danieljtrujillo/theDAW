@@ -113,8 +113,8 @@ async def _bring_up_sidecar(timeout: float = 240.0) -> None:
         setup = await loop.run_in_executor(None, sidecar.setup_state)
         if not setup.get("ready"):
             raise RuntimeError(
-                "Magenta RT2 is not installed. Run Setup-MRT2.bat "
-                "(sidecars/magenta-rt2-nvidia) once to install it, then try again."
+                "Magenta RT2 is not installed yet. Install it from the Magenta "
+                "card in Settings → Models."
             )
         # Park SA3 so the engine's JAX runtime finds a free GPU, then (re)spawn.
         if not (h.get("reachable") and h.get("protocol_ok")):
@@ -170,10 +170,12 @@ async def engine_start():
             {
                 "setup_required": True,
                 **setup,
+                # `installable` tells the UI it can offer a one-click install
+                # (POST /engine/install) instead of naming a script to run.
+                "installable": sidecar.installer_available(),
                 "message": (
-                    "The Magenta RT2 engine is not installed yet. Run "
-                    "Setup-MRT2.bat (sidecars/magenta-rt2-nvidia) once — it "
-                    "checks the PC, asks consent, and installs everything."
+                    "The Magenta RT2 engine is not installed yet. Installing "
+                    "checks the PC, asks consent, and sets up everything."
                 ),
             },
         )
@@ -190,6 +192,30 @@ async def engine_start():
     await loop.run_in_executor(None, sidecar.stop_engine)
     spawn = await loop.run_in_executor(None, sidecar.start_engine)
     return {"ok": True, "already_running": False, "parked": parked, **spawn}
+
+
+@router.post("/engine/install")
+async def engine_install():
+    """Launch the one-time installer — the button that replaces telling the
+    user to find and double-click Setup-MRT2.bat.
+
+    Returns as soon as the installer's console is up; it runs on its own and
+    asks the user for consent there. Poll /engine/status (or re-read the model
+    status in Settings) to see when the install lands.
+    """
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, sidecar.setup_state)
+    if setup.get("ready"):
+        return {"launched": False, "already_installed": True, **setup}
+    try:
+        info = await loop.run_in_executor(None, sidecar.launch_installer)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not start the installer: {exc}") from exc
+    return {"launched": True, **info, **setup}
 
 
 @router.post("/engine/stop")
@@ -266,9 +292,10 @@ async def generate(
                 {
                     "setup_required": True,
                     **setup,
+                    "installable": sidecar.installer_available(),
                     "message": (
-                        "Magenta RT2 is not installed. Run Setup-MRT2.bat "
-                        "(sidecars/magenta-rt2-nvidia) once to install it."
+                        "Magenta RT2 is not installed yet. Install it from the "
+                        "Magenta card in Settings → Models."
                     ),
                 },
             )

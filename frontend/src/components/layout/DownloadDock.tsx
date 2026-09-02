@@ -7,6 +7,10 @@
  * speed, size, file counter, and destination, plus an actionable error block
  * for failed downloads.
  *
+ * "Actionable" is literal for the two failures a token fixes (gated repo, rate
+ * limit): the error block embeds <HfTokenField />, so the row that failed is
+ * where the token goes in, and a good token re-fires that same download.
+ *
  * The store owns all state; this component is purely a view + a few buttons.
  */
 import React from 'react';
@@ -22,6 +26,7 @@ import {
 import { useDownloadStore } from '../../state/downloadStore';
 import { classifyDownloadError, type DownloadJob } from '../../lib/modelDownloadClient';
 import { formatBytes } from '../../lib/storageClient';
+import { HfTokenField } from '../ui/HfTokenField';
 
 /** Bytes/sec → human rate (B/s · KB/s · MB/s · GB/s). */
 const formatSpeed = (bytesPerSec: number): string => {
@@ -113,10 +118,15 @@ export const DownloadDock: React.FC = () => {
 
   // ── Collapsed: a single draggable pill. ─────────────────────────────────
   if (!expanded) {
+    // A dock holding only failures must not wear a green tick: that is what
+    // makes a user scroll past the one row carrying the fix.
+    const failedCount = jobs.filter((j) => j.status === 'error').length;
     const label =
       activeJobs.length > 0
         ? `${activeJobs.length} downloading · ${formatSpeed(totalSpeed)}`
-        : 'Downloads';
+        : failedCount > 0
+          ? `${failedCount} failed — fix here`
+          : 'Downloads';
     return (
       <button
         type="button"
@@ -125,17 +135,27 @@ export const DownloadDock: React.FC = () => {
         onClick={() => {
           if (!dragRef.current?.moved) setExpanded(true);
         }}
-        aria-label="Expand downloads (drag to move)"
+        aria-label={
+          failedCount > 0 && activeJobs.length === 0
+            ? `Expand downloads — ${failedCount} failed (drag to move)`
+            : 'Expand downloads (drag to move)'
+        }
         style={posStyle}
-        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] backdrop-blur-md hover:bg-purple-500/15 hover:text-white transition-colors cursor-grab active:cursor-grabbing touch-none select-none`}
+        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest backdrop-blur-md transition-colors cursor-grab active:cursor-grabbing touch-none select-none ${
+          failedCount > 0 && activeJobs.length === 0
+            ? 'border-rose-500/50 text-rose-200 shadow-[0_0_16px_rgba(244,63,94,0.35)] hover:bg-rose-500/15 hover:text-white'
+            : 'border-purple-500/40 text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] hover:bg-purple-500/15 hover:text-white'
+        }`}
       >
         {activeJobs.length > 0 ? (
           <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+        ) : failedCount > 0 ? (
+          <AlertCircle className="w-3 h-3 text-rose-300 shrink-0" />
         ) : (
           <CheckCircle2 className="w-3 h-3 text-emerald-300 shrink-0" />
         )}
         <span className="truncate">{label}</span>
-        {activeJobs.length === 0 && <span className="text-emerald-300">✓</span>}
+        {activeJobs.length === 0 && failedCount === 0 && <span className="text-emerald-300">✓</span>}
       </button>
     );
   }
@@ -218,7 +238,7 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
       </div>
 
       {isError ? (
-        <DownloadError detail={job.error_detail ?? ''} repoId={job.error_repo_id ?? undefined} />
+        <DownloadError job={job} />
       ) : (
         <>
           {file?.filename && (
@@ -253,8 +273,33 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
   );
 };
 
-const DownloadError: React.FC<{ detail: string; repoId?: string }> = ({ detail, repoId }) => {
-  const info = classifyDownloadError(detail, repoId);
+const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
+  const info = classifyDownloadError(job.error_detail ?? '', job.error_repo_id ?? undefined);
+  const startDownload = useDownloadStore((s) => s.startDownload);
+  // The retry arrives as a NEW job row (the backend only rejoins live jobs), so
+  // this errored row would otherwise sit here still reading as a failure. Say
+  // what happened instead of leaving two contradictory rows on screen.
+  const [retried, setRetried] = React.useState(false);
+  const [retrying, setRetrying] = React.useState(false);
+  const [retryError, setRetryError] = React.useState<string | null>(null);
+  // Only a MISSING token is fixable by pasting one. 'no_access' means the token
+  // already validated and the account simply is not allowed these files — a
+  // token box there is exactly the loop this flow exists to prevent.
+  const tokenFixable = info.kind === 'gated' || info.kind === 'rate_limit';
+
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      await startDownload(job.name);
+      setRetried(true);
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : 'Retry failed.');
+    } finally {
+      setRetrying(false);
+    }
+  };
   return (
     <div className="rounded border border-rose-500/30 bg-rose-500/5 px-2 py-1.5">
       <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">{info.headline}</div>
@@ -273,6 +318,35 @@ const DownloadError: React.FC<{ detail: string; repoId?: string }> = ({ detail, 
             </a>
           ))}
         </div>
+      )}
+      {retried ? (
+        <p className="mt-1.5 flex items-center gap-1.5 text-[8px] text-emerald-300">
+          <CheckCircle2 className="w-3 h-3 shrink-0" />
+          Restarted — follow the new row.
+        </p>
+      ) : (
+        <>
+          {/* Paste here and the download that just failed starts over on its own. */}
+          {tokenFixable && (
+            <HfTokenField idPrefix={`dl-${job.id}`} accent="rose" className="mt-1.5" onSignedIn={retry} />
+          )}
+          {/* Always offered: after accepting a licence on the model page, this
+              is the one click that picks the download back up. */}
+          <button
+            type="button"
+            onClick={() => void retry()}
+            disabled={retrying}
+            className="mt-1.5 inline-flex items-center gap-1 rounded border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-rose-100 hover:bg-rose-500/20 transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/70"
+          >
+            {retrying && <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />}
+            {retrying ? 'Retrying' : 'Retry'}
+          </button>
+          {retryError && (
+            <p role="alert" className="mt-0.5 text-[8px] text-rose-300">
+              {retryError}
+            </p>
+          )}
+        </>
       )}
     </div>
   );

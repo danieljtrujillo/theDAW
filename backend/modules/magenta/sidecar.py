@@ -83,6 +83,10 @@ async def health() -> dict:
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENGINE_SCRIPT = _REPO_ROOT / "sidecars" / "magenta" / "server.py"
 _DISTRO_FILE = _REPO_ROOT / "sidecars" / "magenta-rt2-nvidia" / "app" / ".wsl_distro"
+# The one-time installer, so the UI can LAUNCH it on a button press instead of
+# printing "go and double-click Setup-MRT2.bat". Fixed at import time and never
+# taken from a request, so no caller can point this at another executable.
+_INSTALLER = _REPO_ROOT / "sidecars" / "magenta-rt2-nvidia" / "Setup-MRT2.bat"
 _ENGINE_MODEL = os.getenv("THEDAW_MAGENTA_MODEL", "mrt2_small")
 _WSL_PYTHON = os.getenv("THEDAW_MAGENTA_WSL_PY", "~/mrt2/.venv/bin/python")
 # Native engine interpreter for Linux/macOS auto-spawn (Windows uses WSL). On
@@ -195,6 +199,40 @@ def setup_state(refresh: bool = False) -> dict:
     _setup_cache["t"] = now
     _setup_cache["state"] = state
     return state
+
+
+def installer_available() -> bool:
+    """Whether this checkout ships the one-time installer at all."""
+    return _INSTALLER.is_file()
+
+
+def launch_installer() -> dict:
+    """Start the installer in its own console window and return immediately.
+
+    This is the click that replaces "go run Setup-MRT2.bat". The installer is
+    interactive by design — it states what it needs, how large the downloads
+    are, and asks for consent — so it gets a real console the user can answer
+    in, rather than being buried in a hidden pipe. Nothing is waited on here;
+    the caller polls ``setup_state(refresh=True)`` for the outcome.
+    """
+    if sys.platform != "win32":
+        raise RuntimeError(
+            "The one-click Magenta RT2 installer is Windows-only. On Linux and "
+            "macOS, run the engine yourself and point theDAW at it with "
+            "THEDAW_MAGENTA_URL."
+        )
+    if not _INSTALLER.is_file():
+        raise FileNotFoundError(
+            f"The Magenta RT2 installer is missing from this checkout ({_INSTALLER})."
+        )
+    proc = subprocess.Popen(  # noqa: S603 - fixed path, never request-supplied
+        ["cmd.exe", "/c", str(_INSTALLER)],
+        cwd=str(_INSTALLER.parent),
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        close_fds=True,
+    )
+    log.info("magenta: launched installer %s (pid %s)", _INSTALLER, proc.pid)
+    return {"pid": proc.pid, "installer": str(_INSTALLER)}
 
 
 def start_engine() -> dict:

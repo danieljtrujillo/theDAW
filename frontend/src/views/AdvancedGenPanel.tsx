@@ -28,9 +28,11 @@ import { SlideRow } from '../components/audio/SlideRow';
 import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
-import { swapEngineForModel } from '../lib/magentaEngineClient';
+import { installMagentaEngine, swapEngineForModel } from '../lib/magentaEngineClient';
 import { CLOUD_MODELS } from '../lib/cloudModels';
-import { fetchCheckpoints, type RegisteredCheckpoint } from '../lib/storageClient';
+import { fetchCheckpoints, setLocalOnly, type RegisteredCheckpoint } from '../lib/storageClient';
+import { classifyModelGate } from '../lib/modelDownloadClient';
+import { requireFeature } from '../notices/featureGateStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import '../components/layout/track-controls.css';
 
@@ -295,9 +297,24 @@ export const AdvancedGenPanel: React.FC<{
         const data = await fetchCheckpoints().catch(() => null);
         const cat = data?.catalog.find((c) => c.name === model) ?? null;
         if (cat?.source === 'download' && data?.local_only) {
-          // Local-only would just block this server-side; route to the fix.
-          logWarn('model', `${model}: not on this machine, and local-only blocks downloads. Pick an installed model or allow the download in Settings → Models.`);
-          window.dispatchEvent(new CustomEvent('thedaw:open-settings', { detail: { section: 'models' } }));
+          // Local-only would just block this server-side. Carry the fix on the
+          // warning itself — opening Settings only moved the hunt one step
+          // along, since the toggle that unblocks this is still unlabelled
+          // from here.
+          logWarn('model', `${model}: not on this machine, and local-only blocks downloads.`);
+          requireFeature({
+            id: 'model:local-only',
+            kind: 'model',
+            title: 'Downloads are turned off',
+            message: `${model} is not on this machine, and local-only mode blocks fetching it. Allowing downloads gets it now — or pick an installed model instead.`,
+            action: {
+              label: 'Allow downloads & load',
+              run: async () => {
+                await setLocalOnly(false);
+                void preloadModel(model);
+              },
+            },
+          });
           setModelLoadState('idle');
           return;
         }
@@ -331,8 +348,60 @@ export const AdvancedGenPanel: React.FC<{
       setModelLoadState('idle');
       logInfo('model', `${d.model} loaded in ${d.seconds}s (${d.device ?? '?'}; ${d.vram_used_gb ?? '?'} GB VRAM)`);
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
       setModelLoadState('error');
-      logError('model', `Model load failed: ${e instanceof Error ? e.message : String(e)}`);
+      logError('model', `Model load failed: ${message}`);
+      // A Hugging Face gate is fixable in place, so raise the card that carries
+      // the fix instead of leaving the failure in the LOG dock with nothing to
+      // act on — and offer the fix that matches the gate: a token for a missing
+      // sign-in, the model page for an account that is not on the allow list.
+      const gate = classifyModelGate(message);
+      if (gate?.kind === 'local-only') {
+        requireFeature({
+          id: 'model:local-only',
+          kind: 'model',
+          title: 'Downloads are turned off',
+          message: `${model} is not on this machine, and local-only mode blocks fetching it. Allowing downloads gets it now.`,
+          action: {
+            label: 'Allow downloads & load',
+            run: async () => {
+              await setLocalOnly(false);
+              void preloadModel(model);
+            },
+          },
+        });
+      } else if (gate?.kind === 'sign-in') {
+        requireFeature({
+          id: 'hf:model-load',
+          kind: 'hf',
+          title: 'Hugging Face sign-in needed',
+          message: `${model} is gated — paste a token and it loads again.`,
+          action: {
+            label: 'Retry load',
+            // Not awaited: the load reports through modelLoadState + the LOG
+            // dock, and the notice should clear rather than hang on it.
+            run: () => {
+              void preloadModel(model);
+            },
+          },
+        });
+      } else if (gate?.kind === 'no-access') {
+        const repoUrl = gate.repoUrl;
+        requireFeature({
+          id: 'hf:no-access',
+          kind: 'model',
+          title: 'Access not granted',
+          message: `Your token works — this Hugging Face account is not on ${model}'s allow list. Open the model page, click "Agree and access", then load again.`,
+          action: repoUrl
+            ? {
+                label: 'Open model page',
+                run: () => {
+                  window.open(repoUrl, '_blank', 'noopener');
+                },
+              }
+            : undefined,
+        });
+      }
     }
   }, []);
 
@@ -770,14 +839,25 @@ export const AdvancedGenPanel: React.FC<{
                     : st === 'error' ? 'border-red-500/40 text-red-300 bg-red-500/10'
                     : st === 'ready' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
                     : 'border-zinc-600/40 text-zinc-400 bg-white/3';
-                  const label = st === 'starting' ? 'LOADING' : st === 'setup' ? 'SETUP' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
-                  const title = st === 'setup'
-                    ? 'The Magenta RT2 engine is not installed yet. Double-click Setup-MRT2.bat (in sidecars/magenta-rt2-nvidia) once — it checks the PC, asks consent, and installs everything. Then pick Magenta here again.'
-                    : 'Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio.';
+                  const label = st === 'starting' ? 'LOADING' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
+                  // 'setup' is the one state the user can act on, so it IS the
+                  // action: a pill that installs, not a tooltip naming a script.
+                  if (st === 'setup') {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => void installMagentaEngine()}
+                        title="Install the Magenta RT2 engine. It opens its own window, checks the PC, says how large the downloads are, and asks before installing anything."
+                        className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 ${cls} hover:bg-amber-500/20 hover:text-amber-100 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/70`}
+                      >
+                        Install
+                      </button>
+                    );
+                  }
                   return (
                     <span
                       className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 ${cls}`}
-                      title={title}
+                      title="Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio."
                     >
                       {label}
                     </span>

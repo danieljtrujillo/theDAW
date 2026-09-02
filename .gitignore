@@ -370,3 +370,7 @@ integration-package/backend/larsnet/pretrained_larsnet_models.zip
 
 # Untracked video/marketing scripts (local working material, not part of the product).
 video-scripts/
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
