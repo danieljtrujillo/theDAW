@@ -29,23 +29,30 @@ const ROOT = path.resolve(process.cwd(), '..');
 const OUT = path.resolve(ROOT, 'showcase', 'clips-recorded');
 fs.mkdirSync(OUT, { recursive: true });
 
+// CAST — which library tracks star in the film. Library ids differ per machine, so
+// showcase/_cast.json (gitignored) overrides the defaults below; without it the
+// harness shoots the original Et Tu Machina cast.
+let CAST = {};
+try { CAST = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'showcase', '_cast.json'), 'utf8')); } catch (e) {}
+
 // "Et Tu Machina" — the song the whole film is built around. Imported to the
 // library, separated into 4 stems, and converted to MIDI before capture, so the
 // EDIT timeline, MIX source, DJ deck, and piano roll all carry the same track.
+const HERO_ID = CAST.heroId || '68006988e370427d9108e5c5d724a9f5';
 const HERO = {
-  heroUrl: '/api/library/audio/68006988e370427d9108e5c5d724a9f5',
-  heroLabel: 'Et Tu Machina',
-  heroId: '68006988e370427d9108e5c5d724a9f5',
+  heroUrl: '/api/library/audio/' + HERO_ID,
+  heroLabel: CAST.heroLabel || 'Et Tu Machina',
+  heroId: HERO_ID,
 };
-const DECK_B = { url: '/api/library/audio/81a3d137-2b6f-44fe-9e49-0f540d6ec3fc_00', label: 'Deck B' };
-const STEM_BASE = '68006988e370427d9108e5c5d724a9f5';
-const STEMS = ['drums', 'bass', 'vocals', 'other'].map((n) => ({
+const DECK_B = { url: '/api/library/audio/' + (CAST.deckBId || '81a3d137-2b6f-44fe-9e49-0f540d6ec3fc_00'), label: CAST.deckBLabel || 'Deck B' };
+const STEM_BASE = CAST.stemsBase || HERO_ID;
+const STEMS = (CAST.stems || ['drums', 'bass', 'vocals', 'other']).map((n) => ({
   name: n, url: `/api/library/stems/${STEM_BASE}__${n}/audio`,
 }));
 // Notation scenes use a track that already has MIDI + notation artifacts (tab,
 // arrangement) and analysis, so the Score panel renders a real tab + sheet and
 // the Details panel can infer a prompt. Verified to render cleanly.
-const NOTATION = { notationId: '03591710a6474479a9720780f40885a3' };
+const NOTATION = { notationId: CAST.notationId || '03591710a6474479a9720780f40885a3' };
 // Et Tu Machina's MIDI, windowed to a clean 64-step piano-roll pattern (see _make_pianoroll.py).
 let ETU_PIANO = { bpm: 120, totalSteps: 64, notes: [] };
 try { ETU_PIANO = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'showcase', '_etu_pianoroll.json'), 'utf8')); } catch (e) {}
@@ -152,7 +159,7 @@ const SCENES = [
   { id: '74_magenta-live-generate', tab: 'make', play: false, magentaCond: true, magentaLive: true, hold: 60, holdUntilComplete: 180 },
   { id: '72_crispr-dna', tab: 'make', play: false, chimeraBuild: true, crisprRun: true, hold: 150, holdUntilComplete: 330 },
   // ── nav-scenes (file://) — Magenta RT2 NVIDIA port. MUST stay last (they navigate away). ──
-  { id: '63_magenta-studio-live', nav: 'http://localhost:8778', hold: 7 },
+  { id: '63_magenta-studio-live', nav: CAST.magentaStudioUrl || 'http://localhost:8778', hold: 7 },
   { id: '61_magenta-port-ui', nav: MAGENTA_STUDIO, hold: 7 },
   { id: '62_magenta-card',    nav: MAGENTA_CARD,   hold: 7 },
 ];
@@ -305,7 +312,7 @@ async function applyScene(spec) {
     } catch (e) { log.push('studio ' + e.message); }
   }
   if (spec.fillBucket && !C.bucketFilled) {
-    try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const b = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero/bucket'); mb.getState().add(new File([b], 'Et-Tu-Machina.wav', { type: 'audio/wav' })); C.bucketFilled = true; } catch (e) { log.push('bucket ' + e.message); }
+    try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const b = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero/bucket'); mb.getState().add(new File([b], spec.heroLabel.replace(/ +/g, '-') + '.wav', { type: 'audio/wav' })); C.bucketFilled = true; } catch (e) { log.push('bucket ' + e.message); }
   }
 
   // ── per-scene UI state (fully specified every time) ──
@@ -347,7 +354,7 @@ async function applyScene(spec) {
     // Guard on the CLIPS being present (not a one-time flag): non-chimera scenes clear the
     // stack, and 72_crispr-dna needs a fresh rebuild long after 23_chimera ran.
     if (spec.chimeraBuild && gp.getState().chimera.clips.length === 0) {
-      const srcs = [{ u: spec.heroUrl, l: 'Et Tu Machina' }, { u: spec.stems[0].url, l: 'Drums' }, { u: spec.stems[2].url, l: 'Vocals' }];
+      const srcs = [{ u: spec.heroUrl, l: spec.heroLabel }, { u: spec.stems[0].url, l: 'Drums' }, { u: spec.stems[2].url, l: 'Vocals' }];
       for (const s of srcs) { try { const b = await withTimeout((await fetch(s.u)).blob(), 30000, 'fetch chimera ' + s.l); gp.getState().addChimeraClip({ blob: b, mimeType: 'audio/wav', label: s.l }); } catch (e) { log.push('chimera ' + e.message); } }
       try { gp.getState().setChimeraField('targetBpm', 124); gp.getState().setChimeraField('alignMode', 'weave'); } catch (e) {}
       C.chimeraBuilt = true;
@@ -399,7 +406,7 @@ async function applyScene(spec) {
       const samp = (await imp('/src/state/djSamplerStore.ts')).useDjSampler;
       const labels = ['Kick', 'Snare', 'Hat', 'Stab', 'Vox', 'FX'];
       for (let i = 0; i < labels.length; i++) { try { samp.getState().setPad(i, { entryId: spec.heroId, name: labels[i] }); } catch (e) {} }
-      try { const sl = (await imp('/src/state/djSideListStore.ts')).useDjSideList; sl.getState().add({ entryId: spec.deckB.url, label: 'Deck B' }); sl.getState().add({ entryId: spec.heroId, label: 'Et Tu Machina' }); } catch (e) {}
+      try { const sl = (await imp('/src/state/djSideListStore.ts')).useDjSideList; sl.getState().add({ entryId: spec.deckB.url, label: spec.deckB.label }); sl.getState().add({ entryId: spec.heroId, label: 'Et Tu Machina' }); } catch (e) {}
       C.djStaged = true;
     }
   } catch (e) { log.push('djsamp ' + e.message); }
@@ -572,7 +579,7 @@ async function sceneActions(page, scene) {
     // focusing the path field opens the recent-projects list.
     await page.click('#session-import-path', { timeout: 4000 }).catch(() => {});
     await sleep(900);
-    await page.keyboard.type('C:\\Sets\\EtTuMachina.als', { delay: 55 }).catch(() => {});
+    await page.keyboard.type('C:\\Sets\\' + HERO.heroLabel.replace(/[^A-Za-z0-9]+/g, '') + '.als', { delay: 55 }).catch(() => {});
     await sleep(1400);
   }
 
@@ -679,7 +686,7 @@ async function sceneActions(page, scene) {
   }
   // EDIT commit: name the mixdown and click Commit Edit (offline 44.1k stereo render).
   if (scene.commitEdit) {
-    try { await page.evaluate(() => { const i = document.querySelector('#editor-mixdown-name'); if (i) { i.value = 'Et Tu Machina (mixdown)'; i.dispatchEvent(new Event('input', { bubbles: true })); } }); } catch (e) {}
+    try { await page.evaluate((name) => { const i = document.querySelector('#editor-mixdown-name'); if (i) { i.value = name + ' (mixdown)'; i.dispatchEvent(new Event('input', { bubbles: true })); } }, HERO.heroLabel); } catch (e) {}
     await clickByText(page, /commit\s*edit/i); await sleep(900);
   }
   // ── feature-coverage gap fills ──
