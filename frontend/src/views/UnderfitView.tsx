@@ -157,7 +157,7 @@ export const UnderfitView: React.FC = () => {
   };
 
   // Install problems the sidecar can name (checkout missing, venv missing).
-  const installIssues = !reachable && diag && diag.issues.length > 0 ? diag.issues : null;
+  const installIssues = !reachable && diag && Array.isArray(diag.issues) && diag.issues.length > 0 ? diag.issues : null;
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#050507] border border-white/5 rounded-lg overflow-hidden">
