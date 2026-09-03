@@ -137,8 +137,13 @@
       .then(function (r) {
         if (r.status === 412) {
           return r.json().then(function (j) {
-            push({ resourcesMissing: true });
-            throw new Error(j && j.message ? j.message : 'Magenta RT2 not installed');
+            // FastAPI wraps the gate as { detail: { state, installable, message } }.
+            // Only a real "not installed" shows the install-resources copy; an
+            // engine that is starting or a probe that failed is a retry.
+            var d = (j && j.detail && typeof j.detail === 'object') ? j.detail : (j || {});
+            var notInstalled = d.state === 'not_installed' || (d.state == null && d.setup_required === true);
+            if (notInstalled) push({ resourcesMissing: true });
+            throw new Error(d.message || (notInstalled ? 'Magenta RT2 not installed' : 'Magenta engine is not ready yet - retry in a moment'));
           });
         }
         if (!r.ok) throw new Error('generate HTTP ' + r.status);

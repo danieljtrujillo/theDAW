@@ -8,10 +8,15 @@
  *
  * Write flow: any user-facing toggle calls `patch({...})` which (a)
  * optimistically updates the local store and (b) PATCHes the backend.
- * If the PATCH fails the next refresh() will reconcile.
+ * If the PATCH fails the optimistic value is ROLLED BACK — the toggle
+ * visibly flips back — `error` names the reason, and an error notice with a
+ * Retry button is raised, so a toggle can never look saved while the backend
+ * never heard about it.
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { dismissFeatureGate, requireFeature } from '../notices/featureGateStore';
+import { logError } from './logStore';
 
 export interface AnalysisSettings {
   auto_on_import: boolean;
@@ -112,9 +117,16 @@ interface FeatureToggleState {
   settings: FeatureSettings;
   loaded: boolean;
   loading: boolean;
+  /** Last load/save failure, human-readable. Cleared by the next success. */
   error: string | null;
   refresh: () => Promise<void>;
-  patch: (partial: DeepPartial<FeatureSettings>) => Promise<void>;
+  /**
+   * Save a partial change. Resolves true when the backend confirmed it,
+   * false when it was rolled back (the reason is in `error` and on the
+   * notice card). Never throws.
+   */
+  patch: (partial: DeepPartial<FeatureSettings>) => Promise<boolean>;
+  clearError: () => void;
 }
 
 type DeepPartial<T> = {
@@ -135,6 +147,21 @@ function mergeSettings(base: FeatureSettings, patch: DeepPartial<FeatureSettings
   if (patch.schema_version != null) next.schema_version = patch.schema_version;
   return next;
 }
+
+/** "stems.auto_on_import = on" — what the failed save was, for the notice. */
+function describePatch(partial: DeepPartial<FeatureSettings>): string {
+  const parts: string[] = [];
+  for (const [section, values] of Object.entries(partial)) {
+    if (!values || typeof values !== 'object') continue;
+    for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
+      const shown = typeof value === 'boolean' ? (value ? 'on' : 'off') : String(value);
+      parts.push(`${section}.${key} = ${shown}`);
+    }
+  }
+  return parts.join(', ') || 'setting';
+}
+
+const PATCH_NOTICE_ID = 'settings:patch';
 
 export const useFeatureToggleStore = create<FeatureToggleState>()(
   persist(
@@ -162,7 +189,8 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
       },
 
       patch: async (partial) => {
-        const optimistic = mergeSettings(get().settings, partial);
+        const previous = get().settings;
+        const optimistic = mergeSettings(previous, partial);
         set({ settings: optimistic });
         try {
           const res = await fetch('/api/settings', {
@@ -170,13 +198,44 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(partial),
           });
-          if (!res.ok) throw new Error(`PATCH /api/settings → ${res.status}`);
+          if (!res.ok) {
+            let reason = `HTTP ${res.status}`;
+            try {
+              const body = (await res.json()) as { detail?: unknown };
+              if (typeof body?.detail === 'string') reason = body.detail;
+            } catch {
+              /* non-JSON error body */
+            }
+            throw new Error(`PATCH /api/settings → ${reason}`);
+          }
           const payload = (await res.json()) as FeatureSettings;
-          set({ settings: mergeSettings(DEFAULT_FEATURE_SETTINGS, payload), loaded: true });
+          set({ settings: mergeSettings(DEFAULT_FEATURE_SETTINGS, payload), loaded: true, error: null });
+          dismissFeatureGate(PATCH_NOTICE_ID);
+          return true;
         } catch (e) {
-          set({ error: e instanceof Error ? e.message : String(e) });
+          const reason = e instanceof Error ? e.message : String(e);
+          const what = describePatch(partial);
+          // Roll the optimistic value back so the control shows the truth,
+          // then say why where the user is looking.
+          set({ settings: previous, error: `${what} was not saved: ${reason}` });
+          logError('settings', `${what} was not saved (${reason}); reverted.`);
+          requireFeature({
+            id: PATCH_NOTICE_ID,
+            kind: 'error',
+            title: 'Setting not saved',
+            message: `${what} was reverted — ${reason}. The backend never received it.`,
+            action: {
+              label: 'Retry',
+              run: async () => {
+                if (!(await get().patch(partial))) throw new Error(reason);
+              },
+            },
+          });
+          return false;
         }
       },
+
+      clearError: () => set({ error: null }),
     }),
     {
       name: 'thedaw-feature-settings',
@@ -184,4 +243,3 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
     },
   ),
 );
-

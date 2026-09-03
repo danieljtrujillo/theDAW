@@ -29,7 +29,7 @@
 
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import { pollMagentaJob } from '../state/instrumentStore';
-import { raiseMagentaSetupGate } from './magentaEngineClient';
+import { magentaFetch, raiseMagentaSetupGate } from './magentaEngineClient';
 import {
   buildEffectChain, ensureChopModule, getRackEffect, rackEffectDefaults, RACK_EFFECTS,
   type ChainHandle, type RackEffectInstance,
@@ -667,13 +667,15 @@ export class DrawEngine {
         form.append('duration', '4');
         form.append('model_size', 'small');
         if (!first) form.append('extend', 'true');
-        const res = await fetch('/api/magenta/generate', { method: 'POST', body: form });
+        // magentaFetch starts an installed-but-idle engine on demand and re-sends
+        // once it is up; a 412 here is a real gate (not installed / probe failed).
+        const res = await magentaFetch('/api/magenta/generate', { method: 'POST', body: form });
         if (res.status === 412) {
-          // The card raised here carries the Install button; this status line
-          // only has to say what happened, never what to go and run.
           const detail = await res.json().then((j) => j?.detail).catch(() => null);
-          raiseMagentaSetupGate(detail?.message, detail?.installable !== false);
-          this.onMagentaStatus?.('Magenta is not installed yet — use Install on the card');
+          raiseMagentaSetupGate(detail?.message, detail?.installable !== false, detail?.state);
+          this.onMagentaStatus?.(detail?.state === 'not_installed'
+            ? 'Magenta is not installed yet — use Install on the card'
+            : (detail?.message || 'Magenta engine is not ready — see the notice'));
           break;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

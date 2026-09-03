@@ -1,3 +1,4 @@
+import { magentaFetch } from '../lib/magentaEngineClient';
 import { create } from 'zustand';
 import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
@@ -588,10 +589,11 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
 
     try {
       logInfo('generate', `[${elapsed()}] POST ${genEndpoint} — model=${params.model} duration=${params.duration}s steps=${params.steps} seed=${params.seed}`);
-      const response = await fetch(genEndpoint, {
-        method: 'POST',
-        body: formData,
-      });
+      // Magenta: magentaFetch starts an installed-but-idle engine on demand (live
+      // progress card) and re-sends once it is up; SA3 posts straight through.
+      const response = isMagenta
+        ? await magentaFetch(genEndpoint, { method: 'POST', body: formData })
+        : await fetch(genEndpoint, { method: 'POST', body: formData });
 
       let payload: unknown = null;
       try {
@@ -653,7 +655,9 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
 
         const job = jobPayload as {
           status?: string;
-          progress?: { step?: number; steps?: number };
+          /** Magenta jobs: 'starting' while the sidecar boots the engine for this job. */
+          engine_state?: string;
+          progress?: { step?: number; steps?: number; stage?: string };
           result?: {
             batch?: boolean;
             item?: { audio_base64?: string; mime_type?: string; filename?: string };
@@ -678,7 +682,9 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
           set({
             jobStatus: job.status,
             isGenerating: true,
-            statusLabel: job.status === 'queued' ? 'QUEUED...' : `SAMPLING ${get().progressPct}%`,
+            statusLabel: job.engine_state === 'starting'
+              ? 'STARTING MAGENTA ENGINE...'
+              : job.status === 'queued' ? 'QUEUED...' : `SAMPLING ${get().progressPct}%`,
           });
           await wait(POLL_INTERVAL_MS);
           continue;

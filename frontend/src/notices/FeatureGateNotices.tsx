@@ -7,14 +7,17 @@
  * 'hf' kind renders the shared <HfTokenField /> inline, so the card that says
  * "you need a token" is also where the token goes in. On a successful sign-in
  * the notice's own action runs as the retry, then the card dismisses itself.
- * Nothing polls here — every network request is user-initiated.
+ * 'progress' cards (an engine being started for the user) spin and update in
+ * place; 'error' cards (a save that was rolled back) carry a Retry button.
+ * Nothing polls here — every network request is user-initiated or owned by
+ * the client that raised the progress card.
  *
  * Coexistence with DownloadDock (same corner, default bottom-28 right-4):
  * while download jobs exist this stack lifts to bottom-44 so the collapsed
  * dock pill and the notice cards never overlap.
  */
 import React from 'react';
-import { AlertTriangle, KeyRound, Loader2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, KeyRound, Loader2, X } from 'lucide-react';
 import { useDownloadStore } from '../state/downloadStore';
 import { HfTokenField } from '../components/ui/HfTokenField';
 import { useFeatureGateStore, type FeatureGateKind, type FeatureGateNotice } from './featureGateStore';
@@ -25,27 +28,60 @@ interface KindStyle {
   card: string;
   icon: string;
   title: string;
+  button: string;
   Icon: React.ComponentType<{ className?: string }>;
+  spin?: boolean;
 }
+
+const AMBER_BUTTON =
+  'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 hover:text-amber-100 focus-visible:ring-amber-400/70';
 
 const KIND_STYLES: Record<FeatureGateKind, KindStyle> = {
   module: {
     card: 'border-white/10 border-l-2 border-l-amber-400/80',
     icon: 'text-amber-300',
     title: 'text-amber-200',
+    button: AMBER_BUTTON,
     Icon: AlertTriangle,
   },
   model: {
     card: 'border-white/10 border-l-2 border-l-amber-400/80',
     icon: 'text-amber-300',
     title: 'text-amber-200',
+    button: AMBER_BUTTON,
     Icon: AlertTriangle,
   },
   hf: {
     card: 'border-yellow-500/25 border-l-2 border-l-yellow-400/80',
     icon: 'text-yellow-300',
     title: 'text-yellow-200',
+    button: AMBER_BUTTON,
     Icon: KeyRound,
+  },
+  progress: {
+    card: 'border-sky-500/25 border-l-2 border-l-sky-400/80',
+    icon: 'text-sky-300',
+    title: 'text-sky-200',
+    button:
+      'border-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20 hover:text-sky-100 focus-visible:ring-sky-400/70',
+    Icon: Loader2,
+    spin: true,
+  },
+  error: {
+    card: 'border-rose-500/30 border-l-2 border-l-rose-400/80',
+    icon: 'text-rose-300',
+    title: 'text-rose-200',
+    button:
+      'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20 hover:text-rose-100 focus-visible:ring-rose-400/70',
+    Icon: AlertCircle,
+  },
+  success: {
+    card: 'border-emerald-500/25 border-l-2 border-l-emerald-400/80',
+    icon: 'text-emerald-300',
+    title: 'text-emerald-200',
+    button:
+      'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 focus-visible:ring-emerald-400/70',
+    Icon: CheckCircle2,
   },
 };
 
@@ -113,10 +149,11 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
 
   return (
     <div
+      role={notice.kind === 'error' ? 'alert' : notice.kind === 'progress' ? 'status' : undefined}
       className={`pointer-events-auto w-full rounded-lg border bg-[#0a080f]/95 shadow-[0_8px_32px_rgba(0,0,0,0.75)] backdrop-blur-md ${style.card}`}
     >
       <div className="flex items-start gap-2 px-2.5 py-2">
-        <Icon className={`w-3.5 h-3.5 mt-px shrink-0 ${style.icon}`} />
+        <Icon className={`w-3.5 h-3.5 mt-px shrink-0 ${style.icon} ${style.spin ? 'animate-spin' : ''}`} />
         <div className="min-w-0 flex-1">
           <div className={`text-[10px] font-black uppercase tracking-widest ${style.title}`}>
             {notice.title}
@@ -154,7 +191,7 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
                 type="button"
                 onClick={() => void runAction()}
                 disabled={running}
-                className="mt-1.5 inline-flex items-center gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-amber-200 hover:bg-amber-500/20 hover:text-amber-100 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/70 disabled:opacity-50"
+                className={`mt-1.5 inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[9px] font-black uppercase tracking-widest transition-colors focus-visible:outline-none focus-visible:ring-1 disabled:opacity-50 ${style.button}`}
               >
                 {running && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
                 {notice.action.label}

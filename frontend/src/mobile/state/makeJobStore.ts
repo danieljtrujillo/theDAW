@@ -1,3 +1,4 @@
+import { magentaFetch } from '../../lib/magentaEngineClient';
 /** Standalone generate-job runner for the phone MAKE tab. Pure REST — no
  *  desktop host needed: submit to /api/generate-jobs (SA3) or
  *  /api/magenta/generate (magenta-*), poll for status, then surface the
@@ -193,7 +194,9 @@ export const useMakeJobStore = create<MakeJobState>((set, get) => ({
       if (blocked) throw new Error(blocked);
 
       const { endpoint, form, magenta } = buildForm({ ...req, prompt });
-      const r = await fetch(endpoint, { method: 'POST', body: form });
+      const r = magenta
+        ? await magentaFetch(endpoint, { method: 'POST', body: form })
+        : await fetch(endpoint, { method: 'POST', body: form });
       const payload: unknown = await r.json().catch(() => null);
       if (!live()) return;
       if (!r.ok) throw new Error(errText(payload, `HTTP ${r.status} ${r.statusText}`));

@@ -13,9 +13,12 @@
  * /api/hfauth/login on submit, which validates via whoami and persists the
  * token to huggingface_hub's standard store — every later download picks it up.
  *
- * Call sites: Settings → Models (Hugging Face row), the DownloadDock error
- * block (gated / rate-limited downloads), and the feature-gate notice stack.
- * `idPrefix` keeps the input id unique when two of these are on screen at once.
+ * Call sites: Settings → Models (Hugging Face row, `compact`), the DownloadDock
+ * error block (gated / rate-limited downloads), and the feature-gate notice
+ * stack. `idPrefix` keeps the input id unique when two of these are on screen
+ * at once. `compact` renders the whole thing on ONE row: label, status or
+ * input, reveal toggle for the secret, Save, Get a token — the helper copy
+ * moves into hover titles.
  */
 import React from 'react';
 import { AlertTriangle, CheckCircle2, ExternalLink, Eye, EyeOff, KeyRound, Loader2 } from 'lucide-react';
@@ -42,6 +45,10 @@ const ACCENTS: Record<Accent, { button: string; focus: string }> = {
   },
 };
 
+const ENV_OVERRIDE_TEXT =
+  'An HF_TOKEN environment variable is set and takes priority over anything saved here. If downloads still fail, clear it and restart theDAW.';
+const SAVED_HELP = 'Saved for every download — no restart, nothing else to set up.';
+
 interface Props {
   /** Unique per mounted instance — the input id is derived from it. */
   idPrefix: string;
@@ -53,6 +60,8 @@ interface Props {
    */
   onSignedIn?: (username: string) => void | Promise<void>;
   className?: string;
+  /** One-row layout for dense panels (Settings). */
+  compact?: boolean;
 }
 
 export const HfTokenField: React.FC<Props> = ({
@@ -60,6 +69,7 @@ export const HfTokenField: React.FC<Props> = ({
   accent = 'purple',
   onSignedIn,
   className,
+  compact = false,
 }) => {
   const [status, setStatus] = React.useState<HfAuthStatus | null>(null);
   const [token, setToken] = React.useState('');
@@ -76,6 +86,7 @@ export const HfTokenField: React.FC<Props> = ({
   // in the backend's own detection, so saving a good token here does NOT undo
   // a stale env var. Say so rather than letting downloads keep failing.
   const envOverride = status?.token_source === 'env';
+  const text = compact ? 'text-[11px]' : 'text-[9px]';
 
   React.useEffect(() => {
     let live = true;
@@ -125,9 +136,11 @@ export const HfTokenField: React.FC<Props> = ({
   // toggle that fixes it instead of showing a field that always fails.
   if (status?.available === false) {
     return (
-      <p className={`flex items-start gap-1.5 text-[9px] text-amber-200/90 ${className ?? ''}`}>
+      <p className={`flex items-start gap-1.5 ${text} text-amber-200/90 ${className ?? ''}`}>
         <AlertTriangle className="w-3 h-3 mt-px shrink-0 text-amber-300" />
-        <span>Turn on the Hugging Face Auth module in Settings → Modules, then restart theDAW to sign in.</span>
+        <span className={compact ? 'truncate' : ''}>
+          Turn on the Hugging Face Auth module in Settings → Modules, then restart theDAW to sign in.
+        </span>
       </p>
     );
   }
@@ -136,12 +149,15 @@ export const HfTokenField: React.FC<Props> = ({
   // reopens the field for the case where this token lacks gated access.
   if (status?.logged_in === true && !replacing) {
     return (
-      <div className={`flex flex-col gap-1 ${className ?? ''}`}>
-        <div className="flex items-center gap-1.5 text-[9px]">
+      <div className={`flex ${compact ? 'items-center gap-2' : 'flex-col gap-1'} ${className ?? ''}`}>
+        <div className={`flex items-center gap-1.5 ${text} min-w-0 flex-1`}>
+          {compact && <KeyRound className="w-3 h-3 shrink-0 text-zinc-400" />}
+          {compact && <span className="shrink-0 font-mono uppercase tracking-wider text-zinc-300">Hugging Face</span>}
           <CheckCircle2 className="w-3 h-3 shrink-0 text-emerald-300" />
-          <span className="min-w-0 truncate text-emerald-200">
+          <span className="min-w-0 truncate text-emerald-200" title={envOverride ? ENV_OVERRIDE_TEXT : undefined}>
             {savedAs ? 'Saved — signed in as ' : 'Signed in as '}
             {status.username ?? 'your account'}
+            {compact && envOverride ? ' · HF_TOKEN env var wins' : ''}
           </span>
           <button
             type="button"
@@ -154,13 +170,95 @@ export const HfTokenField: React.FC<Props> = ({
             Use another token
           </button>
         </div>
-        {envOverride && <EnvOverrideNote />}
+        {!compact && envOverride && <EnvOverrideNote />}
         {error && (
-          <p role="alert" className="text-[9px] text-rose-300">
+          <p role="alert" className={`${text} text-rose-300 ${compact ? 'truncate max-w-64' : ''}`} title={error}>
             {error}
           </p>
         )}
       </div>
+    );
+  }
+
+  const input = (
+    <div className="relative min-w-0 flex-1">
+      <input
+        id={inputId}
+        name={inputId}
+        type={show ? 'text' : 'password'}
+        autoComplete="off"
+        spellCheck={false}
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="hf_…  paste your token here"
+        title={compact ? SAVED_HELP : undefined}
+        className={`w-full rounded border border-white/10 bg-black/40 px-1.5 py-1 pr-6 ${text} font-mono text-zinc-200 placeholder:text-zinc-500 outline-none ${styles.focus}`}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((v) => !v)}
+        aria-label={show ? 'Hide token' : 'Show token'}
+        aria-pressed={show}
+        className="absolute right-1 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
+      >
+        {show ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+      </button>
+    </div>
+  );
+  const saveButton = (
+    <button
+      type="submit"
+      disabled={busy || token.trim().length === 0}
+      title="Save the token — every download from here on uses it. No restart."
+      className={`shrink-0 rounded border px-2 py-1 ${text} font-black uppercase tracking-widest transition-colors disabled:opacity-40 inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-1 ${styles.button}`}
+    >
+      {busy && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
+      {busy ? 'Saving' : 'Save'}
+    </button>
+  );
+  const getTokenButton = (
+    <button
+      type="button"
+      onClick={() => void openTokenPage()}
+      title="Open huggingface.co to mint a token, then paste it here"
+      className={`inline-flex shrink-0 items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 ${text} font-mono uppercase tracking-wider text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30`}
+    >
+      <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+      Get a token
+    </button>
+  );
+
+  if (compact) {
+    return (
+      <form
+        className={`flex items-center gap-1.5 ${className ?? ''}`}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+      >
+        <label
+          htmlFor={inputId}
+          title={`${SAVED_HELP}${envOverride ? ` ${ENV_OVERRIDE_TEXT}` : ''}`}
+          className={`flex shrink-0 items-center gap-1 ${text} font-mono uppercase tracking-wider text-zinc-300`}
+        >
+          <KeyRound className="w-3 h-3 shrink-0 text-zinc-400" />
+          Hugging Face
+        </label>
+        {input}
+        {saveButton}
+        {getTokenButton}
+        {envOverride && (
+          <span className={`shrink-0 ${text} text-amber-300`} title={ENV_OVERRIDE_TEXT}>
+            <AlertTriangle className="w-3 h-3" aria-label="HF_TOKEN environment variable takes priority" />
+          </span>
+        )}
+        {error && (
+          <p role="alert" className={`min-w-0 truncate ${text} text-rose-300`} title={error}>
+            {error}
+          </p>
+        )}
+      </form>
     );
   }
 
@@ -180,36 +278,8 @@ export const HfTokenField: React.FC<Props> = ({
         Hugging Face token
       </label>
       <div className="flex gap-1">
-        <div className="relative min-w-0 flex-1">
-          <input
-            id={inputId}
-            name={inputId}
-            type={show ? 'text' : 'password'}
-            autoComplete="off"
-            spellCheck={false}
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="hf_…  paste your token here"
-            className={`w-full rounded border border-white/10 bg-black/40 px-1.5 py-1 pr-6 text-[9px] font-mono text-zinc-200 placeholder:text-zinc-500 outline-none ${styles.focus}`}
-          />
-          <button
-            type="button"
-            onClick={() => setShow((v) => !v)}
-            aria-label={show ? 'Hide token' : 'Show token'}
-            className="absolute right-1 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
-          >
-            {show ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-          </button>
-        </div>
-        <button
-          type="submit"
-          disabled={busy || token.trim().length === 0}
-          title="Save the token — every download from here on uses it. No restart."
-          className={`shrink-0 rounded border px-2 py-1 text-[9px] font-black uppercase tracking-widest transition-colors disabled:opacity-40 inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-1 ${styles.button}`}
-        >
-          {busy && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
-          {busy ? 'Saving' : 'Save'}
-        </button>
+        {input}
+        {saveButton}
       </div>
       {envOverride && <EnvOverrideNote />}
       <div className="flex items-center gap-2">
@@ -218,19 +288,9 @@ export const HfTokenField: React.FC<Props> = ({
             {error}
           </p>
         ) : (
-          <p className="min-w-0 flex-1 text-[9px] text-zinc-500">
-            Saved for every download — no restart, nothing else to set up.
-          </p>
+          <p className="min-w-0 flex-1 text-[9px] text-zinc-500">{SAVED_HELP}</p>
         )}
-        <button
-          type="button"
-          onClick={() => void openTokenPage()}
-          title="Open huggingface.co to mint a token, then paste it above"
-          className="inline-flex shrink-0 items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
-        >
-          <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-          Get a token
-        </button>
+        {getTokenButton}
       </div>
     </form>
   );
@@ -240,10 +300,7 @@ export const HfTokenField: React.FC<Props> = ({
 const EnvOverrideNote: React.FC = () => (
   <p className="flex items-start gap-1 text-[9px] text-amber-200/90">
     <AlertTriangle className="w-3 h-3 mt-px shrink-0 text-amber-300" />
-    <span>
-      An HF_TOKEN environment variable is set and takes priority over anything saved here. If downloads still
-      fail, clear it and restart theDAW.
-    </span>
+    <span>{ENV_OVERRIDE_TEXT}</span>
   </p>
 );
 

@@ -28,7 +28,7 @@ import { SlideRow } from '../components/audio/SlideRow';
 import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
-import { installMagentaEngine, swapEngineForModel } from '../lib/magentaEngineClient';
+import { fetchMagentaEngineStatus, installMagentaEngine, swapEngineForModel } from '../lib/magentaEngineClient';
 import { CLOUD_MODELS } from '../lib/cloudModels';
 import { fetchCheckpoints, setLocalOnly, type RegisteredCheckpoint } from '../lib/storageClient';
 import { classifyModelGate } from '../lib/modelDownloadClient';
@@ -260,12 +260,29 @@ export const AdvancedGenPanel: React.FC<{
   // params; the central Chimera stack stays shared across both engines.
   const isMagenta = p.model.startsWith('magenta-');
 
-  // Probe the Magenta RT2 sidecar once on mount; gates the Magenta model option.
+  // Probe the Magenta RT2 engine once on mount. The model option is offered
+  // whenever the engine is INSTALLED (generation starts it on demand); only a
+  // real "not installed" hides it, and the pill mirrors the engine state.
   useEffect(() => {
-    fetch('/api/magenta/probe')
-      .then((r) => r.json())
-      .then((d) => useGenerateParamsStore.getState().setField('magentaAvailable', d?.available === true))
-      .catch(() => useGenerateParamsStore.getState().setField('magentaAvailable', false));
+    let cancelled = false;
+    fetchMagentaEngineStatus()
+      .then((st) => {
+        if (cancelled) return;
+        const gp = useGenerateParamsStore.getState();
+        const state = st?.state;
+        gp.setField('magentaAvailable', !!st && state !== 'not_installed');
+        gp.setField('magentaEngine',
+          state === 'running' ? 'ready'
+            : state === 'starting' ? 'starting'
+              : state === 'error' ? 'error'
+                : state === 'not_installed' ? 'setup'
+                  : 'off');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        useGenerateParamsStore.getState().setField('magentaAvailable', false);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   // User-registered local checkpoints (Settings → Models & Storage) appear as

@@ -374,3 +374,9 @@ video-scripts/
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+
+# In-app installs and engine prefs (Settings → Models): Lyria clone, Magenta model choice, key file, download logs
+/lyria/
+data/magenta_engine.json
+data/lyria_gemini_key.json
+logs/magenta-download-*.log

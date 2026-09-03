@@ -17,6 +17,14 @@ export interface DownloadFile {
   done: boolean;
 }
 
+/**
+ * 'model'   — a Stable Audio checkpoint via /api/models (Hugging Face, this PC).
+ * 'magenta' — a Magenta RT2 checkpoint fetched by the sidecar's own CLI inside
+ *             WSL (/api/magenta/engine/checkpoints); progress is best-effort,
+ *             parsed from the CLI's log, so bytes may lag or be unknown.
+ */
+export type DownloadJobKind = 'model' | 'magenta';
+
 export interface DownloadJob {
   id: string;
   name: string;
@@ -28,6 +36,12 @@ export interface DownloadJob {
   dest_dir: string;
   error_detail: string | null;
   error_repo_id: string | null;
+  /** Defaults to 'model' when absent (the /api/models registry). */
+  kind?: DownloadJobKind;
+  /** Whole-job percent when the source reports one (magenta). */
+  percent?: number | null;
+  /** Path of the log holding the raw CLI output (magenta). */
+  log?: string | null;
 }
 
 interface DownloadsResponse {

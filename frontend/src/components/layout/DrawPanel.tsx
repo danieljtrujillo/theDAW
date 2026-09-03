@@ -17,7 +17,7 @@ import { sendAudioToEditor, type SendableAudio } from '../../lib/sendToTargets';
 import { useDrawFxStore } from '../../state/drawEffectChainStore';
 import { useDrawModeStore } from '../../state/drawModeStore';
 import { useLibraryStore } from '../../state/libraryStore';
-import { raiseMagentaSetupGate } from '../../lib/magentaEngineClient';
+import { magentaFetch, raiseMagentaSetupGate } from '../../lib/magentaEngineClient';
 import { logError, logInfo } from '../../state/logStore';
 import { pollMagentaJob } from '../../state/instrumentStore';
 import { FxRack } from '../audio/FxRack';
@@ -280,13 +280,15 @@ export const DrawPanel: React.FC = () => {
       form.append('duration', String(duration));
       form.append('model_size', 'small');
       form.append('notes', JSON.stringify(melody));
-      const res = await fetch('/api/magenta/generate', { method: 'POST', body: form });
+      // magentaFetch starts an installed-but-idle engine on demand (with a live
+      // progress card) and re-sends once it is up, so a 412 here is a real gate.
+      const res = await magentaFetch('/api/magenta/generate', { method: 'POST', body: form });
       if (res.status === 412) {
-        // Guided, not an error: the card carries the Install button, so this
-        // never has to name a script or send the user hunting.
         const detail = await res.json().then((j) => j?.detail).catch(() => null);
-        raiseMagentaSetupGate(detail?.message, detail?.installable !== false);
-        setStatus('Magenta is not installed yet — use Install on the card.');
+        raiseMagentaSetupGate(detail?.message, detail?.installable !== false, detail?.state);
+        setStatus(detail?.state === 'not_installed'
+          ? 'Magenta is not installed yet — use Install on the card.'
+          : (detail?.message || 'Magenta engine is not ready — see the notice.'));
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

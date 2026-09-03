@@ -45,12 +45,14 @@ Lifecycle:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -95,6 +97,17 @@ NPM_INSTALL_TIMEOUT_SEC = 600.0
 # Child-process output (npm install, the Express/tsx server) lands here so
 # failures are diagnosable rather than vanishing into DEVNULL.
 SIDECAR_LOG_PATH = _REPO_ROOT / "data" / "logs" / "lyria-sidecar.log"
+
+# The upstream project the sidecar embeds (module.json / the docstrings name
+# it as StarskreamEXE/lyria-3-pro). ``start_install`` clones exactly this.
+LYRIA_REPO = "StarskreamEXE/lyria-3-pro"
+LYRIA_REPO_URL = f"https://github.com/{LYRIA_REPO}.git"
+GIT_CLONE_TIMEOUT_SEC = 900.0
+
+# The GEMINI_API_KEY theDAW hands the child (see _child_env). Env wins, then
+# this file (POST /api/lyria/key), then the assistant's Gemini key pool so a
+# key pasted for the assistant serves Lyria too.
+_GEMINI_KEY_FILE = _REPO_ROOT / "data" / "lyria_gemini_key.json"
 
 
 @contextmanager
@@ -184,7 +197,72 @@ def _child_env(cfg: LyriaConfig) -> dict[str, str]:
         val = os.getenv(key)
         if val:
             env[key] = val
+    # The stored / pooled Gemini key, when the environment has none.
+    if not env.get("GEMINI_API_KEY"):
+        gemini, _source = gemini_key()
+        if gemini:
+            env["GEMINI_API_KEY"] = gemini
     return env
+
+
+# ── prerequisites, keys, project presence ────────────────────────────────────
+
+
+def _git_path() -> Optional[str]:
+    return shutil.which("git") or shutil.which("git.exe")
+
+
+def _npm_path() -> Optional[str]:
+    return shutil.which("npm.cmd") or shutil.which("npm")
+
+
+def _node_path() -> Optional[str]:
+    return shutil.which("node") or shutil.which("node.exe")
+
+
+def project_present(cfg: Optional[LyriaConfig] = None) -> bool:
+    """True when the checkout exists (package.json is the marker)."""
+    cfg = cfg or resolve_config()
+    return (cfg.project_path / "package.json").is_file()
+
+
+def gemini_key() -> tuple[Optional[str], str]:
+    """The GEMINI_API_KEY the child will get, and where it comes from:
+    ``env`` | ``file`` | ``pool`` | ``none``."""
+    env = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if env:
+        return env, "env"
+    try:
+        stored = (
+            json.loads(_GEMINI_KEY_FILE.read_text(encoding="utf-8")).get("key") or ""
+        ).strip()
+        if stored:
+            return stored, "file"
+    except (OSError, ValueError):
+        pass
+    try:
+        from backend.key_pool import key_pool
+
+        pooled = [k for k in key_pool.get_raw_keys("gemini") if k and k.strip()]
+        if pooled:
+            return pooled[0].strip(), "pool"
+    except Exception:  # noqa: BLE001 - the pool is optional here
+        pass
+    return None, "none"
+
+
+def set_gemini_key(key: str) -> None:
+    _GEMINI_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _GEMINI_KEY_FILE.write_text(json.dumps({"key": key.strip()}), encoding="utf-8")
+    log.info("lyria.sidecar: GEMINI_API_KEY stored (%s)", _GEMINI_KEY_FILE.name)
+
+
+def clear_gemini_key() -> bool:
+    try:
+        _GEMINI_KEY_FILE.unlink()
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
@@ -275,31 +353,219 @@ def detect_lan_ip() -> Optional[str]:
 
 
 def probe() -> dict:
-    """Non-spawning diagnostics for the Settings UI / /status endpoint."""
+    """Non-spawning diagnostics for the Settings UI / /status endpoint.
+
+    ``missing`` names each absent piece by id (``project``, ``deps``, ``git``,
+    ``node``, ``key``) so the UI can say precisely what stands in the way and
+    offer the matching fix; ``issues`` keeps the human sentences. A missing key
+    is only an *issue* in live mode: mock mode (the default) spends nothing and
+    needs no key, and Lyria's own Settings modal also accepts one at runtime.
+    """
     cfg = resolve_config()
     pkg = cfg.project_path
     pkg_json = pkg / "package.json"
+    git = _git_path()
+    npm = _npm_path()
+    node = _node_path()
+    key, key_source = gemini_key()
+    deps_installed = (pkg / "node_modules").is_dir()
+    install = install_status()
+    installing = install.get("status") in ("cloning", "installing")
+
     issues: list[str] = []
-    if not pkg.is_dir():
-        issues.append(
-            f"Lyria project not found at {pkg} -- clone StarskreamEXE/lyria-3-pro "
-            "beside this repo or set theDAW_LYRIA_PROJECT."
-        )
-    elif not pkg_json.is_file():
-        issues.append(f"no package.json at {pkg_json}")
-    if not (shutil.which("npm") or shutil.which("npm.cmd")):
-        issues.append("npm not found on PATH -- install Node.js first")
+    missing: list[str] = []
+    if not pkg_json.is_file():
+        missing.append("project")
+        if installing:
+            issues.append(f"Installing: {install.get('message')}")
+        elif not pkg.is_dir():
+            issues.append(
+                f"Lyria project not found at {pkg}: Install clones {LYRIA_REPO} "
+                "there (or set theDAW_LYRIA_PROJECT to an existing checkout)."
+            )
+        else:
+            issues.append(
+                f"{pkg} exists but has no package.json: move it aside so Install "
+                f"can clone {LYRIA_REPO}, or set theDAW_LYRIA_PROJECT."
+            )
+        if not git:
+            missing.append("git")
+            issues.append("git is not installed, so the project cannot be cloned.")
+    elif not deps_installed:
+        missing.append("deps")
+        if installing:
+            issues.append(f"Installing: {install.get('message')}")
+        else:
+            issues.append("Node dependencies are not installed yet (npm install).")
+    if not npm or not node:
+        missing.append("node")
+        issues.append("Node.js (node + npm) is not installed.")
+    if not key:
+        missing.append("key")
+        if not cfg.mock:
+            issues.append(
+                "GEMINI_API_KEY is not set: live mode cannot generate without it."
+            )
     return {
         "project_path": str(pkg),
+        "project_exists": pkg_json.is_file(),
+        "repo": LYRIA_REPO,
+        "repo_url": LYRIA_REPO_URL,
         "port": cfg.port,
         "mock": cfg.mock,
-        "deps_installed": (pkg / "node_modules").is_dir(),
+        "deps_installed": deps_installed,
+        "git": bool(git),
+        "npm": bool(npm),
+        "node": bool(node),
+        "gemini_key": bool(key),
+        "gemini_key_source": key_source,
         "listening": _port_is_listening(cfg.port),
         "process_alive": _proc is not None and _proc.poll() is None,
         "url": _resolved_url or f"http://127.0.0.1:{cfg.port}",
         "lan_ip": detect_lan_ip(),
         "issues": issues,
+        "missing": missing,
+        # Installable = the in-app install can make progress from here.
+        "installable": bool(npm and node and (pkg_json.is_file() or git)),
+        "install": install,
+        "log_path": str(SIDECAR_LOG_PATH),
     }
+
+
+# ── install: clone + npm install, in the background ─────────────────────────
+
+_install_lock = Lock()
+_install_state: dict = {
+    "status": "idle",  # idle | cloning | installing | done | error
+    "step": None,
+    "message": "",
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+    "project_path": None,
+    "log_path": str(SIDECAR_LOG_PATH),
+}
+
+
+def install_status() -> dict:
+    with _install_lock:
+        return dict(_install_state)
+
+
+def _set_install(**fields: object) -> None:
+    with _install_lock:
+        _install_state.update(fields)
+
+
+def _install_worker(cfg: LyriaConfig, need_clone: bool, git: str) -> None:
+    try:
+        if need_clone:
+            target = cfg.project_path
+            if target.exists() and any(target.iterdir()):
+                raise RuntimeError(
+                    f"{target} exists but is not a Lyria checkout (no package.json). "
+                    "Move it aside, or point theDAW_LYRIA_PROJECT at a checkout."
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _set_install(
+                status="cloning",
+                step="clone",
+                message=f"Cloning {LYRIA_REPO} into {target}",
+            )
+            log.info("lyria.sidecar: git clone %s -> %s", LYRIA_REPO_URL, target)
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW
+            with _sidecar_log_handle() as out:
+                rc = subprocess.call(
+                    [git, "clone", "--depth", "1", LYRIA_REPO_URL, str(target)],
+                    stdout=out,
+                    stderr=subprocess.STDOUT,
+                    shell=False,
+                    timeout=GIT_CLONE_TIMEOUT_SEC,
+                    creationflags=creationflags,
+                )
+            if rc != 0:
+                raise RuntimeError(
+                    f"git clone failed (rc={rc}). See {SIDECAR_LOG_PATH} for the "
+                    "output (network? GitHub reachable?), then retry."
+                )
+        _set_install(
+            status="installing",
+            step="npm",
+            message="Installing Node dependencies (npm install) — this can take a few minutes",
+        )
+        _ensure_deps(cfg)
+        _set_install(
+            status="done",
+            step=None,
+            message="Installed. Open the Lyria tab to start it.",
+            finished_at=time.time(),
+        )
+    except subprocess.TimeoutExpired:
+        _set_install(
+            status="error",
+            error=f"git clone timed out after {int(GIT_CLONE_TIMEOUT_SEC)}s.",
+            finished_at=time.time(),
+        )
+    except Exception as e:  # noqa: BLE001 - every failure must land in the status
+        log.warning("lyria.sidecar: install failed: %s", e)
+        _set_install(status="error", error=str(e), finished_at=time.time())
+
+
+def start_install() -> dict:
+    """Clone the project into the folder the sidecar expects (when missing)
+    and run its npm install, on a background thread. Returns the install
+    state; raises RuntimeError naming the missing prerequisite when the
+    install cannot even start (no git to clone with, no Node.js for npm)."""
+    with _install_lock:
+        if _install_state["status"] in ("cloning", "installing"):
+            return {**_install_state, "already_running": True}
+    cfg = resolve_config()
+    need_clone = not project_present(cfg)
+    git = _git_path()
+    npm = _npm_path()
+    if need_clone and not git:
+        raise RuntimeError(
+            "git is not installed, so the Lyria project cannot be cloned. Install "
+            "Git (git-scm.com), restart theDAW, then press Install again."
+        )
+    if not npm or not _node_path():
+        raise RuntimeError(
+            "Node.js is not installed (npm/node not on PATH). Install Node.js LTS "
+            "(nodejs.org), restart theDAW, then press Install again."
+        )
+    if not need_clone and (cfg.project_path / "node_modules").is_dir():
+        _set_install(
+            status="done",
+            step=None,
+            message="Already installed.",
+            error=None,
+            started_at=time.time(),
+            finished_at=time.time(),
+            project_path=str(cfg.project_path),
+        )
+        return {**install_status(), "already_installed": True}
+    _set_install(
+        status="cloning" if need_clone else "installing",
+        step="clone" if need_clone else "npm",
+        message=(
+            f"Cloning {LYRIA_REPO} into {cfg.project_path}"
+            if need_clone
+            else "Installing Node dependencies (npm install)"
+        ),
+        error=None,
+        started_at=time.time(),
+        finished_at=None,
+        project_path=str(cfg.project_path),
+    )
+    threading.Thread(
+        target=_install_worker,
+        args=(cfg, need_clone, git or "git"),
+        daemon=True,
+        name="lyria-install",
+    ).start()
+    return install_status()
 
 
 def ensure_running(*, wait_for_ready: bool = True) -> str:
