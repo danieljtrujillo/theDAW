@@ -593,6 +593,51 @@ export const ChimeraDnaScene: React.FC = () => {
       }
     };
 
+    // Idle placeholder for an EMPTY stack: a dim, slowly turning hologram
+    // strand in the output panel, so the panel reads as "the splice forms
+    // here" instead of a dead rectangle. A first run (empty library, nothing
+    // to add yet) and the onboarding tour's Chimera step both land on this
+    // state — without it the "DNA" simply did not exist on screen.
+    const renderGhost = (o: OutGeom, t: number): void => {
+      const spacing = o.rb * 1.7;
+      const nUsed = Math.max(8, Math.min(420, Math.round(o.span / spacing)));
+      const breathe = 0.5 + 0.5 * Math.sin(t * 0.9);
+      const lt = (t * 0.14) % 2;
+      const larsonU = lt < 1 ? lt : 2 - lt;
+      const stops = 3; // colour drifts through the first lane colours along the strand
+      for (let i = 0; i < nUsed; i++) {
+        const u = i / (nUsed - 1);
+        const x = o.x0 + u * o.span;
+        const theta = x * o.k + o.spin * 0.6;
+        const env = 0.45 + 0.35 * Math.sin(u * 9 + t * 0.4) * Math.sin(u * 23 - t * 0.25);
+        const off = o.amp0 * (0.5 + 0.9 * env) * Math.sin(theta);
+        const za = (Math.cos(theta) + 1) / 2;
+        const seg = u * (stops - 1);
+        let kk = Math.floor(seg);
+        if (kk > stops - 2) kk = stops - 2;
+        const c: Rgb = mixRgb(laneColor(kk), laneColor(kk + 1), seg - kk);
+        const dl = u - larsonU;
+        const larson = Math.exp(-(dl * dl) / (2 * 0.04 * 0.04)) * 0.45;
+        for (let s = 0; s < 2; s++) {
+          const sign = s === 0 ? 1 : -1;
+          const zz = (sign * (za * 2 - 1) + 1) / 2;
+          const size = o.rb * 0.85 * (0.55 + 0.65 * zz);
+          cB.setRGB(c.r / 255, c.g / 255, c.b / 255);
+          cB.lerp(cHolo, HOLO);
+          cB.multiplyScalar(0.82 + 0.26 * zz);
+          cB.lerp(cBg, 0.5 - 0.1 * breathe); // dim: a hologram of the strand to come
+          if (larson > 0.01) cB.lerp(cW, larson);
+          pushBead(x, o.band.cy + sign * off, sign * (za * 2 - 1) * 8 + 0.5, size, cB);
+        }
+        if (i % 6 === 3) {
+          cB.setRGB(c.r / 255, c.g / 255, c.b / 255);
+          cB.lerp(cHolo, HOLO);
+          cB.lerp(cBg, 0.6);
+          pushRung(x, o.band.cy, 1, Math.max(o.amp0 * 0.4, 2 * Math.abs(off)), 0, cB);
+        }
+      }
+    };
+
     const draw = (t: number, ph: DnaPhase): void => {
       if (W <= 2 || H <= 2) return;
       beadCur = 0;
@@ -729,6 +774,7 @@ export const ChimeraDnaScene: React.FC = () => {
           : null;
         renderLane(band, out, plan, lanes.length, real, ln.clipId, ln.laneIndex, beatsNorm, clip?.detectedBpm ?? null, !!clip?.isBase, t, ph, gen);
       }
+      if (lanes.length === 0 && out) renderGhost(out, t);
 
       beads.count = beadCur;
       rungs.count = rungCur;

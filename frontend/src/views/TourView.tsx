@@ -31,6 +31,7 @@ import {
   Music4,
   Phone,
   Plus,
+  Route,
   Search,
   Twitter,
   X,
@@ -67,6 +68,8 @@ const ROUTE_STOP_CAP = 40;
 // is flagged "tight" when its drive can't fit in the days between show dates at
 // this pace. Slice 7 makes this an explicit, user-tunable filter.
 const CALENDAR_DAILY_DRIVE_HOURS = 10;
+// First-use guide: example regions a new user can search with one click.
+const GUIDE_EXAMPLES = ['Austin, TX', 'Los Angeles', 'Nashville', 'Berlin'];
 
 const fmtDur = (s: number): string => {
   const m = Math.round(s / 60);
@@ -179,6 +182,12 @@ export const TourView: React.FC = () => {
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
   const [collapsedCities, setCollapsedCities] = useState<Set<string>>(new Set());
+
+  // ── First-use guide (empty state over the basemap) ─────────────────────────
+  // Shown until a region has been found (or the user dismisses it): says what
+  // the tab is, what to do first, and offers the first action right there.
+  const [guideDismissed, setGuideDismissed] = useState(false);
+  const [guideQuery, setGuideQuery] = useState('');
 
   // ── Boot: module status + persisted filter preset ─────────────────────────
   useEffect(() => {
@@ -1297,6 +1306,106 @@ export const TourView: React.FC = () => {
               Tailwind, wins the tie — which turns inset-0 into a no-op and
               collapses the container to 0 height (black tab). */}
           <div ref={containerRef} className="h-full w-full" />
+          {!mapError && !guideDismissed && venues.length === 0 && !regionName && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
+              <section
+                aria-labelledby="tour-guide-title"
+                className="pointer-events-auto w-full max-w-md rounded-xl border border-lime-500/25 bg-[#0c0a14]/95 p-4 shadow-2xl backdrop-blur"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-lime-500/30 bg-lime-500/10 text-lime-200">
+                    <Route className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <h2 id="tour-guide-title" className="text-[13px] font-black uppercase tracking-widest text-lime-100">
+                      Book the road
+                    </h2>
+                    <p className="mt-0.5 text-[11px] leading-snug text-zinc-400">
+                      Find venues city by city, pick your stops, and TOUR works out the drive between them.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGuideDismissed(true)}
+                    aria-label="Dismiss guide"
+                    className="shrink-0 rounded p-1 text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+                <ol className="mt-3 space-y-2 text-[11px] text-zinc-300">
+                  <li className="flex items-center gap-2">
+                    <span className="grid h-4.5 w-4.5 shrink-0 place-items-center rounded-full bg-lime-500/20 text-[9px] font-black text-lime-200">1</span>
+                    <form
+                      className="flex min-w-0 flex-1 items-center gap-1.5"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        setQuery(guideQuery);
+                        void runSearch(guideQuery);
+                      }}
+                    >
+                      <label htmlFor="tour-guide-region" className="sr-only">City or region to search</label>
+                      <input
+                        id="tour-guide-region"
+                        name="tour-guide-region"
+                        type="text"
+                        autoComplete="off"
+                        value={guideQuery}
+                        onChange={(e) => setGuideQuery(e.target.value)}
+                        placeholder="Search a city or region"
+                        className="min-w-0 flex-1 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-500 focus:border-lime-500/50 focus:outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={busy || !guideQuery.trim()}
+                        className="flex shrink-0 items-center gap-1 rounded border border-lime-500/40 bg-lime-500/15 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-lime-200 disabled:opacity-40"
+                      >
+                        <Search className="h-3 w-3" aria-hidden="true" />
+                        {busy ? 'Searching' : 'Search'}
+                      </button>
+                    </form>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <span className="grid h-4.5 w-4.5 shrink-0 place-items-center rounded-full bg-lime-500/20 text-[9px] font-black text-lime-200">2</span>
+                    <span>Click a venue in the list, then <Plus className="inline h-3 w-3 align-text-bottom" aria-label="plus" /> to add it as a stop.</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <span className="grid h-4.5 w-4.5 shrink-0 place-items-center rounded-full bg-lime-500/20 text-[9px] font-black text-lime-200">3</span>
+                    <span>Optimize the drive order, or lay the stops out on a calendar.</span>
+                  </li>
+                </ol>
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Try</span>
+                  {GUIDE_EXAMPLES.map((ex) => (
+                    <button
+                      key={ex}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setGuideQuery(ex);
+                        setQuery(ex);
+                        void runSearch(ex);
+                      }}
+                      className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300 transition-colors hover:border-lime-500/40 hover:text-lime-200 disabled:opacity-40"
+                    >
+                      {ex}
+                    </button>
+                  ))}
+                </div>
+                {searchError && (
+                  <p className="mt-2 text-[10px] leading-snug text-red-400">{searchError}</p>
+                )}
+                {status && !status.capabilities.venues && (
+                  <p className="mt-2 text-[10px] leading-snug text-amber-300/90">
+                    Venue search is offline right now — start the backend, then search again.
+                  </p>
+                )}
+                <p className="mt-2 text-[9px] leading-snug text-zinc-500">
+                  Route optimization and EV stops need free service keys — add them with the key button (top right) when you get there.
+                </p>
+              </section>
+            </div>
+          )}
           {movedSinceSearch && !mapError && (
             <button
               type="button"
