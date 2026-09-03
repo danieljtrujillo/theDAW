@@ -150,12 +150,14 @@ def _warm_heavy() -> None:
 
         gpu_info = "no CUDA"
         if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            gpu_info = (
-                f"{props.name} "
-                f"({round(props.total_memory / 1024**3, 1)} GB VRAM, "
-                f"cuda={torch.version.cuda})"
-            )
+            # Every device, not just cuda:0 — a two-card rig was logged as one.
+            names = []
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                gb = round(props.total_memory / 1024**3, 1)
+                names.append(f"cuda:{i} {props.name} ({gb} GB)")
+            gpu_info = f"{len(names)} GPU(s): " + "; ".join(names)
+            gpu_info += f" (cuda={torch.version.cuda})"
         logger.info(
             "startup: torch=%s (python=%s) gpu=%s",
             torch.__version__,
@@ -962,6 +964,51 @@ async def set_module_enabled(module_name: str, enabled: bool = Body(..., embed=T
     return config
 
 
+def _gpu_snapshot() -> list[dict]:
+    """Every GPU in the machine from one nvidia-smi query: index, name,
+    device-wide memory used/total (every process, including the WSL Magenta
+    engine), utilization and temperature. Empty when nvidia-smi is missing."""
+    try:
+        r = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.used,memory.total,"
+                "utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    if r.returncode != 0:
+        return []
+    gpus: list[dict] = []
+    for line in r.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 6:
+            continue
+        # The name may itself contain commas; the four numeric fields are last.
+        idx, tail = parts[0], parts[-4:]
+        name = ", ".join(parts[1:-4])
+        try:
+            gpus.append(
+                {
+                    "index": int(idx),
+                    "name": name,
+                    "vram_used_gb": round(int(tail[0]) / 1024, 2),
+                    "vram_total_gb": round(int(tail[1]) / 1024, 2),
+                    "util_pct": int(tail[2]),
+                    "temp_c": int(tail[3]),
+                }
+            )
+        except ValueError:
+            continue
+    return gpus
+
+
 @app.get("/api/system-stats")
 def system_stats():
     # Plain def: runs in the threadpool. The first call may pay the heavy
@@ -970,29 +1017,24 @@ def system_stats():
     import torch
 
     stats: dict = {}
-    if torch.cuda.is_available():
-        stats["vram_used_gb"] = round(torch.cuda.memory_allocated() / 1024**3, 2)
-        stats["vram_total_gb"] = round(
-            torch.cuda.get_device_properties(0).total_memory / 1024**3, 2
-        )
-        try:
-            r = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=utilization.gpu,temperature.gpu",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                stdin=subprocess.DEVNULL,
+    gpus = _gpu_snapshot()
+    has_cuda = torch.cuda.is_available()
+    if has_cuda or gpus:
+        # The scalar fields describe the primary device (cuda:0). Memory is the
+        # device-wide figure from nvidia-smi when available: torch's allocator
+        # only knows this process, so it read 0 GB while the Magenta engine
+        # held most of the card.
+        primary = gpus[0] if gpus else None
+        if primary is not None:
+            stats["vram_used_gb"] = primary["vram_used_gb"]
+            stats["vram_total_gb"] = primary["vram_total_gb"]
+            stats["gpu_util_pct"] = primary["util_pct"]
+            stats["gpu_temp_c"] = primary["temp_c"]
+        else:
+            stats["vram_used_gb"] = round(torch.cuda.memory_allocated() / 1024**3, 2)
+            stats["vram_total_gb"] = round(
+                torch.cuda.get_device_properties(0).total_memory / 1024**3, 2
             )
-            if r.returncode == 0:
-                parts = [p.strip() for p in r.stdout.strip().split(",")]
-                if len(parts) >= 2:
-                    stats["gpu_util_pct"] = int(parts[0])
-                    stats["gpu_temp_c"] = int(parts[1])
-        except Exception:
             stats["gpu_util_pct"] = None
             stats["gpu_temp_c"] = None
     else:
@@ -1000,6 +1042,10 @@ def system_stats():
         stats["vram_total_gb"] = 0
         stats["gpu_util_pct"] = None
         stats["gpu_temp_c"] = None
+    stats["gpus"] = gpus
+    stats["gpu_count"] = (
+        len(gpus) if gpus else (torch.cuda.device_count() if has_cuda else 0)
+    )
 
     try:
         import psutil
@@ -1038,6 +1084,15 @@ def model_info():
             pipeline.model.diffusion_objective if pipeline else None
         ),
         "has_cuda": torch.cuda.is_available(),
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "gpu_names": (
+            [
+                torch.cuda.get_device_properties(i).name
+                for i in range(torch.cuda.device_count())
+            ]
+            if torch.cuda.is_available()
+            else []
+        ),
         "device": str(pipeline.device) if pipeline else None,
         "vram_used_gb": (
             round(torch.cuda.memory_allocated() / 1024**3, 2)

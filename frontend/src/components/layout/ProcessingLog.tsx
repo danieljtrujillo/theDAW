@@ -14,15 +14,54 @@ import { useBottomPanelStore } from '../../state/bottomPanelStore';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+interface GpuStat {
+  index: number;
+  name: string;
+  vram_used_gb: number;
+  vram_total_gb: number;
+  util_pct: number | null;
+  temp_c: number | null;
+}
+
 interface SystemStats {
+  /** Primary device (cuda:0), kept for older backends. */
   gpu_util_pct: number | null;
   gpu_temp_c: number | null;
   vram_used_gb: number;
   vram_total_gb: number;
+  /** Every GPU in the machine; the chips summarise across them. */
+  gpus?: GpuStat[];
+  gpu_count?: number;
   cpu_pct: number | null;
   ram_used_gb: number | null;
   ram_total_gb: number | null;
 }
+
+// Multi-GPU: the chips show the busiest card (max utilisation / temperature and
+// that card's memory) with the count in the label, and the tooltip lists every
+// GPU by index so a two-card rig never reads as one.
+const gpuList = (s: SystemStats): GpuStat[] => (s.gpus && s.gpus.length ? s.gpus : []);
+const gpuCount = (s: SystemStats): number => s.gpu_count ?? gpuList(s).length;
+const gpuLabel = (s: SystemStats, base: string): string => (gpuCount(s) > 1 ? `${base}x${gpuCount(s)}` : base);
+const gpuUtil = (s: SystemStats): number | null => {
+  const g = gpuList(s);
+  return g.length ? Math.max(...g.map((x) => x.util_pct ?? 0)) : s.gpu_util_pct;
+};
+const gpuTemp = (s: SystemStats): number | null => {
+  const g = gpuList(s);
+  return g.length ? Math.max(...g.map((x) => x.temp_c ?? 0)) : s.gpu_temp_c;
+};
+const gpuVram = (s: SystemStats): { used: number; total: number } => {
+  const g = gpuList(s);
+  if (!g.length) return { used: s.vram_used_gb, total: s.vram_total_gb };
+  const busiest = g.reduce((a, b) => (b.vram_used_gb > a.vram_used_gb ? b : a));
+  return { used: busiest.vram_used_gb, total: busiest.vram_total_gb };
+};
+const gpuTitle = (s: SystemStats): string | undefined => {
+  const g = gpuList(s);
+  if (!g.length) return undefined;
+  return g.map((x) => `GPU ${x.index}: ${x.name}  ${x.util_pct ?? '-'}%  ${x.temp_c ?? '-'}C  ${x.vram_used_gb}/${x.vram_total_gb} GB`).join(String.fromCharCode(10));
+};
 
 // ─── Action-button tab config (mirrors GlobalGenerateBar) ────────────────────
 
@@ -254,10 +293,10 @@ export const LogBody: React.FC = () => {
         <div className="absolute right-0 top-0 bottom-0 w-20 pointer-events-none flex flex-col justify-end pb-2"
              style={{ background: 'linear-gradient(to left, rgba(0,0,0,0.85) 60%, transparent)' }}>
           <div className="flex flex-col gap-1 pr-2 items-end">
-            {stats?.gpu_util_pct != null && (
-              <div className="flex flex-col items-end leading-none">
-                <span className="text-[7px] font-mono text-zinc-600 uppercase">GPU</span>
-                <span className="text-[10px] font-mono text-purple-300">{stats.gpu_util_pct}%</span>
+            {stats && gpuUtil(stats) != null && (
+              <div className="flex flex-col items-end leading-none" title={gpuTitle(stats)}>
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">{gpuLabel(stats, 'GPU')}</span>
+                <span className="text-[10px] font-mono text-purple-300">{gpuUtil(stats)}%</span>
               </div>
             )}
             {stats?.cpu_pct != null && (
@@ -266,20 +305,20 @@ export const LogBody: React.FC = () => {
                 <span className="text-[10px] font-mono text-emerald-400">{stats.cpu_pct}%</span>
               </div>
             )}
-            {stats?.gpu_temp_c != null && (
-              <div className="flex flex-col items-end leading-none">
+            {stats && gpuTemp(stats) != null && (() => { const t = gpuTemp(stats) as number; return (
+              <div className="flex flex-col items-end leading-none" title={gpuTitle(stats)}>
                 <span className="text-[7px] font-mono text-zinc-600 uppercase">HEAT</span>
-                <span className={`text-[10px] font-mono ${stats.gpu_temp_c > 80 ? 'text-red-400' : stats.gpu_temp_c > 65 ? 'text-amber-400' : 'text-zinc-300'}`}>
-                  {stats.gpu_temp_c}°C
+                <span className={`text-[10px] font-mono ${t > 80 ? 'text-red-400' : t > 65 ? 'text-amber-400' : 'text-zinc-300'}`}>
+                  {t}°C
                 </span>
               </div>
-            )}
-            {stats?.vram_used_gb != null && stats.vram_total_gb > 0 && (
-              <div className="flex flex-col items-end leading-none">
-                <span className="text-[7px] font-mono text-zinc-600 uppercase">VRAM</span>
-                <span className="text-[10px] font-mono text-zinc-300">{stats.vram_used_gb}/{stats.vram_total_gb}G</span>
+            ); })()}
+            {stats && gpuVram(stats).total > 0 && (() => { const v = gpuVram(stats); return (
+              <div className="flex flex-col items-end leading-none" title={gpuTitle(stats)}>
+                <span className="text-[7px] font-mono text-zinc-600 uppercase">{gpuLabel(stats, 'VRAM')}</span>
+                <span className="text-[10px] font-mono text-zinc-300">{v.used}/{v.total}G</span>
               </div>
-            )}
+            ); })()}
             {isGenerating && estMs > 0 && (
               <div className="flex flex-col items-end leading-none">
                 <span className="text-[7px] font-mono text-zinc-600 uppercase">EST</span>
@@ -426,8 +465,8 @@ export const LogActionButton: React.FC = () => {
 const TEMP_CLASS = (c: number) =>
   c > 80 ? 'text-red-400' : c > 65 ? 'text-amber-400' : 'text-zinc-300';
 
-const Stat: React.FC<{ label: string; value: string; valueClass?: string }> = ({ label, value, valueClass }) => (
-  <span className="flex items-baseline gap-0.5 shrink-0">
+const Stat: React.FC<{ label: string; value: string; valueClass?: string; title?: string }> = ({ label, value, valueClass, title }) => (
+  <span className="flex items-baseline gap-0.5 shrink-0" title={title}>
     <span className="text-[7px] font-mono text-zinc-600 uppercase">{label}</span>
     <span className={`text-[9px] font-mono tabular-nums ${valueClass ?? 'text-zinc-300'}`}>{value}</span>
   </span>
@@ -457,14 +496,14 @@ export const LogStripCompactInfo: React.FC = () => {
       {stats.cpu_pct != null && (
         <Stat label="CPU" value={`${stats.cpu_pct}%`} valueClass="text-emerald-400" />
       )}
-      {stats.gpu_util_pct != null && (
-        <Stat label="GPU" value={`${stats.gpu_util_pct}%`} valueClass="text-purple-300" />
+      {gpuUtil(stats) != null && (
+        <Stat label={gpuLabel(stats, 'GPU')} value={`${gpuUtil(stats)}%`} valueClass="text-purple-300" title={gpuTitle(stats)} />
       )}
-      {stats.gpu_temp_c != null && (
-        <Stat label="TEMP" value={`${stats.gpu_temp_c}°C`} valueClass={TEMP_CLASS(stats.gpu_temp_c)} />
+      {gpuTemp(stats) != null && (
+        <Stat label="TEMP" value={`${gpuTemp(stats)}°C`} valueClass={TEMP_CLASS(gpuTemp(stats) as number)} title={gpuTitle(stats)} />
       )}
-      {stats.vram_used_gb != null && stats.vram_total_gb > 0 && (
-        <Stat label="VRAM" value={`${stats.vram_used_gb}/${stats.vram_total_gb}G`} />
+      {gpuVram(stats).total > 0 && (
+        <Stat label={gpuLabel(stats, 'VRAM')} value={`${gpuVram(stats).used}/${gpuVram(stats).total}G`} title={gpuTitle(stats)} />
       )}
       {stats.ram_used_gb != null && stats.ram_total_gb != null && stats.ram_total_gb > 0 && (
         <Stat label="RAM" value={`${stats.ram_used_gb}/${stats.ram_total_gb}G`} />
