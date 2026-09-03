@@ -20,6 +20,9 @@ export interface GanPluginSummary {
 export interface GanPackageResult {
   manifest: Record<string, unknown>;
   gan_path: string;
+  /** False when the installed bundle already matched the bundled source (no
+   *  files were rewritten); absent on older backends. */
+  rebuilt?: boolean;
 }
 
 export interface GanOpenResult {
@@ -42,11 +45,10 @@ export const ganApi = {
     ),
   /** Build (or rebuild) the bundled "The Owl" sidecar .gan; returns its path. */
   packageOwl: () => postJson<GanPackageResult>('/api/plugin/package-owl'),
-  /** Build (or rebuild) the bundled "Ares" control surface .gan; returns its path. */
+  /** Build (or rebuild) the bundled "Ares" control surface .gan; returns its path.
+   *  A no-op (`rebuilt: false`) when the installed bundle is already current. */
   packageAres: () =>
-    postJson<{ manifest: Record<string, unknown>; gan_path: string; entry_url: string }>(
-      '/api/plugin/package-ares',
-    ),
+    postJson<GanPackageResult & { entry_url: string }>('/api/plugin/package-ares'),
   /** Reveal a file in the OS file manager (Explorer/Finder), selecting it. */
   reveal: (path: string) => postJson<{ status: string; path: string }>('/api/plugin/reveal', { path }),
 };

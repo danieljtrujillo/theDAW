@@ -1,9 +1,13 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import {
-  Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, Trash2,
+  Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2,
   Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
   Plug, RefreshCw, Loader2, Play, Pause, Square, Blocks, FolderOpen, SlidersHorizontal,
+  AudioWaveform, Activity, Layers,
 } from 'lucide-react';
+import { effectiveZoom } from '../lib/canvasScale';
 import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS, MIX_RACK_IDS } from '../state/effectChainStore';
 import { useVstStore } from '../state/vstStore';
 import { useVstEditorStore } from '../state/vstEditorStore';
@@ -129,9 +133,14 @@ const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onCl
 };
 
 /* ═══ MIX (PROCESS) tab — now on the Control-Surface editor ═══════════════════
-   Layout (drag-arrangeable in Design Mode, like DJ):
-     TOP    — 2 viz rows: input + output (toggle waveform / live scope, overlay A/B)
+   Layout:
+     TOP    — the viz rack: 2 content-sized rows, input + output (toggle
+              waveform / live scope, overlay A/B). Sits ABOVE the surface grid
+              (not an fr track of it) so each row only takes the height it
+              needs — a 24 px strip when collapsed, a remembered wave height
+              when open — instead of a fixed share of the tab.
      MIDDLE — effect rail (categories + Quick Master) | library | chain
+              (drag-arrangeable in Design Mode, like DJ)
      LOWER  — effectStage (active effect's UI/viz; ModuleShell + hero viz lands here later)
    The footer is the PROCESS-CHAIN transport. */
 
@@ -257,21 +266,271 @@ function StatRow({ stats }: { stats: AudioStats }) {
   );
 }
 
+/* ═══ MIX viz rack — the Input / Output rows above the surface ═══════════════
+   Content-sized (deliberately NOT an fr track of the surface grid, which would
+   hand the rows a fixed share of the tab whatever they show) so a row only
+   takes the height it needs: a 24 px strip when collapsed, a remembered wave
+   height when open. Each row is 'auto' (open while it has audio or is in
+   live-scope mode, collapsed otherwise) or pinned open / closed by its chevron;
+   the choice and the wave height persist across sessions. */
+type VizRowPref = 'auto' | 'open' | 'closed';
+interface VizRackPrefs {
+  input: VizRowPref;
+  output: VizRowPref;
+  /** Height (css px) of an open row's wave body. */
+  bodyPx: number;
+  setRow: (row: 'input' | 'output', pref: VizRowPref) => void;
+  setBodyPx: (px: number) => void;
+}
+const VIZ_BODY_MIN = 48;
+const VIZ_BODY_MAX = 240;
+const VIZ_BODY_DEFAULT = 72;
+const useVizRackPrefs = create<VizRackPrefs>()(
+  persist(
+    (set) => ({
+      input: 'auto',
+      output: 'auto',
+      bodyPx: VIZ_BODY_DEFAULT,
+      setRow: (row, pref) => set(row === 'input' ? { input: pref } : { output: pref }),
+      setBodyPx: (px) => set({ bodyPx: Math.round(Math.max(VIZ_BODY_MIN, Math.min(VIZ_BODY_MAX, px))) }),
+    }),
+    { name: 'thedaw.mix.vizrack.v1', partialize: (s) => ({ input: s.input, output: s.output, bodyPx: s.bodyPx }) },
+  ),
+);
+const vizRowOpen = (pref: VizRowPref, hasAudio: boolean, mode: MixVizMode): boolean =>
+  pref === 'open' ? true : pref === 'closed' ? false : hasAudio || mode === 'live';
+const vizTabBtn = (active: boolean) =>
+  `p-1 rounded transition-colors ${active ? 'text-purple-300 bg-purple-500/20' : 'text-zinc-500 hover:text-zinc-300'}`;
+
+interface VizRackRowProps {
+  row: 'input' | 'output';
+  label: string;
+  accent: string;
+  overlayAccent: string;
+  url: string | null;
+  overlayUrl: string | null;
+  playLabel: string;
+  placeholder: string;
+  mode: MixVizMode;
+  onMode: (m: MixVizMode) => void;
+  overlay: boolean;
+  onToggleOverlay: () => void;
+  open: boolean;
+  onToggleOpen: () => void;
+  bodyPx: number;
+  /** Header items (stats · transport · actions), shown in both states. */
+  extra: React.ReactNode;
+  /** Show the "processing chain…" scrim (output row while the chain runs). */
+  busy?: boolean;
+  wrapperClassName?: string;
+  onDrop?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragLeave?: () => void;
+}
+
+/** One rack row: the full MixVizRow card when open, a single-line strip that
+ *  keeps every control (view toggle, overlay, stats, transport, actions) when
+ *  collapsed. The chevron is the last header item in both states. */
+const VizRackRow: React.FC<VizRackRowProps> = (p) => {
+  const chevron = (
+    <button
+      type="button"
+      onClick={p.onToggleOpen}
+      aria-expanded={p.open}
+      aria-label={p.open ? `Collapse the ${p.label} row` : `Expand the ${p.label} row`}
+      title={p.open ? 'Collapse row' : 'Expand row'}
+      className="p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-white/5 shrink-0"
+    >
+      {p.open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+    </button>
+  );
+  const extra = <>{p.extra}{chevron}</>;
+  return (
+    <div
+      data-mix-viz-row={p.row}
+      data-open={p.open ? 'true' : 'false'}
+      className={`relative w-full shrink-0 transition-colors ${p.wrapperClassName ?? ''}`}
+      onDrop={p.onDrop}
+      onDragOver={p.onDragOver}
+      onDragLeave={p.onDragLeave}
+    >
+      {p.open ? (
+        <div style={{ height: p.bodyPx }} className="relative w-full">
+          <MixVizRow
+            label={p.label} url={p.url} overlayUrl={p.overlayUrl} accent={p.accent} overlayAccent={p.overlayAccent}
+            playLabel={p.playLabel}
+            mode={p.mode} onMode={p.onMode} overlay={p.overlay} onToggleOverlay={p.onToggleOverlay}
+            placeholder={p.placeholder}
+            headerExtra={extra}
+          />
+          {p.busy && (
+            <div className="absolute inset-0 grid place-items-center rounded-lg bg-black/50 backdrop-blur-sm pointer-events-none">
+              <span className="text-[10px] font-mono text-purple-300 animate-pulse">processing chain…</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="h-6 flex items-center gap-2 px-2 rounded-lg border bg-black/40" style={{ borderColor: `${p.accent}55` }}>
+          <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: p.accent }}>{p.label}</span>
+          <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5 shrink-0">
+            <button type="button" onClick={() => p.onMode('wave')} aria-pressed={p.mode === 'wave'} aria-label={`${p.label}: waveform view`} title="Waveform" className={vizTabBtn(p.mode === 'wave')}>
+              <AudioWaveform className="w-3 h-3" />
+            </button>
+            <button type="button" onClick={() => p.onMode('live')} aria-pressed={p.mode === 'live'} aria-label={`${p.label}: live spectrum / scope`} title="Live spectrum / scope" className={vizTabBtn(p.mode === 'live')}>
+              <Activity className="w-3 h-3" />
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={p.onToggleOverlay}
+            aria-pressed={p.overlay}
+            aria-label={`${p.label}: overlay the other row for A/B comparison`}
+            title="Overlay the other row for A/B comparison"
+            className={`p-1 rounded transition-colors shrink-0 ${p.overlay ? 'text-cyan-300 bg-cyan-500/20' : 'text-zinc-400 hover:text-zinc-100'}`}
+          >
+            <Layers className="w-3 h-3" />
+          </button>
+          <span className="text-[9px] font-mono text-zinc-600 truncate min-w-0">
+            {p.busy ? <span className="text-purple-300 animate-pulse">processing chain…</span> : p.url ? '' : p.placeholder}
+          </span>
+          <div className="ml-auto flex items-center gap-2 shrink-0">{extra}</div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface MixVizRackProps {
+  sourceUrl: string | null; outputUrl: string | null;
+  srcStats: AudioStats | null; outStats: AudioStats | null;
+  hasSource: boolean;
+  inputMode: MixVizMode; setInputMode: (m: MixVizMode) => void;
+  outputMode: MixVizMode; setOutputMode: (m: MixVizMode) => void;
+  inputOverlay: boolean; toggleInputOverlay: () => void;
+  outputOverlay: boolean; toggleOutputOverlay: () => void;
+  dragOverSource: boolean;
+  onDrop: (e: React.DragEvent) => void; onDragOver: (e: React.DragEvent) => void; onDragLeave: () => void;
+  onClickUpload: () => void; onClearSource: () => void;
+  isChainProcessing: boolean;
+  onDownload: () => void; onSendToDAW: () => void; onSendToInpaint: () => void;
+}
+
+const MixVizRack: React.FC<MixVizRackProps> = (p) => {
+  const prefs = useVizRackPrefs();
+  const inputOpen = vizRowOpen(prefs.input, !!p.sourceUrl, p.inputMode);
+  const outputOpen = vizRowOpen(prefs.output, !!p.outputUrl, p.outputMode);
+
+  // Drag the rack's bottom grip to set the wave height. Pointer deltas arrive
+  // in viewport px while bodyPx is a css px inside the shell's zoomed subtree,
+  // so divide by the effective zoom (see lib/canvasScale).
+  const gripRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ y: number; px: number; zoom: number } | null>(null);
+  const onGripDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    drag.current = { y: e.clientY, px: prefs.bodyPx, zoom: effectiveZoom(gripRef.current) };
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+  };
+  const onGripMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    prefs.setBodyPx(d.px + (e.clientY - d.y) / d.zoom);
+  };
+  const onGripUp = (e: React.PointerEvent) => {
+    drag.current = null;
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+  };
+  const onGripKey = (e: React.KeyboardEvent) => {
+    const step = e.shiftKey ? 24 : 8;
+    if (e.key === 'ArrowUp') { prefs.setBodyPx(prefs.bodyPx - step); e.preventDefault(); }
+    else if (e.key === 'ArrowDown') { prefs.setBodyPx(prefs.bodyPx + step); e.preventDefault(); }
+  };
+
+  return (
+    <div data-mix-vizrack className="shrink-0 flex flex-col gap-1.5 px-1.5 pt-1.5">
+      <VizRackRow
+        row="input" label="Input" accent="#22d3ee" overlayAccent="#a855f7"
+        url={p.sourceUrl} overlayUrl={p.outputUrl} playLabel="MIX Input"
+        placeholder="drop audio or click ⬆ to load"
+        mode={p.inputMode} onMode={p.setInputMode} overlay={p.inputOverlay} onToggleOverlay={p.toggleInputOverlay}
+        open={inputOpen} onToggleOpen={() => prefs.setRow('input', inputOpen ? 'closed' : 'open')}
+        bodyPx={prefs.bodyPx}
+        wrapperClassName={p.dragOverSource ? 'rounded-lg ring-1 ring-purple-500/60 bg-purple-500/5' : ''}
+        onDrop={p.onDrop} onDragOver={p.onDragOver} onDragLeave={p.onDragLeave}
+        extra={
+          <>
+            {p.srcStats && <StatRow stats={p.srcStats} />}
+            <MixTransport url={p.sourceUrl} label="MIX Input" />
+            <button
+              type="button"
+              onClick={p.onClickUpload}
+              title={p.hasSource ? 'Replace source' : 'Load source'}
+              aria-label={p.hasSource ? 'Replace the source audio' : 'Load source audio'}
+              className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5"
+            >
+              <Upload className="w-3 h-3" />
+            </button>
+            {p.hasSource && (
+              <button type="button" onClick={p.onClearSource} title="Clear source" aria-label="Clear the source audio" className="p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-white/5">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </>
+        }
+      />
+      <VizRackRow
+        row="output" label="Output" accent="#a855f7" overlayAccent="#22d3ee"
+        url={p.outputUrl} overlayUrl={p.sourceUrl} playLabel="MIX Output"
+        placeholder="output appears after processing"
+        mode={p.outputMode} onMode={p.setOutputMode} overlay={p.outputOverlay} onToggleOverlay={p.toggleOutputOverlay}
+        open={outputOpen} onToggleOpen={() => prefs.setRow('output', outputOpen ? 'closed' : 'open')}
+        bodyPx={prefs.bodyPx}
+        busy={p.isChainProcessing}
+        extra={
+          <>
+            {p.outStats && <StatRow stats={p.outStats} />}
+            <MixTransport url={p.outputUrl} label="MIX Output" />
+            <button type="button" onClick={p.onDownload} disabled={!p.outputUrl} title="Save" aria-label="Save the processed output" className="p-1 rounded text-zinc-400 hover:text-green-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Download className="w-3 h-3" /></button>
+            <button type="button" onClick={p.onSendToDAW} disabled={!p.outputUrl} title="Send to Edit" aria-label="Send the output to the Edit tab" className="p-1 rounded text-zinc-400 hover:text-emerald-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Send className="w-3 h-3" /></button>
+            <button type="button" onClick={p.onSendToInpaint} disabled={!p.outputUrl} title="Send to Inpaint" aria-label="Send the output to Inpaint" className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Sparkles className="w-3 h-3" /></button>
+          </>
+        }
+      />
+      {(inputOpen || outputOpen) && (
+        <div
+          ref={gripRef}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Wave row height"
+          aria-valuemin={VIZ_BODY_MIN}
+          aria-valuemax={VIZ_BODY_MAX}
+          aria-valuenow={prefs.bodyPx}
+          tabIndex={0}
+          title="Drag to set the wave height (↑ / ↓ keys; Shift for larger steps)"
+          className="h-1 -mt-1 mx-8 rounded-full bg-white/5 hover:bg-purple-400/40 focus-visible:bg-purple-400/60 cursor-row-resize outline-none touch-none"
+          onPointerDown={onGripDown}
+          onPointerMove={onGripMove}
+          onPointerUp={onGripUp}
+          onPointerCancel={onGripUp}
+          onKeyDown={onGripKey}
+        />
+      )}
+    </div>
+  );
+};
+
 /* ═══ default layout ═════════════════════════════════════════════════════════ */
 /* The user's hand-arranged MIX layout (Design Mode export):
-     top    — Input / Output viz rows
-     middle — Effects rail · [ Chain over Effect Stage ] · Library
+     Effects rail · [ Chain over Effect Stage ] · Library
+   The Input / Output viz rows live in the content-sized viz rack ABOVE this
+   surface (see MixVizRack), no longer as an fr track of the grid.
    Version is bumped past any previously-persisted MIX layout so this default
    takes over cleanly. */
-const MIX_LAYOUT_VERSION = 6;
+const MIX_LAYOUT_VERSION = 7;
 const defaultMixLayout: SurfaceLayout = {
   version: MIX_LAYOUT_VERSION,
-  root: 'root',
+  root: 'mid',
   nodes: {
-    root: { id: 'root', type: 'container', axis: 'column', children: ['topViz', 'mid'], fr: { topViz: 1.6506024096385525, mid: 5.349397590361448 } },
-    topViz: { id: 'topViz', type: 'container', axis: 'column', children: ['inputVizP', 'outputVizP'], fr: { inputVizP: 1, outputVizP: 1 } },
-    inputVizP: { id: 'inputVizP', type: 'panel', title: 'Input', flow: 'row', widgets: [], pinned: 'inputViz' },
-    outputVizP: { id: 'outputVizP', type: 'panel', title: 'Output', flow: 'row', widgets: [], pinned: 'outputViz' },
     mid: { id: 'mid', type: 'container', axis: 'row', children: ['railP', 'cont-3-b45ab2a0'], fr: { railP: 0.7625161264148641, 'cont-3-b45ab2a0': 3.652897886323994 }, framed: true },
     railP: { id: 'railP', type: 'panel', title: 'Effects', flow: 'row', widgets: [], pinned: 'effectRail' },
     libraryP: { id: 'libraryP', type: 'panel', title: 'Library', flow: 'row', widgets: [], pinned: 'library' },
@@ -285,19 +544,8 @@ const defaultMixLayout: SurfaceLayout = {
 interface ChainEntry { id: string; effect: string; enabled: boolean; params: Record<string, number>; vst?: { plugin_path: string; plugin_name: string; raw_state?: string }; }
 
 interface MixRegArgs {
-  // input/output viz
-  sourceUrl: string | null; outputUrl: string | null;
-  srcStats: AudioStats | null; outStats: AudioStats | null;
+  // the source clip (the Effect Stage feeds it to a Studio Module's instrument)
   sourceFile: File | null;
-  inputMode: MixVizMode; setInputMode: (m: MixVizMode) => void;
-  outputMode: MixVizMode; setOutputMode: (m: MixVizMode) => void;
-  inputOverlay: boolean; toggleInputOverlay: () => void;
-  outputOverlay: boolean; toggleOutputOverlay: () => void;
-  dragOverSource: boolean;
-  onDrop: (e: React.DragEvent) => void; onDragOver: (e: React.DragEvent) => void; onDragLeave: () => void;
-  onClickUpload: () => void; onClearSource: () => void;
-  isChainProcessing: boolean;
-  onDownload: () => void; onSendToDAW: () => void; onSendToInpaint: () => void;
   // rail
   activeCategory: string; setActiveCategory: (c: string) => void; allEffectCount: number;
   quickMaster: Record<string, number>; setQuickParam: (k: string, v: number) => void;
@@ -341,62 +589,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     reg[id] = { id, label, group: 'Panels', kind: 'fixed', source: 'builtin', render: () => <div className="h-full w-full min-h-0 overflow-hidden">{node}</div> };
   };
 
-  /* ── INPUT viz row (with drop affordance) ── */
-  pinned('inputViz', 'Input', (
-    <div
-      className={`h-full w-full min-h-0 transition-colors ${p.dragOverSource ? 'ring-1 ring-purple-500/60 bg-purple-500/5' : ''}`}
-      onDrop={p.onDrop}
-      onDragOver={p.onDragOver}
-      onDragLeave={p.onDragLeave}
-    >
-      <MixVizRow
-        label="Input" url={p.sourceUrl} overlayUrl={p.outputUrl} accent="#22d3ee" overlayAccent="#a855f7"
-        playLabel="MIX Input"
-        mode={p.inputMode} onMode={p.setInputMode} overlay={p.inputOverlay} onToggleOverlay={p.toggleInputOverlay}
-        placeholder="drop audio or click ⬆ to load"
-        headerExtra={
-          <>
-            {p.srcStats && <StatRow stats={p.srcStats} />}
-            <MixTransport url={p.sourceUrl} label="MIX Input" />
-            <button onClick={p.onClickUpload} title={p.sourceFile ? 'Replace source' : 'Load source'} className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5">
-              <Upload className="w-3 h-3" />
-            </button>
-            {p.sourceFile && (
-              <button onClick={p.onClearSource} title="Clear source" className="p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-white/5">
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </>
-        }
-      />
-    </div>
-  ));
-
-  /* ── OUTPUT viz row (with result actions) ── */
-  pinned('outputViz', 'Output', (
-    <div className="h-full w-full min-h-0 relative">
-      <MixVizRow
-        label="Output" url={p.outputUrl} overlayUrl={p.sourceUrl} accent="#a855f7" overlayAccent="#22d3ee"
-        playLabel="MIX Output"
-        mode={p.outputMode} onMode={p.setOutputMode} overlay={p.outputOverlay} onToggleOverlay={p.toggleOutputOverlay}
-        placeholder="output appears after processing"
-        headerExtra={
-          <>
-            {p.outStats && <StatRow stats={p.outStats} />}
-            <MixTransport url={p.outputUrl} label="MIX Output" />
-            <button onClick={p.onDownload} disabled={!p.outputUrl} title="Save" className="p-1 rounded text-zinc-400 hover:text-green-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Download className="w-3 h-3" /></button>
-            <button onClick={p.onSendToDAW} disabled={!p.outputUrl} title="Send to Edit" className="p-1 rounded text-zinc-400 hover:text-emerald-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Send className="w-3 h-3" /></button>
-            <button onClick={p.onSendToInpaint} disabled={!p.outputUrl} title="Send to Inpaint" className="p-1 rounded text-zinc-400 hover:text-purple-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"><Sparkles className="w-3 h-3" /></button>
-          </>
-        }
-      />
-      {p.isChainProcessing && (
-        <div className="absolute inset-0 grid place-items-center bg-black/50 backdrop-blur-sm pointer-events-none">
-          <span className="text-[10px] font-mono text-purple-300 animate-pulse">processing chain…</span>
-        </div>
-      )}
-    </div>
-  ));
+  /* The Input / Output viz rows are the content-sized MixVizRack above the
+     surface (see MixView's render), not grid panels. */
 
   /* ── effect rail: categories + Quick Master ── */
   pinned('effectRail', 'Effects', (
@@ -726,8 +920,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
       <div className="flex items-center gap-2 mb-1.5 shrink-0">
         <span className={sectionTitle}>Chain {p.chain.length > 0 && <span className="text-zinc-600">({p.chain.length})</span>}</span>
         <div className="ml-auto flex items-center gap-1.5">
-          <span className="text-[9px] font-mono text-zinc-500 shrink-0">FORMAT</span>
-          <select name="mix-output-format" className="compact-input text-[10px] w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
+          <label htmlFor="mix-output-format" className="text-[9px] font-mono text-zinc-500 shrink-0">FORMAT</label>
+          <select id="mix-output-format" name="mix-output-format" className="compact-input text-[10px] w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
             <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option><option value="ogg">OGG</option>
           </select>
           <button onClick={() => p.setShowHistory(!p.showHistory)} title="Process history" className={`btn-ghost p-1 shrink-0 ${p.showHistory ? 'text-purple-300' : 'text-zinc-500 hover:text-zinc-300'}`}><History className="w-3.5 h-3.5" /></button>
@@ -1001,16 +1195,25 @@ export const MixView: React.FC = () => {
     const buf = new Uint8Array(analyser.fftSize);
     let raf = 0;
     let alive = true;
+    let skip = false;
     const tick = () => {
       if (!alive) return;
+      raf = requestAnimationFrame(tick);
+      // 30 fps is plenty for a smoothed VU, and nothing is pushed until the
+      // runtime has revealed (data-ready): before that its element frames are
+      // still loading, and a 60 fps broadcast into two dozen frames only
+      // slowed that load down.
+      skip = !skip;
+      if (skip) return;
+      // Resolved via the stage's accessor so the meter keeps feeding the
+      // runtime when the plugin is popped out into its own window.
+      const frame = getGanStageFrame();
+      if (!frame || frame.dataset.ready !== '1') return;
       analyser.getByteTimeDomainData(buf);
       let sum = 0;
       for (let i = 0; i < buf.length; i += 1) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const level = Math.min(1, Math.sqrt(sum / buf.length) * 3);
-      // Resolved via the stage's accessor so the meter keeps feeding the
-      // runtime when the plugin is popped out into its own window.
-      getGanStageFrame()?.contentWindow?.postMessage({ type: 'level', value: level }, '*');
-      raf = requestAnimationFrame(tick);
+      frame.contentWindow?.postMessage({ type: 'level', value: level }, '*');
     };
     raf = requestAnimationFrame(tick);
     return () => { alive = false; cancelAnimationFrame(raf); };
@@ -1221,18 +1424,7 @@ export const MixView: React.FC = () => {
   const ganPluginsVisible = ganPlugins.filter((p) => p.id !== 'ares');
 
   const registry = buildMixRegistry({
-    sourceUrl, outputUrl, srcStats, outStats, sourceFile,
-    inputMode, setInputMode, outputMode, setOutputMode,
-    inputOverlay, toggleInputOverlay: () => setInputOverlay((v) => !v),
-    outputOverlay, toggleOutputOverlay: () => setOutputOverlay((v) => !v),
-    dragOverSource,
-    onDrop: handleDrop,
-    onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOverSource(true); },
-    onDragLeave: () => setDragOverSource(false),
-    onClickUpload: () => fileInputRef.current?.click(),
-    onClearSource: () => setSourceBoth(null),
-    isChainProcessing,
-    onDownload: handleDownload, onSendToDAW: () => void handleSendToDAW(), onSendToInpaint: () => void handleSendToInpaint(),
+    sourceFile,
     activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length + vstPlugins.length + 1,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
@@ -1253,9 +1445,25 @@ export const MixView: React.FC = () => {
   });
 
   return (
-    <div className="relative h-full w-full overflow-hidden text-zinc-200 bg-[#07050a]">
-      <ControlSurface surfaceId="mix" registry={registry} defaultLayout={defaultMixLayout} className="p-1.5" />
-      <input ref={fileInputRef} name="mix-audio-file" type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} title="Upload audio file" />
+    <div className="relative h-full w-full overflow-hidden text-zinc-200 bg-[#07050a] flex flex-col">
+      <MixVizRack
+        sourceUrl={sourceUrl} outputUrl={outputUrl} srcStats={srcStats} outStats={outStats} hasSource={!!sourceFile}
+        inputMode={inputMode} setInputMode={setInputMode} outputMode={outputMode} setOutputMode={setOutputMode}
+        inputOverlay={inputOverlay} toggleInputOverlay={() => setInputOverlay((v) => !v)}
+        outputOverlay={outputOverlay} toggleOutputOverlay={() => setOutputOverlay((v) => !v)}
+        dragOverSource={dragOverSource}
+        onDrop={handleDrop}
+        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOverSource(true); }}
+        onDragLeave={() => setDragOverSource(false)}
+        onClickUpload={() => fileInputRef.current?.click()}
+        onClearSource={() => setSourceBoth(null)}
+        isChainProcessing={isChainProcessing}
+        onDownload={handleDownload} onSendToDAW={() => void handleSendToDAW()} onSendToInpaint={() => void handleSendToInpaint()}
+      />
+      <div className="flex-1 min-h-0 relative">
+        <ControlSurface surfaceId="mix" registry={registry} defaultLayout={defaultMixLayout} className="p-1.5" />
+      </div>
+      <input ref={fileInputRef} id="mix-audio-file" name="mix-audio-file" type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} aria-label="Upload audio file" title="Upload audio file" />
     </div>
   );
 };
