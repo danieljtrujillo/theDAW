@@ -5935,13 +5935,17 @@ function updateLayerPreview() {
 const _modelSeqInfo = {};
 function _updateCropLength() {
   const model = document.getElementById('new-ft-base-model').value || 'sa3';
-  const info = _modelSeqInfo[model] || _modelSeqInfo['sa3'];
+  // The seq-info table is filled from the model registry; before it lands (or
+  // when the registry has neither the pick nor sa3) there is nothing to derive.
+  const info = _modelSeqInfo[model] || _modelSeqInfo['sa3'] || Object.values(_modelSeqInfo)[0];
+  if (!info) return;
   document.getElementById('new-ft-crop-length').value = info.length;
   _updateCropSeconds();
 }
 function _updateCropSeconds() {
   const model = document.getElementById('new-ft-base-model').value || 'sa3';
-  const info = _modelSeqInfo[model] || _modelSeqInfo['sa3'];
+  const info = _modelSeqInfo[model] || _modelSeqInfo['sa3'] || Object.values(_modelSeqInfo)[0];
+  if (!info) return;
   const length = parseInt(document.getElementById('new-ft-crop-length').value) || info.length;
   const seconds = (length * info.dsRatio / info.sr).toFixed(2);
   document.getElementById('new-ft-crop-seconds').value = seconds + 's';
