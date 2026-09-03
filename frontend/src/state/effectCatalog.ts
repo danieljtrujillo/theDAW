@@ -33,6 +33,7 @@ export const ADVANCED_EFFECT_CATALOG = {
   tempo: [
     { id: 'tempo', name: 'Time Stretch', desc: 'Change tempo without affecting pitch', params: 1 },
     { id: 'pitch_shift', name: 'Pitch Shift', desc: 'Shift pitch up or down in cents', params: 1 },
+    { id: 'time_pitch', name: 'Time + Pitch', desc: 'Independent tempo and pitch shift', params: 2 },
   ],
   cleanup: [
     { id: 'denoise', name: 'Noise Reduction', desc: 'FFT denoise for cleaner audio', params: 1 },

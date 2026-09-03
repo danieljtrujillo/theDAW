@@ -75,6 +75,7 @@ html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:cen
 .footer-status{font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:#444a58}
 audio{display:none}
 input[type="file"]{display:none}
+.knob-wrap:focus-visible,.of-track:focus-visible{outline:2px solid #ef4444;outline-offset:2px;border-radius:6px}
 </style>
 </head>
 <body>
@@ -210,8 +211,18 @@ input[type="file"]{display:none}
     <button class="footer-btn" id="btnProcess" style="background:#1c0a0a;border-color:#ef4444;color:#ef4444;font-weight:700">Process</button>
   </div>
 </div>
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" name="fileInput" accept="audio/*" aria-label="Load audio file">
 <audio id="audioEl" crossorigin="anonymous"></audio>
+<script src="module-kit.js"></script>
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+  const kit = window.theDAWKit;
+  kit.toggleGroup('.type-pill', 'active', true);
+  kit.toggleGroup('.footer-btn:not(#btnProcess)', 'active');
+  kit.toggleGroup('.hdr-pill, .pill', 'active');
+  kit.toggleGroup('.delta-btn', 'active');
+});
+</script>
 
 <script>
 (function(){
@@ -281,21 +292,29 @@ function updateKnobVisual(wrap) {
   arc.setAttribute('d', `M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey}`);
 }
 
+const kit = window.theDAWKit;
 function initKnob(wrap, valEl, formatFn, onChange) {
   let dragging = false;
   let startY, startVal;
   const min = +wrap.dataset.min, max = +wrap.dataset.max;
+  const initial = +wrap.dataset.value;
+  const lblEl = wrap.parentElement.querySelector('.knob-lbl');
+  const labelText = lblEl ? lblEl.textContent.trim() : 'Knob';
 
   function update(v) {
     wrap.dataset.value = v;
     valEl.textContent = formatFn(v);
     updateKnobVisual(wrap);
     if (onChange) onChange(v);
+    kit.sync(wrap);
   }
+  // Keyboard + ARIA (module-kit); the page's dblclick below resets to the initial value.
+  kit.slider(wrap, { label: labelText, min, max, step: (max - min) >= 1000 ? 10 : 1, wheel: true,
+    get: () => +wrap.dataset.value, set: update, format: formatFn, reset: initial, noDblClick: true });
 
   wrap.addEventListener('pointerdown', e => {
     dragging = true; startY = e.clientY; startVal = +wrap.dataset.value;
-    wrap.setPointerCapture(e.pointerId);
+    wrap.setPointerCapture(e.pointerId); wrap.focus({ preventScroll: true });
   });
   wrap.addEventListener('pointermove', e => {
     if (!dragging) return;
@@ -303,7 +322,7 @@ function initKnob(wrap, valEl, formatFn, onChange) {
     update(Math.max(min, Math.min(max, startVal + delta)));
   });
   wrap.addEventListener('pointerup', () => { dragging = false; });
-  wrap.addEventListener('dblclick', () => { update(min + (max - min) / 2); });
+  wrap.addEventListener('dblclick', () => { update(initial); });
   updateKnobVisual(wrap);
 }
 
@@ -346,8 +365,20 @@ function setOutputVal(e) {
   document.getElementById('outputThumb').style.bottom = pct + '%';
   document.getElementById('outputVal').textContent = outputDb.toFixed(1) + ' dB';
   updateLiveParams();
+  kit.sync(outputTrack);
 }
-outputTrack.addEventListener('pointerdown', e => { outputDragging = true; outputTrack.setPointerCapture(e.pointerId); setOutputVal(e); });
+kit.slider(outputTrack, { label: 'Output', min: -24, max: 12, step: 0.5, vertical: true, wheel: true,
+  get: () => outputDb,
+  set: v => {
+    outputDb = v;
+    const pct = ((v + 24) / 36) * 100;
+    document.getElementById('outputFill').style.height = pct + '%';
+    document.getElementById('outputThumb').style.bottom = pct + '%';
+    document.getElementById('outputVal').textContent = outputDb.toFixed(1) + ' dB';
+    updateLiveParams();
+  },
+  format: v => v.toFixed(1) + ' dB', reset: 0 });
+outputTrack.addEventListener('pointerdown', e => { outputDragging = true; outputTrack.setPointerCapture(e.pointerId); outputTrack.focus({ preventScroll: true }); setOutputVal(e); });
 outputTrack.addEventListener('pointermove', e => { if (outputDragging) setOutputVal(e); });
 outputTrack.addEventListener('pointerup', () => { outputDragging = false; });
 

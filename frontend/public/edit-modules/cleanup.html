@@ -104,6 +104,7 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 .ftr-stat{font:500 7.5px/1 var(--mono);color:var(--dim)}
 .ftr-stat.ok{color:#22c55e}
 audio{display:none}input[type="file"]{display:none}
+.knob-svg:focus-visible,.of-rail:focus-visible,.ad-toggle:focus-visible,.mode-tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 </style>
 </head>
 <body>
@@ -156,21 +157,22 @@ audio{display:none}input[type="file"]{display:none}
 
   <!-- KNOBS -->
   <div class="knobs-section" id="knobsRow">
-    <div class="knob-slot"><div class="k-lbl">denoise %</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="0"></svg><div class="k-val" id="kv0">65%</div></div>
-    <div class="knob-slot"><div class="k-lbl">reduction dB</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="1"></svg><div class="k-val" id="kv1">-28.0 dB</div></div>
-    <div class="knob-slot"><div class="k-lbl">Hum Frequency</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="2"></svg><div class="k-val" id="kv2">60 Hz</div></div>
-    <div class="auto-detect">
-      <div class="ad-label">Auto Detect</div>
-      <div class="ad-toggle on" id="autoDetect"></div>
+    <!-- slot i posts the i-th backend parameter of the active mode's tool (see MODE_CFG) -->
+    <div class="knob-slot"><div class="k-lbl" id="kl0">Amount</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="0"></svg><div class="k-val" id="kv0">65%</div></div>
+    <div class="knob-slot"><div class="k-lbl" id="kl1">Harmonics</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="1"></svg><div class="k-val" id="kv1">5x</div></div>
+    <div class="knob-slot"><div class="k-lbl" id="kl2">Depth</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="2"></svg><div class="k-val" id="kv2">100%</div></div>
+    <div class="auto-detect" title="Preview: auto-detect picks the mains fundamental (50/60 Hz) from the loaded audio in DEHUM">
+      <div class="ad-label" id="adLabel">Auto Detect</div>
+      <div class="ad-toggle on" id="autoDetect" role="switch" aria-checked="true" aria-labelledby="adLabel" tabindex="0"></div>
       <div class="ad-text" id="adText">Detect</div>
     </div>
-    <div class="knob-slot"><div class="k-lbl">Sensitivity</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="3"></svg><div class="k-val" id="kv3">Medium</div></div>
-    <div class="knob-slot"><div class="k-lbl">Output</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="4"></svg><div class="k-val" id="kv4">0.0 dB</div></div>
+    <div class="knob-slot" style="display:none"><div class="k-lbl" id="kl3">—</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="3" tabindex="-1"></svg><div class="k-val" id="kv3"></div></div>
+    <div class="knob-slot" style="display:none"><div class="k-lbl" id="kl4">—</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="4" tabindex="-1"></svg><div class="k-val" id="kv4"></div></div>
   </div>
 
   <!-- RIGHT: Output fader -->
   <div class="output-col">
-    <div class="of-label">OUTPUT</div>
+    <div class="of-label" title="Preview monitor level only (the restoration tools have no output gain)">OUTPUT</div>
     <div class="of-rail" id="outTrack">
       <div class="of-fill" id="outFill" style="height:50%;background:linear-gradient(to top,rgba(34,211,238,.05),rgba(34,211,238,.55))"></div>
       <div class="of-cap" id="outCap" style="bottom:50%"></div>
@@ -192,9 +194,10 @@ audio{display:none}input[type="file"]{display:none}
   <audio id="ain" controls></audio>
   <audio id="aout" controls></audio>
 </div>
-<input type="file" id="fileinput" accept="audio/*">
+<input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
 </div>
 
+<script src="module-kit.js"></script>
 <script>
 /* ───────────────────────────────────────────────── */
 /*  Cleanup — Pro-grade module                       */
@@ -205,27 +208,36 @@ const DN_COLOR = '#22d3ee';
 const DC_COLOR = '#f59e0b';
 const DH_COLOR = '#3b82f6';
 
-/* ── MODE CONFIG ── */
+/* ── MODE CONFIG ──
+   One backend restoration tool per tab. Knob slot i posts the i-th entry of
+   the tool's parameter list (0..100 in the UI, mapped in `params`). Slots the
+   tool does not have are hidden. */
+const kit = window.theDAWKit;
+const MODE_TO_EFFECT = { denoise: 'neural_denoise', declip: 'declip', dehum: 'dehum' };
+const fmtPct = v => Math.round(v) + '%';
 const MODE_CFG = {
   denoise: { accent: DN_COLOR,
-    knobs: ['denoise %','reduction dB','Hum Frequency','Sensitivity','Output'],
-    defaults: [65, 40, 50, 50, 50],
-    formatVal: [v=>Math.round(v)+'%', v=>{const db=-(v/100*48).toFixed(1);return db.toFixed(1)+' dB'}, v=>Math.round(40+v*0.6)+' Hz', v=>{const s=['Low','Medium','High']; return s[Math.min(2,Math.floor(v/34))];}, v=>{const db=((v-50)/50*12).toFixed(1);return(db>=0?'+':'')+db+' dB';}]
-  },
+    knobs: ['Amount'],
+    defaults: [65, 0, 0],
+    formatVal: [fmtPct],
+    params: kv => ({ amount: +(kv[0] / 100).toFixed(3) }) },
   declip: { accent: DC_COLOR,
-    knobs: ['Threshold','Ceiling','Quality','Sensitivity','Output'],
-    defaults: [70, 60, 50, 55, 50],
-    formatVal: [v=>Math.round(v)+'%', v=>{const db=-(v/100*6).toFixed(1);return db.toFixed(1)+' dB'}, v=>{const q=['Fast','Normal','High']; return q[Math.min(2,Math.floor(v/34))];}, v=>Math.round(v)+'%', v=>{const db=((v-50)/50*12).toFixed(1);return(db>=0?'+':'')+db+' dB';}]
-  },
+    knobs: ['Threshold'],
+    defaults: [90, 0, 0],
+    formatVal: [v => (0.1 + v / 100 * 0.9).toFixed(2)],
+    params: kv => ({ clipThreshold: +(0.1 + kv[0] / 100 * 0.9).toFixed(3) }) },
   dehum: { accent: DH_COLOR,
-    knobs: ['Hum Frequency','Harmonics','Q Factor','Sensitivity','Output'],
-    defaults: [50, 60, 45, 50, 50],
-    formatVal: [v=>Math.round(40+v*0.6)+' Hz', v=>Math.round(1+v/100*7)+'x', v=>(10+v*0.4).toFixed(0), v=>{const s=['Low','Medium','High']; return s[Math.min(2,Math.floor(v/34))];}, v=>{const db=((v-50)/50*12).toFixed(1);return(db>=0?'+':'')+db+' dB';}]
-  }
+    knobs: ['Mains', 'Harmonics', 'Depth'],
+    defaults: [100, 57, 100],
+    formatVal: [v => (v < 50 ? '50 Hz' : '60 Hz'), v => Math.round(1 + v / 100 * 7) + 'x', fmtPct],
+    params: kv => ({ fundamental: kv[0] < 50 ? '50' : '60', harmonics: Math.round(1 + kv[1] / 100 * 7), reduction: +(kv[2] / 100).toFixed(3) }) }
 };
+function humFundamental() { return knobValues[0] < 50 ? 50 : 60; }
+function humHarmonics() { return Math.round(1 + knobValues[1] / 100 * 7); }
 
 let activeMode = 'denoise';
-let knobValues = [65, 40, 50, 50, 50];
+let knobValues = [65, 0, 0];
+let bypassed = false, monitorOutput = true;
 let knobDrag = { active: false, idx: -1, startY: 0, startVal: 0 };
 let outAmt = 50;
 let sensitivity = 'Medium';
@@ -234,38 +246,74 @@ let sensitivity = 'Medium';
 let actx, analyser, source, inputFile, inputBuf;
 const freqData = new Uint8Array(2048);
 const timeData = new Float32Array(4096);
-let liveDenoiseHP, liveDenoiseNotch, liveReverbComp, liveHumNotches = [];
+let liveDenoiseHP, liveDenoiseNotch, liveReverbComp, liveHumNotches = [], outGain, preTap;
 
 /* ── A/B PILLS ── */
 document.getElementById('btnA').addEventListener('click', function(){ this.classList.add('active'); document.getElementById('btnB').classList.remove('active'); });
 document.getElementById('btnB').addEventListener('click', function(){ this.classList.add('active'); document.getElementById('btnA').classList.remove('active'); });
 
-/* ── INPUT/OUTPUT TOGGLES ── */
-document.getElementById('ioInput').addEventListener('click', function(){
-  this.classList.add('active'); document.getElementById('ioOutput').classList.remove('active');
-});
-document.getElementById('ioOutput').addEventListener('click', function(){
-  this.classList.add('active'); document.getElementById('ioInput').classList.remove('active');
-});
+/* ── INPUT/OUTPUT TOGGLES: which signal the analyzer/waveform shows ── */
+function setMonitor(out){
+  monitorOutput = out;
+  document.getElementById('ioInput').classList.toggle('active', !out);
+  document.getElementById('ioOutput').classList.toggle('active', out);
+  kit.pressed(document.getElementById('ioInput'), !out);
+  kit.pressed(document.getElementById('ioOutput'), out);
+  if (actx && source) rebuildChain();
+}
+document.getElementById('ioInput').addEventListener('click', () => setMonitor(false));
+document.getElementById('ioOutput').addEventListener('click', () => setMonitor(true));
+document.getElementById('ioInput').title = 'Analyzer shows the unprocessed input';
+document.getElementById('ioOutput').title = 'Analyzer shows the processed preview';
 
-/* ── AUTO DETECT TOGGLE ── */
-document.getElementById('autoDetect').addEventListener('click', function(){
-  this.classList.toggle('on');
-  document.getElementById('adText').textContent = this.classList.contains('on') ? 'Detect' : 'Off';
-});
+/* ── AUTO DETECT TOGGLE (DEHUM: pick 50/60 Hz from the loaded audio) ── */
+function autoDetectMains(){
+  if (!inputBuf) return;
+  const data = inputBuf.getChannelData(0);
+  const sr = inputBuf.sampleRate;
+  const n = Math.min(data.length, sr * 4);
+  let e50 = 0, e60 = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    e50 += data[i] * Math.sin(2 * Math.PI * 50 * t);
+    e60 += data[i] * Math.sin(2 * Math.PI * 60 * t);
+  }
+  knobValues[0] = Math.abs(e50) > Math.abs(e60) ? 0 : 100;
+  renderKnob(0);
+  if (actx && source) updateDSP();
+}
+const adEl = document.getElementById('autoDetect');
+function toggleAutoDetect(){
+  adEl.classList.toggle('on');
+  const on = adEl.classList.contains('on');
+  adEl.setAttribute('aria-checked', on ? 'true' : 'false');
+  document.getElementById('adText').textContent = on ? 'Detect' : 'Off';
+  if (on && activeMode === 'dehum') autoDetectMains();
+}
+adEl.addEventListener('click', toggleAutoDetect);
+adEl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleAutoDetect(); } });
 
 /* ── MODE TABS ── */
-document.querySelectorAll('.mode-tab').forEach(tab => tab.addEventListener('click', () => {
-  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
-  tab.classList.add('active');
-  activeMode = tab.dataset.mode;
-  const cfg = MODE_CFG[activeMode];
+function setMode(mode){
+  activeMode = mode;
+  document.querySelectorAll('.mode-tab').forEach(t => { const on = t.dataset.mode === mode; t.classList.toggle('active', on); kit.pressed(t, on); });
+  const cfg = MODE_CFG[mode];
   knobValues = [...cfg.defaults];
-  document.querySelectorAll('.k-lbl').forEach((lbl, i) => { if (cfg.knobs[i]) lbl.textContent = cfg.knobs[i]; });
+  document.querySelectorAll('.knob-slot').forEach((slot, i) => {
+    const name = cfg.knobs[i];
+    slot.style.display = name ? '' : 'none';
+    document.getElementById('kl' + i).textContent = name || '—';
+    const svg = slot.querySelector('.knob-svg');
+    svg.tabIndex = name ? 0 : -1;
+    if (name) svg.setAttribute('aria-label', name);
+  });
   renderAllKnobs();
   updateRegionLabels();
   if (actx && source) updateDSP();
-}));
+  if (mode === 'dehum' && adEl.classList.contains('on')) autoDetectMains();
+}
+document.querySelectorAll('.mode-tab').forEach(tab => tab.addEventListener('click', () => setMode(tab.dataset.mode)));
+kit.toggleGroup('.mode-tab', 'active', true);
 
 function updateRegionLabels(){
   const tags = { denoise: 'dnTag', declip: 'dcTag', dehum: 'dhTag' };
@@ -274,19 +322,28 @@ function updateRegionLabels(){
 }
 
 /* ── FOOTER BUTTONS ── */
-document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active'); });
-['btnCleanup','btnAnalyzer','btnPrePost'].forEach(id => {
-  document.getElementById(id).addEventListener('click', function(){
-    document.querySelectorAll('.ftr-btn:not(#btnBypass):not(#btnProcess)').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-  });
+document.getElementById('btnBypass').addEventListener('click', function(){
+  bypassed = !bypassed; this.classList.toggle('active', bypassed); kit.pressed(this, bypassed);
+  if (actx && source) rebuildChain();
 });
+kit.pressed(document.getElementById('btnBypass'), false);
+document.getElementById('btnBypass').title = 'Bypass the live preview (monitor the dry input)';
+['btnCleanup','btnAnalyzer'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(){
+    ['btnCleanup','btnAnalyzer'].forEach(o => { const b = document.getElementById(o); b.classList.toggle('active', b === this); kit.pressed(b, b === this); });
+  });
+  kit.pressed(document.getElementById(id), id === 'btnCleanup');
+});
+document.getElementById('btnPrePost').addEventListener('click', () => setMonitor(!monitorOutput));
+document.getElementById('btnPrePost').title = 'Toggle the analyzer between the input (pre) and the processed preview (post)';
 
 /* ── AUDIO ── */
 function ensureAudio(){
   if (actx) return;
   actx = new AudioContext();
   analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.78;
+  outGain = actx.createGain(); outGain.connect(actx.destination);
+  preTap = actx.createGain();
   /* Denoise chain */
   liveDenoiseHP = actx.createBiquadFilter(); liveDenoiseHP.type = 'highpass'; liveDenoiseHP.frequency.value = 20; liveDenoiseHP.Q.value = 0.5;
   liveDenoiseNotch = actx.createBiquadFilter(); liveDenoiseNotch.type = 'peaking'; liveDenoiseNotch.frequency.value = 800; liveDenoiseNotch.Q.value = 1; liveDenoiseNotch.gain.value = 0;
@@ -302,40 +359,51 @@ function ensureAudio(){
 function rebuildChain(){
   if (!actx || !source) return;
   try { source.disconnect(); } catch(e){}
-  source.connect(liveDenoiseHP); liveDenoiseHP.connect(liveDenoiseNotch); liveDenoiseNotch.connect(liveReverbComp);
-  let prev = liveReverbComp;
-  for (const n of liveHumNotches) { prev.connect(n); prev = n; }
-  prev.connect(analyser); analyser.connect(actx.destination);
+  try { analyser.disconnect(); } catch(e){}
+  try { preTap.disconnect(); } catch(e){}
+  [liveDenoiseHP, liveDenoiseNotch, liveReverbComp, ...liveHumNotches].forEach(n => { try { n.disconnect(); } catch(e){} });
+  source.connect(preTap);
+  if (bypassed) {
+    source.connect(outGain);
+  } else {
+    source.connect(liveDenoiseHP); liveDenoiseHP.connect(liveDenoiseNotch); liveDenoiseNotch.connect(liveReverbComp);
+    let prev = liveReverbComp;
+    for (const n of liveHumNotches) { prev.connect(n); prev = n; }
+    prev.connect(outGain);
+  }
+  (monitorOutput ? outGain : preTap).connect(analyser);
   updateDSP();
 }
 
 function updateDSP(){
   if (!actx || !liveDenoiseHP) return;
-  const dn = knobValues[0] / 100;
-  const hm = activeMode === 'dehum' ? knobValues[0] / 100 : 0;
-  /* Denoise: highpass + notch */
-  liveDenoiseHP.frequency.setTargetAtTime(20 + dn * 280, actx.currentTime, 0.02);
+  const t = actx.currentTime;
+  const amount = knobValues[0] / 100;
+  /* DENOISE: highpass + notch depth follow Amount */
+  const dn = activeMode === 'denoise' ? amount : 0;
+  liveDenoiseHP.frequency.setTargetAtTime(20 + dn * 280, t, 0.02);
   liveDenoiseHP.Q.value = 0.5 + dn * 0.5;
-  liveDenoiseNotch.frequency.setTargetAtTime(800, actx.currentTime, 0.02);
+  liveDenoiseNotch.frequency.setTargetAtTime(800, t, 0.02);
   liveDenoiseNotch.Q.value = 0.5 + dn * 4;
-  liveDenoiseNotch.gain.setTargetAtTime(-dn * 12, actx.currentTime, 0.02);
-  /* Compressor for declip */
-  const dc = activeMode === 'declip' ? knobValues[0] / 100 : 0;
-  liveReverbComp.threshold.setTargetAtTime(-12 - dc * 24, actx.currentTime, 0.02);
-  liveReverbComp.ratio.setTargetAtTime(1 + dc * 7, actx.currentTime, 0.02);
-  liveReverbComp.attack.setTargetAtTime(0.003, actx.currentTime, 0.01);
-  liveReverbComp.release.setTargetAtTime(0.05 + dc * 0.15, actx.currentTime, 0.02);
-  /* Dehum notches */
+  liveDenoiseNotch.gain.setTargetAtTime(-dn * 12, t, 0.02);
+  /* DECLIP: a lower threshold restores harder (preview via compression) */
+  const dc = activeMode === 'declip' ? 1 - amount : 0;
+  liveReverbComp.threshold.setTargetAtTime(-12 - dc * 24, t, 0.02);
+  liveReverbComp.ratio.setTargetAtTime(1 + dc * 7, t, 0.02);
+  liveReverbComp.attack.setTargetAtTime(0.003, t, 0.01);
+  liveReverbComp.release.setTargetAtTime(0.05 + dc * 0.15, t, 0.02);
+  /* DEHUM: notch comb at the mains fundamental, N harmonics, depth */
+  const humOn = activeMode === 'dehum';
+  const f0 = humFundamental();
+  const nH = humHarmonics();
+  const depth = knobValues[2] / 100;
   for (let i = 0; i < liveHumNotches.length; i++){
     const notch = liveHumNotches[i];
-    const humFreq = 40 + knobValues[2] * 0.6;
-    notch.frequency.setTargetAtTime(humFreq * (i + 1), actx.currentTime, 0.01);
-    if (activeMode === 'dehum' && hm > 0.05 && i < Math.ceil(hm * 8)){
-      notch.Q.value = 30; notch.gain.setTargetAtTime(-hm * 30, actx.currentTime, 0.01);
-    } else {
-      notch.gain.setTargetAtTime(0, actx.currentTime, 0.01);
-    }
+    notch.frequency.setTargetAtTime(f0 * (i + 1), t, 0.01);
+    notch.Q.value = 30;
+    notch.gain.setTargetAtTime(humOn && i < nH ? -depth * 40 : 0, t, 0.01);
   }
+  if (outGain) outGain.gain.setTargetAtTime(Math.pow(10, ((outAmt - 50) / 50 * 12) / 20), t, 0.02);
 }
 
 /* theDAW host transport: playback start/stop is reported to the parent stage. */
@@ -393,20 +461,23 @@ document.getElementById('noiseProfileBtn').addEventListener('click', () => {
 
 async function processAudio() {
   if (!inputFile) { document.getElementById('status').textContent = 'no audio loaded'; return; }
-  const denoiseValue = knobValues[0] / 100;
+  const effect = MODE_TO_EFFECT[activeMode];
+  const params = MODE_CFG[activeMode].params(knobValues);
   const fd = new FormData();
   fd.append('audio', inputFile);
-  fd.append('effect', 'neural_denoise');
-  fd.append('params', JSON.stringify({ amount: denoiseValue }));
+  fd.append('effect', effect);
+  fd.append('params', JSON.stringify(params));
+  fd.append('output_format', 'wav');
   const st = document.getElementById('status');
-  st.className = 'ftr-stat'; st.textContent = 'processing...';
+  st.className = 'ftr-stat'; st.textContent = 'processing ' + effect + '...';
+  const t0 = performance.now();
   try {
     const resp = await fetch('/api/edit/restoration/process', { method: 'POST', body: fd });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     document.getElementById('aout').src = url;
-    st.className = 'ftr-stat ok'; st.textContent = 'done';
+    st.className = 'ftr-stat ok'; st.textContent = 'done ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms';
     if (actx) {
       const ab = await blob.arrayBuffer();
       const decoded = await actx.decodeAudioData(ab);
@@ -456,26 +527,36 @@ function renderKnob(idx){
     <line x1="${cx}" y1="${cy-1}" x2="${cx+Math.cos((ang-90)*Math.PI/180)*7}" y2="${cy+Math.sin((ang-90)*Math.PI/180)*7}" stroke="${color}cc" stroke-width="1.5" stroke-linecap="round"/>`;
   /* Update value display */
   const cfg = MODE_CFG[activeMode];
-  document.getElementById('kv' + idx).textContent = cfg.formatVal[idx](val);
+  const fmt = cfg.formatVal[idx];
+  document.getElementById('kv' + idx).textContent = fmt ? fmt(val) : '';
+  kit.sync(svg);
 }
-function renderAllKnobs(){ for (let i = 0; i < 5; i++) renderKnob(i); }
-renderAllKnobs();
+function renderAllKnobs(){ for (let i = 0; i < 3; i++) renderKnob(i); }
 
-/* Knob drag */
+/* Knob drag + keyboard (module-kit) */
 document.querySelectorAll('.knob-svg').forEach(svg => {
+  const idx = +svg.dataset.idx;
+  if (idx > 2) return; // retired slots
+  kit.slider(svg, {
+    min: 0, max: 100, step: 1, wheel: true,
+    get: () => knobValues[idx],
+    set: v => { knobValues[idx] = v; renderKnob(idx); if (actx && source) updateDSP(); },
+    format: v => { const f = MODE_CFG[activeMode].formatVal[idx]; return f ? f(v) : String(v); },
+    reset: () => MODE_CFG[activeMode].defaults[idx],
+  });
   svg.addEventListener('pointerdown', e => {
-    const idx = +svg.dataset.idx;
     knobDrag = { active: true, idx, startY: e.clientY, startVal: knobValues[idx] };
-    svg.setPointerCapture(e.pointerId);
+    svg.setPointerCapture(e.pointerId); svg.focus({ preventScroll: true });
   });
   svg.addEventListener('pointermove', e => {
     if (!knobDrag.active || +svg.dataset.idx !== knobDrag.idx) return;
     const dy = knobDrag.startY - e.clientY;
-    knobValues[knobDrag.idx] = Math.max(0, Math.min(100, knobDrag.startVal + dy * 0.6));
+    knobValues[knobDrag.idx] = Math.max(0, Math.min(100, knobDrag.startVal + dy * (e.shiftKey ? 0.15 : 0.6)));
     renderKnob(knobDrag.idx);
     if (actx && source) updateDSP();
   });
   svg.addEventListener('pointerup', () => { knobDrag.active = false; });
+  svg.addEventListener('pointercancel', () => { knobDrag.active = false; });
 });
 
 /* ── VERTICAL FADER ── */
@@ -492,13 +573,25 @@ function setupFader(trackId, fillId, capId, valId, initial, formatFn, onChange){
     valEl.textContent = formatFn(pct);
     onChange(pct);
   }
-  track.addEventListener('pointerdown', e => { dragging = true; track.setPointerCapture(e.pointerId); setPct(e); });
-  track.addEventListener('pointermove', e => { if (dragging) setPct(e); });
+  function setVal(v){
+    fill.style.height = v + '%'; cap.style.bottom = v + '%';
+    valEl.textContent = formatFn(v);
+    onChange(v);
+    kit.sync(track);
+  }
+  kit.slider(track, { label: 'Output (preview level)', min: 0, max: 100, step: 1, vertical: true, wheel: true,
+    get: () => initial, set: v => { initial = v; setVal(v); }, format: formatFn, reset: 50 });
+  track.addEventListener('pointerdown', e => { dragging = true; track.setPointerCapture(e.pointerId); track.focus({ preventScroll: true }); setPct(e); });
+  track.addEventListener('pointermove', e => { if (dragging) { setPct(e); initial = parseFloat(fill.style.height); kit.sync(track); } });
   track.addEventListener('pointerup', () => { dragging = false; });
+  track.addEventListener('pointercancel', () => { dragging = false; });
 }
 setupFader('outTrack', 'outFill', 'outCap', 'outVal', 50, v => {
   const db = ((v - 50) / 50 * 12).toFixed(1); return (db >= 0 ? '+' : '') + db + ' dB';
-}, v => { outAmt = v; });
+}, v => { outAmt = v; if (actx) updateDSP(); });
+
+/* ── INIT ── */
+setMode('denoise');
 
 /* ── WAVEFORM VISUALIZATION ── */
 const waveCanvas = document.getElementById('waveCanvas');

@@ -83,10 +83,10 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 <div class="bands" id="bandBar"></div>
 
 <div class="controls" id="ctrlArea">
-  <div class="ctrl"><div class="clbl">Frequency</div><input type="range" id="pFreq" min="20" max="20000" value="1000" step="1"><div class="cval" id="vFreq">1000 Hz</div></div>
-  <div class="ctrl"><div class="clbl">Gain</div><input type="range" id="pGain" min="-18" max="18" value="0" step="0.5"><div class="cval" id="vGain">0.0 dB</div></div>
-  <div class="ctrl"><div class="clbl">Q</div><input type="range" id="pQ" min="0.1" max="18" value="1.5" step="0.1"><div class="cval" id="vQ">1.5</div></div>
-  <div class="ctrl"><div class="clbl">Output Gain</div><input type="range" id="pOut" min="-12" max="12" value="0" step="0.5"><div class="cval" id="vOut">0.0 dB</div></div>
+  <div class="ctrl"><label class="clbl" for="pFreq">Frequency</label><input type="range" id="pFreq" name="pFreq" min="20" max="20000" value="1000" step="1"><div class="cval" id="vFreq">1000 Hz</div></div>
+  <div class="ctrl"><label class="clbl" for="pGain">Gain</label><input type="range" id="pGain" name="pGain" min="-18" max="18" value="0" step="0.5"><div class="cval" id="vGain">0.0 dB</div></div>
+  <div class="ctrl"><label class="clbl" for="pQ">Q</label><input type="range" id="pQ" name="pQ" min="0.1" max="18" value="1.5" step="0.1"><div class="cval" id="vQ">1.5</div></div>
+  <div class="ctrl"><label class="clbl" for="pOut">Output Gain</label><input type="range" id="pOut" name="pOut" min="-12" max="12" value="0" step="0.5"><div class="cval" id="vOut">0.0 dB</div></div>
 </div>
 
 <div class="footer">
@@ -98,9 +98,10 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
   <button class="fbtn run" id="runBtn">▶ PROCESS</button>
   <span class="stat" id="status">ready</span>
 </div>
-<input type="file" id="fileinput" accept="audio/*" style="display:none">
+<input type="file" id="fileinput" name="fileinput" accept="audio/*" style="display:none" aria-label="Load audio file">
 </div>
 
+<script src="module-kit.js"></script>
 <script>
 const BANDS = [
   { id: 'lo',    label: 'Low Shelf',  freq: 80,    gain: 0, q: 0.7, color: '#f59e0b', type: 'lowshelf' },
@@ -146,10 +147,36 @@ document.getElementById('pQ').oninput = e => { BANDS[activeBand].q = +e.target.v
 document.getElementById('pOut').oninput = e => { document.getElementById('vOut').textContent = (+e.target.value > 0 ? '+' : '') + (+e.target.value).toFixed(1) + ' dB'; };
 
 // -- Audio --
-function ensureAudio() { if (actx) return; actx = new AudioContext(); analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.85; }
-function connectBuf(buf) { if (source) try { source.stop(); } catch(e) {} source = actx.createBufferSource(); source.buffer = buf; source.loop = true; source.connect(analyser); analyser.connect(actx.destination); source.start(); }
+function ensureAudio() { if (actx) return; actx = new AudioContext(); analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.85; analyser.connect(actx.destination); }
+/* theDAW host transport: playback start/stop is reported to the parent stage. */
+let liveBuf = null;
+function postTransportState(playing) { window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*'); }
+function stopSource() { if (!source) return; try { source.stop(); } catch(e) {} source = null; postTransportState(false); }
+function startSource() { if (!liveBuf) return; if (source) try { source.stop(); } catch(e) {} source = actx.createBufferSource(); source.buffer = liveBuf; source.loop = true; source.connect(analyser); source.start(); postTransportState(true); }
+/* prepareBuf() remembers the buffer without starting playback (host-driven preview). */
+function prepareBuf(buf) { stopSource(); liveBuf = buf; }
+function connectBuf(buf) { prepareBuf(buf); startSource(); }
 async function loadFile(file) { ensureAudio(); inputFile = file; const ab = await file.arrayBuffer(); inputBuf = await actx.decodeAudioData(ab.slice(0)); document.getElementById('ain').src = URL.createObjectURL(file); connectBuf(inputBuf); }
+/* prepareFile() mirrors loadFile() but leaves playback stopped for the host toggle. */
+async function prepareFile(file) { ensureAudio(); inputFile = file; const ab = await file.arrayBuffer(); inputBuf = await actx.decodeAudioData(ab.slice(0)); document.getElementById('ain').src = URL.createObjectURL(file); prepareBuf(inputBuf); }
 document.getElementById('fileinput').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+const ainEl = document.getElementById('ain'), aoutEl = document.getElementById('aout');
+function previewStillAudible() { return !!(source || (ainEl && !ainEl.paused && !ainEl.ended) || (aoutEl && !aoutEl.paused && !aoutEl.ended)); }
+[ainEl, aoutEl].forEach(el => { if (!el) return; el.addEventListener('play', () => postTransportState(true)); el.addEventListener('pause', () => postTransportState(previewStillAudible())); el.addEventListener('ended', () => postTransportState(previewStillAudible())); });
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      // Host-supplied audio loads paused; the stage's transport toggle starts it.
+      prepareFile(file);
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+  if (e.data && e.data.type === 'thedaw-transport') {
+    if (e.data.action === 'play') { if (actx && actx.state === 'suspended') actx.resume(); if (ainEl) ainEl.pause(); if (aoutEl) aoutEl.pause(); startSource(); }
+    else if (e.data.action === 'pause') { stopSource(); if (ainEl) ainEl.pause(); if (aoutEl) aoutEl.pause(); }
+  }
+});
 document.getElementById('pickFile').onclick = () => document.getElementById('fileinput').click();
 document.getElementById('useTone').onclick = async () => { const r = await fetch('/static/testtone.wav'); const b = await r.blob(); loadFile(new File([b], 'testtone.wav', { type: 'audio/wav' })); };
 
@@ -325,6 +352,8 @@ draw();
 
 // -- Toggles --
 document.querySelectorAll('.tog').forEach(t => t.addEventListener('click', () => t.classList.toggle('on')));
+window.theDAWKit.toggleGroup('.tog', 'on');
+document.querySelectorAll('.band').forEach(b => { b.setAttribute('role', 'button'); b.setAttribute('tabindex', '0'); b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); b.click(); } }); });
 </script>
 </body>
 </html>

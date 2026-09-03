@@ -89,6 +89,7 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 .ftr-stat.ok{color:#22c55e}
 audio{display:none}
 input[type="file"]{display:none}
+.rotary-knob:focus-visible{outline:2px solid #2dd4bf;outline-offset:2px;border-radius:50%}
 </style>
 </head>
 <body>
@@ -133,13 +134,13 @@ input[type="file"]{display:none}
 <!-- MODE SECTION -->
 <div class="mode-section">
   <span class="mode-title">MODES</span>
-  <label class="mode-check"><input type="checkbox" id="ckDenoise" checked><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-noise</span></label>
-  <label class="mode-check"><input type="checkbox" id="ckDeclip"><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-clip</span></label>
-  <label class="mode-check"><input type="checkbox" id="ckDereverb"><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-reverb</span></label>
+  <label class="mode-check" title="Adds a restoration/neural_denoise pass (amount = Restoration Amount)"><input type="checkbox" id="ckDenoise" name="ckDenoise" checked><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-noise</span></label>
+  <label class="mode-check" title="Adds a restoration/declip pass (threshold from Repair Intensity)"><input type="checkbox" id="ckDeclip" name="ckDeclip"><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-clip</span></label>
+  <label class="mode-check" title="Adds a restoration/dereverb pass (amount = Restoration Amount)"><input type="checkbox" id="ckDereverb" name="ckDereverb"><span class="ck-box"><svg viewBox="0 0 10 10" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="2,5 4.5,7.5 8,3"/></svg></span><span class="ck-label">De-reverb</span></label>
   <div class="mode-sep"></div>
   <div class="focus-group">
-    <span class="focus-label">FOCUS</span>
-    <select class="focus-select" id="focusSelect">
+    <label class="focus-label" for="focusSelect" title="Focus biases the declick threshold: Voice gentler, SFX more aggressive">FOCUS</label>
+    <select class="focus-select" id="focusSelect" name="focusSelect">
       <option value="balanced">Balanced</option>
       <option value="voice">Voice</option>
       <option value="music">Music</option>
@@ -166,7 +167,7 @@ input[type="file"]{display:none}
     <span class="knob-val" id="valArtifact">4.0</span>
   </div>
   <div class="knob-unit">
-    <span class="knob-label">OUTPUT GAIN</span>
+    <span class="knob-label" title="Preview monitor gain only (the restoration tools have no output gain)">OUTPUT GAIN (PREVIEW)</span>
     <svg class="rotary-knob" data-param="gain" data-min="-24" data-max="24" data-val="50" viewBox="0 0 52 52" width="66" height="66"></svg>
     <span class="knob-val" id="valGain">0.0 dB</span>
   </div>
@@ -175,8 +176,8 @@ input[type="file"]{display:none}
 <!-- BOTTOM ACTION ROW -->
 <div class="action-row">
   <div class="ai-group">
-    <span class="ai-label">AI Model</span>
-    <select class="ai-select" id="aiModelSelect">
+    <label class="ai-label" for="aiModelSelect" title="Preview label only: every pass runs the current DSP tools">AI Model</label>
+    <select class="ai-select" id="aiModelSelect" name="aiModelSelect">
       <option value="standard">Standard v2</option>
       <option value="pro">Pro v3</option>
       <option value="ultra">Ultra</option>
@@ -200,11 +201,13 @@ input[type="file"]{display:none}
   <audio id="aout" controls></audio>
 </div>
 </div>
-<input type="file" id="fileinput" accept="audio/*">
+<input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
 
+<script src="module-kit.js"></script>
 <script>
 (function(){
 'use strict';
+const kit = window.theDAWKit;
 
 /* ── STATE ── */
 const params = {
@@ -365,22 +368,34 @@ function formatVal(param, pct){
 
 /* Init all knobs */
 const knobSvgs = document.querySelectorAll('.rotary-knob');
+const KNOB_DEFAULTS = { restoration: 65, intensity: 72, artifact: 40, gain: 50 };
+function refreshKnob(svg, p){
+  renderRotary(svg, params[p]);
+  document.getElementById('val' + p.charAt(0).toUpperCase() + p.slice(1)).textContent = formatVal(p, params[p]);
+  kit.sync(svg);
+}
 knobSvgs.forEach(svg => {
   const p = svg.dataset.param;
   renderRotary(svg, params[p]);
+  const lbl = svg.parentElement.querySelector('.knob-label');
+  kit.slider(svg, {
+    label: lbl ? lbl.textContent.trim() : p,
+    min: 0, max: 100, step: 1, wheel: true,
+    get: () => params[p], set: v => { params[p] = v; refreshKnob(svg, p); updateRepairLive(); },
+    format: v => formatVal(p, v), reset: KNOB_DEFAULTS[p],
+  });
   /* drag */
   let drag = { active: false, startY: 0, startVal: 0 };
   svg.style.cursor = 'pointer';
   svg.addEventListener('pointerdown', e => {
     drag = { active: true, startY: e.clientY, startVal: params[p] };
-    svg.setPointerCapture(e.pointerId);
+    svg.setPointerCapture(e.pointerId); svg.focus({ preventScroll: true });
   });
   svg.addEventListener('pointermove', e => {
     if(!drag.active) return;
     const dy = drag.startY - e.clientY;
-    params[p] = Math.max(0, Math.min(100, drag.startVal + dy * 0.5));
-    renderRotary(svg, params[p]);
-    document.getElementById('val' + p.charAt(0).toUpperCase() + p.slice(1)).textContent = formatVal(p, params[p]);
+    params[p] = Math.max(0, Math.min(100, drag.startVal + dy * (e.shiftKey ? 0.12 : 0.5)));
+    refreshKnob(svg, p);
     updateRepairLive();
   });
   svg.addEventListener('pointerup', () => { drag.active = false });
@@ -388,6 +403,9 @@ knobSvgs.forEach(svg => {
 
 /* ── PILL BUTTONS ── */
 document.querySelectorAll('.pill').forEach(b => b.addEventListener('click', () => b.classList.toggle('active')));
+kit.toggleGroup('.pill', 'active');
+kit.toggleGroup('#qualityBtn, #btnBypass', 'active');
+kit.toggleGroup('.ftr .ftr-btn:not(#btnBypass)', 'active', true);
 document.getElementById('qualityBtn').addEventListener('click', function(){
   this.classList.toggle('active');
   this.querySelector('.quality-dot');
@@ -403,29 +421,53 @@ document.getElementById('qualityBtn').addEventListener('click', function(){
 document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active') });
 
 /* ── PROCESS ── */
+/* The Repair button runs a chain of restoration passes: each checked MODE
+   adds its own /api/edit/restoration tool, and the final pass is always the
+   declick repair. Every pass feeds the previous pass's output. */
+const FOCUS_THRESHOLD_BIAS = { balanced: 1.0, voice: 1.4, music: 1.0, sfx: 0.6 };
+function repairPasses(){
+  const restore = params.restoration / 100;
+  const inten = params.intensity / 100;
+  const focus = FOCUS_THRESHOLD_BIAS[document.getElementById('focusSelect').value] || 1;
+  const passes = [];
+  if (document.getElementById('ckDenoise').checked) passes.push(['neural_denoise', { amount: +restore.toFixed(3) }]);
+  if (document.getElementById('ckDeclip').checked) passes.push(['declip', { clipThreshold: +Math.max(0.1, Math.min(1, 1 - inten * 0.9)).toFixed(3) }]);
+  if (document.getElementById('ckDereverb').checked) passes.push(['dereverb', { dryWet: +restore.toFixed(3) }]);
+  passes.push(['declick', {
+    window: Math.max(10, Math.min(100, Math.round(10 + restore * 90))),
+    overlap: Math.max(50, Math.min(95, Math.round(50 + (params.artifact / 100) * 45))),
+    threshold: Math.max(1, Math.min(100, Math.round((100 - inten * 99) * focus))),
+  }]);
+  return passes;
+}
+async function runPass(effect, p, blobIn){
+  const fd = new FormData();
+  fd.append('effect', effect);
+  fd.append('params', JSON.stringify(p));
+  fd.append('output_format', 'wav');
+  fd.append('audio', blobIn, 'input.wav');
+  const r = await fetch('/api/edit/restoration/process', { method: 'POST', body: fd });
+  if(!r.ok) throw new Error(effect + ' ' + r.status);
+  return r.blob();
+}
 document.getElementById('repairBtn').onclick = async () => {
   if(!inputFile) return;
   const st = document.getElementById('status');
-  st.className = 'ftr-stat'; st.textContent = 'processing...';
-  const fd = new FormData();
-  fd.append('effect', 'declick');
-  fd.append('params', JSON.stringify({
-    window: Math.max(10, Math.min(100, Math.round(10 + (params.restoration / 100) * 90))),
-    overlap: 75,
-    threshold: Math.max(1, Math.min(100, Math.round(100 - (params.intensity / 100) * 99)))
-  }));
-  fd.append('output_format', 'wav');
-  fd.append('audio', inputFile);
+  st.className = 'ftr-stat';
+  const passes = repairPasses();
   const t0 = performance.now();
   try {
-    const r = await fetch('/api/edit/restoration/process', { method: 'POST', body: fd });
-    if(r.ok){
-      const blob = await r.blob();
+    let blob = inputFile;
+    for (let i = 0; i < passes.length; i++) {
+      st.textContent = 'pass ' + (i + 1) + '/' + passes.length + ': ' + passes[i][0] + '...';
+      blob = await runPass(passes[i][0], passes[i][1], blob);
+    }
+    {
       document.getElementById('aout').src = URL.createObjectURL(blob);
       st.className = 'ftr-stat ok';
-      st.textContent = 'done ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms';
-    } else { st.textContent = r.status + ' error' }
-  } catch(e){ st.textContent = 'ERR' }
+      st.textContent = 'done ' + passes.length + ' pass' + (passes.length > 1 ? 'es' : '') + ' ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms';
+    }
+  } catch(e){ st.textContent = 'error: ' + e.message }
 };
 
 /* ── SPLIT WAVEFORM CANVAS ── */

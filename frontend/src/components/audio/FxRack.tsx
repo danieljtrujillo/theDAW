@@ -2,19 +2,22 @@
  * FxRack — UI for a real-time insert-effect chain (the psychoacoustic rack).
  *
  * Presentational + a11y only: it renders the add control, per-effect enable /
- * reorder / remove, and SLIDE param sliders, and calls back into the store. The
- * same component drives the master bus (Phase A) and per-track chains (Phase B);
- * the caller supplies the chain array and the mutators.
+ * reorder / remove, and each effect's controls (a bespoke pad/panel where one
+ * exists, else the schema-driven EffectControls panel), and calls back into the
+ * store. The same component drives the master bus (Phase A), per-track chains
+ * (Phase B), DRAW's chain and the EDIT floating windows; the caller supplies the
+ * chain array and the mutators.
  */
 
 import { Blocks, ChevronUp, ChevronDown, SlidersHorizontal, X } from 'lucide-react';
 import { RACK_EFFECTS, getRackEffect } from '../../lib/rackEffects';
 import type { ChainEntry } from '../../state/effectChainStore';
-import { SlideTrack } from './SlideTrack';
 import { SpatializerPad } from './SpatializerPad';
 import { OwlPad } from './OwlPad';
 import { ChopControls } from './ChopControls';
 import { GaterControls } from './GaterControls';
+import { EffectControls, type EffectControlsLayout } from './effects/EffectControls';
+import { schemaForBackendEffect, schemaForRackEffect } from './effects/effectSchema';
 
 interface FxRackProps {
   chain: ChainEntry[];
@@ -41,12 +44,10 @@ interface FxRackProps {
   /** When provided, the 'ares' composite entry gets an open-surface button
    *  that opens its .gan control surface. */
   onOpenSurface?: (entry: ChainEntry) => void;
+  /** Control-panel density for the schema-driven tiles: `compact` (default)
+   *  for rails and racks, `expanded` for floating windows / stages. */
+  layout?: EffectControlsLayout;
 }
-
-const fmtValue = (v: number, step: number, unit?: string): string => {
-  const decimals = step < 1 ? (step < 0.1 ? 2 : 1) : 0;
-  return `${v.toFixed(decimals)}${unit ? ` ${unit}` : ''}`;
-};
 
 export function FxRack({
   chain,
@@ -61,8 +62,10 @@ export function FxRack({
   hideAdd,
   onOpenVst,
   onOpenSurface,
+  layout = 'compact',
 }: FxRackProps) {
   const addId = `${idPrefix}-add`;
+  const expanded = layout === 'expanded';
 
   return (
     <div className="flex flex-col gap-2">
@@ -103,6 +106,44 @@ export function FxRack({
         // anything not in the rack).
         if (!def) {
           const label = entry.vst?.plugin_name || entry.label || entry.effect;
+          // A preserved source-DAW device that maps onto a backend effect id
+          // (lofi_vinyl, pitch_shift, …) has a real parameter schema: show
+          // its controls (edits persist with the project) with an honest note
+          // that the track does not render it live.
+          const preserved = entry.vst ? null : schemaForBackendEffect(entry.effect, 'preserved');
+          if (preserved) {
+            return (
+              <div
+                key={entry.id}
+                className={`${expanded ? 'grow basis-full' : 'grow basis-60 max-w-xs'} rounded border border-white/5 bg-black/30 p-2 flex flex-col gap-1.5`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[8px] font-black uppercase tracking-wider text-amber-300/80 shrink-0">IMP</span>
+                  <span className="text-[10px] font-mono text-zinc-300 flex-1 truncate" title={`${label} — preserved from import (not rendered live on this track yet)`}>
+                    {label}
+                  </span>
+                  <button
+                    onClick={() => onRemove(entry.id)}
+                    aria-label={`Remove ${label}`}
+                    title="Remove this imported effect"
+                    className="p-0.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/10 shrink-0"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="pl-1">
+                  <EffectControls
+                    schema={preserved}
+                    params={entry.params}
+                    idPrefix={`${idPrefix}-${entry.id}`}
+                    layout={layout}
+                    hideHeader
+                    onChange={(p) => onUpdateParams(entry.id, p)}
+                  />
+                </div>
+              </div>
+            );
+          }
           return (
             <div
               key={entry.id}
@@ -141,7 +182,11 @@ export function FxRack({
         // While a lane plays back, show the sampled value so the control follows
         // the automation; edits still write the stored params (onUpdateParams).
         const shown = displayParams ? { ...entry.params, ...(displayParams(entry.id) ?? {}) } : entry.params;
-        const sizing = entry.effect === 'spatializer' ? 'grow basis-80 max-w-sm' : 'grow basis-60 max-w-xs';
+        const sizing = expanded
+          ? 'grow basis-full'
+          : entry.effect === 'spatializer' || entry.effect === 'ares' || entry.effect === 'kargyraa'
+            ? 'grow basis-80 max-w-md'
+            : 'grow basis-60 max-w-xs';
         return (
           <div
             key={entry.id}
@@ -230,30 +275,20 @@ export function FxRack({
                 />
               </div>
             ) : (
-            <div className="flex flex-col gap-1 pl-4">
-              {def.params.map((p) => {
-                const value = shown[p.key] ?? p.default;
-                const labelId = `${idPrefix}-${entry.id}-${p.key}-label`;
-                return (
-                  <div key={p.key} className="flex items-center gap-2">
-                    <span id={labelId} className="text-[9px] font-mono text-zinc-500 w-16 shrink-0">{p.label}</span>
-                    <SlideTrack
-                      value={value}
-                      min={p.min}
-                      max={p.max}
-                      step={p.step}
-                      defaultValue={p.default}
-                      ariaLabelledBy={labelId}
-                      className="flex-1"
-                      onChange={(v) => onUpdateParams(entry.id, { ...entry.params, [p.key]: v })}
-                    />
-                    <span className="text-[9px] font-mono text-zinc-400 w-16 shrink-0 text-right tabular-nums">
-                      {fmtValue(value, p.step, p.unit)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+              /* Every other effect (and Ares while its surface is closed):
+                 the schema-driven panel — grouped knobs/sliders/toggles/
+                 selects, XY pads, presets, mix, units, double-click reset. */
+              <div className="pl-4">
+                <EffectControls
+                  schema={schemaForRackEffect(def)}
+                  params={entry.params}
+                  display={displayParams?.(entry.id)}
+                  idPrefix={`${idPrefix}-${entry.id}`}
+                  layout={layout}
+                  hideHeader
+                  onChange={(p) => onUpdateParams(entry.id, p)}
+                />
+              </div>
             )}
           </div>
         );

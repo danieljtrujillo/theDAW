@@ -9,6 +9,8 @@
    the existing /api/studio chain effects onto the module that best visualizes
    them, so selecting a chain entry opens the right instrument. */
 
+import { EDIT_TOOL_FAMILIES, editToolPageFor } from '../components/audio/effects/editToolStack';
+
 export interface StudioModule {
   id: string;
   name: string;
@@ -51,8 +53,33 @@ export const STUDIO_MODULES: StudioModule[] = [
     desc: 'RVQ quantization explorer with glitch effects', effectIds: ['tempo', 'pitch_shift'] },
 ];
 
+/* ── Tool Stack: the Edit Tool Stack tools WITHOUT a bespoke page ─────────────
+   Each opens public/edit-modules/tool.html, which renders the tool's live
+   manifest (GET /api/edit/<family>/tools) as knobs/sliders/selects with the
+   same host protocol as the hero GUIs, so every one of the 49 offline tools is
+   reachable from MIX. Kept out of STUDIO_MODULES: that list is the curated
+   hero set and its files are checked verbatim by editModulesContract.test.ts. */
+const FAMILY_COLOR: Record<string, string> = {
+  mastering: '#ffab40', restoration: '#26c6da', enhance: '#42a5f5',
+  creative_fx: '#ff7043', creative_neural: '#8b5cf6', delivery: '#a3e635',
+};
+const toolName = (id: string) => id.split('_').map((w) => w === 'eq' ? 'EQ' : w === 'src' ? 'SRC' : w === 'pa' ? 'PA' : w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+export const TOOL_STACK_MODULES: StudioModule[] = EDIT_TOOL_FAMILIES.flatMap((f) =>
+  f.tools
+    .filter((t) => editToolPageFor(f.id, t) === 'tool.html')
+    .map((t) => ({
+      id: `tool:${f.id}/${t}`,
+      name: toolName(t),
+      file: `tool.html?family=${encodeURIComponent(f.id)}&tool=${encodeURIComponent(t)}`,
+      color: FAMILY_COLOR[f.id] ?? '#a1a1aa',
+      category: f.label,
+      desc: `${f.label} · offline render via ${f.prefix}/${t}`,
+      preview: 'tool',
+    })),
+);
+
 export const moduleById: Record<string, StudioModule> = Object.fromEntries(
-  STUDIO_MODULES.map((m) => [m.id, m]),
+  [...STUDIO_MODULES, ...TOOL_STACK_MODULES].map((m) => [m.id, m]),
 );
 
 /** Map an existing effectCatalog id → the module that best represents it. */

@@ -22,6 +22,8 @@ import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideRow } from '../components/audio/SlideRow';
 import { MixVizRow, type MixVizMode } from '../components/audio/MixVizRow';
 import { EffectsVizPanel } from './EffectsVizPanel';
+import { EffectControls } from '../components/audio/effects/EffectControls';
+import { schemaForEffectId } from '../components/audio/effects/effectSchema';
 import { EffectGuiStage } from '../components/audio/EffectGuiStage';
 import { VstEmbedHost } from '../components/audio/VstEmbedHost';
 import { TheOwl } from '../components/audio/TheOwl';
@@ -33,7 +35,7 @@ import { RACK_EFFECTS, getRackEffect } from '../lib/rackEffects';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { EFFECT_CATALOG, PARAM_BOUNDS, CATEGORY_META, fxToCategory, fxPreview, vstPreviewKey, type CategoryMeta } from '../lib/effectCatalog';
-import { STUDIO_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
+import { STUDIO_MODULES, TOOL_STACK_MODULES, moduleById, effectToModuleId, type StudioModule } from '../lib/moduleCatalog';
 import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../lib/magentaToolCatalog';
 import { MagentaToolStage } from '../components/audio/MagentaToolStage';
 import { GanPluginStage, getGanStageFrame } from '../components/audio/GanPluginStage';
@@ -609,7 +611,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'studio' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
           <Boxes className="w-3.5 h-3.5 shrink-0" />
           <span className="text-[10px] font-bold flex-1 truncate">Studio</span>
-          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length + PSYCHO_MODULES.length + 1}</span>
+          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length + PSYCHO_MODULES.length + TOOL_STACK_MODULES.length + 1}</span>
         </button>
         <button onClick={() => p.setActiveCategory('magenta')}
           title="Magenta RealTime 2 — generative instruments (Collider · Jam · MRT2)"
@@ -745,6 +747,30 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 </button>
               );
             })}
+            {/* Edit Tool Stack: every offline tool without a hero GUI opens the
+                schema-driven tool page, so all 49 tools are reachable from here. */}
+            <div className="basis-full flex items-center gap-2 px-1 pt-1">
+              <span className="text-[9px] font-black uppercase tracking-[0.18em] text-lime-300/80">Tool Stack</span>
+              <span className="text-[8px] font-mono text-zinc-500">{TOOL_STACK_MODULES.length} offline tools</span>
+              <span className="flex-1 h-px bg-white/5" />
+            </div>
+            {TOOL_STACK_MODULES.map((m) => {
+              const active = p.activeModule?.id === m.id;
+              return (
+                <button key={`tool-${m.id}`} type="button" onClick={() => p.onPickModule(m.id)} title={m.desc}
+                  className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${active ? 'border-lime-400/60 ring-1 ring-lime-400/40 bg-lime-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
+                  style={{ width: 132 }}>
+                  <div className="flex items-center gap-1.5">
+                    <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
+                    <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                  </div>
+                  <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
+                    <ModuleThumb preview={m.preview} seed={m.id} className="w-full h-full" />
+                  </div>
+                  <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.category}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       ) : p.activeCategory === 'vst' ? (
@@ -835,6 +861,15 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                   ? <ModuleTile key="ares" name="Ares" color="#ff3b3b" marked={p.ganActiveId === 'ares'} onClick={p.onPickAres} />
                   : <ModuleRow key="ares" name="Ares" desc="XY Kaoss control surface" color="#ff3b3b" marked={p.ganActiveId === 'ares'} onClick={p.onPickAres} />}
                 {STUDIO_MODULES.map((m) => (tile
+                  ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} preview={m.preview} />
+                  : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <AllHeader icon={SlidersHorizontal} color="text-lime-300" label="Tool Stack" count={TOOL_STACK_MODULES.length} />
+              <div className={boxCls}>
+                {TOOL_STACK_MODULES.map((m) => (tile
                   ? <ModuleTile key={m.id} name={m.name} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} preview={m.preview} />
                   : <ModuleRow key={m.id} name={m.name} desc={m.desc} color={m.color} marked={p.activeModule?.id === m.id} onClick={() => p.onPickModule(m.id)} />
                 ))}
@@ -963,15 +998,29 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                   <button className="text-zinc-600 hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); p.removeEffect(entry.id); }}><X className="w-3 h-3" /></button>
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === p.chain.length - 1} title="Move later" onClick={(e) => { e.stopPropagation(); p.reorder(index, index + 1); }}><ChevronRight className="w-3 h-3" /></button>
                 </div>
-                {Object.keys(entry.params).length > 0 && (
-                  <div className="flex flex-col gap-1 mt-1.5 overflow-y-auto min-h-0" onClick={(e) => e.stopPropagation()}>
-                    {Object.entries(entry.params).map(([key, val]) => {
-                      const rd = getRackEffect(entry.effect)?.params.find((pp) => pp.key === key);
-                      const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || (rd ? [rd.min, rd.max, rd.step] : [0, 1, 0.01]);
-                      return <SlideRow key={key} label={rd?.label || prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
-                    })}
-                  </div>
-                )}
+                {Object.keys(entry.params).length > 0 && (() => {
+                  // Every effect with a schema gets the real control panel (grouped
+                  // knobs with units, curves, presets, mix); bare rows only remain for
+                  // an id the schema layer does not know.
+                  const schema = schemaForEffectId(entry.effect);
+                  return (
+                    <div className="flex flex-col gap-1 mt-1.5 overflow-y-auto min-h-0" onClick={(e) => e.stopPropagation()}>
+                      {schema ? (
+                        <EffectControls
+                          schema={schema}
+                          params={entry.params}
+                          idPrefix={`mix-${entry.id}`}
+                          hideHeader
+                          onChange={(np) => p.updateParams(entry.id, np)}
+                        />
+                      ) : Object.entries(entry.params).map(([key, val]) => {
+                        const rd = getRackEffect(entry.effect)?.params.find((pp) => pp.key === key);
+                        const [min, max, step] = PARAM_BOUNDS[entry.effect]?.[key] || (rd ? [rd.min, rd.max, rd.step] : [0, 1, 0.01]);
+                        return <SlideRow key={key} label={rd?.label || prettyParam(key)} value={val} min={min} max={max} step={step} onChange={(v) => p.updateParams(entry.id, { ...entry.params, [key]: v })} />;
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             </React.Fragment>
           ))
@@ -1027,7 +1076,26 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     : selected && selected.effect === 'spatializer'
       ? <TheOwl params={selected.params} idPrefix={`mix-owl-${selected.id}`} onChange={(np) => p.updateParams(selected.id, np)} />
     : selected
-      ? <EffectsVizPanel effect={selected.effect} params={selected.params} className="h-full! border-purple-500/15!" />
+      ? (() => {
+          const schema = schemaForEffectId(selected.effect);
+          if (!schema) return <EffectsVizPanel effect={selected.effect} params={selected.params} className="h-full! border-purple-500/15!" />;
+          return (
+            <div className="h-full min-h-0 flex flex-col gap-2">
+              <div className="shrink-0 max-h-[62%] overflow-y-auto rounded border border-purple-500/15 bg-black/30">
+                <EffectControls
+                  schema={schema}
+                  params={selected.params}
+                  idPrefix={`mix-stage-${selected.id}`}
+                  layout="expanded"
+                  enabled={selected.enabled}
+                  onToggleEnabled={() => p.toggleEnabled(selected.id)}
+                  onChange={(np) => p.updateParams(selected.id, np)}
+                />
+              </div>
+              <EffectsVizPanel effect={selected.effect} params={selected.params} className="flex-1 min-h-0 border-purple-500/15!" />
+            </div>
+          );
+        })()
       : <EffectGuiStage module={null} sourceFile={p.sourceFile} />
   ));
 

@@ -46,6 +46,20 @@ export type RackEffectFactory = (
   params: Record<string, number>,
 ) => RackEffectInstance;
 
+/** Control the generic panel (EffectControls) renders for a param. Inferred
+ *  when absent: `options` → select, a 0/1 step-1 range → toggle, else knob. */
+export type RackParamKind = 'knob' | 'slider' | 'toggle' | 'select';
+/** Travel law for a knob/slider: log for frequencies and times so the useful
+ *  range is not crammed into the first few degrees. */
+export type RackParamCurve = 'lin' | 'log';
+
+/**
+ * One parameter of a rack effect. The first seven fields drive the audio
+ * factory and every existing consumer (automation lanes, MIX cards, import);
+ * the optional presentation fields below them are the schema the generic
+ * control panel (components/audio/effects/EffectControls) renders from, so
+ * an effect with no bespoke window still gets a correct, grouped UI.
+ */
 export interface RackParamDescriptor {
   key: string;
   label: string;
@@ -54,6 +68,35 @@ export interface RackParamDescriptor {
   step: number;
   default: number;
   unit?: string;
+  /** Section the control sits in (defaults to a single unnamed section). */
+  group?: string;
+  /** Control type override (see RackParamKind for the inference rules). */
+  kind?: RackParamKind;
+  /** Option labels for enumerated params. The value of option i is
+   *  `optionValues[i]` when given, else `min + i * step`. */
+  options?: readonly string[];
+  optionValues?: readonly number[];
+  /** Travel law (default 'lin'). Log requires min > 0. */
+  curve?: RackParamCurve;
+  /** Bipolar param (gain, pan, pitch): the dial fills out from its centre. */
+  bipolar?: boolean;
+  /** Show a 0..1 value as 0..100 %. */
+  display?: 'percent';
+  /** One-line hint shown as the control's title. */
+  tip?: string;
+}
+
+/** A named set of param values merged onto the effect's current params. */
+export interface RackEffectPreset {
+  label: string;
+  values: Record<string, number>;
+}
+
+/** Two params driven together from one XY surface (x across, y up). */
+export interface RackXYPad {
+  label: string;
+  x: string;
+  y: string;
 }
 
 export interface RackEffectDef {
@@ -63,6 +106,12 @@ export interface RackEffectDef {
   description: string;
   params: RackParamDescriptor[];
   make: RackEffectFactory;
+  /** The param that acts as wet/dry; the panel gives it a fixed header slot. */
+  mixKey?: string;
+  /** Sensible starting points for this effect (plus the implicit Default). */
+  presets?: readonly RackEffectPreset[];
+  /** Declared XY pads; each pair also stays reachable as individual controls. */
+  xy?: readonly RackXYPad[];
 }
 
 /* ── small helpers ─────────────────────────────────────────────────────────── */
@@ -315,7 +364,7 @@ export const SPATIAL_TELEPORT = 10;
 export const SPATIAL_AUTOPILOT = 11;
 
 /** One-click spatial-motion presets (merged onto the effect's current params). */
-export const SPATIAL_PRESETS: ReadonlyArray<{ label: string; values: Record<string, number> }> = [
+export const SPATIAL_PRESETS: ReadonlyArray<RackEffectPreset> = [
   { label: 'Static Front', values: { motion: 0, azimuth: 0, elevation: 0, distance: 1.5 } },
   { label: 'Orbit CW', values: { motion: 1, motionRate: 0.3, motionDepth: 2 } },
   { label: 'Orbit CCW', values: { motion: 2, motionRate: 0.3, motionDepth: 2 } },
@@ -1657,8 +1706,13 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Spatial',
     description: 'Relieves hard-panned headphone "in-head" stereo (Bauer/BS2B).',
     params: [
-      { key: 'amount', label: 'Amount', min: 0, max: 1, step: 0.01, default: 0.5 },
-      { key: 'cutFreq', label: 'Cut', min: 200, max: 2000, step: 10, default: 700, unit: 'Hz' },
+      { key: 'amount', label: 'Amount', min: 0, max: 1, step: 0.01, default: 0.5, display: 'percent', group: 'Crossfeed', tip: 'How much of each channel bleeds into the other (capped so the direct path always wins).' },
+      { key: 'cutFreq', label: 'Cut', min: 200, max: 2000, step: 10, default: 700, unit: 'Hz', curve: 'log', group: 'Crossfeed', tip: 'Low-pass on the cross path — the head-shadow roll-off.' },
+    ],
+    presets: [
+      { label: 'Subtle', values: { amount: 0.3, cutFreq: 700 } },
+      { label: 'Natural', values: { amount: 0.5, cutFreq: 700 } },
+      { label: 'Strong', values: { amount: 0.8, cutFreq: 900 } },
     ],
     make: makeCrossfeed,
   },
@@ -1668,9 +1722,14 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Low end',
     description: 'Implies the missing fundamental via synthesized harmonics.',
     params: [
-      { key: 'drive', label: 'Drive', min: 1, max: 40, step: 1, default: 6 },
-      { key: 'blend', label: 'Blend', min: 0, max: 1.5, step: 0.01, default: 0.6 },
-      { key: 'crossover', label: 'Crossover', min: 50, max: 160, step: 1, default: 90, unit: 'Hz' },
+      { key: 'crossover', label: 'Crossover', min: 50, max: 160, step: 1, default: 90, unit: 'Hz', curve: 'log', group: 'Sub band', tip: 'Everything below this is the sub band the harmonics are built from.' },
+      { key: 'drive', label: 'Harmonics', min: 1, max: 40, step: 1, default: 6, group: 'Sub band', tip: 'Waveshaper drive — more drive, more (and higher) harmonics.' },
+      { key: 'blend', label: 'Blend', min: 0, max: 1.5, step: 0.01, default: 0.6, group: 'Blend', tip: 'Level of the synthesized harmonics added to the dry signal.' },
+    ],
+    presets: [
+      { label: 'Earbuds', values: { crossover: 90, drive: 6, blend: 0.6 } },
+      { label: 'Laptop speakers', values: { crossover: 110, drive: 12, blend: 0.9 } },
+      { label: 'Club hint', values: { crossover: 70, drive: 4, blend: 0.4 } },
     ],
     make: makePhantomBass,
   },
@@ -1681,17 +1740,25 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     description:
       'Subharmonic throat-growl bass: octave-divider sub, period-doubling growl gate, morphing vowel formants and a sygyt whistle band.',
     params: [
-      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
-      { key: 'subLevel', label: 'Sub', min: 0, max: 1.5, step: 0.01, default: 0.9 },
-      { key: 'deepLevel', label: 'Deep', min: 0, max: 1, step: 0.01, default: 0.3 },
-      { key: 'growlRate', label: 'Growl', min: 20, max: 90, step: 0.5, default: 45, unit: 'Hz' },
-      { key: 'growlDepth', label: 'Gr Dpth', min: 0, max: 1, step: 0.01, default: 0.65 },
-      { key: 'drive', label: 'Drive', min: 1, max: 40, step: 1, default: 14 },
-      { key: 'vowel', label: 'Vowel', min: 0, max: 4, step: 0.01, default: 0.6 },
-      { key: 'motionRate', label: 'Motion', min: 0, max: 8, step: 0.05, default: 0.8, unit: 'Hz' },
-      { key: 'motionDepth', label: 'Mo Dpth', min: 0, max: 1, step: 0.01, default: 0.35 },
-      { key: 'whistleHz', label: 'Whistle', min: 800, max: 2400, step: 10, default: 1500, unit: 'Hz' },
-      { key: 'whistleAmt', label: 'Wh Amt', min: 0, max: 1, step: 0.01, default: 0.45 },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1, display: 'percent', group: 'Output' },
+      { key: 'subLevel', label: 'Sub', min: 0, max: 1.5, step: 0.01, default: 0.9, group: 'Sub', tip: 'Octave-below sub level.' },
+      { key: 'deepLevel', label: 'Deep', min: 0, max: 1, step: 0.01, default: 0.3, display: 'percent', group: 'Sub', tip: 'Two-octaves-below level.' },
+      { key: 'growlRate', label: 'Growl Rate', min: 20, max: 90, step: 0.5, default: 45, unit: 'Hz', group: 'Growl', tip: 'Period-doubling gate rate — the growl pitch.' },
+      { key: 'growlDepth', label: 'Growl Depth', min: 0, max: 1, step: 0.01, default: 0.65, display: 'percent', group: 'Growl' },
+      { key: 'drive', label: 'Drive', min: 1, max: 40, step: 1, default: 14, group: 'Growl', tip: 'Harmonic enrichment before the formant bank.' },
+      { key: 'vowel', label: 'Vowel', min: 0, max: 4, step: 0.01, default: 0.6, group: 'Formant', tip: 'Morphs the formant bank a → o → u → e → i.' },
+      { key: 'motionRate', label: 'Motion Rate', min: 0, max: 8, step: 0.05, default: 0.8, unit: 'Hz', group: 'Formant', tip: 'LFO wobble of the vowel position.' },
+      { key: 'motionDepth', label: 'Motion Depth', min: 0, max: 1, step: 0.01, default: 0.35, display: 'percent', group: 'Formant' },
+      { key: 'whistleHz', label: 'Whistle', min: 800, max: 2400, step: 10, default: 1500, unit: 'Hz', curve: 'log', group: 'Whistle', tip: 'Centre of the sygyt overtone band.' },
+      { key: 'whistleAmt', label: 'Whistle Amt', min: 0, max: 1, step: 0.01, default: 0.45, display: 'percent', group: 'Whistle' },
+    ],
+    mixKey: 'mix',
+    xy: [{ label: 'Vowel / Growl', x: 'vowel', y: 'growlDepth' }],
+    presets: [
+      { label: 'Throat Growl', values: { subLevel: 0.9, deepLevel: 0.3, growlRate: 45, growlDepth: 0.65, drive: 14, vowel: 0.6, whistleAmt: 0.45 } },
+      { label: 'Deep Sub', values: { subLevel: 1.2, deepLevel: 0.8, growlDepth: 0.3, drive: 8, whistleAmt: 0.1, motionDepth: 0.15 } },
+      { label: 'Sygyt Whistle', values: { subLevel: 0.6, growlDepth: 0.4, whistleAmt: 1, whistleHz: 1900, vowel: 3.5 } },
+      { label: 'Talking Bass', values: { vowel: 2, motionRate: 2.5, motionDepth: 0.9, growlDepth: 0.5, drive: 20 } },
     ],
     make: makeKargyraa,
   },
@@ -1701,8 +1768,14 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Spatial',
     description: 'True mid/side widening with a mono-safe low end.',
     params: [
-      { key: 'width', label: 'Width', min: 0, max: 2.5, step: 0.01, default: 1.4 },
-      { key: 'bassMonoFreq', label: 'Bass mono', min: 20, max: 400, step: 5, default: 120, unit: 'Hz' },
+      { key: 'width', label: 'Width', min: 0, max: 2.5, step: 0.01, default: 1.4, group: 'Image', tip: '1.0 = unchanged, 0 = mono, above 1 widens the side signal.' },
+      { key: 'bassMonoFreq', label: 'Bass Mono', min: 20, max: 400, step: 5, default: 120, unit: 'Hz', curve: 'log', group: 'Image', tip: 'Side signal is high-passed here so the low end stays centred.' },
+    ],
+    presets: [
+      { label: 'Mono', values: { width: 0 } },
+      { label: 'Narrow', values: { width: 0.7 } },
+      { label: 'Wide', values: { width: 1.6, bassMonoFreq: 120 } },
+      { label: 'Super Wide', values: { width: 2.2, bassMonoFreq: 150 } },
     ],
     make: makeStereoWidener,
   },
@@ -1712,9 +1785,16 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Tone',
     description: 'Adds harmonic air/presence the ear reads as detail.',
     params: [
-      { key: 'frequency', label: 'Freq', min: 1000, max: 9000, step: 50, default: 3500, unit: 'Hz' },
-      { key: 'amount', label: 'Amount', min: 1, max: 40, step: 1, default: 8 },
-      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.4 },
+      { key: 'frequency', label: 'Freq', min: 1000, max: 9000, step: 50, default: 3500, unit: 'Hz', curve: 'log', group: 'Excite', tip: 'High-pass corner of the band that gets new harmonics.' },
+      { key: 'amount', label: 'Amount', min: 1, max: 40, step: 1, default: 8, group: 'Excite', tip: 'Harmonic generator drive.' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.4, display: 'percent', group: 'Output' },
+    ],
+    mixKey: 'mix',
+    xy: [{ label: 'Air', x: 'frequency', y: 'amount' }],
+    presets: [
+      { label: 'Air', values: { frequency: 5000, amount: 6, mix: 0.3 } },
+      { label: 'Presence', values: { frequency: 3000, amount: 10, mix: 0.4 } },
+      { label: 'Crunch', values: { frequency: 2000, amount: 20, mix: 0.6 } },
     ],
     make: makeExciter,
   },
@@ -1724,13 +1804,14 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Spatial',
     description: 'Positions the track in 3D around the head, with motion presets.',
     params: [
-      { key: 'azimuth', label: 'Azimuth', min: -180, max: 180, step: 1, default: 0, unit: 'deg' },
-      { key: 'elevation', label: 'Elevation', min: -90, max: 90, step: 1, default: 0, unit: 'deg' },
-      { key: 'distance', label: 'Distance', min: 0.5, max: 10, step: 0.1, default: 1.5 },
-      { key: 'motion', label: 'Motion', min: 0, max: 11, step: 1, default: 0 },
-      { key: 'motionRate', label: 'Rate', min: 0, max: 4, step: 0.01, default: 0.3, unit: 'Hz' },
-      { key: 'motionDepth', label: 'Depth', min: 0, max: 8, step: 0.1, default: 1.5 },
+      { key: 'azimuth', label: 'Azimuth', min: -180, max: 180, step: 1, default: 0, unit: 'deg', bipolar: true, group: 'Position', tip: '0 = front, +90 = right, ±180 = behind.' },
+      { key: 'elevation', label: 'Elevation', min: -90, max: 90, step: 1, default: 0, unit: 'deg', bipolar: true, group: 'Position' },
+      { key: 'distance', label: 'Distance', min: 0.5, max: 10, step: 0.1, default: 1.5, unit: 'm', curve: 'log', group: 'Position' },
+      { key: 'motion', label: 'Motion', min: 0, max: 11, step: 1, default: 0, options: SPATIAL_MOTIONS, group: 'Motion' },
+      { key: 'motionRate', label: 'Rate', min: 0, max: 4, step: 0.01, default: 0.3, unit: 'Hz', group: 'Motion' },
+      { key: 'motionDepth', label: 'Depth', min: 0, max: 8, step: 0.1, default: 1.5, unit: 'm', group: 'Motion' },
     ],
+    presets: SPATIAL_PRESETS,
     make: makeSpatializer,
   },
   {
@@ -1739,8 +1820,13 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Tone',
     description: 'Equal-loudness tilt so the balance holds at low volume.',
     params: [
-      { key: 'level', label: 'Level', min: 0, max: 90, step: 1, default: 70, unit: 'phon' },
-      { key: 'amount', label: 'Amount', min: 0, max: 1, step: 0.01, default: 0.5 },
+      { key: 'level', label: 'Level', min: 0, max: 90, step: 1, default: 70, unit: 'phon', group: 'Contour', tip: 'Listening level the contour compensates for — lower means more low/high lift.' },
+      { key: 'amount', label: 'Amount', min: 0, max: 1, step: 0.01, default: 0.5, display: 'percent', group: 'Contour' },
+    ],
+    presets: [
+      { label: 'Night', values: { level: 30, amount: 0.8 } },
+      { label: 'Quiet room', values: { level: 50, amount: 0.6 } },
+      { label: 'Reference', values: { level: 80, amount: 0.2 } },
     ],
     make: makeLoudnessContour,
   },
@@ -1750,12 +1836,20 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Performance',
     description: 'An XY performance pad: pick a program, then sweep two params by dragging.',
     params: [
-      { key: 'program', label: 'Program', min: 0, max: 4, step: 1, default: 0 },
-      { key: 'x', label: 'X', min: 0, max: 1, step: 0.001, default: 0.5 },
-      { key: 'y', label: 'Y', min: 0, max: 1, step: 0.001, default: 0.3 },
-      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
-      { key: 'hold', label: 'Hold', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'active', label: 'Active', min: 0, max: 1, step: 1, default: 1 },
+      { key: 'program', label: 'Program', min: 0, max: 4, step: 1, default: 0, options: OWLPAD_PROGRAMS, group: 'Program' },
+      { key: 'x', label: 'X', min: 0, max: 1, step: 0.001, default: 0.5, display: 'percent', group: 'Pad', tip: 'Frequency (or delay time in the Delay program).' },
+      { key: 'y', label: 'Y', min: 0, max: 1, step: 0.001, default: 0.3, display: 'percent', group: 'Pad', tip: 'Resonance (or feedback in the delay programs).' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1, display: 'percent', group: 'Output' },
+      { key: 'hold', label: 'Hold', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Program', tip: 'Latch the last pad position instead of gating back to dry on release.' },
+      { key: 'active', label: 'Active', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Program' },
+    ],
+    mixKey: 'mix',
+    xy: [{ label: 'Pad', x: 'x', y: 'y' }],
+    presets: [
+      { label: 'LPF Sweep', values: { program: 0, x: 0.5, y: 0.3, active: 1 } },
+      { label: 'HPF Sweep', values: { program: 1, x: 0.3, y: 0.3, active: 1 } },
+      { label: 'Delay Throw', values: { program: 3, x: 0.4, y: 0.55, active: 1 } },
+      { label: 'Filter + Delay', values: { program: 4, x: 0.5, y: 0.5, active: 1 } },
     ],
     make: makeOwlPad,
   },
@@ -1765,12 +1859,18 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Performance',
     description: 'Rhythmic tremolo gate: chop the level with an LFO (sine/square/saw), free-run or tempo-synced.',
     params: [
-      { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz' },
-      { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8 },
-      { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1 },
-      { key: 'sync', label: 'Sync', min: 0, max: 1, step: 1, default: 0 },
-      { key: 'div', label: 'Division', min: 0, max: 7, step: 1, default: 3 },
-      { key: 'bpm', label: 'BPM', min: 40, max: 240, step: 1, default: 120 },
+      { key: 'sync', label: 'Sync', min: 0, max: 1, step: 1, default: 0, kind: 'toggle', group: 'Clock', tip: 'Tempo-sync: the rate follows Division × BPM instead of the Rate knob.' },
+      { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz', curve: 'log', group: 'Clock' },
+      { key: 'div', label: 'Division', min: 0, max: 7, step: 1, default: 3, options: GATER_DIVISIONS, group: 'Clock' },
+      { key: 'bpm', label: 'BPM', min: 40, max: 240, step: 1, default: 120, group: 'Clock' },
+      { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1, options: ['Sine', 'Square', 'Saw'], group: 'Gate' },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8, display: 'percent', group: 'Gate' },
+    ],
+    presets: [
+      { label: 'Trance 1/16', values: { sync: 1, div: 4, shape: 1, depth: 0.9 } },
+      { label: 'Chop 1/8', values: { sync: 1, div: 3, shape: 1, depth: 1 } },
+      { label: 'Tremolo', values: { sync: 0, rate: 5, shape: 0, depth: 0.5 } },
+      { label: 'Helicopter', values: { sync: 0, rate: 14, shape: 2, depth: 1 } },
     ],
     make: makeGater,
   },
@@ -1780,8 +1880,14 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Performance',
     description: 'Lo-fi bit-depth reduction (stepped quantization), blended with dry.',
     params: [
-      { key: 'bits', label: 'Bits', min: 1, max: 16, step: 1, default: 8 },
-      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+      { key: 'bits', label: 'Bits', min: 1, max: 16, step: 1, default: 8, unit: 'bit', group: 'Crush' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1, display: 'percent', group: 'Output' },
+    ],
+    mixKey: 'mix',
+    presets: [
+      { label: '12-bit warm', values: { bits: 12, mix: 0.6 } },
+      { label: '8-bit', values: { bits: 8, mix: 1 } },
+      { label: '4-bit crunch', values: { bits: 4, mix: 1 } },
     ],
     make: makeBitcrush,
   },
@@ -1791,8 +1897,15 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Performance',
     description: 'Multiply by a sine carrier for metallic / robotic sidebands.',
     params: [
-      { key: 'frequency', label: 'Freq', min: 1, max: 4000, step: 1, default: 200, unit: 'Hz' },
-      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
+      { key: 'frequency', label: 'Freq', min: 1, max: 4000, step: 1, default: 200, unit: 'Hz', curve: 'log', group: 'Carrier' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1, display: 'percent', group: 'Output' },
+    ],
+    mixKey: 'mix',
+    xy: [{ label: 'Carrier / Mix', x: 'frequency', y: 'mix' }],
+    presets: [
+      { label: 'Robot', values: { frequency: 200, mix: 1 } },
+      { label: 'Bell', values: { frequency: 1200, mix: 0.7 } },
+      { label: 'Sub Tremor', values: { frequency: 30, mix: 1 } },
     ],
     make: makeRingMod,
   },
@@ -1802,12 +1915,18 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Performance',
     description: 'MPC-style buffer chop: stutter, beat-repeat, or shuffle. Latch for continuous, or hold to chop.',
     params: [
-      { key: 'program', label: 'Program', min: 0, max: 2, step: 1, default: 0 },
-      { key: 'rate', label: 'Rate', min: 0.5, max: 32, step: 0.5, default: 8, unit: 'Hz' },
-      { key: 'slice', label: 'Slice', min: 0.05, max: 1, step: 0.01, default: 0.5 },
-      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1 },
-      { key: 'latch', label: 'Latch', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'gate', label: 'Gate', min: 0, max: 1, step: 1, default: 0 },
+      { key: 'program', label: 'Program', min: 0, max: 2, step: 1, default: 0, options: ['Stutter', 'Beat-Repeat', 'Shuffle'], group: 'Program' },
+      { key: 'rate', label: 'Rate', min: 0.5, max: 32, step: 0.5, default: 8, unit: 'Hz', curve: 'log', group: 'Chop' },
+      { key: 'slice', label: 'Slice', min: 0.05, max: 1, step: 0.01, default: 0.5, display: 'percent', group: 'Chop', tip: 'Fraction of each cycle that is replayed.' },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, default: 1, display: 'percent', group: 'Output' },
+      { key: 'latch', label: 'Latch', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Program', tip: 'Chop continuously; off = dry until Gate is held.' },
+      { key: 'gate', label: 'Gate', min: 0, max: 1, step: 1, default: 0, kind: 'toggle', group: 'Program', tip: 'Momentary chop while held (when Latch is off).' },
+    ],
+    mixKey: 'mix',
+    presets: [
+      { label: 'Stutter 1/16', values: { program: 0, rate: 8, slice: 0.5 } },
+      { label: 'Beat Repeat', values: { program: 1, rate: 4, slice: 0.5 } },
+      { label: 'Shuffle', values: { program: 2, rate: 2, slice: 1 } },
     ],
     make: makeChop,
   },
@@ -1817,10 +1936,17 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'EQ & Dynamics',
     description: 'Three-band tone shaping: low shelf, sweepable mid bell, high shelf.',
     params: [
-      { key: 'low', label: 'Low', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB' },
-      { key: 'midFreq', label: 'Mid Freq', min: 100, max: 12000, step: 10, default: 1000, unit: 'Hz' },
-      { key: 'mid', label: 'Mid', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB' },
-      { key: 'high', label: 'High', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB' },
+      { key: 'low', label: 'Low', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB', bipolar: true, group: 'Low shelf', tip: 'Low shelf at 120 Hz.' },
+      { key: 'midFreq', label: 'Mid Freq', min: 100, max: 12000, step: 10, default: 1000, unit: 'Hz', curve: 'log', group: 'Mid bell' },
+      { key: 'mid', label: 'Mid', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB', bipolar: true, group: 'Mid bell' },
+      { key: 'high', label: 'High', min: -24, max: 24, step: 0.5, default: 0, unit: 'dB', bipolar: true, group: 'High shelf', tip: 'High shelf at 6 kHz.' },
+    ],
+    xy: [{ label: 'Mid', x: 'midFreq', y: 'mid' }],
+    presets: [
+      { label: 'Smile', values: { low: 3, midFreq: 800, mid: -2, high: 3 } },
+      { label: 'Presence', values: { low: 0, midFreq: 3000, mid: 3, high: 1 } },
+      { label: 'Mud Cut', values: { low: -2, midFreq: 300, mid: -4, high: 0 } },
+      { label: 'Telephone', values: { low: -12, midFreq: 1500, mid: 6, high: -12 } },
     ],
     make: makeParametricEq,
   },
@@ -1830,12 +1956,19 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'EQ & Dynamics',
     description: 'Dynamics compressor with makeup gain (threshold/ratio/attack/release).',
     params: [
-      { key: 'threshold', label: 'Threshold', min: -60, max: 0, step: 0.5, default: -24, unit: 'dB' },
-      { key: 'ratio', label: 'Ratio', min: 1, max: 20, step: 0.1, default: 3 },
-      { key: 'attack', label: 'Attack', min: 0, max: 200, step: 1, default: 10, unit: 'ms' },
-      { key: 'release', label: 'Release', min: 5, max: 1000, step: 5, default: 150, unit: 'ms' },
-      { key: 'knee', label: 'Knee', min: 0, max: 40, step: 1, default: 6, unit: 'dB' },
-      { key: 'makeup', label: 'Makeup', min: 0, max: 24, step: 0.5, default: 0, unit: 'dB' },
+      { key: 'threshold', label: 'Threshold', min: -60, max: 0, step: 0.5, default: -24, unit: 'dB', group: 'Detector' },
+      { key: 'ratio', label: 'Ratio', min: 1, max: 20, step: 0.1, default: 3, unit: ':1', group: 'Detector' },
+      { key: 'knee', label: 'Knee', min: 0, max: 40, step: 1, default: 6, unit: 'dB', group: 'Detector' },
+      { key: 'attack', label: 'Attack', min: 0, max: 200, step: 1, default: 10, unit: 'ms', group: 'Envelope' },
+      { key: 'release', label: 'Release', min: 5, max: 1000, step: 5, default: 150, unit: 'ms', curve: 'log', group: 'Envelope' },
+      { key: 'makeup', label: 'Makeup', min: 0, max: 24, step: 0.5, default: 0, unit: 'dB', group: 'Output' },
+    ],
+    xy: [{ label: 'Threshold / Ratio', x: 'threshold', y: 'ratio' }],
+    presets: [
+      { label: 'Gentle Glue', values: { threshold: -18, ratio: 2, knee: 10, attack: 30, release: 200, makeup: 1 } },
+      { label: 'Vocal', values: { threshold: -24, ratio: 4, knee: 6, attack: 10, release: 120, makeup: 3 } },
+      { label: 'Drum Smash', values: { threshold: -30, ratio: 10, knee: 2, attack: 2, release: 60, makeup: 6 } },
+      { label: 'Peak Stop', values: { threshold: -6, ratio: 20, knee: 0, attack: 1, release: 50, makeup: 0 } },
     ],
     make: makeCompressor,
   },
@@ -1845,10 +1978,18 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Space',
     description: 'Convolution reverb (synthesized IR) with predelay, tone and wet/dry mix.',
     params: [
-      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's' },
-      { key: 'predelay', label: 'Predelay', min: 0, max: 200, step: 1, default: 20, unit: 'ms' },
-      { key: 'tone', label: 'Tone', min: 500, max: 18000, step: 50, default: 8000, unit: 'Hz' },
-      { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3 },
+      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's', curve: 'log', group: 'Space' },
+      { key: 'predelay', label: 'Predelay', min: 0, max: 200, step: 1, default: 20, unit: 'ms', group: 'Space' },
+      { key: 'tone', label: 'Tone', min: 500, max: 18000, step: 50, default: 8000, unit: 'Hz', curve: 'log', group: 'Tone', tip: 'Low-pass on the reverb tail.' },
+      { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3, display: 'percent', group: 'Output' },
+    ],
+    mixKey: 'wet',
+    xy: [{ label: 'Decay / Mix', x: 'decay', y: 'wet' }],
+    presets: [
+      { label: 'Room', values: { decay: 0.8, predelay: 10, tone: 6000, wet: 0.2 } },
+      { label: 'Plate', values: { decay: 1.8, predelay: 0, tone: 12000, wet: 0.3 } },
+      { label: 'Hall', values: { decay: 3, predelay: 30, tone: 8000, wet: 0.35 } },
+      { label: 'Cathedral', values: { decay: 6, predelay: 60, tone: 5000, wet: 0.45 } },
     ],
     make: makeReverb,
   },
@@ -1858,10 +1999,18 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Space',
     description: 'Feedback delay/echo with a tone-shaped feedback path and wet mix.',
     params: [
-      { key: 'time', label: 'Time', min: 0, max: 2000, step: 1, default: 350, unit: 'ms' },
-      { key: 'feedback', label: 'Feedback', min: 0, max: 0.95, step: 0.01, default: 0.35 },
-      { key: 'tone', label: 'Tone', min: 200, max: 18000, step: 50, default: 6000, unit: 'Hz' },
-      { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3 },
+      { key: 'time', label: 'Time', min: 0, max: 2000, step: 1, default: 350, unit: 'ms', group: 'Echo' },
+      { key: 'feedback', label: 'Feedback', min: 0, max: 0.95, step: 0.01, default: 0.35, display: 'percent', group: 'Echo' },
+      { key: 'tone', label: 'Tone', min: 200, max: 18000, step: 50, default: 6000, unit: 'Hz', curve: 'log', group: 'Tone', tip: 'Low-pass in the feedback path — repeats get darker.' },
+      { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3, display: 'percent', group: 'Output' },
+    ],
+    mixKey: 'wet',
+    xy: [{ label: 'Time / Feedback', x: 'time', y: 'feedback' }],
+    presets: [
+      { label: 'Slapback', values: { time: 110, feedback: 0.15, tone: 6000, wet: 0.3 } },
+      { label: '1/8 @ 120', values: { time: 250, feedback: 0.4, tone: 5000, wet: 0.3 } },
+      { label: 'Dotted 1/8 @ 120', values: { time: 375, feedback: 0.45, tone: 5000, wet: 0.3 } },
+      { label: 'Dub', values: { time: 450, feedback: 0.7, tone: 2000, wet: 0.4 } },
     ],
     make: makeDelay,
   },
@@ -1871,8 +2020,15 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'EQ & Dynamics',
     description: 'Resonant high-pass filter (removes lows below the cutoff).',
     params: [
-      { key: 'frequency', label: 'Freq', min: 20, max: 2000, step: 5, default: 120, unit: 'Hz' },
-      { key: 'resonance', label: 'Q', min: 0.1, max: 18, step: 0.1, default: 0.7 },
+      { key: 'frequency', label: 'Freq', min: 20, max: 2000, step: 5, default: 120, unit: 'Hz', curve: 'log', group: 'Filter' },
+      { key: 'resonance', label: 'Q', min: 0.1, max: 18, step: 0.1, default: 0.7, curve: 'log', group: 'Filter' },
+    ],
+    xy: [{ label: 'Cutoff / Q', x: 'frequency', y: 'resonance' }],
+    presets: [
+      { label: 'Rumble Cut', values: { frequency: 40, resonance: 0.7 } },
+      { label: 'Thin', values: { frequency: 300, resonance: 0.7 } },
+      { label: 'Telephone', values: { frequency: 600, resonance: 2 } },
+      { label: 'Resonant Sweep', values: { frequency: 200, resonance: 8 } },
     ],
     make: makeHighpass,
   },
@@ -1882,8 +2038,15 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'EQ & Dynamics',
     description: 'Resonant low-pass filter (removes highs above the cutoff).',
     params: [
-      { key: 'frequency', label: 'Freq', min: 500, max: 20000, step: 10, default: 8000, unit: 'Hz' },
-      { key: 'resonance', label: 'Q', min: 0.1, max: 18, step: 0.1, default: 0.7 },
+      { key: 'frequency', label: 'Freq', min: 500, max: 20000, step: 10, default: 8000, unit: 'Hz', curve: 'log', group: 'Filter' },
+      { key: 'resonance', label: 'Q', min: 0.1, max: 18, step: 0.1, default: 0.7, curve: 'log', group: 'Filter' },
+    ],
+    xy: [{ label: 'Cutoff / Q', x: 'frequency', y: 'resonance' }],
+    presets: [
+      { label: 'Warm', values: { frequency: 6000, resonance: 0.7 } },
+      { label: 'Muffled', values: { frequency: 1200, resonance: 0.7 } },
+      { label: 'Underwater', values: { frequency: 500, resonance: 4 } },
+      { label: 'Acid', values: { frequency: 1500, resonance: 10 } },
     ],
     make: makeLowpass,
   },
@@ -1893,27 +2056,41 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     group: 'Performance',
     description: 'Ares control surface: filter -> delay -> reverb -> grains -> gate, one effect driven by the XY pad, knobs and selectors.',
     params: [
-      { key: 'filterOn', label: 'Filter', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'filterType', label: 'F Type', min: 0, max: 1, step: 0.2, default: 0 },
-      { key: 'filterCutoff', label: 'Cutoff', min: 0, max: 1, step: 0.01, default: 0.74 },
-      { key: 'filterReso', label: 'Reso', min: 0, max: 1, step: 0.01, default: 0.4 },
-      { key: 'delayOn', label: 'Delay', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'delayTime', label: 'D Time', min: 0, max: 1, step: 0.01, default: 0.6 },
-      { key: 'delayFeedback', label: 'D Fbk', min: 0, max: 1, step: 0.01, default: 0.5 },
-      { key: 'delayMix', label: 'D Mix', min: 0, max: 1, step: 0.01, default: 0.5 },
-      { key: 'reverbOn', label: 'Reverb', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'reverbSize', label: 'R Size', min: 0, max: 1, step: 0.01, default: 0.48 },
-      { key: 'reverbMix', label: 'R Mix', min: 0, max: 1, step: 0.01, default: 0.55 },
-      { key: 'grainsOn', label: 'Grains', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'grainsDensity', label: 'G Dens', min: 0, max: 1, step: 0.01, default: 0.42 },
-      { key: 'grainsSize', label: 'G Size', min: 0, max: 1, step: 0.01, default: 0.4 },
-      { key: 'grainsSpread', label: 'G Sprd', min: 0, max: 1, step: 0.01, default: 0.5 },
-      { key: 'grainsMix', label: 'G Mix', min: 0, max: 1, step: 0.01, default: 0.6 },
-      { key: 'gateOn', label: 'Gate', min: 0, max: 1, step: 1, default: 1 },
-      { key: 'gateRate', label: 'Gt Rate', min: 0, max: 1, step: 0.01, default: 0.33 },
-      { key: 'gateDepth', label: 'Gt Dpth', min: 0, max: 1, step: 0.01, default: 0.72 },
-      { key: 'wetDry', label: 'Wet/Dry', min: 0, max: 1, step: 0.01, default: 0.85 },
-      { key: 'freeze', label: 'Freeze', min: 0, max: 1, step: 1, default: 0 },
+      { key: 'filterOn', label: 'Filter On', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Filter' },
+      // The engine maps 0..1 onto six slots (two of them low-pass) so the .gan
+      // selector's positions land where its artwork says; the panel exposes the
+      // five distinct types at representative positions.
+      { key: 'filterType', label: 'Filter Type', min: 0, max: 1, step: 0.2, default: 0, options: ['Low-pass', 'High-pass', 'Band-pass', 'Notch', 'All-pass'], optionValues: [0, 0.4, 0.6, 0.8, 1], group: 'Filter' },
+      { key: 'filterCutoff', label: 'Filter Cutoff', min: 0, max: 1, step: 0.01, default: 0.74, display: 'percent', group: 'Filter', tip: 'Log sweep 20 Hz – 20 kHz.' },
+      { key: 'filterReso', label: 'Filter Reso', min: 0, max: 1, step: 0.01, default: 0.4, display: 'percent', group: 'Filter' },
+      { key: 'delayOn', label: 'Delay On', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Delay' },
+      { key: 'delayTime', label: 'Delay Time', min: 0, max: 1, step: 0.01, default: 0.6, display: 'percent', group: 'Delay', tip: '0 – 1000 ms.' },
+      { key: 'delayFeedback', label: 'Delay Fbk', min: 0, max: 1, step: 0.01, default: 0.5, display: 'percent', group: 'Delay' },
+      { key: 'delayMix', label: 'Delay Mix', min: 0, max: 1, step: 0.01, default: 0.5, display: 'percent', group: 'Delay' },
+      { key: 'reverbOn', label: 'Reverb On', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Reverb' },
+      { key: 'reverbSize', label: 'Reverb Size', min: 0, max: 1, step: 0.01, default: 0.48, display: 'percent', group: 'Reverb', tip: '0.1 – 8 s decay.' },
+      { key: 'reverbMix', label: 'Reverb Mix', min: 0, max: 1, step: 0.01, default: 0.55, display: 'percent', group: 'Reverb' },
+      { key: 'grainsOn', label: 'Grains On', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Grains' },
+      { key: 'grainsDensity', label: 'Grain Density', min: 0, max: 1, step: 0.01, default: 0.42, display: 'percent', group: 'Grains', tip: '5 – 100 grains/s.' },
+      { key: 'grainsSize', label: 'Grain Size', min: 0, max: 1, step: 0.01, default: 0.4, display: 'percent', group: 'Grains', tip: '40 – 300 ms.' },
+      { key: 'grainsSpread', label: 'Grain Spread', min: 0, max: 1, step: 0.01, default: 0.5, display: 'percent', group: 'Grains' },
+      { key: 'grainsMix', label: 'Grain Mix', min: 0, max: 1, step: 0.01, default: 0.6, display: 'percent', group: 'Grains' },
+      { key: 'freeze', label: 'Freeze', min: 0, max: 1, step: 1, default: 0, kind: 'toggle', group: 'Grains', tip: 'Hold the grain buffer.' },
+      { key: 'gateOn', label: 'Gate On', min: 0, max: 1, step: 1, default: 1, kind: 'toggle', group: 'Gate' },
+      { key: 'gateRate', label: 'Gate Rate', min: 0, max: 1, step: 0.01, default: 0.33, display: 'percent', group: 'Gate', tip: '0.5 – 20 Hz.' },
+      { key: 'gateDepth', label: 'Gate Depth', min: 0, max: 1, step: 0.01, default: 0.72, display: 'percent', group: 'Gate' },
+      { key: 'wetDry', label: 'Wet/Dry', min: 0, max: 1, step: 0.01, default: 0.85, display: 'percent', group: 'Output' },
+    ],
+    mixKey: 'wetDry',
+    xy: [
+      { label: 'Filter', x: 'filterCutoff', y: 'filterReso' },
+      { label: 'Delay', x: 'delayTime', y: 'delayFeedback' },
+    ],
+    presets: [
+      { label: 'Clean', values: { filterOn: 0, delayOn: 0, reverbOn: 0, grainsOn: 0, gateOn: 0, freeze: 0, wetDry: 0.5 } },
+      { label: 'Dub Echo', values: { filterOn: 1, filterType: 0.4, filterCutoff: 0.3, filterReso: 0.3, delayOn: 1, delayTime: 0.45, delayFeedback: 0.7, delayMix: 0.6, reverbOn: 1, reverbSize: 0.6, reverbMix: 0.3, grainsOn: 0, gateOn: 0, freeze: 0, wetDry: 0.8 } },
+      { label: 'Shimmer Cloud', values: { filterOn: 0, delayOn: 0, reverbOn: 1, reverbSize: 0.9, reverbMix: 0.6, grainsOn: 1, grainsDensity: 0.7, grainsSize: 0.6, grainsSpread: 0.8, grainsMix: 0.7, gateOn: 0, freeze: 0, wetDry: 0.9 } },
+      { label: 'Trance Gate', values: { filterOn: 1, filterType: 0, filterCutoff: 0.6, filterReso: 0.5, delayOn: 1, delayTime: 0.25, delayFeedback: 0.3, delayMix: 0.3, reverbOn: 0, grainsOn: 0, gateOn: 1, gateRate: 0.4, gateDepth: 0.9, freeze: 0, wetDry: 1 } },
     ],
     make: makeAres,
   },

@@ -98,7 +98,7 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
   - Takes an absolute path, checks only the extension against a 10-format list, then streams the file; wildcard CORS plus the `0.0.0.0` bind makes it reachable from any browser tab and any LAN device.
   - Fixing it (resolve plus `is_relative_to` containment, and narrowing CORS) closes the exfiltration path that the companion-phone LAN story widens.
 
-- [ ] **FX-001** P0 S Character FX Tube and Vinyl send knob names the backend does not have `frontend/public/edit-modules/character-fx.html:243`
+- [x] **FX-001** P0 S Character FX Tube and Vinyl send knob names the backend does not have `frontend/public/edit-modules/character-fx.html:243`
   - The page sends drive/bias/warmth and crackle/rumble/filtering; `ghost_voice` and `radio_room` declare ghostiness/size and distance/muffle/room, and unknown keys are dropped silently, so both modes render at 0.5 defaults.
   - Fixing it makes 10 of the module's 15 knobs do something; the Web Audio preview already moves, so the render currently contradicts what the user hears.
 

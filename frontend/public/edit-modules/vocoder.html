@@ -78,6 +78,7 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 .ftr-btn.proc:hover{background:rgba(232,121,249,.12)}
 audio{display:none}
 input[type="file"]{display:none}
+.vknob:focus-visible{outline:2px solid #e879f9;outline-offset:2px;border-radius:50%}
 </style>
 </head>
 <body>
@@ -116,7 +117,7 @@ input[type="file"]{display:none}
   <!-- KNOB ROW -->
   <div class="knobs-strip">
     <div class="knob-unit sm">
-      <span class="ku-lbl">Carrier Freq</span>
+      <span class="ku-lbl" title="Live preview carrier only: voxsynth reads Spectral Smooth and Mix">Carrier Freq (preview)</span>
       <svg viewBox="0 0 64 64" class="vknob" data-param="carrierFreq"></svg>
       <span class="ku-val" id="vCarrierFreq">440 Hz</span>
     </div>
@@ -128,7 +129,7 @@ input[type="file"]{display:none}
     </div>
     <div class="knob-sep"></div>
     <div class="knob-unit sm">
-      <span class="ku-lbl">Width</span>
+      <span class="ku-lbl" title="Live preview only: voxsynth reads Spectral Smooth and Mix">Width (preview)</span>
       <svg viewBox="0 0 64 64" class="vknob" data-param="width"></svg>
       <span class="ku-val" id="vWidth">75%</span>
     </div>
@@ -154,10 +155,12 @@ input[type="file"]{display:none}
     <audio id="ain" controls></audio>
     <audio id="aout" controls></audio>
   </div>
-  <input type="file" id="fileinput" accept="audio/*">
+  <input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
 </div>
 
+<script src="module-kit.js"></script>
 <script>
+const kit = window.theDAWKit;
 /* ── STATE ── */
 let actx, analyser, source, inputFile, inputBuf;
 let carrierType = 'noise';
@@ -221,10 +224,9 @@ function updateKnobDisplay(param) {
   const raw = cfg.min + (knobNorm[param] / 100) * (cfg.max - cfg.min);
   const map = { smooth: 'vSmooth', carrierFreq: 'vCarrierFreq', width: 'vWidth', mix: 'vMix' };
   const el = document.getElementById(map[param]);
-  if (el) {
-    if (param === 'carrierFreq') el.textContent = Math.round(raw) + cfg.unit;
-    else el.textContent = Math.round(raw) + cfg.unit;
-  }
+  if (el) el.textContent = Math.round(raw) + cfg.unit;
+  const svg = document.querySelector('.vknob[data-param="' + param + '"]');
+  if (svg) kit.sync(svg);
 }
 
 /* Init all knobs */
@@ -237,7 +239,18 @@ document.querySelectorAll('.vknob').forEach(svg => {
 
 /* ── KNOB INTERACTION ── */
 let vkDrag = { active: false, param: '', startY: 0, startVal: 0 };
+const VK_DEFAULTS = { smooth: 50, carrierFreq: ((440 - 50) / (8000 - 50)) * 100, width: 75, mix: 100 };
 document.querySelectorAll('.vknob').forEach(svg => {
+  const p0 = svg.dataset.param;
+  const lbl = svg.parentElement.querySelector('.ku-lbl');
+  kit.slider(svg, {
+    label: lbl ? lbl.textContent.trim() : p0,
+    min: 0, max: 100, step: 1, wheel: true,
+    get: () => knobNorm[p0],
+    set: v => { knobNorm[p0] = v; renderVKnob(svg, p0); updateKnobDisplay(p0); syncParams(); updateFilterQ(); updateLiveMix(); },
+    format: v => { const cfg = KNOB_CFG[p0]; return Math.round(cfg.min + (v / 100) * (cfg.max - cfg.min)) + cfg.unit; },
+    reset: VK_DEFAULTS[p0],
+  });
   svg.addEventListener('pointerdown', e => {
     const p = svg.dataset.param;
     vkDrag = { active: true, param: p, startY: e.clientY, startVal: knobNorm[p] };
@@ -266,6 +279,9 @@ function syncParams() {
 /* ── HEADER / FOOTER TOGGLES ── */
 document.getElementById('bypBtn').addEventListener('click', function() { this.classList.toggle('on'); });
 document.querySelectorAll('.hdr-pill').forEach(p => p.addEventListener('click', function() { this.classList.toggle('on'); }));
+kit.toggleGroup('#bypBtn, .hdr-pill', 'on');
+kit.toggleGroup('.carrier-pill', 'on', true);
+kit.toggleGroup('.ftr-tab', 'active', true);
 document.querySelectorAll('.ftr-tab').forEach(t => t.addEventListener('click', function() {
   document.querySelectorAll('.ftr-tab').forEach(x => x.classList.remove('active'));
   this.classList.add('active');
