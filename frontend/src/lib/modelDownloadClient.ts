@@ -136,7 +136,7 @@ export function classifyDownloadError(detail: string, repoId?: string): Classifi
     return {
       kind: 'rate_limit',
       headline: 'Hugging Face is rate-limiting',
-      fix: 'Wait a minute, then retry. Setting an HF_TOKEN raises the download limit.',
+      fix: 'Wait a minute, then retry. Signing in to Hugging Face (Settings → Models, or the sign-in card) raises the download limit.',
     };
   }
 
@@ -159,7 +159,7 @@ export function classifyDownloadError(detail: string, repoId?: string): Classifi
     return {
       kind: 'gated',
       headline: 'Access not granted (gated model)',
-      fix: 'You need access first: sign in to Hugging Face, request access on the model page (click "Agree and access"), then create a token and set it as HF_TOKEN. Retry once approved.',
+      fix: 'You need access first: request it on the model page (click "Agree and access"), then create a read token and paste it into the Hugging Face sign-in card that just opened. Retry once approved.',
       links: [
         ...(repoUrl ? [{ label: 'Request access', url: repoUrl }] : []),
         { label: 'Create HF token', url: 'https://huggingface.co/settings/tokens' },

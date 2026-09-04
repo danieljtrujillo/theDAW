@@ -344,8 +344,12 @@ logs/
 *.bak-*
 deprecated/
 
-# Local model weights (multi-GB safetensors + configs) - never commit
-models/
+# Local model weights (multi-GB safetensors + configs) - never commit.
+# ROOT-anchored on purpose: a bare `models/` matches at any depth and was
+# silently swallowing underfit/dashboard/models/ — the small registry JSON
+# files the Underfit dashboard builds its model list from — so every clone
+# and Pinokio install got an empty model picker (GH-133).
+/models/
 
 # Underfit is vendored as a git-subrepo (dada-bots/underfit + local mods): its
 # CODE is tracked by theDAW; only its heavy runtime dirs are excluded here (also

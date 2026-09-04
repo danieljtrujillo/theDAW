@@ -22,6 +22,7 @@ import {
 import { useDownloadStore } from '../../state/downloadStore';
 import { classifyDownloadError, type DownloadJob } from '../../lib/modelDownloadClient';
 import { formatBytes } from '../../lib/storageClient';
+import { requireFeature } from '../../notices/featureGateStore';
 
 /** Bytes/sec → human rate (B/s · KB/s · MB/s · GB/s). */
 const formatSpeed = (bytesPerSec: number): string => {
@@ -255,6 +256,23 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
 
 const DownloadError: React.FC<{ detail: string; repoId?: string }> = ({ detail, repoId }) => {
   const info = classifyDownloadError(detail, repoId);
+  // A gated-repo failure is the one download error the app can actually fix
+  // from inside itself: raise the Hugging Face sign-in card. The card, its
+  // /api/hfauth/login handler and this store all existed, but nothing ever
+  // called requireFeature, so users with a valid token had no way to enter it
+  // and the download 401'd forever (GH-133, half of GH-132).
+  React.useEffect(() => {
+    if (info.kind !== 'gated') return;
+    requireFeature({
+      id: 'hf:gated-model',
+      kind: 'hf',
+      title: 'Sign in to Hugging Face to download this model',
+      message: repoId
+        ? `${repoId} is gated. Accept its licence on huggingface.co, then paste a read token here and retry the download.`
+        : 'This model is gated. Accept its licence on huggingface.co, then paste a read token here and retry the download.',
+      docsHint: 'A token only needs the "read" permission. It is stored where the Hugging Face CLI keeps it.',
+    });
+  }, [info.kind, repoId]);
   return (
     <div className="rounded border border-rose-500/30 bg-rose-500/5 px-2 py-1.5">
       <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">{info.headline}</div>

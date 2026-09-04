@@ -56,6 +56,24 @@ extraResources:
       - "**/*"
       - "!**/__pycache__/**"
       - "!**/*.py[cod]"
+  # Underfit LoRA trainer. This is a vendored git-subrepo of dada-bots/underfit
+  # WITH local modifications, so cloning upstream at runtime is not a
+  # substitute — the tree itself must ship. Without it the packaged app had no
+  # underfit/ at all: the UNDERFIT tab could only report "checkout not found",
+  # and /api/underfit/setup (which syncs an EXISTING checkout, never clones)
+  # had nothing to build (GH-131). The venv is created on first use by that
+  # endpoint; the runtime dirs excluded here mirror .gitignore's underfit rules.
+  - from: ../underfit
+    to: python/underfit
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.py[cod]"
+      - "!**/.venv/**"
+      - "!**/state/**"
+      - "!**/.gradio/**"
+      - "!**/node_modules/**"
+      - "!**/.uv-cache/**"
   - from: ../pyproject.toml
     to: python/pyproject.toml
   - from: ../uv.lock
