@@ -339,6 +339,25 @@ def _get_or_load_generation_pipeline(model_name: str):
                 dt,
                 torch.cuda.is_available(),
             )
+            # Say so, once, when the fast attention path is missing. Nothing in
+            # the UI showed this before, so a user on the SDPA fallback had no
+            # way to know why generation was slower than expected (GH-127/#134).
+            # Expected on Linux/macOS (the wheel is win32-only in pyproject);
+            # on Windows it means the pinned wheel failed to import.
+            if _flash_attn_active() is False and not _FA_WARNED:
+                _FA_WARNED.add("warned")
+                if sys.platform == "win32":
+                    logger.warning(
+                        "model.load: flash_attn is installed but did not import — "
+                        "running on the SDPA fallback (slower). The wheel must match "
+                        "this exact torch/CUDA/Python; see docs/windows/troubleshooting.md."
+                    )
+                else:
+                    logger.info(
+                        "model.load: flash_attn not available on %s — using the SDPA "
+                        "attention fallback (expected here; slower, same math).",
+                        sys.platform,
+                    )
             if torch.cuda.is_available():
                 mem_gb = torch.cuda.memory_allocated() / 1024**3
                 logger.info("model.load: %r VRAM allocated %.2f GB", normalized, mem_gb)
@@ -1016,9 +1035,64 @@ def system_stats():
     return stats
 
 
+def _require_inpaint_region(mask_start: float, mask_end: float) -> None:
+    """Refuse an inpaint request with no usable region, with a fix in the message.
+
+    The pipeline zeroes the source everywhere *outside* [start, end) is kept and
+    *inside* is regenerated — but with no bounds at all it builds an all-zero
+    mask, which silences the whole upload and quietly returns plain
+    text-to-audio. That is a wrong result with no error, which is worse than a
+    clear refusal. Both endpoints used to forward bounds only when one of them
+    was > 0, so a 0–0 region (what the MAKE panel set on every file load) hit
+    exactly that path.
+    """
+    if mask_end > mask_start:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Inpaint needs a region to regenerate: drag a selection on the inpaint "
+            "waveform (or set mask_start/mask_end with mask_end > mask_start). "
+            f"Got {mask_start:.2f}–{mask_end:.2f}s."
+        ),
+    )
+
+
+#: One-shot guard so the flash-attn notice logs once per process, not per load.
+_FA_WARNED: set[str] = set()
+
+
+def _flash_attn_installed() -> bool:
+    """Cheap, import-free: is the flash_attn package present at all?"""
+    import importlib.util
+
+    return importlib.util.find_spec("flash_attn") is not None
+
+
+def _flash_attn_active() -> Optional[bool]:
+    """Did the attention module actually bind flash_attn? None = not yet imported.
+
+    Distinct from `_flash_attn_installed`: a wheel built against a different
+    torch/CUDA imports as present but fails at import time, and the model then
+    runs on the SDPA fallback. Only the transformer module knows which.
+    """
+    mod = sys.modules.get("stable_audio_3.models.transformer")
+    if mod is None:
+        return None
+    return getattr(mod, "flash_attn_func", None) is not None
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model_loaded": pipeline is not None}
+    return {
+        "status": "ok",
+        "model_loaded": pipeline is not None,
+        # Surfaced so the UI / a user / a bug report can tell whether the fast
+        # attention path is available. Absent on Linux and macOS by design
+        # (pyproject gates the wheel to win32) — the SDPA fallback is used.
+        "flash_attention_installed": _flash_attn_installed(),
+        "flash_attention_active": _flash_attn_active(),
+    }
 
 
 @app.get("/api/model-info")
@@ -1038,6 +1112,8 @@ def model_info():
             pipeline.model.diffusion_objective if pipeline else None
         ),
         "has_cuda": torch.cuda.is_available(),
+        "flash_attention_installed": _flash_attn_installed(),
+        "flash_attention_active": _flash_attn_active(),
         "device": str(pipeline.device) if pipeline else None,
         "vram_used_gb": (
             round(torch.cuda.memory_allocated() / 1024**3, 2)
@@ -1452,9 +1528,9 @@ async def generate(
         # Inpainting
         if inpaint_audio_tuple:
             generate_args["inpaint_audio"] = inpaint_audio_tuple
-            if mask_start > 0 or mask_end > 0:
-                generate_args["inpaint_mask_start_seconds"] = mask_start
-                generate_args["inpaint_mask_end_seconds"] = mask_end
+            _require_inpaint_region(mask_start, mask_end)
+            generate_args["inpaint_mask_start_seconds"] = mask_start
+            generate_args["inpaint_mask_end_seconds"] = mask_end
 
         loop = asyncio.get_event_loop()
 
@@ -1881,9 +1957,9 @@ async def generate_jobs(
             base_args["init_noise_level"] = float(init_noise_level)
         if inpaint_audio_tuple:
             base_args["inpaint_audio"] = inpaint_audio_tuple
-            if mask_start > 0 or mask_end > 0:
-                base_args["inpaint_mask_start_seconds"] = float(mask_start)
-                base_args["inpaint_mask_end_seconds"] = float(mask_end)
+            _require_inpaint_region(mask_start, mask_end)
+            base_args["inpaint_mask_start_seconds"] = float(mask_start)
+            base_args["inpaint_mask_end_seconds"] = float(mask_end)
 
         job_id = str(uuid.uuid4())
         lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(

@@ -473,6 +473,7 @@ The interface restyles and rearranges without touching a config file.
 | [docs/guides/dj-and-genealogy.md](docs/guides/dj-and-genealogy.md) | DJ console, the genealogy graph, and the watch-link broadcast. |
 | [docs/workflows/inference.md](docs/workflows/inference.md), [lora.md](docs/workflows/lora.md), [autoencoder.md](docs/workflows/autoencoder.md) | Inference modes, LoRA adapters and training, and the standalone autoencoder. |
 | [docs/windows/setup-guide.md](docs/windows/setup-guide.md), [troubleshooting.md](docs/windows/troubleshooting.md) | Windows installation (CUDA, Flash Attention, soundfile) and fixes. |
+| [docs/linux/setup-guide.md](docs/linux/setup-guide.md) | Linux installation: prerequisites, `./theDAW.sh`, the glibc caveat, and what differs from Windows. |
 
 The GitHub **[Wiki](https://github.com/gantasmo/theDAW/wiki)** mirrors this index in a browsable form across theDAW and its sidecars.
 
@@ -486,7 +487,7 @@ theDAW generates its own documentation and promo material from the live app. `sc
 
 ## Troubleshooting
 
-**Static glitch output on the Medium model.** Flash Attention is not installed correctly. Verify it with `uv run python -c "from flash_attn import flash_attn_func; import flash_attn; print(flash_attn.__version__)"` and reinstall a wheel matching the Python, torch, and CUDA combination from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+**Static glitch output on the Medium model (Windows).** First check whether Flash Attention actually loaded: `GET /api/health` reports `flash_attention_active`, and `uv run python -c "from flash_attn import flash_attn_func; import flash_attn; print(flash_attn.__version__)"` confirms it. If it did not import, reinstall a wheel matching your exact Python, torch and CUDA from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases). Note: without Flash Attention the model runs on an SDPA fallback that is designed to be numerically equivalent (just slower) — this is the normal state on Linux and macOS, where the wheel is not installed at all. If you get static *with* `flash_attention_active: false` and a working fallback, please report it with the model name; that combination is not expected.
 
 **"API UNREACHABLE" banner.** The backend is not listening on port 8600. Test it with `curl http://localhost:8600/api/health`. On Windows, `.\theDAW.bat` clears stale processes automatically.
 

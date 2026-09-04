@@ -324,6 +324,21 @@ runs local SA3 when Suno/Lyria is selected.
   Just Give Up then ran clean through `POST /api/stems/{id}/run?stems=6`. —
   `integration-package/backend/.sidecar_venv/pyvenv.cfg`
 
+### 2026-08-27 — GitHub issue triage (#127 #131 #132 #133 #134): coded, tsc+ruff clean, NOT yet verified in the running app
+
+Standing rule applied throughout: no dead-end errors — self-repair, or say exactly what fixes it.
+
+- **#132 inpaint always errored.** `submitInpaint` never sent `model_name` and `/api/generate-jobs` defaulted to `Form("medium")`, so EDIT inpaint always asked for the gated checkpoint. Endpoint now `Optional[str]=None` → resident model; the panel sends the selection. — `backend/server.py`, `WaveformEditor.tsx`
+- **MAKE inpaint silently discarded the upload.** 0–0 region → all-zero mask → plain text-to-audio, no error. The panel now defaults the region to the middle third on load, and both endpoints 400 with a "drag a region" message on `mask_end <= mask_start` (`_require_inpaint_region`). — `AdvancedGenPanel.tsx`, `server.py`
+- **Model picker reset on reload.** `generateParamsStore` persists `model` only (`partialize`), so a user on `small` stops silently reverting to the gated `medium`. — `generateParamsStore.ts`
+- **HF sign-in was unreachable dead code.** `requireFeature` had zero call sites. A gated download failure now raises the `kind:'hf'` card from `DownloadError`; the classifier's fix text points at it instead of "set HF_TOKEN". Closes the "I have access but it 401s" half of #133/#132. — `DownloadDock.tsx`, `modelDownloadClient.ts`
+- **#131 Underfit dead ends.** Probe now inspects site-packages (numpy/torch/soundfile) and reports "venv is incomplete"; `start_setup` no longer short-circuits on `python.exe` alone; the panel says Repair vs Create, states the 2.5 GB / 10–30 min cost, and now renders `log_tail` during the build (was returned, never shown). Start's 503 detail is rendered. Dashboard URL derives from `diag.port` (was hardcoded 8791). — `underfit/sidecar.py`, `UnderfitView.tsx`
+- **Installer shipped no `underfit/`.** Added to `electron-builder.yml` extraResources with the .gitignore runtime excludes. — `electron-ui/electron-builder.yml`
+- **#133 empty Underfit model picker.** `.gitignore`'s bare `models/` swallowed `underfit/dashboard/models/`; anchored to `/models/` and vendored the six registry/template JSONs from upstream dada-bots/underfit. — `.gitignore`, `underfit/dashboard/models/**`
+- **#134 Linux.** `backend/_devstack.py` `_spawn` shlex-splits string commands off Windows (was `shell=False` + string → FileNotFoundError). New `theDAW.sh` (POSIX port of theDAW.bat incl. the pyk4a glibc<2.38 retry) and `docs/linux/setup-guide.md`, registered in RAG; README + USER_GUIDE link it and the stale "Optional Linux CUDA wheels" section is gone. — `_devstack.py`, `theDAW.sh`, `docs/linux/`, `rag.py`
+- **#127 / FA visibility.** `/api/health` + `/api/model-info` report `flash_attention_installed` / `flash_attention_active`; one-shot log line at model load when the fast path is absent (info on Linux/macOS where it is expected, warning on Windows where it means the wheel failed). — `server.py`
+- **Docs that were wrong.** `tests/conftest.py` no longer tells users to run a nonexistent `uv sync --extra flash-attn`; USER_GUIDE §27.2 cited `sidecars/magenta-rt2-nvidia/port/` (it is `engine/`); `docs/guides/underfit.md` claimed the env is "already provisioned" (false in the shipped app); README and `docs/windows/troubleshooting.md` asserted static Medium output = missing Flash Attention — now framed honestly against the equivalent SDPA fallback with the health fields to check. Coverage report regenerated.
+
 ### 2026-08-27 (second pass) — pad punches, Kargyraa Sub, full-device templates (user request; coded, tsc+ruff clean, NOT yet verified in the running app)
 
 - **PERFORM pads can now punch FX (notes were a dead routing path).** The grid's
