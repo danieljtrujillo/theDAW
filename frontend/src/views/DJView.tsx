@@ -962,11 +962,15 @@ export const DJView: React.FC = () => {
     if (list.length < 2) { setFlash('Automix needs an active set with ≥2 tracks'); setAutomixOn(false); return; }
     const other = (d: djEngine.DeckId): djEngine.DeckId => (d === 'A' ? 'B' : 'A');
     const loadOnto = (d: djEngine.DeckId, entryId: string) => (d === 'A' ? setDeckATrack : setDeckBTrack)(entryId);
-    const loadNextAfter = (entryId: string | null, onto: djEngine.DeckId) => {
+    const nextEntryIdAfter = (entryId: string | null): string | null => {
       const l = seq();
       const i = entryId ? l.indexOf(entryId) : -1;
       const ni = i >= 0 ? i + 1 : 1;
-      if (ni < l.length && l[ni] !== deckATrackRef.current && l[ni] !== deckBTrackRef.current) loadOnto(onto, l[ni]);
+      return ni < l.length ? l[ni] : null;
+    };
+    const loadNextAfter = (entryId: string | null, onto: djEngine.DeckId) => {
+      const nextId = nextEntryIdAfter(entryId);
+      if (nextId && nextId !== deckATrackRef.current && nextId !== deckBTrackRef.current) loadOnto(onto, nextId);
     };
 
     // Init: current = a playing deck, else Deck A seeded with the first track.
@@ -1003,7 +1007,8 @@ export const DJView: React.FC = () => {
         if (!due && useDjAutomix.getState().pendingTransition && ns.hasBuffer) due = true;
         if (cs.playing && due && ns.hasBuffer) {
           useDjAutomix.getState().consumeTransition();
-          const inPerf = perfOf(nxt === 'A' ? deckATrackRef.current : deckBTrackRef.current);
+          const incomingEntryId = nextEntryIdAfter(outEntry);
+          const inPerf = incomingEntryId ? perfOf(incomingEntryId) : undefined;
           syncDeck(nxt);              // beatmatch the incoming deck to the outgoing tempo + phase
           djEngine.seekDeck(nxt, inPerf?.cueIn ?? 0);
           djEngine.playDeck(nxt);

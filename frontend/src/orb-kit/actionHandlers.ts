@@ -375,6 +375,7 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
 
         case 'dj_load_set': {
             const name = stringValue(action.payload, ['name', 'set']).trim();
+            if (!name) return 'No set name provided. Pass a set name to switch to it.';
             const sl = useSetlistStore.getState();
             const match = Object.values(sl.setlists).find(
                 (s) => s.name.toLowerCase() === name.toLowerCase(),
@@ -405,6 +406,7 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
 
         case 'dj_set_next': {
             const label = stringValue(action.payload, ['label', 'track', 'title']).trim();
+            if (!label) return 'No track label provided. Pass a title or track label to queue next.';
             const sl = useSetlistStore.getState();
             const active = sl.activeId ? sl.setlists[sl.activeId] : null;
             if (!active) return 'No active setlist.';
@@ -414,6 +416,7 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
             if (idx < 0) return `No track matching "${label}" in "${active.name}".`;
             const now = useDjAutomix.getState().nowPlayingEntryId;
             const nowIdx = now ? active.entries.findIndex((e) => e.entryId === now) : -1;
+            if (idx === nowIdx) return `"${active.entries[idx].label}" is already playing.`;
             const entries = [...active.entries];
             const [moved] = entries.splice(idx, 1);
             // After the currently-playing track; to the front when nothing plays.

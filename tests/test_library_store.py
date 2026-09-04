@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from backend.modules.library import router
 from backend.modules.library.store import LibraryStore, USER_MUTABLE_FIELDS
 
 
@@ -86,6 +87,31 @@ def test_get_audio_path_resolves_declared_filename(tmp_path: Path):
 
     assert audio is not None
     assert audio == item_dir / "output.wav"
+
+
+def test_load_perf_set_rejects_traversal_and_absolute_paths(tmp_path: Path):
+    store = LibraryStore(tmp_path)
+    set_dir = tmp_path / "bad-set"
+    set_dir.mkdir()
+    (set_dir / "track.wav").write_bytes(b"RIFF\x00\x00\x00\x00WAVEdata")
+    (set_dir / "performance.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {"file": "../outside.wav", "title": "bad"},
+                    {"file": "/tmp/escape.wav", "title": "bad-abs"},
+                    {"file": "track.wav", "title": "good"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = router._load_perf_set(store, set_dir)
+
+    assert result is not None
+    assert [entry["label"] for entry in result["entries"]] == ["good"]
+    assert result["entries"][0]["entryId"]
 
 
 def test_update_entry_writes_only_user_mutable_fields(tmp_path: Path):
