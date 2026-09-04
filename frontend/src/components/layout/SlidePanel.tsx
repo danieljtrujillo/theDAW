@@ -944,7 +944,7 @@ export const SlidePanel: React.FC = () => {
         <span className="w-px h-4 bg-white/10" />
 
         <span
-          className={`w-1.5 h-1.5 rounded-full ${midiInputs.length > 0 ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-zinc-600'}`}
+          className={`w-1.5 h-1.5 rounded-full ${midiInputs.length > 0 ? 'bg-emerald-400' : 'bg-zinc-600'}`}
           title={midiInputs.length > 0 ? `MIDI: ${midiInputs.join(', ')}` : 'No MIDI device connected'}
         />
         <label htmlFor="slide-controller-profile" className="sr-only">Controller profile</label>

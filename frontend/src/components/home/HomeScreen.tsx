@@ -153,9 +153,9 @@ const HOME_TABS: HomeTab[] = [
     accent: { borderL: 'border-l-sky-500/50', hoverBorderL: 'hover:border-l-sky-400/90', icon: 'text-sky-300' },
   },
   {
-    id: 'audimate',
-    label: 'Audimate',
-    desc: 'Wire generation pipelines as nodes',
+    id: 'nodefi',
+    label: 'NodeFI',
+    desc: 'NodeF.I. — wire node graphs: AI pipelines offline, stems + rack FX live',
     icon: Waypoints,
     accent: { borderL: 'border-l-teal-500/50', hoverBorderL: 'hover:border-l-teal-400/90', icon: 'text-teal-300' },
   },

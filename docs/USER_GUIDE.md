@@ -59,7 +59,7 @@ This guide is the task-oriented manual: how to *use* each workspace. For the cod
 37. [App Menu and Project Operations](#37-app-menu-and-project-operations)
 38. [HOME Screen and Onboarding Tour](#38-home-screen-and-onboarding-tour)
 39. [Backup, Updates, and Maintenance](#39-backup-updates-and-maintenance)
-40. [Audimate Tab: Node-Graph Pipelines](#40-audimate-tab)
+40. [NodeF.I. Tab: Node-Graph Pipelines](#40-nodefi-tab)
 41. [TOUR Tab: Venue Discovery and Route Planning](#41-tour-tab)
 42. [Mobile Companion App](#42-mobile-companion-app)
 
@@ -193,7 +193,7 @@ The application window has five regions:
 
 **Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, the app menu (§37), and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
-**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly — and the assistant can reach every workspace plus the Library rail, reporting an honest failure rather than a false success if a target does not exist. Alongside the nine below, the bar also carries **Audimate** (§40), **SWAY**, and **Tour**. The nine core tabs are:
+**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly — and the assistant can reach every workspace plus the Library rail, reporting an honest failure rather than a false success if a target does not exist. Alongside the nine below, the bar also carries **NodeF.I.** (§40), **SWAY**, and **Tour**. The nine core tabs are:
 
 - **MAKE**: generate audio from a text prompt with the AI models (§6).
 - **EDIT**: arrange clips on a timeline, add effects and automation, and export (§7).
@@ -2373,9 +2373,9 @@ The app menu's **Data** section (§37) holds backup, restore, and update operati
 
 ---
 
-## 40. Audimate Tab
+## 40. NodeF.I. Tab
 
-The Audimate tab (`AudimateView`) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
+The NodeF.I. tab (the tab bar reads **NODEFI**; formerly Audimate, which is still the internal identifier prefix — `AudimateView`, `audimateRunner.ts`) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
 
 ### 40.1 Node types
 
@@ -2390,7 +2390,7 @@ The Audimate tab (`AudimateView`) is a node-graph editor for building generation
 
 ### 40.2 Running a graph
 
-Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/audimateRunner.ts`), so an Audimate pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
+Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/audimateRunner.ts`), so a NodeF.I. pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
 
 ---
 

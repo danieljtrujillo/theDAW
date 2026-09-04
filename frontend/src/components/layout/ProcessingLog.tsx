@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { Trash2, Download, X, Zap, Cast, CircleAlert } from 'lucide-react';
+import { Trash2, Download, CircleAlert } from 'lucide-react';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { buildGenerateParamsFromState, useGenerateStore } from '../../state/generateStore';
@@ -63,14 +63,16 @@ const gpuTitle = (s: SystemStats): string | undefined => {
   return g.map((x) => `GPU ${x.index}: ${x.name}  ${x.util_pct ?? '-'}%  ${x.temp_c ?? '-'}C  ${x.vram_used_gb}/${x.vram_total_gb} GB`).join(String.fromCharCode(10));
 };
 
-// ─── Action-button tab config (mirrors GlobalGenerateBar) ────────────────────
+// ─── Action-button tab config ────────────────────────────────────────────────
+// Labels only — the button's skin is the shared neutral/high-contrast pair
+// below (per user mandate: never a bright brand color; theme-derivative idle).
 
 const TAB_CONFIG = {
-  create:  { idle: 'CREATE',  active: 'ABORT', idleColor: 'bg-purple-600 hover:bg-purple-500 text-white',           activeColor: 'bg-red-600/30 text-red-300 hover:bg-red-600/50' },
-  edit:    { idle: 'PROCESS', active: 'ABORT', idleColor: 'bg-blue-700 hover:bg-blue-600 text-white',               activeColor: 'bg-blue-600/30 text-blue-300 hover:bg-blue-600/50' },
-  train:   { idle: 'TRAIN',   active: 'ABORT', idleColor: 'bg-rose-700 hover:bg-rose-600 text-white',               activeColor: 'bg-rose-600/30 text-rose-300 hover:bg-rose-600/50' },
-  library: { idle: 'CREATE',  active: 'ABORT', idleColor: 'bg-purple-600/60 hover:bg-purple-500/60 text-white/70',  activeColor: 'bg-red-600/30 text-red-300 hover:bg-red-600/50' },
-  advanced:{ idle: 'CREATE',  active: 'ABORT', idleColor: 'bg-purple-600/60 hover:bg-purple-500/60 text-white/70',  activeColor: 'bg-red-600/30 text-red-300 hover:bg-red-600/50' },
+  create:  { idle: 'CREATE',  active: 'ABORT' },
+  edit:    { idle: 'PROCESS', active: 'ABORT' },
+  train:   { idle: 'TRAIN',   active: 'ABORT' },
+  library: { idle: 'CREATE',  active: 'ABORT' },
+  advanced:{ idle: 'CREATE',  active: 'ABORT' },
 } as const;
 
 type TabKey = keyof typeof TAB_CONFIG;
@@ -210,7 +212,7 @@ export const LogBody: React.FC = () => {
   return (
     <div className="h-full flex flex-col min-h-0 bg-black/40">
       {/* Thin toolbar at the top of the body for mode toggle + download/clear. */}
-      <div className="shrink-0 flex items-center justify-between gap-1 px-2 py-1 border-b border-white/5 bg-purple-500/4">
+      <div className="shrink-0 flex items-center justify-between gap-1 px-2 py-0.5 border-b border-white/5 bg-purple-500/4">
         <button
           type="button"
           onClick={() => setLogVerbose(!verbose)}
@@ -338,6 +340,15 @@ export const LogBody: React.FC = () => {
 // per user spec), independent of the LOG body's open/closed state so
 // the affordance is always one click away.
 
+// Shared footer-button skin. Deliberately NOT a bright brand color: idle is a
+// muted translucent chip whose classes the edit-theme scope remaps, so it
+// derives from whatever theme is active; while running it flips to a
+// high-contrast inverse (light chip, dark text) so state is unmissable.
+const ACTION_BASE =
+  'relative w-full h-full overflow-hidden rounded-lg border font-black uppercase tracking-widest text-[9px] leading-tight flex items-center justify-center text-center px-1 transition-colors disabled:cursor-not-allowed';
+const ACTION_IDLE = 'bg-white/8 hover:bg-white/15 border-white/15 text-zinc-200';
+const ACTION_HOT = 'bg-zinc-100 hover:bg-white border-white/80 text-black';
+
 export const LogActionButton: React.FC = () => {
   const centerTab     = useAppUiStore((s) => s.centerTab);
   const isGenerating  = useGenerateStore((s) => s.isGenerating);
@@ -378,10 +389,10 @@ export const LogActionButton: React.FC = () => {
       <button
         type="button"
         onClick={sendActiveSetToVj}
-        className="relative w-full h-full overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors bg-cyan-600 hover:bg-cyan-500 text-white"
+        className={`${ACTION_BASE} ${ACTION_IDLE}`}
         title={isVjSetTargetActive() ? 'Send the active setlist to the VJ performance' : 'Queue the active setlist — delivers when the VJ tab opens'}
       >
-        <span className="relative z-10 flex items-center gap-2"><Cast className="w-3.5 h-3.5" /> Send to VJ</span>
+        <span className="relative z-10">Send to VJ</span>
       </button>
     );
   }
@@ -395,15 +406,10 @@ export const LogActionButton: React.FC = () => {
         type="button"
         onClick={() => { void useStudioStore.getState().processChain(); }}
         disabled={isChainProcessing}
-        className={`relative w-full h-full overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors disabled:cursor-not-allowed ${
-          isChainProcessing ? 'bg-orange-600/30 text-orange-300' : 'bg-orange-600 hover:bg-orange-500 text-white'
-        }`}
+        className={`${ACTION_BASE} ${isChainProcessing ? ACTION_HOT : ACTION_IDLE}`}
         title={isChainProcessing ? 'Processing the effect chain…' : 'Process the effect chain over the source audio'}
       >
-        <span className="relative z-10 flex items-center gap-2">
-          <Zap className="w-3.5 h-3.5" />
-          {isChainProcessing ? 'PROCESSING…' : 'PROCESS CHAIN'}
-        </span>
+        <span className="relative z-10">{isChainProcessing ? 'PROCESSING…' : 'PROCESS CHAIN'}</span>
       </button>
     );
   }
@@ -427,9 +433,7 @@ export const LogActionButton: React.FC = () => {
     <button
       type="button"
       onClick={handleAction}
-      className={`relative w-full h-full overflow-hidden font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 transition-colors ${
-        isActive ? cfg.activeColor : cfg.idleColor
-      }`}
+      className={`${ACTION_BASE} ${isActive ? ACTION_HOT : ACTION_IDLE}`}
       title={
         tab === 'create' ? (isGenerating ? 'Abort generation' : `Submit ${model.toUpperCase()} to /api/generate-jobs`) :
         tab === 'edit'   ? (isProcessing ? 'Cancel processing' : 'Process audio') :
@@ -439,14 +443,13 @@ export const LogActionButton: React.FC = () => {
     >
       {tab === 'create' && isGenerating && (
         <div
-          className="absolute inset-y-0 left-0 bg-red-500/25 transition-[width] duration-200"
+          className="absolute inset-y-0 left-0 bg-black/20 transition-[width] duration-200"
           style={{ width: `${Math.max(2, progressPct)}%` }}
         />
       )}
-      <span className="relative z-10 flex items-center gap-2">
-        {isActive ? <X className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
+      <span className="relative z-10 flex flex-col items-center">
         {isActive
-          ? (tab === 'create' ? `ABORT (${progressPct}%)` : cfg.active)
+          ? (tab === 'create' ? `ABORT ${progressPct}%` : cfg.active)
           : cfg.idle}
         {tab === 'create' && !isGenerating && statusLabel !== 'READY' && (
           <span className="text-[8px] font-mono opacity-60 normal-case tracking-normal">{statusLabel}</span>

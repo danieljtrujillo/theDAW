@@ -670,7 +670,7 @@ export const AdvancedGenPanel: React.FC<{
       />
 
       {/* ═══ TOP: input waveforms (INIT | INPAINT) ═══ */}
-      <div className="shrink-0 grid grid-cols-2 gap-1.5" style={{ height: 128 }}>
+      <div className="shrink-0 grid grid-cols-2 gap-1.5" style={{ height: 108 }}>
         {/* INIT */}
         <div className={`${accentBox} flex flex-col px-2 py-1.5 min-w-0`}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
@@ -720,7 +720,7 @@ export const AdvancedGenPanel: React.FC<{
               }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
-            {initAudioUrl ? <SemanticWave audioUrl={initAudioUrl} height={88} ariaLabel="Init audio waveform" />
+            {initAudioUrl ? <SemanticWave audioUrl={initAudioUrl} height={72} ariaLabel="Init audio waveform" />
               : <div className="h-full flex items-center justify-center"><span className="text-[9px] text-zinc-600">No init audio</span></div>}
           </div>
         </div>
@@ -747,7 +747,7 @@ export const AdvancedGenPanel: React.FC<{
               onChange={(e) => { if (e.target.files?.[0]) patch({ inpaintAudioFile: e.target.files[0], inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); e.target.value = ''; }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
-            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={88} ariaLabel="Inpaint audio waveform" onDuration={setInpaintDur}
+            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={72} ariaLabel="Inpaint audio waveform" onDuration={setInpaintDur}
                 region={inpaintDur > 0 ? {
                   start: p.maskStart / inpaintDur,
                   end: p.maskEnd / inpaintDur,
@@ -761,7 +761,7 @@ export const AdvancedGenPanel: React.FC<{
 
       {/* ═══ UPPER: rails span BOTH rows (no blank space below them); the
           chimera card sits in row 1, the viz/prompt row in row 2 ═══ */}
-      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 180px' }}>
+      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 156px' }}>
 
         {/* ── LEFT RAIL: Presets · Controls · Templates (GENERATE lives in footer CREATE) ── */}
         <div className="flex flex-col gap-1.5 min-h-0 row-span-2">
@@ -959,7 +959,7 @@ export const AdvancedGenPanel: React.FC<{
           {/* ONE CRISPR scene behind the whole card: lanes + fused output */}
           <div className="absolute inset-0 z-0 pointer-events-none"><ChimeraDnaScene /></div>
           {/* tab-head panel — the fused CRISPR output forms here on weave */}
-          <div data-crispr-output className="relative z-10 shrink-0 h-28 rounded-lg overflow-hidden border border-purple-500/20 flex items-start justify-center gap-2 pt-1.5">
+          <div data-crispr-output className="relative z-10 shrink-0 h-24 rounded-lg overflow-hidden border border-purple-500/20 flex items-start justify-center gap-2 pt-1.5">
             <span className="pointer-events-none absolute left-2 top-1 z-10 text-[8px] font-black uppercase tracking-[0.3em] text-purple-200/40">
               CRISPR
             </span>

@@ -98,7 +98,7 @@ export const BottomMultiTabPanel: React.FC = () => {
                 key={t.id}
                 data-tour={`bottom-tab-${t.id}`}
                 onClick={() => setActiveTab(t.id)}
-                className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
                 title={t.desc}
               >
                 <Icon className="w-3 h-3" /> {t.label}

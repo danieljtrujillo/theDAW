@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle, AlertTriangle, FolderInput, Info, Layers, Loader2, Save, Scissors, SlidersHorizontal } from 'lucide-react';
+import { AlertCircle, AlertTriangle, FolderInput, Info, Layers, Loader2, PanelRight, Save, Scissors, SlidersHorizontal } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useDawImportStore } from '../state/dawImportStore';
 import { useProjectStore } from '../state/projectStore';
@@ -10,6 +10,8 @@ import { SESSION_IMPORT_FILTER } from '../lib/fileFilters';
 import { PathInput } from '../components/ui/PathInput';
 import { DawSessionGrid } from '../components/session/DawSessionGrid';
 import { PerformRoutingPanel } from '../components/session/PerformRoutingPanel';
+import { PerformRail } from '../components/session/PerformRail';
+import { usePerformRailStore } from '../state/performRailStore';
 import { InfiNightCredit } from '../components/ui/Credit';
 import { importDawProjectToEditor } from '../lib/dawProjectToEditor';
 
@@ -32,6 +34,7 @@ export const SessionView: React.FC = () => {
   const refreshRecent = useProjectStore((s) => s.refreshRecent);
   const [timelineBusy, setTimelineBusy] = React.useState(false);
   const [showRouting, setShowRouting] = React.useState(false);
+  const railOpen = usePerformRailStore((s) => s.open);
   const [recentOpen, setRecentOpen] = React.useState(false);
   const [activeIdx, setActiveIdx] = React.useState(-1);
   const blurCloseTimer = React.useRef<number | null>(null);
@@ -255,6 +258,20 @@ export const SessionView: React.FC = () => {
             <>
               <button
                 type="button"
+                onClick={() => usePerformRailStore.getState().setOpen(!railOpen)}
+                aria-pressed={railOpen}
+                aria-label="Routes and parameters rail"
+                className={`h-7 w-7 inline-flex items-center justify-center rounded border ${
+                  railOpen
+                    ? 'border-emerald-400/40 text-emerald-100 bg-emerald-400/10'
+                    : 'border-white/10 text-zinc-300 hover:text-white hover:bg-white/5'
+                }`}
+                title="Routes & Params — the route list and live effect parameters, in a rail on the right"
+              >
+                <PanelRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
                 onClick={() => setShowRouting((v) => !v)}
                 aria-pressed={showRouting}
                 aria-label="Sway routing"
@@ -314,26 +331,31 @@ export const SessionView: React.FC = () => {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 p-2">
-        {/* DawSessionGrid is keyed on project identity: it holds a decoded-buffer
-            cache and per-track refs that are NOT cleared between imports, so
-            without a remount a second import inherits the first one's audio. */}
-        {project ? (
-          <DawSessionGrid
-            key={`${project.source_daw}:${project.name}:${project.tracks.length}`}
-            project={project}
-            fill
-          />
-        ) : (
-          <div className="h-full rounded border border-dashed border-white/10 bg-black/15 grid place-items-center">
-            <div className="flex flex-col items-center gap-2 text-center">
-              <FolderInput className="w-7 h-7 text-zinc-600" />
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
-                No Project Loaded
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0 min-h-0 p-2">
+          {/* DawSessionGrid is keyed on project identity: it holds a decoded-buffer
+              cache and per-track refs that are NOT cleared between imports, so
+              without a remount a second import inherits the first one's audio. */}
+          {project ? (
+            <DawSessionGrid
+              key={`${project.source_daw}:${project.name}:${project.tracks.length}`}
+              project={project}
+              fill
+            />
+          ) : (
+            <div className="h-full rounded border border-dashed border-white/10 bg-black/15 grid place-items-center">
+              <div className="flex flex-col items-center gap-2 text-center">
+                <FolderInput className="w-7 h-7 text-zinc-600" />
+                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                  No Project Loaded
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+        {/* Right rail — the route list (formerly a chip wall above the grid)
+            and live effect parameters. Collapsible, expandable, resizable. */}
+        {project && <PerformRail project={project} />}
       </div>
 
     </div>

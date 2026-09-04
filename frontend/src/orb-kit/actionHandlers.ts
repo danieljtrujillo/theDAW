@@ -140,7 +140,7 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
             const ok = useAppUiStore.getState().navigateTo(tab);
             return ok
                 ? `Navigated to ${tab}`
-                : `Navigation failed: unknown workspace "${tab}". Valid targets: make, edit, mix, perform, dj, vj, sway, foundry, underfit, audimate, learn, tour, library.`;
+                : `Navigation failed: unknown workspace "${tab}". Valid targets: make, edit, mix, perform, dj, vj, sway, foundry, underfit, nodefi, learn, tour, library.`;
         }
 
         case 'open_docs':

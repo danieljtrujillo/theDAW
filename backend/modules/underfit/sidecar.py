@@ -98,6 +98,45 @@ def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
+#: Packages the dashboard imports at module scope. If any is absent the venv is
+#: broken and `server.py` dies on import, so a repair must be offered.
+_REQUIRED_VENV_PACKAGES = ("numpy", "torch", "soundfile")
+
+
+def _venv_site_packages(cfg: UnderfitConfig) -> Optional[Path]:
+    """The venv's site-packages dir, or None when it cannot be located."""
+    venv = cfg.project_path / ".venv"
+    if sys.platform == "win32":
+        candidate = venv / "Lib" / "site-packages"
+        return candidate if candidate.is_dir() else None
+    for lib in sorted((venv / "lib").glob("python*")):
+        candidate = lib / "site-packages"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def missing_venv_packages(cfg: UnderfitConfig) -> list[str]:
+    """Which required packages are absent from the venv.
+
+    Checked by LOOKING AT site-packages rather than running
+    `python -c "import torch"`: /status is polled every few seconds and
+    spawning an interpreter (which imports torch) that often would be brutal.
+    An empty list means "looks installed"; it is not a guarantee the packages
+    import cleanly, only that a repair is not obviously required.
+    """
+    site = _venv_site_packages(cfg)
+    if site is None:
+        return list(_REQUIRED_VENV_PACKAGES)
+    missing = []
+    for pkg in _REQUIRED_VENV_PACKAGES:
+        # A wheel leaves either <pkg>/ or <pkg>-<version>.dist-info/.
+        if (site / pkg).is_dir() or any(site.glob(f"{pkg}-*.dist-info")):
+            continue
+        missing.append(pkg)
+    return missing
+
+
 def probe() -> dict:
     """Non-spawning diagnostics for /status."""
     cfg = resolve_config()
@@ -114,6 +153,18 @@ def probe() -> dict:
             f"underfit venv python missing at {cfg.python_path} — run its "
             "setup to create .venv"
         )
+    elif cfg.project_path.is_dir():
+        # A venv whose interpreter exists but whose packages do not is the
+        # state a half-finished `uv sync` leaves behind (quitting during the
+        # ~2.5 GB torch download does it). Checking only for python.exe called
+        # that "healthy", which routed the user to a Start button that could
+        # never work instead of to the repair button — GH-131.
+        missing = missing_venv_packages(cfg)
+        if missing:
+            issues.append(
+                f"underfit venv is incomplete — missing {', '.join(missing)}. "
+                "Its setup did not finish; rebuild the environment."
+            )
     return {
         "project_path": str(cfg.project_path),
         "port": cfg.port,
@@ -251,7 +302,12 @@ def start_setup() -> dict:
     second run while one is in flight."""
     cfg = resolve_config()
     with _setup_lock:
-        if cfg.python_path.is_file():
+        # Only short-circuit when the venv is genuinely usable. Reporting
+        # "already present" off the interpreter file alone made this a no-op
+        # for exactly the users who needed it — a half-synced venv has a
+        # python.exe and no packages, so the repair button repaired nothing
+        # and the user was told to install modules by hand (GH-131).
+        if cfg.python_path.is_file() and not missing_venv_packages(cfg):
             _setup.update(state="done", message="Underfit environment already present.")
             return dict(_setup)
         if _setup["state"] == "running":

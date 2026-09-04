@@ -1,6 +1,6 @@
-## Perform, Foundry & Audimate
+## Perform, Foundry & NodeF.I.
 
-Three center-panel tabs that extend theDAW beyond linear editing: a live scene/clip launcher, an embedded plugin-UI designer, and a node-graph generation pipeline. All three are registered in `CenterTabBar.tsx` (labels **Perform**, **Foundry**, **Audimate**) and mounted from `DAWCenterPanel.tsx`.
+Three center-panel tabs that extend theDAW beyond linear editing: a live scene/clip launcher, an embedded plugin-UI designer, and a node-graph generation pipeline. All three are registered in `CenterTabBar.tsx` (labels **Perform**, **Foundry**, **NODEFI**) and mounted from `DAWCenterPanel.tsx`.
 
 ### Perform (Session grid)
 
@@ -22,7 +22,9 @@ Three center-panel tabs that extend theDAW beyond linear editing: a live scene/c
 
 theDAW only hosts the iframe. A Python sidecar (`backend/modules/foundry/sidecar.py`) spawns and supervises the Node server on port **5472**: in production it runs the compiled `dist/server.cjs` directly with a bundled node (no npm/install); in dev it npm-installs then runs the Vite+Express dev server. It is spawned lazily on the first `/api/foundry/url` call and torn down at exit; a 503 surfaces the diagnostic verbatim.
 
-### Audimate (node-graph pipelines)
+### NodeF.I. (node-graph pipelines)
+
+> Renamed from **Audimate**; the tab reads **NODEFI**. The rename is display-level, so every internal identifier still carries the `audimate*` prefix (`AudimateView`, `audimateStore.ts`, `audimateRunner.ts`, `components/audimate/`).
 
 `AudimateView` is a hand-rolled pannable/zoomable node canvas (no node-editor library) with a grouped palette and per-node inspector, plus the standard node-editor toolset: ctrl-click multi-select and shift-drag marquee, multi-node drag, `Ctrl+D` duplicate with edge remapping, `Delete`, `Ctrl+Z`/`Ctrl+Y` undo-redo via history middleware, `Ctrl+A`, `Esc`, `F`/zoom-to-fit, selectable and deletable wires (fat hit paths), and node + wire context menus, all under key-scope arbitration. Pointer math multiplies by the shell's effective CSS zoom, so node ends land under the cursor at any zoom level. Node kinds: **Library** (source), **Generate**, **Magenta**, **Effect**, **Merge/Mix**, **Feedback**, **Output**. The runner (`audimateRunner.ts`) topologically walks the DAG and reuses existing backend contracts — no new endpoints:
 
@@ -36,4 +38,4 @@ The graph (nodes/edges/viewport) persists across reloads; run state is transient
 
 ### Offline / performance
 
-Perform, `.tasmo`, and Audimate are fully local: parsing runs on the FastAPI backend, playback is browser Web Audio, and Generate/Magenta call the local Stable Audio and Magenta sidecars (no external key). Foundry's builder runs locally too; only its optional AI co-designer/texture features need an external provider key or a local engine (Ollama / LM Studio / local Stable Diffusion). Efficiency comes from lazy-warmed tabs, cached/pre-warmed clip buffers, cached transcodes, silent-gap collapsing, a lazily-spawned Foundry sidecar, and Audimate's cache-everything-but-feedback execution.
+Perform, `.tasmo`, and NodeF.I. are fully local: parsing runs on the FastAPI backend, playback is browser Web Audio, and Generate/Magenta call the local Stable Audio and Magenta sidecars (no external key). Foundry's builder runs locally too; only its optional AI co-designer/texture features need an external provider key or a local engine (Ollama / LM Studio / local Stable Diffusion). Efficiency comes from lazy-warmed tabs, cached/pre-warmed clip buffers, cached transcodes, silent-gap collapsing, a lazily-spawned Foundry sidecar, and NodeF.I.'s cache-everything-but-feedback execution.

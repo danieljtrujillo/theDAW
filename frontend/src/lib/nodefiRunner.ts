@@ -1,6 +1,6 @@
 import { magentaFetch } from './magentaEngineClient';
 /**
- * Audimate runner — drives a node graph to produce audio.
+ * Nodefi runner — drives a node graph to produce audio.
  *
  * Topologically walks the graph (feedback back-edges cut first), runs each
  * node's underlying async action (Stable Audio generate, Magenta, studio
@@ -10,7 +10,7 @@ import { magentaFetch } from './magentaEngineClient';
  * previous pass's captured input back out. Everything not reachable from a
  * feedback node runs once and is cached.
  *
- * All network calls reuse the existing backend contracts (see the Audimate
+ * All network calls reuse the existing backend contracts (see the Nodefi
  * integration notes): POST /api/generate-jobs + poll /api/jobs/{id};
  * POST /api/magenta/generate + poll /api/magenta/jobs/{id}; single-shot
  * POST /api/studio/process. No new backend endpoints.
@@ -24,7 +24,8 @@ import { useLibraryStore } from '../state/libraryStore';
 import { EFFECT_DEFAULTS } from '../state/effectChainStore';
 import { getEngineCtx } from '../state/playerStore';
 import { encodeWav } from './wavEncode';
-import type { GraphEdge, GraphNode, NodeRunStatus } from './audimateTypes';
+import { fetchStemBlob } from './nodefiLive';
+import type { GraphEdge, GraphNode, NodeRunStatus } from './nodefiTypes';
 
 export interface RunnerCallbacks {
   onStatus: (nodeId: string, status: NodeRunStatus, message?: string) => void;
@@ -250,7 +251,7 @@ export function runGraph(
         const input = inputBlob(node.id, 'in');
         if (!input) throw new Error('no input audio');
         if (String(node.params.save ?? '1') === '1') {
-          const name = String(node.params.name || '').trim() || 'audimate-output';
+          const name = String(node.params.name || '').trim() || 'nodefi-output';
           await useLibraryStore.getState().importEntry({
             blob: input,
             filename: `${name}.wav`,
@@ -262,6 +263,45 @@ export function runGraph(
       case 'feedback':
         // Handled inline in the pass loop; never dispatched here.
         return inputBlob(node.id, 'in') ?? new Blob();
+      case 'suno': {
+        // Cloud generation through the backend Suno proxy — zero local GPU.
+        // The key lives server-side (Settings → Models); we submit, poll, and
+        // pull the finished MP3 back as this node's output blob.
+        const prompt = String(node.params.prompt || '').trim();
+        if (!prompt) throw new Error('enter a description / style');
+        const { sunoApi } = await import('../suno/sunoApi');
+        const status = await sunoApi.getStatus();
+        if (!status.configured) throw new Error('Suno API key not set — Settings → Models');
+        const title = String(node.params.title || '').trim() || undefined;
+        const job =
+          String(node.params.mode || 'simple') === 'custom'
+            ? await sunoApi.custom({
+                style: prompt,
+                lyrics: String(node.params.lyrics || '').trim() || undefined,
+                title,
+                instrumental: String(node.params.instrumental ?? '1') === '1',
+              })
+            : await sunoApi.simple({ description: prompt, title });
+        for (;;) {
+          ensureLive();
+          await wait(3000);
+          ensureLive();
+          const j = await sunoApi.poll(job.id);
+          if (j.status === 'complete') return sunoApi.fetchAudioBlob(job.id);
+          if (j.status === 'error') throw new Error(j.error || 'Suno generation failed');
+        }
+      }
+      case 'stem':
+        // A stem is a plain source — usable in offline AI graphs too.
+        return fetchStemBlob(String(node.params.libraryId || ''), String(node.params.stem || 'mix'));
+      case 'lfilter':
+      case 'lgain':
+      case 'ldelay':
+      case 'xfade':
+      case 'lrack':
+      case 'lfo':
+      case 'lout':
+        throw new Error('live-only node — press LIVE to perform this graph');
     }
   }
 

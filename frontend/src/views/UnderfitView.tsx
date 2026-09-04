@@ -38,6 +38,8 @@ export const UnderfitView: React.FC = () => {
   // missing checkout/venv shows a fix, never an endless "connecting…".
   const [diag, setDiag] = useState<UnderfitStatus | null>(null);
   const [starting, setStarting] = useState(false);
+  /** Detail from a failed POST /start, rendered next to the button. */
+  const [startError, setStartError] = useState<string | null>(null);
   // On-demand venv build state (POST /api/underfit/setup + poll /setup-status).
   const [setupState, setSetupState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [setupMsg, setSetupMsg] = useState('');
@@ -98,10 +100,27 @@ export const UnderfitView: React.FC = () => {
   // when auto-spawn was disabled). POST /start blocks until :8791 answers.
   const startServer = async () => {
     setStarting(true);
+    setStartError(null);
     try {
-      await fetch('/api/underfit/start', { method: 'POST' });
-    } catch {
-      // Failure shows up in the next diag poll; nothing extra to do here.
+      const res = await fetch('/api/underfit/start', { method: 'POST' });
+      // A 503 RESOLVES — it does not throw — so the old bare `await` dropped the
+      // one message that explains the failure ("Underfit dashboard exited before
+      // becoming ready (rc=…). See …underfit-sidecar.log"). That silence is why
+      // GH-131 arrived as "why do I need to install modules by hand?".
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const body = await res.json() as { detail?: unknown };
+          detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? '');
+        } catch {
+          try { detail = await res.text(); } catch { /* body already consumed */ }
+        }
+        setStartError(detail || `Start failed with HTTP ${res.status}.`);
+      }
+    } catch (e) {
+      setStartError(
+        `Could not reach the backend to start Underfit: ${e instanceof Error ? e.message : String(e)}`,
+      );
     } finally {
       setStarting(false);
       void ping();
@@ -156,8 +175,11 @@ export const UnderfitView: React.FC = () => {
     }
   };
 
-  // Install problems the sidecar can name (checkout missing, venv missing).
+  // Install problems the sidecar can name (checkout missing, venv missing or
+  // incomplete). Any of these routes the user to the build/repair button.
   const installIssues = !reachable && diag && Array.isArray(diag.issues) && diag.issues.length > 0 ? diag.issues : null;
+  /** The venv exists but its packages don't — a rerun repairs rather than creates. */
+  const needsRepair = !!installIssues?.some((i) => i.includes('venv is incomplete'));
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#050507] border border-white/5 rounded-lg overflow-hidden">
@@ -200,7 +222,11 @@ export const UnderfitView: React.FC = () => {
         {!reachable && installIssues && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-zinc-300">
             <AlertTriangle className="w-6 h-6 text-amber-400" />
-            <span className="text-sm font-semibold text-amber-100">Underfit isn't installed on this machine yet</span>
+            <span className="text-sm font-semibold text-amber-100">
+              {needsRepair
+                ? "Underfit's environment is incomplete"
+                : "Underfit isn't installed on this machine yet"}
+            </span>
             <ul className="max-w-xl space-y-1.5">
               {installIssues.map((issue) => (
                 <li key={issue} className="text-[11px] font-mono text-zinc-400 leading-relaxed">
@@ -209,8 +235,12 @@ export const UnderfitView: React.FC = () => {
               ))}
             </ul>
             <div className="max-w-xl text-center text-[11px] text-zinc-500 leading-relaxed">
-              theDAW can build the trainer environment here. This runs a one-time dependency
-              sync and takes a few minutes. The model packs download later, on demand.
+              {needsRepair
+                ? 'A previous setup did not finish, so the environment has an interpreter but no packages. Rerunning it installs only what is missing.'
+                : 'theDAW can build the trainer environment here. This runs a one-time dependency sync. The model packs download later, on demand.'}
+              {' '}It downloads roughly 2.5 GB (torch + torchaudio), so expect 10–30 minutes on a
+              first run. Leave theDAW open while it works — quitting midway is what leaves the
+              environment half-built.
             </div>
             {setupMsg && (
               <div
@@ -233,7 +263,11 @@ export const UnderfitView: React.FC = () => {
                 ) : (
                   <Play className="w-3.5 h-3.5" />
                 )}
-                {setupState === 'running' ? 'Building environment...' : 'Create environment'}
+                {setupState === 'running'
+                  ? 'Building environment...'
+                  : needsRepair
+                    ? 'Repair environment'
+                    : 'Create environment'}
               </button>
               <button
                 type="button"
@@ -259,6 +293,14 @@ export const UnderfitView: React.FC = () => {
               {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
               {starting ? 'Starting…' : 'Start Underfit'}
             </button>
+            {startError && (
+              <p
+                role="alert"
+                className="max-w-lg rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-[10px] font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word text-left"
+              >
+                {startError}
+              </p>
+            )}
           </div>
         )}
         {!reachable && !installIssues && (!diag || diag.listening) && (

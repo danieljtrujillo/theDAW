@@ -17,6 +17,7 @@ Run:  python -m backend._devstack
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -71,6 +72,13 @@ def _emit(tag: str, line: str) -> None:
 
 
 def _spawn(cmd, cwd=None, env=None) -> subprocess.Popen:
+    # On Windows a string command goes through the shell so `npm` / `lt` resolve
+    # their .cmd shims. POSIX has no such shim, and shell=False with a string
+    # makes Popen exec a file literally named "npm run dev" -> FileNotFoundError,
+    # which is why this module could not start the stack on Linux/macOS. Split
+    # into argv there instead of turning the shell on (no quoting surprises).
+    if not IS_WINDOWS and isinstance(cmd, str):
+        cmd = shlex.split(cmd)
     return subprocess.Popen(
         cmd,
         cwd=cwd,
