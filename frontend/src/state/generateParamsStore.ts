@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 export interface LoraSlot {
   name: string;
@@ -271,7 +272,7 @@ interface ParamsStore extends GenerateParamsState {
   clearChimera: () => void;
 }
 
-export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
+export const useGenerateParamsStore = create<ParamsStore>()(persist((set) => ({
   prompt: '',
   negativePrompt: '',
   model: 'medium',
@@ -429,5 +430,14 @@ export const useGenerateParamsStore = create<ParamsStore>()((set) => ({
     chimera: { ...state.chimera, clips: [], lastMeta: null },
     inpaintRegions: [],
   })),
+}), {
+  name: 'thedaw-generate-params-v1',
+  // Only the model choice persists. It used to reset to 'medium' on every
+  // reload, so a user who had switched to 'small' (the only ungated model on
+  // a fresh install) silently went back to requesting the gated one — and the
+  // next inpaint or generate failed with no obvious cause (GH-132). Nothing
+  // else is persisted: the store holds File/Blob objects that cannot be
+  // serialised, and prompt/params are session state by design.
+  partialize: (s) => ({ model: s.model }),
 }));
 

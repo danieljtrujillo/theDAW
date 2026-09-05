@@ -341,6 +341,32 @@ def _get_or_load_generation_pipeline(model_name: str):
                 dt,
                 torch.cuda.is_available(),
             )
+            # Say so, once, when the fast attention path is missing. Nothing in
+            # the UI showed this before, so a user on the SDPA fallback had no
+            # way to know why generation was slower than expected (GH-127/#134).
+            # Expected on Linux/macOS (the wheel is win32-only in pyproject);
+            # on Windows it means the pinned wheel failed to import.
+            if _flash_attn_active() is False and not _FA_WARNED:
+                _FA_WARNED.add("warned")
+                if _flash_attn_imported() and torch.cuda.is_available():
+                    logger.info(
+                        "model.load: flash_attn is installed but %s is below "
+                        "compute capability 8.0 (Ampere) — running on the SDPA "
+                        "attention fallback (works, slower).",
+                        torch.cuda.get_device_name(torch.cuda.current_device()),
+                    )
+                elif sys.platform == "win32":
+                    logger.warning(
+                        "model.load: flash_attn is installed but did not import — "
+                        "running on the SDPA fallback (slower). The wheel must match "
+                        "this exact torch/CUDA/Python; see docs/windows/troubleshooting.md."
+                    )
+                else:
+                    logger.info(
+                        "model.load: flash_attn not available on %s — using the SDPA "
+                        "attention fallback (expected here; slower, same math).",
+                        sys.platform,
+                    )
             if torch.cuda.is_available():
                 mem_gb = torch.cuda.memory_allocated() / 1024**3
                 logger.info("model.load: %r VRAM allocated %.2f GB", normalized, mem_gb)
@@ -1157,9 +1183,82 @@ def system_stats():
     return stats
 
 
+def _require_inpaint_region(mask_start: float, mask_end: float) -> None:
+    """Refuse an inpaint request with no usable region, with a fix in the message.
+
+    The pipeline zeroes the source everywhere *outside* [start, end) is kept and
+    *inside* is regenerated — but with no bounds at all it builds an all-zero
+    mask, which silences the whole upload and quietly returns plain
+    text-to-audio. That is a wrong result with no error, which is worse than a
+    clear refusal. Both endpoints used to forward bounds only when one of them
+    was > 0, so a 0–0 region (what the MAKE panel set on every file load) hit
+    exactly that path.
+    """
+    if mask_end > mask_start:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Inpaint needs a region to regenerate: drag a selection on the inpaint "
+            "waveform (or set mask_start/mask_end with mask_end > mask_start). "
+            f"Got {mask_start:.2f}–{mask_end:.2f}s."
+        ),
+    )
+
+
+#: One-shot guard so the flash-attn notice logs once per process, not per load.
+_FA_WARNED: set[str] = set()
+
+
+def _flash_attn_installed() -> bool:
+    """Cheap, import-free: is the flash_attn package present at all?"""
+    import importlib.util
+
+    return importlib.util.find_spec("flash_attn") is not None
+
+
+def _flash_attn_active() -> Optional[bool]:
+    """Did the attention module actually bind flash_attn? None = not yet imported.
+
+    Distinct from `_flash_attn_installed`: a wheel built against a different
+    torch/CUDA imports as present but fails at import time, and the model then
+    runs on the SDPA fallback. Only the transformer module knows which.
+    """
+    mod = sys.modules.get("stable_audio_3.models.transformer")
+    if mod is None:
+        return None
+    if getattr(mod, "flash_attn_func", None) is None:
+        return False
+    # The wheel can import and still be unusable: FlashAttention 2 kernels
+    # need an Ampere (sm_80) or newer GPU, and the transformer module gates
+    # on that per device (Turing / Volta cards run the SDPA fallback).
+    usable = getattr(mod, "flash_attn_usable", None)
+    if usable is None:
+        return True
+    import torch
+
+    if not torch.cuda.is_available():
+        return False
+    return bool(usable(torch.cuda.current_device()))
+
+
+def _flash_attn_imported() -> bool:
+    """Did the attention module bind flash_attn at import time (GPU aside)?"""
+    mod = sys.modules.get("stable_audio_3.models.transformer")
+    return mod is not None and getattr(mod, "flash_attn_func", None) is not None
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model_loaded": pipeline is not None}
+    return {
+        "status": "ok",
+        "model_loaded": pipeline is not None,
+        # Surfaced so the UI / a user / a bug report can tell whether the fast
+        # attention path is available. Absent on Linux and macOS by design
+        # (pyproject gates the wheel to win32) — the SDPA fallback is used.
+        "flash_attention_installed": _flash_attn_installed(),
+        "flash_attention_active": _flash_attn_active(),
+    }
 
 
 @app.get("/api/model-info")
@@ -1188,6 +1287,8 @@ def model_info():
             if torch.cuda.is_available()
             else []
         ),
+        "flash_attention_installed": _flash_attn_installed(),
+        "flash_attention_active": _flash_attn_active(),
         "device": str(pipeline.device) if pipeline else None,
         "vram_used_gb": (
             round(torch.cuda.memory_allocated() / 1024**3, 2)
@@ -1622,12 +1723,14 @@ async def generate(
         if inpaint_audio_tuple:
             generate_args["inpaint_audio"] = inpaint_audio_tuple
             if mask_start > 0 or mask_end > 0:
+                _require_inpaint_region(mask_start, mask_end)
                 generate_args["inpaint_mask_start_seconds"] = mask_start
                 generate_args["inpaint_mask_end_seconds"] = mask_end
             else:
-                # Multi-region mask. The seconds path is deliberately NOT set
-                # here: pipeline.generate lets start/end seconds override a
-                # prebuilt inpaint_mask.
+                # Multi-region mask (Chimera seam healing). The seconds path is
+                # deliberately NOT set here: pipeline.generate lets start/end
+                # seconds override a prebuilt inpaint_mask. No usable region at
+                # all gets the same clear 400 as an empty 0-0 selection.
                 inpaint_mask = _build_inpaint_mask(
                     inpaint_region_list,
                     int(
@@ -1635,8 +1738,9 @@ async def generate(
                     ),
                     int(generate_args["sample_size"]),
                 )
-                if inpaint_mask is not None:
-                    generate_args["inpaint_mask"] = inpaint_mask
+                if inpaint_mask is None:
+                    _require_inpaint_region(mask_start, mask_end)
+                generate_args["inpaint_mask"] = inpaint_mask
 
         loop = asyncio.get_event_loop()
 
@@ -2081,12 +2185,14 @@ async def generate_jobs(
         if inpaint_audio_tuple:
             base_args["inpaint_audio"] = inpaint_audio_tuple
             if mask_start > 0 or mask_end > 0:
+                _require_inpaint_region(mask_start, mask_end)
                 base_args["inpaint_mask_start_seconds"] = float(mask_start)
                 base_args["inpaint_mask_end_seconds"] = float(mask_end)
             else:
-                # Multi-region mask. The seconds path is deliberately NOT set
-                # here: pipeline.generate lets start/end seconds override a
-                # prebuilt inpaint_mask.
+                # Multi-region mask (Chimera seam healing). The seconds path is
+                # deliberately NOT set here: pipeline.generate lets start/end
+                # seconds override a prebuilt inpaint_mask. No usable region at
+                # all gets the same clear 400 as an empty 0-0 selection.
                 inpaint_mask = _build_inpaint_mask(
                     inpaint_region_list,
                     int(
@@ -2094,9 +2200,10 @@ async def generate_jobs(
                     ),
                     int(base_args["sample_size"]),
                 )
-                if inpaint_mask is not None:
-                    base_args["inpaint_mask"] = inpaint_mask
-                    inpaint_regions_count = len(inpaint_region_list)
+                if inpaint_mask is None:
+                    _require_inpaint_region(mask_start, mask_end)
+                base_args["inpaint_mask"] = inpaint_mask
+                inpaint_regions_count = len(inpaint_region_list)
 
         job_id = str(uuid.uuid4())
         lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(

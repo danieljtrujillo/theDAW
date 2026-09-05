@@ -17,7 +17,11 @@ import { DadabotsCredit } from '../components/ui/Credit';
  * Start the server with:
  *   underfit\.venv\Scripts\python.exe dashboard\server.py
  */
-const UNDERFIT_URL = 'http://localhost:8791';
+/** Fallback only, until /api/underfit/status reports the real port. The
+ *  backend honours theDAW_UNDERFIT_PORT; hardcoding 8791 here meant that
+ *  override moved the sidecar but not the tab, which then pinged a dead port. */
+const DEFAULT_UNDERFIT_PORT = 8791;
+const urlForPort = (port: number) => `http://localhost:${port}`;
 const PING_INTERVAL_MS = 3000;
 
 /** Sidecar probe payload from GET /api/underfit/status (backend/modules/underfit). */
@@ -43,6 +47,14 @@ export const UnderfitView: React.FC = () => {
   // On-demand venv build state (POST /api/underfit/setup + poll /setup-status).
   const [setupState, setSetupState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [setupMsg, setSetupMsg] = useState('');
+  /** Last lines of the `uv sync` output — the only sign of life during a
+   *  10–30 minute torch download. The backend has always returned this; the
+   *  panel never rendered it, so the build looked frozen and people quit it. */
+  const [setupLog, setSetupLog] = useState('');
+  // The sidecar's real port, once known. Everything that addresses the
+  // dashboard (ping, iframe, external link, copy) derives from this.
+  const underfitPort = diag?.port ?? DEFAULT_UNDERFIT_PORT;
+  const underfitUrl = urlForPort(underfitPort);
   // Tracks the last known reachability so we only remount the iframe on a
   // down→up transition (not on every successful poll).
   const wasReachable = useRef(false);
@@ -67,8 +79,8 @@ export const UnderfitView: React.FC = () => {
   const ping = useCallback(async () => {
     try {
       // no-cors resolves (opaque) when the server is reachable, rejects on a
-      // connection error — so this works even though :8791 sends no CORS headers.
-      await fetch(`${UNDERFIT_URL}/?_ping=${Date.now()}`, { mode: 'no-cors', cache: 'no-store' });
+      // connection error — so this works even though the dashboard sends no CORS headers.
+      await fetch(`${underfitUrl}/?_ping=${Date.now()}`, { mode: 'no-cors', cache: 'no-store' });
       if (!wasReachable.current) {
         wasReachable.current = true;
         setReachable(true);
@@ -81,7 +93,7 @@ export const UnderfitView: React.FC = () => {
       }
       void fetchDiag();
     }
-  }, [reachable, fetchDiag]);
+  }, [reachable, fetchDiag, underfitUrl]);
 
   useEffect(() => {
     void ping();
@@ -131,10 +143,10 @@ export const UnderfitView: React.FC = () => {
   // Poll the setup job until it finishes, then spawn the dashboard.
   const pollSetup = async () => {
     for (;;) {
-      let j: { state?: string; message?: string };
+      let j: { state?: string; message?: string; log_tail?: string };
       try {
         const res = await fetch('/api/underfit/setup-status', { cache: 'no-store' });
-        j = (await res.json()) as { state?: string; message?: string };
+        j = (await res.json()) as { state?: string; message?: string; log_tail?: string };
       } catch {
         setSetupState('error');
         setSetupMsg('Lost contact with the backend during setup.');
@@ -143,6 +155,7 @@ export const UnderfitView: React.FC = () => {
       const state = (j.state as typeof setupState) ?? 'idle';
       setSetupState(state);
       setSetupMsg(j.message ?? '');
+      setSetupLog(j.log_tail ?? '');
       if (state === 'done') {
         void startServer();
         return;
@@ -157,6 +170,7 @@ export const UnderfitView: React.FC = () => {
   const createEnv = async () => {
     setSetupState('running');
     setSetupMsg('Starting the Underfit environment build...');
+    setSetupLog('');
     try {
       const res = await fetch('/api/underfit/setup', { method: 'POST' });
       const j = (await res.json()) as { state?: string; message?: string };
@@ -189,7 +203,7 @@ export const UnderfitView: React.FC = () => {
           <div className="min-w-0">
             <div className="text-[10px] font-black uppercase tracking-widest text-sky-100">Underfit</div>
             <div className="text-[8px] font-mono uppercase tracking-wider text-zinc-600 truncate">
-              LoRA trainer · localhost:8791 · {reachable ? 'connected' : 'waiting for server'}
+              LoRA trainer · localhost:{underfitPort} · {reachable ? 'connected' : 'waiting for server'}
             </div>
           </div>
           <span className="w-px h-5 bg-white/10 shrink-0" />
@@ -206,7 +220,7 @@ export const UnderfitView: React.FC = () => {
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
           <a
-            href={UNDERFIT_URL}
+            href={underfitUrl}
             target="_blank"
             rel="noreferrer"
             className="p-1.5 rounded border border-sky-500/30 hover:bg-sky-500/15 text-sky-300 hover:text-sky-100"
@@ -250,6 +264,14 @@ export const UnderfitView: React.FC = () => {
               >
                 {setupMsg}
               </div>
+            )}
+            {setupState === 'running' && setupLog && (
+              <pre
+                aria-live="polite"
+                className="max-w-xl w-full max-h-32 overflow-y-auto rounded border border-white/10 bg-black/40 px-2.5 py-2 text-[9px] font-mono leading-relaxed text-zinc-400 whitespace-pre-wrap wrap-break-word text-left"
+              >
+                {setupLog}
+              </pre>
             )}
             <div className="flex items-center gap-2">
               <button
@@ -308,14 +330,14 @@ export const UnderfitView: React.FC = () => {
             <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
             <span className="text-sm">Connecting to Underfit…</span>
             <span className="text-[10px] font-mono text-zinc-600">
-              Waiting for the dashboard server on :8791 (auto-retrying every 3s)
+              Waiting for the dashboard server on :{underfitPort} (auto-retrying every 3s)
             </span>
           </div>
         )}
         {reachable && (
           <iframe
             key={reloadKey}
-            src={`${UNDERFIT_URL}/?_t=${reloadKey}`}
+            src={`${underfitUrl}/?_t=${reloadKey}`}
             allow="clipboard-write; fullscreen; autoplay"
             className="w-full h-full border-0 bg-black"
             title="Underfit"

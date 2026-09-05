@@ -766,7 +766,15 @@ export const AdvancedGenPanel: React.FC<{
               onChange={(e) => { if (e.target.files?.[0]) patch({ inpaintAudioFile: e.target.files[0], inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); e.target.value = ''; }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
-            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={72} ariaLabel="Inpaint audio waveform" onDuration={setInpaintDur}
+            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={72} ariaLabel="Inpaint audio waveform" onDuration={(d) => {
+                  setInpaintDur(d);
+                  // A freshly loaded file has no region (0–0). The backend then
+                  // builds an all-zero mask and the upload contributes nothing,
+                  // so the user gets plain text-to-audio and no error. Default
+                  // to the middle third so a region is visible and draggable.
+                  const cur = useGenerateParamsStore.getState();
+                  if (d > 0 && cur.maskStart === 0 && cur.maskEnd === 0) patch({ maskStart: d / 3, maskEnd: (2 * d) / 3 });
+                }}
                 region={inpaintDur > 0 ? {
                   start: p.maskStart / inpaintDur,
                   end: p.maskEnd / inpaintDur,

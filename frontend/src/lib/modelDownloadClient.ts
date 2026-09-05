@@ -211,8 +211,11 @@ export function classifyDownloadError(detail: string, repoId?: string): Classifi
     return {
       kind: 'gated',
       headline: 'Sign in to Hugging Face',
-      fix: 'This model is gated. Paste a token below — the download restarts on its own.',
-      links: repoUrl ? [{ label: 'Open model page', url: repoUrl }] : undefined,
+      fix: 'This model is gated. Accept its licence on the model page, then paste a read token below — the download restarts on its own.',
+      links: [
+        ...(repoUrl ? [{ label: 'Open model page', url: repoUrl }] : []),
+        { label: 'Create HF token', url: 'https://huggingface.co/settings/tokens' },
+      ],
     };
   }
 

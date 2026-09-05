@@ -19,9 +19,17 @@ internals behind the adapter types, see theDAW's
 
 Click the **Underfit** tab in the center tab bar, alongside MAKE, MIX, DJ, and
 the other center tabs. theDAW serves the dashboard on `http://localhost:8791`
-and embeds it in the tab. Inside theDAW the model packs and Python environment
-are already provisioned, so there is no install, Hugging Face login, or download
-step. The first action is creating a dataset.
+and embeds it in the tab.
+
+Underfit runs in its **own** Python environment, separate from theDAW's. On first
+use the tab offers to build it (**Create environment**); this is a one-time
+`uv sync` that downloads roughly 2.5 GB of torch + torchaudio and takes 10–30
+minutes. Leave theDAW open while it runs — quitting midway leaves a half-built
+environment, which the tab now detects and offers to **Repair**. Training itself
+needs a CUDA GPU. The model packs download later, on demand, and the SA3
+checkpoints they wrap are gated on Hugging Face, so you may be asked to sign in
+(the app raises a sign-in card when a download is refused). Once the dashboard
+is up, the first action is creating a dataset.
 
 > The standalone underfit project defaults to port `8787`. Inside theDAW it runs
 > on `8791` so it does not collide with other local services.
