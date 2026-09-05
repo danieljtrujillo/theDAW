@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from backend.modules.analysis.prompt import derive_semantic_tags, generate_prompt
-from backend.modules.library.db import LibraryDB
+from backend.modules.library.db import SCHEMA_VERSION, LibraryDB
 
 
 def test_semantic_tags_from_full_analysis():
@@ -79,7 +79,9 @@ def test_genre_field_raises_confidence_and_tags():
 
 def test_analysis_schema_v3_persists_prompt(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
-    assert db.schema_version() == 3
+    # the prompt columns arrived in schema v3; the DB is now past that
+    assert SCHEMA_VERSION >= 3
+    assert db.schema_version() == SCHEMA_VERSION
     db.upsert_entry({"id": "track"})
     db.upsert_analysis(
         "track",
