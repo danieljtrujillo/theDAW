@@ -88,6 +88,14 @@ There is no manual torch reinstall, no manual wheel download, and no separate
 `soundfile` install. Those were required on the old upstream layout and are now
 handled by `pyproject.toml`.
 
+> **Turing and Volta GPUs (RTX 20xx, GTX 16xx, TITAN RTX, V100):** the Flash
+> Attention wheel installs and imports on these cards but its kernels only run
+> on Ampere (RTX 30xx) or newer. theDAW checks the compute capability per GPU
+> at first use and routes attention through PyTorch's SDPA fallback on anything
+> below sm_80, so generation, init audio and inpainting still work — somewhat
+> slower, with a one-line `flash_attn disabled on …` notice in the LOG panel.
+> No configuration is needed.
+
 > **Why Python 3.10?** The Flash Attention wheel is built for cp310, and
 > `pyproject.toml` only requests flash-attn on `python_version < '3.11'`. On
 > Python 3.11+ that wheel is skipped, so use Python 3.10 for the supported

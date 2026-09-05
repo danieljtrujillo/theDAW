@@ -74,6 +74,40 @@ def precompute_varlen_metadata(padding_mask: torch.Tensor):
 from .utils import compile
 
 
+# FlashAttention 2 kernels require an Ampere (sm_80) or newer GPU. The wheel
+# still imports on older cards (Turing RTX 20xx, Volta) and then raises
+# "FlashAttention only supports Ampere GPUs or newer" from inside the kernel,
+# so the import-time flags above are not enough: the decision is made per
+# device and cached. Anything that is not a CUDA device with major >= 8 uses
+# the flex / SDPA fallback cascade in apply_attn.
+_FLASH_ATTN_MIN_CAPABILITY = 8
+_flash_attn_device_ok = {}
+
+
+def flash_attn_usable(device) -> bool:
+    if flash_attn_func is None:
+        return False
+    dev = torch.device(device) if not isinstance(device, torch.device) else device
+    if dev.type != "cuda":
+        return False
+    index = dev.index if dev.index is not None else torch.cuda.current_device()
+    ok = _flash_attn_device_ok.get(index)
+    if ok is None:
+        try:
+            major, _minor = torch.cuda.get_device_capability(index)
+            ok = major >= _FLASH_ATTN_MIN_CAPABILITY
+        except Exception as e:  # no CUDA runtime, bad index, ...
+            logging.debug(f"flash_attn capability probe failed on {dev}: {e}")
+            ok = False
+        if not ok:
+            logging.info(
+                f"flash_attn disabled on {torch.cuda.get_device_name(index) if torch.cuda.is_available() else dev}: "
+                f"compute capability below sm_{_FLASH_ATTN_MIN_CAPABILITY}0; using SDPA / flex fallback"
+            )
+        _flash_attn_device_ok[index] = ok
+    return ok
+
+
 def _left_pad_to_match(emb, target_len):
     """Left-pad or right-trim emb along seq dim to match target_len.
 
@@ -97,6 +131,19 @@ if flex_attention_available:
 else:
     flex_attention_compiled = None
 
+
+# Set once the compiled flex_attention has failed (no Triton on Windows, an
+# unsupported GPU, ...). torch.compile re-attempts and re-fails on every call
+# (~18 s each on a Triton-less box), so after the first failure the
+# sliding-window fallback goes straight to chunked-halo SDPA. Inductor needs
+# Triton for CUDA kernels, so without it the flex tier is skipped outright
+# instead of paying for one doomed compile per process.
+try:
+    import triton  # noqa: F401
+
+    _flex_attention_broken = False
+except Exception:  # ImportError, or a broken install
+    _flex_attention_broken = True
 
 # Cache band block_masks for sliding-window attention fallback (flex_attention path).
 # Keyed by (seq_q, seq_k, w_left, w_right, device). create_block_mask is expensive
@@ -602,8 +649,8 @@ class Attention(nn.Module):
              heads_per_kv_head = self.num_heads // self.kv_heads
              k, v = map(lambda t: t.repeat_interleave(heads_per_kv_head, dim = 1), (k, v))
 
-        flash_attn_available = flash_attn_func is not None
-        flash_attn_varlen_available = flash_attn_varlen_func is not None and index_first_axis is not None
+        flash_attn_available = flash_attn_usable(q.device)
+        flash_attn_varlen_available = flash_attn_available and flash_attn_varlen_func is not None and index_first_axis is not None
 
         if causal and (flex_attention_block_mask is not None or flex_attention_score_mod is not None):
             flex_attention_block_mask = None
@@ -679,13 +726,15 @@ class Attention(nn.Module):
                 seq_q, seq_k = q.shape[2], k.shape[2]
                 wl, wr = flash_attn_sliding_window
                 handled = False
-                if flex_attention_available and flex_attention_compiled is not None:
+                global _flex_attention_broken
+                if flex_attention_available and flex_attention_compiled is not None and not _flex_attention_broken:
                     try:
                         bm = _get_sliding_window_block_mask(seq_q, seq_k, wl, wr, q.device)
                         out = flex_attention_compiled(q, k, v, block_mask=bm)
                         handled = True
                     except Exception as _flex_err:
-                        logging.debug(f"flex_attention failed, trying chunked-halo SDPA: {_flex_err}")
+                        _flex_attention_broken = True
+                        logging.info(f"flex_attention unavailable ({type(_flex_err).__name__}); using chunked-halo SDPA for sliding-window attention from now on")
                 if not handled:
                     try:
                         out = _sliding_window_chunked_halo_sdpa(q, k, v, wl, wr)
@@ -1227,8 +1276,8 @@ class ContinuousTransformer(nn.Module):
                 extended_padding_mask = padding_mask
 
             # Precompute varlen metadata once for all layers (major performance optimization)
-            # Only compute if varlen attention is actually available
-            if flash_attn_varlen_func is not None and index_first_axis is not None:
+            # Only compute if varlen attention is actually available on this device
+            if flash_attn_varlen_func is not None and index_first_axis is not None and flash_attn_usable(device):
                 varlen_metadata = precompute_varlen_metadata(extended_padding_mask)
 
         # Iterate over the transformer layers

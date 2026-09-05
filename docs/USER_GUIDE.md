@@ -1802,6 +1802,10 @@ uv run python -c "import flash_attn; from flash_attn import flash_attn_func; pri
 ```
 Any import error means the wheel does not match the installed Python, PyTorch, and CUDA combination. Reinstall from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
 
+### "FlashAttention only supports Ampere GPUs or newer"
+
+Older cards (Turing RTX 20xx / GTX 16xx, Volta V100) import the Flash Attention wheel but cannot run its kernels. theDAW detects a compute capability below 8.0 per GPU and uses PyTorch's SDPA attention instead, so generation, Chimera init audio and inpainting work without changes; expect the LOG line `flash_attn disabled on <GPU name>` once per session and somewhat slower sampling. If you still see this error, the backend predates the September 2026 attention gate — update and restart it.
+
 ### "API UNREACHABLE" banner in the header
 
 The backend is not responding on port 8600. Test directly:
