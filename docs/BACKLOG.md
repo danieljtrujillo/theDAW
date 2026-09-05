@@ -232,7 +232,7 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
 
 - [ ] **FE-009** P1 S Six large-media fetches still use `res.blob()` `frontend/src/state/studioStore.ts:147`
   - The repo documents this call as failing outright on large audio under disk pressure (verified live on a 66 MB WAV) and the fix as `arrayBuffer()` plus `new Blob`.
-  - Remaining sites: `studioStore.ts:147`, `studioStore.ts:246`, `lib/onlineImport.ts:26`, `lib/projectImport.ts:211`, `lib/audimateRunner.ts:219`, `state/trainingStore.ts:347`.
+  - Remaining sites: `studioStore.ts:147`, `studioStore.ts:246`, `lib/onlineImport.ts:26`, `lib/projectImport.ts:211`, `lib/nodefiRunner.ts:219`, `state/trainingStore.ts:347`.
 
 - [ ] **FE-010** P1 S The MIDI ignore list is a UI control wired to nothing `frontend/src/state/midiIgnoreStore.ts:99`
   - DJView writes and persists ignore rules, but neither `isMidiSigIgnored` nor `isMidiMessageIgnored` is called anywhere.
@@ -317,7 +317,7 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
 | FE-020 | S | questMidiClient hardcodes `ws://localhost:8600` for every non-https origin | `frontend/src/state/questMidiClient.ts:24` | Contradicts its own docblock; any LAN or Docker origin opens a socket to itself and reconnects every 2 s forever. `xrControlClient.ts:71` has the correct three-branch form. |
 | FE-021 | S | `transparentBg` never reaches the canvas, so EDIT clip colours are covered | `frontend/src/components/audio/SemanticWave.tsx:104` | The child hardcodes a `#06070d` wrapper background and fills the canvas opaquely; per-clip track tint survives only in the 14 px header. |
 | FE-022 | M | The MIX effects visualization is a fixed decorative curve | `frontend/src/views/EffectsVizPanel.tsx:40` | Constant SVG geometry that never reflects the effect or its params, on the default branch of the effect stage, presented as a scope. |
-| FE-023 | S | Audimate can create edges but has no way to delete one | `frontend/src/views/AudimateView.tsx:264` | Edges are inside a `pointer-events-none` svg; the store's `removeEdge` has zero callers. |
+| FE-023 | S | NodeF.I. can create edges but has no way to delete one | `frontend/src/views/NodefiView.tsx:264` | Edges are inside a `pointer-events-none` svg; the store's `removeEdge` has zero callers. |
 | FE-024 | S | Form controls in DJ and MIX are missing ids, names and labels | `frontend/src/views/DJView.tsx:2161` | The DJ browser search and set-rename inputs have no accessible name at all; the MIX format select has a name and a span, not a label. Violates hard rule 3. |
 | FE-025 | S | The ~110-profile controller table loads in the first-paint chunk | `frontend/src/App.tsx:39` | Static import for one detect helper; the table is only meaningful once a MIDI device is enumerated. |
 

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-27T02:53:05.519Z",
+  "generatedAt": "2026-09-05T20:12:04.603Z",
   "entries": [
     {
       "file": "01-shell-make.png",
@@ -1056,6 +1056,54 @@
       ],
       "kind": "crop",
       "sourceScene": "40-controller-vision"
+    },
+    {
+      "file": "41-score-strip.png",
+      "label": "41-score-strip",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "41-score-strip"
+    },
+    {
+      "file": "42-score-highway.png",
+      "label": "42-score-highway",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "42-score-highway"
+    },
+    {
+      "file": "43-sing-karaoke.png",
+      "label": "43-sing-karaoke",
+      "features": [
+        "library-midi-conversion"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "43-sing-karaoke"
+    },
+    {
+      "file": "44-draw.png",
+      "label": "44-draw",
+      "features": [
+        "piano-roll-linked-clip-editing"
+      ],
+      "docsSections": [
+        "§13 Bottom Panel Tabs"
+      ],
+      "kind": "full",
+      "sourceScene": "44-draw"
     }
   ]
 }

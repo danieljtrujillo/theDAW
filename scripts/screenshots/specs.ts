@@ -948,6 +948,38 @@ export const SCREENSHOT_SPECS: ScreenshotSpec[] = [
       { id: 'cv-modal', x: 430, y: 120, width: 1060, height: 840, purpose: 'Controller Vision layout inference surface', featureRefs: ['controller-vision-detect-identify'] },
     ],
   },
+  {
+    sceneId: '41-score-strip',
+    outputFile: '41-score-strip.png',
+    viewport: VIEWPORT,
+    captureMode: 'full',
+    featureRefs: ['library-midi-conversion'],
+    docsSections: ['§13 Bottom Panel Tabs'],
+  },
+  {
+    sceneId: '42-score-highway',
+    outputFile: '42-score-highway.png',
+    viewport: VIEWPORT,
+    captureMode: 'full',
+    featureRefs: ['library-midi-conversion'],
+    docsSections: ['§13 Bottom Panel Tabs'],
+  },
+  {
+    sceneId: '43-sing-karaoke',
+    outputFile: '43-sing-karaoke.png',
+    viewport: VIEWPORT,
+    captureMode: 'full',
+    featureRefs: ['library-midi-conversion'],
+    docsSections: ['§13 Bottom Panel Tabs'],
+  },
+  {
+    sceneId: '44-draw',
+    outputFile: '44-draw.png',
+    viewport: VIEWPORT,
+    captureMode: 'full',
+    featureRefs: ['piano-roll-linked-clip-editing'],
+    docsSections: ['§13 Bottom Panel Tabs'],
+  },
 ];
 
 export function buildScreenshotManifestEntries(specs: ScreenshotSpec[] = SCREENSHOT_SPECS): ScreenshotManifestEntry[] {

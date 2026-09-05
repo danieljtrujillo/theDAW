@@ -57,6 +57,9 @@ const OUT_DIR = path.resolve(
     ? '../docs/screenshots'
     : 'docs/screenshots',
 );
+// SA3_SHOTS_THEME=<theme id> shoots every scene in that colour theme (the
+// README gallery is shot in 'brushed-steel'); unset keeps the app default.
+const THEME = (process.env.SA3_SHOTS_THEME ?? '').trim();
 const SELECTED = (process.env.SCENES ?? '')
   .split(',')
   .map((s) => s.trim())
@@ -201,6 +204,61 @@ async function menuItem(page: Page, name: string): Promise<void> {
   await page.waitForTimeout(400);
 }
 
+
+/** In the SCORE rail, click the first artifact button of the given kind (the
+ *  rail prints each artifact's kind under its label). */
+async function pickScoreArtifact(page: Page, kind: string): Promise<boolean> {
+  await page.waitForFunction((k) => Array.from(document.querySelectorAll('button')).some((b) => (b.textContent || '').toLowerCase().includes(k)), kind, { timeout: 15000 }).catch(() => undefined);
+  const ok = await page.evaluate((k) => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const b = buttons.find((x) => (x.textContent || '').toLowerCase().includes(k));
+    if (b) { (b as HTMLButtonElement).click(); return true; }
+    return false;
+  }, kind).catch(() => false);
+  await page.waitForTimeout(600);
+  return ok;
+}
+
+/** Click a role=radio control by its text (the SCORE mode switch). */
+async function clickRadio(page: Page, re: RegExp): Promise<boolean> {
+  const ok = await page.evaluate((src) => {
+    const rx = new RegExp(src, 'i');
+    const r = Array.from(document.querySelectorAll('[role="radio"]')).find((x) => rx.test(x.textContent || '') || rx.test(x.getAttribute('aria-label') || ''));
+    if (r) { (r as HTMLElement).click(); return true; }
+    return false;
+  }, re.source).catch(() => false);
+  await page.waitForTimeout(500);
+  return ok;
+}
+
+/** The library entry with the most timed lyric words (SA3_LYRICS_TRACK overrides
+ *  by title), plus a seek point inside its timed region. */
+async function pickLyricsTrack(baseUrl: string): Promise<{ id: string; title: string; seekSec: number } | null> {
+  const r = await fetch(`${baseUrl}/api/library/entries`);
+  if (!r.ok) return null;
+  const body = (await r.json()) as { entries?: Array<{ id: string; title: string; lyrics?: string }> };
+  const entries = body.entries ?? [];
+  const wanted = (process.env.SA3_LYRICS_TRACK ?? '').toLowerCase();
+  const candidates = entries.filter((e) => (e.lyrics || '').trim().length > 0);
+  const ordered = wanted ? candidates.filter((e) => e.title.toLowerCase().includes(wanted)).concat(candidates) : candidates;
+  let best: { id: string; title: string; seekSec: number; timed: number } | null = null;
+  for (const e of ordered.slice(0, 8)) {
+    try {
+      const d = await fetch(`${baseUrl}/api/lyrics/${encodeURIComponent(e.id)}`);
+      if (!d.ok) continue;
+      const doc = ((await d.json()) as { doc: { lines: Array<{ start_ms: number | null; confidence: number | null; words: Array<{ start_ms: number | null }> }> } }).doc;
+      const timedLines = doc.lines.filter((l) => l.start_ms !== null && (l.confidence ?? 1) >= 0.6);
+      const timed = timedLines.reduce((n, l) => n + l.words.filter((w) => w.start_ms !== null).length, 0);
+      if (!best || timed > best.timed) {
+        const mid = timedLines[Math.floor(timedLines.length / 3)];
+        best = { id: e.id, title: e.title, seekSec: mid && mid.start_ms !== null ? mid.start_ms / 1000 + 0.6 : 30, timed };
+      }
+      if (wanted && e.title.toLowerCase().includes(wanted)) break;
+    } catch { /* next */ }
+  }
+  return best;
+}
+
 // ── The resolved showcase context (set once in main() before the scene loop) ──
 interface HeroCtx {
   heroUrl: string;
@@ -242,6 +300,8 @@ interface MediaSpec extends Partial<HeroCtx> {
   slideView?: string;
   selectEntry?: 'hero' | 'notation' | null;
   libraryExpanded?: boolean;
+  /** Open the right rail on the compact library (not the Catalogue). */
+  libraryRail?: boolean;
   bottomTab?: string;
   maximizePanel?: boolean;
 }
@@ -457,6 +517,7 @@ async function applyMedia(spec: MediaSpec): Promise<{ tracks: number; clips: num
 
   if (spec.selectEntry) { try { lib.getState().setSelectedEntry(spec.selectEntry === 'notation' ? spec.notationId : spec.heroId); } catch (e) {} }
   if (spec.libraryExpanded) { try { appUi.getState().setLibraryExpanded(true); } catch (e) {} }
+  if (spec.libraryRail) { try { appUi.setState({ isRightPanelOpen: true, isLibraryExpanded: false }); } catch (e) {} }
 
   if (spec.bottomTab) bp.setState({ activeTab: spec.bottomTab, isOpen: true, multiMaximized: !!spec.maximizePanel, multiHeight: Math.max(380, bp.getState().multiHeight || 0) });
 
@@ -469,6 +530,18 @@ async function boot(page: Page): Promise<void> {
   await page.goto(NAV);
   await waitForReady(page);
   await page.waitForTimeout(400);
+  await dismissRecoveryNotice(page);
+}
+
+/** The EDIT scenes leave an autosaved arrangement behind in the shared
+ *  browser context, and every later navigation then shows the "Unsaved
+ *  arrangement recovered" banner. Discard it so the frames stay clean. */
+async function dismissRecoveryNotice(page: Page): Promise<void> {
+  const discard = page.getByRole('button', { name: /^\s*discard\s*$/i }).first();
+  if (await discard.isVisible().catch(() => false)) {
+    await discard.click().catch(() => undefined);
+    await page.waitForTimeout(300);
+  }
 }
 
 /** Drive the media loaders for a scene, merging the resolved hero base in. */
@@ -711,7 +784,7 @@ const SCENES: Scene[] = [
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
       await boot(page);
-      await media(page, { selectEntry: 'hero', libraryExpanded: true });
+      await media(page, { selectEntry: 'hero', libraryRail: true });
       await openLibrary(page);
       await librarySearch(page, seed.title);
       await entryRow(page, seed.id).click({ timeout: 5000 }).catch(() => undefined);
@@ -726,7 +799,7 @@ const SCENES: Scene[] = [
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
       await boot(page);
-      await media(page, { libraryExpanded: true });
+      await media(page, { libraryRail: true });
       await openLibrary(page);
       await librarySearch(page, seed.title);
       await entryRow(page, seed.id).click({ button: 'right', timeout: 5000 }).catch(() => undefined);
@@ -741,7 +814,7 @@ const SCENES: Scene[] = [
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
       await boot(page);
-      await media(page, { selectEntry: 'hero', libraryExpanded: true });
+      await media(page, { selectEntry: 'hero', libraryRail: true });
       await openLibrary(page);
       await librarySearch(page, seed.title);
       await entryRow(page, seed.id).click({ timeout: 5000 }).catch(() => undefined);
@@ -817,7 +890,7 @@ const SCENES: Scene[] = [
       const seed = await pickShowcaseTrack(BACKEND);
       if (!seed) throw new Error('no library entries to showcase');
       await boot(page);
-      await media(page, { libraryExpanded: true });
+      await media(page, { libraryRail: true });
       await openLibrary(page);
       await librarySearch(page, seed.title);
       await entryRow(page, seed.id).click({ button: 'right', timeout: 5000 }).catch(() => undefined);
@@ -1022,6 +1095,97 @@ const SCENES: Scene[] = [
       await snapScene(page, '40-controller-vision');
     },
   },
+  {
+    name: '41-score-strip',
+    description: 'SCORE play-along STRIP: one endless staff scrolling under a centred now-line',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { loadHero: true, play: true, selectEntry: 'notation', bottomTab: 'score', maximizePanel: true });
+      await pickScoreArtifact(page, 'musicxml');
+      await page.evaluate(async () => {
+        const m = await ((p: string) => import(p))('/src/state/playAlongStore.ts');
+        m.usePlayAlongStore.getState().setNowLine('center');
+        m.usePlayAlongStore.getState().setInk('magenta');
+      }).catch(() => undefined);
+      await clickRadio(page, /strip/i);
+      // OSMD engraves the whole score as one system; give it a beat, then let
+      // the cursor travel a few bars so the highlight is mid-phrase.
+      await page.waitForTimeout(6000);
+      await page.evaluate(async () => {
+        const p = (await ((p: string) => import(p))('/src/state/playerStore.ts')).usePlayerStore.getState();
+        p.seek(24);
+      }).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      await snapScene(page, '41-score-strip');
+    },
+  },
+  {
+    name: '42-score-highway',
+    description: 'SCORE play-along HIGHWAY: the note chart approaching the hit line',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { loadHero: true, play: true, selectEntry: 'notation', bottomTab: 'score', maximizePanel: true });
+      await pickScoreArtifact(page, 'musicxml');
+      await clickRadio(page, /highway/i);
+      await page.waitForTimeout(4000);
+      await page.evaluate(async () => {
+        const p = (await ((p: string) => import(p))('/src/state/playerStore.ts')).usePlayerStore.getState();
+        p.seek(24);
+      }).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      await snapScene(page, '42-score-highway');
+    },
+  },
+  {
+    name: '43-sing-karaoke',
+    description: 'SING tab following an aligned lyric word by word',
+    run: async (page) => {
+      const song = await pickLyricsTrack(BACKEND);
+      if (!song) throw new Error('no library entry with timed lyrics');
+      await boot(page);
+      await media(page, {
+        heroUrl: `/api/library/audio/${song.id}`, heroLabel: song.title, heroId: song.id,
+        loadHero: true, play: true, selectEntry: 'hero', bottomTab: 'sing', maximizePanel: true,
+      });
+      await page.waitForTimeout(1500);
+      await page.evaluate(async (sec) => {
+        const p = (await ((p: string) => import(p))('/src/state/playerStore.ts')).usePlayerStore.getState();
+        p.seek(sec);
+      }, song.seekSec).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      await snapScene(page, '43-sing-karaoke');
+    },
+  },
+  {
+    name: '44-draw',
+    description: 'DRAW: gestures on the canvas playing generative music',
+    run: async (page) => {
+      await boot(page);
+      await media(page, { bottomTab: 'draw', maximizePanel: true });
+      await page.waitForTimeout(800);
+      // Paint a couple of strokes across the panel's canvas.
+      const canvas = page.locator('canvas').last();
+      const box = await canvas.boundingBox().catch(() => null);
+      if (box) {
+        const strokes: Array<Array<[number, number]>> = [
+          [[0.15, 0.7], [0.3, 0.35], [0.45, 0.6], [0.6, 0.3], [0.75, 0.55]],
+          [[0.2, 0.8], [0.5, 0.75], [0.8, 0.85]],
+        ];
+        for (const stroke of strokes) {
+          const [x0, y0] = stroke[0];
+          await page.mouse.move(box.x + box.width * x0, box.y + box.height * y0);
+          await page.mouse.down();
+          for (const [fx, fy] of stroke.slice(1)) {
+            await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy, { steps: 18 });
+          }
+          await page.mouse.up();
+          await page.waitForTimeout(300);
+        }
+      }
+      await page.waitForTimeout(900);
+      await snapScene(page, '44-draw');
+    },
+  },
 ];
 
 async function loadPianoRoll(): Promise<HeroCtx['piano']> {
@@ -1121,6 +1285,15 @@ async function main(): Promise<void> {
       /* localStorage unavailable — nothing to seed */
     }
   });
+  if (THEME) {
+    // The colour theme persists under thedaw-edit-theme-v1 (zustand persist);
+    // seeding it before app code runs restyles every scene. A string, for the
+    // same __name reason as above.
+    await context.addInitScript(
+      `try { localStorage.setItem('thedaw-edit-theme-v1', JSON.stringify({ state: { themeId: ${JSON.stringify(THEME)}, customImage: null }, version: 1 })); } catch {}`,
+    );
+    log(`theme:    ${THEME}`);
+  }
   const page = await context.newPage();
   page.on('pageerror', (err) => log(`PAGE ERROR: ${err.message}`));
   page.on('console', (m) => {

@@ -66,8 +66,8 @@ Sources: the EDIT-tab audit, the Ableton `.als` import audit, and the tab sweep
 - [ ] **MIX: the rack is applied twice to the processed output you audition.** — S
 - [ ] **MIX: "Send to Edit" sends nothing.** — S
 - [ ] **Library: bulk "Download → MIDI" always 404s** (wrong id space — the route wants a midis-row id). — S — `frontend/src/views/LibraryView.tsx:1322`
-- [ ] **Audimate: the Effect node 400s on first run** — displayed params are never stored, and the default node cannot be fixed without switching effect away and back. — S — `frontend/src/lib/audimateTypes.ts:148`
-- [ ] **Audimate: wires can never be deleted** — `removeEdge` has no caller and the edge layer is `pointer-events-none`. — S — `frontend/src/state/audimateStore.ts:133`
+- [ ] **NodeF.I.: the Effect node 400s on first run** — displayed params are never stored, and the default node cannot be fixed without switching effect away and back. — S — `frontend/src/lib/nodefiTypes.ts:148`
+- [ ] **NodeF.I.: wires can never be deleted** — `removeEdge` has no caller and the edge layer is `pointer-events-none`. — S — `frontend/src/state/nodefiStore.ts:133`
 - [ ] **LEARN: node menu "Open lineage rooted here" / "Open in Library" silently no-op** whenever the library rail is closed (the default on a fresh install). — S — `frontend/src/components/library/LineageModal.tsx:3365`
 - [ ] **LEARN: the Track tab fetches a 4-hop lineage and renders 1 hop.** — M — `frontend/src/components/library/LineageModal.tsx:762`
 - [ ] **MAKE: the seed actually used is never captured** — default-seed takes are unreproducible, filenames emit `seed_-1`, metadata records `-1`. — M — `backend/server.py:1620`
@@ -139,13 +139,13 @@ Recorded so they are not re-proposed:
 ### P1
 
 - [ ] **Perform: 108 of the DNB set's 110 Sway mappings do nothing in PERFORM.** Auto-routing only lifts mixer/volume-named mappings into the mix; the device-FX mappings (DryWet/On/macros) resolve to the editor, not the Perform grid's live chains. Route `target_kind==='device'` mappings onto the grid chains via CcMod `fx` (plumbing exists — the deck already creates fx CcMods by hand). — M — `frontend/src/state/performRouting.ts:243`, `frontend/src/components/session/DawSessionGrid.tsx:713`
-- [ ] **Audimate canvas cursor offset — node ends don't match the pointer.** `screenToWorld` ignores the shell's CSS `zoom` (the same class of bug the EDIT audit fixed with `effectiveZoom`). — S — `frontend/src/views/AudimateView.tsx:234`
+- [ ] **NodeF.I. canvas cursor offset — node ends don't match the pointer.** `screenToWorld` ignores the shell's CSS `zoom` (the same class of bug the EDIT audit fixed with `effectiveZoom`). — S — `frontend/src/views/NodefiView.tsx:234`
 - [ ] **Theme picker: selection happens under the dark overlay, so theme colors can't be judged; several themes have unreadable popups.** Drop the scrim while the picker is open, then contrast-audit every theme's overlays/popups. — M — `frontend/src/components/menu/ThemeModal.tsx:1`, `frontend/src/lib/editThemes.ts:1`
 
 ### P2
 
 - [ ] **Boot: sequence the emergence** — still sheet → vibration ramps in → ONE cymatic pattern forms → the wordmark plops forward; today the waves run continuously while it rises. Also verify the GANTASMO logo no longer clips at reveal, and kill the orb's window/mask look outside the corner. — S — `frontend/src/components/layout/LiquidChromeTitle.tsx:200`, `frontend/src/components/layout/LoadingScreen.tsx:78`
-- [ ] **Audimate: standard node-editor/synth tools** (multi-select, box-select, duplicate, delete key, undo, zoom-to-fit, param inspector). — L — `frontend/src/views/AudimateView.tsx:1`
+- [ ] **NodeF.I.: standard node-editor/synth tools** (multi-select, box-select, duplicate, delete key, undo, zoom-to-fit, param inspector). — L — `frontend/src/views/NodefiView.tsx:1`
 - [ ] **Lower-panel toggles should read as part of the footer, with the panel emerging from those buttons.** — M — `frontend/src/components/audio/PlayerFooter.tsx:217`
 - [ ] **`.swayproj` import** (binary format, D:\sway examples; strings confirm the six dims + grid modes). — M — `backend/modules/library/router.py:1`
 - [ ] **Sway deck buttons have no factory CC/note map** (SwayCommand doesn't define one) — learn-only today; capture a hardware monitor session and pin them. — XS — `frontend/src/components/session/swaydeck/deckState.ts:13`
@@ -182,15 +182,15 @@ running app. Items stay in their sections above until that verification happens.
   at startup (saving stays paused until answered), restore rebuilds blobs + peaks and
   lands on EDIT. — `frontend/src/lib/editorAutosave.ts`,
   `frontend/src/components/layout/AutosaveRecoveryNotice.tsx`, `Shell.tsx`
-- **Audimate node-editor tools** — multi-select (ctrl-click), shift-drag marquee,
+- **NodeF.I. node-editor tools** — multi-select (ctrl-click), shift-drag marquee,
   multi-drag, Ctrl+D duplicate (edge-remapping), Delete, Ctrl+Z/Y undo-redo (history
   middleware), Ctrl+A, Esc, F/zoom-to-fit + toolbar buttons, clickable/selectable
   wires (fat hit paths; double-click or Del removes), node + wire context menus,
   key-scope arbitration. Also fixed here: the cursor-offset bug (`effectiveZoom` in
   screenToWorld/pan/wheel/spawn), wires-undeletable, and the Effect-node 400 (params
   seeded at addNode + persist migrate v2 + runner merges defaults). —
-  `frontend/src/views/AudimateView.tsx`, `frontend/src/state/audimateStore.ts`,
-  `frontend/src/lib/audimateRunner.ts`, `frontend/src/components/audimate/AudimateInspector.tsx`
+  `frontend/src/views/NodefiView.tsx`, `frontend/src/state/nodefiStore.ts`,
+  `frontend/src/lib/nodefiRunner.ts`, `frontend/src/components/nodefi/NodefiInspector.tsx`
 - **Lower-panel toggles read as part of the footer** — strip restyled in the footer's
   language (tinted blur + hairline border), the anonymous flex-1 slab is now a
   labelled PANELS toggle showing the active tab, and both dock bodies emerge from

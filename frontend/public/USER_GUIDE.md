@@ -2379,7 +2379,7 @@ The app menu's **Data** section (§37) holds backup, restore, and update operati
 
 ## 40. NodeF.I. Tab
 
-The NodeF.I. tab (the tab bar reads **NODEFI**; formerly Audimate, which is still the internal identifier prefix — `AudimateView`, `audimateRunner.ts`) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
+The NodeF.I. tab (the tab bar reads **NODEFI**) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
 
 ### 40.1 Node types
 
@@ -2394,7 +2394,7 @@ The NodeF.I. tab (the tab bar reads **NODEFI**; formerly Audimate, which is stil
 
 ### 40.2 Running a graph
 
-Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/audimateRunner.ts`), so a NodeF.I. pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
+Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/nodefiRunner.ts`), so a NodeF.I. pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
 
 ---
 
