@@ -88,7 +88,7 @@ const ModuleRow: React.FC<{ name: string; desc: string; color: string; marked: b
   <div onClick={onClick} className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${marked ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
     <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
     <div className="flex-1 min-w-0">
-      <span className="text-[11px] font-medium block truncate" style={{ color }}>{name}</span>
+      <span className="text-[11px] font-medium block truncate" style={{ color: `var(--mix-label, ${color})`, textShadow: `0 0 8px ${color}` }}>{name}</span>
       <p className="text-[9px] text-zinc-500 truncate mt-0.5">{desc}</p>
     </div>
     {marked && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />}
@@ -102,7 +102,7 @@ const ModuleTile: React.FC<{ name: string; color: string; marked: boolean; onCli
         : <span className="absolute left-1/2 top-9 -translate-x-1/2 w-7 h-7 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}80` }} />}
     </div>
     <div className="absolute inset-x-0 bottom-0 px-1 pt-3 pb-1 bg-linear-to-t from-black/95 to-transparent">
-      <span className="text-[9px] font-medium leading-tight line-clamp-2 block" style={{ color }}>{name}</span>
+      <span className="text-[9px] font-medium leading-tight line-clamp-2 block" style={{ color: `var(--mix-label, ${color})`, textShadow: `0 0 8px ${color}` }}>{name}</span>
     </div>
   </div>
 );
@@ -373,7 +373,7 @@ const VizRackRow: React.FC<VizRackRowProps> = (p) => {
         </div>
       ) : (
         <div className="h-6 flex items-center gap-2 px-2 rounded-lg border bg-black/40" style={{ borderColor: `${p.accent}55` }}>
-          <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: p.accent }}>{p.label}</span>
+          <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: `var(--mix-label, ${p.accent})`, textShadow: `0 0 8px ${p.accent}` }}>{p.label}</span>
           <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5 shrink-0">
             <button type="button" onClick={() => p.onMode('wave')} aria-pressed={p.mode === 'wave'} aria-label={`${p.label}: waveform view`} title="Waveform" className={vizTabBtn(p.mode === 'wave')}>
               <AudioWaveform className="w-3 h-3" />

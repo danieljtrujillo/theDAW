@@ -19,7 +19,16 @@
  *   --et-line    : rgb triple for `border-white/α` dividers
  *   --et-line-hex: the track-header hex border (`#1a1528`)
  *   --et-tint    : rgb triple for `bg-white/α` subtle fills
- *   --et-ink     : rgb triple for text on light themes
+ *   --et-elevated: raised surfaces (zinc-600/700, #202329); light themes give
+ *                  it a light value so they never carry dark islands
+ *   Ink tiers — every hardcoded text utility is re-pointed onto one of these by
+ *   index.css, so the values are chosen per theme against THAT theme's
+ *   canvas / panel / popup / elevated surfaces (WCAG 2.1 contrast):
+ *   --et-ink     : primary text            ≥ 7:1   (text-white, zinc-50…300)
+ *   --et-ink-2   : secondary labels        ≥ 4.5:1 (zinc-400)
+ *   --et-ink-3   : muted / meta text floor ≥ 4.5:1 (zinc-500…700, white/40…60)
+ *   --et-ink-inv : text ON solid accent fills (stays white on light themes)
+ *   --et-border  : interactive-control border floor ≥ 3:1
  */
 
 export interface EditTheme {
@@ -45,6 +54,10 @@ export const DEFAULT_ET_VARS: Record<string, string> = {
   '--et-line-hex': '#231e38', // solid borders -> --panel-border
   '--et-tint': '255 255 255',
   '--et-ink': '245 243 255',
+  '--et-ink-2': '206 202 222',
+  '--et-ink-3': '176 172 192',
+  '--et-ink-inv': '255 255 255',
+  '--et-border': '142 138 158',
 };
 
 export const EDIT_THEMES: EditTheme[] = [
@@ -63,6 +76,10 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '236 239 246',
       '--et-line-hex': '#191922',
       '--et-tint': '236 239 246',
+      '--et-ink': '240 242 248',
+      '--et-ink-2': '202 206 218',
+      '--et-ink-3': '172 176 190',
+      '--et-border': '138 142 156',
     },
   },
   {
@@ -78,6 +95,10 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '212 218 230',
       '--et-line-hex': '#2a2d34',
       '--et-tint': '236 240 250',
+      '--et-ink': '236 240 250',
+      '--et-ink-2': '202 208 220',
+      '--et-ink-3': '180 186 200',
+      '--et-border': '150 156 170',
     },
   },
   // ── Silver / Metal ────────────────────────────────────────────────────
@@ -87,13 +108,17 @@ export const EDIT_THEMES: EditTheme[] = [
     group: 'Metal',
     vars: {
       '--et-root-bg': 'linear-gradient(180deg,#101114 0%,#0a0a0c 100%)',
-      '--et-shade': '120 128 145',
+      '--et-shade': '72 78 90',
       '--et-canvas': '#0a0a0c',
       '--et-panel': '#17181c',
       '--et-popup': '#0a0a0c',
       '--et-line': '196 204 218',
       '--et-line-hex': '#333a44',
       '--et-tint': '200 208 222',
+      '--et-ink': '240 243 248',
+      '--et-ink-2': '214 220 232',
+      '--et-ink-3': '190 197 210',
+      '--et-border': '156 164 180',
     },
   },
   {
@@ -109,6 +134,10 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '205 212 224',
       '--et-line-hex': '#3a3f49',
       '--et-tint': '210 216 228',
+      '--et-ink': '240 243 248',
+      '--et-ink-2': '208 214 226',
+      '--et-ink-3': '182 189 202',
+      '--et-border': '150 157 172',
     },
   },
   {
@@ -117,13 +146,17 @@ export const EDIT_THEMES: EditTheme[] = [
     group: 'Metal',
     vars: {
       '--et-root-bg': '#111316',
-      '--et-shade': '90 98 110',
+      '--et-shade': '64 70 80',
       '--et-canvas': '#16181b',
       '--et-panel': '#202329',
       '--et-popup': '#15171a',
       '--et-line': '188 198 210',
       '--et-line-hex': '#313640',
       '--et-tint': '198 206 218',
+      '--et-ink': '238 242 248',
+      '--et-ink-2': '214 220 232',
+      '--et-ink-3': '188 195 208',
+      '--et-border': '156 163 178',
     },
   },
   // ── Light / Off-white ─────────────────────────────────────────────────
@@ -141,7 +174,11 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '40 38 44',
       '--et-line-hex': '#c7c4bc',
       '--et-tint': '30 28 34',
-      '--et-ink': '46 44 52',
+      '--et-elevated': '#d3d0c8',
+      '--et-ink': '28 26 34',
+      '--et-ink-2': '58 56 66',
+      '--et-ink-3': '66 64 76',
+      '--et-border': '104 101 94',
     },
   },
   {
@@ -151,14 +188,18 @@ export const EDIT_THEMES: EditTheme[] = [
     light: true,
     vars: {
       '--et-root-bg': '#d8dce0',
-      '--et-shade': '150 158 168',
+      '--et-shade': '168 176 186',
       '--et-canvas': '#dfe2e6',
       '--et-panel': '#d3d7dc',
       '--et-popup': '#e9ecef',
       '--et-line': '38 44 52',
       '--et-line-hex': '#bcc2c9',
       '--et-tint': '30 36 44',
-      '--et-ink': '40 46 54',
+      '--et-elevated': '#c3c8ce',
+      '--et-ink': '24 30 38',
+      '--et-ink-2': '48 54 64',
+      '--et-ink-3': '52 58 68',
+      '--et-border': '92 100 110',
     },
   },
   {
@@ -175,7 +216,11 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '58 48 34',
       '--et-line-hex': '#d4cbb9',
       '--et-tint': '46 38 26',
-      '--et-ink': '56 46 34',
+      '--et-elevated': '#dbd2c1',
+      '--et-ink': '40 32 22',
+      '--et-ink-2': '68 58 44',
+      '--et-ink-3': '78 68 54',
+      '--et-border': '116 106 90',
     },
   },
   // ── Pastel ────────────────────────────────────────────────────────────
@@ -186,14 +231,18 @@ export const EDIT_THEMES: EditTheme[] = [
     light: true,
     vars: {
       '--et-root-bg': 'linear-gradient(160deg,#eaf4ee,#dcefe4)',
-      '--et-shade': '150 194 172',
+      '--et-shade': '168 204 186',
       '--et-canvas': '#e6f1ea',
       '--et-panel': '#d8ebe0',
       '--et-popup': '#eef6f1',
       '--et-line': '26 66 50',
       '--et-line-hex': '#c0ded0',
       '--et-tint': '24 60 46',
-      '--et-ink': '28 62 48',
+      '--et-elevated': '#c6ddd0',
+      '--et-ink': '18 44 32',
+      '--et-ink-2': '40 72 58',
+      '--et-ink-3': '48 80 66',
+      '--et-border': '78 114 98',
     },
   },
   {
@@ -210,7 +259,11 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '48 38 84',
       '--et-line-hex': '#d3ccec',
       '--et-tint': '46 36 82',
-      '--et-ink': '50 40 84',
+      '--et-elevated': '#d1cae6',
+      '--et-ink': '34 26 62',
+      '--et-ink-2': '64 54 96',
+      '--et-ink-3': '72 62 104',
+      '--et-border': '106 94 142',
     },
   },
   {
@@ -227,7 +280,11 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '86 50 34',
       '--et-line-hex': '#e6d2c4',
       '--et-tint': '84 48 32',
-      '--et-ink': '86 52 38',
+      '--et-elevated': '#e3cfc0',
+      '--et-ink': '64 34 22',
+      '--et-ink-2': '96 62 46',
+      '--et-ink-3': '102 70 54',
+      '--et-border': '142 102 84',
     },
   },
   {
@@ -237,14 +294,18 @@ export const EDIT_THEMES: EditTheme[] = [
     light: true,
     vars: {
       '--et-root-bg': 'linear-gradient(160deg,#eaf2f9,#dce9f4)',
-      '--et-shade': '150 186 220',
+      '--et-shade': '168 198 226',
       '--et-canvas': '#e5eef6',
       '--et-panel': '#d8e6f2',
       '--et-popup': '#eef4fa',
       '--et-line': '24 52 84',
       '--et-line-hex': '#c2d6ea',
       '--et-tint': '22 50 82',
-      '--et-ink': '26 54 86',
+      '--et-elevated': '#c4d6e6',
+      '--et-ink': '16 36 62',
+      '--et-ink-2': '40 64 94',
+      '--et-ink-3': '40 64 94',
+      '--et-border': '78 110 142',
     },
   },
   // ── Gradient ──────────────────────────────────────────────────────────
@@ -261,6 +322,10 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '150 140 210',
       '--et-line-hex': '#2c2650',
       '--et-tint': '160 150 220',
+      '--et-ink': '240 238 255',
+      '--et-ink-2': '204 200 234',
+      '--et-ink-3': '176 172 210',
+      '--et-border': '146 140 192',
     },
   },
   {
@@ -276,6 +341,10 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '224 150 150',
       '--et-line-hex': '#4a2028',
       '--et-tint': '224 160 150',
+      '--et-ink': '255 240 243',
+      '--et-ink-2': '236 204 210',
+      '--et-ink-3': '210 176 182',
+      '--et-border': '180 140 148',
     },
   },
   {
@@ -291,6 +360,10 @@ export const EDIT_THEMES: EditTheme[] = [
       '--et-line': '130 190 210',
       '--et-line-hex': '#123642',
       '--et-tint': '140 196 214',
+      '--et-ink': '232 246 250',
+      '--et-ink-2': '190 218 228',
+      '--et-ink-3': '160 194 206',
+      '--et-border': '120 164 180',
     },
   },
 ];
@@ -305,6 +378,10 @@ const CUSTOM_IMAGE_VARS: Record<string, string> = {
   '--et-line': '220 224 235',
   '--et-line-hex': '#2a2a34',
   '--et-tint': '224 228 238',
+  '--et-ink': '240 242 248',
+  '--et-ink-2': '204 208 220',
+  '--et-ink-3': '176 180 194',
+  '--et-border': '146 150 166',
 };
 
 export const CUSTOM_IMAGE_ID = 'custom-image';

@@ -10,33 +10,30 @@
  * (/api/tour/enrich). Slice 4: a route itinerary — add venues as stops,
  * optimize the drive order (/api/tour/route, ORS), draw the route on the
  * map, and list per-leg drive times. Slice 5: an explicit start point +
- * date window, and the itinerary grouped by city while building (the
- * optimized result stays a flat drive order).
+ * date window. Slice 6: calendar mode (keep show-date order, flag legs that
+ * do not fit).
+ *
+ * The left rail is a five-step workflow (views/tour/RailStep): 1 Where (region
+ * search + home base) -> 2 When (dates, optional) -> 3 What (filters) ->
+ * 4 Venues (results, Add to route) -> 5 Route (stops, order, optimize /
+ * calendar, totals). Steps auto-open/close on the transitions that matter
+ * (a search collapses Where and reveals Venues; the first stop opens Route);
+ * the user can toggle any step by hand at any time.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './tourMap.css';
-import { List, type ListImperativeAPI, type RowComponentProps } from 'react-window';
+import { List, type ListImperativeAPI } from 'react-window';
 import {
-  Check,
-  ChevronRight,
-  Facebook,
-  Globe,
-  Instagram,
+  ChevronDown,
+  ChevronUp,
   KeyRound,
-  Mail,
-  MessageCircle,
-  Music2,
-  Music4,
-  Phone,
+  MapPin,
   Plus,
   Route,
   Search,
-  Twitter,
   X,
-  Youtube,
-  type LucideIcon,
 } from 'lucide-react';
 import {
   enrichVenue,
@@ -58,10 +55,14 @@ import {
   type TourStatus,
   type TourVenue,
 } from '../lib/tourClient';
+import { RailStep, type StepState } from './tour/RailStep';
+import { ChipGroup } from './tour/ChipGroup';
+import { ContactLinks } from './tour/ContactLinks';
+import { VenueRow } from './tour/VenueRow';
 
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark';
 const MARKER_CAP = 400;
-const ROW_HEIGHT = 46;
+const ROW_HEIGHT = 48;
 // Mirrors the backend cap (routing.MAX_STOPS) — ORS limits jobs/waypoints.
 const ROUTE_STOP_CAP = 40;
 // Nominal daily driving budget for the calendar-mode feasibility check: a leg
@@ -71,58 +72,44 @@ const CALENDAR_DAILY_DRIVE_HOURS = 10;
 // First-use guide: example regions a new user can search with one click.
 const GUIDE_EXAMPLES = ['Austin, TX', 'Los Angeles', 'Nashville', 'Berlin'];
 
+/** Rail steps, in workflow order. */
+type StepId = 'where' | 'when' | 'what' | 'venues' | 'route';
+
+// Shared control styles for the rail (12 px fields, 11 px buttons).
+const INPUT_CLS =
+  'rounded border border-white/10 bg-white/5 px-2 py-1.5 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-lime-500/50 focus:outline-none';
+const BTN_PRIMARY_CLS =
+  'flex shrink-0 items-center gap-1 rounded border border-lime-500/40 bg-lime-500/15 px-2.5 py-1.5 text-[11px] font-bold text-lime-100 hover:bg-lime-500/25 disabled:opacity-40';
+const BTN_GHOST_CLS =
+  'shrink-0 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:border-white/20 hover:text-zinc-100 disabled:opacity-40';
+const ICON_BTN_CLS = 'shrink-0 rounded p-0.5 text-zinc-500 hover:text-zinc-200 disabled:opacity-30 disabled:hover:text-zinc-500';
+
 const fmtDur = (s: number): string => {
   const m = Math.round(s / 60);
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
 };
 const fmtMiles = (meters: number): string => `${(meters / 1609.344).toFixed(1)} mi`;
+// ISO date -> "May 3" for collapsed-step summaries.
+const fmtDate = (iso: string): string => {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
 
-// An OSM contact tag may be a full URL or a bare handle; normalize to a URL.
-const handleUrl = (host: string, v: string): string =>
-  /^https?:\/\//i.test(v) ? v : `https://${host}/${v.replace(/^@/, '')}`;
-
-// Every contact channel a venue can carry, in a stable render order. `external`
-// links open in a new tab; tel:/mailto: navigate in place.
-const CONTACT_CHANNELS: Array<{
-  key: keyof TourVenue;
-  icon: LucideIcon;
-  label: string;
-  href: (v: string) => string;
-  external: boolean;
-}> = [
-  { key: 'website', icon: Globe, label: 'Website', href: (v) => v, external: true },
-  { key: 'email', icon: Mail, label: 'Email', href: (v) => `mailto:${v}`, external: false },
-  { key: 'phone', icon: Phone, label: 'Call', href: (v) => `tel:${v}`, external: false },
-  { key: 'whatsapp', icon: MessageCircle, label: 'WhatsApp', href: (v) => `https://wa.me/${v.replace(/[^0-9]/g, '')}`, external: true },
-  { key: 'instagram', icon: Instagram, label: 'Instagram', href: (v) => handleUrl('instagram.com', v), external: true },
-  { key: 'facebook', icon: Facebook, label: 'Facebook', href: (v) => handleUrl('facebook.com', v), external: true },
-  { key: 'twitter', icon: Twitter, label: 'X / Twitter', href: (v) => handleUrl('x.com', v), external: true },
-  { key: 'youtube', icon: Youtube, label: 'YouTube', href: (v) => handleUrl('youtube.com', v), external: true },
-  { key: 'tiktok', icon: Music2, label: 'TikTok', href: (v) => handleUrl('tiktok.com', v), external: true },
-  { key: 'soundcloud', icon: Music4, label: 'SoundCloud', href: (v) => handleUrl('soundcloud.com', v), external: true },
-  { key: 'bandcamp', icon: Music4, label: 'Bandcamp', href: (v) => (/^https?:\/\//i.test(v) ? v : `https://${v}`), external: true },
-  { key: 'spotify', icon: Music4, label: 'Spotify', href: (v) => v, external: true },
-];
-
-/** Every contact/social channel a venue carries, whichever exist. */
-const ContactLinks: React.FC<{ v: TourVenue }> = ({ v }) => (
-  <span className="flex shrink-0 flex-wrap items-center gap-1">
-    {CONTACT_CHANNELS.map(({ key, icon: Icon, label, href, external }) => {
-      const value = v[key];
-      if (typeof value !== 'string' || !value) return null;
-      return (
-        <a
-          key={key}
-          href={href(value)}
-          {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
-          aria-label={`${label} for ${v.name}`}
-          className="text-zinc-400 hover:text-lime-300"
-        >
-          <Icon className="h-3 w-3" />
-        </a>
-      );
-    })}
-  </span>
+/** Dashed empty/error/guidance note used inside rail steps. */
+const RailNote: React.FC<{ tone?: 'muted' | 'warn' | 'error'; children: React.ReactNode }> = ({ tone = 'muted', children }) => (
+  <p
+    role={tone === 'error' ? 'alert' : undefined}
+    className={`rounded-md border border-dashed px-3 py-2.5 text-[11px] leading-snug ${
+      tone === 'error'
+        ? 'border-red-500/30 text-red-300'
+        : tone === 'warn'
+          ? 'border-amber-500/30 text-amber-200/90'
+          : 'border-white/10 text-zinc-500'
+    }`}
+  >
+    {children}
+  </p>
 );
 
 export const TourView: React.FC = () => {
@@ -181,13 +168,41 @@ export const TourView: React.FC = () => {
   const [startError, setStartError] = useState('');
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
-  const [collapsedCities, setCollapsedCities] = useState<Set<string>>(new Set());
 
   // ── First-use guide (empty state over the basemap) ─────────────────────────
   // Shown until a region has been found (or the user dismisses it): says what
   // the tab is, what to do first, and offers the first action right there.
   const [guideDismissed, setGuideDismissed] = useState(false);
   const [guideQuery, setGuideQuery] = useState('');
+
+  // ── Rail workflow state ───────────────────────────────────────────────────
+  // Hovered venue (list row <-> map marker sync); '' when nothing is hovered.
+  const [hoverId, setHoverId] = useState('');
+  // Which steps are expanded. Where + Venues open on first paint so a new user
+  // sees the primary action and what will appear below it.
+  const [openSteps, setOpenSteps] = useState<Set<StepId>>(() => new Set(['where', 'venues']));
+  // Polite live-region text for stop reordering (screen readers).
+  const [announce, setAnnounce] = useState('');
+  const markerElsRef = useRef<Map<string, HTMLElement>>(new Map());
+
+  const toggleStep = useCallback((id: StepId) => {
+    setOpenSteps((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  // After a successful search the region is settled: fold Where down to its
+  // summary and make sure the results step is visible.
+  const revealVenues = useCallback(() => {
+    setOpenSteps((prev) => {
+      const next = new Set(prev);
+      next.delete('where');
+      next.add('venues');
+      return next;
+    });
+  }, []);
 
   // ── Boot: module status + persisted filter preset ─────────────────────────
   useEffect(() => {
@@ -297,13 +312,14 @@ export const TourView: React.FC = () => {
       setVenues(res.venues);
       setSelectedId('');
       setMovedSinceSearch(false);
+      revealVenues();
     } catch (e) {
       setSearchError(e instanceof Error ? e.message : String(e));
       setVenues([]);
     } finally {
       setBusy(false);
     }
-  }, [busy, currentViewbox, currentRef]);
+  }, [busy, currentViewbox, currentRef, revealVenues]);
 
   // ── Search the current map viewport (no geocode) ──────────────────────────
   const searchArea = useCallback(async () => {
@@ -329,13 +345,14 @@ export const TourView: React.FC = () => {
       setSelectedId('');
       setRegionName('Map area');
       setMovedSinceSearch(false);
+      revealVenues();
     } catch (e) {
       setSearchError(e instanceof Error ? e.message : String(e));
       setVenues([]);
     } finally {
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, revealVenues]);
 
   // ── Filters: toggle + debounced persist ──────────────────────────────────
   const persistFilters = useCallback((genres: Set<string>, vibes: Set<string>) => {
@@ -430,22 +447,14 @@ export const TourView: React.FC = () => {
     if (!map) return;
     for (const m of markersRef.current) m.remove();
     markersRef.current = [];
+    const els = new Map<string, HTMLElement>();
+    markerElsRef.current = els;
     for (const v of markerSet) {
       const inRoute = routeIds.has(v.id);
       const order = routeOrder.get(v.id);
       const el = document.createElement('div');
-      if (inRoute) {
-        el.style.cssText =
-          'display:flex;align-items:center;justify-content:center;width:18px;height:18px;' +
-          'border-radius:50%;background:#a3e635;border:2px solid #0a080f;' +
-          'box-shadow:0 0 8px rgba(163,230,53,.9);color:#0a080f;cursor:pointer;' +
-          'font:700 10px/1 system-ui,sans-serif;';
-        if (order) el.textContent = String(order);
-      } else {
-        el.style.cssText =
-          'width:9px;height:9px;border-radius:50%;background:rgba(163,230,53,.65);' +
-          'border:1.5px solid #0a080f;cursor:pointer;';
-      }
+      el.className = inRoute ? 'tour-marker tour-marker--stop' : 'tour-marker';
+      if (inRoute && order) el.textContent = String(order);
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([v.lon, v.lat])
         .setPopup(
@@ -454,9 +463,21 @@ export const TourView: React.FC = () => {
         )
         .addTo(map);
       el.addEventListener('click', () => selectVenue(v, false));
+      el.addEventListener('mouseenter', () => setHoverId(v.id));
+      el.addEventListener('mouseleave', () => setHoverId(''));
+      els.set(v.id, el);
       markersRef.current.push(marker);
     }
   }, [markerSet, routeIds, routeOrder, selectVenue]);
+
+  // Mirror the hovered / selected list row on its marker without rebuilding
+  // the marker set (which can be 400 elements).
+  useEffect(() => {
+    for (const [id, el] of markerElsRef.current) {
+      el.classList.toggle('is-hover', id === hoverId);
+      el.classList.toggle('is-selected', id === selectedId);
+    }
+  }, [hoverId, selectedId, markerSet]);
 
   // ── Route: add/remove stops, optimize, draw ───────────────────────────────
   // Any change to the stop set / roundtrip flag invalidates a drawn route AND
@@ -515,26 +536,6 @@ export const TourView: React.FC = () => {
     setRoundtrip(next);
     invalidateRoute();
   }, [invalidateRoute]);
-
-  // Route stops grouped by city, preserving first-seen order (for the
-  // pre-optimize itinerary view; the optimized result stays a flat drive order).
-  const stopsByCity = useMemo(() => {
-    const groups = new Map<string, TourVenue[]>();
-    for (const s of routeStops) {
-      const key = s.city || 'Unspecified';
-      (groups.get(key) ?? groups.set(key, []).get(key)!).push(s);
-    }
-    return [...groups.entries()];
-  }, [routeStops]);
-
-  const toggleCity = useCallback((city: string) => {
-    setCollapsedCities((prev) => {
-      const next = new Set(prev);
-      if (next.has(city)) next.delete(city);
-      else next.add(city);
-      return next;
-    });
-  }, []);
 
   // ── Trip start point (Slice 5): geocode a place as the route origin ────────
   const setStart = useCallback(async (q: string) => {
@@ -797,40 +798,100 @@ export const TourView: React.FC = () => {
     }
   }, [keysSaving, orsInput, ocmInput]);
 
+
+  // ── Rail helpers: reorder stops, clear filters/dates, auto-open Route ─────
+  // Swap a stop with its neighbour IN THE DISPLAYED LIST (routeStops, or the
+  // date-sorted calendarStops) and write that order back. In calendar mode a
+  // dated stop snaps back to its date position, so its buttons are disabled.
+  const moveStop = useCallback((list: TourVenue[], i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    const next = [...list];
+    [next[i], next[j]] = [next[j], next[i]];
+    setRouteStops(next);
+    setAnnounce(`${next[j].name} moved to position ${j + 1} of ${next.length}`);
+    invalidateRoute();
+  }, [invalidateRoute]);
+
+  const clearFilters = useCallback(() => {
+    setSelGenres(new Set());
+    setSelVibes(new Set());
+    persistFilters(new Set(), new Set());
+  }, [persistFilters]);
+
+  const clearDates = useCallback(() => {
+    setDateStart('');
+    setDateEnd('');
+  }, []);
+
+  // The Route step stays folded until the first stop exists, then opens; it
+  // folds again when the last stop goes. Manual toggles in between are kept.
+  const hadStops = useRef(false);
+  useEffect(() => {
+    const has = routeStops.length > 0;
+    if (has === hadStops.current) return;
+    hadStops.current = has;
+    setOpenSteps((prev) => {
+      const next = new Set(prev);
+      if (has) next.add('route');
+      else next.delete('route');
+      return next;
+    });
+  }, [routeStops.length]);
+
   const caps = status?.capabilities;
+  // Undefined until /status answers — never gate on a not-yet-known capability.
+  const venuesOffline = caps ? !caps.venues : false;
+  const routeOffline = caps ? !caps.route : false;
+  const filterCount = selGenres.size + selVibes.size;
+
+  // The step the user should work on next, top to bottom.
+  const activeStep: StepId = !regionName ? 'where' : routeStops.length === 0 ? 'venues' : 'route';
+  const stepState = (id: StepId, done: boolean, optional = false): StepState =>
+    done ? 'done' : id === activeStep ? 'active' : optional ? 'optional' : 'todo';
+  const whereState = stepState('where', !!regionName);
+  const whenState = stepState('when', !!(dateStart && dateEnd), true);
+  const whatState = stepState('what', filterCount > 0, true);
+  const venuesState = stepState('venues', routeStops.length > 0);
+  const routeState = stepState('route', !!route);
+
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const whereSummary = regionName
+    ? `${regionName}${startPoint ? ` · from ${startPoint.label}` : ''}`
+    : 'Search a city or region to begin';
+  const whenSummary = dateStart && dateEnd
+    ? `${fmtDate(dateStart)} - ${fmtDate(dateEnd)} · ${plural(tripDays, 'day')}`
+    : dateStart
+      ? `From ${fmtDate(dateStart)}`
+      : dateEnd
+        ? `Until ${fmtDate(dateEnd)}`
+        : 'Any dates';
+  const whatSummary = filterCount > 0
+    ? `${plural(filterCount, 'filter')}${venues.length ? ` · ${filtered.length} of ${venues.length} venues` : ''}`
+    : venues.length ? `No filters · ${plural(venues.length, 'venue')}` : 'No filters';
+  const venuesSummary = venues.length
+    ? `${plural(sorted.length, 'venue')} · ${routeStops.length} added`
+    : 'Nothing yet — search first';
+  const routeSummary = routeStops.length === 0
+    ? 'Add a venue to start'
+    : route
+      ? `${plural(routeStops.length, 'stop')} · ${fmtDur(route.total.duration_s)} · ${fmtMiles(route.total.distance_m)}`
+      : `${plural(routeStops.length, 'stop')} · not routed yet`;
+
+  const displayedStops = routeMode === 'calendar' ? calendarStops : routeStops;
+  const routeButtonLabel = routeBusy
+    ? 'Routing...'
+    : routeMode === 'calendar'
+      ? route ? 'Rebuild from dates' : 'Build from dates'
+      : route ? 'Optimize again' : 'Optimize drive';
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#0a080f]">
       <div className="relative flex items-center gap-3 px-3 py-1.5 border-b border-white/8 shrink-0">
         <span className="text-[11px] font-black uppercase tracking-widest text-lime-200">Tour</span>
-        <form
-          className="flex items-center gap-1.5"
-          onSubmit={(e) => { e.preventDefault(); void runSearch(query); }}
-        >
-          <label htmlFor="tour-region" className="sr-only">Search a region or city</label>
-          <input
-            id="tour-region"
-            name="tour-region"
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="city or region..."
-            className="w-56 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-lime-500/50 focus:outline-none"
-          />
-          <button
-            type="submit"
-            disabled={busy || !query.trim()}
-            className="flex items-center gap-1 rounded border border-lime-500/40 bg-lime-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-lime-200 disabled:opacity-40"
-          >
-            <Search className="h-3 w-3" aria-hidden="true" />
-            {busy ? 'Searching' : 'Search'}
-          </button>
-        </form>
-        {searchError ? (
-          <span className="min-w-0 truncate text-[10px] text-red-400" title={searchError}>{searchError}</span>
-        ) : regionName ? (
-          <span className="min-w-0 truncate text-[10px] text-zinc-500" title={regionName}>{regionName}</span>
-        ) : null}
+        <span className="min-w-0 truncate text-[11px] text-zinc-500">
+          Find venues, pick stops, route the drive.
+        </span>
         <div className="ml-auto flex items-center gap-1.5">
           <StatusPill label="Map" ok />
           <StatusPill label="Venues" ok={caps?.venues} />
@@ -892,412 +953,547 @@ export const TourView: React.FC = () => {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        <aside className="flex w-72 shrink-0 flex-col border-r border-white/8">
-          <div className="space-y-1.5 border-b border-white/8 px-2.5 py-2">
-            <div className="flex items-center gap-1.5">
-              <span className="w-9 shrink-0 text-[9px] font-bold uppercase tracking-wider text-zinc-400">Start</span>
+        <aside
+          aria-label="Tour planner"
+          className="flex w-80 shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-white/8"
+        >
+          {/* ── 1 · Where ──────────────────────────────────────────────── */}
+          <RailStep
+            n={1}
+            id="tour-step-where"
+            title="Where"
+            helper="Search a city or region. Venues there appear in step 4."
+            state={whereState}
+            open={openSteps.has('where')}
+            onToggle={() => toggleStep('where')}
+            summary={whereSummary}
+          >
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(e) => { e.preventDefault(); void runSearch(query); }}
+            >
+              <label htmlFor="tour-region" className="sr-only">City or region</label>
+              <input
+                id="tour-region"
+                name="tour-region"
+                type="text"
+                autoComplete="off"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="City or region, e.g. Austin, TX"
+                className={`min-w-0 flex-1 ${INPUT_CLS}`}
+              />
+              <button type="submit" disabled={busy || !query.trim()} className={BTN_PRIMARY_CLS}>
+                <Search className="h-3 w-3" aria-hidden="true" />
+                {busy ? 'Searching...' : 'Search'}
+              </button>
+            </form>
+            {searchError ? (
+              <div className="mt-2"><RailNote tone="error">{searchError}</RailNote></div>
+            ) : venuesOffline ? (
+              <div className="mt-2">
+                <RailNote tone="warn">Venue search is offline — start the backend, then search again.</RailNote>
+              </div>
+            ) : regionName && !busy ? (
+              <p className="mt-2 text-[11px] leading-snug text-zinc-400">
+                Showing <span className="text-zinc-200">{regionName}</span> · {plural(venues.length, 'venue')}.
+                Pan the map and use &ldquo;Search this area&rdquo; to look elsewhere.
+              </p>
+            ) : null}
+
+            <div className="mt-3">
+              <p className="mb-1 text-[11px] text-zinc-400">
+                Home base <span className="text-zinc-600">(optional)</span>
+              </p>
               {startPoint ? (
-                <>
-                  <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-200" title={startPoint.label}>
+                <div className="flex items-center gap-2 rounded border border-white/10 bg-white/5 px-2 py-1.5">
+                  <MapPin className="h-3 w-3 shrink-0 text-lime-300" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-zinc-100" title={startPoint.label}>
                     {startPoint.label}
                   </span>
-                  <button
-                    type="button"
-                    aria-label="Clear start point"
-                    onClick={clearStart}
-                    className="shrink-0 text-zinc-400 hover:text-red-400"
-                  >
-                    <X className="h-2.5 w-2.5" aria-hidden="true" />
+                  <button type="button" aria-label="Clear home base" onClick={clearStart} className={ICON_BTN_CLS}>
+                    <X className="h-3 w-3" aria-hidden="true" />
                   </button>
-                </>
+                </div>
               ) : (
                 <form
-                  className="flex min-w-0 flex-1 items-center gap-1"
+                  className="flex items-center gap-2"
                   onSubmit={(e) => { e.preventDefault(); void setStart(startQuery); }}
                 >
-                  <label htmlFor="tour-start" className="sr-only">Tour start point</label>
+                  <label htmlFor="tour-start" className="sr-only">Home base city or address</label>
                   <input
                     id="tour-start"
                     name="tour-start"
                     type="text"
+                    autoComplete="off"
                     value={startQuery}
                     onChange={(e) => setStartQuery(e.target.value)}
-                    placeholder="home base (city/address)"
-                    className="min-w-0 flex-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-200 placeholder:text-zinc-500 focus:border-lime-500/50 focus:outline-none"
+                    placeholder="City or address"
+                    className={`min-w-0 flex-1 ${INPUT_CLS}`}
                   />
-                  <button
-                    type="submit"
-                    disabled={startBusy || !startQuery.trim()}
-                    className="shrink-0 rounded border border-lime-500/40 bg-lime-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-lime-200 disabled:opacity-40"
-                  >
+                  <button type="submit" disabled={startBusy || !startQuery.trim()} className={BTN_GHOST_CLS}>
                     {startBusy ? '...' : 'Set'}
                   </button>
                 </form>
               )}
+              {startError && <p role="alert" className="mt-1 text-[11px] leading-snug text-red-400">{startError}</p>}
+              <p className="mt-1 text-[10px] leading-snug text-zinc-600">
+                Where the drive starts{roundtrip ? ' and ends' : ''}. Without one, the route starts at the searched region.
+              </p>
             </div>
-            {startError && <p className="text-[9px] leading-snug text-red-400">{startError}</p>}
-            <div className="flex items-center gap-1.5">
-              <span className="w-9 shrink-0 text-[9px] font-bold uppercase tracking-wider text-zinc-400">Dates</span>
-              <label htmlFor="tour-date-start" className="sr-only">Tour start date</label>
-              <input
-                id="tour-date-start"
-                name="tour-date-start"
-                type="date"
-                value={dateStart}
-                max={dateEnd || undefined}
-                onChange={(e) => setDateStart(e.target.value)}
-                className="min-w-0 flex-1 rounded border border-white/10 bg-white/5 px-1 py-0.5 text-[10px] text-zinc-200 focus:border-lime-500/50 focus:outline-none scheme-dark"
-              />
-              <span className="shrink-0 text-[9px] text-zinc-500">to</span>
-              <label htmlFor="tour-date-end" className="sr-only">Tour end date</label>
-              <input
-                id="tour-date-end"
-                name="tour-date-end"
-                type="date"
-                value={dateEnd}
-                min={dateStart || undefined}
-                onChange={(e) => setDateEnd(e.target.value)}
-                className="min-w-0 flex-1 rounded border border-white/10 bg-white/5 px-1 py-0.5 text-[10px] text-zinc-200 focus:border-lime-500/50 focus:outline-none scheme-dark"
-              />
-              {tripDays > 0 && (
-                <span className="shrink-0 text-[9px] uppercase tracking-wider text-lime-300/80">
-                  {tripDays}d
-                </span>
+          </RailStep>
+
+          {/* ── 2 · When ───────────────────────────────────────────────── */}
+          <RailStep
+            n={2}
+            id="tour-step-when"
+            title="When"
+            helper="Optional. Show dates in step 5 must fall inside this window."
+            state={whenState}
+            open={openSteps.has('when')}
+            onToggle={() => toggleStep('when')}
+            summary={whenSummary}
+            meta={whenState === 'optional' ? 'optional' : undefined}
+          >
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label htmlFor="tour-date-start" className="mb-1 block text-[11px] text-zinc-400">From</label>
+                <input
+                  id="tour-date-start"
+                  name="tour-date-start"
+                  type="date"
+                  value={dateStart}
+                  max={dateEnd || undefined}
+                  onChange={(e) => setDateStart(e.target.value)}
+                  className={`w-full scheme-dark ${INPUT_CLS}`}
+                />
+              </div>
+              <div>
+                <label htmlFor="tour-date-end" className="mb-1 block text-[11px] text-zinc-400">To</label>
+                <input
+                  id="tour-date-end"
+                  name="tour-date-end"
+                  type="date"
+                  value={dateEnd}
+                  min={dateStart || undefined}
+                  onChange={(e) => setDateEnd(e.target.value)}
+                  className={`w-full scheme-dark ${INPUT_CLS}`}
+                />
+              </div>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="min-w-0 flex-1 text-[11px] text-zinc-400">
+                {tripDays > 0 ? `${plural(tripDays, 'day')} on the road.` : 'Leave blank for an open-ended trip.'}
+              </span>
+              {(dateStart || dateEnd) && (
+                <button type="button" onClick={clearDates} className={BTN_GHOST_CLS}>Clear dates</button>
               )}
             </div>
-          </div>
-          <div className="border-b border-white/8 px-2.5 py-2">
-            <ChipRow kind="genre" labels={availGenres} selected={selGenres} onToggle={toggleChip} />
-            <div className="mt-1.5">
-              <ChipRow kind="vibe" labels={availVibes} selected={selVibes} onToggle={toggleChip} />
+          </RailStep>
+
+          {/* ── 3 · What ───────────────────────────────────────────────── */}
+          <RailStep
+            n={3}
+            id="tour-step-what"
+            title="What"
+            helper="Narrow the list. Filters apply instantly and are remembered."
+            state={whatState}
+            open={openSteps.has('what')}
+            onToggle={() => toggleStep('what')}
+            summary={whatSummary}
+            meta={venues.length > 0 ? `${filtered.length} of ${venues.length}` : filterCount === 0 ? 'optional' : undefined}
+            actions={
+              filterCount > 0 ? (
+                <button type="button" onClick={clearFilters} className={BTN_GHOST_CLS}>Clear filters</button>
+              ) : undefined
+            }
+          >
+            <div className="space-y-3">
+              <ChipGroup
+                id="tour-genre"
+                label="Genre"
+                labels={availGenres}
+                selected={selGenres}
+                onToggle={(l) => toggleChip('genre', l)}
+                empty="Genres load once the backend answers."
+              />
+              <ChipGroup
+                id="tour-vibe"
+                label="Venue type"
+                labels={availVibes}
+                selected={selVibes}
+                onToggle={(l) => toggleChip('vibe', l)}
+                empty="Venue types load once the backend answers."
+              />
+              <div role="group" aria-labelledby="tour-energy-label">
+                <p id="tour-energy-label" className="mb-1 text-[11px] text-zinc-400">Energy</p>
+                <div className="flex gap-1">
+                  {(['gas', 'ev'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      aria-pressed={energyMode === m}
+                      onClick={() => setEnergyMode(m)}
+                      className={`rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                        energyMode === m
+                          ? 'border-lime-500/50 bg-lime-500/15 text-lime-200'
+                          : 'border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:text-zinc-200'
+                      }`}
+                    >
+                      {m === 'gas' ? 'Gas' : 'EV'}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10px] leading-snug text-zinc-600">
+                  EV adds charging stations along the route once it is built.
+                </p>
+              </div>
             </div>
-          </div>
-          {routeStops.length > 0 && (
-            <div className="border-b border-white/8 px-2.5 py-2">
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] font-black uppercase tracking-widest text-lime-200">
-                  Route · {routeStops.length}
+            {venues.length > 0 && (
+              <p className="mt-3 text-[11px] text-zinc-400">
+                Showing <span className="text-zinc-200">{filtered.length}</span> of {venues.length} venues.
+              </p>
+            )}
+          </RailStep>
+
+          {/* ── 4 · Venues ─────────────────────────────────────────────── */}
+          <RailStep
+            n={4}
+            id="tour-step-venues"
+            title="Venues"
+            helper="Click a name to fly there. Add makes it a stop in step 5."
+            state={venuesState}
+            open={openSteps.has('venues')}
+            onToggle={() => toggleStep('venues')}
+            summary={venuesSummary}
+            meta={venues.length > 0 ? String(sorted.length) : undefined}
+            grow
+          >
+            {venues.length > 0 && (
+              <div className="mb-2 flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-400">
+                  {sorted.length} of {venues.length}{filterCount > 0 ? ' match your filters' : ' venues'}
                 </span>
-                <div
-                  role="group"
-                  aria-label="Route mode"
-                  className="ml-auto flex overflow-hidden rounded border border-white/10"
+                <label htmlFor="tour-sort" className="text-[11px] text-zinc-500">Sort</label>
+                <select
+                  id="tour-sort"
+                  name="tour-sort"
+                  value={sortMode}
+                  onChange={(e) => setSortMode(e.target.value as 'relevance' | 'name' | 'type')}
+                  className="shrink-0 rounded border border-white/10 bg-[#17131f] px-1.5 py-1 text-[11px] text-zinc-200 scheme-dark focus:border-lime-500/50 focus:outline-none"
                 >
+                  <option value="relevance">Relevance</option>
+                  <option value="name">Name A-Z</option>
+                  <option value="type">Type</option>
+                </select>
+              </div>
+            )}
+            <div className="min-h-24 flex-1" role="region" aria-label="Venue results">
+              {busy ? (
+                <RailNote>Searching {query.trim() || 'the map area'}...</RailNote>
+              ) : sorted.length > 0 ? (
+                <List
+                  listRef={listRef}
+                  rowComponent={VenueRow}
+                  rowCount={sorted.length}
+                  rowHeight={ROW_HEIGHT}
+                  rowProps={{
+                    venues: sorted,
+                    selectedId,
+                    hoverId,
+                    routeIds,
+                    onFocus: focusVenue,
+                    onHover: setHoverId,
+                    onToggleRoute: toggleRouteStop,
+                  }}
+                  overscanCount={8}
+                  style={{ height: '100%' }}
+                />
+              ) : venues.length > 0 ? (
+                <RailNote>
+                  No venues match your filters.{' '}
+                  <button type="button" onClick={clearFilters} className="text-lime-300 underline-offset-2 hover:underline">
+                    Clear filters
+                  </button>
+                </RailNote>
+              ) : searchError ? (
+                <RailNote tone="error">The search failed — see step 1 for the reason, then try again.</RailNote>
+              ) : regionName ? (
+                <RailNote>
+                  No venues found in {regionName}. Try a larger city, or zoom the map and use &ldquo;Search this area&rdquo;.
+                </RailNote>
+              ) : (
+                <RailNote>
+                  Venues from your search will list here — name, type, address and contact links — each with an
+                  <span className="mx-1 inline-flex items-center gap-0.5 rounded-full border border-white/15 px-1 text-zinc-300">
+                    <Plus className="h-2.5 w-2.5" aria-hidden="true" />Add
+                  </span>
+                  button to make it a stop.
+                </RailNote>
+              )}
+            </div>
+            {selectedVenue && (
+              <div className="mt-2 shrink-0 rounded-md border border-lime-500/25 bg-lime-500/5 px-2.5 py-2">
+                <div className="flex items-start gap-2">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-bold text-zinc-100">{selectedVenue.name}</span>
+                    <span className="block truncate text-[10px] text-zinc-400">
+                      {selectedVenue.category.replace(/_/g, ' ')}
+                      {selectedVenue.city ? ` · ${selectedVenue.city}` : ''}
+                    </span>
+                    {selectedVenue.address && (
+                      <span className="block truncate text-[10px] text-zinc-500">{selectedVenue.address}</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Close venue details"
+                    onClick={() => setSelectedId('')}
+                    className={ICON_BTN_CLS}
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <ContactLinks v={selectedVenue} />
+                  <button
+                    type="button"
+                    onClick={() => toggleRouteStop(selectedVenue)}
+                    aria-pressed={routeIds.has(selectedVenue.id)}
+                    className={`ml-auto ${BTN_GHOST_CLS}`}
+                  >
+                    {routeIds.has(selectedVenue.id) ? 'Remove stop' : 'Add stop'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={enrichBusy}
+                    onClick={() => void runEnrich(selectedVenue)}
+                    className={BTN_PRIMARY_CLS}
+                  >
+                    {enrichBusy ? 'Finding...' : 'Find booking info'}
+                  </button>
+                </div>
+                {enrichError && (
+                  <p role="alert" className="mt-1.5 text-[11px] leading-snug text-red-400">{enrichError}</p>
+                )}
+                {enrichments[selectedVenue.id] && (
+                  <EnrichResult data={enrichments[selectedVenue.id]} />
+                )}
+              </div>
+            )}
+          </RailStep>
+
+          {/* ── 5 · Route ──────────────────────────────────────────────── */}
+          <RailStep
+            n={5}
+            id="tour-step-route"
+            title="Route"
+            helper="Order your stops, then optimize the drive or build it from show dates."
+            state={routeState}
+            open={openSteps.has('route')}
+            onToggle={() => toggleStep('route')}
+            summary={routeSummary}
+            meta={routeStops.length > 0 ? plural(routeStops.length, 'stop') : undefined}
+            actions={
+              routeStops.length > 0 ? (
+                <button type="button" onClick={clearRoute} className={BTN_GHOST_CLS}>Clear</button>
+              ) : undefined
+            }
+          >
+            {routeStops.length === 0 ? (
+              <RailNote>Press Add on a venue in step 4. Stops collect here in the order you add them.</RailNote>
+            ) : (
+              <>
+                <div role="group" aria-label="Route mode" className="grid grid-cols-2 overflow-hidden rounded border border-white/10">
                   {(['optimize', 'calendar'] as const).map((m) => (
                     <button
                       key={m}
                       type="button"
                       aria-pressed={routeMode === m}
                       onClick={() => changeRouteMode(m)}
-                      className={`px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider transition-colors ${
-                        routeMode === m
-                          ? 'bg-lime-500/20 text-lime-200'
-                          : 'text-zinc-500 hover:text-zinc-300'
+                      className={`px-2 py-1 text-[11px] font-semibold transition-colors ${
+                        routeMode === m ? 'bg-lime-500/20 text-lime-100' : 'text-zinc-400 hover:text-zinc-200'
                       }`}
                     >
-                      {m === 'optimize' ? 'Optimize' : 'Calendar'}
+                      {m === 'optimize' ? 'Optimize order' : 'By show dates'}
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  aria-label="Clear route"
-                  onClick={clearRoute}
-                  className="text-zinc-400 hover:text-zinc-200"
-                >
-                  <X className="h-3 w-3" aria-hidden="true" />
-                </button>
-              </div>
-              <div className="mt-1.5 flex items-center gap-2">
-                <span className="flex items-center gap-1.5">
+                <p className="mt-1 text-[10px] leading-snug text-zinc-600">
+                  {routeMode === 'optimize'
+                    ? 'Reorders the stops for the shortest drive.'
+                    : 'Keeps your show dates in order and flags legs that do not fit. Undated stops keep list order.'}
+                </p>
+                <p aria-live="polite" className="sr-only">{announce}</p>
+
+                {route ? (
+                  <ol className="mt-2 max-h-52 overflow-y-auto" aria-label="Drive order">
+                    {route.stops.map((s, i) => {
+                      const feas = legFeasibility(i);
+                      const leg = route.legs[i];
+                      return (
+                        <li key={s.id} className="flex items-center gap-1.5 py-1">
+                          <span className="w-4 shrink-0 text-right text-[10px] font-bold text-lime-300/80">{i + 1}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] text-zinc-100">{s.name}</span>
+                            <span className="block truncate text-[10px] text-zinc-500">
+                              {routeMode === 'calendar' && stopDates[s.id] ? `${fmtDate(stopDates[s.id])} · ` : ''}
+                              {leg ? `${fmtDur(leg.duration_s)} · ${fmtMiles(leg.distance_m)}` : s.city ?? ''}
+                            </span>
+                          </span>
+                          {feas === 'tight' && (
+                            <span
+                              title="This drive may not fit before the show date"
+                              className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] font-bold text-amber-400"
+                            >
+                              tight
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            aria-label={`Remove ${s.name} from route`}
+                            onClick={() => removeRouteStop(s.id)}
+                            className={ICON_BTN_CLS}
+                          >
+                            <X className="h-3 w-3" aria-hidden="true" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                ) : (
+                  <ol className="mt-2 max-h-52 overflow-y-auto" aria-label="Stops">
+                    {displayedStops.map((s, i) => {
+                      const dated = routeMode === 'calendar' && !!stopDates[s.id];
+                      return (
+                        <li key={s.id} className="flex items-center gap-1.5 py-1">
+                          <span className="w-4 shrink-0 text-right text-[10px] font-bold text-lime-300/80">{i + 1}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] text-zinc-100">{s.name}</span>
+                            <span className="block truncate text-[10px] text-zinc-500">
+                              {s.city || s.address || s.category.replace(/_/g, ' ')}
+                            </span>
+                          </span>
+                          {routeMode === 'calendar' && (
+                            <>
+                              <label htmlFor={`tour-stop-date-${s.id}`} className="sr-only">Show date for {s.name}</label>
+                              <input
+                                id={`tour-stop-date-${s.id}`}
+                                name={`tour-stop-date-${s.id}`}
+                                type="date"
+                                value={stopDates[s.id] ?? ''}
+                                min={dateStart || undefined}
+                                max={dateEnd || undefined}
+                                onChange={(e) => setStopDate(s.id, e.target.value)}
+                                className="w-28 shrink-0 rounded border border-white/10 bg-white/5 px-1 py-0.5 text-[11px] text-zinc-100 scheme-dark focus:border-lime-500/50 focus:outline-none"
+                              />
+                            </>
+                          )}
+                          <span className="flex shrink-0 flex-col">
+                            <button
+                              type="button"
+                              aria-label={`Move ${s.name} up`}
+                              title={dated ? 'Dated stops follow their date' : 'Move up'}
+                              disabled={i === 0 || dated}
+                              onClick={() => moveStop(displayedStops, i, -1)}
+                              className={ICON_BTN_CLS}
+                            >
+                              <ChevronUp className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Move ${s.name} down`}
+                              title={dated ? 'Dated stops follow their date' : 'Move down'}
+                              disabled={i === displayedStops.length - 1 || dated}
+                              onClick={() => moveStop(displayedStops, i, 1)}
+                              className={ICON_BTN_CLS}
+                            >
+                              <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${s.name} from route`}
+                            onClick={() => removeRouteStop(s.id)}
+                            className={ICON_BTN_CLS}
+                          >
+                            <X className="h-3 w-3" aria-hidden="true" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+
+                <div className="mt-2 flex items-center gap-2">
                   <input
                     id="tour-roundtrip"
                     name="tour-roundtrip"
                     type="checkbox"
                     checked={roundtrip}
                     onChange={(e) => setRoundtripMode(e.target.checked)}
-                    className="h-3 w-3 accent-lime-400"
+                    className="h-3.5 w-3.5 accent-lime-400"
                   />
-                  <label htmlFor="tour-roundtrip" className="text-[9px] uppercase tracking-wider text-zinc-400">
-                    roundtrip
-                  </label>
-                </span>
-                <button
-                  type="button"
-                  disabled={routeBusy}
-                  onClick={() => void runOptimize()}
-                  className="ml-auto rounded border border-lime-500/40 bg-lime-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-lime-200 disabled:opacity-40"
-                >
-                  {routeBusy
-                    ? routeMode === 'calendar'
-                      ? 'Building...'
-                      : 'Routing...'
-                    : routeMode === 'calendar'
-                      ? 'Build'
-                      : 'Optimize'}
-                </button>
-              </div>
-              {route && (
-                <p className="mt-1 truncate text-[9px] uppercase tracking-wider text-zinc-400">
-                  from {route.start.label}
-                </p>
-              )}
-              {route ? (
-                // Routed: drive order + per-leg times. Calendar mode also shows
-                // each stop's date and flags any leg that can't fit before it.
-                <ol className="mt-1 max-h-40 overflow-y-auto">
-                  {route.stops.map((s, i) => {
-                    const feas = legFeasibility(i);
-                    return (
-                      <li key={s.id} className="flex items-center gap-1.5 py-0.5">
-                        <span className="w-4 shrink-0 text-right text-[9px] font-bold text-lime-300/80">{i + 1}</span>
-                        <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-300">
-                          {s.name}
-                          {routeMode === 'calendar' && stopDates[s.id] && (
-                            <span className="ml-1 text-[8px] text-zinc-500">{stopDates[s.id]}</span>
-                          )}
-                        </span>
-                        {feas === 'tight' && (
-                          <span
-                            title="This drive may not fit before the show date"
-                            className="shrink-0 rounded bg-amber-500/15 px-1 text-[8px] font-bold uppercase tracking-wider text-amber-400"
-                          >
-                            tight
-                          </span>
-                        )}
-                        {route.legs[i] && (
-                          <span className="shrink-0 text-[9px] text-zinc-400">
-                            {fmtDur(route.legs[i].duration_s)} · {fmtMiles(route.legs[i].distance_m)}
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          aria-label={`Remove ${s.name} from route`}
-                          onClick={() => removeRouteStop(s.id)}
-                          className="shrink-0 text-zinc-400 hover:text-red-400"
-                        >
-                          <X className="h-2.5 w-2.5" aria-hidden="true" />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ol>
-              ) : routeMode === 'calendar' ? (
-                // Calendar: one date input per stop, listed in date order.
-                <div className="mt-1 max-h-40 overflow-y-auto">
-                  {calendarStops.map((s) => (
-                    <div key={s.id} className="flex items-center gap-1.5 py-0.5">
-                      <label htmlFor={`tour-stop-date-${s.id}`} className="sr-only">
-                        Show date for {s.name}
-                      </label>
-                      <input
-                        id={`tour-stop-date-${s.id}`}
-                        name={`tour-stop-date-${s.id}`}
-                        type="date"
-                        value={stopDates[s.id] ?? ''}
-                        min={dateStart || undefined}
-                        max={dateEnd || undefined}
-                        onChange={(e) => setStopDate(s.id, e.target.value)}
-                        className="w-28 shrink-0 rounded border border-white/10 bg-white/5 px-1 py-0.5 text-[9px] text-zinc-200 focus:border-lime-500/50 focus:outline-none scheme-dark"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-300">{s.name}</span>
-                      {s.city && (
-                        <span className="shrink-0 truncate text-[8px] uppercase tracking-wider text-zinc-500">
-                          {s.city}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        aria-label={`Remove ${s.name} from route`}
-                        onClick={() => removeRouteStop(s.id)}
-                        className="shrink-0 text-zinc-400 hover:text-red-400"
-                      >
-                        <X className="h-2.5 w-2.5" aria-hidden="true" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                // Building the itinerary: grouped by city (collapsible).
-                <div className="mt-1 max-h-40 overflow-y-auto">
-                  {stopsByCity.map(([city, group]) => {
-                    const collapsed = collapsedCities.has(city);
-                    return (
-                      <div key={city}>
-                        <button
-                          type="button"
-                          onClick={() => toggleCity(city)}
-                          aria-expanded={!collapsed}
-                          className="flex w-full items-center gap-1 py-0.5 text-left"
-                        >
-                          <ChevronRight
-                            className={`h-2.5 w-2.5 shrink-0 text-zinc-400 transition-transform ${collapsed ? '' : 'rotate-90'}`}
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-[9px] font-bold uppercase tracking-wider text-zinc-300">
-                            {city}
-                          </span>
-                          <span className="shrink-0 text-[9px] text-zinc-400">{group.length}</span>
-                        </button>
-                        {!collapsed &&
-                          group.map((s) => (
-                            <div key={s.id} className="flex items-center gap-1.5 py-0.5 pl-3.5">
-                              <span className="min-w-0 flex-1">
-                                <span className="block truncate text-[10px] text-zinc-300">{s.name}</span>
-                                {(s.address || s.phone) && (
-                                  <span className="block truncate text-[8px] uppercase tracking-wider text-zinc-500">
-                                    {s.address || s.phone}
-                                  </span>
-                                )}
-                              </span>
-                              <ContactLinks v={s} />
-                              <button
-                                type="button"
-                                aria-label={`Remove ${s.name} from route`}
-                                onClick={() => removeRouteStop(s.id)}
-                                className="shrink-0 text-zinc-400 hover:text-red-400"
-                              >
-                                <X className="h-2.5 w-2.5" aria-hidden="true" />
-                              </button>
-                            </div>
-                          ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {route && (
-                <div className="mt-1 border-t border-white/8 pt-1">
-                  {route.roundtrip && route.legs.length > route.stops.length && (
-                    <p className="flex justify-between text-[9px] text-zinc-400">
-                      <span className="uppercase tracking-wider">back to start</span>
-                      <span>
-                        {fmtDur(route.legs[route.legs.length - 1].duration_s)} · {fmtMiles(route.legs[route.legs.length - 1].distance_m)}
-                      </span>
-                    </p>
-                  )}
-                  <p className="flex justify-between text-[10px] font-bold text-zinc-200">
-                    <span className="uppercase tracking-wider">total</span>
-                    <span>{fmtDur(route.total.duration_s)} · {fmtMiles(route.total.distance_m)}</span>
-                  </p>
-                  {route.unassigned.map((u) => (
-                    <p key={u.id || u.name} className="mt-0.5 flex items-center gap-1 text-[9px] leading-snug text-amber-400">
-                      <span className="min-w-0 flex-1 truncate">unreachable: {u.name}</span>
-                      {u.id && (
-                        <button
-                          type="button"
-                          aria-label={`Remove ${u.name} from route`}
-                          onClick={() => removeRouteStop(u.id)}
-                          className="shrink-0 text-amber-400/80 hover:text-red-400"
-                        >
-                          <X className="h-2.5 w-2.5" aria-hidden="true" />
-                        </button>
-                      )}
-                    </p>
-                  ))}
-                </div>
-              )}
-              {route && (
-                <div className="mt-1.5 flex items-center gap-2 border-t border-white/8 pt-1.5">
-                  <span className="text-[9px] uppercase tracking-wider text-zinc-400">energy</span>
-                  <div className="flex overflow-hidden rounded border border-white/10">
-                    {(['gas', 'ev'] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        aria-pressed={energyMode === m}
-                        onClick={() => setEnergyMode(m)}
-                        className={`px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
-                          energyMode === m
-                            ? 'bg-lime-500/20 text-lime-200'
-                            : 'text-zinc-400 hover:text-zinc-200'
-                        }`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                  {energyMode === 'ev' && (
-                    <span className="ml-auto min-w-0 truncate text-[9px] text-cyan-300" title={chargersMsg}>
-                      {chargersMsg || `${chargers.length} chargers`}
-                    </span>
-                  )}
-                </div>
-              )}
-              {routeError && (
-                <p className="mt-1 text-[10px] leading-snug text-red-400">{routeError}</p>
-              )}
-            </div>
-          )}
-          <div className="flex items-center gap-2 px-2.5 py-1">
-            <span className="min-w-0 flex-1 truncate text-[9px] uppercase tracking-widest text-zinc-400">
-              {venues.length === 0
-                ? 'search a region to find venues'
-                : `${filtered.length} of ${venues.length} venues`}
-            </span>
-            {venues.length > 0 && (
-              <>
-                <label htmlFor="tour-sort" className="sr-only">Sort venues</label>
-                <select
-                  id="tour-sort"
-                  name="tour-sort"
-                  value={sortMode}
-                  onChange={(e) => setSortMode(e.target.value as 'relevance' | 'name' | 'type')}
-                  className="shrink-0 rounded border border-white/10 bg-[#17131f] px-1 py-0.5 text-[9px] uppercase tracking-wider text-zinc-300 scheme-dark focus:border-lime-500/50 focus:outline-none"
-                >
-                  <option value="relevance">relevance</option>
-                  <option value="name">A-Z</option>
-                  <option value="type">type</option>
-                </select>
-              </>
-            )}
-          </div>
-          <div className="flex-1 min-h-0">
-            {sorted.length > 0 && (
-              <List
-                listRef={listRef}
-                rowComponent={VenueRow}
-                rowCount={sorted.length}
-                rowHeight={ROW_HEIGHT}
-                rowProps={{ venues: sorted, selectedId, onFocus: focusVenue, routeIds, onToggleRoute: toggleRouteStop }}
-                overscanCount={8}
-                style={{ height: '100%' }}
-              />
-            )}
-          </div>
-          {selectedVenue && (
-            <div className="shrink-0 border-t border-white/8 px-2.5 py-2">
-              <div className="flex items-start gap-2">
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] font-bold text-zinc-100">{selectedVenue.name}</span>
-                  <span className="block truncate text-[9px] uppercase tracking-wider text-zinc-400">
-                    {selectedVenue.category.replace(/_/g, ' ')}
-                    {selectedVenue.city ? ` · ${selectedVenue.city}` : ''}
-                  </span>
-                  {selectedVenue.address && (
-                    <span className="block truncate text-[9px] text-zinc-500">{selectedVenue.address}</span>
-                  )}
-                </span>
-                <span className="flex shrink-0 flex-col items-end gap-1">
-                  <ContactLinks v={selectedVenue} />
+                  <label htmlFor="tour-roundtrip" className="text-[11px] text-zinc-300">Round trip</label>
                   <button
                     type="button"
-                    disabled={enrichBusy}
-                    onClick={() => void runEnrich(selectedVenue)}
-                    className="rounded border border-lime-500/40 bg-lime-500/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-lime-200 disabled:opacity-40"
+                    disabled={routeBusy || routeOffline}
+                    onClick={() => void runOptimize()}
+                    className={`ml-auto ${BTN_PRIMARY_CLS}`}
                   >
-                    {enrichBusy ? 'Finding...' : 'Find booking info'}
+                    <Route className="h-3 w-3" aria-hidden="true" />
+                    {routeButtonLabel}
                   </button>
-                </span>
-              </div>
-              {enrichError && (
-                <p className="mt-1.5 text-[10px] leading-snug text-red-400">{enrichError}</p>
-              )}
-              {enrichments[selectedVenue.id] && (
-                <EnrichResult data={enrichments[selectedVenue.id]} />
-              )}
-            </div>
-          )}
+                </div>
+                {routeOffline && (
+                  <div className="mt-2">
+                    <RailNote tone="warn">
+                      Routing needs a free openrouteservice key — add it with the key button (top right).
+                    </RailNote>
+                  </div>
+                )}
+                {routeError && <div className="mt-2"><RailNote tone="error">{routeError}</RailNote></div>}
+
+                {route && (
+                  <div className="mt-2 space-y-1 border-t border-white/8 pt-2">
+                    <p className="truncate text-[10px] text-zinc-500">Starts at {route.start.label}</p>
+                    {route.roundtrip && route.legs.length > route.stops.length && (
+                      <p className="flex justify-between text-[11px] text-zinc-400">
+                        <span>Back to start</span>
+                        <span>
+                          {fmtDur(route.legs[route.legs.length - 1].duration_s)} · {fmtMiles(route.legs[route.legs.length - 1].distance_m)}
+                        </span>
+                      </p>
+                    )}
+                    <p className="flex justify-between text-[12px] font-bold text-zinc-100">
+                      <span>Total drive</span>
+                      <span>{fmtDur(route.total.duration_s)} · {fmtMiles(route.total.distance_m)}</span>
+                    </p>
+                    {route.unassigned.map((u) => (
+                      <p key={u.id || u.name} className="flex items-center gap-1 text-[11px] leading-snug text-amber-400">
+                        <span className="min-w-0 flex-1 truncate">Unreachable: {u.name}</span>
+                        {u.id && (
+                          <button
+                            type="button"
+                            aria-label={`Remove ${u.name} from route`}
+                            onClick={() => removeRouteStop(u.id)}
+                            className="shrink-0 text-amber-400/80 hover:text-red-400"
+                          >
+                            <X className="h-3 w-3" aria-hidden="true" />
+                          </button>
+                        )}
+                      </p>
+                    ))}
+                    {energyMode === 'ev' && (
+                      <p className="text-[11px] text-cyan-300" title={chargersMsg}>
+                        {chargersMsg || `${plural(chargers.length, 'charging station')} along the route`}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </RailStep>
         </aside>
 
         <div className="relative flex-1 min-h-0">
@@ -1322,6 +1518,7 @@ export const TourView: React.FC = () => {
                     </h2>
                     <p className="mt-0.5 text-[11px] leading-snug text-zinc-400">
                       Find venues city by city, pick your stops, and TOUR works out the drive between them.
+                      The numbered steps on the left walk you through it.
                     </p>
                   </div>
                   <button
@@ -1367,11 +1564,17 @@ export const TourView: React.FC = () => {
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="grid h-4.5 w-4.5 shrink-0 place-items-center rounded-full bg-lime-500/20 text-[9px] font-black text-lime-200">2</span>
-                    <span>Click a venue in the list, then <Plus className="inline h-3 w-3 align-text-bottom" aria-label="plus" /> to add it as a stop.</span>
+                    <span>
+                      Press{' '}
+                      <span className="inline-flex items-center gap-0.5 rounded-full border border-white/15 px-1 text-zinc-200">
+                        <Plus className="h-2.5 w-2.5" aria-hidden="true" />Add
+                      </span>{' '}
+                      on any venue in step 4 to make it a stop.
+                    </span>
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="grid h-4.5 w-4.5 shrink-0 place-items-center rounded-full bg-lime-500/20 text-[9px] font-black text-lime-200">3</span>
-                    <span>Optimize the drive order, or lay the stops out on a calendar.</span>
+                    <span>In step 5, optimize the drive order or build it from your show dates.</span>
                   </li>
                 </ol>
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -1394,11 +1597,6 @@ export const TourView: React.FC = () => {
                 </div>
                 {searchError && (
                   <p className="mt-2 text-[10px] leading-snug text-red-400">{searchError}</p>
-                )}
-                {status && !status.capabilities.venues && (
-                  <p className="mt-2 text-[10px] leading-snug text-amber-300/90">
-                    Venue search is offline right now — start the backend, then search again.
-                  </p>
                 )}
                 <p className="mt-2 text-[9px] leading-snug text-zinc-500">
                   Route optimization and EV stops need free service keys — add them with the key button (top right) when you get there.
@@ -1429,54 +1627,6 @@ export const TourView: React.FC = () => {
     </div>
   );
 };
-
-type VenueRowProps = {
-  venues: TourVenue[];
-  selectedId: string;
-  onFocus: (v: TourVenue) => void;
-  routeIds: Set<string>;
-  onToggleRoute: (v: TourVenue) => void;
-};
-
-/* The row is a flex of siblings (focus button + action links + route toggle),
-   NOT links nested inside one big button — interactive-inside-interactive is
-   invalid HTML and breaks keyboard/AT navigation. */
-function VenueRow({ index, style, venues, selectedId, onFocus, routeIds, onToggleRoute }: RowComponentProps<VenueRowProps>) {
-  const v = venues[index];
-  if (!v) return null;
-  const active = v.id === selectedId;
-  const inRoute = routeIds.has(v.id);
-  return (
-    <div style={style} className="px-1.5">
-      <div
-        className={`flex h-10.5 w-full items-center gap-2 rounded-md border px-2 ${
-          active
-            ? 'border-lime-500/40 bg-lime-500/10'
-            : 'border-transparent hover:border-white/10 hover:bg-white/5'
-        }`}
-      >
-        <button type="button" onClick={() => onFocus(v)} className="min-w-0 flex-1 text-left">
-          <span className="block truncate text-[11px] text-zinc-200">{v.name}</span>
-          <span className="block truncate text-[9px] uppercase tracking-wider text-zinc-400">
-            {v.category.replace(/_/g, ' ')}
-            {v.address ? ` · ${v.address}` : ''}
-          </span>
-        </button>
-        <span className="flex shrink-0 items-center gap-1">
-          <ContactLinks v={v} />
-          <button
-            type="button"
-            onClick={() => onToggleRoute(v)}
-            aria-label={inRoute ? `Remove ${v.name} from route` : `Add ${v.name} to route`}
-            className={inRoute ? 'text-lime-300' : 'text-zinc-500 hover:text-lime-300'}
-          >
-            {inRoute ? <Check className="h-3 w-3" aria-hidden="true" /> : <Plus className="h-3 w-3" aria-hidden="true" />}
-          </button>
-        </span>
-      </div>
-    </div>
-  );
-}
 
 const KeyField: React.FC<{
   id: string;
@@ -1537,36 +1687,7 @@ const EnrichResult: React.FC<{ data: TourEnrichment }> = ({ data }) => {
   );
 };
 
-const ChipRow: React.FC<{
-  kind: 'genre' | 'vibe';
-  labels: string[];
-  selected: Set<string>;
-  onToggle: (kind: 'genre' | 'vibe', label: string) => void;
-}> = ({ kind, labels, selected, onToggle }) => (
-  <div className="flex flex-wrap gap-1">
-    {labels.map((label) => {
-      const on = selected.has(label);
-      return (
-        <button
-          key={label}
-          type="button"
-          aria-pressed={on}
-          onClick={() => onToggle(kind, label)}
-          className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
-            on
-              ? 'border-lime-500/50 bg-lime-500/15 text-lime-200'
-              : 'border-white/10 bg-white/5 text-zinc-500 hover:text-zinc-300'
-          }`}
-        >
-          {label}
-        </button>
-      );
-    })}
-  </div>
-);
 
-/** Capability chip: lit when the backing service/key is ready, dim otherwise.
- *  Undefined (status not fetched yet) renders neutral. */
 const StatusPill: React.FC<{ label: string; ok?: boolean }> = ({ label, ok }) => (
   <span
     className={

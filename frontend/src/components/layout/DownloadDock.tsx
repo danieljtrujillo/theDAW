@@ -50,9 +50,14 @@ const formatSpeed = (bytesPerSec: number): string => {
 const isActive = (job: DownloadJob): boolean =>
   job.status === 'queued' || job.status === 'downloading';
 
-// Default resting spot: bottom-right, but lifted high enough (bottom-28 = 7rem)
-// to clear the collapsed ShellBottomDock strip so the dock isn't clipped.
-const DEFAULT_POS_CLASS = 'bottom-28 right-4';
+// Default resting spot: INSIDE the always-visible bottom strip (the long,
+// mostly empty "PANELS" toggle run, just right of its label), so the pill never
+// floats over work-area controls — at bottom-28 right-4 it covered the
+// visualizer's Fullscreen button, the DJ library's load buttons and the
+// Lineage sliders. `bottom` is in zoomed px: the strip sits directly above the
+// 5rem footer, which lives outside the zoomed shell.
+const DEFAULT_POS_CLASS = 'left-40';
+const DEFAULT_POS_STYLE: React.CSSProperties = { bottom: 'calc((5rem + 5px) / var(--layout-zoom, 1))' };
 
 export const DownloadDock: React.FC = () => {
   const jobs = useDownloadStore((s) => s.jobs);
@@ -119,7 +124,7 @@ export const DownloadDock: React.FC = () => {
   }, 0);
 
   const posClass = pos ? 'fixed z-50' : `fixed z-50 ${DEFAULT_POS_CLASS}`;
-  const posStyle = pos ? { left: pos.x, top: pos.y } : undefined;
+  const posStyle = pos ? { left: pos.x, top: pos.y } : DEFAULT_POS_STYLE;
 
   // ── Collapsed: a single draggable pill. ─────────────────────────────────
   if (!expanded) {

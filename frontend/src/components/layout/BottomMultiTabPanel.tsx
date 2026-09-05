@@ -98,7 +98,7 @@ export const BottomMultiTabPanel: React.FC = () => {
                 key={t.id}
                 data-tour={`bottom-tab-${t.id}`}
                 onClick={() => setActiveTab(t.id)}
-                className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent et-ink-2 hover:et-ink'}`}
                 title={t.desc}
               >
                 <Icon className="w-3 h-3" /> {t.label}
@@ -108,7 +108,9 @@ export const BottomMultiTabPanel: React.FC = () => {
         </div>
         {/* Right cluster — SLIDE-only controls (when active) + the always-on
             maximize toggle so any tab can fill the window. */}
-        <div className="flex items-center gap-1 pr-2 shrink-0">
+        {/* pr-5 keeps the Maximize toggle clear of the shell's library pull
+            handle (14px wide, right edge, vertically centred). */}
+        <div className="flex items-center gap-1 pr-5 shrink-0">
           {activeTab === 'slide' && (
             <>
               <SlideContentToggle />

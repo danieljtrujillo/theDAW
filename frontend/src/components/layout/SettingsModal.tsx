@@ -52,13 +52,17 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    // Bottom inset = the PlayerFooter (fixed, UNzoomed, z-50 and later in the
+    // DOM, so it paints over this z-50 overlay): without it a tall modal's last
+    // rows sat under the footer. Sizes are % of this inset box rather than vh —
+    // inside the zoomed shell vh is multiplied by the zoom (94vh = 103vh at 1.1).
+    <div className="fixed inset-x-0 top-0 z-50 flex items-center justify-center" style={{ bottom: 'calc(5rem / var(--layout-zoom, 1))' }}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
-        className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-[min(1720px,96vw)] max-h-[94vh] flex flex-col shadow-2xl"
+        className="relative bg-[#0c0a14] border border-purple-500/30 rounded-lg w-[min(1720px,96%)] max-h-[96%] flex flex-col shadow-2xl"
       >
         {/* Header — title + launch-mode + profile + restart/shutdown + close,
             all icon-only (hover tooltips name each one). */}

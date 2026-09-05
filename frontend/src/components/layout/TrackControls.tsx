@@ -101,7 +101,7 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
     const isMajor = v % 10 === 0;
     const p = smoothstep(1 - Math.abs(v - value) / FOCUS_UNITS);
     const tickW = isMajor ? 12 : 8;
-    const txt: RGB = [lerp(150, 255, p), lerp(150, 255, p), lerp(155, 255, p)];
+    const txt: RGB = [lerp(176, 255, p), lerp(176, 255, p), lerp(181, 255, p)];
     const tickCol: RGB = [lerp(150, base[0], p), lerp(150, base[1], p), lerp(155, base[2], p)];
     marks.push(
       <div
@@ -110,8 +110,8 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
         style={{
           top: `${(1 - v / 100) * 100}%`,
           transform: `translate(${-p * 7}px, -50%) scale(${1 + p * 0.6})`,
-          opacity: lerp(0.22, 1, p),
-          color: rgb(txt),
+          opacity: lerp(0.85, 1, p),
+          color: `var(--ts-mark, ${rgb(txt)})`,
           // a bulging (magnified) number must paint ABOVE its smaller
           // neighbors — without this the next ruler mark, drawn later, clipped
           // the top of the enlarged digits.

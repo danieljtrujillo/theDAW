@@ -185,7 +185,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
           style={{
             fontSize: active ? '12px' : '9px',
             fontWeight: active ? 800 : 700,
-            color: 'var(--accent)',
+            color: 'var(--ts-readout, var(--accent-bright, var(--accent)))',
             textShadow: active ? '0 0 10px var(--accent-glow)' : 'none',
             transition: 'font-size 0.1s ease, text-shadow 0.1s ease',
           }}

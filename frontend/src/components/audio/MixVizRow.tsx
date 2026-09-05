@@ -89,7 +89,7 @@ export const MixVizRow: React.FC<MixVizRowProps> = ({
       {/* header: transparent overlay — label · view toggle · overlay · extra,
           floated over the waveform with a scrim + text-shadow for legibility */}
       <div className="absolute top-0 inset-x-0 z-40 flex items-center gap-2 px-2 py-1 bg-linear-to-b from-black/70 to-transparent **:drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
-        <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: accent }}>{label}</span>
+        <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: `var(--mix-label, ${accent})`, textShadow: `0 0 8px ${accent}` }}>{label}</span>
         <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5 shrink-0">
           <button type="button" onClick={() => onMode('wave')} title="Waveform" aria-label="Waveform view" aria-pressed={mode === 'wave'} className={tabBtn(mode === 'wave')}>
             <AudioWaveform className="w-3 h-3" />
