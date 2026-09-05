@@ -490,14 +490,22 @@ def _load_perf_set(store: LibraryStore, set_dir: Path) -> Optional[dict[str, Any
         fname = t.get("file")
         if not isinstance(fname, str) or not fname:
             continue
-        if fname.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", fname) or ".." in fname:
-            log.warning("performance set %s: rejecting unsafe file %r", set_dir.name, fname)
+        if (
+            fname.startswith(("/", "\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", fname)
+            or ".." in fname
+        ):
+            log.warning(
+                "performance set %s: rejecting unsafe file %r", set_dir.name, fname
+            )
             continue
         audio_path = (set_dir / fname).resolve()
         try:
             audio_path.relative_to(resolved_set_dir)
         except ValueError:
-            log.warning("performance set %s: file escapes set dir %r", set_dir.name, fname)
+            log.warning(
+                "performance set %s: file escapes set dir %r", set_dir.name, fname
+            )
             continue
         if not audio_path.is_file():
             log.warning("performance set %s: missing audio %r", set_dir.name, fname)
