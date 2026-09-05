@@ -8,8 +8,22 @@
  * user already looked at on screen rather than a second renderer's approximation.
  *
  * Usage: node scripts/renderScorePdf.mjs <in.musicxml> <out.pdf> [--artist NAME] [--zoom N]
- *        [--page-width N]
- * On success one JSON line goes to stdout: {"ok":true,"pages":N,"bytes":M}
+ *        [--page-width N] [--check-fit]
+ * On success one JSON line goes to stdout: {"ok":true,"pages":N,"bytes":M,"zoom":Z}
+ * with --check-fit it also carries "fit":{"tallestBottom","usable","printable",
+ * "pageHeight","bottomMargin","systems","passes","startZoom","overflows"} (OSMD units)
+ * describing the measure-and-fit result; "usable" is the fit target, "printable" is
+ * OSMD's PageHeight - PageBottomMargin.
+ *
+ * Measure-and-fit: without an explicit --zoom the script does what the SCORE tab
+ * does after every automatic render (ScoreView.tsx doRender, maths in
+ * src/components/layout/score/scoreFit.ts): compare the tallest rendered music
+ * system with PageHeight - 0.3 * PageBottomMargin and, if it overflows, lower the
+ * zoom by that ratio (x0.98 slack, floor 0.3) and render again, at most two extra
+ * passes.
+ * OSMD cannot split a system across pages, so without this a many-staff score is
+ * drawn straight off the bottom of the sheet. An explicit --zoom is the analogue
+ * of the user zooming by hand: it is honoured as-is and never fitted.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -27,11 +41,25 @@ const A4_HEIGHT_MM = 297;
 const ZOOM_DEFAULT = 0.64;
 // ScoreView's initial pageWRef, i.e. the container width OSMD measures for one page.
 const PAGE_WIDTH_PX = 520;
+// Mirrors FIT_FLOOR / FIT_SLACK / FIT_MAX_EXTRA_PASSES / FIT_MIN_RELATIVE_CHANGE /
+// FIT_MARGIN_KEEP in src/components/layout/score/scoreFit.ts; keep them in step or
+// the bundle PDF paginates differently from the tab.
+const FIT_FLOOR = 0.3;
+const FIT_SLACK = 0.98;
+const FIT_MAX_EXTRA_PASSES = 2;
+const FIT_MIN_RELATIVE_CHANGE = 0.005;
+// Ink may use the top 70% of the bottom margin (OSMD's own page breaking already
+// lets a system's ledger lines run into it); the bottom 30%, where the running
+// footer sits, is the line nothing may cross.
+const FIT_MARGIN_KEEP = 0.3;
 
 const fail = (message) => {
   console.error(`renderScorePdf: ${message}`);
   process.exit(1);
 };
+
+// Flags that take no value; everything else consumes the next argv entry.
+const BOOLEAN_FLAGS = new Set(['check-fit']);
 
 const parseArgs = (argv) => {
   const positional = [];
@@ -39,8 +67,13 @@ const parseArgs = (argv) => {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith('--')) {
-      flags[arg.slice(2)] = argv[i + 1];
-      i += 1;
+      const name = arg.slice(2);
+      if (BOOLEAN_FLAGS.has(name)) {
+        flags[name] = true;
+      } else {
+        flags[name] = argv[i + 1];
+        i += 1;
+      }
     } else {
       positional.push(arg);
     }
@@ -52,6 +85,9 @@ const parseArgs = (argv) => {
     output: positional[1],
     artist: flags.artist ?? '',
     zoom: Number.isFinite(zoom) && zoom > 0 ? zoom : ZOOM_DEFAULT,
+    // An explicit zoom is the user's choice and is never auto-fitted.
+    fit: flags.zoom === undefined,
+    checkFit: flags['check-fit'] === true,
     pageWidth: Number.isFinite(pageWidth) && pageWidth > 0 ? pageWidth : PAGE_WIDTH_PX,
   };
 };
@@ -60,7 +96,7 @@ const args = parseArgs(process.argv.slice(2));
 if (!args.source || !args.output) {
   fail(
     'usage: renderScorePdf.mjs <input.musicxml> <output.pdf> ' +
-      '[--artist NAME] [--zoom N] [--page-width N]',
+      '[--artist NAME] [--zoom N] [--page-width N] [--check-fit]',
   );
 }
 
@@ -646,9 +682,66 @@ try {
   fail(`OSMD could not load the MusicXML: ${e.message}`);
 }
 
+// ---- measure-and-fit (mirror of scoreFit.ts) ---------------------------------
+
+/** Bottom edge of the tallest rendered system and the printable page height, in
+ *  OSMD units. BorderBottom already includes the ink skyline (ledger lines etc.). */
+const measureFit = () => {
+  let tallestBottom = 0;
+  let systems = 0;
+  for (const page of osmd.GraphicSheet?.MusicPages ?? []) {
+    for (const system of page?.MusicSystems ?? []) {
+      const ps = system?.PositionAndShape;
+      const y = ps?.AbsolutePosition?.y;
+      const bb = ps?.BorderBottom;
+      if (!Number.isFinite(y) || !Number.isFinite(bb)) continue;
+      systems += 1;
+      if (y + bb > tallestBottom) tallestBottom = y + bb;
+    }
+  }
+  const rules = osmd.EngravingRules;
+  const pageHeight = Number(rules?.PageHeight);
+  const rawMargin = Number(rules?.PageBottomMargin);
+  const bottomMargin = Number.isFinite(rawMargin) ? rawMargin : 0;
+  const readable = Number.isFinite(pageHeight);
+  // `usable` is the fit target; `printable` is OSMD's PageHeight - PageBottomMargin.
+  const usable = readable ? pageHeight - bottomMargin * FIT_MARGIN_KEEP : 0;
+  const printable = readable ? pageHeight - bottomMargin : 0;
+  return {
+    tallestBottom,
+    usable,
+    printable,
+    pageHeight: readable ? pageHeight : 0,
+    bottomMargin,
+    systems,
+    overflows: usable > 0 && tallestBottom > usable,
+  };
+};
+
+const computeFitZoom = (zoom, { tallestBottom, usable }) => {
+  if (!(usable > 0) || !(tallestBottom > usable)) return zoom;
+  return Math.min(zoom, Math.max(FIT_FLOOR, zoom * (usable / tallestBottom) * FIT_SLACK));
+};
+
+const worthAnotherPass = (current, next) =>
+  next < current && (current - next) / current > FIT_MIN_RELATIVE_CHANGE;
+
+let zoom = args.zoom;
+let fitPasses = 0;
+let fitReport;
 try {
-  osmd.Zoom = args.zoom;
+  osmd.Zoom = zoom;
   osmd.render();
+  fitReport = measureFit();
+  while (args.fit && fitPasses < FIT_MAX_EXTRA_PASSES) {
+    const next = computeFitZoom(zoom, fitReport);
+    if (!worthAnotherPass(zoom, next)) break;
+    zoom = next;
+    fitPasses += 1;
+    osmd.Zoom = zoom;
+    osmd.render();
+    fitReport = measureFit();
+  }
 } catch (e) {
   fail(`OSMD render failed: ${e.message}`);
 }
@@ -679,4 +772,18 @@ try {
   fail(`cannot write ${args.output}: ${e.message}`);
 }
 
-process.stdout.write(`${JSON.stringify({ ok: true, pages: pages.length, bytes: bytes.length })}\n`);
+const summary = { ok: true, pages: pages.length, bytes: bytes.length, zoom };
+if (args.checkFit) {
+  summary.fit = {
+    tallestBottom: fitReport.tallestBottom,
+    usable: fitReport.usable,
+    printable: fitReport.printable,
+    pageHeight: fitReport.pageHeight,
+    bottomMargin: fitReport.bottomMargin,
+    systems: fitReport.systems,
+    passes: fitPasses,
+    startZoom: args.zoom,
+    overflows: fitReport.overflows,
+  };
+}
+process.stdout.write(`${JSON.stringify(summary)}\n`);

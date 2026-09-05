@@ -27,6 +27,23 @@ score's real tempo map. Nothing assumes 120 BPM: the piano transcription route
 writes 120 and the arrangement route writes 100, so a hardcoded constant would
 silently stretch every arrangement chart.
 
+Additive fields (schema version unchanged; Unity's ``JsonUtility`` ignores
+fields it does not declare):
+
+  - **Beat Saber mapping** ``bsLine`` / ``bsLayer`` / ``bsColor`` / ``bsCut`` /
+    ``bsMinDifficulty`` on every event, computed once by
+    :mod:`.beatsaber_map` and consumed by :mod:`.beatsaber` (the ``.dat``
+    writer) and the web highway's "blocks" skin, so both render the same notes.
+    ``bsMinDifficulty`` is ``-1`` for anything that is never a block (rests,
+    graces, tie continuations, chord members, percussion).
+  - **Percussion** ``drumVoice`` on every event: ``""`` for pitched notes, else
+    one of ``kick`` / ``snare`` / ``hihat`` / ``tom`` / ``crash`` / ``ride`` /
+    ``perc``. Unpitched notes carry the General MIDI kit pitch in ``midi`` (0
+    when the staff position is not a known voice) and their real notehead
+    glyph (``noteheadXBlack`` for ``x`` heads, ``noteheadCircleX`` for
+    ``circle-x``). A drum-kit MIDI source is engraved through the percussion
+    arranger first, so the chart and MAKE SHEET agree.
+
 Reference: SMuFL 1.4 glyph assignments, which Bravura implements at the same
 codepoints.
 """
@@ -40,6 +57,15 @@ from bisect import bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from ..arrangers.percussion import (
+    build_percussion_score,
+    canonical_drum_pitch,
+    drum_voice_for_pitch,
+    gm_pitch_for_display,
+    is_drum_midi,
+)
+from . import beatsaber_map
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +132,7 @@ _CODEPOINTS: dict[str, int] = {
     "noteheadHalf": 57507,
     "noteheadBlack": 57508,
     "noteheadXBlack": 57513,
+    "noteheadCircleX": 57523,
     "restDoubleWhole": 58594,
     "restWhole": 58595,
     "restHalf": 58596,
@@ -215,6 +242,15 @@ _BARLINE_GLYPHS = {
 }
 
 _MIDI_SUFFIXES = frozenset({".mid", ".midi", ".smf"})
+
+# MusicXML <notehead> values that select a different head glyph. Anything else
+# (including "normal" and the empty string) keeps the duration-derived head.
+_NOTEHEAD_OVERRIDES = {
+    "x": "noteheadXBlack",
+    "circle-x": "noteheadCircleX",
+}
+# Chart vocabulary for ChartEvent.drumVoice; "" means "pitched note".
+DRUM_VOICES = ("kick", "snare", "hihat", "tom", "crash", "ride", "perc")
 
 
 # --------------------------------------------------------------------------
@@ -703,24 +739,25 @@ def _resolve_stem(element: Any, staff_step: float) -> str:
 
 
 def _note_glyphs(
-    note_type: str, stem: str, is_chord_member: bool, is_percussion: bool
+    note_type: str, stem: str, is_chord_member: bool, notehead: str = "normal"
 ) -> dict[str, Any]:
     """Composite / notehead / flag glyph hints for one sounding note.
 
     A chord member that shares a stem carries only its bare notehead; the root
     carries the stem and the flag, so the two never draw a stem each.
+    ``notehead`` is the MusicXML head shape: ``x`` and ``circle-x`` (cymbals,
+    hats) have no composite note-with-stem glyph, so they ship the bare head.
     """
     down = stem == "down"
-    notehead = _NOTEHEAD_GLYPHS.get(note_type, "noteheadBlack")
-    if is_percussion:
-        notehead = "noteheadXBlack"
-    head_glyph, head_code = _glyph(notehead)
+    override = _NOTEHEAD_OVERRIDES.get((notehead or "normal").lower())
+    head_name = override or _NOTEHEAD_GLYPHS.get(note_type, "noteheadBlack")
+    head_glyph, head_code = _glyph(head_name)
 
     flag_glyph, flag_code = "", 0
     if not is_chord_member and note_type in _FLAG_GLYPHS:
         flag_glyph, flag_code = _glyph(_FLAG_GLYPHS[note_type][1 if down else 0])
 
-    if is_chord_member or is_percussion:
+    if is_chord_member or override is not None:
         glyph, code = head_glyph, head_code
     else:
         pair = _NOTE_GLYPHS.get(note_type)
@@ -794,6 +831,11 @@ def _blank_event() -> dict[str, Any]:
         "accidentalCodepoint": 0,
         "dotGlyph": "",
         "dotCodepoint": 0,
+        # Percussion voice; "" for every pitched note (see module docstring).
+        "drumVoice": "",
+        # Beat Saber mapping; bsMinDifficulty -1 = never a block. Stamped by
+        # beatsaber_map.assign() once the whole chart is walked.
+        **beatsaber_map.BS_DEFAULTS,
     }
 
 
@@ -837,7 +879,6 @@ def _emit_element(
     counters: _Counters,
 ) -> list[dict[str, Any]]:
     """One music21 element as one event (a chord becomes one event per pitch)."""
-    from music21 import chord as m21chord  # type: ignore[import]
     from music21 import note as m21note  # type: ignore[import]
 
     dur = element.duration
@@ -900,12 +941,11 @@ def _emit_element(
         counters.rests += 1
         return [event]
 
-    if isinstance(element, m21chord.Chord):
-        pitches = sorted(element.pitches, key=lambda p: _i(getattr(p, "midi", 0)))
-    elif isinstance(element, m21note.Note):
-        pitches = [element.pitch]
-    else:
+    # (pitch used for staff placement, MIDI number, notehead, drum voice)
+    heads = _sounding_heads(element)
+    if not heads:
         return []
+    pitches = [head[0] for head in heads]
 
     clef_obj = _clef_at(clefs, onset_beats)
     lowest_line = _i(getattr(clef_obj, "lowestLine", 31), 31)
@@ -919,8 +959,13 @@ def _emit_element(
         counters.chords += 1
 
     events: list[dict[str, Any]] = []
-    for index, pitch in enumerate(pitches):
-        accidental, cautionary, acc_glyph, acc_code = _accidental_fields(pitch)
+    for index, (pitch, midi, notehead, drum_voice) in enumerate(heads):
+        unpitched = bool(drum_voice)
+        if unpitched:
+            # An unpitched head has a staff position but no spelling to show.
+            accidental, cautionary, acc_glyph, acc_code = "", False, "", 0
+        else:
+            accidental, cautionary, acc_glyph, acc_code = _accidental_fields(pitch)
         staff_step = steps[index]
         ledger, below = _ledger_lines(staff_step)
         event = _blank_event()
@@ -928,7 +973,8 @@ def _emit_element(
         event.update(
             {
                 "isRest": False,
-                "midi": _i(getattr(pitch, "midi", 0)),
+                "midi": midi,
+                "drumVoice": drum_voice,
                 "velocity": velocity,
                 "step": _s(getattr(pitch, "step", "")),
                 "octave": _i(getattr(pitch, "octave", 4), 4),
@@ -953,7 +999,7 @@ def _emit_element(
                 note_type,
                 stem,
                 is_chord_member=is_chord and index > 0,
-                is_percussion=is_percussion,
+                notehead=notehead,
             )
         )
         counters.notes += 1
@@ -965,6 +1011,54 @@ def _emit_element(
             counters.tied += 1
         events.append(event)
     return events
+
+
+def _sounding_heads(element: Any) -> list[tuple[Any, int, str, str]]:
+    """``(placement pitch, midi, notehead, drumVoice)`` per head, low to high.
+
+    Pitched notes and chords report their own pitch and ``""`` for the voice.
+    ``Unpitched`` heads (and ``PercussionChord`` members) place by their display
+    pitch; ``midi`` is the General MIDI kit pitch recovered from the staff
+    position and head shape through ``DRUM_STAFF`` (0 when unknown), and the
+    voice is the coarse highway lane name (``perc`` when unknown).
+    """
+    from music21 import chord as m21chord  # type: ignore[import]
+    from music21 import note as m21note  # type: ignore[import]
+    from music21 import percussion as m21percussion  # type: ignore[import]
+
+    def head_shape(obj: Any) -> str:
+        return _s(getattr(obj, "notehead", "normal")).lower() or "normal"
+
+    def unpitched_head(obj: Any) -> tuple[Any, int, str, str]:
+        try:
+            display = obj.displayPitch()
+        except Exception:  # noqa: BLE001 - a head with no display position
+            display = None
+        step = _s(getattr(obj, "displayStep", "")) or _s(getattr(display, "step", ""))
+        octave = _i(getattr(obj, "displayOctave", None), 4)
+        if display is None:
+            from music21 import pitch as m21pitch  # type: ignore[import]
+
+            display = m21pitch.Pitch(f"{step or 'B'}{octave}")
+        shape = head_shape(obj)
+        midi = gm_pitch_for_display(step or "B", octave, shape)
+        voice = drum_voice_for_pitch(midi) if midi else "perc"
+        return display, midi, shape, voice
+
+    if isinstance(element, m21percussion.PercussionChord):
+        heads = [unpitched_head(n) for n in element.notes]
+        heads.sort(key=lambda h: _i(getattr(h[0], "midi", 0)))
+        return heads
+    if isinstance(element, m21note.Unpitched):
+        return [unpitched_head(element)]
+    if isinstance(element, m21chord.Chord):
+        shape = head_shape(element)
+        pitches = sorted(element.pitches, key=lambda p: _i(getattr(p, "midi", 0)))
+        return [(p, _i(getattr(p, "midi", 0)), shape, "") for p in pitches]
+    if isinstance(element, m21note.Note):
+        pitch = element.pitch
+        return [(pitch, _i(getattr(pitch, "midi", 0)), head_shape(element), "")]
+    return []
 
 
 def _fill_grace_durations(events: list[dict[str, Any]], ticks_per_quarter: int) -> None:
@@ -1005,7 +1099,19 @@ def _walk_part(
 ) -> list[dict[str, Any]]:
     from music21 import chord as m21chord  # type: ignore[import]
     from music21 import note as m21note  # type: ignore[import]
+    from music21 import percussion as m21percussion  # type: ignore[import]
     from music21 import stream as m21stream  # type: ignore[import]
+
+    # Unpitched is a NotRest, not a Note; PercussionChord is a ChordBase, not a
+    # Chord. Both have to be named or a drum staff walks as an empty part.
+    sounding_classes = (
+        m21note.Note,
+        m21note.Rest,
+        m21chord.Chord,
+        m21note.Unpitched,
+        m21percussion.PercussionChord,
+    )
+    chord_classes = (m21chord.Chord, m21percussion.PercussionChord)
 
     measures = list(part.getElementsByClass(m21stream.Measure))
     # A part with no bar structure (a flat MIDI track) still exports as one span.
@@ -1022,11 +1128,9 @@ def _walk_part(
     for measure_number, measure_offset, measure in blocks:
         for voice, voice_offset, container in _voice_containers(measure):
             base = measure_offset + voice_offset
-            for element in container.getElementsByClass(
-                (m21note.Note, m21note.Rest, m21chord.Chord)
-            ):
+            for element in container.getElementsByClass(sounding_classes):
                 onset = base + _f(element.offset)
-                is_chord = isinstance(element, m21chord.Chord)
+                is_chord = isinstance(element, chord_classes)
                 if is_chord:
                     chord_counter[0] += 1
                 events.extend(
@@ -1064,6 +1168,31 @@ def _walk_part(
     return events
 
 
+def _part_is_percussion(part: Any, instrument: Any) -> bool:
+    """A part is percussion when its instrument says so, when it opens on a
+    percussion clef, or when it carries any unpitched note at all."""
+    from music21 import clef as m21clef  # type: ignore[import]
+    from music21 import instrument as m21instrument  # type: ignore[import]
+    from music21 import note as m21note  # type: ignore[import]
+    from music21 import percussion as m21percussion  # type: ignore[import]
+
+    if isinstance(instrument, m21instrument.UnpitchedPercussion):
+        return True
+    if "percussion" in _s(getattr(instrument, "instrumentName", "")).lower():
+        return True
+    try:
+        for obj in part.recurse().getElementsByClass(m21clef.Clef):
+            if _s(getattr(obj, "sign", "")).lower() == "percussion":
+                return True
+        for _ in part.recurse().getElementsByClass(
+            (m21note.Unpitched, m21percussion.PercussionChord)
+        ):
+            return True
+    except Exception:  # noqa: BLE001 - classification is metadata only
+        return False
+    return False
+
+
 def _part_block(part: Any, index: int) -> dict[str, Any]:
     instrument = None
     try:
@@ -1079,7 +1208,7 @@ def _part_block(part: Any, index: int) -> dict[str, Any]:
     semitones = (
         _i(getattr(transposition, "semitones", 0)) if transposition is not None else 0
     )
-    percussion = "percussion" in _s(getattr(instrument, "instrumentName", "")).lower()
+    percussion = _part_is_percussion(part, instrument)
     return {
         "index": index,
         "id": _s(getattr(part, "id", "")) or name,
@@ -1119,8 +1248,12 @@ def _pair_raw_onsets(
     midi = pretty_midi.PrettyMIDI(str(raw_midi_path))
     by_pitch: dict[int, list[list[Any]]] = {}
     for instrument in midi.instruments:
+        # Chart events of a drum staff carry the canonical kit pitch, so a raw
+        # side-stick (37) has to pair with the notated snare (38).
+        is_drum = bool(getattr(instrument, "is_drum", False))
         for raw in instrument.notes:
-            by_pitch.setdefault(int(raw.pitch), []).append(
+            pitch = canonical_drum_pitch(raw.pitch) if is_drum else int(raw.pitch)
+            by_pitch.setdefault(pitch, []).append(
                 [float(raw.start), float(raw.end), int(raw.velocity), False]
             )
     for entries in by_pitch.values():
@@ -1238,14 +1371,21 @@ def build_notechart(
     """
     from music21 import converter  # type: ignore[import]
 
-    score = converter.parse(str(source_path))
-    if score is None:
-        raise ValueError(f"music21 could not parse {source_path}")
-
     source_format = (
         "midi" if source_path.suffix.lower() in _MIDI_SUFFIXES else "musicxml"
     )
-    if source_format == "midi":
+    drum_source = source_format == "midi" and is_drum_midi(source_path)
+    if drum_source:
+        # A kit MIDI parsed as pitches puts the kick on F2 and the hat on F#3.
+        # Engrave it the way MAKE SHEET does: one percussion staff, already
+        # quantised to 1/16 by the arranger, so no second quantize pass.
+        score = build_percussion_score(source_path, title=title)
+    else:
+        score = converter.parse(str(source_path))
+    if score is None:
+        raise ValueError(f"music21 could not parse {source_path}")
+
+    if source_format == "midi" and not drum_source:
         # Match what MAKE SHEET engraves, so the chart and the sheet agree.
         try:
             quantized = score.quantize((4, 3), inPlace=False, recurse=True)
@@ -1306,6 +1446,11 @@ def build_notechart(
             )
     if not raw_is_quantized:
         _apply_raw_beats(parts, tempo_map)
+
+    # Beat Saber lane / layer / colour / cut / difficulty, computed once and
+    # carried on every event. Runs after the raw pairing because the per-hand
+    # gap rule reads onsetSecRaw.
+    bs_stats = beatsaber_map.assign(parts)
 
     end_beats = 0.0
     end_seconds = 0.0
@@ -1388,6 +1533,11 @@ def build_notechart(
             else 0.0,
             "maxSimultaneous": _max_simultaneous(parts),
             "meanAbsRawDeviationSec": _f(raw_stats["mean_deviation"]),
+            "beatSaberCandidates": _i(bs_stats["candidates"]),
+            "percussionPartCount": sum(1 for p in parts if p["isPercussion"]),
+            "drumHitCount": sum(
+                1 for p in parts for e in p["events"] if e["drumVoice"]
+            ),
         },
     }
     return _round_tree(chart)

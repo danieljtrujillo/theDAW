@@ -1,6 +1,6 @@
 """Audio → MIDI conversion.
 
-Two engines, both lazy-imported so the main app doesn't take their
+Three engines, all lazy-imported so the main app doesn't take their
 weight at startup:
 
   - **basic-pitch** (Spotify, Apache-2.0, ~25 MB model): multi-instrument
@@ -8,8 +8,12 @@ weight at startup:
   - **piano-transcription-inference** (Bytedance, MIT, ~100 MB): top-
     quality piano transcription. Used when ``hint='piano'`` (e.g., the
     'piano' stem from htdemucs_6s) and the package is available.
+  - **drum-onsets** (:mod:`.drums`, model-free, always available): onset
+    detection + spectral rules → General MIDI drum notes on one
+    ``is_drum`` instrument. Used when ``hint='drums'`` (the 'drums' stem);
+    basic-pitch on a drum stem emits hundreds of spurious pitched notes.
 
-Either engine can be missing; ``convert_to_midi()`` returns
+The pitched engines can be missing; ``convert_to_midi()`` returns
 ``{"ok": False, "error": ...}`` rather than raising, so the caller can
 gracefully degrade per stem. Outputs Standard MIDI File (.mid) to the
 caller-supplied output path; we don't manage paths internally.
@@ -31,7 +35,11 @@ from typing import Literal, Optional
 log = logging.getLogger(__name__)
 
 
-MidiHint = Literal["auto", "piano", "generic"]
+MidiHint = Literal["auto", "piano", "generic", "drums"]
+
+#: Engine id used for routing (``_route``) — the result dict / ``midis`` row
+#: carries the engine's own name, ``drums.ENGINE_NAME`` (``"drum-onsets"``).
+DRUM_ENGINE = "drum_onsets"
 
 
 def _basic_pitch_available() -> bool:
@@ -54,6 +62,8 @@ def engine_capabilities() -> dict:
     return {
         "basic_pitch": _basic_pitch_available(),
         "piano_transcription_inference": _piano_transcription_available(),
+        # librosa + pretty_midi are base dependencies: nothing to install.
+        DRUM_ENGINE: True,
     }
 
 
@@ -141,7 +151,10 @@ def install_engine(engine: str) -> dict:
 
 def _route(hint: MidiHint) -> str:
     """Choose an engine based on hint + availability. Falls back to
-    whatever is installed; returns 'none' if nothing is."""
+    whatever is installed; returns 'none' if nothing is. The drum engine
+    is model-free and always wins for ``hint='drums'``."""
+    if hint == "drums":
+        return DRUM_ENGINE
     if hint == "piano" and _piano_transcription_available():
         return "piano_transcription_inference"
     if _basic_pitch_available():
@@ -157,12 +170,18 @@ def convert_to_midi(
     *,
     hint: MidiHint = "auto",
     auto_install: bool = True,
+    bpm: Optional[float] = None,
+    beats: Optional[list[float]] = None,
 ) -> dict:
     """Convert ``audio_path`` to a MIDI file at ``output_path``.
 
-    If neither engine is installed and ``auto_install`` is True, this
-    transparently runs ``pip install basic-pitch`` and retries. Set
+    If neither pitched engine is installed and ``auto_install`` is True,
+    this transparently runs ``pip install basic-pitch`` and retries. Set
     ``auto_install=False`` to keep the historical fail-fast behavior.
+
+    ``bpm`` / ``beats`` (seconds) are the entry's analysis-row tempo map;
+    only the drum engine uses them (tempo track + 1/16 quantisation of
+    on-grid hits). The pitched engines ignore them.
 
     Returns a result dict — never raises. On success:
       {"ok": True, "engine": ..., "engine_version": ..., "notes_count": int}
@@ -174,6 +193,12 @@ def convert_to_midi(
         return {"ok": False, "error": f"audio not found: {p}"}
 
     engine = _route(hint)
+    if engine == DRUM_ENGINE:
+        try:
+            return _run_drum_onsets(p, output_path, bpm=bpm, beats=beats)
+        except Exception as e:
+            log.warning("midi.engine: drum-onsets failed for %s: %s", p.name, e)
+            return {"ok": False, "engine": DRUM_ENGINE, "error": repr(e)}
     if engine == "none":
         if not auto_install:
             return {
@@ -215,6 +240,21 @@ def convert_to_midi(
     except Exception as e:
         log.warning("midi.engine: %s conversion failed for %s: %s", engine, p.name, e)
         return {"ok": False, "engine": engine, "error": repr(e)}
+
+
+def _run_drum_onsets(
+    audio_path: Path,
+    output_path: Path,
+    *,
+    bpm: Optional[float] = None,
+    beats: Optional[list[float]] = None,
+) -> dict:
+    """Model-free drum transcription (see :mod:`.drums`). The result dict
+    carries ``engine == "drum-onsets"`` — that string lands in the ``midis``
+    row so the notation layer can recognise a drum MIDI."""
+    from .drums import transcribe_drums
+
+    return transcribe_drums(audio_path, output_path, bpm=bpm, beats=beats)
 
 
 def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
@@ -439,8 +479,14 @@ def _module_version(name: str) -> str:
 
 
 def hint_for_stem(stem_name: Optional[str]) -> MidiHint:
-    """Stem-aware routing: piano-transcription-inference excels on
-    pure piano; everything else routes to basic-pitch."""
-    if stem_name and stem_name.lower() in {"piano", "keys", "keyboards"}:
+    """Stem-aware routing: a drum stem (any name containing 'drum') goes to
+    the model-free drum engine, piano-transcription-inference excels on
+    pure piano, everything else routes to basic-pitch."""
+    if not stem_name:
+        return "generic"
+    name = stem_name.lower()
+    if "drum" in name:
+        return "drums"
+    if name in {"piano", "keys", "keyboards"}:
         return "piano"
     return "generic"

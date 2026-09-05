@@ -22,6 +22,7 @@ def test_engine_capabilities_returns_bools():
     caps = engine_capabilities()
     assert isinstance(caps["basic_pitch"], bool)
     assert isinstance(caps["piano_transcription_inference"], bool)
+    assert caps["drum_onsets"] is True
 
 
 def test_hint_for_stem_routes_piano_specially():
@@ -29,7 +30,7 @@ def test_hint_for_stem_routes_piano_specially():
     assert hint_for_stem("Piano") == "piano"
     assert hint_for_stem("KEYS") == "piano"
     assert hint_for_stem("vocals") == "generic"
-    assert hint_for_stem("drums") == "generic"
+    assert hint_for_stem("drums") == "drums"  # model-free drum engine
     assert hint_for_stem(None) == "generic"
     assert hint_for_stem("") == "generic"
 

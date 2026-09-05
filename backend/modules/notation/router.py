@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import mimetypes
 import zipfile
@@ -11,7 +12,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.modules.library.router import get_store as get_library_store
 
@@ -40,7 +41,19 @@ _EXT_FOR_FORMAT = {
     # The Unity flying-notation chart. Double extension so it is obvious on disk
     # that the payload is JSON while still identifying what kind of JSON.
     "notechart": ".notechart.json",
+    # A zipped Beat Saber custom level (Info.dat + <Difficulty>.dat + song.ogg).
+    "beatsaber": ".beatsaber.zip",
 }
+
+# Formats written into their own sub-directory of notation/ (the Beat Saber
+# writer leaves the unzipped level folder beside the zip, which would clutter
+# the flat notation/ listing).
+_SUBDIR_FOR_FORMAT = {"beatsaber": "beatsaber"}
+
+# Chord-track file name suffix (the CHORDS play-along document).
+_CHORDTRACK_SUFFIX = ".chordtrack.json"
+_CHORDTRACK_METHODS = ("auto", "harmony", "chroma")
+_CHORDTRACK_RESOLUTIONS = ("beat", "bar")
 
 
 def _song_slug(title: str, fallback: str = "score") -> str:
@@ -67,6 +80,17 @@ def _scored_name(slug: str, base: str) -> str:
 class ExportRequest(BaseModel):
     source_artifact_id: str
     format: str
+    # Per-format export options. Beat Saber reads: difficulties (list of
+    # Easy/Normal/Hard/Expert/ExpertPlus), version (2|3), bpm_source
+    # ('analysis'|'chart'), parts (chart part indices) and include_audio.
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChordsRequest(BaseModel):
+    source: str = "auto"
+    source_artifact_id: Optional[str] = None
+    include_sevenths: bool = True
+    resolution: str = "beat"
 
 
 class TabsRequest(BaseModel):
@@ -236,9 +260,28 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
     if entry_dir is None:
         raise HTTPException(500, f"entry directory missing for {entry_id!r}")
-    title = _entry_title(store, entry_id)
+    entry = store.get_entry(entry_id)
+    title = str(getattr(entry, "title", "") or "") if entry is not None else ""
     slug = _song_slug(title)
-    output = entry_dir / "notation" / _scored_name(slug, f"{source_path.stem}{ext}")
+    out_dir = entry_dir / "notation"
+    subdir = _SUBDIR_FOR_FORMAT.get(fmt)
+    if subdir:
+        out_dir = out_dir / subdir
+    output = out_dir / _scored_name(slug, f"{source_path.stem}{ext}")
+
+    # Audio context for the chart-based targets (notechart duration, Beat Saber
+    # song.ogg + Info.dat BPM). Harmless for the symbolic formats.
+    audio_path = store.get_audio_path(entry_id)
+    duration = getattr(entry, "duration", None) if entry is not None else None
+    audio_duration_sec = float(duration) if duration else None
+    analysis = store.db.get_analysis(entry_id)
+    analysis_bpm: Optional[float] = None
+    if analysis and analysis.get("bpm"):
+        try:
+            analysis_bpm = float(analysis["bpm"])
+        except (TypeError, ValueError):
+            analysis_bpm = None
+
     result = convert_score(
         store.db,
         entry_id=entry_id,
@@ -248,10 +291,169 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
         source_ref=body.source_artifact_id,
         artifact_id=f"{body.source_artifact_id}__{fmt}",
         title=title,
+        options=dict(body.options or {}),
+        audio_path=audio_path,
+        audio_duration_sec=audio_duration_sec,
+        analysis_bpm=analysis_bpm,
     )
     if not result.get("ok"):
         raise HTTPException(501, result)
     return result
+
+
+def _artifact_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
+    """The parsed ``metadata_json`` of a notation artifact row (``{}`` when
+    missing or unparsable)."""
+    raw = artifact.get("metadata_json") or artifact.get("metadata") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _find_lead_sheet(
+    store: Any, entry_id: str, source_artifact_id: Optional[str]
+) -> Optional[dict[str, Any]]:
+    """The MusicXML artifact the chord track reads ``<harmony>`` from.
+
+    An explicit ``source_artifact_id`` must be a MusicXML artifact of this entry
+    whose file exists (404 otherwise); with none given, the newest ``musicxml``
+    artifact arranged in the ``lead-sheet`` style that still exists on disk is
+    used, or ``None`` when the entry has no lead sheet.
+    """
+    if source_artifact_id:
+        artifact = store.db.get_notation_artifact(source_artifact_id)
+        if (
+            artifact is None
+            or artifact.get("entry_id") != entry_id
+            or artifact.get("kind") != "musicxml"
+        ):
+            raise HTTPException(
+                404, f"MusicXML artifact {source_artifact_id!r} not found for entry"
+            )
+        if not Path(artifact.get("path") or "").is_file():
+            raise HTTPException(
+                404, f"artifact file missing on disk: {artifact.get('path')}"
+            )
+        return artifact
+    candidates = store.db.list_notation_artifacts(entry_id, kind="musicxml")
+    for artifact in reversed(candidates):  # list is oldest-first
+        if _artifact_metadata(artifact).get("style") != "lead-sheet":
+            continue
+        if Path(artifact.get("path") or "").is_file():
+            return artifact
+    return None
+
+
+@router.post("/{entry_id}/chords")
+def make_chords(entry_id: str, body: ChordsRequest) -> dict[str, Any]:
+    """Build the entry's chord track (``gantasmo.chordtrack``) and register it
+    as a ``chordtrack`` notation artifact.
+
+    ``source`` 'harmony' reads the ``<harmony>`` symbols of a lead sheet,
+    'chroma' estimates chords from the audio (seeded by the analysis row when
+    present), 'auto' prefers the lead sheet when it carries symbols. 404 when
+    nothing can be derived; 501 with the builder's error dict on failure.
+    """
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    # An entry whose audio file is gone still resolves to its directory (and is
+    # never indexed into the DB), so the directory is the existence check here;
+    # the audio-less case is reported below as 'no audio', which is the useful
+    # answer. The DB row is required only to register the result (FK).
+    entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
+    if entry_dir is None:
+        raise HTTPException(404, f"entry {entry_id!r} not found")
+
+    source = (body.source or "auto").lower().strip()
+    if source not in _CHORDTRACK_METHODS:
+        raise HTTPException(
+            422, f"unknown chord source {body.source!r}; expected {_CHORDTRACK_METHODS}"
+        )
+    resolution = (body.resolution or "beat").lower().strip()
+    if resolution not in _CHORDTRACK_RESOLUTIONS:
+        raise HTTPException(
+            422,
+            f"unknown resolution {body.resolution!r}; expected {_CHORDTRACK_RESOLUTIONS}",
+        )
+
+    lead_sheet = _find_lead_sheet(store, entry_id, body.source_artifact_id)
+    audio_path = store.get_audio_path(entry_id)
+    analysis_row = store.db.get_analysis(entry_id)
+
+    if source == "harmony" and lead_sheet is None:
+        raise HTTPException(
+            404, "no lead sheet for this entry; ARRANGE lead-sheet first"
+        )
+    if source == "chroma" and audio_path is None:
+        raise HTTPException(404, "no audio for this entry")
+    if lead_sheet is None and audio_path is None:
+        raise HTTPException(
+            404,
+            "no audio and no lead sheet for this entry; nothing to derive chords from",
+        )
+    if store.db.get_entry(entry_id) is None:
+        raise HTTPException(404, f"entry {entry_id!r} is not indexed in the library")
+
+    from .exporters.chordtrack import write_chordtrack
+
+    entry = store.get_entry(entry_id)
+    title = str(getattr(entry, "title", "") or "") if entry is not None else ""
+    slug = _song_slug(title)
+    output = entry_dir / "notation" / f"{slug}__chords{_CHORDTRACK_SUFFIX}"
+    lead_id = str(lead_sheet.get("id") or "") if lead_sheet else ""
+    result = write_chordtrack(
+        output,
+        entry_id=entry_id,
+        audio_path=audio_path,
+        analysis_row=analysis_row,
+        lead_sheet_path=Path(str(lead_sheet["path"])) if lead_sheet else None,
+        method=source,
+        include_sevenths=bool(body.include_sevenths),
+        resolution=resolution,
+        source_artifact_id=lead_id,
+    )
+    if not result.get("ok"):
+        raise HTTPException(501, result)
+
+    artifact_id = f"{entry_id}__chords__chordtrack"
+    source_ref = lead_id or (str(audio_path) if audio_path else "")
+    store.db.add_notation_artifact(
+        artifact_id=artifact_id,
+        entry_id=entry_id,
+        kind="chordtrack",
+        path=str(result.get("path") or output),
+        source_ref=source_ref or None,
+        engine=str(result.get("engine") or "chordtrack"),
+        engine_version=str(result.get("engine_version") or "1"),
+        metadata={
+            "format": "chordtrack",
+            "method": result.get("method"),
+            "stats": result.get("stats", {}),
+            "source": source,
+            "resolution": resolution,
+            "include_sevenths": bool(body.include_sevenths),
+            "lead_sheet_artifact_id": lead_id,
+        },
+    )
+    if source_ref:
+        store.db.add_relation(
+            from_id=source_ref,
+            to_id=artifact_id,
+            kind="charted_as_chords",
+            metadata={"method": result.get("method"), "engine": "chordtrack"},
+        )
+    return {
+        "ok": True,
+        "artifact": store.db.get_notation_artifact(artifact_id),
+        "path": str(result.get("path") or output),
+        "engine": "chordtrack",
+        "method": result.get("method"),
+        "stats": result.get("stats", {}),
+    }
 
 
 @router.post("/{entry_id}/tabs")
@@ -492,6 +694,10 @@ def get_artifact_file(artifact_id: str) -> FileResponse:
         mime = "application/vnd.recordare.musicxml+xml"
     elif kind in ("abc", "alphatex"):
         mime = "text/plain; charset=utf-8"
+    elif kind in ("chordtrack", "notechart", "lyrics"):
+        mime = "application/json"
+    elif kind == "beatsaber":
+        mime = "application/zip"
     # Name the download after the originating song so saved sheets are
     # identifiable even for artifacts created before song-prefixed filenames.
     slug = _song_slug(_entry_title(store, str(artifact.get("entry_id") or "")))

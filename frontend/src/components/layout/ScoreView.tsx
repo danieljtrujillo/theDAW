@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileMusic, Guitar, LayoutGrid, Loader2, Maximize2, Minus, Music2, Pause, Play, Plus, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FileMusic, Gamepad2, Guitar, LayoutGrid, Loader2, Minus, Music2, Music4, Pause, Play, Plus, RefreshCw } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { logError, logInfo } from '../../state/logStore';
@@ -18,6 +18,7 @@ import {
   getNotationCapabilities,
   listNotationArtifacts,
   makeArrangement,
+  makeChordTrack,
   makeTabs,
   notationArtifactUrl,
   notationPackUrl,
@@ -26,9 +27,61 @@ import {
 } from '../../lib/notationClient';
 import type { AlphaTabApi } from '@coderline/alphatab';
 import { effectiveZoom } from '../../lib/canvasScale';
+import {
+  A4_RATIO,
+  applySheetEngraving,
+  clampZoom,
+  describeArtifact,
+  NOTE_HIGHLIGHT_COLOR,
+  PAGE_GAP,
+  prepareMusicXml,
+  useWheelZoom,
+  ZOOM_DEFAULT,
+  ZOOM_MAX,
+  ZOOM_MIN,
+  ZOOM_STEP,
+  ZoomControls,
+  type ExternalMediaOutput,
+} from './score/scoreShared';
+import { fitZoomToPage, type FitReport } from './score/scoreFit';
+import {
+  allowedModes,
+  modeForInstrument,
+  PLAY_ALONG_INSTRUMENTS,
+  usePlayAlongStore,
+  type PlayAlongInstrument,
+  type PlayAlongMode,
+} from '../../state/playAlongStore';
+import { ModeSwitch } from './score/playAlong/ModeSwitch';
+import { applyInstrumentPreset, discoverParts, knownParts, useKnownParts } from './score/playAlong/partRegistry';
 
-/** Karaoke note colour — matches the cursor hairline so they read as one. */
-const NOTE_HIGHLIGHT_COLOR = '#34d399';
+// The play-along views load on demand: OSMD and alphaTab are already dynamic
+// imports in the PAGE view, three.js has its own chunk, and none of them is
+// needed to show a page of sheet music.
+const SheetStrip = React.lazy(() => import('./score/strip/SheetStrip'));
+const TabStrip = React.lazy(() => import('./score/strip/TabStrip'));
+const ChordPlayAlong = React.lazy(() => import('./score/chords/ChordPlayAlong'));
+const Highway = React.lazy(() => import('./score/highway/Highway'));
+const BeatSaberPackView = React.lazy(() => import('./score/beatsaber/BeatSaberPackView'));
+const BeatSaberExportPopover = React.lazy(() => import('./score/beatsaber/BeatSaberExportPopover'));
+
+const INSTRUMENT_LABELS: Record<PlayAlongInstrument, string> = {
+  all: 'All parts',
+  guitar: 'Guitar',
+  bass: 'Bass',
+  keys: 'Keys',
+  drums: 'Drums',
+  vocals: 'Vocals',
+  strings: 'Strings',
+};
+
+/** Artifact kinds whose views work without a library track (a strip or a
+ *  page can be read unplayed); everything else needs audio to derive chords. */
+const KINDS_WITHOUT_ENTRY = ['musicxml', 'alphatex', 'notechart', 'chordtrack'];
+
+const LazyFallback: React.FC = () => (
+  <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">Loading…</div>
+);
 
 const DEFAULT_TUNINGS = [
   'guitar-standard',
@@ -36,78 +89,10 @@ const DEFAULT_TUNINGS = [
   'guitar-7-string',
   'bass-standard',
   'bass-5-string',
+  'ukulele-standard',
 ];
 
 const DEFAULT_STYLES = ['lead-sheet', 'piano-reduction', 'simplified', 'band-score'];
-
-/** Tuning ids the backend stores, as a player would say them out loud. */
-const TUNING_LABELS: Record<string, string> = {
-  'guitar-standard': 'Standard',
-  'guitar-drop-d': 'Drop D',
-  'guitar-7-string': '7-String',
-  'bass-standard': 'Standard',
-  'bass-5-string': '5-String',
-};
-
-/** Artifact kinds that are not arrangements, as a short display name. */
-const KIND_LABELS: Record<string, string> = {
-  midi: 'MIDI',
-  musicxml: 'Sheet',
-  alphatex: 'Tab',
-  abc: 'ABC',
-  pdf: 'PDF',
-  svg: 'SVG',
-  notechart: 'Note Chart',
-};
-
-const titleCase = (value: string): string =>
-  value.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-
-/**
- * What this artifact actually IS, in words: the arrangement style for a score
- * ("Band Score", "Piano Reduction"), or the instrument, tuning, capo and
- * difficulty for a tab ("Bass Tab, 5-String"). The backend has recorded all of
- * this in metadata_json since tabs and arrangements were built (style for
- * arrangements; instrument / tuning_name / capo / difficulty for tabs) and
- * nothing ever displayed it, so a band score and a piano reduction were
- * indistinguishable in the list, as were a drop-D guitar tab and a 5-string
- * bass tab. Falls back to the bare kind when an artifact carries no metadata,
- * which is the case for anything recovered off disk.
- */
-const describeArtifact = (artifact: NotationArtifact): string => {
-  let meta: Record<string, unknown> = {};
-  try {
-    // JSON.parse('null') yields null, not an object, and a metadata_json column
-    // holding the literal "null" is a real row shape. Indexing that throws and
-    // would take down the whole artifact list, so check the parsed type rather
-    // than trusting the parse to have produced a record.
-    const parsed: unknown = JSON.parse(artifact.metadata_json || '{}');
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      meta = parsed as Record<string, unknown>;
-    }
-  } catch {
-    meta = {};
-  }
-  const str = (key: string): string =>
-    typeof meta[key] === 'string' ? (meta[key] as string).trim() : '';
-
-  const style = str('style');
-  if (style) return titleCase(style);
-
-  const instrument = str('instrument');
-  if (instrument) {
-    const parts = [`${titleCase(instrument)} Tab`];
-    const tuningName = str('tuning_name');
-    if (tuningName) parts.push(TUNING_LABELS[tuningName] ?? titleCase(tuningName));
-    const capo = Number(meta.capo ?? 0);
-    if (Number.isFinite(capo) && capo > 0) parts.push(`Capo ${capo}`);
-    const difficulty = str('difficulty');
-    if (difficulty) parts.push(titleCase(difficulty));
-    return parts.join(', ');
-  }
-
-  return KIND_LABELS[artifact.kind] ?? titleCase(artifact.kind);
-};
 
 export const ScoreView: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
@@ -129,6 +114,17 @@ export const ScoreView: React.FC = () => {
   const [tabDifficulty, setTabDifficulty] = useState('medium');
   const [arrangeStyle, setArrangeStyle] = useState('piano-reduction');
   const [arranging, setArranging] = useState(false);
+  const [makingChords, setMakingChords] = useState(false);
+  // Beat Saber export popover: open flag, and the part names it offers (learnt
+  // from a loaded view or fetched from the sheet's part-list; null = all).
+  const [bsOpen, setBsOpen] = useState(false);
+  const [bsParts, setBsParts] = useState<string[] | null>(null);
+  const bsForRef = useRef<string | null>(null);
+  const mode = usePlayAlongStore((s) => s.mode);
+  const setMode = usePlayAlongStore((s) => s.setMode);
+  const setSkin = usePlayAlongStore((s) => s.setSkin);
+  const instrument = usePlayAlongStore((s) => s.instrument);
+  const setInstrument = usePlayAlongStore((s) => s.setInstrument);
   // The global artist/composer name now lives in Settings (notation.artist); the
   // sheet preview reads it directly when rendering.
 
@@ -144,10 +140,34 @@ export const ScoreView: React.FC = () => {
   // capabilities().formats already accounts for the OSMD renderer and MuseScore
   // separately, so intersecting it with what the export ROUTE accepts is the
   // honest answer. musicxml and midi are inputs here, never export targets.
-  const EXPORTABLE_FROM_SHEET = ['pdf', 'abc', 'svg', 'notechart'];
+  const EXPORTABLE_FROM_SHEET = ['pdf', 'abc', 'svg', 'notechart', 'beatsaber'];
   const exportFormats = selectedArtifact?.kind === 'musicxml'
     ? EXPORTABLE_FROM_SHEET.filter((fmt) => (caps?.formats ?? []).includes(fmt))
     : [];
+  // Which play-along views the selected artifact supports. A Beat Saber pack
+  // has its own card; anything that is not a sheet, tab, chart or chord track
+  // (a MIDI, a vocal transcript) only offers chords, and only with a track to
+  // derive them from.
+  const selectedKind = selectedArtifact?.kind ?? null;
+  const hasEntry = !!entry;
+  const allowed = useMemo<PlayAlongMode[]>(() => {
+    if (!selectedKind || selectedKind === 'beatsaber') return [];
+    if (KINDS_WITHOUT_ENTRY.includes(selectedKind) || hasEntry) return allowedModes(selectedKind);
+    return [];
+  }, [selectedKind, hasEntry]);
+  // The persisted mode when this artifact supports it; else PAGE when the
+  // artifact has a plain view; else the one view its kind has.
+  const effectiveMode: PlayAlongMode = allowed.includes(mode)
+    ? mode
+    : allowed.includes('page')
+      ? 'page'
+      : (allowed[0] ?? 'page');
+  const selectedParts = useKnownParts(selectedArtifact?.id ?? null);
+  const modeHint = selectedParts && selectedParts.length >= 5 && effectiveMode === 'page' && allowed.includes('strip')
+    ? `${selectedParts.length} staves — try STRIP`
+    : undefined;
+  const analysisBpmRaw = entry?.analysis?.bpm;
+  const analysisBpm = typeof analysisBpmRaw === 'number' && Number.isFinite(analysisBpmRaw) ? analysisBpmRaw : null;
 
   const loadArtifacts = async () => {
     if (!selectedEntryId) return;
@@ -253,7 +273,7 @@ export const ScoreView: React.FC = () => {
 
   const onInstrumentChange = (value: string) => {
     setTabInstrument(value);
-    setTabTuning(value === 'bass' ? 'bass-standard' : 'guitar-standard');
+    setTabTuning(value === 'bass' ? 'bass-standard' : value === 'ukulele' ? 'ukulele-standard' : 'guitar-standard');
   };
 
   const makeArrangementFromMidis = async () => {
@@ -275,6 +295,152 @@ export const ScoreView: React.FC = () => {
       logError('score', `Arrangement failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setArranging(false);
+    }
+  };
+
+  // ---- Play-along integration ---------------------------------------------
+
+  const makeChordsFromEntry = async () => {
+    if (!selectedEntryId) return;
+    setMakingChords(true);
+    try {
+      const artifact = await makeChordTrack(selectedEntryId, { source: 'auto' });
+      logInfo('score', 'Built the chord track (from the lead sheet when one exists, else estimated from the audio)');
+      await loadArtifacts();
+      if (artifact?.id) {
+        setSelectedArtifactId(artifact.id);
+        setMode('chords');
+      }
+    } catch (e) {
+      logError('score', `Chord track failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMakingChords(false);
+    }
+  };
+
+  /** Write the INSTRUMENT preset into an artifact's part visibility, learning
+   *  the parts of a sheet no view has rendered yet from its part-list. A note
+   *  chart's parts are learnt by the highway when it loads. */
+  const applyPreset = useCallback(async (target: NotationArtifact, inst: PlayAlongInstrument, force: boolean) => {
+    if (applyInstrumentPreset(target.id, inst, { force })) return;
+    if (target.kind !== 'musicxml') return;
+    try {
+      await discoverParts(target.id);
+      applyInstrumentPreset(target.id, inst, { force });
+    } catch (e) {
+      logError('score', `Could not read the parts of ${target.id} for the ${inst} preset: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
+
+  const onPlayAlongInstrument = (value: string) => {
+    const inst: PlayAlongInstrument = (PLAY_ALONG_INSTRUMENTS as readonly string[]).includes(value)
+      ? (value as PlayAlongInstrument)
+      : 'all';
+    setInstrument(inst);
+    if (!selectedArtifact) return;
+    // 'All parts' only resets the part filter; it does not pull the reader out
+    // of the view they chose.
+    if (inst !== 'all') {
+      const pick = modeForInstrument(inst, selectedArtifact.kind);
+      if (allowed.includes(pick.mode)) setMode(pick.mode);
+      if (pick.skin) setSkin(pick.skin);
+    }
+    void applyPreset(selectedArtifact, inst, true);
+  };
+
+  // A preset chosen earlier follows the reader to the next artifact they open
+  // (first sight only: manual PART toggles on an artifact are kept).
+  useEffect(() => {
+    if (!selectedArtifact || instrument === 'all') return;
+    void applyPreset(selectedArtifact, instrument, false);
+    // selectedArtifact is looked up from selectedArtifactId; the id is the identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedArtifactId, instrument, applyPreset]);
+
+  // The export popover belongs to one sheet; selecting another closes it.
+  useEffect(() => {
+    setBsOpen(false);
+  }, [selectedArtifactId]);
+
+  const openBeatSaber = () => {
+    if (!selectedArtifact || selectedArtifact.kind !== 'musicxml') return;
+    const id = selectedArtifact.id;
+    bsForRef.current = id;
+    const known = knownParts(id);
+    setBsParts(known ? known.map((p) => p.name) : null);
+    setBsOpen(true);
+    if (!known) {
+      discoverParts(id)
+        .then((parts) => {
+          if (bsForRef.current === id) setBsParts(parts.map((p) => p.name));
+        })
+        .catch(() => {
+          /* the backend maps every pitched part when no selection is sent */
+        });
+    }
+  };
+
+  const onBeatSaberDone = async (artifact: NotationArtifact | null) => {
+    setBsOpen(false);
+    await loadArtifacts();
+    if (artifact?.id) setSelectedArtifactId(artifact.id);
+  };
+
+  const renderPreview = (): React.ReactNode => {
+    if (!selectedArtifact) {
+      return (
+        <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-600">
+          Select a score artifact to preview.
+        </div>
+      );
+    }
+    const lazy = (node: React.ReactNode) => <React.Suspense fallback={<LazyFallback />}>{node}</React.Suspense>;
+    const chords = () => lazy(
+      <ChordPlayAlong
+        entry={entry}
+        artifacts={artifacts}
+        artifact={selectedArtifact}
+        caps={caps}
+        onArtifactsChanged={() => void loadArtifacts()}
+      />,
+    );
+    const highway = () => lazy(
+      <Highway
+        entry={entry}
+        artifact={selectedArtifact}
+        artifacts={artifacts}
+        onArtifactsChanged={() => void loadArtifacts()}
+      />,
+    );
+    switch (selectedArtifact.kind) {
+      case 'musicxml':
+        if (effectiveMode === 'strip') return lazy(<SheetStrip artifact={selectedArtifact} entry={entry} artifacts={artifacts} />);
+        if (effectiveMode === 'chords') return chords();
+        if (effectiveMode === 'highway') return highway();
+        return <MusicXmlPreview artifact={selectedArtifact} entry={entry} />;
+      case 'alphatex':
+        if (effectiveMode === 'strip') return lazy(<TabStrip artifact={selectedArtifact} entry={entry} />);
+        if (effectiveMode === 'chords') return chords();
+        return <TabPreview artifact={selectedArtifact} entry={entry} />;
+      case 'notechart':
+        return highway();
+      case 'chordtrack':
+        return chords();
+      case 'beatsaber':
+        return lazy(
+          <BeatSaberPackView
+            artifact={selectedArtifact}
+            artifacts={artifacts}
+            onOpenHighway={(source) => setSelectedArtifactId(source.id)}
+          />,
+        );
+      default:
+        if (effectiveMode === 'chords' && entry) return chords();
+        return (
+          <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">
+            {selectedArtifact.kind.toUpperCase()} artifact selected. Download or send it to MIDI/Score tools.
+          </div>
+        );
     }
   };
 
@@ -325,6 +491,7 @@ export const ScoreView: React.FC = () => {
             >
               <option value="guitar">Guitar</option>
               <option value="bass">Bass</option>
+              <option value="ukulele">Ukulele</option>
             </select>
             <select
               id="score-tab-difficulty"
@@ -401,10 +568,28 @@ export const ScoreView: React.FC = () => {
             disabled={!selectedEntryId || arranging || midiArtifacts.length === 0}
             title={midiArtifacts.length === 0
               ? 'Run Convert to MIDI first'
-              : (arrangeStyle === 'band-score' ? 'Arrange all MIDI stems into a band score' : 'Arrange the first MIDI artifact')}
+              : (arrangeStyle === 'band-score'
+                ? 'Arrange the MIDI stems into a band score (a full-mix stem and pitched drum transcriptions are left out; a drum-kit MIDI becomes a percussion staff)'
+                : 'Arrange the first MIDI artifact')}
           >
             {arranging ? <Loader2 className="w-3 h-3 animate-spin" /> : <LayoutGrid className="w-3 h-3 text-sky-300" />}
             ARRANGE
+          </button>
+        </div>
+
+        <div className="p-2 border-b border-white/5 space-y-1.5">
+          <div className="flex items-center gap-1">
+            <Music4 className="w-3 h-3 text-amber-300" />
+            <span className="text-[8px] font-black uppercase tracking-widest text-amber-200">Play along</span>
+          </div>
+          <button
+            className="btn-ghost text-[8px] py-1 w-full flex items-center justify-center gap-1 disabled:opacity-40"
+            onClick={() => void makeChordsFromEntry()}
+            disabled={!selectedEntryId || makingChords}
+            title="Derive a chord track for the CHORDS view: from the lead sheet when one exists, else estimated from the audio"
+          >
+            {makingChords ? <Loader2 className="w-3 h-3 animate-spin" /> : <Music4 className="w-3 h-3 text-amber-300" />}
+            MAKE CHORDS
           </button>
         </div>
 
@@ -446,17 +631,64 @@ export const ScoreView: React.FC = () => {
               ? `${describeArtifact(selectedArtifact)} · ${selectedArtifact.kind} · ${selectedArtifact.id}`
               : 'No artifact selected'}
           </span>
+          {selectedArtifact && allowed.length > 0 && (
+            <ModeSwitch allowed={allowed} value={effectiveMode} onChange={setMode} hint={modeHint} />
+          )}
+          <label htmlFor="score-instrument" className="sr-only">Instrument preset</label>
+          <select
+            id="score-instrument"
+            name="score-instrument"
+            className="form-select text-[8px] px-1 py-0.5 shrink-0"
+            value={instrument}
+            disabled={!selectedArtifact}
+            onChange={(e) => onPlayAlongInstrument(e.target.value)}
+            title="Instrument preset: shows the parts and the view your instrument reads (drums: drum highway; guitar/bass: chords; keys/strings/vocals: strip)"
+          >
+            {PLAY_ALONG_INSTRUMENTS.map((inst) => (
+              <option key={inst} value={inst}>{INSTRUMENT_LABELS[inst]}</option>
+            ))}
+          </select>
           {exportFormats.map((fmt) => (
-            <button
-              key={fmt}
-              className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
-              onClick={() => void exportSelectedAs(fmt)}
-              disabled={exporting !== null}
-              title={`Export ${fmt.toUpperCase()} from this score`}
-            >
-              {exporting === fmt ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-              {fmt.toUpperCase()}
-            </button>
+            fmt === 'beatsaber' ? (
+              <span key={fmt} className="relative">
+                <button
+                  className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
+                  onClick={() => (bsOpen ? setBsOpen(false) : openBeatSaber())}
+                  disabled={exporting !== null || !selectedEntryId}
+                  title="Export a Beat Saber level pack (Info.dat + one .dat per difficulty + song.ogg) from this score"
+                  aria-haspopup="dialog"
+                  aria-expanded={bsOpen}
+                  aria-controls="score-bs-popover"
+                >
+                  <Gamepad2 className="w-3 h-3 text-rose-300" />
+                  BEAT SABER
+                </button>
+                {bsOpen && selectedEntryId && selectedArtifact && (
+                  <React.Suspense fallback={null}>
+                    <BeatSaberExportPopover
+                      entryId={selectedEntryId}
+                      artifact={selectedArtifact}
+                      parts={bsParts}
+                      caps={caps}
+                      analysisBpm={analysisBpm}
+                      onDone={(artifact) => void onBeatSaberDone(artifact)}
+                      onClose={() => setBsOpen(false)}
+                    />
+                  </React.Suspense>
+                )}
+              </span>
+            ) : (
+              <button
+                key={fmt}
+                className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
+                onClick={() => void exportSelectedAs(fmt)}
+                disabled={exporting !== null}
+                title={`Export ${fmt.toUpperCase()} from this score`}
+              >
+                {exporting === fmt ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                {fmt.toUpperCase()}
+              </button>
+            )
           ))}
           {selectedArtifact && (
             <a
@@ -478,250 +710,11 @@ export const ScoreView: React.FC = () => {
           )}
         </div>
         <div className="flex-1 min-h-0 bg-[#0b0810]">
-          {selectedArtifact?.kind === 'musicxml' ? (
-            <MusicXmlPreview artifact={selectedArtifact} entry={entry} />
-          ) : selectedArtifact?.kind === 'alphatex' ? (
-            <TabPreview artifact={selectedArtifact} entry={entry} />
-          ) : selectedArtifact ? (
-            <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">
-              {selectedArtifact.kind.toUpperCase()} artifact selected. Download or send it to MIDI/Score tools.
-            </div>
-          ) : (
-            <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-600">
-              Select a score artifact to preview.
-            </div>
-          )}
+          {renderPreview()}
         </div>
       </div>
     </div>
   );
-};
-
-const ZOOM_MIN = 0.4;
-const ZOOM_MAX = 3;
-const ZOOM_STEP = 1.12;
-// Scores open (and reset) at 64% rather than 1:1. At full scale the engraving
-// runs oversized for the pane; 0.64 fits more music per page and matches the
-// size the sheet is actually read at. Also the target of the reset button, so
-// resetting never jumps back to the rejected 100% size.
-const ZOOM_DEFAULT = 0.64;
-const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
-
-/** Ctrl/Cmd + scrollwheel zoom on the sheet. A native non-passive listener
- *  is required so the gesture can preventDefault (React's onWheel is passive).
- *  Plain wheel keeps scrolling the page so long scores stay navigable. */
-function useWheelZoom(
-  scrollRef: React.RefObject<HTMLDivElement | null>,
-  onZoomDelta: (factor: number) => void,
-) {
-  const cb = useRef(onZoomDelta);
-  cb.current = onZoomDelta;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const handler = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
-      cb.current(e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
-    };
-    el.addEventListener('wheel', handler, { passive: false });
-    return () => el.removeEventListener('wheel', handler);
-  }, [scrollRef]);
-}
-
-const ZoomControls: React.FC<{
-  zoom: number;
-  onIn: () => void;
-  onOut: () => void;
-  onReset: () => void;
-}> = ({ zoom, onIn, onOut, onReset }) => (
-  <div className="absolute bottom-2 right-2 z-10 flex items-center gap-0.5 rounded-md border border-purple-500/40 bg-[#0a080f]/95 px-1 py-0.5 shadow-lg backdrop-blur-sm">
-    <button
-      className="p-1 rounded text-purple-200 hover:bg-purple-500/20 disabled:opacity-40"
-      onClick={onOut}
-      disabled={zoom <= ZOOM_MIN + 0.001}
-      title="Zoom out (Ctrl + scroll)"
-      aria-label="Zoom out"
-    >
-      <Minus className="w-3 h-3" />
-    </button>
-    <button
-      className="min-w-9 text-center text-[9px] font-mono text-purple-200 hover:text-white px-0.5"
-      onClick={onReset}
-      title="Reset zoom"
-      aria-label="Reset zoom to the default scale"
-    >
-      {Math.round(zoom * 100)}%
-    </button>
-    <button
-      className="p-1 rounded text-purple-200 hover:bg-purple-500/20 disabled:opacity-40"
-      onClick={onIn}
-      disabled={zoom >= ZOOM_MAX - 0.001}
-      title="Zoom in (Ctrl + scroll)"
-      aria-label="Zoom in"
-    >
-      <Plus className="w-3 h-3" />
-    </button>
-    <button
-      className="p-1 rounded text-purple-200 hover:bg-purple-500/20"
-      onClick={onReset}
-      title="Fit / reset zoom"
-      aria-label="Fit to width"
-    >
-      <Maximize2 className="w-3 h-3" />
-    </button>
-  </div>
-);
-
-const A4_RATIO = 297 / 210; // A4 portrait height / width
-const PAGE_GAP = 24; // px between side-by-side pages (matches gap-6)
-
-// Media + symbolic extensions that must never show up in a sheet title.
-const TITLE_EXT_RE =
-  /\.(wav|mp3|flac|ogg|oga|m4a|aac|aif|aiff|opus|wma|alac|mp4|mov|webm|mkv|m4v|avi|mid|midi|musicxml|xml)$/i;
-
-// Leading track numbers carried in from ripped/downloaded filenames:
-// "04 - Song", "04. Song", "04_Song", "1-04 - Song", "[04] Song", "A4. Song".
-// A separator after the number is REQUIRED, which is what keeps a title that
-// genuinely opens on a number intact: "99 Luftballons", "7 Nation Army",
-// "24K Magic" and "1979" have no separator, so none of them match.
-const TRACK_BRACKETED_RE = /^\s*[[(]\s*(?:\d{1,2}[-.])?\d{1,3}\s*[\])]\s*[-–—._]*\s*/;
-const TRACK_NUMBERED_RE = /^\s*(?:(?:\d{1,2}[-.])?\d{1,3}|[A-Ha-h]\d{1,2})\s*[-–—._)]+\s*/;
-const HAS_LETTER_RE = /\p{L}/u;
-
-/** Drop a leading track number. Bails out when the remainder has no letters,
- *  so an all-numeric title survives whole ("1-800-273-8255", "24 - 7"). */
-const stripTrackPrefix = (t: string): string => {
-  const stripped = t.replace(TRACK_BRACKETED_RE, '').replace(TRACK_NUMBERED_RE, '');
-  return stripped !== t && HAS_LETTER_RE.test(stripped) ? stripped.trim() : t;
-};
-
-/** Sanitize a title for engraving: drop a trailing media extension and a
- *  leading track number, and treat music21's "Music21 Fragment" / "Music21"
- *  placeholders as empty. */
-const cleanTitleText = (raw: string): string => {
-  const t = (raw || '').trim().replace(TITLE_EXT_RE, '').trim();
-  if (/^music21( fragment)?$/i.test(t)) return '';
-  return stripTrackPrefix(t);
-};
-
-/** Word-wrap a long title by inserting newlines (OSMD splits labels on \n and
- *  centers each line) so a long song name lays out across the page instead of
- *  running off the side. Never truncates; hard-breaks a single oversized word. */
-const wrapTitle = (t: string, budget: number): string => {
-  if (t.length <= budget) return t;
-  const lines: string[] = [];
-  let cur = '';
-  for (const w of t.split(/\s+/)) {
-    let word = w;
-    if (cur && (cur + ' ' + word).length > budget) {
-      lines.push(cur);
-      cur = '';
-    }
-    cur = cur ? cur + ' ' + word : word;
-    while (cur.length > budget) {
-      lines.push(cur.slice(0, budget));
-      cur = cur.slice(budget);
-      word = cur;
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines.join('\n');
-};
-
-/** Pre-process MusicXML before OSMD renders it so the title block reads like a
- *  real sheet: the SONG name as the centered Title (cleaned of media extensions,
- *  word-wrapped if long), and the ARTIST centered directly beneath it. OSMD maps
- *  <work-title> -> Title and <movement-title> -> Subtitle (confirmed in its
- *  reader), so the song goes in work-title and the artist in movement-title; the
- *  composer credit is disabled in the options so the artist never floats off to
- *  the top-right. Returns the cleaned song title for the running page footer. */
-const prepareMusicXml = (
-  xml: string,
-  pageWidthPx: number,
-  artist: string,
-): { xml: string; title: string } => {
-  try {
-    const doc = new DOMParser().parseFromString(xml, 'application/xml');
-    if (doc.querySelector('parsererror')) return { xml, title: '' };
-    const root = doc.documentElement;
-    const budget = Math.max(16, Math.floor(pageWidthPx / 13));
-
-    const song = cleanTitleText(
-      (doc.querySelector('work > work-title')?.textContent ||
-        doc.querySelector('movement-title')?.textContent ||
-        '').trim(),
-    );
-
-    // Title slot (work-title) = wrapped song name.
-    let work = doc.querySelector('work');
-    if (!work) {
-      work = doc.createElement('work');
-      root.insertBefore(work, root.firstChild);
-    }
-    let workTitle = work.querySelector('work-title');
-    if (!workTitle) {
-      workTitle = doc.createElement('work-title');
-      work.appendChild(workTitle);
-    }
-    workTitle.textContent = song ? wrapTitle(song, budget) : '';
-
-    // Subtitle slot (movement-title) = artist, centered under the title.
-    let movement = doc.querySelector('movement-title');
-    if (!movement) {
-      movement = doc.createElement('movement-title');
-      if (work.nextSibling) root.insertBefore(movement, work.nextSibling);
-      else root.appendChild(movement);
-    }
-    movement.textContent = artist || '';
-
-    // Drop music21's placeholder credit-words so they don't print.
-    for (const cw of Array.from(doc.querySelectorAll('credit-words'))) {
-      if (/^music21( fragment)?$/i.test((cw.textContent || '').trim())) cw.textContent = '';
-    }
-
-    return { xml: new XMLSerializer().serializeToString(doc), title: song };
-  } catch {
-    return { xml, title: '' };
-  }
-};
-
-/** Engraving rules that make OSMD output look like sheet music from a book:
- *  smaller text (the default title/labels are oversized for a fitted A4 page),
- *  tidy page margins so music never runs off the side, and compact, even
- *  system spacing. Applied before render; unknown keys on older builds no-op. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const applySheetEngraving = (rules: any): void => {
-  if (!rules) return;
-  try {
-    rules.SheetTitleHeight = 2.2;
-    rules.SheetSubtitleHeight = 1.4;
-    rules.SheetComposerHeight = 1.5;
-    rules.SheetAuthorHeight = 1.4;
-    rules.TitleTopDistance = 5.0;
-    rules.TitleBottomDistance = 1.0;
-    rules.SpacingBetweenTextLines = 1.0;
-    rules.MeasureNumberLabelHeight = 1.0;
-    rules.InstrumentLabelTextHeight = 1.4;
-    rules.LyricsHeight = 1.5;
-    rules.InstantaneousTempoTextHeight = 1.6;
-    rules.ContinuousTempoTextHeight = 1.4;
-    // Generous page margins, especially top + bottom (the bottom margin also
-    // houses the injected running footer + page number).
-    rules.PageLeftMargin = 4.0;
-    rules.PageRightMargin = 4.0;
-    rules.PageTopMargin = 5.5;
-    // Tall bottom margin: the music must clear the injected running footer +
-    // page number that live in the bottom margin (see decoratePages).
-    rules.PageBottomMargin = 14.0;
-    rules.MinimumDistanceBetweenSystems = 4.0;
-    rules.MinSkyBottomDistBetweenSystems = 2.0;
-    rules.StaffDistance = 4.0;
-    rules.BetweenStaffDistance = 4.0;
-    rules.RenderMeasureNumbersOnlyAtSystemStart = true;
-  } catch {
-    /* older OSMD builds: ignore unsupported rules */
-  }
 };
 
 /** Sheet-music preview. Renders the score as real A4 pages laid out left-to-
@@ -741,6 +734,10 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const osmdRef = useRef<any>(null);
   const zoomRef = useRef(ZOOM_DEFAULT);
+  // True once the user zooms by hand (buttons, readout, Ctrl+wheel) on this
+  // score. Until then every render auto-fits: a system taller than the page
+  // lowers the zoom so nothing is drawn off the sheet. Reset per artifact.
+  const userZoomedRef = useRef(false);
   const pageWRef = useRef(520);
   const footerTitleRef = useRef('');
   const footerArtistRef = useRef('');
@@ -749,6 +746,9 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   // says which arrangement it is rather than looking like every other sheet.
   const footerLabelRef = useRef('');
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  // Last auto-fit measurement, for the zoom readout's tooltip ("fitted to the
+  // page"); null while the user drives the zoom or nothing was measured.
+  const [fitInfo, setFitInfo] = useState<{ zoom: number; report: FitReport } | null>(null);
   const [status, setStatus] = useState('Loading MusicXML renderer…');
   const [pageCount, setPageCount] = useState(1);
   const [page, setPage] = useState(1); // 1-based page currently in view
@@ -905,6 +905,17 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
 
   // OSMD reads host.offsetWidth at render() to size one page, then we widen the
   // host into a horizontal strip so the page svgs sit side by side.
+  //
+  // Measure-and-fit: OSMD never splits a music system across pages, so a
+  // system taller than the printable height (7-staff band scores at the default
+  // zoom) is drawn through the bottom margin and clipped by the page SVG. After
+  // the first render the tallest system is compared with PageHeight -
+  // PageBottomMargin and, when it overflows and the user has not zoomed by
+  // hand, the zoom is lowered by that ratio and the sheet re-rendered (at most
+  // two extra passes, floor 0.3). The fit restarts from ZOOM_DEFAULT on every
+  // automatic render (load, pane resize) so a pane that grows back gets its
+  // zoom back too. renderScorePdf.mjs runs the same loop so the bundle PDF
+  // paginates identically.
   const doRender = useCallback(() => {
     const osmd = osmdRef.current;
     const host = hostRef.current;
@@ -912,8 +923,18 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     try {
       host.style.display = 'block';
       host.style.width = `${pageWRef.current}px`;
+      if (!userZoomedRef.current) zoomRef.current = ZOOM_DEFAULT;
       osmd.Zoom = zoomRef.current;
       osmd.render();
+      if (!userZoomedRef.current) {
+        const fit = fitZoomToPage(osmd, zoomRef.current, (z) => {
+          osmd.Zoom = z;
+          osmd.render();
+        });
+        zoomRef.current = fit.zoom;
+        setZoom(fit.zoom);
+        setFitInfo(fit.passes > 0 ? { zoom: fit.zoom, report: fit.report } : null);
+      }
       host.style.display = 'flex';
       host.style.width = 'max-content';
       const count =
@@ -929,6 +950,8 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   }, [decoratePages, syncCursorToRender]);
 
   const applyZoom = useCallback((next: number) => {
+    userZoomedRef.current = true;
+    setFitInfo(null);
     zoomRef.current = clampZoom(next);
     setZoom(zoomRef.current);
     doRender();
@@ -1098,6 +1121,9 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
           (osmdGenRef.current === generation ? osmdRef.current?.cursor ?? null : null),
         );
         pageWRef.current = computePageW();
+        // A new score starts at the default zoom and may auto-fit; a manual
+        // zoom on the previous score does not carry over.
+        userZoomedRef.current = false;
         doRender();
         setStatus('');
         setPage(1);
@@ -1269,6 +1295,15 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   }, [exportingPdf]);
 
   const pageLabel = pageCount <= 1 ? '1 page' : `Page ${page} / ${pageCount}`;
+  // The readout doubles as the reset button; when auto-fit lowered the zoom the
+  // tooltip says so, since 36% next to a 64% default otherwise looks like a
+  // stray setting.
+  const fitTitle = fitInfo
+    ? `Fitted to the page: a system was taller than the sheet at ${Math.round(ZOOM_DEFAULT * 100)}%, ` +
+      `so zoom was lowered to ${Math.round(fitInfo.zoom * 100)}% (tallest system now ` +
+      `${Math.round(fitInfo.report.tallestBottom)} of ${Math.round(fitInfo.report.usable)} units). ` +
+      'Click to reset zoom.'
+    : 'Reset zoom';
   const otherTrackLoaded = !!entryId && !!engineEntryId && !isSameTrack;
   const transportLabel = !entry
     ? 'No track selected'
@@ -1348,8 +1383,8 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         <button
           onClick={() => applyZoom(ZOOM_DEFAULT)}
           className="min-w-10 text-center hover:text-white"
-          title="Reset zoom"
-          aria-label="Reset zoom"
+          title={fitTitle}
+          aria-label={fitTitle}
         >
           {Math.round(zoom * 100)}%
         </button>
@@ -1379,15 +1414,6 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     </div>
   );
 };
-
-/** Duck-typed handle onto alphaTab's external-media player output — the 1.8
- *  API for "an external audio source is the time axis" (PlayerMode
- *  EnabledExternalMedia). Feature-detected at runtime so an older bundle
- *  degrades to a static tab instead of crashing. */
-interface ExternalMediaOutput {
-  updatePosition?: (timeMs: number) => void;
-  handler?: unknown;
-}
 
 const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | null }> = ({ artifact, entry }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
