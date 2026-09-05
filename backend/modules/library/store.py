@@ -11,7 +11,7 @@ overridable via `theDAW_GENERATIONS_DIR`):
 
 For generate outputs `entry_id = "{job_id}_{index:02d}"`. For imports we
 mint a UUID. The `metadata.json` is the source of truth — any user-mutable
-field (favorite, rating, tags, notes) is merged in there.
+field (favorite, rating, tags, notes, lyrics) is merged in there.
 
 This module is intentionally storage-only: it does NOT depend on FastAPI
 so it can be reused by an eventual `S3Provider` / `DriveProvider` that
@@ -41,8 +41,12 @@ log = logging.getLogger(__name__)
 # `chimera_sources` is included because the backend doesn't know about
 # the user-facing Chimera stack labels at generation time — the frontend
 # PATCHes them after the mashup runs.
+# `lyrics` is the plain (untimed) lyrics text: the user's own words, edited
+# from the Details / SING surfaces. The lyrics module mirrors the text of
+# `<entry>/lyrics.json` into it on every save, so it never diverges from
+# the timed document. Suno imports already carry it via `_flatten_suno_meta`.
 USER_MUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"favorite", "rating", "tags", "notes", "title", "chimera_sources"}
+    {"favorite", "rating", "tags", "notes", "title", "chimera_sources", "lyrics"}
 )
 
 
@@ -72,6 +76,8 @@ class LibraryRecord:
     notes: str
     source: str
     chimera_sources: list[str] = field(default_factory=list)
+    # Plain lyrics text (see USER_MUTABLE_FIELDS). '' when the entry has none.
+    lyrics: str = ""
     # Optional pointers to extra artifacts on disk.
     spectrogram_paths: dict[str, Optional[str]] = field(default_factory=dict)
     # Media (video / image) entries. 'audio' keeps the original contract;
@@ -106,6 +112,7 @@ class LibraryRecord:
             "notes": self.notes,
             "source": self.source,
             "chimera_sources": list(self.chimera_sources),
+            "lyrics": self.lyrics,
             "spectrogram_paths": dict(self.spectrogram_paths),
             "kind": self.kind,
             "media_url": self.media_url,
@@ -343,6 +350,7 @@ def _record_from_metadata(
         notes=str(meta.get("notes") or ""),
         source=str(meta.get("source") or "generate"),
         chimera_sources=list(meta.get("chimera_sources") or []),
+        lyrics=str(meta.get("lyrics") or ""),
         spectrogram_paths=dict(meta.get("spectrogram_paths") or {}),
     )
 
@@ -399,6 +407,7 @@ def _media_record_from_metadata(
         notes=str(meta.get("notes") or ""),
         source=str(meta.get("source") or "import"),
         chimera_sources=[],
+        lyrics=str(meta.get("lyrics") or ""),
         spectrogram_paths={},
         kind=kind,
         media_url=media_url,
@@ -574,6 +583,7 @@ class LibraryStore:
                     chimera_sources=[]
                     if is_media
                     else list(meta.get("chimera_sources") or []),
+                    lyrics=str(meta.get("lyrics") or ""),
                     spectrogram_paths={}
                     if is_media
                     else dict(meta.get("spectrogram_paths") or {}),
@@ -651,6 +661,8 @@ class LibraryStore:
             meta["tags"] = [str(t) for t in (meta["tags"] or [])]
         if "notes" in meta:
             meta["notes"] = str(meta["notes"] or "")
+        if "lyrics" in meta:
+            meta["lyrics"] = str(meta["lyrics"] or "")
         if "chimera_sources" in meta:
             raw = meta["chimera_sources"] or []
             if not isinstance(raw, list):

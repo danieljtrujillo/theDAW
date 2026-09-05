@@ -37,6 +37,7 @@ interface ServerRecord {
   rating: 'like' | 'dislike' | null;
   tags: string[];
   notes: string;
+  lyrics?: string;
   source: string;
   chimera_sources?: string[];
   play_count?: number;
@@ -67,6 +68,7 @@ const toEntry = (r: ServerRecord): LibraryEntry => ({
   rating: r.rating,
   tags: r.tags ?? [],
   notes: r.notes ?? '',
+  lyrics: r.lyrics ?? '',
   source: (['generate', 'studio', 'import'].includes(r.source)
     ? r.source
     : 'generate') as LibraryEntry['source'],
@@ -87,6 +89,7 @@ const patchToServerKeys = (patch: LibraryEntryPatch): Record<string, unknown> =>
   if (patch.rating !== undefined) body.rating = patch.rating;
   if (patch.tags !== undefined) body.tags = patch.tags;
   if (patch.notes !== undefined) body.notes = patch.notes;
+  if (patch.lyrics !== undefined) body.lyrics = patch.lyrics;
   if (patch.chimeraSources !== undefined) body.chimera_sources = patch.chimeraSources;
   return body;
 };

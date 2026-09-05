@@ -53,6 +53,7 @@ const toEntry = (r: ServerMediaRecord): LibraryEntry => ({
   rating: null,
   tags: r.tags ?? [],
   notes: r.notes ?? '',
+  lyrics: '',
   source: 'import',
   kind: r.kind ?? 'video',
   mediaUrl: r.media_url ?? r.audio_url,

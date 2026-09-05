@@ -6,7 +6,11 @@ JSON line to stdout as the LAST line. All diagnostics and model-download progres
 go to stderr so stdout stays clean for the parent to parse.
 
 Request  : {"audio": str, "language": str|null, "model": str, "device": str,
-            "compute_type": str}
+            "compute_type": str,
+            # optional decoding knobs (defaults in parentheses):
+            "initial_prompt": str|null (none),
+            "condition_on_previous_text": bool (true),
+            "vad_filter": bool (true), "beam_size": int (5)}
 Response : {"ok": true, "language": str, "text": str,
             "segments": [{"text", "start", "end",
                           "words": [{"word", "start", "end"}]}]}   (seconds)
@@ -43,6 +47,14 @@ def main() -> int:
     model_size = req.get("model") or "small"
     device = req.get("device") or "cpu"
     compute_type = req.get("compute_type") or "int8"
+    # Optional decoding knobs. The lyrics aligner primes the decoder with the
+    # user's lyrics (initial_prompt), turns off cross-window conditioning so a
+    # hallucinated chorus does not snowball, and disables VAD so quiet entries
+    # are not trimmed away. Missing keys keep the historical defaults.
+    initial_prompt = req.get("initial_prompt") or None
+    cond = bool(req.get("condition_on_previous_text", True))
+    vad = bool(req.get("vad_filter", True))
+    beam = int(req.get("beam_size") or 5)
 
     try:
         from faster_whisper import WhisperModel
@@ -55,7 +67,10 @@ def main() -> int:
             audio,
             language=language,
             word_timestamps=True,
-            vad_filter=True,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=cond,
+            vad_filter=vad,
+            beam_size=beam,
         )
         seg_out = []
         text_parts = []

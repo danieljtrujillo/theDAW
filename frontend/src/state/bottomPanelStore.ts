@@ -18,6 +18,7 @@ export type BottomPanelTab =
   | 'spectral'
   | 'details'
   | 'score'
+  | 'sing'
   | 'midi'
   | 'step-seq'
   | 'draw'

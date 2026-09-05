@@ -34,6 +34,14 @@ SIDECAR_VENV_DIRNAME = ".whisper_venv"
 _CRITICAL_PACKAGES: tuple[str, ...] = ("faster_whisper",)
 _INSTALL_TIMEOUT_SEC = 20 * 60
 _TRANSCRIBE_TIMEOUT_SEC = 30 * 60
+# Optional per-call decoding knobs a caller may forward to the worker. Anything
+# else in ``extra`` is dropped so the request stays a closed, known shape.
+_EXTRA_KEYS: tuple[str, ...] = (
+    "initial_prompt",
+    "condition_on_previous_text",
+    "vad_filter",
+    "beam_size",
+)
 
 
 def _venv_python(base: Path) -> Path:
@@ -242,11 +250,20 @@ def ensure_ready(cfg: Optional[WhisperConfig] = None) -> dict:
 
 
 async def transcribe(
-    audio_path: Path, language: str = "en", cfg: Optional[WhisperConfig] = None
+    audio_path: Path,
+    language: str = "en",
+    cfg: Optional[WhisperConfig] = None,
+    extra: Optional[dict] = None,
 ) -> dict:
     """Run the isolated worker on one file. Returns the worker's JSON dict:
     {ok, language, text, segments} on success, {ok: False, error} otherwise.
-    Never raises; install/spawn/parse failures all come back as ok=False."""
+    Never raises; install/spawn/parse failures all come back as ok=False.
+
+    ``extra`` optionally forwards decoding knobs to the worker; only the keys in
+    ``_EXTRA_KEYS`` (``initial_prompt``, ``condition_on_previous_text``,
+    ``vad_filter``, ``beam_size``) are passed through, and ``None`` values are
+    skipped so the worker keeps its own defaults. Existing callers that omit
+    ``extra`` get exactly the request they always did."""
     cfg = cfg or resolve_config()
     ready = await asyncio.to_thread(ensure_ready, cfg)
     if not ready.get("critical_ok"):
@@ -255,15 +272,18 @@ async def transcribe(
             "error": ready.get("error") or "faster-whisper not installed",
             "probe": ready,
         }
-    request = json.dumps(
-        {
-            "audio": str(audio_path),
-            "language": language,
-            "model": cfg.model,
-            "device": cfg.device,
-            "compute_type": cfg.compute_type,
-        }
-    )
+    request_dict: dict = {
+        "audio": str(audio_path),
+        "language": language,
+        "model": cfg.model,
+        "device": cfg.device,
+        "compute_type": cfg.compute_type,
+    }
+    if extra:
+        request_dict.update(
+            {k: v for k, v in extra.items() if k in _EXTRA_KEYS and v is not None}
+        )
+    request = json.dumps(request_dict)
     try:
         proc = await asyncio.create_subprocess_exec(
             str(cfg.python_exe),
