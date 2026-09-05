@@ -13,6 +13,7 @@ import { CatalogueProviderBadge } from './CatalogueProviderBadge';
 import { CatalogueLineage } from './CatalogueLineage';
 import { inferProvider } from './catalogProviders';
 import { deriveLyrics, deriveStyle } from './catalogSearch';
+import { useBottomPanelStore } from '../state/bottomPanelStore';
 
 interface Props {
   entry: LibraryEntry;
@@ -86,7 +87,9 @@ async function blobToBase64(blob: Blob): Promise<string> {
  *   Core params · Prompt + Negative · Analysis (every key/value) · Embedded
  *   tags · Tags editor · Notes editor · favorite/rating · on-demand
  *   spectrogram (MEL/STFT/CHROMA/CQT) · embedded lineage viewer. For Suno
- *   tracks it also surfaces derived lyrics/style and Suno cover/mashup actions.
+ *   tracks it also surfaces the derived style and Suno cover/mashup actions;
+ *   lyrics (the entry's field, or derived) show for every provider with a
+ *   jump to the SING tab.
  */
 export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
   const updateEntry = useLibraryStore((s) => s.updateEntry);
@@ -137,7 +140,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
     [embedded],
   );
 
-  const lyrics = isSuno ? deriveLyrics(entry) : '';
+  const lyrics = deriveLyrics(entry);
   const style = isSuno ? deriveStyle(entry) : '';
 
   const addTag = () => {
@@ -270,12 +273,12 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
           </div>
         )}
 
-        {/* Suno lyrics / style (derived, best-effort) */}
-        {isSuno && (style || lyrics) && (
+        {/* Lyrics (any provider) / Suno style (derived, best-effort) */}
+        {(style || lyrics) && (
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               <Mic2 className="w-3 h-3 text-orange-400" />
-              <span className="mono-label text-[9px]!">SUNO</span>
+              <span className="mono-label text-[9px]!">{isSuno ? 'SUNO' : 'LYRICS'}</span>
             </div>
             {style && <Field label="Style" value={style} />}
             {lyrics && (
@@ -284,6 +287,14 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
                 <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word whitespace-pre-wrap max-h-40 overflow-y-auto no-scrollbar">
                   {lyrics}
                 </p>
+                <button
+                  type="button"
+                  className="btn-ghost text-[8px] py-0.5 px-1.5 self-start text-rose-200"
+                  onClick={() => useBottomPanelStore.getState().showTab('sing')}
+                  title="Sing along, edit or time these lyrics in the SING tab"
+                >
+                  OPEN IN SING
+                </button>
               </div>
             )}
           </div>

@@ -392,6 +392,15 @@ async def run_prepare(job: Job, req: dict[str, Any]) -> None:
         payload = art.model_dump()
         _artifacts[asset_id] = payload
         _persist(asset_id, src_path, payload)
+        if art.lyrics.words:
+            # Seed the SING tab's lyrics.json once from a transcribing prepare;
+            # never overwrites a document the user already has.
+            try:
+                from backend.modules.lyrics import service as lyrics_service
+
+                lyrics_service.seed_from_vocal_artifact(asset_id, payload)
+            except Exception as e:
+                log.info("vocal: lyrics seed skipped: %s", e)
         job.result = payload
         job.update(status="done", progress=1.0, message="artifact ready")
     except Exception as e:

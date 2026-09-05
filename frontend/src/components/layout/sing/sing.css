@@ -1,0 +1,66 @@
+/* SING tab: the karaoke scroller's per-frame states. Everything that changes
+   every frame is a data attribute or a CSS variable, never a React render. */
+
+.sing-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sing-lines li {
+  transition: opacity 180ms ease, transform 180ms ease, color 180ms ease;
+  transform-origin: left center;
+}
+
+.sing-lines li[data-state='past'] {
+  opacity: 0.35;
+}
+
+.sing-lines li[data-state='active'] {
+  color: #fff;
+  transform: scale(1.12);
+}
+
+.sing-lines li[data-state='next'] {
+  opacity: 0.7;
+}
+
+.sing-lines li[data-kind='marker'] .sing-text {
+  font-variant: small-caps;
+  letter-spacing: 0.12em;
+  opacity: 0.55;
+}
+
+/* The word being sung: a left-to-right fill driven by --p (0..1). */
+.sing-lines span[data-on] {
+  background: linear-gradient(
+    90deg,
+    rgb(251 113 133) calc(var(--p, 0) * 100%),
+    rgb(212 212 216) calc(var(--p, 0) * 100%)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.sing-chip {
+  display: inline-block;
+  min-width: 3.4em;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  color: rgb(161 161 170);
+}
+
+.sing-chip[data-untimed] {
+  border-style: dashed;
+  color: rgb(113 113 122);
+}
+
+.sing-chip[data-low] {
+  border-color: rgb(251 191 36 / 0.6);
+  color: rgb(252 211 77);
+}

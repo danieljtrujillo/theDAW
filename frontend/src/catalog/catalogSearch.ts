@@ -120,6 +120,9 @@ const taggedValues = (tags: string[], prefixes: string[]): string[] => {
  * notes so a lyrics-target search still finds something sensible.
  */
 export const deriveLyrics = (e: LibraryEntry): string => {
+  // The entry's own lyrics field is the truth (Suno imports and the SING
+  // tab both write it); the fallbacks below serve legacy imports.
+  if (e.lyrics && e.lyrics.trim()) return e.lyrics;
   const fromTags = taggedValues(e.tags, ['lyrics:', 'lyric:']);
   if (fromTags.length) return fromTags.join(' ');
   const a = analysisOf(e);

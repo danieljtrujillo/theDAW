@@ -1,0 +1,10 @@
+{
+  "name": "lyrics",
+  "label": "Lyrics & Sing-Along",
+  "enabled": true,
+  "icon": "MicVocal",
+  "sidebar": false,
+  "api_prefix": "/api/lyrics",
+  "backend": true,
+  "description": "Plain and word-timed lyrics per library song: paste/edit, whisper extraction, alignment of pasted text to the audio, LRC import/export, and the SING tab's sing-along document."
+}

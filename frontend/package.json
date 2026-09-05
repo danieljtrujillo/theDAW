@@ -15,7 +15,8 @@
     "lint": "tsc --noEmit",
     "screenshots": "tsx ../scripts/screenshots/capture.ts",
     "docs:coverage": "tsx ../scripts/screenshots/featureCoverage.ts",
-    "test:playalong": "tsx src/state/playAlongStore.test.ts && tsx src/lib/chordShapes.test.ts && tsx src/components/layout/score/strip/stripXMap.test.ts && tsx src/components/layout/score/highway/schedule.test.ts && tsx src/components/layout/score/highway/HighwayScene.test.ts && tsx src/components/layout/score/chords/ChordDiagram.test.tsx && tsx src/components/layout/score/scoreFit.test.ts && tsx src/components/layout/score/playAlong/latencyMath.test.ts && tsx src/components/layout/score/playAlong/partRegistry.test.ts && tsx src/components/layout/score/beatsaber/beatsaberMeta.test.ts"
+    "test:playalong": "tsx src/state/playAlongStore.test.ts && tsx src/lib/chordShapes.test.ts && tsx src/components/layout/score/strip/stripXMap.test.ts && tsx src/components/layout/score/highway/schedule.test.ts && tsx src/components/layout/score/highway/HighwayScene.test.ts && tsx src/components/layout/score/chords/ChordDiagram.test.tsx && tsx src/components/layout/score/scoreFit.test.ts && tsx src/components/layout/score/playAlong/latencyMath.test.ts && tsx src/components/layout/score/playAlong/partRegistry.test.ts && tsx src/components/layout/score/beatsaber/beatsaberMeta.test.ts",
+    "test:sing": "tsx src/components/layout/sing/singSync.test.ts"
   },
   "dependencies": {
     "@coderline/alphatab": "^1.8.3",

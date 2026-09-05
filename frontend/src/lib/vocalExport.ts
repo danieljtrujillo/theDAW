@@ -32,8 +32,15 @@ export interface VocalArtifactDoc {
   segments: ArtifactSegment[];
   timing: { tempo_bpm: number | null };
   source: { asset_id: string; duration_ms: number };
-  lyrics: { language: string; text: string; source: string };
+  lyrics: {
+    language: string;
+    text: string;
+    source: string;
+    words?: Array<{ text: string; start_ms: number; end_ms: number }>;
+  };
   review: { reviewed: boolean; notes: string };
+  /** The analysed pitch curve, when the artifact carries one. */
+  f0?: { hop_ms: number; hz: number[]; voiced: boolean[] };
 }
 
 export const fetchVocalArtifact = async (
