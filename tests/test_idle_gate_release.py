@@ -88,7 +88,7 @@ def test_preload_model_releases_gate_when_the_load_fails(gate, monkeypatch):
     monkeypatch.setattr(server, "_ensure_gpu_clear_of_magenta", lambda: None)
     monkeypatch.setattr(server, "_get_or_load_generation_pipeline", boom)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(HTTPException):
         asyncio.run(server.preload_model(model="small"))
 
     assert gate.active_tags() == []
