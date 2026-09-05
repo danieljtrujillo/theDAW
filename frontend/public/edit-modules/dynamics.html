@@ -47,6 +47,7 @@ html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:cen
 /* ── KNOB ROW ── */
 .knob-row{display:flex;align-items:flex-start;justify-content:center;gap:12px;flex-shrink:0;padding:6px 4px}
 .knob-group{display:flex;flex-direction:column;align-items:center;gap:1px;user-select:none;cursor:ns-resize}
+.knob-group:focus-visible,.mix-track:focus-visible{outline:2px solid #34d399;outline-offset:2px;border-radius:4px}
 .knob-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4a5268;letter-spacing:.5px;text-transform:uppercase;font-weight:600}
 .knob-svg{width:66px;height:66px;display:block}
 .knob-value{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#d0d8e8;text-align:center;min-width:48px}
@@ -148,8 +149,8 @@ input[type="file"]{display:none}
     <div class="knob-row">
       <!-- Mode selector -->
       <div class="knob-group" style="justify-content:center">
-        <span class="knob-label">Mode</span>
-        <select class="mode-select" id="modeSelect" style="margin-top:14px;margin-bottom:14px;width:54px">
+        <label class="knob-label" for="modeSelect">Mode</label>
+        <select class="mode-select" id="modeSelect" name="modeSelect" style="margin-top:14px;margin-bottom:14px;width:54px">
           <option value="compressor" selected>Comp</option>
           <option value="gate">Gate</option>
           <option value="expander">Expand</option>
@@ -222,6 +223,12 @@ input[type="file"]{display:none}
         <button class="mode-pill" id="pillGate" data-mode="gate">Gate</button>
         <button class="mode-pill" id="pillExp" data-mode="expander">Expander</button>
       </div>
+      <div class="toggle-group" role="group" aria-label="Band edited by the Threshold and Ratio knobs" title="multiband_dynamics: Low below 250 Hz, Mid 250 Hz to 4 kHz, High above 4 kHz">
+        <button class="toggle-pill active" data-band="all">All</button>
+        <button class="toggle-pill" data-band="low">Low</button>
+        <button class="toggle-pill" data-band="mid">Mid</button>
+        <button class="toggle-pill" data-band="high">High</button>
+      </div>
       <div class="toggle-group">
         <button class="toggle-pill" id="togSidechain">Sidechain</button>
         <button class="toggle-pill" id="togLookahead">Lookahead</button>
@@ -243,13 +250,19 @@ input[type="file"]{display:none}
 </div>
 <audio id="audioIn" crossorigin="anonymous"></audio>
 <audio id="audioOut" crossorigin="anonymous"></audio>
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" name="fileInput" accept="audio/*" aria-label="Load audio file">
 
+<script src="module-kit.js"></script>
 <script>
 (function(){
 'use strict';
+const kit = window.theDAWKit;
 
-/* ═══════════════ STATE ═══════════════ */
+/* ═══════════════ STATE ═══════════════
+   The backend tool is multiband_dynamics (3 bands, per-band threshold/ratio,
+   shared attack/release). `bands` holds the per-band detector settings; the
+   Threshold/Ratio knobs edit the band selected in the BAND row ("All" links
+   the three). Knee / Makeup / Mix only shape the live preview. */
 const state = {
   threshold: -10.0,
   ratio: 4.0,
@@ -261,8 +274,20 @@ const state = {
   mode: 'compressor',
   sidechain: false,
   lookahead: false,
-  bypass: false
+  bypass: false,
+  band: 'all',
+  bands: {
+    low:  { threshold: -24, ratio: 2 },
+    mid:  { threshold: -18, ratio: 3 },
+    high: { threshold: -20, ratio: 2.5 },
+  }
 };
+const BAND_KEYS = ['low', 'mid', 'high'];
+/* Write a detector value into the selected band(s). */
+function setBandParam(param, v) {
+  const targets = state.band === 'all' ? BAND_KEYS : [state.band];
+  targets.forEach(b => { state.bands[b][param] = v; });
+}
 
 /* ═══════════════ AUDIO ENGINE ═══════════════ */
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -486,6 +511,7 @@ function updateKnob(id, newVal) {
   el.dataset.value = newVal;
   const param = el.dataset.param;
   state[param] = newVal;
+  if (param === 'threshold' || param === 'ratio') setBandParam(param, newVal);
 
   const svg = el.querySelector('.knob-svg');
   drawKnobSVG(svg, getKnobFraction(el));
@@ -500,16 +526,49 @@ function updateKnob(id, newVal) {
   } else {
     valEl.textContent = newVal.toFixed(1);
   }
+  kit.sync(el);
 }
+
+/* ── Band selector: the Threshold/Ratio knobs follow the selected band ── */
+document.querySelectorAll('.toggle-pill[data-band]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.band = btn.dataset.band;
+    document.querySelectorAll('.toggle-pill[data-band]').forEach(b => b.classList.toggle('active', b === btn));
+    if (state.band !== 'all') {
+      const b = state.bands[state.band];
+      state.threshold = b.threshold; state.ratio = b.ratio;
+      updateKnob('knobThreshold', b.threshold);
+      updateKnob('knobRatio', b.ratio);
+      updateCompressor();
+    }
+  });
+});
+kit.toggleGroup('.toggle-pill[data-band]', 'active', true);
 
 /* ── Knob drag interaction ── */
 let activeKnob = null;
 let knobStartY = 0;
 let knobStartVal = 0;
 
+const KNOB_DEFAULTS = { threshold: -10, ratio: 4, attack: 10.5, release: 121, knee: 6, makeup: 0 };
+const PREVIEW_ONLY = { knee: true, makeup: true };
 document.querySelectorAll('.knob-group[data-param]').forEach(el => {
   const svg = el.querySelector('.knob-svg');
   drawKnobSVG(svg, getKnobFraction(el));
+  const param = el.dataset.param;
+  const unitEl = el.querySelector('.knob-unit');
+  if (PREVIEW_ONLY[param] && unitEl) {
+    unitEl.textContent = (unitEl.textContent.trim() || '') + ' preview';
+    unitEl.title = 'Shapes the live preview only (not a multiband_dynamics parameter)';
+  }
+  kit.slider(el, {
+    label: el.querySelector('.knob-label').textContent.trim() + (PREVIEW_ONLY[param] ? ' (preview only)' : ''),
+    min: parseFloat(el.dataset.min), max: parseFloat(el.dataset.max), step: parseFloat(el.dataset.step),
+    get: () => parseFloat(el.dataset.value),
+    set: v => { updateKnob(el.id, v); updateCompressor(); },
+    format: () => el.querySelector('.knob-value').textContent,
+    reset: KNOB_DEFAULTS[param],
+  });
 
   el.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -553,7 +612,10 @@ function updateMixVisual() {
   const trackH = mixTrack.getBoundingClientRect().height - 8;
   mixThumb.style.bottom = (pct * trackH) + 'px';
   mixVal.textContent = Math.round(state.mix) + '%';
+  kit.sync(mixTrack);
 }
+kit.slider(mixTrack, { label: 'Mix (preview only)', min: 0, max: 100, step: 1, vertical: true, wheel: true,
+  get: () => state.mix, set: v => { state.mix = v; updateMixVisual(); updateCompressor(); }, format: v => Math.round(v) + '%', reset: 100 });
 
 mixTrack.addEventListener('mousedown', (e) => {
   mixDragging = true;
@@ -630,6 +692,7 @@ let presetIdx = 0;
 function loadPreset(idx) {
   const p = presets[idx];
   document.getElementById('presetName').textContent = p.name;
+  BAND_KEYS.forEach(b => { state.bands[b].threshold = p.threshold; state.bands[b].ratio = p.ratio; });
   ['threshold','ratio','attack','release','knee','makeup'].forEach(k => {
     state[k] = p[k];
     const knobId = 'knob' + k.charAt(0).toUpperCase() + k.slice(1);
@@ -881,10 +944,12 @@ async function processAudio() {
     const formData = new FormData();
     formData.append('audio', blob, 'input.wav');
     formData.append('effect', 'multiband_dynamics');
+    // One value per band when a band was edited; "All" keeps the three linked.
+    const b = state.bands;
     formData.append('params', JSON.stringify({
-      lowThresh: state.threshold, lowRatio: state.ratio,
-      midThresh: state.threshold, midRatio: state.ratio,
-      highThresh: state.threshold, highRatio: state.ratio,
+      lowThresh: b.low.threshold, lowRatio: b.low.ratio,
+      midThresh: b.mid.threshold, midRatio: b.mid.ratio,
+      highThresh: b.high.threshold, highRatio: b.high.ratio,
       attack: Math.max(1, Math.min(100, state.attack)),
       release: Math.max(10, Math.min(1000, state.release)),
     }));
@@ -902,6 +967,13 @@ async function processAudio() {
 }
 
 /* ═══════════════ INIT ═══════════════ */
+BAND_KEYS.forEach(b => { state.bands[b].threshold = state.threshold; state.bands[b].ratio = state.ratio; });
+kit.toggleGroup('.mode-pill', 'active', true);
+kit.toggleGroup('.hdr-right .pill', 'active');
+kit.toggleGroup('.footer-tab', 'active', true);
+kit.toggleGroup('.toggle-pill:not([data-band])', 'active');
+kit.pressed(document.getElementById('btnBypass'), false);
+document.getElementById('btnBypass').addEventListener('click', function(){ kit.pressed(this, state.bypass); });
 updateMixVisual();
 draw();
 

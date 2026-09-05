@@ -12,10 +12,12 @@ common when basic-pitch is installed but piano-transcription isn't.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from backend.modules.library.db import LibraryDB
 
@@ -70,6 +72,7 @@ def convert_entry(
     # Per-stem conversions (if requested + stems exist).
     if from_stems:
         stems = db.list_stems(entry_id)
+        tempo_map: Optional[tuple[Optional[float], list[float]]] = None
         for stem_row in stems:
             stem_name = stem_row.get("stem_name") or ""
             stem_audio = Path(stem_row.get("audio_path") or "")
@@ -77,8 +80,15 @@ def convert_entry(
                 continue
             hint: MidiHint = hint_for_stem(stem_name)
             stem_out = midi_dir / f"{stem_name}.mid"
+            extra: dict = {}
+            if hint == "drums":
+                # The drum engine writes the entry's real tempo map and snaps
+                # on-grid hits to it; read the analysis row once, lazily.
+                if tempo_map is None:
+                    tempo_map = _analysis_tempo_map(db, entry_id)
+                extra = {"bpm": tempo_map[0], "beats": tempo_map[1] or None}
             stem_res = convert_to_midi(
-                stem_audio, stem_out, hint=hint, auto_install=auto_install
+                stem_audio, stem_out, hint=hint, auto_install=auto_install, **extra
             )
             results.append({"target": stem_name, **stem_res})
             if stem_res.get("ok"):
@@ -119,6 +129,34 @@ def convert_entry(
         "failures": failures,
         "results": results,
     }
+
+
+def _analysis_tempo_map(
+    db: LibraryDB, entry_id: str
+) -> tuple[Optional[float], list[float]]:
+    """``(bpm, beats)`` from the entry's analysis row; ``(None, [])`` when
+    the entry has not been analysed or the row is malformed."""
+    try:
+        row = db.get_analysis(entry_id)
+    except Exception as e:
+        log.debug("midi.runner: analysis lookup failed for %s: %s", entry_id, e)
+        return None, []
+    if not row:
+        return None, []
+    bpm: Optional[float] = None
+    try:
+        raw_bpm = row.get("bpm")
+        if raw_bpm is not None and float(raw_bpm) > 0.0:
+            bpm = float(raw_bpm)
+    except (TypeError, ValueError):
+        bpm = None
+    beats: list[float] = []
+    try:
+        parsed = json.loads(row.get("beats_json") or "[]")
+        beats = [float(b) for b in parsed if b is not None]
+    except (TypeError, ValueError):
+        beats = []
+    return bpm, beats
 
 
 def _set_status(db: LibraryDB, entry_id: str, status: str) -> None:

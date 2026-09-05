@@ -29,6 +29,7 @@
 
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import { pollMagentaJob } from '../state/instrumentStore';
+import { magentaFetch, raiseMagentaSetupGate } from './magentaEngineClient';
 import {
   buildEffectChain, ensureChopModule, getRackEffect, rackEffectDefaults, RACK_EFFECTS,
   type ChainHandle, type RackEffectInstance,
@@ -666,8 +667,17 @@ export class DrawEngine {
         form.append('duration', '4');
         form.append('model_size', 'small');
         if (!first) form.append('extend', 'true');
-        const res = await fetch('/api/magenta/generate', { method: 'POST', body: form });
-        if (res.status === 412) { this.onMagentaStatus?.('Magenta not installed - run Setup-MRT2'); break; }
+        // magentaFetch starts an installed-but-idle engine on demand and re-sends
+        // once it is up; a 412 here is a real gate (not installed / probe failed).
+        const res = await magentaFetch('/api/magenta/generate', { method: 'POST', body: form });
+        if (res.status === 412) {
+          const detail = await res.json().then((j) => j?.detail).catch(() => null);
+          raiseMagentaSetupGate(detail?.message, detail?.installable !== false, detail?.state);
+          this.onMagentaStatus?.(detail?.state === 'not_installed'
+            ? 'Magenta is not installed yet — use Install on the card'
+            : (detail?.message || 'Magenta engine is not ready — see the notice'));
+          break;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const { job } = await res.json();
         const arr = await pollMagentaJob(job.id);

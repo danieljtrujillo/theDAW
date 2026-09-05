@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Layers, X, ChevronUp, ChevronDown, GripVertical } from 'lucide-react';
-import { useGenerateParamsStore, type ChimeraClip } from '../../state/generateParamsStore';
+import {
+  useGenerateParamsStore,
+  type ChimeraClip,
+  type ChimeraPerClipMeta,
+} from '../../state/generateParamsStore';
 import { keyLabel, toCamelot } from '../../lib/camelot';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from '../audio/SlideTrack';
@@ -23,10 +27,42 @@ const fmtRatio = (r: number | undefined): string => {
   return `×${r.toFixed(2)}`;
 };
 
+/** '+1 st' / '-2 st' for a non-zero, non-atonal pitch shift; null otherwise. */
+const fmtPitch = (pc: ChimeraPerClipMeta): string | null => {
+  const st = pc.pitch_shift_semitones;
+  if (st == null || st === 0 || pc.atonal) return null;
+  const n = Math.round(st * 10) / 10;
+  return `${n > 0 ? '+' : ''}${Number.isInteger(n) ? n : n.toFixed(1)} st`;
+};
+
+/** '1/2x' / '2x' when the clip was folded an octave; null at 1x. */
+const fmtMultiplier = (m: number | undefined): string | null => {
+  if (m == null || m === 1) return null;
+  if (m === 0.5) return '1/2x';
+  if (m === 2) return '2x';
+  return `${m}x`;
+};
+
+/** 'lead x3 · sup x2' from the v2 placements' lanes; null on v1 meta. */
+const laneSummary = (pc: ChimeraPerClipMeta): string | null => {
+  const pl = pc.placements;
+  if (!pl || !pl.length || pl.every((p) => p.lane == null)) return null;
+  const lead = pl.filter((p) => p.lane === 'lead').length;
+  const sup = pl.filter((p) => p.lane === 'support').length;
+  const parts: string[] = [];
+  if (lead) parts.push(`lead x${lead}`);
+  if (sup) parts.push(`sup x${sup}`);
+  return parts.length ? parts.join(' · ') : null;
+};
+
+const DOWNBEAT_UNCERTAIN = 0.15;
+
 
 export const ChimeraStack: React.FC = () => {
   const clips = useGenerateParamsStore((s) => s.chimera.clips);
   const lastMeta = useGenerateParamsStore((s) => s.chimera.lastMeta);
+  const usePromptHint = useGenerateParamsStore((s) => s.chimera.usePromptHint ?? false);
+  const setChimeraField = useGenerateParamsStore((s) => s.setChimeraField);
   const removeChimeraClip = useGenerateParamsStore((s) => s.removeChimeraClip);
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
   const moveChimeraClip = useGenerateParamsStore((s) => s.moveChimeraClip);
@@ -165,6 +201,7 @@ export const ChimeraStack: React.FC = () => {
               <ChimeraRow
                 clip={clip}
                 clipsAll={clips}
+                meta={metaByLabel.get(clip.label)}
                 detectedBpm={metaByLabel.get(clip.label)?.detected_bpm ?? clip.detectedBpm ?? null}
                 stretchRatio={metaByLabel.get(clip.label)?.stretch_ratio ?? clip.stretchRatio}
                 index={idx}
@@ -195,7 +232,9 @@ export const ChimeraStack: React.FC = () => {
       >
         <input
           ref={fileInputRef}
+          id="chimera-audio-file"
           name="chimera-audio-file"
+          aria-label="Add audio files to the Chimera stack"
           type="file"
           accept="audio/*"
           multiple
@@ -210,9 +249,32 @@ export const ChimeraStack: React.FC = () => {
       </div>
 
       {lastMeta && (
-        <div className="text-[9px] font-mono text-zinc-500 mt-0.5">
-          Last mashup: {lastMeta.duration_sec.toFixed(2)}s @ {lastMeta.target_bpm_used.toFixed(1)} BPM
-          {' '}({lastMeta.target_bpm_source}), {lastMeta.align_mode_used}-aligned
+        <div className="text-[9px] font-mono text-zinc-500 mt-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5">
+          <span>
+            Last mashup: {lastMeta.duration_sec.toFixed(2)}s @ {lastMeta.target_bpm_used.toFixed(1)} BPM
+            {' '}({lastMeta.target_bpm_source}), {lastMeta.align_mode_used}-aligned
+            {lastMeta.engine_used ? ` · ${lastMeta.engine_used}` : ''}
+            {lastMeta.target_key
+              ? ` · ${lastMeta.target_key} ${lastMeta.target_scale ?? ''}${lastMeta.target_camelot ? ` (${lastMeta.target_camelot})` : ''}`
+              : ''}
+            {lastMeta.arc_used ? ` · ${lastMeta.arc_used}` : ''}
+            {lastMeta.seams?.length ? ` · ${lastMeta.seams.length} seams` : ''}
+          </span>
+          {lastMeta.prompt_hint && (
+            <button
+              type="button"
+              aria-pressed={usePromptHint}
+              onClick={() => setChimeraField('usePromptHint', !usePromptHint)}
+              className={`px-1.5 py-0.5 rounded border text-[8px] uppercase tracking-widest transition-colors ${
+                usePromptHint
+                  ? 'border-purple-400 bg-purple-500/20 text-purple-200'
+                  : 'border-white/10 bg-black/30 text-zinc-400 hover:bg-white/5'
+              }`}
+              title={`Append "${lastMeta.prompt_hint}" to the prompt at CREATE`}
+            >
+              use hint
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -222,6 +284,8 @@ export const ChimeraStack: React.FC = () => {
 interface ChimeraRowProps {
   clip: ChimeraClip;
   clipsAll: ChimeraClip[];
+  /** This clip's per_clip entry from the last mashup (v1 or v2 shape). */
+  meta?: ChimeraPerClipMeta;
   detectedBpm: number | null;
   stretchRatio: number | undefined;
   index: number;
@@ -235,6 +299,7 @@ interface ChimeraRowProps {
 const ChimeraRow: React.FC<ChimeraRowProps> = ({
   clip,
   clipsAll,
+  meta,
   detectedBpm,
   stretchRatio,
   index,
@@ -268,6 +333,15 @@ const ChimeraRow: React.FC<ChimeraRowProps> = ({
   };
 
   const badge = 'bg-black/40 backdrop-blur-sm rounded px-1 py-0.5 pointer-events-auto';
+
+  // v2 badges — every read is optional-chained so v1 meta renders nothing extra
+  const pitch = meta ? fmtPitch(meta) : null;
+  const offKey = !!meta?.harmonic_outlier;
+  const mult = fmtMultiplier(meta?.tempo_multiplier);
+  const lanes = meta ? laneSummary(meta) : null;
+  const stems = meta?.sources_used === 'stems';
+  const downbeatUncertain =
+    meta?.downbeat_confidence != null && meta.downbeat_confidence < DOWNBEAT_UNCERTAIN;
 
   return (
     <div
@@ -324,6 +398,39 @@ const ChimeraRow: React.FC<ChimeraRowProps> = ({
             );
           })()}
           <span className="text-zinc-500" title="Stretch ratio">{fmtRatio(stretchRatio)}</span>
+          {mult && (
+            <span className="text-amber-300" title="Tempo octave: the clip was folded to half/double time to meet the target BPM">
+              {mult}
+            </span>
+          )}
+          {pitch && (
+            <span className="text-emerald-300" title="Pitch shift applied to match the target key">
+              {pitch}
+            </span>
+          )}
+          {offKey && (
+            <span className="text-red-300" title="Harmonic outlier: no Camelot-compatible shift within the cap; left at its own key">
+              off-key
+            </span>
+          )}
+          {stems && (
+            <span className="text-sky-300" title="Cached Demucs stems were used for this clip">
+              stems
+            </span>
+          )}
+          {lanes && (
+            <span className="text-zinc-400" title="Phrase placements per lane in the last mashup">
+              {lanes}
+            </span>
+          )}
+          {downbeatUncertain && (
+            <span
+              className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+              role="img"
+              aria-label="downbeat uncertain; longer transitions used"
+              title="downbeat uncertain; longer transitions used"
+            />
+          )}
         </div>
       </div>
 

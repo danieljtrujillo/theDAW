@@ -150,12 +150,14 @@ def _warm_heavy() -> None:
 
         gpu_info = "no CUDA"
         if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            gpu_info = (
-                f"{props.name} "
-                f"({round(props.total_memory / 1024**3, 1)} GB VRAM, "
-                f"cuda={torch.version.cuda})"
-            )
+            # Every device, not just cuda:0 — a two-card rig was logged as one.
+            names = []
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                gb = round(props.total_memory / 1024**3, 1)
+                names.append(f"cuda:{i} {props.name} ({gb} GB)")
+            gpu_info = f"{len(names)} GPU(s): " + "; ".join(names)
+            gpu_info += f" (cuda={torch.version.cuda})"
         logger.info(
             "startup: torch=%s (python=%s) gpu=%s",
             torch.__version__,
@@ -339,6 +341,32 @@ def _get_or_load_generation_pipeline(model_name: str):
                 dt,
                 torch.cuda.is_available(),
             )
+            # Say so, once, when the fast attention path is missing. Nothing in
+            # the UI showed this before, so a user on the SDPA fallback had no
+            # way to know why generation was slower than expected (GH-127/#134).
+            # Expected on Linux/macOS (the wheel is win32-only in pyproject);
+            # on Windows it means the pinned wheel failed to import.
+            if _flash_attn_active() is False and not _FA_WARNED:
+                _FA_WARNED.add("warned")
+                if _flash_attn_imported() and torch.cuda.is_available():
+                    logger.info(
+                        "model.load: flash_attn is installed but %s is below "
+                        "compute capability 8.0 (Ampere) — running on the SDPA "
+                        "attention fallback (works, slower).",
+                        torch.cuda.get_device_name(torch.cuda.current_device()),
+                    )
+                elif sys.platform == "win32":
+                    logger.warning(
+                        "model.load: flash_attn is installed but did not import — "
+                        "running on the SDPA fallback (slower). The wheel must match "
+                        "this exact torch/CUDA/Python; see docs/windows/troubleshooting.md."
+                    )
+                else:
+                    logger.info(
+                        "model.load: flash_attn not available on %s — using the SDPA "
+                        "attention fallback (expected here; slower, same math).",
+                        sys.platform,
+                    )
             if torch.cuda.is_available():
                 mem_gb = torch.cuda.memory_allocated() / 1024**3
                 logger.info("model.load: %r VRAM allocated %.2f GB", normalized, mem_gb)
@@ -637,6 +665,101 @@ def _compute_request_sample_size(
             )
 
     return int(target_audio_samples)
+
+
+def _parse_inpaint_regions(raw: str) -> list[tuple[float, float]]:
+    """Parse the ``inpaint_regions`` form field into ``(start_sec, end_sec)`` pairs.
+
+    Accepts ``''`` (no regions), a JSON list of ``[start, end]`` pairs or of
+    ``{"start": s, "end": e}`` objects (``start_sec``/``end_sec`` keys are also
+    tolerated). Every value must be a finite number with ``start < end``;
+    anything else is a 400. Seconds are in the generated clip's timeline.
+    """
+    detail = "inpaint_regions must be a JSON list of [start_sec, end_sec]"
+    if raw is None or not str(raw).strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=detail) from exc
+    if parsed is None:
+        return []
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail=detail)
+
+    regions: list[tuple[float, float]] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            start_raw = item.get("start", item.get("start_sec"))
+            end_raw = item.get("end", item.get("end_sec"))
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            start_raw, end_raw = item
+        else:
+            raise HTTPException(status_code=400, detail=detail)
+        if isinstance(start_raw, bool) or isinstance(end_raw, bool):
+            raise HTTPException(status_code=400, detail=detail)
+        try:
+            start = float(start_raw)
+            end = float(end_raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        if not (math.isfinite(start) and math.isfinite(end)) or start >= end:
+            raise HTTPException(status_code=400, detail=detail)
+        regions.append((start, end))
+    return regions
+
+
+def _build_inpaint_mask(
+    regions: list[tuple[float, float]],
+    sample_rate: int,
+    sample_size: int,
+    min_region_sec: float = 0.5,
+) -> "torch.Tensor | None":
+    """Build a ``[1, sample_size]`` inpaint mask (1 = keep, 0 = regenerate).
+
+    Each region is widened symmetrically to at least ``min_region_sec`` so it
+    survives the 4096x latent downsample, clipped to ``[0, sample_size / sr]``,
+    then sorted and merged with its neighbours. Returns ``None`` when there is
+    nothing to mask. Pure; the tensor is float32 on CPU and the pipeline moves
+    it to the model device (and truncates it if the sample size is adapted).
+    """
+    import torch
+
+    if not regions or sample_size <= 0 or sample_rate <= 0:
+        return None
+    total_sec = float(sample_size) / float(sample_rate)
+    half_min = max(0.0, float(min_region_sec)) / 2.0
+
+    spans: list[tuple[float, float]] = []
+    for start, end in regions:
+        start = float(start)
+        end = float(end)
+        if end - start < 2.0 * half_min:
+            centre = (start + end) / 2.0
+            start = centre - half_min
+            end = centre + half_min
+        start = min(max(start, 0.0), total_sec)
+        end = min(max(end, 0.0), total_sec)
+        if end > start:
+            spans.append((start, end))
+    if not spans:
+        return None
+
+    spans.sort()
+    merged: list[list[float]] = [list(spans[0])]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    mask = torch.ones(1, int(sample_size), dtype=torch.float32)
+    for start, end in merged:
+        s = min(int(start * sample_rate), int(sample_size))
+        e = min(int(end * sample_rate), int(sample_size))
+        if e > s:
+            mask[:, s:e] = 0.0
+    return mask
 
 
 async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
@@ -962,6 +1085,51 @@ async def set_module_enabled(module_name: str, enabled: bool = Body(..., embed=T
     return config
 
 
+def _gpu_snapshot() -> list[dict]:
+    """Every GPU in the machine from one nvidia-smi query: index, name,
+    device-wide memory used/total (every process, including the WSL Magenta
+    engine), utilization and temperature. Empty when nvidia-smi is missing."""
+    try:
+        r = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.used,memory.total,"
+                "utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    if r.returncode != 0:
+        return []
+    gpus: list[dict] = []
+    for line in r.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 6:
+            continue
+        # The name may itself contain commas; the four numeric fields are last.
+        idx, tail = parts[0], parts[-4:]
+        name = ", ".join(parts[1:-4])
+        try:
+            gpus.append(
+                {
+                    "index": int(idx),
+                    "name": name,
+                    "vram_used_gb": round(int(tail[0]) / 1024, 2),
+                    "vram_total_gb": round(int(tail[1]) / 1024, 2),
+                    "util_pct": int(tail[2]),
+                    "temp_c": int(tail[3]),
+                }
+            )
+        except ValueError:
+            continue
+    return gpus
+
+
 @app.get("/api/system-stats")
 def system_stats():
     # Plain def: runs in the threadpool. The first call may pay the heavy
@@ -970,29 +1138,24 @@ def system_stats():
     import torch
 
     stats: dict = {}
-    if torch.cuda.is_available():
-        stats["vram_used_gb"] = round(torch.cuda.memory_allocated() / 1024**3, 2)
-        stats["vram_total_gb"] = round(
-            torch.cuda.get_device_properties(0).total_memory / 1024**3, 2
-        )
-        try:
-            r = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=utilization.gpu,temperature.gpu",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                stdin=subprocess.DEVNULL,
+    gpus = _gpu_snapshot()
+    has_cuda = torch.cuda.is_available()
+    if has_cuda or gpus:
+        # The scalar fields describe the primary device (cuda:0). Memory is the
+        # device-wide figure from nvidia-smi when available: torch's allocator
+        # only knows this process, so it read 0 GB while the Magenta engine
+        # held most of the card.
+        primary = gpus[0] if gpus else None
+        if primary is not None:
+            stats["vram_used_gb"] = primary["vram_used_gb"]
+            stats["vram_total_gb"] = primary["vram_total_gb"]
+            stats["gpu_util_pct"] = primary["util_pct"]
+            stats["gpu_temp_c"] = primary["temp_c"]
+        else:
+            stats["vram_used_gb"] = round(torch.cuda.memory_allocated() / 1024**3, 2)
+            stats["vram_total_gb"] = round(
+                torch.cuda.get_device_properties(0).total_memory / 1024**3, 2
             )
-            if r.returncode == 0:
-                parts = [p.strip() for p in r.stdout.strip().split(",")]
-                if len(parts) >= 2:
-                    stats["gpu_util_pct"] = int(parts[0])
-                    stats["gpu_temp_c"] = int(parts[1])
-        except Exception:
             stats["gpu_util_pct"] = None
             stats["gpu_temp_c"] = None
     else:
@@ -1000,6 +1163,10 @@ def system_stats():
         stats["vram_total_gb"] = 0
         stats["gpu_util_pct"] = None
         stats["gpu_temp_c"] = None
+    stats["gpus"] = gpus
+    stats["gpu_count"] = (
+        len(gpus) if gpus else (torch.cuda.device_count() if has_cuda else 0)
+    )
 
     try:
         import psutil
@@ -1016,9 +1183,82 @@ def system_stats():
     return stats
 
 
+def _require_inpaint_region(mask_start: float, mask_end: float) -> None:
+    """Refuse an inpaint request with no usable region, with a fix in the message.
+
+    The pipeline zeroes the source everywhere *outside* [start, end) is kept and
+    *inside* is regenerated — but with no bounds at all it builds an all-zero
+    mask, which silences the whole upload and quietly returns plain
+    text-to-audio. That is a wrong result with no error, which is worse than a
+    clear refusal. Both endpoints used to forward bounds only when one of them
+    was > 0, so a 0–0 region (what the MAKE panel set on every file load) hit
+    exactly that path.
+    """
+    if mask_end > mask_start:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Inpaint needs a region to regenerate: drag a selection on the inpaint "
+            "waveform (or set mask_start/mask_end with mask_end > mask_start). "
+            f"Got {mask_start:.2f}–{mask_end:.2f}s."
+        ),
+    )
+
+
+#: One-shot guard so the flash-attn notice logs once per process, not per load.
+_FA_WARNED: set[str] = set()
+
+
+def _flash_attn_installed() -> bool:
+    """Cheap, import-free: is the flash_attn package present at all?"""
+    import importlib.util
+
+    return importlib.util.find_spec("flash_attn") is not None
+
+
+def _flash_attn_active() -> Optional[bool]:
+    """Did the attention module actually bind flash_attn? None = not yet imported.
+
+    Distinct from `_flash_attn_installed`: a wheel built against a different
+    torch/CUDA imports as present but fails at import time, and the model then
+    runs on the SDPA fallback. Only the transformer module knows which.
+    """
+    mod = sys.modules.get("stable_audio_3.models.transformer")
+    if mod is None:
+        return None
+    if getattr(mod, "flash_attn_func", None) is None:
+        return False
+    # The wheel can import and still be unusable: FlashAttention 2 kernels
+    # need an Ampere (sm_80) or newer GPU, and the transformer module gates
+    # on that per device (Turing / Volta cards run the SDPA fallback).
+    usable = getattr(mod, "flash_attn_usable", None)
+    if usable is None:
+        return True
+    import torch
+
+    if not torch.cuda.is_available():
+        return False
+    return bool(usable(torch.cuda.current_device()))
+
+
+def _flash_attn_imported() -> bool:
+    """Did the attention module bind flash_attn at import time (GPU aside)?"""
+    mod = sys.modules.get("stable_audio_3.models.transformer")
+    return mod is not None and getattr(mod, "flash_attn_func", None) is not None
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model_loaded": pipeline is not None}
+    return {
+        "status": "ok",
+        "model_loaded": pipeline is not None,
+        # Surfaced so the UI / a user / a bug report can tell whether the fast
+        # attention path is available. Absent on Linux and macOS by design
+        # (pyproject gates the wheel to win32) — the SDPA fallback is used.
+        "flash_attention_installed": _flash_attn_installed(),
+        "flash_attention_active": _flash_attn_active(),
+    }
 
 
 @app.get("/api/model-info")
@@ -1038,6 +1278,17 @@ def model_info():
             pipeline.model.diffusion_objective if pipeline else None
         ),
         "has_cuda": torch.cuda.is_available(),
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "gpu_names": (
+            [
+                torch.cuda.get_device_properties(i).name
+                for i in range(torch.cuda.device_count())
+            ]
+            if torch.cuda.is_available()
+            else []
+        ),
+        "flash_attention_installed": _flash_attn_installed(),
+        "flash_attention_active": _flash_attn_active(),
         "device": str(pipeline.device) if pipeline else None,
         "vram_used_gb": (
             round(torch.cuda.memory_allocated() / 1024**3, 2)
@@ -1192,8 +1443,22 @@ async def preload_model(model: str = Form(...)):
         loop = asyncio.get_event_loop()
         since = resolution_seq()
         t0 = time.perf_counter()
-        await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
-        await loop.run_in_executor(None, _get_or_load_generation_pipeline, normalized)
+        try:
+            await loop.run_in_executor(None, _ensure_gpu_clear_of_magenta)
+            await loop.run_in_executor(
+                None, _get_or_load_generation_pipeline, normalized
+            )
+        except HTTPException:
+            # Deliberate 404/409 answers pass through untouched.
+            raise
+        except Exception as exc:
+            # An unhandled raise here becomes a bare 500 whose body is not JSON,
+            # so the UI can only report "HTTP 500". Passing the real text
+            # through is what lets the frontend recognise a gated-repo failure
+            # and offer the Hugging Face token field instead of a dead end.
+            raise HTTPException(
+                status_code=502, detail=f"{type(exc).__name__}: {exc}"
+            ) from exc
         return {
             "loaded": True,
             "model": normalized,
@@ -1342,6 +1607,9 @@ async def generate(
     # Inpainting
     mask_start: float = Form(0.0),
     mask_end: float = Form(0.0),
+    # JSON [[start_sec, end_sec], ...]; multi-region mask used only when
+    # inpaint_audio is present and mask_start == mask_end == 0.
+    inpaint_regions: str = Form(""),
     # RF-Inversion
     inversion_steps: int = Form(8),
     inversion_gamma: float = Form(0.5),
@@ -1415,8 +1683,10 @@ async def generate(
 
         # Load inpaint audio if provided
         inpaint_audio_tuple = None
+        inpaint_region_list: list[tuple[float, float]] = []
         if inpaint_audio is not None and inpaint_audio.filename:
             inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+            inpaint_region_list = _parse_inpaint_regions(inpaint_regions)
 
         generate_args = {
             "prompt": prompt,
@@ -1453,8 +1723,24 @@ async def generate(
         if inpaint_audio_tuple:
             generate_args["inpaint_audio"] = inpaint_audio_tuple
             if mask_start > 0 or mask_end > 0:
+                _require_inpaint_region(mask_start, mask_end)
                 generate_args["inpaint_mask_start_seconds"] = mask_start
                 generate_args["inpaint_mask_end_seconds"] = mask_end
+            else:
+                # Multi-region mask (Chimera seam healing). The seconds path is
+                # deliberately NOT set here: pipeline.generate lets start/end
+                # seconds override a prebuilt inpaint_mask. No usable region at
+                # all gets the same clear 400 as an empty 0-0 selection.
+                inpaint_mask = _build_inpaint_mask(
+                    inpaint_region_list,
+                    int(
+                        generation_pipeline.model_config.get("sample_rate", sample_rate)
+                    ),
+                    int(generate_args["sample_size"]),
+                )
+                if inpaint_mask is None:
+                    _require_inpaint_region(mask_start, mask_end)
+                generate_args["inpaint_mask"] = inpaint_mask
 
         loop = asyncio.get_event_loop()
 
@@ -1747,6 +2033,9 @@ async def generate_jobs(
     custom_name: str = Form(""),
     mask_start: float = Form(0.0),
     mask_end: float = Form(0.0),
+    # JSON [[start_sec, end_sec], ...]; multi-region mask used only when
+    # inpaint_audio is present and mask_start == mask_end == 0.
+    inpaint_regions: str = Form(""),
     sampler_type: Optional[str] = Form(None),
     sigma_max: float = Form(1.0),
     duration_padding_sec: float = Form(6.0),
@@ -1810,9 +2099,20 @@ async def generate_jobs(
         # synchronous from_pretrained here freezes the single uvicorn worker for the
         # whole load, which is exactly when /health 502s and in-flight FileResponse
         # streams (MIDI/audio) get truncated ("Invalid MIDI track chunk").
-        generation_pipeline = await asyncio.get_event_loop().run_in_executor(
-            None, _get_or_load_generation_pipeline, normalized_model_name
-        )
+        try:
+            generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+                None, _get_or_load_generation_pipeline, normalized_model_name
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # Without this the resolver's own explanation ("local-only mode is
+            # ON", "Cannot access gated repo") dies as a bare 500 whose body is
+            # not JSON, and the UI can only say "HTTP 500 Internal Server
+            # Error". The text IS the fix, so it has to reach the client.
+            raise HTTPException(
+                status_code=502, detail=f"{type(exc).__name__}: {exc}"
+            ) from exc
 
         init_audio_tuple = None
         if init_audio is not None and init_audio.filename:
@@ -1824,8 +2124,10 @@ async def generate_jobs(
         )
 
         inpaint_audio_tuple = None
+        inpaint_region_list: list[tuple[float, float]] = []
         if inpaint_audio is not None and inpaint_audio.filename:
             inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+            inpaint_region_list = _parse_inpaint_regions(inpaint_regions)
 
         dist_shift = None
         if dist_shift_type and dist_shift_type not in ("None", "none", ""):
@@ -1879,11 +2181,29 @@ async def generate_jobs(
         if init_audio_tuple:
             base_args["init_audio"] = init_audio_tuple
             base_args["init_noise_level"] = float(init_noise_level)
+        inpaint_regions_count = 0
         if inpaint_audio_tuple:
             base_args["inpaint_audio"] = inpaint_audio_tuple
             if mask_start > 0 or mask_end > 0:
+                _require_inpaint_region(mask_start, mask_end)
                 base_args["inpaint_mask_start_seconds"] = float(mask_start)
                 base_args["inpaint_mask_end_seconds"] = float(mask_end)
+            else:
+                # Multi-region mask (Chimera seam healing). The seconds path is
+                # deliberately NOT set here: pipeline.generate lets start/end
+                # seconds override a prebuilt inpaint_mask. No usable region at
+                # all gets the same clear 400 as an empty 0-0 selection.
+                inpaint_mask = _build_inpaint_mask(
+                    inpaint_region_list,
+                    int(
+                        generation_pipeline.model_config.get("sample_rate", sample_rate)
+                    ),
+                    int(base_args["sample_size"]),
+                )
+                if inpaint_mask is None:
+                    _require_inpaint_region(mask_start, mask_end)
+                base_args["inpaint_mask"] = inpaint_mask
+                inpaint_regions_count = len(inpaint_region_list)
 
         job_id = str(uuid.uuid4())
         lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(
@@ -1896,6 +2216,7 @@ async def generate_jobs(
             "model_name": normalized_model_name,
             "init_audio_type": normalized_init_audio_type,
             "lora_count": len(lora_paths),
+            "inpaint_regions_count": inpaint_regions_count,
             "status": "queued",
             "progress": {"step": 0, "steps": int(steps)},
             "created_at": time.time(),

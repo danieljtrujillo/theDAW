@@ -106,6 +106,9 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 .ftr-spacer{flex:1}
 .ftr-stat{font:500 7.5px/1 var(--mono);color:var(--dim)}
 .ftr-stat.ok{color:#22c55e}
+.knob-slot.k-preview .k-lbl{color:#7a8196}
+.knob-slot.k-preview .k-unit{color:#3e4250;letter-spacing:.6px;text-transform:uppercase}
+.knob-svg:focus-visible,.fc-rail:focus-visible,.of-rail:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 audio{display:none}input[type="file"]{display:none}
 </style>
 </head>
@@ -144,29 +147,26 @@ audio{display:none}input[type="file"]{display:none}
   <div class="harmonics-overlay" id="harmOverlay"></div>
 </div>
 
-<!-- MODE SELECTOR ROW -->
-<div class="mode-row">
+<!-- MODE SELECTOR ROW: one pill per backend Character-FX macro -->
+<div class="mode-row" role="group" aria-label="Character mode">
   <span class="mode-label">MODE</span>
-  <button class="mode-pill active" data-mode="tape">Tape</button>
-  <button class="mode-pill" data-mode="tube">Tube</button>
-  <button class="mode-pill" data-mode="vinyl">Vinyl</button>
+  <button class="mode-pill active" data-mode="tape" title="Broken Tape — wow + tilt">Tape</button>
+  <button class="mode-pill" data-mode="ghost" title="Ghost Voice — ghostiness + size">Ghost</button>
+  <button class="mode-pill" data-mode="radio" title="Radio Room — distance, muffle, room">Radio</button>
+  <button class="mode-pill" data-mode="alien" title="Alien Transmission — mod + speed">Alien</button>
+  <button class="mode-pill" data-mode="tunnel" title="Tunnel PA — harsh + distance">Tunnel</button>
   <span class="mode-spacer"></span>
-  <span class="style-label">STYLE</span>
-  <select class="style-select" id="styleSel">
-    <option>Warm 2" Tape</option>
-    <option>Hot 1/2" Tape</option>
-    <option>Cassette Lo-Fi</option>
-    <option>Reel Saturation</option>
-  </select>
+  <label class="style-label" for="styleSel">STYLE</label>
+  <select class="style-select" id="styleSel" name="styleSel" title="Style presets — set the knobs for this mode"></select>
 </div>
 
 <!-- CONTROLS AREA: faders + knobs -->
 <div class="controls-area">
 
-  <!-- LEFT: BIAS fader + SG/SIG meters -->
+  <!-- LEFT: BIAS fader (preview saturation bias) + SG/SIG meters -->
   <div class="fader-section">
     <div class="fader-card">
-      <div class="fc-label">BIAS</div>
+      <div class="fc-label" id="biasLabel" title="Preview-only: asymmetric saturation bias on the live monitor">BIAS</div>
       <div class="fc-rail" id="biasTrack">
         <div class="fc-fill" id="biasFill" style="height:55%;background:linear-gradient(to top,rgba(245,158,11,.05),rgba(245,158,11,.55))"></div>
         <div class="fc-cap" id="biasCap" style="bottom:55%"></div>
@@ -185,18 +185,17 @@ audio{display:none}input[type="file"]{display:none}
     </div>
   </div>
 
-  <!-- CENTER: 5 rotary knobs -->
+  <!-- CENTER: the mode's backend knobs (slot i posts BACKEND_KNOBS[effect][i]) + a preview Mix -->
   <div class="knobs-center" id="knobsRow">
-    <div class="knob-slot"><div class="k-lbl">Noise</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="0"></svg><div class="k-val" id="kv0">4.8 dB</div><div class="k-unit">dB</div></div>
-    <div class="knob-slot"><div class="k-lbl">Wow & Flutter</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="1"></svg><div class="k-val" id="kv1">12%</div><div class="k-unit">%</div></div>
-    <div class="knob-slot"><div class="k-lbl">Tone</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="2"></svg><div class="k-val" id="kv2">0.26%</div><div class="k-unit">%</div></div>
-    <div class="knob-slot"><div class="k-lbl">Mix</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="3"></svg><div class="k-val" id="kv3">2.3 kHz</div><div class="k-unit">kHz</div></div>
-    <div class="knob-slot"><div class="k-lbl">Output</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="4"></svg><div class="k-val" id="kv4">58%</div><div class="k-unit">%</div></div>
+    <div class="knob-slot"><div class="k-lbl" id="kl0">Wow</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="0"></svg><div class="k-val" id="kv0">50%</div><div class="k-unit" id="ku0">%</div></div>
+    <div class="knob-slot"><div class="k-lbl" id="kl1">Tilt</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="1"></svg><div class="k-val" id="kv1">50%</div><div class="k-unit" id="ku1">%</div></div>
+    <div class="knob-slot"><div class="k-lbl" id="kl2">—</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="2"></svg><div class="k-val" id="kv2">50%</div><div class="k-unit" id="ku2">%</div></div>
+    <div class="knob-slot k-preview"><div class="k-lbl" id="kl3">Mix</div><svg viewBox="0 0 52 52" class="knob-svg" data-idx="3"></svg><div class="k-val" id="kv3">70%</div><div class="k-unit" id="ku3">preview</div></div>
   </div>
 
-  <!-- RIGHT: Output fader + Gain/Mix meters -->
+  <!-- RIGHT: Output fader (preview monitor level) -->
   <div class="output-fader">
-    <div class="of-label">OUTPUT</div>
+    <div class="of-label" id="outLabel" title="Preview-only: monitor level of the live preview">OUTPUT</div>
     <div class="of-rail" id="outTrack">
       <div class="of-fill" id="outFill" style="height:70%;background:linear-gradient(to top,rgba(245,158,11,.05),rgba(245,158,11,.55))"></div>
       <div class="of-cap" id="outCap" style="bottom:70%"></div>
@@ -208,113 +207,188 @@ audio{display:none}input[type="file"]{display:none}
 
 <!-- FOOTER -->
 <div class="ftr">
-  <button class="ftr-btn" id="btnBypass">Bypass</button>
+  <button class="ftr-btn" id="btnBypass" title="Bypass the live preview (dry)">Bypass</button>
   <button class="ftr-btn active" id="btnCharFx">Character FX</button>
   <button class="ftr-btn" id="btnAnalyzer">Analyzer</button>
-  <button class="ftr-btn" id="btnPrePost">Pre/Post</button>
-  <button class="ftr-btn" id="btnProcess" style="margin-left:6px;border-color:var(--accent);color:var(--accent)">PROCESS</button>
+  <button class="ftr-btn" id="btnPrePost" title="Analyzer taps the input (pre) or the processed preview (post)">Pre/Post</button>
+  <button class="ftr-btn" id="btnProcess" style="margin-left:6px;border-color:var(--accent);color:var(--accent)" title="Render this mode's macro on the backend">PROCESS</button>
+  <button class="ftr-btn" id="btnLoad" title="Load an audio file">Load</button>
   <span class="ftr-spacer"></span>
-  <span class="ftr-stat" id="status">ready</span>
+  <span class="ftr-stat" id="status" aria-live="polite">ready</span>
   <audio id="ain" controls></audio>
   <audio id="aout" controls></audio>
 </div>
-<input type="file" id="fileinput" accept="audio/*">
+<input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
 </div>
 
+<script src="module-kit.js"></script>
 <script>
 /* ───────────────────────────────────────────────── */
 /*  Character FX — Pro-grade module                  */
+/*  One mode per backend macro (creative_fx MACROS). */
 /* ───────────────────────────────────────────────── */
 
 const ACCENT = '#f59e0b';
+const kit = window.theDAWKit;
 
-/* ── BACKEND EFFECT ID MAPPING ── */
-const MODE_TO_EFFECT = {
-  tape:  'broken_tape',
-  tube:  'ghost_voice',
-  vinyl: 'radio_room'
-};
+/* ── BACKEND CONTRACT ──
+   MODE_TO_EFFECT maps a mode pill to its /api/edit/creative-fx tool id, and
+   BACKEND_KNOBS lists, per tool, the exact knob names the backend reads —
+   knob slot i posts BACKEND_KNOBS[effect][i] (0..1). Both tables are checked
+   against the backend spec by editModulesContract.test.ts (FX-001). */
+const MODE_TO_EFFECT = { tape: 'broken_tape', ghost: 'ghost_voice', radio: 'radio_room', alien: 'alien_transmission', tunnel: 'tunnel_pa' };
+const BACKEND_KNOBS = { broken_tape: ['wow', 'tilt'], ghost_voice: ['ghostiness', 'size'], radio_room: ['distance', 'muffle', 'room'], alien_transmission: ['mod', 'speed'], tunnel_pa: ['harsh', 'distance'] };
+const MIX_SLOT = 3; // preview-only wet/dry knob (not part of the backend macro)
 
-function buildBackendParams(mode, kv) {
-  switch (mode) {
-    case 'tape':
-      return { wow: kv[1] / 100, tilt: kv[2] / 100, noise: kv[0] / 100, mix: kv[3] / 100, output: kv[4] / 100 };
-    case 'tube':
-      return { drive: kv[0] / 100, bias: kv[1] / 100, warmth: kv[2] / 100, mix: kv[3] / 100, output: kv[4] / 100 };
-    case 'vinyl':
-      return { crackle: kv[0] / 100, rumble: kv[1] / 100, filtering: kv[2] / 100, mix: kv[3] / 100, output: kv[4] / 100 };
-    default:
-      return {};
-  }
-}
-
-async function processAudio() {
-  if (!inputFile) { document.getElementById('status').textContent = 'no audio loaded'; return; }
-  const effectId = MODE_TO_EFFECT[activeMode];
-  if (!effectId) { document.getElementById('status').textContent = 'unknown mode'; return; }
-  const params = buildBackendParams(activeMode, knobValues);
-  const fd = new FormData();
-  fd.append('audio', inputFile);
-  fd.append('effect', effectId);
-  fd.append('params', JSON.stringify(params));
-  const st = document.getElementById('status');
-  st.className = 'ftr-stat'; st.textContent = 'processing...';
-  try {
-    const resp = await fetch('/api/edit/creative-fx/process', { method: 'POST', body: fd });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    document.getElementById('aout').src = url;
-    st.className = 'ftr-stat ok'; st.textContent = 'done';
-    if (actx) {
-      const ab = await blob.arrayBuffer();
-      const decoded = await actx.decodeAudioData(ab);
-      connectBuf(decoded);
-    }
-  } catch (err) {
-    st.className = 'ftr-stat'; st.textContent = 'error: ' + err.message;
-  }
-}
-
-/* ── MODE CONFIG ── */
+const pct = v => Math.round(v) + '%';
+/* ── MODE CONFIG — labels/readouts per slot, style presets per mode ── */
 const MODES = {
-  tape:  { styles: ['Warm 2" Tape','Hot 1/2" Tape','Cassette Lo-Fi','Reel Saturation'],
-           knobs: ['Noise','Wow & Flutter','Tone','Mix','Output'],
-           defaults: [24, 48, 13, 58, 70],
-           formatVal: [v=>(v/5).toFixed(1)+' dB', v=>v+'%', v=>(v/50).toFixed(2)+'%', v=>(v/25).toFixed(1)+' kHz', v=>v+'%'] },
-  tube:  { styles: ['12AX7 Clean','12AT7 Warm','EL34 Crunch','6L6 Power'],
-           knobs: ['Drive','Bias','Warmth','Mix','Output'],
-           defaults: [35, 50, 60, 50, 75],
-           formatVal: [v=>v+'%', v=>v+'%', v=>v+'%', v=>v+'%', v=>v+'%'] },
-  vinyl: { styles: ['Pristine 33','Worn 45','Dusty 78','Crackle Heavy'],
-           knobs: ['Crackle','Rumble','Filtering','Mix','Output'],
-           defaults: [30, 20, 45, 55, 72],
-           formatVal: [v=>v+'%', v=>v+'%', v=>v+'%', v=>v+'%', v=>v+'%'] }
+  tape:   { knobs: ['Wow', 'Tilt', null, 'Mix'], units: ['flutter', 'dark', '', 'preview'],
+            fmt: [v => (v / 100 * 5 + 1).toFixed(1) + ' Hz', v => '-' + (v / 100 * 6).toFixed(1) + ' dB', pct, pct],
+            defaults: [50, 50, 0, 70],
+            styles: [['Warm 2" Tape', [30, 25]], ['Hot 1/2" Tape', [45, 40]], ['Cassette Lo-Fi', [70, 65]], ['Broken Reel', [95, 80]]] },
+  ghost:  { knobs: ['Ghostiness', 'Size', null, 'Mix'], units: ['denoise + slow', 'echo', '', 'preview'],
+            fmt: [pct, v => Math.round(60 + v / 100 * 900) + ' ms', pct, pct],
+            defaults: [50, 50, 0, 70],
+            styles: [['Whisper', [30, 20]], ['Haunting', [55, 55]], ['Crypt', [80, 85]], ['Other Side', [100, 100]]] },
+  radio:  { knobs: ['Distance', 'Muffle', 'Room', 'Mix'], units: ['high-pass', 'low-pass', 'echo', 'preview'],
+            fmt: [v => Math.round(300 + v / 100 * 400) + ' Hz', v => Math.round(4000 - v / 100 * 2500) + ' Hz', v => Math.round(20 + v / 100 * 120) + ' ms', pct],
+            defaults: [50, 50, 50, 70],
+            styles: [['Kitchen Radio', [30, 40, 35]], ['Walkie-Talkie', [70, 70, 20]], ['Next Room', [40, 60, 80]], ['Shortwave', [90, 90, 50]]] },
+  alien:  { knobs: ['Mod', 'Speed', null, 'Mix'], units: ['vibrato', 'phaser', '', 'preview'],
+            fmt: [v => (4 + v / 100 * 8).toFixed(1) + ' Hz', v => (0.2 + v / 100 * 3).toFixed(2) + ' Hz', pct, pct],
+            defaults: [50, 50, 0, 70],
+            styles: [['Faint Signal', [25, 30]], ['Transmission', [50, 50]], ['Abduction', [80, 75]], ['Mothership', [100, 100]]] },
+  tunnel: { knobs: ['Harsh', 'Distance', null, 'Mix'], units: ['treble', 'echo', '', 'preview'],
+            fmt: [v => '+' + (v / 100 * 6).toFixed(1) + ' dB', v => Math.round(80 + v / 100 * 400) + ' ms', pct, pct],
+            defaults: [50, 50, 0, 70],
+            styles: [['Subway', [40, 35]], ['Stadium PA', [60, 70]], ['Storm Drain', [80, 90]], ['Megaphone', [100, 20]]] },
 };
 
 let activeMode = 'tape';
-let knobValues = [24, 48, 13, 58, 70];
-let knobDrag = { active:false, idx:-1, startY:0, startVal:0 };
+let knobValues = [...MODES.tape.defaults];
+let knobDrag = { active: false, idx: -1, startY: 0, startVal: 0 };
 let biasAmt = 55, outAmt = 70;
 let showHarmonics = false;
+let bypassed = false, deltaMode = false, analyzerPost = true;
+const abSlots = { A: null, B: null };
+let activeSlot = 'B';
 
 /* ── STATE ── */
 let actx, analyser, source, inputFile, inputBuf;
 const freqData = new Uint8Array(2048);
 const timeData = new Float32Array(4096);
-let liveNodes = [], liveOsc = null;
+let liveNodes = [], liveOscs = [];
+let dryGain, wetGain, outGain, preTap;
 
-/* ── A/B PILLS ── */
-document.getElementById('btnA').addEventListener('click', function(){ this.classList.add('active'); document.getElementById('btnB').classList.remove('active'); });
-document.getElementById('btnB').addEventListener('click', function(){ this.classList.add('active'); document.getElementById('btnA').classList.remove('active'); });
+function backendKnobCount(mode) { return BACKEND_KNOBS[MODE_TO_EFFECT[mode]].length; }
+
+/* Params posted to the backend: slot i -> BACKEND_KNOBS[effect][i], 0..1. */
+function buildBackendParams(mode, kv) {
+  const keys = BACKEND_KNOBS[MODE_TO_EFFECT[mode]];
+  const out = {};
+  keys.forEach((k, i) => { out[k] = Math.max(0, Math.min(1, kv[i] / 100)); });
+  return out;
+}
+
+async function processAudio() {
+  if (!inputFile) { setStatus('no audio loaded'); return; }
+  const effectId = MODE_TO_EFFECT[activeMode];
+  const params = buildBackendParams(activeMode, knobValues);
+  const fd = new FormData();
+  fd.append('audio', inputFile);
+  fd.append('effect', effectId);
+  fd.append('params', JSON.stringify(params));
+  fd.append('output_format', 'wav');
+  setStatus('processing ' + effectId + '...');
+  const t0 = performance.now();
+  try {
+    const resp = await fetch('/api/edit/creative-fx/process', { method: 'POST', body: fd });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+    document.getElementById('aout').src = URL.createObjectURL(blob);
+    setStatus('done ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms', true);
+    if (actx) {
+      const decoded = await actx.decodeAudioData(await blob.arrayBuffer());
+      connectBuf(decoded);
+    }
+  } catch (err) {
+    setStatus('error: ' + err.message);
+  }
+}
+
+function setStatus(text, ok) {
+  const st = document.getElementById('status');
+  st.className = 'ftr-stat' + (ok ? ' ok' : '');
+  st.textContent = text;
+}
+
+/* ── STYLE PRESETS (per mode) ── */
+const styleSel = document.getElementById('styleSel');
+function fillStyles() {
+  const cfg = MODES[activeMode];
+  styleSel.innerHTML = '';
+  cfg.styles.forEach(([name], i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = name; styleSel.appendChild(o); });
+  styleSel.selectedIndex = 0;
+  document.getElementById('presetName').textContent = cfg.styles[0][0];
+}
+function applyStyle(i) {
+  const cfg = MODES[activeMode];
+  const st = cfg.styles[i];
+  if (!st) return;
+  st[1].forEach((v, k) => { knobValues[k] = v; });
+  styleSel.selectedIndex = i;
+  document.getElementById('presetName').textContent = st[0];
+  renderAllKnobs();
+  if (actx && source) rebuildChain();
+}
+styleSel.addEventListener('change', () => applyStyle(styleSel.selectedIndex));
+const presetBtns = document.querySelectorAll('.preset-nav button');
+presetBtns[0].setAttribute('aria-label', 'Previous style');
+presetBtns[1].setAttribute('aria-label', 'Next style');
+presetBtns[0].addEventListener('click', () => applyStyle((styleSel.selectedIndex - 1 + styleSel.options.length) % styleSel.options.length));
+presetBtns[1].addEventListener('click', () => applyStyle((styleSel.selectedIndex + 1) % styleSel.options.length));
+
+/* ── A/B snapshots ── */
+function snapshot() { return { mode: activeMode, knobs: [...knobValues], bias: biasAmt, out: outAmt }; }
+function restore(s) {
+  if (!s) return;
+  if (s.mode !== activeMode) setMode(s.mode, false);
+  knobValues = [...s.knobs]; biasAmt = s.bias; outAmt = s.out;
+  renderAllKnobs(); setFaderVisual('bias', biasAmt); setFaderVisual('out', outAmt);
+  if (actx && source) rebuildChain();
+}
+function selectSlot(slot) {
+  abSlots[activeSlot] = snapshot();
+  activeSlot = slot;
+  document.getElementById('btnA').classList.toggle('active', slot === 'A');
+  document.getElementById('btnB').classList.toggle('active', slot === 'B');
+  kit.pressed(document.getElementById('btnA'), slot === 'A');
+  kit.pressed(document.getElementById('btnB'), slot === 'B');
+  restore(abSlots[slot]);
+}
+document.getElementById('btnA').addEventListener('click', () => selectSlot('A'));
+document.getElementById('btnB').addEventListener('click', () => selectSlot('B'));
+document.getElementById('btnCopy').title = 'Copy the current settings into the other slot';
+document.getElementById('btnCopy').addEventListener('click', () => { abSlots[activeSlot === 'A' ? 'B' : 'A'] = snapshot(); setStatus('copied to ' + (activeSlot === 'A' ? 'B' : 'A'), true); });
+document.getElementById('btnDelta').title = 'Delta: monitor the wet signal only';
+document.getElementById('btnDelta').addEventListener('click', function () {
+  deltaMode = !deltaMode; this.classList.toggle('active', deltaMode); kit.pressed(this, deltaMode); applyMix();
+});
+kit.pressed(document.getElementById('btnA'), false);
+kit.pressed(document.getElementById('btnB'), true);
+kit.pressed(document.getElementById('btnDelta'), false);
 
 /* ── VIEW / HARMONICS TOGGLES ── */
-document.getElementById('togView').addEventListener('click', function(){ this.classList.toggle('on'); });
+document.getElementById('togView').addEventListener('click', function(){ this.classList.toggle('on'); kit.pressed(this, this.classList.contains('on')); });
 document.getElementById('togHarmonics').addEventListener('click', function(){
   this.classList.toggle('on');
   showHarmonics = this.classList.contains('on');
+  kit.pressed(this, showHarmonics);
   document.getElementById('harmOverlay').style.display = showHarmonics ? 'flex' : 'none';
 });
+kit.pressed(document.getElementById('togView'), true);
+kit.pressed(document.getElementById('togHarmonics'), false);
 
 /* ── HARMONICS OVERLAY BARS ── */
 (function initHarmonics(){
@@ -330,21 +404,28 @@ document.getElementById('togHarmonics').addEventListener('click', function(){
 })();
 
 /* ── MODE SELECTION ── */
-document.querySelectorAll('.mode-pill').forEach(pill => pill.addEventListener('click', () => {
-  document.querySelectorAll('.mode-pill').forEach(p => p.classList.remove('active'));
-  pill.classList.add('active');
-  activeMode = pill.dataset.mode;
-  const cfg = MODES[activeMode];
-  /* update style dropdown */
-  const sel = document.getElementById('styleSel');
-  sel.innerHTML = '';
-  cfg.styles.forEach(s => { const o = document.createElement('option'); o.textContent = s; sel.appendChild(o); });
-  /* update knob labels + defaults */
-  knobValues = [...cfg.defaults];
-  document.querySelectorAll('.k-lbl').forEach((lbl, i) => lbl.textContent = cfg.knobs[i]);
+function setMode(mode, resetKnobs) {
+  activeMode = mode;
+  document.querySelectorAll('.mode-pill').forEach(p => { const on = p.dataset.mode === mode; p.classList.toggle('active', on); kit.pressed(p, on); });
+  const cfg = MODES[mode];
+  const n = backendKnobCount(mode);
+  if (resetKnobs !== false) knobValues = [...cfg.defaults];
+  document.querySelectorAll('.knob-slot').forEach((slot, i) => {
+    const used = i < n || i === MIX_SLOT;
+    slot.style.display = used ? '' : 'none';
+    slot.classList.toggle('k-preview', i === MIX_SLOT);
+    document.getElementById('kl' + i).textContent = cfg.knobs[i] || '—';
+    document.getElementById('ku' + i).textContent = cfg.units[i] || '';
+    const svg = slot.querySelector('.knob-svg');
+    svg.setAttribute('aria-hidden', used ? 'false' : 'true');
+    svg.tabIndex = used ? 0 : -1;
+  });
+  fillStyles();
+  relabelKnobs();
   renderAllKnobs();
   if (actx && source) rebuildChain();
-}));
+}
+document.querySelectorAll('.mode-pill').forEach(pill => pill.addEventListener('click', () => setMode(pill.dataset.mode)));
 
 /* ── AUDIO ── */
 function ensureAudio(){
@@ -353,67 +434,112 @@ function ensureAudio(){
   analyser = actx.createAnalyser();
   analyser.fftSize = 4096;
   analyser.smoothingTimeConstant = 0.78;
-  analyser.connect(actx.destination);
+  outGain = actx.createGain();
+  outGain.connect(actx.destination);
+  preTap = actx.createGain(); // analyzer tap point for Pre
 }
 
 function teardownChain(){
-  if (liveOsc) { try { liveOsc.stop(); } catch(e){} liveOsc = null; }
+  liveOscs.forEach(o => { try { o.stop(); } catch(e){} });
+  liveOscs = [];
   liveNodes.forEach(n => { try { n.disconnect(); } catch(e){} });
   liveNodes = [];
   if (source) { try { source.disconnect(); } catch(e){} }
+  try { analyser.disconnect(); } catch(e){}
+  try { preTap.disconnect(); } catch(e){}
 }
 
+function dbToGain(db) { return Math.pow(10, db / 20); }
+
+function applyMix(){
+  if (!dryGain || !wetGain || !outGain) return;
+  const mix = knobValues[MIX_SLOT] / 100;
+  const wet = bypassed ? 0 : (deltaMode ? 1 : mix);
+  const dry = bypassed ? 1 : (deltaMode ? 0 : 1 - mix);
+  const t = actx.currentTime;
+  wetGain.gain.setTargetAtTime(wet, t, 0.02);
+  dryGain.gain.setTargetAtTime(dry, t, 0.02);
+  outGain.gain.setTargetAtTime(dbToGain((outAmt - 50) / 50 * 12), t, 0.02);
+}
+
+/* A live Web-Audio sketch of each macro so the knobs are heard before PROCESS
+   renders the real FFmpeg chain. knob i mirrors BACKEND_KNOBS[effect][i]. */
 function rebuildChain(){
   if (!actx || !source) return;
   teardownChain();
-  const k = knobValues;
-  const mix = k[4] / 100;
-  const dryGain = actx.createGain(); dryGain.gain.value = 1 - mix * 0.7;
-  source.connect(dryGain); dryGain.connect(analyser);
-  liveNodes.push(dryGain);
-  const wetGain = actx.createGain(); wetGain.gain.value = mix;
-  liveNodes.push(wetGain);
+  const k = knobValues.map(v => v / 100);
+  dryGain = actx.createGain(); wetGain = actx.createGain();
+  source.connect(preTap);
+  source.connect(dryGain); dryGain.connect(outGain);
+  wetGain.connect(outGain);
+  liveNodes.push(dryGain, wetGain);
+
+  /* preview saturation bias (left fader) — a gentle asymmetric shaper */
+  const shaper = actx.createWaveShaper();
+  const bias = (biasAmt - 50) / 50; // -1..1
+  const curve = new Float32Array(2048);
+  for (let i = 0; i < 2048; i++) { const x = (i * 2) / 2048 - 1; curve[i] = Math.tanh((x + bias * 0.25) * 1.4) - Math.tanh(bias * 0.25 * 1.4); }
+  shaper.curve = curve; shaper.oversample = '2x';
+  liveNodes.push(shaper);
+
+  const echo = (ms, fb) => {
+    const d = actx.createDelay(2.0); d.delayTime.value = Math.min(1.99, ms / 1000);
+    const g = actx.createGain(); g.gain.value = fb;
+    d.connect(g); g.connect(d);
+    liveNodes.push(d, g);
+    return d;
+  };
+  const lfo = (hz, depth, target) => {
+    const o = actx.createOscillator(); o.frequency.value = hz;
+    const g = actx.createGain(); g.gain.value = depth;
+    o.connect(g); g.connect(target); o.start();
+    liveOscs.push(o); liveNodes.push(g);
+  };
+  let head = shaper;
+  source.connect(head);
+  const chain = (...nodes) => { nodes.forEach(n => { head.connect(n); head = n; liveNodes.push(n); }); };
 
   switch (activeMode) {
-    case 'tape': {
-      /* Lowpass for tone, delay for wow/flutter */
-      const lp = actx.createBiquadFilter(); lp.type = 'lowpass';
-      lp.frequency.value = 1500 + (100 - k[2]) * 120; lp.Q.value = 0.7;
-      const delay = actx.createDelay(0.1);
-      delay.delayTime.value = 0.001 + (k[1] / 100) * 0.008;
-      /* Modulate delay for wow */
-      liveOsc = actx.createOscillator(); liveOsc.type = 'sine';
-      liveOsc.frequency.value = 0.5 + (k[1] / 100) * 4;
-      const modGain = actx.createGain(); modGain.gain.value = 0.0005 + (k[1] / 100) * 0.003;
-      liveOsc.connect(modGain); modGain.connect(delay.delayTime); liveOsc.start();
-      source.connect(lp); lp.connect(delay); delay.connect(wetGain); wetGain.connect(analyser);
-      liveNodes.push(lp, delay, modGain); break;
+    case 'tape': {            // vibrato f=1+wow*5 d=.2+wow*.6 → treble g=-6*tilt @6k → highpass 60
+      const vib = actx.createDelay(0.05); vib.delayTime.value = 0.008;
+      lfo(1 + k[0] * 5, 0.0004 + k[0] * 0.004, vib.delayTime);
+      const tilt = actx.createBiquadFilter(); tilt.type = 'highshelf'; tilt.frequency.value = 6000; tilt.gain.value = -6 * k[1];
+      const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 60;
+      chain(vib, tilt, hp); break;
     }
-    case 'tube': {
-      /* Bandpass resonance + soft clipping via waveshaper */
-      const bp = actx.createBiquadFilter(); bp.type = 'peaking';
-      bp.frequency.value = 800 + k[2] * 30; bp.Q.value = 0.8; bp.gain.value = k[0] / 10;
-      const ws = actx.createWaveShaper();
-      const samples = 44100; const curve = new Float32Array(samples);
-      const drive = 1 + (k[0] / 100) * 8;
-      for (let i = 0; i < samples; i++) { const x = (i * 2) / samples - 1; curve[i] = Math.tanh(x * drive); }
-      ws.curve = curve; ws.oversample = '4x';
-      source.connect(bp); bp.connect(ws); ws.connect(wetGain); wetGain.connect(analyser);
-      liveNodes.push(bp, ws); break;
+    case 'ghost': {           // afftdn nr → atempo slow-down → aecho 60+size*900ms, .3+size*.4
+      const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 6000 - k[0] * 4200; lp.Q.value = 0.5;
+      const pitch = actx.createDelay(0.1); pitch.delayTime.value = 0.03;
+      lfo(0.3 + k[0] * 0.5, k[0] * 0.01, pitch.delayTime); // slow warble stands in for the tempo drop
+      const e = echo(60 + k[1] * 900, 0.3 + k[1] * 0.4);
+      chain(lp, pitch, e); break;
     }
-    case 'vinyl': {
-      /* Highpass rumble, lowpass filtering, noise via ring-mod */
-      const hp = actx.createBiquadFilter(); hp.type = 'highpass';
-      hp.frequency.value = 30 + k[1] * 3; hp.Q.value = 0.5;
-      const lp = actx.createBiquadFilter(); lp.type = 'lowpass';
-      lp.frequency.value = 5000 + (100 - k[2]) * 150; lp.Q.value = 0.5;
-      source.connect(hp); hp.connect(lp); lp.connect(wetGain); wetGain.connect(analyser);
-      liveNodes.push(hp, lp); break;
+    case 'radio': {           // highpass 300+d*400 → lowpass 4000-m*2500 → aecho 20+r*120ms
+      const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 300 + k[0] * 400; hp.Q.value = 0.7;
+      const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4000 - k[1] * 2500; lp.Q.value = 0.7;
+      const e = echo(20 + k[2] * 120, 0.2 + k[2] * 0.3);
+      chain(hp, lp, e); break;
     }
-    default: {
-      source.connect(wetGain); wetGain.connect(analyser); break;
+    case 'alien': {           // vibrato f=4+mod*8 d=.3+mod*.5 → aphaser speed=.2+speed*3
+      const vib = actx.createDelay(0.05); vib.delayTime.value = 0.006;
+      lfo(4 + k[0] * 8, 0.0006 + k[0] * 0.003, vib.delayTime);
+      const ph = actx.createBiquadFilter(); ph.type = 'allpass'; ph.frequency.value = 900; ph.Q.value = 2;
+      const ph2 = actx.createBiquadFilter(); ph2.type = 'allpass'; ph2.frequency.value = 1800; ph2.Q.value = 2;
+      lfo(0.2 + k[1] * 3, 700, ph.frequency); lfo(0.2 + k[1] * 3, 1400, ph2.frequency);
+      chain(vib, ph, ph2); break;
+    }
+    case 'tunnel': {          // highpass 400 → treble +harsh*6 @3k → aecho 80+d*400 | 120+d*500
+      const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 400;
+      const tr = actx.createBiquadFilter(); tr.type = 'highshelf'; tr.frequency.value = 3000; tr.gain.value = k[0] * 6;
+      const e1 = echo(80 + k[1] * 400, 0.5), e2 = echo(120 + k[1] * 500, 0.3);
+      chain(hp, tr);
+      const sum = actx.createGain(); head.connect(e1); head.connect(e2); e1.connect(sum); e2.connect(sum); head.connect(sum);
+      liveNodes.push(sum); head = sum; break;
     }
   }
+  head.connect(wetGain);
+  (analyzerPost ? outGain : preTap).connect(analyser);
+  applyMix();
 }
 
 /* theDAW host transport: playback start/stop is reported to the parent stage. */
@@ -462,6 +588,7 @@ async function prepareFile(file){
   prepareBuf(inputBuf);
 }
 document.getElementById('fileinput').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+document.getElementById('btnLoad').addEventListener('click', () => document.getElementById('fileinput').click());
 
 /* ── SVG ROTARY KNOBS (52px, 270deg sweep) ── */
 function renderKnob(idx){
@@ -496,61 +623,100 @@ function renderKnob(idx){
     <line x1="${cx}" y1="${cy-1}" x2="${cx+Math.cos((ang-90)*Math.PI/180)*7}" y2="${cy+Math.sin((ang-90)*Math.PI/180)*7}" stroke="${color}cc" stroke-width="1.5" stroke-linecap="round"/>`;
   /* Update value display */
   const cfg = MODES[activeMode];
-  document.getElementById('kv' + idx).textContent = cfg.formatVal[idx](val);
+  const fmt = cfg.fmt[idx] || pct;
+  document.getElementById('kv' + idx).textContent = fmt(val);
+  kit.sync(svg);
 }
-function renderAllKnobs(){ for (let i = 0; i < 5; i++) renderKnob(i); }
-renderAllKnobs();
+function renderAllKnobs(){ for (let i = 0; i < 4; i++) renderKnob(i); }
 
-/* Knob drag */
+/* Knob drag + keyboard (module-kit) */
 document.querySelectorAll('.knob-svg').forEach(svg => {
+  const idx = +svg.dataset.idx;
+  kit.slider(svg, {
+    min: 0, max: 100, step: 1, wheel: true,
+    get: () => knobValues[idx],
+    set: v => { knobValues[idx] = v; renderKnob(idx); if (idx === MIX_SLOT) applyMix(); else if (actx && source) rebuildChain(); },
+    format: v => (MODES[activeMode].fmt[idx] || pct)(v),
+    reset: () => MODES[activeMode].defaults[idx],
+    noDblClick: true, // the page's own dblclick handler below resets the slot
+  });
   svg.addEventListener('pointerdown', e => {
-    const idx = +svg.dataset.idx;
     knobDrag = { active: true, idx, startY: e.clientY, startVal: knobValues[idx] };
     svg.setPointerCapture(e.pointerId);
+    svg.focus({ preventScroll: true });
   });
   svg.addEventListener('pointermove', e => {
     if (!knobDrag.active || +svg.dataset.idx !== knobDrag.idx) return;
     const dy = knobDrag.startY - e.clientY;
-    knobValues[knobDrag.idx] = Math.max(0, Math.min(100, knobDrag.startVal + dy * 0.6));
+    knobValues[knobDrag.idx] = Math.max(0, Math.min(100, knobDrag.startVal + dy * (e.shiftKey ? 0.15 : 0.6)));
     renderKnob(knobDrag.idx);
-    if (actx && source) rebuildChain();
+    if (knobDrag.idx === MIX_SLOT) applyMix(); else if (actx && source) rebuildChain();
   });
   svg.addEventListener('pointerup', () => { knobDrag.active = false; });
+  svg.addEventListener('pointercancel', () => { knobDrag.active = false; });
+  svg.addEventListener('dblclick', () => { knobValues[idx] = MODES[activeMode].defaults[idx]; renderKnob(idx); if (idx === MIX_SLOT) applyMix(); else if (actx && source) rebuildChain(); });
 });
-
-/* ── VERTICAL FADER SETUP ── */
-function setupFader(trackId, fillId, capId, valId, initial, formatFn, onChange){
-  const track = document.getElementById(trackId);
-  const fill = document.getElementById(fillId);
-  const cap = document.getElementById(capId);
-  const valEl = document.getElementById(valId);
-  let dragging = false;
-  function setPct(e){
-    const rect = track.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(100, (1 - (e.clientY - rect.top) / rect.height) * 100));
-    fill.style.height = pct + '%'; cap.style.bottom = pct + '%';
-    valEl.textContent = formatFn(pct);
-    onChange(pct);
-  }
-  track.addEventListener('pointerdown', e => { dragging = true; track.setPointerCapture(e.pointerId); setPct(e); });
-  track.addEventListener('pointermove', e => { if (dragging) setPct(e); });
-  track.addEventListener('pointerup', () => { dragging = false; });
+// Keep the knob's aria-label current with the mode's slot name.
+function relabelKnobs(){
+  document.querySelectorAll('.knob-svg').forEach(svg => {
+    const i = +svg.dataset.idx;
+    const name = MODES[activeMode].knobs[i];
+    if (name) svg.setAttribute('aria-label', name + (i === MIX_SLOT ? ' (preview mix)' : ''));
+  });
 }
-setupFader('biasTrack', 'biasFill', 'biasCap', 'biasVal', 55, v => {
-  const db = ((v - 50) / 50 * 6).toFixed(1); return (db >= 0 ? '+' : '') + db + ' dB';
-}, v => { biasAmt = v; });
-setupFader('outTrack', 'outFill', 'outCap', 'outVal', 70, v => {
-  const db = ((v - 50) / 50 * 12).toFixed(1); return (db >= 0 ? '+' : '') + db + ' dB';
-}, v => { outAmt = v; });
+
+/* ── VERTICAL FADERS (bias / output) ── */
+const FADERS = {
+  bias: { track: 'biasTrack', fill: 'biasFill', cap: 'biasCap', val: 'biasVal', label: 'Bias (preview saturation)',
+          fmt: v => { const db = ((v - 50) / 50 * 6).toFixed(1); return (db >= 0 ? '+' : '') + db + ' dB'; },
+          get: () => biasAmt, set: v => { biasAmt = v; if (actx && source) rebuildChain(); }, reset: 50 },
+  out:  { track: 'outTrack', fill: 'outFill', cap: 'outCap', val: 'outVal', label: 'Output (preview level)',
+          fmt: v => { const db = ((v - 50) / 50 * 12).toFixed(1); return (db >= 0 ? '+' : '') + db + ' dB'; },
+          get: () => outAmt, set: v => { outAmt = v; applyMix(); }, reset: 50 },
+};
+function setFaderVisual(id, v){
+  const f = FADERS[id];
+  document.getElementById(f.fill).style.height = v + '%';
+  document.getElementById(f.cap).style.bottom = v + '%';
+  document.getElementById(f.val).textContent = f.fmt(v);
+  kit.sync(document.getElementById(f.track));
+}
+Object.keys(FADERS).forEach(id => {
+  const f = FADERS[id];
+  const track = document.getElementById(f.track);
+  let dragging = false;
+  const setFromEvent = e => {
+    const rect = track.getBoundingClientRect();
+    const v = Math.max(0, Math.min(100, (1 - (e.clientY - rect.top) / rect.height) * 100));
+    f.set(v); setFaderVisual(id, v);
+  };
+  kit.slider(track, { min: 0, max: 100, step: 1, vertical: true, wheel: true, label: f.label, format: f.fmt,
+    get: f.get, set: v => { f.set(v); setFaderVisual(id, v); }, reset: f.reset });
+  track.addEventListener('pointerdown', e => { dragging = true; track.setPointerCapture(e.pointerId); track.focus({ preventScroll: true }); setFromEvent(e); });
+  track.addEventListener('pointermove', e => { if (dragging) setFromEvent(e); });
+  track.addEventListener('pointerup', () => { dragging = false; });
+  track.addEventListener('pointercancel', () => { dragging = false; });
+  setFaderVisual(id, f.get());
+});
 
 /* ── FOOTER BUTTONS ── */
-document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active'); });
-['btnCharFx','btnAnalyzer','btnPrePost'].forEach(id => {
-  document.getElementById(id).addEventListener('click', function(){
-    document.querySelectorAll('.ftr-btn:not(#btnBypass):not(#btnProcess)').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-  });
+document.getElementById('btnBypass').addEventListener('click', function(){
+  bypassed = !bypassed; this.classList.toggle('active', bypassed); kit.pressed(this, bypassed); applyMix();
 });
+kit.pressed(document.getElementById('btnBypass'), false);
+['btnCharFx','btnAnalyzer'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(){
+    ['btnCharFx','btnAnalyzer'].forEach(o => { const b = document.getElementById(o); b.classList.toggle('active', b === this); kit.pressed(b, b === this); });
+    document.getElementById('specZone').classList.toggle('analyzer-only', id === 'btnAnalyzer');
+  });
+  kit.pressed(document.getElementById(id), id === 'btnCharFx');
+});
+document.getElementById('btnPrePost').addEventListener('click', function(){
+  analyzerPost = !analyzerPost; this.classList.toggle('active', !analyzerPost); kit.pressed(this, !analyzerPost);
+  this.textContent = analyzerPost ? 'Pre/Post' : 'Pre';
+  if (actx && source) rebuildChain();
+});
+kit.pressed(document.getElementById('btnPrePost'), false);
 document.getElementById('btnProcess').addEventListener('click', processAudio);
 
 /* ── SPECTRUM VISUALIZATION ── */
@@ -596,12 +762,10 @@ function draw(){
   /* Grid lines */
   ctx.strokeStyle = 'rgba(255,255,255,.03)';
   ctx.lineWidth = 0.5;
-  /* Horizontal dB lines */
   for (let i = 0; i < 7; i++){
     const y = (i / 6) * H;
     ctx.beginPath(); ctx.moveTo(28, y); ctx.lineTo(W - 24, y); ctx.stroke();
   }
-  /* Vertical frequency lines */
   const freqs = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
   freqs.forEach(f => {
     const ratio = Math.log10(f / 20) / Math.log10(1000);
@@ -612,7 +776,6 @@ function draw(){
   });
 
   if (!analyser) {
-    /* Idle state: subtle gradient */
     const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.4);
     g.addColorStop(0, 'rgba(245,158,11,.02)'); g.addColorStop(1, 'transparent');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
@@ -625,7 +788,6 @@ function draw(){
   analyser.getFloatTimeDomainData(timeData);
   const bins = freqData.length;
 
-  /* Filled spectrum area (dark orange) */
   ctx.beginPath();
   ctx.moveTo(28, H);
   for (let i = 0; i < bins * 0.75; i++){
@@ -642,7 +804,6 @@ function draw(){
   fillGrad.addColorStop(1, 'rgba(245,158,11,.01)');
   ctx.fillStyle = fillGrad; ctx.fill();
 
-  /* Spectrum line (bright orange) */
   ctx.beginPath();
   for (let i = 0; i < bins * 0.75; i++){
     const ratio = Math.log10(1 + (i / (bins * 0.75)) * 999) / 3;
@@ -654,7 +815,6 @@ function draw(){
   ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.5; ctx.shadowColor = ACCENT; ctx.shadowBlur = 6; ctx.stroke();
   ctx.shadowBlur = 0;
 
-  /* Harmonics overlay curve (brighter, thicker) when active */
   if (showHarmonics) {
     ctx.beginPath();
     for (let i = 0; i < bins * 0.75; i++){
@@ -669,7 +829,6 @@ function draw(){
     ctx.shadowBlur = 0;
   }
 
-  /* Character response tint at bottom */
   const tg = ctx.createLinearGradient(0, H * 0.6, 0, H);
   tg.addColorStop(0, 'transparent');
   tg.addColorStop(1, 'rgba(245,158,11,.04)');
@@ -680,9 +839,7 @@ function draw(){
 }
 draw();
 
-/* The footer <audio> previews join the host transport protocol. An element play is
-   reported as playing; a pause or ended report stays true only while another preview
-   voice (the loop source or the other element) is still audible. */
+/* The footer <audio> previews join the host transport protocol. */
 const ainEl = document.getElementById('ain');
 const aoutEl = document.getElementById('aout');
 function previewStillAudible() {
@@ -715,19 +872,20 @@ window.addEventListener('message', async (e) => {
   if (e.data && e.data.type === 'thedaw-transport') {
     if (e.data.action === 'play') {
       if (actx && actx.state === 'suspended') actx.resume();
-      // A single preview voice plays at a time: the element previews are paused
-      // before the loop source starts so the loop never layers over them.
       if (ainEl) ainEl.pause();
       if (aoutEl) aoutEl.pause();
       startSource();
     } else if (e.data.action === 'pause') {
       stopSource();
-      // The host pause silences the element previews as well as the loop source.
       if (ainEl) ainEl.pause();
       if (aoutEl) aoutEl.pause();
     }
   }
 });
+
+/* ── INIT ── */
+setMode('tape');
+kit.toggleGroup('.mode-pill', 'active', true);
 </script>
 </body>
 </html>

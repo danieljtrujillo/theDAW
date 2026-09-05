@@ -19,6 +19,7 @@ process audio.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
 import re
@@ -34,6 +35,17 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_W = 1672.0
 _DEFAULT_H = 941.0
+
+# Bump whenever the composed runtime (index.html / element wrapper markup or
+# scripts) changes shape: it is folded into the source fingerprint so an
+# already-installed bundle gets recomposed once, even though its project.json
+# and artwork are unchanged.
+RUNTIME_TEMPLATE_VERSION = 5
+
+# The composed runtime never waits longer than this for its element frames and
+# artwork before revealing whatever has arrived (a stuck asset must not leave
+# the stage blank forever).
+_REVEAL_TIMEOUT_MS = 6000
 
 
 def _slug(text: str) -> str:
@@ -54,11 +66,30 @@ def _png_size(data: bytes) -> tuple[int, int] | None:
     return w, h
 
 
+# Runs before anything else in an element document. The composed index.html
+# hands each element its render scale on its frame's dataset (``data-gz``; the
+# URL fragment ``#gz=<k>`` is the fallback for a document loaded by src), so the
+# zoom is in place BEFORE the element's own scripts measure their canvases:
+# ``clientWidth`` then already reports design px and nothing has to re-size
+# later. (Applying the zoom after load, as the previous runtime did, left the
+# elements' cached W/H at the unzoomed box size — a root-zoom change fires no
+# ``resize`` — so knob arcs and labels were drawn off/at the edge of a canvas a
+# third of its intended size, and every canvas rendered upscaled.)
+_EL_ZOOM_SCRIPT = (
+    "<script>(function(){var k=0;try{var fe=window.frameElement;"
+    "if(fe&&fe.dataset&&fe.dataset.gz)k=parseFloat(fe.dataset.gz);}catch(_){}"
+    "if(!(k>0)){var m=/(?:^|[#&])gz=([0-9.]+)/.exec(location.hash||'');"
+    "if(m)k=parseFloat(m[1]);}"
+    "if(isFinite(k)&&k>0){document.documentElement.style.zoom=k;}})();</script>"
+)
+
+
 def _el_doc(custom_code: str) -> str:
     """Wrap a CustomCode body as a standalone, transparent full-window document."""
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
-        "<style>html,body{margin:0;padding:0;overflow:hidden;width:100%;height:100%;"
+        + _EL_ZOOM_SCRIPT
+        + "<style>html,body{margin:0;padding:0;overflow:hidden;width:100%;height:100%;"
         "background:transparent}</style></head><body>" + custom_code + "</body></html>"
     )
 
@@ -199,10 +230,18 @@ def import_vst_foundry(
         if etype == "CustomCode":
             code = str(el.get("customCode") or "")
             asset_name = f"el_{eid}.html"
-            assets[asset_name] = _el_doc(code).encode("utf-8")
+            el_html = _el_doc(code)
+            assets[asset_name] = el_html.encode("utf-8")
+            # No ``src`` here: the runtime script mounts the document once the
+            # canvas has a size, with the render scale on the frame's dataset
+            # (see _EL_ZOOM_SCRIPT). The document travels inline (``data-doc``
+            # -> srcdoc) so a surface costs ONE html request plus its artwork
+            # instead of a round trip per element; ``data-src`` names the same
+            # document as a standalone asset (fallback / inspection).
             body_parts.append(
                 f'<div class="gan-el" style="{style}">'
-                f'<iframe class="gan-frame" src="{asset_name}" '
+                f'<iframe class="gan-frame" data-src="{asset_name}" '
+                f'data-doc="{html.escape(el_html, quote=True)}" '
                 f'title="{ename}" scrolling="no"></iframe></div>'
             )
             kind = "xy" if "valueX" in code else "value"
@@ -231,11 +270,11 @@ def import_vst_foundry(
                 f'title="{ename} ({etype})"></div>'
             )
 
-    index_html = _compose_index(canvas_w, canvas_h, has_bg, body_parts)
-    assets["index.html"] = index_html.encode("utf-8")
-
     disp_name = name or pj_path.parent.name or "Owl Tool"
     pid = plugin_id or f"{_slug(disp_name)}-{hashlib.sha256(raw).hexdigest()[:8]}"
+    index_html = _compose_index(canvas_w, canvas_h, has_bg, body_parts, pid)
+    assets["index.html"] = index_html.encode("utf-8")
+
     manifest = GanManifest(
         id=pid,
         name=disp_name,
@@ -244,11 +283,53 @@ def import_vst_foundry(
         canvas=GanCanvas(width=canvas_w, height=canvas_h),
         controls=controls,
         source="vst-foundry",
+        source_hash=source_fingerprint(
+            project_json_path,
+            name=name,
+            plugin_id=plugin_id,
+            background_path=background_path,
+            exclude_substrings=exclude_substrings,
+        ),
     )
     return manifest, assets
 
 
-def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> str:
+def source_fingerprint(
+    project_json_path: str,
+    *,
+    name: str | None = None,
+    plugin_id: str | None = None,
+    background_path: str | None = None,
+    exclude_substrings: list[str] | None = None,
+) -> str:
+    """Fingerprint everything ``import_vst_foundry`` composes from: the export's
+    bytes, the artwork it would bundle, the import options, and the runtime
+    template version. Equal fingerprints mean an identical package, so a
+    packager can skip rewriting an installed bundle (and its extracted runtime)
+    when nothing changed."""
+    pj_path = Path(project_json_path)
+    h = hashlib.sha256()
+    h.update(f"template:{RUNTIME_TEMPLATE_VERSION}\n".encode())
+    h.update(f"name:{name or ''}\nid:{plugin_id or ''}\n".encode())
+    h.update(f"exclude:{','.join(sorted(exclude_substrings or []))}\n".encode())
+    raw = pj_path.read_bytes() if pj_path.is_file() else b""
+    h.update(b"project:")
+    h.update(raw)
+    bg_name = "background.png"
+    try:
+        bg_name = str(json.loads(raw.decode("utf-8")).get("background") or bg_name)
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        pass
+    bg_path = Path(background_path) if background_path else (pj_path.parent / bg_name)
+    h.update(b"\nbackground:")
+    if bg_path.is_file():
+        h.update(bg_path.read_bytes())
+    return h.hexdigest()
+
+
+def _compose_index(
+    w: float, h: float, has_bg: bool, body_parts: list[str], plugin_id: str = ""
+) -> str:
     bg_css = (
         "background:url(background.png) 0 0/100% 100% no-repeat;"
         if has_bg
@@ -266,10 +347,18 @@ def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> s
         # largest W:H rectangle that fits the stage (min of full width vs the
         # width implied by full height), so background-size:100% 100% no longer
         # distorts the art and the percent-positioned controls stay aligned.
+        # overflow:hidden clips to the art: elements an author parked outside
+        # the canvas (negative x/y) used to float in the letterbox gutters.
+        # The canvas stays invisible until the reveal script has the artwork
+        # decoded and every element frame laid out at its final scale, then
+        # fades in as one unit (no piecemeal pop-in, no unscaled first paint).
         f"#gan-canvas{{position:relative;aspect-ratio:{w:.0f}/{h:.0f};"
         f"width:min(100cqw,calc(100cqh*{w:.0f}/{h:.0f}));height:auto;"
-        "max-width:100%;max-height:100%;"
+        "max-width:100%;max-height:100%;overflow:hidden;"
+        "opacity:0;transition:opacity .18s ease-out;"
         f"{bg_css}}}"
+        "html.gan-ready #gan-canvas{opacity:1;}"
+        "@media (prefers-reduced-motion:reduce){#gan-canvas{transition:none;}}"
         ".gan-el{box-sizing:border-box;}"
         ".gan-frame{width:100%;height:100%;border:0;display:block;background:transparent;}"
         ".gan-knob-wrap{display:flex;align-items:center;justify-content:center;}"
@@ -285,33 +374,91 @@ def _compose_index(w: float, h: float, has_bg: bool, body_parts: list[str]) -> s
     )
     # Relay control values UP to the host, and forward host->plugin messages
     # (e.g. live audio 'level' for the meter) DOWN to every element iframe.
+    # Level pushes are broadcast to every element frame; capped at ~30 fps and
+    # dropped until the surface has revealed, so a host's 60 fps meter feed
+    # never competes with the element documents for the main thread while
+    # they are still loading.
     relay = (
-        "<script>window.addEventListener('message',function(e){"
+        "<script>(function(){var lastLevel=0;"
+        "window.addEventListener('message',function(e){"
         "var d=e.data;if(!d)return;"
         "if(d.type==='updateValue'){window.parent.postMessage(d,'*');}"
-        "else if(d.type==='level'){var fr=document.querySelectorAll('#gan-canvas iframe');"
+        "else if(d.type==='level'){"
+        "if(!document.documentElement.classList.contains('gan-ready'))return;"
+        "var now=performance.now();if(now-lastLevel<33)return;lastLevel=now;"
+        "var fr=document.querySelectorAll('#gan-canvas iframe');"
         "for(var i=0;i<fr.length;i++){try{fr[i].contentWindow.postMessage(d,'*');}catch(_){}}}"
-        "});</script>"
+        "});})();</script>"
     )
     # Element iframes carry CustomCode authored against the native canvas size
     # (hardcoded px fonts and shapes). The percentage layout scales their BOXES
-    # with the letterboxed canvas but nothing scales their CONTENT, so text
-    # renders at design px inside a shrunken box — the "weird text scaling".
-    # Zoom each iframe's document by rendered/native width: the content then
-    # lays out against its design-size viewport and paints scaled to fit.
+    # with the letterboxed canvas but nothing scales their CONTENT, so each
+    # element document is zoomed by rendered/native width and lays out against
+    # its design-size viewport. The scale must be in place BEFORE the element's
+    # scripts run (they size their canvases from clientWidth once, and a root
+    # zoom change fires no resize), so frames start with no src: once the canvas
+    # has a size the script assigns src with the scale in the fragment, which
+    # the element's head script applies first thing. A later stage resize
+    # re-zooms every frame and dispatches a resize into it so the elements
+    # re-measure.
+    #
+    # Reveal: the canvas is opacity:0 until the artwork is decoded and every
+    # element frame has loaded at its final scale, then two rAFs later (layout
+    # + paint of the zoomed frames settled) html gets .gan-ready, the canvas
+    # fades in as one unit, and the host is told via postMessage so it can drop
+    # its skeleton in the same beat. A timeout reveals whatever arrived so a
+    # stuck asset never leaves the stage blank.
     scaler = (
         "<script>(function(){"
-        f"var W={w:.0f};"
+        f"var W={w:.0f},HAS_BG={'true' if has_bg else 'false'},PID={json.dumps(plugin_id)};"
         "var canvas=document.getElementById('gan-canvas');"
-        "function apply(){var k=canvas.clientWidth/W;if(!isFinite(k)||k<=0)return;"
-        "var fr=document.querySelectorAll('#gan-canvas iframe');"
-        "for(var i=0;i<fr.length;i++){"
-        "try{fr[i].contentDocument.documentElement.style.zoom=k;}catch(_){}}}"
-        "var fr=document.querySelectorAll('#gan-canvas iframe');"
-        "for(var i=0;i<fr.length;i++){fr[i].addEventListener('load',apply);}"
+        "var frames=Array.prototype.slice.call(document.querySelectorAll('#gan-canvas iframe'));"
+        "var pending=frames.length,bgReady=!HAS_BG,revealed=false,lastK=0;"
+        "function scale(){var k=canvas.clientWidth/W;return(isFinite(k)&&k>0)?k:0;}"
+        "function zoomFrame(fr,k,notify){try{var d=fr.contentDocument;"
+        "if(!d||!d.documentElement||d.URL==='about:blank')return;"
+        "d.documentElement.style.zoom=k;"
+        "if(notify){var cw=fr.contentWindow;cw.dispatchEvent(new cw.Event('resize'));}}catch(_){}}"
+        "function reveal(){if(revealed)return;revealed=true;"
+        "requestAnimationFrame(function(){requestAnimationFrame(function(){"
+        "document.documentElement.classList.add('gan-ready');"
+        "try{window.parent.postMessage({type:'gan-ready',plugin:PID},'*');}catch(_){}});});}"
+        # Once every frame is in, the artwork gets a short grace period only:
+        # a decode that never settles must not hold the surface hostage.
+        "var bgGrace=null;"
+        "function maybeReveal(){if(pending<=0&&bgReady)reveal();"
+        "else if(pending<=0&&bgGrace==null)bgGrace=setTimeout(reveal,1500);}"
+        "function onLoad(fr){return function(){"
+        "try{if(fr.contentDocument&&fr.contentDocument.URL==='about:blank')return;}catch(_){}"
+        "if(fr.__ganLoaded)return;fr.__ganLoaded=true;"
+        "var k=scale();if(k&&k!==fr.__ganK){fr.__ganK=k;zoomFrame(fr,k,true);}"
+        "pending--;maybeReveal();};}"
+        # First sizing mounts each element: the scale goes on the frame's
+        # dataset, then the inline document (srcdoc) or, failing that, the
+        # standalone asset with the scale in its fragment.
+        "function start(fr,k){fr.__ganStarted=true;fr.__ganK=k;fr.dataset.gz=k;"
+        "var doc=fr.getAttribute('data-doc');"
+        "if(doc!==null){fr.removeAttribute('data-doc');fr.srcdoc=doc;}"
+        "else{fr.src=fr.getAttribute('data-src')+'#gz='+k;}}"
+        "function apply(){var k=scale();if(!k)return;"
+        "for(var i=0;i<frames.length;i++){var fr=frames[i];"
+        "if(!fr.__ganStarted){start(fr,k);}"
+        "else if(fr.__ganLoaded&&k!==lastK){fr.__ganK=k;fr.dataset.gz=k;zoomFrame(fr,k,true);}}"
+        "lastK=k;}"
+        "for(var i=0;i<frames.length;i++){frames[i].addEventListener('load',onLoad(frames[i]));}"
+        # Keep a strong reference to the probe image: Chromium can leave a
+        # decode() promise unsettled when the element is collected mid-decode.
+        "if(HAS_BG){var img=new Image();window.__ganBg=img;"
+        "var done=function(){bgReady=true;maybeReveal();};"
+        "img.onload=function(){(img.decode?img.decode():Promise.resolve()).then(done,done);};"
+        "img.onerror=done;img.src='background.png';"
+        "if(img.complete&&img.naturalWidth)img.onload();}"
+        # Diagnostics for hosts/tests: where the reveal stands right now.
+        "window.__ganState=function(){return{pending:pending,bgReady:bgReady,revealed:revealed,lastK:lastK};};"
         "if(typeof ResizeObserver!=='undefined'){new ResizeObserver(apply).observe(canvas);}"
         "else{window.addEventListener('resize',apply);}"
         "apply();"
+        f"setTimeout(reveal,{_REVEAL_TIMEOUT_MS});"
         "})();</script>"
     )
     body = (

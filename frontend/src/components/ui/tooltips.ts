@@ -75,7 +75,7 @@ export const HOVER_TOOLTIPS: Record<string, string> = {
   cfgNormThreshold:
     'Safety valve capping how large guidance correction can get. Raise if you hear pops/clicks with high CFG. Only matters when CFG > 1.',
   initNoise:
-    '0.1 = subtle remix. 0.3 = loose cover. 0.5 = inspired by. 0.7 = heavy remix. 0.9 = almost from scratch. 1.0 = original ignored.',
+    '0.1 = subtle remix. 0.3 = loose cover. 0.5 = inspired by. 0.7 = heavy remix. 0.9 = almost from scratch. 1.0 = original ignored. With Chimera, 0.45-0.55 keeps the arrangement; 0.7+ re-imagines it.',
   inversionSteps:
     'How carefully the model analyzes your input audio before regenerating. More steps = more faithful to the original.',
   inversionGamma:

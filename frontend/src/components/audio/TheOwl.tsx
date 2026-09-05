@@ -16,10 +16,14 @@
  *   - 12 ring buttons (6 L + 6 R): the 12 motion modes (motion 0..11)
  *
  * Positions are percentages of the 1672x941 art; tweak the constants to nudge a
- * control onto its frame. The art is fit (not stretched) inside the stage.
+ * control onto its frame. The art is fit (not stretched) inside the stage: the
+ * letterbox takes its aspect from the decoded image's natural size, and the
+ * whole surface stays hidden until the artwork is decoded and both canvas
+ * panels have loaded, then fades in as one unit — controls are on their art
+ * from the first visible frame instead of appearing before the PNG arrives.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SlideTrack } from './SlideTrack';
 import { SPATIAL_MOTIONS } from '../../lib/rackEffects';
 import { ContextMenu, useContextMenu } from '../ui/ContextMenu';
@@ -34,6 +38,41 @@ interface TheOwlProps {
 
 const BG = '/owl/the-owl.png';
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
+
+/** The design grid the percent constants below were measured on (also the
+ *  fallback aspect until the image reports its natural size). */
+const ART = { w: 1672, h: 941 };
+/** Decoded once per session: a re-open (tab round-trips remount TheOwl)
+ *  reveals on its first frame instead of waiting on the image again. */
+let artCache: { w: number; h: number } | null = null;
+let artPromise: Promise<{ w: number; h: number }> | null = null;
+function decodeArt(): Promise<{ w: number; h: number }> {
+  if (artCache) return Promise.resolve(artCache);
+  if (!artPromise) {
+    const img = new Image();
+    img.src = BG;
+    const loaded: Promise<void> =
+      typeof img.decode === 'function'
+        ? img.decode()
+        : new Promise<void>((res, rej) => {
+            img.onload = () => res();
+            img.onerror = () => rej(new Error('owl artwork failed to load'));
+          });
+    artPromise = loaded
+      .then(() => {
+        artCache = { w: img.naturalWidth || ART.w, h: img.naturalHeight || ART.h };
+        return artCache;
+      })
+      .catch(() => {
+        artPromise = null; // let a later mount retry
+        return ART;
+      });
+  }
+  return artPromise;
+}
+/** Never hold the surface back longer than this (a stalled panel/image must
+ *  not leave the stage blank). */
+const OWL_REVEAL_TIMEOUT_MS = 4000;
 
 /* positions as % of the 1672x941 art */
 const PAD = {
@@ -104,32 +143,56 @@ export function TheOwl({ params, onChange, idPrefix }: TheOwlProps) {
     return () => window.removeEventListener('message', handler);
   }, []);
 
+  // Reveal choreography: artwork decoded (cached after the first time) + both
+  // canvas panels loaded -> fade the whole surface in at once.
+  const [art, setArt] = useState<{ w: number; h: number } | null>(artCache);
+  const [padsLoaded, setPadsLoaded] = useState(0);
+  const [forced, setForced] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void decodeArt().then((a) => { if (alive) setArt(a); });
+    const t = window.setTimeout(() => { if (alive) setForced(true); }, OWL_REVEAL_TIMEOUT_MS);
+    return () => { alive = false; window.clearTimeout(t); };
+  }, []);
+  const ready = forced || (!!art && padsLoaded >= 2);
+  const aspect = art ?? ART;
+  const onPadLoad = () => setPadsLoaded((n) => n + 1);
+
   return (
     <div
       className="relative h-full w-full bg-[#07080c] overflow-hidden flex items-center justify-center select-none"
       style={{ containerType: 'size' }}
       onContextMenu={(e) => menu.open(e, true)}
     >
-      {/* Letterbox the surface to the artwork's native 1672:941 so the PNG is
-          never stretched: the box grows to the largest 1672:941 rectangle that
-          fits the stage, and the percent-positioned controls stay aligned. */}
+      {!ready && (
+        <div className="absolute inset-0 grid place-items-center pointer-events-none" aria-hidden="true">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-500 animate-pulse">loading The Owl…</span>
+        </div>
+      )}
+      {/* Letterbox the surface to the artwork's native aspect so the PNG is
+          never stretched: the box grows to the largest art-proportioned
+          rectangle that fits the stage, and the percent-positioned controls
+          (normalised art coordinates) stay aligned at any size. */}
       <div
         className="relative"
         style={{
-          width: 'min(100cqw, calc(100cqh * 1672 / 941))',
+          width: `min(100cqw, calc(100cqh * ${aspect.w} / ${aspect.h}))`,
           height: 'auto',
-          aspectRatio: '1672 / 941',
+          aspectRatio: `${aspect.w} / ${aspect.h}`,
           maxWidth: '100%',
           maxHeight: '100%',
           backgroundImage: `url(${BG})`,
           backgroundSize: '100% 100%',
           backgroundRepeat: 'no-repeat',
+          opacity: ready ? 1 : 0,
+          transition: 'opacity 180ms ease-out',
         }}
       >
         {/* ── left panel: the real Kaoss surface (trails + glowing indicator) ── */}
         <iframe
           src="/owl/kaoss.html"
           title="Azimuth / elevation pad"
+          onLoad={onPadLoad}
           className="absolute border-0 bg-transparent"
           style={{ left: `${PAD.left.left}%`, top: `${PAD.left.top}%`, width: `${PAD.left.w}%`, height: `${PAD.left.h}%` }}
         />
@@ -137,6 +200,7 @@ export function TheOwl({ params, onChange, idPrefix }: TheOwlProps) {
         <iframe
           src="/owl/room.html"
           title="Distance / depth pad"
+          onLoad={onPadLoad}
           className="absolute border-0 bg-transparent"
           style={{ left: `${PAD.right.left}%`, top: `${PAD.right.top}%`, width: `${PAD.right.w}%`, height: `${PAD.right.h}%` }}
         />

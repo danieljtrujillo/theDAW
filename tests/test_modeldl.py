@@ -1,6 +1,7 @@
 """Tests for the model-download job registry (backend.modules.modeldl.router).
 
-``huggingface_hub.hf_hub_download`` is monkeypatched in the router namespace so
+The router's ``hf_download_with_mirror`` (the hf_hub_download wrapper with the
+public-mirror fallback) is monkeypatched in the router namespace so
 no network call or weight download ever happens. The download pool is real, so
 each test that starts a job polls for the terminal state with a timeout to stay
 deterministic without sleeping on a fixed delay.
@@ -74,7 +75,7 @@ def test_download_valid_name_reaches_done(client, monkeypatch):
         assert tqdm_class is not None and issubclass(tqdm_class, modeldl._JobTqdm)
         return f"/fake/cache/{repo_id}/{filename}"
 
-    monkeypatch.setattr(modeldl, "hf_hub_download", fake_download)
+    monkeypatch.setattr(modeldl, "hf_download_with_mirror", fake_download)
 
     name = _first_catalog_name()
     resp = client.post(f"/api/models/{name}/download")
@@ -105,7 +106,7 @@ def test_duplicate_download_while_live_returns_same_job(client, monkeypatch):
         assert release.wait(timeout=5.0), "test never released the blocked download"
         return f"/fake/cache/{repo_id}/{filename}"
 
-    monkeypatch.setattr(modeldl, "hf_hub_download", blocking_download)
+    monkeypatch.setattr(modeldl, "hf_download_with_mirror", blocking_download)
 
     name = _first_catalog_name()
     first = client.post(f"/api/models/{name}/download").json()
@@ -128,7 +129,7 @@ def test_download_error_path_records_detail(client, monkeypatch):
     def boom(*, repo_id, filename, **kwargs):
         raise RuntimeError("network exploded")
 
-    monkeypatch.setattr(modeldl, "hf_hub_download", boom)
+    monkeypatch.setattr(modeldl, "hf_download_with_mirror", boom)
 
     name = _first_catalog_name()
     job_id = client.post(f"/api/models/{name}/download").json()["job_id"]
@@ -142,7 +143,7 @@ def test_download_error_path_records_detail(client, monkeypatch):
 def test_clear_removes_finished_jobs(client, monkeypatch):
     monkeypatch.setattr(
         modeldl,
-        "hf_hub_download",
+        "hf_download_with_mirror",
         lambda *, repo_id, filename, **kwargs: f"/fake/{repo_id}/{filename}",
     )
 

@@ -28,9 +28,11 @@ import { SlideRow } from '../components/audio/SlideRow';
 import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
-import { swapEngineForModel } from '../lib/magentaEngineClient';
+import { fetchMagentaEngineStatus, installMagentaEngine, swapEngineForModel } from '../lib/magentaEngineClient';
 import { CLOUD_MODELS } from '../lib/cloudModels';
-import { fetchCheckpoints, type RegisteredCheckpoint } from '../lib/storageClient';
+import { fetchCheckpoints, setLocalOnly, type RegisteredCheckpoint } from '../lib/storageClient';
+import { classifyModelGate } from '../lib/modelDownloadClient';
+import { requireFeature } from '../notices/featureGateStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import '../components/layout/track-controls.css';
 
@@ -154,7 +156,7 @@ function TemplatesPanel() {
   };
   const filtered = templates.filter((t) => t.name.toLowerCase().includes(searchQuery.toLowerCase()));
   return (
-    <div className="hardware-card flex flex-col min-h-0">
+    <div className="hardware-card flex flex-col min-h-0 flex-1">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">TEMPLATES</span>
         <button className="btn-ghost cursor-pointer p-1" onClick={handleSave} title="Save current">
@@ -258,12 +260,29 @@ export const AdvancedGenPanel: React.FC<{
   // params; the central Chimera stack stays shared across both engines.
   const isMagenta = p.model.startsWith('magenta-');
 
-  // Probe the Magenta RT2 sidecar once on mount; gates the Magenta model option.
+  // Probe the Magenta RT2 engine once on mount. The model option is offered
+  // whenever the engine is INSTALLED (generation starts it on demand); only a
+  // real "not installed" hides it, and the pill mirrors the engine state.
   useEffect(() => {
-    fetch('/api/magenta/probe')
-      .then((r) => r.json())
-      .then((d) => useGenerateParamsStore.getState().setField('magentaAvailable', d?.available === true))
-      .catch(() => useGenerateParamsStore.getState().setField('magentaAvailable', false));
+    let cancelled = false;
+    fetchMagentaEngineStatus()
+      .then((st) => {
+        if (cancelled) return;
+        const gp = useGenerateParamsStore.getState();
+        const state = st?.state;
+        gp.setField('magentaAvailable', !!st && state !== 'not_installed');
+        gp.setField('magentaEngine',
+          state === 'running' ? 'ready'
+            : state === 'starting' ? 'starting'
+              : state === 'error' ? 'error'
+                : state === 'not_installed' ? 'setup'
+                  : 'off');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        useGenerateParamsStore.getState().setField('magentaAvailable', false);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   // User-registered local checkpoints (Settings → Models & Storage) appear as
@@ -295,9 +314,24 @@ export const AdvancedGenPanel: React.FC<{
         const data = await fetchCheckpoints().catch(() => null);
         const cat = data?.catalog.find((c) => c.name === model) ?? null;
         if (cat?.source === 'download' && data?.local_only) {
-          // Local-only would just block this server-side; route to the fix.
-          logWarn('model', `${model}: not on this machine, and local-only blocks downloads. Pick an installed model or allow the download in Settings → Models.`);
-          window.dispatchEvent(new CustomEvent('thedaw:open-settings', { detail: { section: 'models' } }));
+          // Local-only would just block this server-side. Carry the fix on the
+          // warning itself — opening Settings only moved the hunt one step
+          // along, since the toggle that unblocks this is still unlabelled
+          // from here.
+          logWarn('model', `${model}: not on this machine, and local-only blocks downloads.`);
+          requireFeature({
+            id: 'model:local-only',
+            kind: 'model',
+            title: 'Downloads are turned off',
+            message: `${model} is not on this machine, and local-only mode blocks fetching it. Allowing downloads gets it now — or pick an installed model instead.`,
+            action: {
+              label: 'Allow downloads & load',
+              run: async () => {
+                await setLocalOnly(false);
+                void preloadModel(model);
+              },
+            },
+          });
           setModelLoadState('idle');
           return;
         }
@@ -331,8 +365,60 @@ export const AdvancedGenPanel: React.FC<{
       setModelLoadState('idle');
       logInfo('model', `${d.model} loaded in ${d.seconds}s (${d.device ?? '?'}; ${d.vram_used_gb ?? '?'} GB VRAM)`);
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
       setModelLoadState('error');
-      logError('model', `Model load failed: ${e instanceof Error ? e.message : String(e)}`);
+      logError('model', `Model load failed: ${message}`);
+      // A Hugging Face gate is fixable in place, so raise the card that carries
+      // the fix instead of leaving the failure in the LOG dock with nothing to
+      // act on — and offer the fix that matches the gate: a token for a missing
+      // sign-in, the model page for an account that is not on the allow list.
+      const gate = classifyModelGate(message);
+      if (gate?.kind === 'local-only') {
+        requireFeature({
+          id: 'model:local-only',
+          kind: 'model',
+          title: 'Downloads are turned off',
+          message: `${model} is not on this machine, and local-only mode blocks fetching it. Allowing downloads gets it now.`,
+          action: {
+            label: 'Allow downloads & load',
+            run: async () => {
+              await setLocalOnly(false);
+              void preloadModel(model);
+            },
+          },
+        });
+      } else if (gate?.kind === 'sign-in') {
+        requireFeature({
+          id: 'hf:model-load',
+          kind: 'hf',
+          title: 'Hugging Face sign-in needed',
+          message: `${model} is gated — paste a token and it loads again.`,
+          action: {
+            label: 'Retry load',
+            // Not awaited: the load reports through modelLoadState + the LOG
+            // dock, and the notice should clear rather than hang on it.
+            run: () => {
+              void preloadModel(model);
+            },
+          },
+        });
+      } else if (gate?.kind === 'no-access') {
+        const repoUrl = gate.repoUrl;
+        requireFeature({
+          id: 'hf:no-access',
+          kind: 'model',
+          title: 'Access not granted',
+          message: `Your token works — this Hugging Face account is not on ${model}'s allow list. Open the model page, click "Agree and access", then load again.`,
+          action: repoUrl
+            ? {
+                label: 'Open model page',
+                run: () => {
+                  window.open(repoUrl, '_blank', 'noopener');
+                },
+              }
+            : undefined,
+        });
+      }
     }
   }, []);
 
@@ -361,6 +447,25 @@ export const AdvancedGenPanel: React.FC<{
   // Synesteez (image → spectrogram audio composer).
   const [heroTab, setHeroTab] = useState<'chimera' | 'compare' | 'synesteez'>('chimera');
   const prevAudioRef = useRef<string | null>(null);
+
+  // Prompt-required feedback: CREATE with an empty prompt (and no Chimera
+  // stack) sets statusLabel 'PROMPT REQUIRED' + an error and fires
+  // 'thedaw:focus-prompt'; the box turns red, explains itself, takes focus,
+  // and clears the moment the user types.
+  const genError = useGenerateStore((s) => s.error);
+  const genStatusLabel = useGenerateStore((s) => s.statusLabel);
+  const promptRequired = genStatusLabel === 'PROMPT REQUIRED' && !!genError;
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const onFocusPrompt = () => {
+      const el = promptRef.current;
+      if (!el) return;
+      el.focus();
+      el.scrollIntoView({ block: 'nearest' });
+    };
+    window.addEventListener('thedaw:focus-prompt', onFocusPrompt);
+    return () => window.removeEventListener('thedaw:focus-prompt', onFocusPrompt);
+  }, []);
   useEffect(() => {
     if (lastAudioUrl && lastAudioUrl !== prevAudioRef.current) setHeroTab('compare');
     prevAudioRef.current = lastAudioUrl;
@@ -569,7 +674,7 @@ export const AdvancedGenPanel: React.FC<{
   /* ────────────────────────────────────────────────────────────────────── */
 
   return (
-    <div className="h-full w-full overflow-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
+    <div className="h-full w-full overflow-y-auto overflow-x-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
 
       {/* MIDI picker — right-click the INIT box to render a MIDI into the init slot. */}
       <LibraryMidiPicker
@@ -661,7 +766,15 @@ export const AdvancedGenPanel: React.FC<{
               onChange={(e) => { if (e.target.files?.[0]) patch({ inpaintAudioFile: e.target.files[0], inpaintEnabled: true, maskStart: 0, maskEnd: 0 }); e.target.value = ''; }} />
           </div>
           <div className="flex-1 min-h-0 rounded overflow-hidden border border-white/5 bg-black/40">
-            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={72} ariaLabel="Inpaint audio waveform" onDuration={setInpaintDur}
+            {inpaintAudioUrl ? <SemanticWave audioUrl={inpaintAudioUrl} height={72} ariaLabel="Inpaint audio waveform" onDuration={(d) => {
+                  setInpaintDur(d);
+                  // A freshly loaded file has no region (0–0). The backend then
+                  // builds an all-zero mask and the upload contributes nothing,
+                  // so the user gets plain text-to-audio and no error. Default
+                  // to the middle third so a region is visible and draggable.
+                  const cur = useGenerateParamsStore.getState();
+                  if (d > 0 && cur.maskStart === 0 && cur.maskEnd === 0) patch({ maskStart: d / 3, maskEnd: (2 * d) / 3 });
+                }}
                 region={inpaintDur > 0 ? {
                   start: p.maskStart / inpaintDur,
                   end: p.maskEnd / inpaintDur,
@@ -675,7 +788,9 @@ export const AdvancedGenPanel: React.FC<{
 
       {/* ═══ UPPER: rails span BOTH rows (no blank space below them); the
           chimera card sits in row 1, the viz/prompt row in row 2 ═══ */}
-      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 156px' }}>
+      {/* min-h-150: below 600 logical px the panel scrolls (outer overflow-y-auto)
+          instead of clipping the rail's lower controls behind an open dock. */}
+      <div className="flex-1 min-h-150 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 156px' }}>
 
         {/* ── LEFT RAIL: Presets · Controls · Templates (GENERATE lives in footer CREATE) ── */}
         <div className="flex flex-col gap-1.5 min-h-0 row-span-2">
@@ -709,7 +824,7 @@ export const AdvancedGenPanel: React.FC<{
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
                 <label htmlFor="gen-model" className="text-[11px] text-zinc-300 w-16 shrink-0">Model</label>
-                <select id="gen-model" name="gen-model" className="compact-input flex-1" value={p.model} onChange={(e) => {
+                <select id="gen-model" name="gen-model" className="compact-input flex-1 min-w-0" value={p.model} onChange={(e) => {
                   const m = e.target.value; const prev = p.model;
                   const isMag = m.startsWith('magenta-');
                   // A registered local checkpoint follows its filename's ARC/RF
@@ -770,14 +885,25 @@ export const AdvancedGenPanel: React.FC<{
                     : st === 'error' ? 'border-red-500/40 text-red-300 bg-red-500/10'
                     : st === 'ready' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
                     : 'border-zinc-600/40 text-zinc-400 bg-white/3';
-                  const label = st === 'starting' ? 'LOADING' : st === 'setup' ? 'SETUP' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
-                  const title = st === 'setup'
-                    ? 'The Magenta RT2 engine is not installed yet. Double-click Setup-MRT2.bat (in sidecars/magenta-rt2-nvidia) once — it checks the PC, asks consent, and installs everything. Then pick Magenta here again.'
-                    : 'Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio.';
+                  const label = st === 'starting' ? 'LOADING' : st === 'error' ? 'ERROR' : st === 'ready' ? 'READY' : 'OFF';
+                  // 'setup' is the one state the user can act on, so it IS the
+                  // action: a pill that installs, not a tooltip naming a script.
+                  if (st === 'setup') {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => void installMagentaEngine()}
+                        title="Install the Magenta RT2 engine. It opens its own window, checks the PC, says how large the downloads are, and asks before installing anything."
+                        className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 ${cls} hover:bg-amber-500/20 hover:text-amber-100 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/70`}
+                      >
+                        Install
+                      </button>
+                    );
+                  }
                   return (
                     <span
                       className={`text-[8px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border shrink-0 ${cls}`}
-                      title={title}
+                      title="Magenta RT2 engine. The GPU swap runs by itself when the Model changes: picking Magenta parks Stable Audio and starts the engine; picking an SA3 model stops it and restores Stable Audio."
                     >
                       {label}
                     </span>
@@ -812,11 +938,11 @@ export const AdvancedGenPanel: React.FC<{
           </div>
 
           {/* Templates — fills the rail's lower region */}
-          <div className="flex-1 min-h-0"><TemplatesPanel /></div>
+          <div className="flex-1 min-h-24 overflow-hidden flex flex-col"><TemplatesPanel /></div>
 
           {/* SAMPLING (Magenta) ↔ TEMP/SAMPLER (SA3) — moved from the chimera card */}
           {isMagenta ? (
-            <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+            <div className={`${colBox} p-2 flex flex-col gap-1 shrink min-h-40 basis-1/2`}>
               <span className={subTitle}>SAMPLING</span>
               <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
                 <SlideKnob label="Temp" value={p.magTemperature} onChange={(v) => sf('magTemperature', v)} min={0} max={2} step={0.05} size={32} />
@@ -833,7 +959,7 @@ export const AdvancedGenPanel: React.FC<{
               </div>
             </div>
           ) : (
-            <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+            <div className={`${colBox} p-2 flex flex-col gap-1 shrink min-h-40 basis-1/2`}>
               <span className={subTitle}>TEMP</span>
               <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
                 <SlideKnob label="Init nz" value={p.initNoise} onChange={(v) => sf('initNoise', v)} min={0} max={1} tipKey="initNoise" size={32} />
@@ -1123,9 +1249,23 @@ export const AdvancedGenPanel: React.FC<{
             </div>
           </div>
           <div className="relative flex-1 min-h-0">
-            <textarea name="gen-prompt" className="compact-input w-full resize-none h-full"
+            <label htmlFor="gen-prompt" className="sr-only">Prompt</label>
+            <textarea id="gen-prompt" name="gen-prompt" ref={promptRef}
+              className={`compact-input w-full resize-none h-full ${promptRequired ? 'border-red-500/70' : ''}`}
               placeholder={isMagenta ? 'describe the vibe — instruments, mood, genre, era…' : '120 BPM house loop, deep sub bass, crispy hi-hats, minimal percussion…'}
-              value={p.prompt} onChange={(e) => sf('prompt', e.target.value)} maxLength={1000} />
+              aria-invalid={promptRequired || undefined}
+              aria-describedby={promptRequired ? 'gen-prompt-error' : undefined}
+              value={p.prompt}
+              onChange={(e) => {
+                sf('prompt', e.target.value);
+                if (promptRequired) useGenerateStore.setState({ error: null, statusLabel: 'READY' });
+              }}
+              maxLength={1000} />
+            {promptRequired && (
+              <span id="gen-prompt-error" role="alert" className="absolute bottom-1 left-2 right-16 truncate text-[9px] text-red-300">
+                {genError}
+              </span>
+            )}
             <span className="absolute bottom-1 right-2 text-[9px] text-zinc-500">{p.prompt.length}/1000</span>
           </div>
           {isMagenta ? (
@@ -1145,11 +1285,11 @@ export const AdvancedGenPanel: React.FC<{
               </button>
             </div>
           ) : (
-          <div className="relative shrink-0">
-            <textarea name="gen-negative-prompt" className="compact-input w-full resize-none h-9"
+          <div className="shrink-0 flex items-start gap-1">
+            <textarea name="gen-negative-prompt" className="compact-input flex-1 min-w-0 resize-none h-9"
               placeholder="negative: vocals, distortion, harshness…"
               value={p.negativePrompt} onChange={(e) => sf('negativePrompt', e.target.value)} maxLength={500} />
-            <div className="absolute top-1 right-2 flex items-center gap-1">
+            <div className="shrink-0 flex items-center gap-1 pt-1">
               <SavedPromptsDropdown type="negative" value={p.negativePrompt} onChange={(v) => sf('negativePrompt', v)} />
               <button
                 onClick={async () => {

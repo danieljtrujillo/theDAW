@@ -6,7 +6,8 @@ arrangements rendered as MusicXML:
   - ``lead-sheet``      melody (skyline) plus chord symbols
   - ``piano-reduction`` two-staff grand-staff reduction split at middle C
   - ``simplified``      single-staff melody only, quantized
-  - ``band-score``      one staff per source stem
+  - ``band-score``      one staff per source stem (percussion staff for drum
+                        MIDIs, clef by register, redundant 'full' mix skipped)
 
 Pure music21; no new dependencies. Each builder returns a ``music21`` score
 that the engine writes to MusicXML, so the results render in the existing
@@ -25,6 +26,24 @@ STYLES = ("lead-sheet", "piano-reduction", "simplified", "band-score")
 
 # Pitches at or above middle C (MIDI 60) go to the treble staff.
 _TREBLE_BASS_SPLIT = 60
+
+# Band-score register control. A stem whose median pitch is below A3 (57)
+# reads on a bass clef. Each clef gets a window of three ledger lines above
+# and below the staff; pitches outside it are folded by octave INTO the
+# window (pitch class preserved, register normalised), because basic-pitch
+# stems span MIDI 22-101 and a ten-ledger-line stack under a treble staff
+# inflates every system past the page.
+_BAND_BASS_CLEF_BELOW = 57
+_CLEF_WINDOWS: dict[str, tuple[int, int]] = {
+    "G": (53, 88),  # F3 .. E6 on a treble staff
+    "F": (33, 67),  # A1 .. G4 on a bass staff
+}
+# Keep the lowest pitch plus the top three: a sane skyline and measure width.
+_BAND_MAX_CHORD = 4
+# Stem names that are a second transcription of the whole mix; redundant
+# beside the real stems (measured Jaccard 0.47 against the stem union) and
+# always the tallest staff.
+_MIX_STEM_NAMES = frozenset({"full", "mix", "master"})
 
 
 def arrange(sources: list[Path], style: str, *, title: str = "") -> dict[str, Any]:
@@ -48,9 +67,10 @@ def arrange(sources: list[Path], style: str, *, title: str = "") -> dict[str, An
         if not path.is_file():
             return {"ok": False, "error": f"source not found: {path}"}
 
+    extra_stats: dict[str, Any] = {}
     try:
         if style == "band-score":
-            score = _band_score(paths, title)
+            score, extra_stats = _band_score(paths, title)
         else:
             base = converter.parse(str(paths[0]))
             try:
@@ -85,12 +105,9 @@ def arrange(sources: list[Path], style: str, *, title: str = "") -> dict[str, An
     note_count = len(score.flatten().notes)
     if note_count == 0:
         return {"ok": False, "error": "no notes found in source(s)"}
-    return {
-        "ok": True,
-        "style": style,
-        "score": score,
-        "stats": {"parts": len(score.parts), "notes": note_count},
-    }
+    stats: dict[str, Any] = {"parts": len(score.parts), "notes": note_count}
+    stats.update(extra_stats)
+    return {"ok": True, "style": style, "score": score, "stats": stats}
 
 
 def _skyline_chords(base: Any) -> list[Any]:
@@ -215,28 +232,150 @@ def _lead_sheet(base: Any, title: str) -> Any:
     return score
 
 
-def _band_score(paths: list[Path], title: str) -> Any:
+def _stem_base(path: Path) -> str:
+    """Normalised stem name: lower-case, last ``__``-separated segment
+    (``Song__full`` -> ``full``)."""
+    stem = path.stem.lower().strip()
+    if "__" in stem:
+        stem = stem.rsplit("__", 1)[-1]
+    return stem
+
+
+def _is_mix_stem(path: Path) -> bool:
+    return _stem_base(path) in _MIX_STEM_NAMES
+
+
+def _is_drum_named(path: Path) -> bool:
+    base = _stem_base(path)
+    return "drum" in base or "percussion" in base
+
+
+def _clef_for_pitches(midis: list[int]) -> str:
+    """'F' (bass) when the median pitch sits below A3, else 'G' (treble)."""
+    if not midis:
+        return "G"
+    ordered = sorted(midis)
+    median = ordered[len(ordered) // 2]
+    return "F" if median < _BAND_BASS_CLEF_BELOW else "G"
+
+
+def fold_into_window(midi: int, low: int, high: int) -> int:
+    """Move ``midi`` by whole octaves until it lies in ``[low, high]``.
+
+    The window is always at least an octave wide, so the result is unique.
+    """
+    while midi < low:
+        midi += 12
+    while midi > high:
+        midi -= 12
+    return midi
+
+
+def _band_voice(
+    pitches: list[Any], quarter_length: float, window: tuple[int, int]
+) -> tuple[Any, int]:
+    """One band-score sonority: pitches folded into the clef window, deduped,
+    capped at ``_BAND_MAX_CHORD`` (lowest + top three). Returns the element and
+    the number of pitches that were folded."""
+    from music21 import pitch as m21pitch  # type: ignore[import]
+
+    low, high = window
+    folded = 0
+    seen: set[int] = set()
+    kept: list[int] = []
+    for p in pitches:
+        midi = int(p.midi)
+        target = fold_into_window(midi, low, high)
+        if target != midi:
+            folded += 1
+        if target not in seen:
+            seen.add(target)
+            kept.append(target)
+    kept.sort()
+    if len(kept) > _BAND_MAX_CHORD:
+        kept = [kept[0]] + kept[-(_BAND_MAX_CHORD - 1) :]
+    return _voice([m21pitch.Pitch(midi=m) for m in kept], quarter_length), folded
+
+
+def _band_score(paths: list[Path], title: str) -> tuple[Any, dict[str, Any]]:
+    """One staff per stem.
+
+    * With more than one source, a whole-mix stem (``full``/``mix``/``master``)
+      is skipped: it duplicates the real stems and is always the tallest staff.
+    * A drum-kit MIDI (``is_drum`` instruments, or GM kit pitches in a file
+      named like a drum stem) becomes an unpitched percussion staff.
+    * A drum-NAMED stem that is NOT kit data (a pitched transcription of a
+      drum stem: hundreds of spurious notes across five octaves) is skipped
+      when other stems exist: omitting is honest, chordifying is garbage.
+    * Every other stem picks its clef from its median pitch, folds outliers by
+      octave into a three-ledger-line window and caps chords at four pitches.
+
+    Returns ``(score, stats)`` with ``stats = {skipped, skip_reasons, clefs,
+    folded_notes}``.
+    """
     from music21 import chord, clef, converter, stream  # type: ignore[import]
 
+    from .percussion import build_percussion_part, is_drum_midi
+
     score = _new_score(title, "Band Score")
+    skipped: list[str] = []
+    skip_reasons: dict[str, str] = {}
+    clefs: dict[str, str] = {}
+    folded_total = 0
+    multi = len(paths) > 1
+
     for index, path in enumerate(paths):
+        part_name = path.stem[:24] or f"Part {index + 1}"
+        drum_kit = is_drum_midi(path)
+        if multi and not drum_kit and _is_mix_stem(path):
+            skipped.append(path.stem)
+            skip_reasons[path.stem] = "whole-mix transcription duplicates the stems"
+            continue
+        if multi and not drum_kit and _is_drum_named(path):
+            skipped.append(path.stem)
+            skip_reasons[path.stem] = (
+                "pitched transcription of a drum stem (no kit data)"
+            )
+            continue
+
+        if drum_kit:
+            part = build_percussion_part(path, title=part_name)
+            clefs[part_name] = "percussion"
+            score.insert(0, part)
+            continue
+
         source = converter.parse(str(path))
         try:
             source = source.quantize((4, 3), inPlace=False, recurse=True)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
             log.debug("arrange: quantize skipped for %s: %s", path, exc)
+        sonorities = list(source.chordify().flatten().getElementsByClass(chord.Chord))
+        clef_sign = _clef_for_pitches(
+            [int(p.midi) for sonority in sonorities for p in sonority.pitches]
+        )
+        window = _CLEF_WINDOWS[clef_sign]
         # Rebuild each stem into a fresh part (as the other builders do) so the
         # MusicXML writer bars it with a consistent time signature. Inserting
         # chordify()'s pre-measured stream directly produced scores OSMD could
         # not render ("Cannot read properties of undefined (reading
         # 'denominator')").
         part = stream.Part()
-        part.partName = path.stem[:24] or f"Part {index + 1}"
-        part.insert(0, clef.TrebleClef())
-        for sonority in source.chordify().flatten().getElementsByClass(chord.Chord):
-            part.insert(
-                sonority.offset,
-                _voice(list(sonority.pitches), sonority.duration.quarterLength),
+        part.partName = part_name
+        part.partAbbreviation = part_name[:6]
+        part.insert(0, clef.BassClef() if clef_sign == "F" else clef.TrebleClef())
+        for sonority in sonorities:
+            element, folded = _band_voice(
+                list(sonority.pitches), sonority.duration.quarterLength, window
             )
+            folded_total += folded
+            part.insert(sonority.offset, element)
+        clefs[part_name] = clef_sign
         score.insert(0, part)
-    return score
+
+    stats: dict[str, Any] = {
+        "skipped": skipped,
+        "skip_reasons": skip_reasons,
+        "clefs": clefs,
+        "folded_notes": folded_total,
+    }
+    return score, stats

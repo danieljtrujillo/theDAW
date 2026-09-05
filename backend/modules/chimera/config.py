@@ -7,6 +7,7 @@ restarting the server).
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import shutil
 import subprocess
@@ -20,6 +21,11 @@ class ToolchainStatus(TypedDict):
     aubio_source: Optional[str]
     ffmpeg: bool
     librubberband: bool
+    # v2: rubberband filter exposes pitch + transients options (ffmpeg >= 4.x
+    # builds with librubberband do; older/odd builds may not).
+    rubberband_pitch: bool
+    # v2: Spotify pedalboard importable (used by the mastering stage).
+    pedalboard: bool
     versions: dict[str, Optional[str]]
     install_hint: Optional[str]
 
@@ -73,16 +79,30 @@ def _detect_aubio() -> tuple[bool, Optional[str], Optional[str]]:
     return False, None, None
 
 
-def _detect_ffmpeg() -> tuple[bool, bool, Optional[str]]:
+def _detect_ffmpeg() -> tuple[bool, bool, bool, Optional[str]]:
+    """Return ``(ffmpeg, librubberband, rubberband_pitch, version)``."""
     if not shutil.which("ffmpeg"):
-        return False, False, None
+        return False, False, False, None
     code, out = _run(["ffmpeg", "-version"])
     if code != 0:
-        return False, False, None
+        return False, False, False, None
     version = _first_line(out)
     code, filters = _run(["ffmpeg", "-hide_banner", "-filters"])
     librubberband = code == 0 and "rubberband" in filters.lower()
-    return True, librubberband, version
+    rubberband_pitch = False
+    if librubberband:
+        code, help_out = _run(["ffmpeg", "-hide_banner", "-h", "filter=rubberband"])
+        rubberband_pitch = (
+            code == 0 and "pitch" in help_out and "transients" in help_out
+        )
+    return True, librubberband, rubberband_pitch, version
+
+
+def _detect_pedalboard() -> bool:
+    try:
+        return importlib.util.find_spec("pedalboard") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _build_hint(aubio_ok: bool, ffmpeg_ok: bool, rb_ok: bool) -> Optional[str]:
@@ -107,19 +127,25 @@ def probe(force: bool = False) -> ToolchainStatus:
     if _cached is not None and not force:
         return _cached
     aubio_ok, aubio_source, aubio_ver = _detect_aubio()
-    ffmpeg_ok, rb_ok, ffmpeg_ver = _detect_ffmpeg()
+    ffmpeg_ok, rb_ok, rb_pitch_ok, ffmpeg_ver = _detect_ffmpeg()
+    pedalboard_ok = _detect_pedalboard()
     _cached = {
         "aubio": aubio_ok,
         "aubio_source": aubio_source,
         "ffmpeg": ffmpeg_ok,
         "librubberband": rb_ok,
+        "rubberband_pitch": rb_pitch_ok,
+        "pedalboard": pedalboard_ok,
         "versions": {"aubio": aubio_ver, "ffmpeg": ffmpeg_ver},
         "install_hint": _build_hint(aubio_ok, ffmpeg_ok, rb_ok),
     }
     log.info(
-        "chimera toolchain probe: aubio=%s ffmpeg=%s librubberband=%s",
+        "chimera toolchain probe: aubio=%s ffmpeg=%s librubberband=%s "
+        "rubberband_pitch=%s pedalboard=%s",
         aubio_ok,
         ffmpeg_ok,
         rb_ok,
+        rb_pitch_ok,
+        pedalboard_ok,
     )
     return _cached

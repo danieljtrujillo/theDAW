@@ -73,6 +73,7 @@ html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:cen
 /* ── KNOBS ROW ── */
 .knobs-row{display:flex;align-items:flex-start;justify-content:center;gap:8px;flex-shrink:0;padding:6px 0 2px}
 .knob-unit{display:flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;user-select:none;width:78px}
+.knob-unit:focus-visible{outline:2px solid #f59e0b;outline-offset:2px;border-radius:6px}
 .ku-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#3e4250;letter-spacing:.6px;text-transform:uppercase;font-weight:600;margin-bottom:2px;text-align:center}
 .ku-svg{display:block}
 .ku-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#a0a4b0;line-height:1;margin-top:1px;text-align:center}
@@ -184,8 +185,8 @@ input[type="file"]{display:none}
   <div class="footer">
     <button class="footer-btn" id="btnBypass">Bypass</button>
     <button class="footer-btn active" id="btnMaximizer">Maximizer</button>
-    <button class="footer-btn" id="btnOversampling">Oversampling</button>
-    <select class="footer-select" id="oversampleSel">
+    <label class="footer-btn" for="oversampleSel" id="btnOversampling" title="Preview only: the backend limiter renders at full precision">Oversampling</label>
+    <select class="footer-select" id="oversampleSel" name="oversampleSel">
       <option>2x</option>
       <option>4x</option>
       <option>8x</option>
@@ -197,12 +198,14 @@ input[type="file"]{display:none}
     <button class="footer-btn" id="btnProcess">Process</button>
   </div>
 </div>
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" name="fileInput" accept="audio/*" aria-label="Load audio file">
 <audio id="audioEl" crossorigin="anonymous"></audio>
 
+<script src="module-kit.js"></script>
 <script>
 (function(){
 'use strict';
+const kit = window.theDAWKit;
 
 let inputFile = null;
 
@@ -213,17 +216,19 @@ const ACCENT = '#f59e0b';
 const ACCENT_DIM = 'rgba(245,158,11,0.12)';
 const KNOB_SIZE = 64;
 
+/* One knob per backend parameter of mastering/maximizer (ceiling, targetLUFS,
+   targetLRA, attack, release) plus the preview monitor level. The former
+   Character / Stereo / Upward / Soft Clip / Transient / Mix knobs drove
+   nothing (neither the backend nor the live limiter) and are gone. */
 const knobDefs = [
-  { id:'gain',      label:'Gain',       min:-12, max:12,  val:1.8,  step:0.1, unit:'dB',  bipolar:true  },
-  { id:'output',    label:'Output Level',min:-12, max:0,   val:-1.0, step:0.1, unit:'dB',  bipolar:false },
-  { id:'truepeak',  label:'True Peak',   min:-3,  max:0,   val:-1.0, step:0.1, unit:'dB',  bipolar:false, toggle:true, toggled:true },
-  { id:'character', label:'Character',   min:0,   max:100, val:50,   step:1,   unit:'',    bipolar:false, valFmt:v=>['Transparent','Warm','Aggressive','Saturate'][Math.min(3,Math.floor(v/26))] },
-  { id:'stereo',    label:'Stereo',      min:0,   max:200, val:100,  step:1,   unit:'%',   bipolar:false },
-  { id:'upward',    label:'Upward',      min:0,   max:100, val:15,   step:1,   unit:'%',   bipolar:false },
-  { id:'softclip',  label:'Soft Clip',   min:0,   max:100, val:15,   step:1,   unit:'%',   bipolar:false },
-  { id:'transient', label:'Transient',   min:0,   max:100, val:20,   step:1,   unit:'%',   bipolar:false },
-  { id:'mix',       label:'Mix',         min:0,   max:100, val:100,  step:1,   unit:'%',   bipolar:false },
+  { id:'loudness',  label:'Loudness',    min:-24, max:-6,  val:-14,  step:0.5, unit:'LUFS', bipolar:false, backend:'targetLUFS' },
+  { id:'truepeak',  label:'Ceiling',     min:-3,  max:0,   val:-1.0, step:0.1, unit:'dBTP', bipolar:false, backend:'ceiling', toggle:true, toggled:true },
+  { id:'lra',       label:'LRA',         min:1,   max:20,  val:9,    step:0.5, unit:'LU',   bipolar:false, backend:'targetLRA' },
+  { id:'attack',    label:'Attack',      min:1,   max:50,  val:5,    step:0.5, unit:'ms',   bipolar:false, backend:'attack' },
+  { id:'release',   label:'Release',     min:10,  max:2000,val:50,   step:5,   unit:'ms',   bipolar:false, backend:'release' },
+  { id:'output',    label:'Output Level',min:-12, max:0,   val:-1.0, step:0.1, unit:'dB',   bipolar:false, preview:true },
 ];
+const KNOB_DEFAULTS = { loudness:-14, truepeak:-1.0, lra:9, attack:5, release:50, output:-1.0 };
 
 /* ============================================================
    SVG ROTARY KNOB RENDERER
@@ -337,22 +342,41 @@ knobDefs.forEach(def => {
 
   unit.appendChild(valEl);
   knobsRow.appendChild(unit);
+  if (def.preview) { label.title = 'Preview monitor level only (not sent to the backend)'; label.textContent = def.label + ' preview'; }
 
   renderKnobSVG(svg, def);
+  kit.slider(unit, {
+    label: def.label + (def.preview ? ' (preview only)' : ''),
+    min: def.min, max: def.max, step: def.step, wheel: true,
+    get: () => def.val, set: v => setKnob(def, v), format: v => formatKnob(def, v),
+    reset: KNOB_DEFAULTS[def.id], noDblClick: true,
+  });
   updateKnobValue(def);
 });
 
+function formatKnob(def, v) {
+  if (def.valFmt) return def.valFmt(v);
+  if (def.unit === '%') return Math.round(v) + '%';
+  if (def.unit === 'dB') return (v > 0 ? '+' : '') + v.toFixed(1) + ' dB';
+  if (def.unit === 'ms') return (v >= 1000 ? (v / 1000).toFixed(2) + ' s' : v.toFixed(v < 10 ? 1 : 0) + ' ms');
+  if (def.unit) return v.toFixed(1) + ' ' + def.unit;
+  return v.toFixed(1);
+}
 function updateKnobValue(def) {
   const el = document.getElementById('kval_' + def.id);
-  if (def.valFmt) {
-    el.textContent = def.valFmt(def.val);
-  } else if (def.unit === '%') {
-    el.textContent = Math.round(def.val) + '%';
-  } else if (def.unit === 'dB') {
-    el.textContent = (def.val > 0 ? '+' : '') + def.val.toFixed(1) + ' dB';
-  } else {
-    el.textContent = def.val.toFixed(1);
-  }
+  el.textContent = formatKnob(def, def.val);
+  const svgEl = document.getElementById('knob_' + def.id);
+  const unit = svgEl ? svgEl.closest('.knob-unit') : null;
+  if (unit) kit.sync(unit);
+}
+function setKnob(def, nv) {
+  nv = Math.round(nv / def.step) * def.step;
+  nv = Math.max(def.min, Math.min(def.max, nv));
+  def.val = +nv.toFixed(4);
+  knobState[def.id] = def.val;
+  renderKnobSVG(document.getElementById('knob_' + def.id), def);
+  updateKnobValue(def);
+  updateLimiter();
 }
 
 /* ============================================================
@@ -395,8 +419,7 @@ knobsRow.addEventListener('dblclick', e => {
   const id = unit.dataset.knobId;
   const origDef = knobDefs.find(d => d.id === id);
   if (!origDef) return;
-  const defaultVals = { gain:1.8, output:-1.0, truepeak:-1.0, character:50, stereo:100, upward:15, softclip:15, transient:20, mix:100 };
-  origDef.val = defaultVals[id] || 0;
+  origDef.val = KNOB_DEFAULTS[id] !== undefined ? KNOB_DEFAULTS[id] : 0;
   knobState[id] = origDef.val;
   renderKnobSVG(document.getElementById('knob_' + id), origDef);
   updateKnobValue(origDef);
@@ -441,11 +464,15 @@ function connectSource(el) {
 }
 
 function updateLimiter() {
-  const gain = knobState.gain || 0;
-  const output = knobState.output || -1;
-  const ceiling = knobState.truepeak || -1;
-  inputGain.gain.value = Math.pow(10, gain / 20);
+  // Preview: drive into the brickwall by the distance from -14 LUFS (louder
+  // target = more gain), ceiling = threshold, attack/release follow the knobs.
+  const loud = knobState.loudness !== undefined ? knobState.loudness : -14;
+  const output = knobState.output !== undefined ? knobState.output : -1;
+  const ceiling = knobState.truepeak !== undefined ? knobState.truepeak : -1;
+  inputGain.gain.value = Math.pow(10, (loud + 14) / 20);
   compressor.threshold.value = ceiling;
+  compressor.release.value = Math.max(0.01, Math.min(1, (knobState.release !== undefined ? knobState.release : 50) / 1000));
+  compressor.attack.value = Math.max(0.001, Math.min(0.05, (knobState.attack !== undefined ? knobState.attack : 5) / 1000));
   outputGain.gain.value = Math.pow(10, output / 20);
 }
 updateLimiter();
@@ -495,6 +522,9 @@ const ST_FRAMES = 180; /* ~3 sec at 60fps */
 document.querySelectorAll('.pill').forEach(btn => {
   btn.addEventListener('click', () => btn.classList.toggle('active'));
 });
+kit.toggleGroup('.pill', 'active');
+kit.toggleGroup('.ku-tog-btn', 'on');
+kit.toggleGroup('.footer-btn:not(#btnProcess):not(#btnLoad):not(#btnTone)', 'active');
 
 /* ============================================================
    MAIN DRAW LOOP
@@ -710,12 +740,13 @@ async function processAudio() {
   const statusEl = document.getElementById('status');
   statusEl.textContent = 'Processing...';
 
+  const kv = (id, d) => (getKnobValue(id) !== null ? getKnobValue(id) : d);
   const params = {
-    ceiling: Math.max(-3, Math.min(0, getKnobValue('truepeak') !== null ? getKnobValue('truepeak') : (getKnobValue('output') !== null ? getKnobValue('output') : -1))),
-    targetLUFS: Math.max(-24, Math.min(-6, getKnobValue('gain') !== null ? -14 + getKnobValue('gain') : -14)),
-    targetLRA: 9,
-    attack: Math.max(1, Math.min(50, 5)),
-    release: Math.max(10, Math.min(2000, 50))
+    ceiling: Math.max(-3, Math.min(0, kv('truepeak', -1))),
+    targetLUFS: Math.max(-24, Math.min(-6, kv('loudness', -14))),
+    targetLRA: Math.max(1, Math.min(20, kv('lra', 9))),
+    attack: Math.max(1, Math.min(50, kv('attack', 5))),
+    release: Math.max(10, Math.min(2000, kv('release', 50)))
   };
 
   const fd = new FormData();

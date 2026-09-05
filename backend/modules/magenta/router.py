@@ -1,14 +1,28 @@
 """Magenta RT2 module — proxies the WSL2/CUDA mrt2 studio sidecar.
 
 Endpoints (mounted at /api/magenta):
-    GET  /probe          -> sidecar health (+ availability flag)
-    POST /generate       -> start a generation job; returns {job:{id}}
-    GET  /jobs/{job_id}  -> poll job status/result (mirrors the main JOBS shape)
+    GET  /probe                   -> sidecar health (+ availability flag + state)
+    POST /generate                -> start a generation job; returns {job:{id}}
+    GET  /jobs/{job_id}           -> poll job status/result (mirrors the main JOBS shape)
+    GET  /engine/status           -> health + install probe + machine-readable state
+    POST /engine/start|stop|restart
+    POST /engine/install          -> launch the consented one-time installer
+    GET  /engine/models           -> the checkpoints the sidecar supports (+ active)
+    PUT  /engine/model            -> pick the checkpoint the engine loads
+    GET  /engine/checkpoints      -> checkpoint download jobs + installed files
+    POST /engine/checkpoints/{model}/download
+    POST /engine/checkpoints/clear
+
+Every 412 carries the same detail shape: the install probe's keys plus
+``state`` ("not_installed" | "not_running" | "starting" | "probe_failed"),
+``installable`` and ``message``. ``setup_required`` is kept for older clients
+and is true only for ``not_installed``.
 
 The generation itself is one-shot on the sidecar, but we wrap it in the same
 job/poll shape the frontend already uses for SA3 generations so the UI flow is
 uniform. The model is text-prompt -> audio; ``model_size`` is accepted for
-forward-compatibility but the local studio server serves a single fixed model.
+forward-compatibility — the engine serves whichever checkpoint was picked with
+``PUT /engine/model`` (mrt2_small by default).
 """
 
 from __future__ import annotations
@@ -20,8 +34,10 @@ import json
 import logging
 import time
 import uuid
+from typing import Callable
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from . import sidecar
 
@@ -33,6 +49,45 @@ MAGENTA_JOBS: dict[str, dict] = {}
 # Serializes on-demand engine bring-up so concurrent CREATE presses don't each
 # park SA3 + spawn WSL; the first wins, the rest see it ready inside the lock.
 _bringup_lock = asyncio.Lock()
+
+NOT_INSTALLED_MESSAGE = (
+    "The Magenta RT2 engine is not installed yet. Installing checks the PC, "
+    "asks consent, and sets up everything."
+)
+
+
+def _gate_detail(setup: dict, state: str, message: str) -> dict:
+    """The 412 payload. Flat install-probe keys + `state`, backward compatible
+    with clients that only know `setup_required` / `installable` / `message`."""
+    return {
+        "setup_required": state == "not_installed",
+        **setup,
+        "installable": sidecar.installer_available(),
+        "state": state,
+        "message": message,
+    }
+
+
+def _setup_gate(setup: dict) -> HTTPException | None:
+    """412 for the two install states a caller cannot proceed from. A probe
+    that did not answer is reported as exactly that — never as "not
+    installed", which is what used to send installed users back to Install."""
+    if setup.get("probe_failed"):
+        return HTTPException(
+            412,
+            _gate_detail(
+                setup,
+                "probe_failed",
+                "Couldn't check whether Magenta RT2 is installed: "
+                f"{setup.get('probe_error') or 'no answer from WSL'}. "
+                "Retry in a moment.",
+            ),
+        )
+    if not setup.get("ready"):
+        return HTTPException(
+            412, _gate_detail(setup, "not_installed", NOT_INSTALLED_MESSAGE)
+        )
+    return None
 
 
 def _normalize_style_audio(audio_bytes: bytes) -> bytes:
@@ -95,13 +150,17 @@ def _normalize_style_audio(audio_bytes: bytes) -> bytes:
             pass
 
 
-async def _bring_up_sidecar(timeout: float = 240.0) -> None:
+async def _bring_up_sidecar(
+    timeout: float = 240.0, on_state: Callable[[str, str], None] | None = None
+) -> None:
     """Ensure the extended sidecar is up and ready, starting it on demand.
 
     No-op when it is already available. Otherwise: refuse with an actionable
     message if the WSL side was never installed; else park SA3 to free the GPU,
     stop any stray engine, spawn ours, and wait for /health to report ready.
-    Raises RuntimeError (carried into the job's error) on setup-missing or timeout.
+    ``on_state`` (optional) is told "starting" / "running" so a job can show
+    the bring-up to whoever is polling it. Raises RuntimeError (carried into
+    the job's error) on setup-missing or timeout.
     """
     if (await sidecar.health()).get("available"):
         return
@@ -111,11 +170,18 @@ async def _bring_up_sidecar(timeout: float = 240.0) -> None:
         if h.get("available"):
             return
         setup = await loop.run_in_executor(None, sidecar.setup_state)
+        if setup.get("probe_failed"):
+            raise RuntimeError(
+                "Couldn't check whether Magenta RT2 is installed: "
+                f"{setup.get('probe_error')}. Try again in a moment."
+            )
         if not setup.get("ready"):
             raise RuntimeError(
-                "Magenta RT2 is not installed. Run Setup-MRT2.bat "
-                "(sidecars/magenta-rt2-nvidia) once to install it, then try again."
+                "Magenta RT2 is not installed yet. Install it from the Magenta "
+                "card in Settings → Models."
             )
+        if on_state:
+            on_state("starting", "starting the Magenta engine")
         # Park SA3 so the engine's JAX runtime finds a free GPU, then (re)spawn.
         if not (h.get("reachable") and h.get("protocol_ok")):
             try:
@@ -132,8 +198,19 @@ async def _bring_up_sidecar(timeout: float = 240.0) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(2.0)
-            if (await sidecar.health()).get("available"):
+            h = await sidecar.health()
+            if h.get("available"):
+                if on_state:
+                    on_state("running", "generating")
                 return
+            if on_state and h.get("status"):
+                on_state("starting", str(h.get("status")))
+            if sidecar.engine_state(h, None) == "error":
+                raise RuntimeError(
+                    "The Magenta RT2 engine failed to load its model: "
+                    f"{h.get('error') or h.get('status')}. Pick another model in "
+                    "Settings → Models or check logs/magenta-sidecar.log."
+                )
         raise RuntimeError(
             "The Magenta RT2 engine started but did not become ready in time. "
             "Check the WSL sidecar, then try again."
@@ -142,7 +219,13 @@ async def _bring_up_sidecar(timeout: float = 240.0) -> None:
 
 @router.get("/probe")
 async def probe():
-    return await sidecar.health()
+    h = await sidecar.health()
+    setup = None
+    if not (h.get("reachable") and h.get("protocol_ok")):
+        setup = await asyncio.get_event_loop().run_in_executor(
+            None, sidecar.setup_state
+        )
+    return {**h, "state": sidecar.engine_state(h, setup)}
 
 
 # ── engine lifecycle: the Model dropdown's GPU swap, no terminal anywhere ────
@@ -153,30 +236,24 @@ async def probe():
 # swaps SA3 back onto the GPU. Both refuse with 409 while a generation runs.
 
 
-@router.post("/engine/start")
-async def engine_start():
+async def _start_engine(refresh: bool) -> dict:
     h = await sidecar.health()
     if h.get("reachable") and h.get("protocol_ok"):
         # The extended engine is already up (ready or still loading) — keep it.
-        return {"ok": True, "already_running": True, **h}
+        return {
+            "ok": True,
+            "already_running": True,
+            "state": sidecar.engine_state(h, None),
+            **h,
+        }
 
     # Refuse with a precise diagnosis when the WSL side was never set up —
     # spawning would just die on a missing venv and read as a vague ERROR.
-    loop_probe = asyncio.get_event_loop()
-    setup = await loop_probe.run_in_executor(None, sidecar.setup_state)
-    if not setup.get("ready"):
-        raise HTTPException(
-            412,
-            {
-                "setup_required": True,
-                **setup,
-                "message": (
-                    "The Magenta RT2 engine is not installed yet. Run "
-                    "Setup-MRT2.bat (sidecars/magenta-rt2-nvidia) once — it "
-                    "checks the PC, asks consent, and installs everything."
-                ),
-            },
-        )
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, lambda: sidecar.setup_state(refresh))
+    gate = _setup_gate(setup)
+    if gate:
+        raise gate
 
     # Park SA3 first so the engine's JAX runtime finds a free GPU. The import is
     # deferred to request time: the server module is fully initialized by then.
@@ -186,10 +263,60 @@ async def engine_start():
 
     # Stop every other magenta engine first (idempotent): a bundled Studio on a
     # DIFFERENT port still holds GPU memory even though the 8777 probe missed it.
-    loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, sidecar.stop_engine)
     spawn = await loop.run_in_executor(None, sidecar.start_engine)
-    return {"ok": True, "already_running": False, "parked": parked, **spawn}
+    return {
+        "ok": True,
+        "already_running": False,
+        "parked": parked,
+        "state": "starting",
+        **spawn,
+    }
+
+
+@router.post("/engine/start")
+async def engine_start(refresh: bool = False):
+    return await _start_engine(refresh)
+
+
+@router.post("/engine/restart")
+async def engine_restart():
+    """Stop whatever engine is up and start again with the currently picked
+    model — the click that applies a model change while the engine runs."""
+    loop = asyncio.get_event_loop()
+    stopped = await loop.run_in_executor(None, sidecar.stop_engine)
+    # Give the port a moment to close so the start path does not see the old
+    # engine as "already running".
+    for _ in range(10):
+        if not (await sidecar.health()).get("reachable"):
+            break
+        await asyncio.sleep(0.5)
+    started = await _start_engine(False)
+    return {**started, "stopped": stopped}
+
+
+@router.post("/engine/install")
+async def engine_install():
+    """Launch the one-time installer — the button that replaces telling the
+    user to find and double-click Setup-MRT2.bat.
+
+    Returns as soon as the installer's console is up; it runs on its own and
+    asks the user for consent there. Poll /engine/status (or re-read the model
+    status in Settings) to see when the install lands.
+    """
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, lambda: sidecar.setup_state(True))
+    if setup.get("ready"):
+        return {"launched": False, "already_installed": True, **setup}
+    try:
+        info = await loop.run_in_executor(None, sidecar.launch_installer)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not start the installer: {exc}") from exc
+    return {"launched": True, **info, **setup}
 
 
 @router.post("/engine/stop")
@@ -205,20 +332,142 @@ async def engine_stop():
         # A running generation blocks the eager onload; the lazy wake path
         # restores the model at the next CREATE anyway.
         restored = {"skipped": e.detail}
-    return {"ok": True, **stopped, "sa3": restored}
+    return {"ok": True, **stopped, "sa3": restored, "state": "not_running"}
 
 
 @router.get("/engine/status")
-async def engine_status():
+async def engine_status(refresh: bool = False):
+    """Health + install probe + one machine-readable ``state``. Pass
+    ``refresh=1`` to bypass the install-probe cache (after an install)."""
     h = await sidecar.health()
-    out = {**h, "process_alive": sidecar.engine_process_alive()}
-    if not (h.get("reachable") and h.get("protocol_ok")):
+    out = {
+        **h,
+        "process_alive": sidecar.engine_process_alive(),
+        "active_model": sidecar.engine_model(),
+        "installable": sidecar.installer_available(),
+    }
+    setup = None
+    if refresh or not (h.get("reachable") and h.get("protocol_ok")):
         setup = await asyncio.get_event_loop().run_in_executor(
-            None, sidecar.setup_state
+            None, lambda: sidecar.setup_state(refresh)
         )
-        out["setup_required"] = not setup.get("ready")
+        out["setup_required"] = bool(
+            not setup.get("ready") and not setup.get("probe_failed")
+        )
         out["setup"] = setup
+    out["state"] = sidecar.engine_state(h, setup)
     return out
+
+
+# ── model pick + checkpoint downloads ───────────────────────────────────────
+
+
+class EngineModelBody(BaseModel):
+    model: str
+
+
+@router.get("/engine/models")
+async def engine_models(refresh: bool = False):
+    """The real model list (what the vendored sidecar can load), each stamped
+    installed / active / runnable on this GPU, plus any download in flight."""
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, lambda: sidecar.setup_state(refresh))
+    catalog = await loop.run_in_executor(None, lambda: sidecar.model_catalog(setup))
+    h = await sidecar.health()
+    return {
+        **catalog,
+        "running_model": h.get("model") if h.get("reachable") else None,
+        "state": sidecar.engine_state(h, setup),
+        "setup": setup,
+    }
+
+
+@router.put("/engine/model")
+async def engine_set_model(body: EngineModelBody):
+    """Pick the checkpoint the engine loads. Persisted (data/magenta_engine.json)
+    and used by the next start; ``restart_required`` says whether a running
+    engine still serves the previous pick."""
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, sidecar.setup_state)
+    spec = sidecar.ENGINE_MODELS.get(body.model)
+    if spec is None:
+        raise HTTPException(
+            400,
+            f"Unknown Magenta model {body.model!r}. The sidecar supports: "
+            + ", ".join(sidecar.ENGINE_MODELS),
+        )
+    if (
+        not setup.get("probe_failed")
+        and setup.get("checkpoints")
+        and spec["checkpoint"] not in setup["checkpoints"]
+    ):
+        raise HTTPException(
+            409,
+            {
+                "message": (
+                    f"{spec['label']} is not downloaded yet ({spec['checkpoint']}). "
+                    "Download it first, then pick it."
+                ),
+                "downloadable": True,
+                "model": body.model,
+            },
+        )
+    sidecar.set_engine_model(body.model)
+    h = await sidecar.health()
+    running_model = h.get("model") if h.get("reachable") else None
+    return {
+        "ok": True,
+        "active": body.model,
+        "running_model": running_model,
+        "restart_required": bool(running_model and running_model != body.model),
+        **(await loop.run_in_executor(None, lambda: sidecar.model_catalog(setup))),
+    }
+
+
+@router.get("/engine/checkpoints")
+async def engine_checkpoints():
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, sidecar.setup_state)
+    jobs = await loop.run_in_executor(None, sidecar.checkpoint_jobs)
+    return {"jobs": jobs, "installed": setup.get("checkpoints") or []}
+
+
+@router.post("/engine/checkpoints/{model_id}/download")
+async def engine_download_checkpoint(model_id: str):
+    """Fetch a checkpoint with the sidecar's own ``mrt checkpoints download``
+    (inside the engine venv), in the background. Needs the venv: without it
+    there is no ``mrt`` to run, and Install is the answer."""
+    if model_id not in sidecar.ENGINE_MODELS:
+        raise HTTPException(
+            404,
+            f"Unknown Magenta model {model_id!r}. The sidecar supports: "
+            + ", ".join(sidecar.ENGINE_MODELS),
+        )
+    loop = asyncio.get_event_loop()
+    setup = await loop.run_in_executor(None, sidecar.setup_state)
+    if setup.get("probe_failed"):
+        gate = _setup_gate(setup)
+        if gate:
+            raise gate
+    if not setup.get("venv"):
+        raise HTTPException(
+            412,
+            _gate_detail(
+                setup,
+                "not_installed",
+                "The Magenta RT2 engine is not installed yet, so there is nothing "
+                "to download the checkpoint with. Install first.",
+            ),
+        )
+    job = await loop.run_in_executor(
+        None, lambda: sidecar.start_checkpoint_download(model_id)
+    )
+    return {"ok": True, "job": job}
+
+
+@router.post("/engine/checkpoints/clear")
+async def engine_clear_checkpoint_jobs():
+    return {"cleared": sidecar.clear_checkpoint_jobs()}
 
 
 @router.get("/jobs/{job_id}")
@@ -253,25 +502,20 @@ async def generate(
     audio_file: UploadFile | None = File(None),
 ):
     # The engine is brought up on demand inside the job (it can take a while to
-    # load). Only fail fast here when the WSL side was never installed, so the
-    # user gets an actionable setup prompt instead of a stuck job.
+    # load). Only fail fast here when the WSL side was never installed (or the
+    # install check did not answer), so the user gets an actionable setup
+    # prompt instead of a stuck job. "Installed, not running" is NOT a 412: the
+    # job starts the engine itself and reports that stage while it does.
     h = await sidecar.health()
+    engine_state = "running"
     if not h.get("available"):
         setup = await asyncio.get_event_loop().run_in_executor(
             None, sidecar.setup_state
         )
-        if not setup.get("ready"):
-            raise HTTPException(
-                412,
-                {
-                    "setup_required": True,
-                    **setup,
-                    "message": (
-                        "Magenta RT2 is not installed. Run Setup-MRT2.bat "
-                        "(sidecars/magenta-rt2-nvidia) once to install it."
-                    ),
-                },
-            )
+        gate = _setup_gate(setup)
+        if gate:
+            raise gate
+        engine_state = sidecar.engine_state(h, setup)
 
     # Read the optional style clip now (the UploadFile is tied to this request)
     # and auto-format it to a canonical WAV the sidecar can always decode.
@@ -303,6 +547,7 @@ async def generate(
         "extend": bool(extend),
         "status": "queued",
         "progress": {"step": 0, "steps": 1},
+        "engine_state": engine_state,
         "created_at": time.time(),
         "result": None,
         "error": None,
@@ -327,7 +572,7 @@ async def generate(
             audio_mime=audio_mime,
         )
     )
-    return {"ok": True, "job": {"id": job_id}}
+    return {"ok": True, "job": {"id": job_id}, "engine_state": engine_state}
 
 
 def _save_magenta_to_library(
@@ -421,10 +666,18 @@ async def _run_generate(
 ):
     job = MAGENTA_JOBS[job_id]
     job["status"] = "running"
+
+    def _on_state(state: str, stage: str) -> None:
+        # Pollers read `engine_state` + `progress.stage` to say "starting the
+        # Magenta engine…" instead of a silent QUEUED for three minutes.
+        job["engine_state"] = state
+        job["progress"] = {**job.get("progress", {}), "stage": stage}
+
     try:
         # Bring the engine up if it isn't already (parks SA3, spawns WSL, waits
         # for the model to load). No-op when the sidecar is already serving.
-        await _bring_up_sidecar()
+        await _bring_up_sidecar(on_state=_on_state)
+        _on_state("running", "generating")
         wav_bytes, meta = await sidecar.generate(
             prompt=prompt,
             duration=duration,

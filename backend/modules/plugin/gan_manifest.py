@@ -75,3 +75,8 @@ class GanManifest(BaseModel):
     controls: list[GanControl] = []
     # Provenance, e.g. "vst-foundry" for an imported VST Foundry export.
     source: str | None = None
+    # Fingerprint of the inputs this package was composed from (source files +
+    # the runtime template version). The bundled-plugin packagers compare it to
+    # skip a rebuild when nothing changed, so the installed runtime files keep
+    # their mtimes and the browser's cached copies stay valid.
+    source_hash: str | None = None

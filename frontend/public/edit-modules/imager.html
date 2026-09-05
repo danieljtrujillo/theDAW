@@ -120,6 +120,7 @@ html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:cen
 .footer-status{font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:#444a58}
 audio{display:none}
 input[type="file"]{display:none}
+.knob-wrap:focus-visible,.bw-fader-track:focus-visible{outline:2px solid #a855f7;outline-offset:2px;border-radius:6px}
 </style>
 </head>
 <body>
@@ -221,10 +222,15 @@ input[type="file"]{display:none}
               </div>
             </div>
             <div class="ms-slider-group">
-              <div class="ms-sl-row">
-                <span class="ms-sl-lbl">Mono Low</span>
-                <input type="range" class="ms-slider" id="monoLowSlider" min="20" max="500" value="120" step="1">
+              <div class="ms-sl-row" title="Preview only: stereotools has no bass-mono crossover">
+                <label class="ms-sl-lbl" for="monoLowSlider">Mono Low</label>
+                <input type="range" class="ms-slider" id="monoLowSlider" name="monoLowSlider" min="20" max="500" value="120" step="1">
                 <span class="ms-sl-val" id="monoLowVal">120</span>
+              </div>
+              <div class="ms-sl-row">
+                <label class="ms-sl-lbl" for="outGainSlider" title="Output gain (dB) sent to the backend and applied to the preview">Output</label>
+                <input type="range" class="ms-slider" id="outGainSlider" name="outGainSlider" min="-12" max="12" value="0" step="0.5">
+                <span class="ms-sl-val" id="outGainVal">0.0</span>
               </div>
               <div class="ms-phase-row">
                 <span class="ms-phase-lbl">Phase Roles</span>
@@ -240,8 +246,8 @@ input[type="file"]{display:none}
           <div class="stereo-title">Stereoize</div>
           <div class="stereo-knobs">
             <div class="knob-group">
-              <span class="knob-lbl">Recover Sides</span>
-              <div class="knob-wrap" id="recoverKnob" data-value="0" data-min="0" data-max="100">
+              <span class="knob-lbl">Balance</span>
+              <div class="knob-wrap" id="balanceKnob" data-value="0" data-min="-100" data-max="100">
                 <svg viewBox="0 0 48 48">
                   <circle cx="24" cy="24" r="19" fill="none" stroke="#14171e" stroke-width="2.5"/>
                   <path class="knob-arc" fill="none" stroke="#a855f7" stroke-width="2.5" stroke-linecap="round" d=""/>
@@ -249,7 +255,7 @@ input[type="file"]{display:none}
                   <line class="knob-needle" x1="24" y1="24" x2="24" y2="11" stroke="#a855f7" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
               </div>
-              <span class="knob-val" id="recoverVal">0%</span>
+              <span class="knob-val" id="balanceVal">C</span>
             </div>
             <div class="knob-group">
               <span class="knob-lbl">Output Width</span>
@@ -280,8 +286,9 @@ input[type="file"]{display:none}
     <button class="footer-btn" id="btnPrePost">Pre/Post</button>
   </div>
 </div>
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" name="fileInput" accept="audio/*" aria-label="Load audio file">
 <audio id="audioEl" crossorigin="anonymous"></audio>
+<script src="module-kit.js"></script>
 
 <script>
 (function(){
@@ -301,12 +308,13 @@ const BANDS = [
 let gonioMode = 'polar'; // 'polar' | 'lissajous'
 let msMode = {m:true, mid:false, s:true, side:false};
 let monoLowFreq = 120;
-let girthVal = 100, recoverVal = 0, outWidthVal = 100;
+let girthVal = 100, balanceVal = 0, outWidthVal = 100, outGainDb = 0;
+const kit = window.theDAWKit;
 
 /* Audio engine */
 let actx, analyserL, analyserR, source, inputFile;
 let inSplitter, midGainL, midGainR, sideGainL, sideGainR;
-let outMerger, outputGain, outSplitter;
+let outMerger, outputGain, outSplitter, balSplit, balL, balR, balMerge;
 const FFTSIZE = 4096;
 const timeBufL = new Float32Array(FFTSIZE);
 const timeBufR = new Float32Array(FFTSIZE);
@@ -337,16 +345,21 @@ function renderBandFaders() {
 
   bwContainer.querySelectorAll('.bw-fader-track').forEach(track => {
     const idx = +track.dataset.idx;
-    function setVal(e) {
-      const rect = track.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(200, (1 - (e.clientY - rect.top) / rect.height) * 200));
+    function applyWidth(pct) {
       BANDS[idx].width = Math.round(pct);
       document.getElementById('bwFill'+idx).style.height = (pct/2)+'%';
       document.getElementById('bwThumb'+idx).style.bottom = (pct/2)+'%';
       document.getElementById('bwVal'+idx).textContent = Math.round(pct)+'%';
       updateWidth();
+      kit.sync(track);
     }
-    track.addEventListener('pointerdown', e => { dragFader = idx; track.setPointerCapture(e.pointerId); setVal(e); });
+    function setVal(e) {
+      const rect = track.getBoundingClientRect();
+      applyWidth(Math.max(0, Math.min(200, (1 - (e.clientY - rect.top) / rect.height) * 200)));
+    }
+    kit.slider(track, { label: BANDS[idx].label + ' band width', min: 0, max: 200, step: 1, vertical: true, wheel: true,
+      get: () => BANDS[idx].width, set: applyWidth, format: v => Math.round(v) + '%', reset: 100 });
+    track.addEventListener('pointerdown', e => { dragFader = idx; track.setPointerCapture(e.pointerId); track.focus({ preventScroll: true }); setVal(e); });
     track.addEventListener('pointermove', e => { if(dragFader===idx) setVal(e); });
     track.addEventListener('pointerup', () => { dragFader = null; });
   });
@@ -388,17 +401,23 @@ function initKnob(wrap, valEl, suffix, onChange) {
   let dragging = false;
   let startY, startVal;
   const min = +wrap.dataset.min, max = +wrap.dataset.max;
+  const initial = +wrap.dataset.value;
+  const fmt = typeof suffix === 'function' ? suffix : (v => Math.round(v) + suffix);
+  const lblEl = wrap.parentElement.querySelector('.knob-lbl');
 
   function update(v) {
     wrap.dataset.value = v;
-    valEl.textContent = Math.round(v) + suffix;
+    valEl.textContent = fmt(v);
     updateKnobVisual(wrap);
     if (onChange) onChange(v);
+    kit.sync(wrap);
   }
+  kit.slider(wrap, { label: lblEl ? lblEl.textContent.trim() : 'Knob', min, max, step: 1, wheel: true,
+    get: () => +wrap.dataset.value, set: update, format: fmt, reset: initial, noDblClick: true });
 
   wrap.addEventListener('pointerdown', e => {
     dragging = true; startY = e.clientY; startVal = +wrap.dataset.value;
-    wrap.setPointerCapture(e.pointerId);
+    wrap.setPointerCapture(e.pointerId); wrap.focus({ preventScroll: true });
   });
   wrap.addEventListener('pointermove', e => {
     if (!dragging) return;
@@ -406,7 +425,7 @@ function initKnob(wrap, valEl, suffix, onChange) {
     update(Math.max(min, Math.min(max, startVal + delta)));
   });
   wrap.addEventListener('pointerup', () => { dragging = false; });
-  wrap.addEventListener('dblclick', () => { update(min + (max - min) / 2); });
+  wrap.addEventListener('dblclick', () => { update(initial); });
   updateKnobVisual(wrap);
 }
 
@@ -417,11 +436,12 @@ initKnob(
   '%',
   v => { girthVal = v; }
 );
+const fmtBalance = v => { const r = Math.round(v); return r === 0 ? 'C' : (r < 0 ? 'L' : 'R') + Math.abs(r); };
 initKnob(
-  document.getElementById('recoverKnob'),
-  document.getElementById('recoverVal'),
-  '%',
-  v => { recoverVal = v; }
+  document.getElementById('balanceKnob'),
+  document.getElementById('balanceVal'),
+  fmtBalance,
+  v => { balanceVal = v; updateBalance(); }
 );
 initKnob(
   document.getElementById('outWidthKnob'),
@@ -447,7 +467,14 @@ function ensureAudio() {
   inSplitter.connect(midGainR,  1); midGainR.connect(outMerger, 0, 1);
   inSplitter.connect(sideGainR, 0); sideGainR.connect(outMerger, 0, 1);
   outputGain = actx.createGain();
-  outMerger.connect(outputGain);
+  balSplit = actx.createChannelSplitter(2);
+  balL = actx.createGain(); balR = actx.createGain();
+  balMerge = actx.createChannelMerger(2);
+  outMerger.connect(balSplit);
+  balSplit.connect(balL, 0); balSplit.connect(balR, 1);
+  balL.connect(balMerge, 0, 0); balR.connect(balMerge, 0, 1);
+  balMerge.connect(outputGain);
+  updateBalance();
   outSplitter = actx.createChannelSplitter(2);
   outputGain.connect(outSplitter);
   analyserL = actx.createAnalyser(); analyserL.fftSize = FFTSIZE;
@@ -458,6 +485,22 @@ function ensureAudio() {
   updateWidth();
 }
 
+/* Balance (-100 L .. +100 R, equal-power) and output gain (dB) - the two
+   stereotools parameters besides width. */
+function updateBalance() {
+  if (!actx || !balL) return;
+  const b = Math.max(-1, Math.min(1, balanceVal / 100));
+  const ang = (b + 1) * Math.PI / 4; // 0 = hard L, pi/2 = hard R
+  const now = actx.currentTime;
+  balL.gain.setTargetAtTime(Math.cos(ang) * Math.SQRT2, now, 0.01);
+  balR.gain.setTargetAtTime(Math.sin(ang) * Math.SQRT2, now, 0.01);
+  outputGain.gain.setTargetAtTime(Math.pow(10, outGainDb / 20), now, 0.01);
+}
+/* The width the backend renders: the band average scaled by Output Width. */
+function effectiveWidth() {
+  const avgBand = BANDS.reduce((a,b) => a + b.width, 0) / BANDS.length;
+  return Math.max(0, Math.min(200, avgBand * (outWidthVal / 100)));
+}
 function updateWidth() {
   if (!actx) return;
   const avgBand = BANDS.reduce((a,b) => a + b.width, 0) / BANDS.length;
@@ -735,6 +778,11 @@ document.querySelectorAll('.ms-btn').forEach(btn => {
 /* ═══════════════════════════════════════════════
    MONO LOW SLIDER
    ═══════════════════════════════════════════════ */
+document.getElementById('outGainSlider').oninput = e => {
+  outGainDb = +e.target.value;
+  document.getElementById('outGainVal').textContent = (outGainDb > 0 ? '+' : '') + outGainDb.toFixed(1);
+  updateBalance();
+};
 document.getElementById('monoLowSlider').oninput = e => {
   monoLowFreq = +e.target.value;
   document.getElementById('monoLowVal').textContent = monoLowFreq;
@@ -760,24 +808,30 @@ document.getElementById('gmLissajous').addEventListener('click', () => {
    PHASE ROLES
    ═══════════════════════════════════════════════ */
 document.querySelectorAll('.ms-phase-btn').forEach(b => b.addEventListener('click', () => b.classList.toggle('active')));
+kit.toggleGroup('.ms-phase-btn, .ms-btn', 'active');
+kit.toggleGroup('.footer-btn:not(#btnProcess)', 'active');
+kit.toggleGroup('.pill, .hdr-pill', 'active');
 
 /* ═══════════════════════════════════════════════
    A/B SWITCHING
    ═══════════════════════════════════════════════ */
 function captureState() {
-  return { bands: BANDS.map(b => b.width), girth: girthVal, recover: recoverVal, outWidth: outWidthVal, monoLow: monoLowFreq };
+  return { bands: BANDS.map(b => b.width), girth: girthVal, balance: balanceVal, outWidth: outWidthVal, monoLow: monoLowFreq, outGain: outGainDb };
 }
 function restoreState(s) {
   if (!s) return;
   BANDS.forEach((b, i) => { b.width = s.bands[i]; });
-  girthVal = s.girth; recoverVal = s.recover; outWidthVal = s.outWidth; monoLowFreq = s.monoLow;
+  girthVal = s.girth; balanceVal = s.balance; outWidthVal = s.outWidth; monoLowFreq = s.monoLow; outGainDb = s.outGain || 0;
+  document.getElementById('outGainSlider').value = outGainDb;
+  document.getElementById('outGainVal').textContent = (outGainDb > 0 ? '+' : '') + outGainDb.toFixed(1);
+  updateBalance();
   renderBandFaders();
   document.getElementById('girthKnob').dataset.value = girthVal;
   document.getElementById('girthVal').textContent = Math.round(girthVal) + '%';
   updateKnobVisual(document.getElementById('girthKnob'));
-  document.getElementById('recoverKnob').dataset.value = recoverVal;
-  document.getElementById('recoverVal').textContent = Math.round(recoverVal) + '%';
-  updateKnobVisual(document.getElementById('recoverKnob'));
+  document.getElementById('balanceKnob').dataset.value = balanceVal;
+  document.getElementById('balanceVal').textContent = fmtBalance(balanceVal);
+  updateKnobVisual(document.getElementById('balanceKnob'));
   document.getElementById('outWidthKnob').dataset.value = outWidthVal;
   document.getElementById('outWidthVal').textContent = Math.round(outWidthVal) + '%';
   updateKnobVisual(document.getElementById('outWidthKnob'));
@@ -831,16 +885,14 @@ async function processAudio() {
   const statusEl = document.getElementById('status');
   statusEl.textContent = 'Processing...';
 
-  const avgWidth = BANDS.reduce((a, b) => a + b.width, 0) / BANDS.length;
-
   const formData = new FormData();
   formData.append('audio', inputFile);
   formData.append('effect', 'stereo_imager');
   formData.append('output_format', 'wav');
   formData.append('params', JSON.stringify({
-    width: avgWidth,
-    balance: 0,
-    outputGain: 0
+    width: +effectiveWidth().toFixed(1),
+    balance: Math.max(-100, Math.min(100, Math.round(balanceVal))),
+    outputGain: Math.max(-12, Math.min(12, outGainDb))
   }));
 
   try {

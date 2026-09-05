@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tool — theDAW</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ── tool.html: the schema-driven module GUI for ANY Edit Tool Stack tool ──
+   Open as tool.html?family=<family>&tool=<tool_id>. The page fetches the
+   tool's manifest from GET /api/edit/<family>/tools/<tool_id> (the same
+   ToolSpec the backend validates against) and renders one control per
+   parameter: a rotary knob for numbers (log travel for Hz), a select for
+   enums, a pill for bools and a text field for strings. PROCESS posts the
+   values to /api/edit/<family>/process. Without query params it lists every
+   tool of every family. Speaks the same host protocol as the bespoke pages
+   (thedaw-audio / thedaw-transport / thedaw-transport-state). */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#07080c;--panel:#0e1018;--surface:#141720;--border:#1e2230;
+  --accent:#00e5ff;--accent-dim:rgba(0,229,255,.15);--accent-glow:rgba(0,229,255,.25);
+  --text:#e0e6f0;--dim:#5a6278;--mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif;
+}
+html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--sans);color:var(--text);overflow:hidden}
+.module-frame{width:780px;max-width:780px;height:504px;max-height:504px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden}
+.hdr{display:flex;align-items:center;padding:0 10px;background:#0a0b10;border-bottom:1px solid #1a1d28;flex-shrink:0;height:28px;gap:8px}
+.hdr-icon{width:14px;height:14px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent-glow);flex-shrink:0}
+.hdr-title{font:700 10px/1 var(--mono);letter-spacing:1.4px;text-transform:uppercase;color:#c8cad0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px}
+.hdr-fam{font:500 8px/1 var(--mono);color:var(--dim);letter-spacing:.6px;text-transform:uppercase}
+.hdr-spacer{flex:1}
+.hdr-pill{font:600 7px/1 var(--mono);letter-spacing:.4px;padding:2px 7px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;user-select:none;white-space:nowrap}
+.hdr-pill.flag{border-color:var(--accent);color:var(--accent)}
+.desc{font:400 10px/1.4 var(--sans);color:#8a91a6;padding:6px 12px 4px;flex-shrink:0;border-bottom:1px solid var(--border);min-height:22px}
+.desc b{color:#c8cad0;font-weight:600}
+.viz{position:relative;flex:0 0 150px;background:#040610;border-bottom:1px solid var(--border);overflow:hidden}
+.viz canvas{width:100%;height:100%;display:block}
+.viz-tag{position:absolute;top:6px;left:10px;font:600 7px/1 var(--mono);letter-spacing:1.2px;text-transform:uppercase;color:var(--dim)}
+.viz-ab{position:absolute;top:4px;right:8px;display:flex;gap:2px}
+.viz-ab button{font:700 7px/1 var(--mono);padding:3px 7px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer}
+.viz-ab button.on{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
+.viz-ab button:disabled{opacity:.35;cursor:default}
+.controls{flex:1;min-height:0;overflow:auto;display:flex;flex-wrap:wrap;align-content:flex-start;gap:8px 14px;padding:10px 14px}
+.ctl{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:70px}
+.ctl-lbl{font:700 9px/1 var(--mono);letter-spacing:.8px;text-transform:uppercase;color:var(--dim);text-align:center;max-width:96px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctl-val{font:700 11px/1 var(--mono);color:var(--text)}
+.ctl-unit{font:500 7px/1 var(--mono);color:var(--dim);letter-spacing:.4px;text-transform:uppercase;min-height:7px}
+.knob-svg{width:56px;height:56px;cursor:ns-resize;display:block;touch-action:none}
+.knob-svg:focus-visible,.ctl select:focus-visible,.ctl input:focus-visible,.pill:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.ctl.wide{flex:1 1 220px;align-items:stretch}
+.ctl.wide .ctl-lbl{text-align:left;max-width:none}
+.ctl input[type=text]{width:100%;background:#0a0c12;border:1px solid var(--border);border-radius:4px;color:var(--text);font:500 11px/1.4 var(--mono);padding:6px 8px}
+.ctl select{background:#0a0c12;border:1px solid var(--border);border-radius:4px;color:var(--text);font:600 10px/1 var(--mono);padding:5px 6px;min-width:90px}
+.ctl input[type=range]{width:160px;accent-color:var(--accent)}
+.pill{font:700 9px/1 var(--mono);letter-spacing:.6px;padding:8px 14px;border-radius:4px;border:1px solid var(--border);background:#0a0c12;color:var(--dim);cursor:pointer;min-width:64px}
+.pill.on{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);box-shadow:0 0 8px var(--accent-glow)}
+.ftr{display:flex;align-items:center;gap:6px;padding:0 8px;background:#08090e;border-top:1px solid var(--border);flex-shrink:0;height:28px}
+.ftr-btn{font:600 7.5px/1 var(--mono);padding:3px 8px;border-radius:3px;border:1px solid #22262e;background:#0c0e14;color:#6b7080;cursor:pointer;transition:.15s;user-select:none}
+.ftr-btn:hover{background:#14171e;color:#c8cad0}
+.ftr-btn.proc{border-color:var(--accent);color:var(--accent);margin-left:6px}
+.ftr-spacer{flex:1}
+.ftr-stat{font:500 7.5px/1 var(--mono);color:var(--dim)}
+.ftr-stat.ok{color:#22c55e}.ftr-stat.err{color:#ef4444}
+audio{display:none}input[type="file"]{display:none}
+/* picker (no ?tool= given) */
+.picker{flex:1;min-height:0;overflow:auto;padding:12px 14px}
+.picker h2{font:700 9px/1 var(--mono);letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin:10px 0 6px;display:flex;align-items:center;gap:8px}
+.picker h2::after{content:'';flex:1;height:1px;background:var(--border)}
+.picker .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px}
+.picker a{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#0a0c12;color:var(--text);text-decoration:none;font:600 10px/1.2 var(--sans)}
+.picker a:hover{border-color:var(--accent)}
+.picker a small{font:400 8px/1.3 var(--mono);color:var(--dim)}
+.picker a .stub{color:#f59e0b}
+</style>
+</head>
+<body>
+<div class="module-frame">
+  <div class="hdr">
+    <div class="hdr-icon" id="hdrIcon"></div>
+    <span class="hdr-title" id="toolName">Edit Tool</span>
+    <span class="hdr-fam" id="toolFamily"></span>
+    <span class="hdr-spacer"></span>
+    <span class="hdr-pill" id="toolMode" hidden></span>
+    <span class="hdr-pill" id="toolEngine" hidden></span>
+    <span class="hdr-pill" id="toolLicense" hidden></span>
+  </div>
+  <div class="desc" id="toolDesc">Loading tool manifest…</div>
+  <div class="viz" id="vizZone">
+    <canvas id="vizCanvas"></canvas>
+    <div class="viz-tag" id="vizTag">Waveform · input</div>
+    <div class="viz-ab" role="group" aria-label="Monitor">
+      <button type="button" id="monIn" class="on" aria-pressed="true" title="Monitor the loaded input">IN</button>
+      <button type="button" id="monOut" aria-pressed="false" disabled title="Monitor the processed output">OUT</button>
+    </div>
+  </div>
+  <div class="controls" id="controls" aria-live="polite"></div>
+  <div class="picker" id="picker" hidden></div>
+  <div class="ftr">
+    <button class="ftr-btn" id="btnLoad" type="button">Load</button>
+    <button class="ftr-btn" id="btnTone" type="button" title="Load the built-in test tone">Tone</button>
+    <button class="ftr-btn" id="btnDefaults" type="button" title="Reset every control to the manifest default">Defaults</button>
+    <button class="ftr-btn proc" id="btnProcess" type="button">PROCESS</button>
+    <span class="ftr-spacer"></span>
+    <span class="ftr-stat" id="status" aria-live="polite">ready</span>
+    <audio id="ain" controls></audio>
+    <audio id="aout" controls></audio>
+  </div>
+  <input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
+</div>
+
+<script src="module-kit.js"></script>
+<script>
+(function(){
+'use strict';
+const kit = window.theDAWKit;
+
+/* ── Families: backend/modules/<family>/module.json api_prefix ── */
+const FAMILIES = {
+  mastering:       { prefix: '/api/edit/mastering',       label: 'Mastering & Tonal',        color: '#4dd0e1' },
+  restoration:     { prefix: '/api/edit/restoration',     label: 'Restoration & Cleanup',    color: '#26c6da' },
+  enhance:         { prefix: '/api/edit/enhance',         label: 'Enhance / Super-Res',      color: '#42a5f5' },
+  creative_fx:     { prefix: '/api/edit/creative-fx',     label: 'Creative FX & Character',  color: '#ff7043' },
+  creative_neural: { prefix: '/api/edit/creative-neural', label: 'Creative Neural / Spectral', color: '#8b5cf6' },
+  delivery:        { prefix: '/api/edit/delivery',        label: 'Delivery / Export',        color: '#ffab40' },
+};
+/* Static fallback (mirrors backend TOOLS) so the picker renders without a backend. */
+const STATIC_TOOLS = {
+  mastering: ['parametric_eq','maximizer','stereo_imager','dynamic_eq','match_eq','multiband_dynamics','harmonic_exciter','transient_shaper','spectral_stabilizer','loudness_meter','master_assistant'],
+  restoration: ['vocal_isolate','stem_separation','neural_denoise','dereverb','declip','restore_all','spectral_repair','breath_removal','dehum','deess','declick'],
+  enhance: ['super_res','uncrush','studio_enhance','neural_codec','classical_upsample'],
+  creative_fx: ['ghost_voice','alien_transmission','broken_tape','radio_room','tunnel_pa','glitch_machine','neural_reverb','pitchlift'],
+  creative_neural: ['spectramorph','timbreforge','promptfx','tokensynth','grainlab','crossfade_morph','ambientforge','voxsynth'],
+  delivery: ['codec_matrix','smart_export','high_quality_src','dither','metadata','batch_export'],
+};
+
+const qs = new URLSearchParams(location.search);
+let family = qs.get('family') || '';
+let toolId = qs.get('tool') || '';
+if (!family && toolId.includes('/')) { [family, toolId] = toolId.split('/'); }
+
+const $ = id => document.getElementById(id);
+const setStatus = (t, cls) => { const st = $('status'); st.className = 'ftr-stat' + (cls ? ' ' + cls : ''); st.textContent = t; };
+const pretty = k => k.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+
+/* ── STATE ── */
+let spec = null;
+const values = {};
+let actx, analyser, source, inputFile, inputBuf, outputBuf, liveBuf = null, monitor = 'in';
+const timeData = new Float32Array(4096);
+const freqData = new Uint8Array(1024);
+
+/* ── PICKER (no tool selected) ── */
+async function renderPicker(){
+  $('controls').hidden = true;
+  $('picker').hidden = false;
+  $('toolName').textContent = 'Edit Tool Stack';
+  $('toolDesc').innerHTML = '<b>49 offline tools</b> · pick one to open its schema-driven GUI. Bespoke pages exist for a few (EQ, Dynamics, …); every other tool renders here from its backend manifest.';
+  $('vizZone').style.display = 'none';
+  const picker = $('picker');
+  picker.innerHTML = '';
+  for (const [fid, fam] of Object.entries(FAMILIES)) {
+    let tools = STATIC_TOOLS[fid].map(id => ({ id, name: pretty(id), implemented: null }));
+    try {
+      const r = await fetch(fam.prefix + '/tools');
+      if (r.ok) { const j = await r.json(); tools = j.tools.map(t => ({ id: t.id, name: t.name, implemented: t.implemented, params: t.params.length })); }
+    } catch (e) { /* offline: static list */ }
+    const h = document.createElement('h2'); h.textContent = fam.label + ' · ' + tools.length; h.style.color = fam.color; picker.appendChild(h);
+    const grid = document.createElement('div'); grid.className = 'grid';
+    tools.forEach(t => {
+      const a = document.createElement('a');
+      a.href = 'tool.html?family=' + encodeURIComponent(fid) + '&tool=' + encodeURIComponent(t.id);
+      a.innerHTML = '<span>' + t.name + '</span><small>' + t.id + (t.params != null ? ' · ' + t.params + ' params' : '') + (t.implemented === false ? ' · <span class="stub">not wired yet</span>' : '') + '</small>';
+      grid.appendChild(a);
+    });
+    picker.appendChild(grid);
+  }
+}
+
+/* ── CONTROL RENDERING ── */
+function paramStep(p){
+  if (p.type === 'int') return 1;
+  const span = (p.hi ?? 1) - (p.lo ?? 0);
+  if (span <= 2) return 0.01;
+  if (span <= 50) return 0.1;
+  if (span <= 2000) return 1;
+  return 10;
+}
+function isLogParam(p){ return (p.unit === 'Hz' || (p.unit === 'ms' && (p.hi ?? 1) / Math.max(p.lo ?? 0.001, 0.001) >= 50)) && (p.lo ?? 0) > 0; }
+function fmtValue(p, v){
+  if (p.type === 'int') return Math.round(v) + (p.unit ? ' ' + p.unit : '');
+  const step = paramStep(p);
+  const d = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+  if (p.unit === 'Hz') return v >= 1000 ? (v / 1000).toFixed(2) + ' kHz' : v.toFixed(d) + ' Hz';
+  if (p.unit === 'ms' && v >= 1000) return (v / 1000).toFixed(2) + ' s';
+  if (p.unit === 'dB' && (p.lo ?? 0) < 0 && v > 0) return '+' + v.toFixed(Math.max(1, d)) + ' dB';
+  return v.toFixed(d) + (p.unit ? (p.unit.startsWith(':') || p.unit === '%' ? '' : ' ') + p.unit : '');
+}
+const toNorm = (p, v) => { const lo = p.lo ?? 0, hi = p.hi ?? 1; if (isLogParam(p)) return Math.log(Math.max(lo, Math.min(hi, v)) / lo) / Math.log(hi / lo); return (v - lo) / (hi - lo || 1); };
+const fromNorm = (p, t) => { const lo = p.lo ?? 0, hi = p.hi ?? 1; t = Math.max(0, Math.min(1, t)); const raw = isLogParam(p) ? lo * Math.pow(hi / lo, t) : lo + t * (hi - lo); const st = paramStep(p); return Math.max(lo, Math.min(hi, +(Math.round(raw / st) * st).toFixed(6))); };
+
+function renderKnob(svg, norm, bipolar, color){
+  const cx = 28, cy = 28, r = 20, tickR = 24;
+  const sA = 135, eA = 405, range = eA - sA;
+  const ang = sA + norm * range;
+  const pol = (a, rad) => { const d = (a - 90) * Math.PI / 180; return { x: cx + rad * Math.cos(d), y: cy + rad * Math.sin(d) }; };
+  let ticks = '';
+  for (let i = 0; i <= 12; i++) {
+    const ta = sA + (i / 12) * range, p1 = pol(ta, tickR), p2 = pol(ta, tickR + 2);
+    const lit = bipolar ? ((norm >= 0.5 && ta >= sA + range / 2 && ta <= ang) || (norm < 0.5 && ta <= sA + range / 2 && ta >= ang)) : ((ta - sA) / range) <= norm;
+    ticks += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="${lit ? color : 'rgba(255,255,255,.06)'}" stroke-width="${lit ? 1 : .6}" stroke-linecap="round" opacity="${lit ? .8 : .3}"/>`;
+  }
+  const from = bipolar ? sA + range / 2 : sA;
+  const a0 = Math.min(from, ang), a1 = Math.max(from, ang);
+  const s = pol(a0, r), v = pol(a1, r);
+  const la = (a1 - a0) > 180 ? 1 : 0;
+  const tip = pol(ang, r);
+  svg.innerHTML = `
+    <defs><radialGradient id="kf" cx="50%" cy="40%" r="55%"><stop offset="0" stop-color="#1c2030"/><stop offset="1" stop-color="#0c0f18"/></radialGradient></defs>
+    ${ticks}
+    <path d="M${pol(sA,r).x},${pol(sA,r).y} A${r},${r} 0 1 1 ${pol(eA,r).x},${pol(eA,r).y}" fill="none" stroke="rgba(255,255,255,.04)" stroke-width="4" stroke-linecap="round"/>
+    ${a1 - a0 > 0.5 ? `<path d="M${s.x},${s.y} A${r},${r} 0 ${la} 1 ${v.x},${v.y}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round"/>` : ''}
+    <circle cx="${tip.x}" cy="${tip.y}" r="2.8" fill="${color}"/>
+    <circle cx="${cx}" cy="${cy}" r="11" fill="url(#kf)" stroke="${color}33" stroke-width="1.2"/>
+    <line x1="${cx}" y1="${cy-1}" x2="${cx+Math.cos((ang-90)*Math.PI/180)*8}" y2="${cy+Math.sin((ang-90)*Math.PI/180)*8}" stroke="${color}cc" stroke-width="1.5" stroke-linecap="round"/>`;
+}
+
+function buildControls(){
+  const root = $('controls');
+  root.innerHTML = '';
+  const color = (FAMILIES[family] || {}).color || '#00e5ff';
+  spec.params.forEach((p, i) => {
+    const id = 'p_' + p.name;
+    const label = p.label || pretty(p.name);
+    const wrap = document.createElement('div');
+    wrap.className = 'ctl';
+    if (p.help) wrap.title = p.help;
+    if (p.type === 'string') {
+      wrap.classList.add('wide');
+      values[p.name] = p.default != null ? String(p.default) : '';
+      wrap.innerHTML = `<label class="ctl-lbl" for="${id}">${label}</label><input type="text" id="${id}" name="${id}" placeholder="${label}">`;
+      const inp = wrap.querySelector('input'); inp.value = values[p.name];
+      inp.addEventListener('input', () => { values[p.name] = inp.value; });
+    } else if (p.type === 'enum') {
+      const opts = p.options || [];
+      values[p.name] = p.default != null ? String(p.default) : (opts[0] || '');
+      wrap.innerHTML = `<label class="ctl-lbl" for="${id}">${label}</label><select id="${id}" name="${id}">${opts.map(o => `<option value="${o}"${o === values[p.name] ? ' selected' : ''}>${o}</option>`).join('')}</select><span class="ctl-unit">${p.control === 'RoundToggle' ? 'toggle' : 'choice'}</span>`;
+      wrap.querySelector('select').addEventListener('change', e => { values[p.name] = e.target.value; });
+    } else if (p.type === 'bool') {
+      values[p.name] = !!p.default;
+      wrap.innerHTML = `<span class="ctl-lbl" id="${id}-lbl">${label}</span><button type="button" class="pill${values[p.name] ? ' on' : ''}" id="${id}" aria-pressed="${values[p.name]}" aria-labelledby="${id}-lbl">${values[p.name] ? 'ON' : 'OFF'}</button><span class="ctl-unit">switch</span>`;
+      const b = wrap.querySelector('button');
+      b.addEventListener('click', () => { values[p.name] = !values[p.name]; b.classList.toggle('on', values[p.name]); b.setAttribute('aria-pressed', String(values[p.name])); b.textContent = values[p.name] ? 'ON' : 'OFF'; });
+    } else {
+      const lo = p.lo ?? 0, hi = p.hi ?? 1;
+      values[p.name] = typeof p.default === 'number' ? p.default : lo;
+      const bipolar = lo < 0 && hi > 0 && Math.abs(lo) === Math.abs(hi);
+      const asSlider = p.control === 'ParamSlider' || p.control === 'ParamFader';
+      if (asSlider) {
+        wrap.classList.add('wide');
+        const step = paramStep(p);
+        wrap.innerHTML = `<label class="ctl-lbl" for="${id}">${label}</label><input type="range" id="${id}" name="${id}" min="${lo}" max="${hi}" step="${step}" value="${values[p.name]}"><div style="display:flex;justify-content:space-between"><span class="ctl-unit">${isLogParam(p) ? 'log' : ''}</span><span class="ctl-val" id="${id}-val">${fmtValue(p, values[p.name])}</span></div>`;
+        const inp = wrap.querySelector('input');
+        const valEl = wrap.querySelector('.ctl-val');
+        inp.addEventListener('input', () => { values[p.name] = +inp.value; valEl.textContent = fmtValue(p, values[p.name]); });
+        inp.addEventListener('dblclick', () => { inp.value = values[p.name] = typeof p.default === 'number' ? p.default : lo; valEl.textContent = fmtValue(p, values[p.name]); });
+      } else {
+        wrap.innerHTML = `<span class="ctl-lbl" id="${id}-lbl">${label}</span><svg viewBox="0 0 56 56" class="knob-svg" id="${id}"></svg><span class="ctl-val" id="${id}-val"></span><span class="ctl-unit">${p.unit || (isLogParam(p) ? 'log' : '')}</span>`;
+        const svg = wrap.querySelector('svg');
+        const valEl = wrap.querySelector('.ctl-val'); // scoped: the control is not in the document yet
+        const draw = () => { renderKnob(svg, toNorm(p, values[p.name]), bipolar, color); valEl.textContent = fmtValue(p, values[p.name]); kit.sync(svg); };
+        const set = v => { values[p.name] = Math.max(lo, Math.min(hi, v)); draw(); };
+        kit.slider(svg, { min: lo, max: hi, step: paramStep(p), wheel: true, get: () => values[p.name], set, format: v => fmtValue(p, v), reset: typeof p.default === 'number' ? p.default : lo, noDblClick: true });
+        svg.setAttribute('aria-labelledby', id + '-lbl');
+        let drag = null;
+        svg.addEventListener('pointerdown', e => { drag = { y: e.clientY, t: toNorm(p, values[p.name]) }; svg.setPointerCapture(e.pointerId); svg.focus({ preventScroll: true }); e.preventDefault(); });
+        svg.addEventListener('pointermove', e => { if (!drag) return; const dt = (drag.y - e.clientY) / (e.shiftKey ? 700 : 170); set(fromNorm(p, drag.t + dt)); });
+        svg.addEventListener('pointerup', () => { drag = null; });
+        svg.addEventListener('pointercancel', () => { drag = null; });
+        svg.addEventListener('dblclick', () => set(typeof p.default === 'number' ? p.default : lo));
+        wrap._draw = draw;
+        draw();
+      }
+    }
+    root.appendChild(wrap);
+  });
+  if (spec.params.length === 0) root.innerHTML = '<div class="ctl-unit" style="padding:20px">This tool has no parameters — load audio and press PROCESS.</div>';
+}
+
+function resetDefaults(){
+  spec.params.forEach(p => {
+    const id = 'p_' + p.name;
+    const el = $(id);
+    if (!el) return;
+    if (p.type === 'string') { values[p.name] = p.default != null ? String(p.default) : ''; el.value = values[p.name]; }
+    else if (p.type === 'enum') { values[p.name] = p.default != null ? String(p.default) : ((p.options || [])[0] || ''); el.value = values[p.name]; }
+    else if (p.type === 'bool') { values[p.name] = !!p.default; el.classList.toggle('on', values[p.name]); el.setAttribute('aria-pressed', String(values[p.name])); el.textContent = values[p.name] ? 'ON' : 'OFF'; }
+    else if (el.tagName === 'INPUT') { values[p.name] = typeof p.default === 'number' ? p.default : (p.lo ?? 0); el.value = values[p.name]; const v = $(id + '-val'); if (v) v.textContent = fmtValue(p, values[p.name]); }
+    else { values[p.name] = typeof p.default === 'number' ? p.default : (p.lo ?? 0); const w = el.closest('.ctl'); if (w && w._draw) w._draw(); }
+  });
+  setStatus('defaults restored');
+}
+
+/* ── LOAD THE MANIFEST ── */
+async function loadSpec(){
+  const fam = FAMILIES[family];
+  if (!fam || !toolId) { renderPicker(); return; }
+  document.title = pretty(toolId) + ' — theDAW';
+  $('toolFamily').textContent = fam.label;
+  $('hdrIcon').style.background = fam.color; $('hdrIcon').style.boxShadow = '0 0 6px ' + fam.color;
+  document.documentElement.style.setProperty('--accent', fam.color);
+  document.documentElement.style.setProperty('--accent-dim', fam.color + '26');
+  document.documentElement.style.setProperty('--accent-glow', fam.color + '40');
+  try {
+    const r = await fetch(fam.prefix + '/tools/' + encodeURIComponent(toolId));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    spec = await r.json();
+  } catch (e) {
+    $('toolName').textContent = pretty(toolId);
+    $('toolDesc').innerHTML = '<b>Manifest unavailable</b> (' + e.message + '). Is the backend running on :8600? The picker at <a href="tool.html" style="color:var(--accent)">tool.html</a> lists every tool.';
+    setStatus('manifest error', 'err');
+    return;
+  }
+  $('toolName').textContent = spec.name;
+  $('toolDesc').innerHTML = (spec.description ? spec.description + ' ' : '') + '<span style="color:var(--dim)">· ' + spec.params.length + ' parameter' + (spec.params.length === 1 ? '' : 's') + ' · offline render via ' + fam.prefix + '/process</span>' + (spec.implemented === false ? ' <b style="color:#f59e0b">— handler not wired yet (501)</b>' : '');
+  const pill = (id, text, flag) => { const el = $(id); el.hidden = !text; el.textContent = text; el.classList.toggle('flag', !!flag); };
+  pill('toolMode', spec.mode ? 'mode ' + spec.mode : '', false);
+  pill('toolEngine', spec.engine || '', false);
+  pill('toolLicense', spec.license || '', false);
+  buildControls();
+  setStatus(spec.implemented === false ? 'scaffolded — PROCESS returns 501' : 'ready');
+}
+
+/* ── AUDIO PREVIEW (monitor input or output; the tool itself renders offline) ── */
+function ensureAudio(){ if (actx) return; actx = new AudioContext(); analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.8; analyser.connect(actx.destination); }
+function postTransportState(playing){ window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*'); }
+function stopSource(){ if (!source) return; try { source.stop(); } catch(e){} source = null; postTransportState(false); }
+function startSource(){ if (!liveBuf) return; if (source) try { source.stop(); } catch(e){} source = actx.createBufferSource(); source.buffer = liveBuf; source.loop = true; source.connect(analyser); source.start(); postTransportState(true); }
+function prepareBuf(buf){ stopSource(); liveBuf = buf; }
+function connectBuf(buf){ prepareBuf(buf); startSource(); }
+async function loadFile(file){ ensureAudio(); inputFile = file; const ab = await file.arrayBuffer(); inputBuf = await actx.decodeAudioData(ab.slice(0)); $('ain').src = URL.createObjectURL(file); setMonitor('in'); connectBuf(inputBuf); setStatus('loaded ' + file.name); }
+async function prepareFile(file){ ensureAudio(); inputFile = file; const ab = await file.arrayBuffer(); inputBuf = await actx.decodeAudioData(ab.slice(0)); $('ain').src = URL.createObjectURL(file); setMonitor('in'); prepareBuf(inputBuf); setStatus('loaded ' + file.name); }
+function setMonitor(which){
+  monitor = which;
+  $('monIn').classList.toggle('on', which === 'in'); $('monIn').setAttribute('aria-pressed', String(which === 'in'));
+  $('monOut').classList.toggle('on', which === 'out'); $('monOut').setAttribute('aria-pressed', String(which === 'out'));
+  $('monOut').disabled = !outputBuf;
+  $('vizTag').textContent = 'Waveform · ' + (which === 'out' ? 'output' : 'input');
+  const buf = which === 'out' ? outputBuf : inputBuf;
+  if (buf) { const wasPlaying = !!source; prepareBuf(buf); if (wasPlaying) startSource(); }
+}
+$('monIn').addEventListener('click', () => setMonitor('in'));
+$('monOut').addEventListener('click', () => setMonitor('out'));
+$('fileinput').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+$('btnLoad').onclick = () => $('fileinput').click();
+$('btnTone').onclick = async () => { try { const r = await fetch('/static/testtone.wav'); const b = await r.blob(); loadFile(new File([b], 'testtone.wav', { type: 'audio/wav' })); } catch (e) { setStatus('test tone unavailable', 'err'); } };
+$('btnDefaults').onclick = () => { if (spec) resetDefaults(); };
+
+/* ── PROCESS ── */
+$('btnProcess').onclick = async () => {
+  if (!spec) return;
+  if (!inputFile) { setStatus('load audio first'); return; }
+  const fam = FAMILIES[family];
+  const fd = new FormData();
+  fd.append('effect', spec.id);
+  fd.append('params', JSON.stringify(values));
+  fd.append('output_format', 'wav');
+  fd.append('audio', inputFile);
+  setStatus('processing ' + spec.id + '...');
+  const t0 = performance.now();
+  try {
+    const r = await fetch(fam.prefix + '/process', { method: 'POST', body: fd });
+    if (!r.ok) {
+      let detail = r.status + ' error';
+      try { const j = await r.json(); detail = j.detail || j.message || detail; } catch (e) {}
+      setStatus(detail, 'err'); return;
+    }
+    const blob = await r.blob();
+    $('aout').src = URL.createObjectURL(blob);
+    if (actx) { outputBuf = await actx.decodeAudioData(await blob.arrayBuffer()); setMonitor('out'); if (!source) startSource(); }
+    setStatus('done ' + (blob.size / 1024).toFixed(0) + 'KB ' + Math.round(performance.now() - t0) + 'ms', 'ok');
+  } catch (e) { setStatus('error: ' + e.message, 'err'); }
+};
+
+/* ── VIZ ── */
+const vizCanvas = $('vizCanvas'), vizZone = $('vizZone');
+function draw(){
+  requestAnimationFrame(draw);
+  const W = vizZone.clientWidth, H = vizZone.clientHeight;
+  if (!W || !H) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (vizCanvas.width !== W * dpr || vizCanvas.height !== H * dpr) { vizCanvas.width = W * dpr; vizCanvas.height = H * dpr; }
+  const ctx = vizCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#040610'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 0.5;
+  for (let i = 1; i < 4; i++) { const y = (i / 4) * H; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  const color = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#00e5ff';
+  if (!analyser) {
+    ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.font = '9px "IBM Plex Mono"'; ctx.textAlign = 'center';
+    ctx.fillText('Load audio (or receive it from the host) to preview', W / 2, H / 2);
+    return;
+  }
+  analyser.getByteFrequencyData(freqData);
+  const bins = 96;
+  const bw = W / bins;
+  for (let i = 0; i < bins; i++) {
+    const idx = Math.min(freqData.length - 1, Math.floor(Math.pow(i / bins, 2) * freqData.length * 0.6));
+    const v = freqData[idx] / 255;
+    ctx.fillStyle = color + (v > 0.6 ? 'cc' : '66');
+    ctx.fillRect(i * bw + 1, H - v * H * 0.9, bw - 2, v * H * 0.9);
+  }
+  analyser.getFloatTimeDomainData(timeData);
+  ctx.beginPath();
+  for (let i = 0; i < timeData.length; i += 2) { const x = (i / timeData.length) * W; const y = H / 2 + timeData[i] * H * 0.4; i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+  ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1; ctx.stroke();
+}
+draw();
+
+/* The footer <audio> previews join the host transport protocol. */
+const ainEl = $('ain'), aoutEl = $('aout');
+function previewStillAudible(){ return !!(source || (ainEl && !ainEl.paused && !ainEl.ended) || (aoutEl && !aoutEl.paused && !aoutEl.ended)); }
+[ainEl, aoutEl].forEach(el => { el.addEventListener('play', () => postTransportState(true)); el.addEventListener('pause', () => postTransportState(previewStillAudible())); el.addEventListener('ended', () => postTransportState(previewStillAudible())); });
+
+// ── Receive audio + transport from parent page ──
+window.addEventListener('message', async (e) => {
+  if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
+    try {
+      const blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      const file = new File([blob], e.data.name || 'track.wav', { type: 'audio/wav' });
+      // Host-supplied audio loads paused; the stage's transport toggle starts it.
+      prepareFile(file);
+    } catch(err) { console.warn('postMessage audio load failed:', err); }
+  }
+  if (e.data && e.data.type === 'thedaw-transport') {
+    if (e.data.action === 'play') { if (actx && actx.state === 'suspended') actx.resume(); ainEl.pause(); aoutEl.pause(); startSource(); }
+    else if (e.data.action === 'pause') { stopSource(); ainEl.pause(); aoutEl.pause(); }
+  }
+});
+
+loadSpec();
+})();
+</script>
+</body>
+</html>

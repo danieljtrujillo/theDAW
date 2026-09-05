@@ -120,6 +120,9 @@ interface RealPlacement {
   voice: number;
   poly: number;
   lanes: number[];
+  /** v2: true when this placement sits in the support lane (drawn at 60%
+   *  saturation so the lead reads as the melody line). Absent on v1 meta. */
+  support?: boolean;
 }
 
 interface RealLane {
@@ -189,6 +192,7 @@ export const ChimeraDnaScene: React.FC = () => {
     const dummy = new THREE.Object3D();
     const cB = new THREE.Color();
     const cG = new THREE.Color();
+    const cGrey = new THREE.Color();
     const cW = new THREE.Color(1, 1, 1);
     // hologram tint: every colour leans toward pale ice-light, so the palette
     // reads as projected light instead of saturated neon
@@ -371,6 +375,7 @@ export const ChimeraDnaScene: React.FC = () => {
         fuseLanes: number[] | null;
         fuseSub: number;
         fuseAmt: number;
+        support: boolean;
       } | null => {
         const slot = slotOf(u);
         // chunk membership: REAL CRISPR placements when the mashup ran, else
@@ -381,6 +386,7 @@ export const ChimeraDnaScene: React.FC = () => {
         let uOut = u;
         let fuseLanes: number[] | null = null;
         let fuseSub = 0;
+        let support = false;
         if (gen && real && real.plc.length && real.stretchedDur > 0 && real.mixDur > 0) {
           const tau = u * real.stretchedDur;
           let pl: RealPlacement | null = null;
@@ -391,6 +397,7 @@ export const ChimeraDnaScene: React.FC = () => {
           if (pl) {
             voice = pl.voice;
             poly = pl.poly;
+            support = !!pl.support;
             uOut = (pl.o0 + (tau - pl.w0)) / real.mixDur;
             fuseLanes = pl.lanes;
             fuseSub = pl.o1 > pl.o0 ? (tau - pl.w0) / (pl.o1 - pl.o0) : 0;
@@ -478,7 +485,7 @@ export const ChimeraDnaScene: React.FC = () => {
           cyc += (Math.sin(vth) * 0.6 + 0.5) * vap * 28 + Math.sin(t * 3 + i) * vap * 3;
         }
 
-        return { cx, cyc, offMag, za, aIn, w, thetaRot, sel, voice, poly, tph, vap, rbN, slot, fuseLanes, fuseSub, fuseAmt };
+        return { cx, cyc, offMag, za, aIn, w, thetaRot, sel, voice, poly, tph, vap, rbN, slot, fuseLanes, fuseSub, fuseAmt, support };
       };
 
       // ---- backbone beads ----
@@ -511,6 +518,13 @@ export const ChimeraDnaScene: React.FC = () => {
             if (p.fuseLanes) contribColor(p.fuseLanes, p.fuseSub, cG);
             else finalColor(plan, laneCount, p.slot, slotSub(u, p.slot), cG);
             cB.lerp(cG, p.fuseAmt);
+          }
+          // support-lane beads at 60% saturation: pull 40% toward the colour's
+          // own luminance so the lead lane reads as the melody line
+          if (p.support) {
+            const lum = 0.299 * cB.r + 0.587 * cB.g + 0.114 * cB.b;
+            cGrey.setRGB(lum, lum, lum);
+            cB.lerp(cGrey, 0.4);
           }
           cB.lerp(cHolo, HOLO); // hologram tint — projected light, not neon
           // NEVER darken toward black (normal blending paints it): depth shade
@@ -593,6 +607,51 @@ export const ChimeraDnaScene: React.FC = () => {
       }
     };
 
+    // Idle placeholder for an EMPTY stack: a dim, slowly turning hologram
+    // strand in the output panel, so the panel reads as "the splice forms
+    // here" instead of a dead rectangle. A first run (empty library, nothing
+    // to add yet) and the onboarding tour's Chimera step both land on this
+    // state — without it the "DNA" simply did not exist on screen.
+    const renderGhost = (o: OutGeom, t: number): void => {
+      const spacing = o.rb * 1.7;
+      const nUsed = Math.max(8, Math.min(420, Math.round(o.span / spacing)));
+      const breathe = 0.5 + 0.5 * Math.sin(t * 0.9);
+      const lt = (t * 0.14) % 2;
+      const larsonU = lt < 1 ? lt : 2 - lt;
+      const stops = 3; // colour drifts through the first lane colours along the strand
+      for (let i = 0; i < nUsed; i++) {
+        const u = i / (nUsed - 1);
+        const x = o.x0 + u * o.span;
+        const theta = x * o.k + o.spin * 0.6;
+        const env = 0.45 + 0.35 * Math.sin(u * 9 + t * 0.4) * Math.sin(u * 23 - t * 0.25);
+        const off = o.amp0 * (0.5 + 0.9 * env) * Math.sin(theta);
+        const za = (Math.cos(theta) + 1) / 2;
+        const seg = u * (stops - 1);
+        let kk = Math.floor(seg);
+        if (kk > stops - 2) kk = stops - 2;
+        const c: Rgb = mixRgb(laneColor(kk), laneColor(kk + 1), seg - kk);
+        const dl = u - larsonU;
+        const larson = Math.exp(-(dl * dl) / (2 * 0.04 * 0.04)) * 0.45;
+        for (let s = 0; s < 2; s++) {
+          const sign = s === 0 ? 1 : -1;
+          const zz = (sign * (za * 2 - 1) + 1) / 2;
+          const size = o.rb * 0.85 * (0.55 + 0.65 * zz);
+          cB.setRGB(c.r / 255, c.g / 255, c.b / 255);
+          cB.lerp(cHolo, HOLO);
+          cB.multiplyScalar(0.82 + 0.26 * zz);
+          cB.lerp(cBg, 0.5 - 0.1 * breathe); // dim: a hologram of the strand to come
+          if (larson > 0.01) cB.lerp(cW, larson);
+          pushBead(x, o.band.cy + sign * off, sign * (za * 2 - 1) * 8 + 0.5, size, cB);
+        }
+        if (i % 6 === 3) {
+          cB.setRGB(c.r / 255, c.g / 255, c.b / 255);
+          cB.lerp(cHolo, HOLO);
+          cB.lerp(cBg, 0.6);
+          pushRung(x, o.band.cy, 1, Math.max(o.amp0 * 0.4, 2 * Math.abs(off)), 0, cB);
+        }
+      }
+    };
+
     const draw = (t: number, ph: DnaPhase): void => {
       if (W <= 2 || H <= 2) return;
       beadCur = 0;
@@ -600,9 +659,12 @@ export const ChimeraDnaScene: React.FC = () => {
       const wr = wrap.getBoundingClientRect();
       const { clips: cs, lastMeta: lm } = dataRef.current;
 
-      // Post-mashup beats: per_clip.beats are PRE-stretch seconds — scale by the
-      // stretch ratio first. After beat-matching every lane's rungs land on the
-      // shared target-BPM grid (uniform spacing), instead of the sporadic
+      // Post-mashup beats: v2 sends per_clip.beats_stretched already in the
+      // CONFORMED timebase (source / ratio, on-grid) — prefer it. Otherwise
+      // per_clip.beats are PRE-stretch SOURCE seconds and the conformed time
+      // is b / ratio (stretched_duration_sec = duration / ratio; the old
+      // b * ratio was inverted). After beat-matching every lane's rungs land on
+      // the shared target-BPM grid (uniform spacing), instead of the sporadic
       // pre-stretch positions. With CRISPR placements the lane shows the WHOLE
       // stretched clip; otherwise it shows the mashup window.
       const beatsByLabel = new Map<string, number[]>();
@@ -614,9 +676,11 @@ export const ChimeraDnaScene: React.FC = () => {
           const b1 = hasPlc ? pc.stretched_duration_sec : pc.window_end_sec;
           if (b1 > b0) {
             const sp = b1 - b0;
+            const bs = pc.beats_stretched;
+            const src = bs && bs.length ? bs : (pc.beats ?? []).map((b) => b / ratio);
             beatsByLabel.set(
               pc.label,
-              pc.beats.map((b) => (b * ratio - b0) / sp).filter((u) => u >= 0 && u <= 1),
+              src.map((b) => (b - b0) / sp).filter((u) => u >= 0 && u <= 1),
             );
           }
         }
@@ -669,6 +733,7 @@ export const ChimeraDnaScene: React.FC = () => {
               voice: 0,
               poly: 1,
               lanes: [],
+              support: p.lane === 'support',
             });
           }
         }
@@ -729,6 +794,7 @@ export const ChimeraDnaScene: React.FC = () => {
           : null;
         renderLane(band, out, plan, lanes.length, real, ln.clipId, ln.laneIndex, beatsNorm, clip?.detectedBpm ?? null, !!clip?.isBase, t, ph, gen);
       }
+      if (lanes.length === 0 && out) renderGhost(out, t);
 
       beads.count = beadCur;
       rungs.count = rungCur;

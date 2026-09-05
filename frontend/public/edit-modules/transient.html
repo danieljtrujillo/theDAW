@@ -87,6 +87,7 @@ html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:cen
 .mode-tab.active{background:#081a14;color:#34d399}
 audio{display:none}
 input[type="file"]{display:none}
+.knob-unit:focus-visible{outline:2px solid #34d399;outline-offset:2px;border-radius:6px}
 </style>
 </head>
 <body>
@@ -166,12 +167,14 @@ input[type="file"]{display:none}
     <button class="footer-btn" id="btnProcess">Process</button>
   </div>
 </div>
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" name="fileInput" accept="audio/*" aria-label="Load audio file">
 <audio id="audioEl" crossorigin="anonymous"></audio>
 
+<script src="module-kit.js"></script>
 <script>
 (function(){
 'use strict';
+const kit = window.theDAWKit;
 
 let inputFile = null;
 
@@ -185,14 +188,19 @@ const KNOB_SIZE = 66;
 /* ============================================================
    KNOB DEFINITIONS
    ============================================================ */
+/* Backend: mastering/transient_shaper — attack, sustain, fastEnv, slowEnv,
+   outputGain. Sensitivity and Mix shape the live preview only. */
 const knobDefs = [
-  { id:'attack',      label:'Attack',      min:-100, max:100,  val:0,   step:1,   unit:'%', bipolar:true  },
-  { id:'sustain',     label:'Sustain',     min:-100, max:100,  val:0,   step:1,   unit:'%', bipolar:true  },
-  { id:'sensitivity', label:'Sensitivity', min:0,    max:100,  val:50,  step:1,   unit:'%', bipolar:false },
+  { id:'attack',      label:'Attack',      min:-100, max:100,  val:0,   step:1,   unit:'%', bipolar:true,  backend:'attack' },
+  { id:'sustain',     label:'Sustain',     min:-100, max:100,  val:0,   step:1,   unit:'%', bipolar:true,  backend:'sustain' },
+  { id:'fastEnv',     label:'Fast Env',    min:0.1,  max:10,   val:1.0, step:0.1, unit:'ms', bipolar:false, backend:'fastEnv' },
+  { id:'slowEnv',     label:'Slow Env',    min:10,   max:200,  val:50,  step:1,   unit:'ms', bipolar:false, backend:'slowEnv' },
   { id:'_monitor',    label:'Monitor',     type:'monitor' },
-  { id:'mix',         label:'Mix',         min:0,    max:100,  val:100, step:1,   unit:'%', bipolar:false },
-  { id:'output',      label:'Output',      min:-12,  max:12,   val:0,   step:0.1, unit:'dB',bipolar:true  },
+  { id:'sensitivity', label:'Sensitivity', min:0,    max:100,  val:50,  step:1,   unit:'%', bipolar:false, preview:true },
+  { id:'mix',         label:'Mix',         min:0,    max:100,  val:100, step:1,   unit:'%', bipolar:false, preview:true },
+  { id:'output',      label:'Output',      min:-12,  max:12,   val:0,   step:0.1, unit:'dB',bipolar:true,  backend:'outputGain' },
 ];
+const KNOB_DEFAULTS = { attack:0, sustain:0, fastEnv:1.0, slowEnv:50, sensitivity:50, mix:100, output:0 };
 
 /* ============================================================
    SVG ROTARY KNOB RENDERER
@@ -335,21 +343,40 @@ knobDefs.forEach(def => {
   unit.appendChild(svg);
   unit.appendChild(valEl);
   knobsRow.appendChild(unit);
+  if (def.preview) { labelEl.title = 'Shapes the live preview only (not a transient_shaper parameter)'; labelEl.textContent = def.label + ' preview'; }
 
   renderKnobSVG(svg, def);
+  kit.slider(unit, {
+    label: def.label + (def.preview ? ' (preview only)' : ''),
+    min: def.min, max: def.max, step: def.step, wheel: true,
+    get: () => def.val, set: v => setKnob(def, v), format: v => formatKnob(def, v),
+    reset: KNOB_DEFAULTS[def.id], noDblClick: true,
+  });
   updateKnobValue(def);
 });
 
+function formatKnob(def, v) {
+  if (def.unit === '%') return (def.bipolar && v > 0 ? '+' : '') + Math.round(v) + '%';
+  if (def.unit === 'dB') return (v > 0 ? '+' : '') + v.toFixed(1) + ' dB';
+  if (def.unit === 'ms') return v.toFixed(v < 10 ? 1 : 0) + ' ms';
+  return v.toFixed(1);
+}
 function updateKnobValue(def) {
   if (def.type === 'monitor') return;
   const el = document.getElementById('kval_' + def.id);
-  if (def.unit === '%') {
-    el.textContent = (def.bipolar && def.val > 0 ? '+' : '') + Math.round(def.val) + '%';
-  } else if (def.unit === 'dB') {
-    el.textContent = (def.val > 0 ? '+' : '') + def.val.toFixed(1) + ' dB';
-  } else {
-    el.textContent = def.val.toFixed(1);
-  }
+  el.textContent = formatKnob(def, def.val);
+  const svgEl = document.getElementById('knob_' + def.id);
+  const unit = svgEl ? svgEl.closest('.knob-unit') : null;
+  if (unit) kit.sync(unit);
+}
+function setKnob(def, nv) {
+  nv = Math.round(nv / def.step) * def.step;
+  nv = Math.max(def.min, Math.min(def.max, nv));
+  def.val = +nv.toFixed(4);
+  knobState[def.id] = def.val;
+  renderKnobSVG(document.getElementById('knob_' + def.id), def);
+  updateKnobValue(def);
+  updateDSP();
 }
 
 /* ============================================================
@@ -392,8 +419,7 @@ knobsRow.addEventListener('dblclick', e => {
   const id = unit.dataset.knobId;
   const def = knobDefs.find(d => d.id === id);
   if (!def || def.type === 'monitor') return;
-  const defaults = { attack:0, sustain:0, sensitivity:50, mix:100, output:0 };
-  def.val = defaults[id] !== undefined ? defaults[id] : 0;
+  def.val = KNOB_DEFAULTS[id] !== undefined ? KNOB_DEFAULTS[id] : 0;
   knobState[id] = def.val;
   renderKnobSVG(document.getElementById('knob_' + id), def);
   updateKnobValue(def);
@@ -476,6 +502,9 @@ document.querySelectorAll('.mode-tab').forEach(tab => {
     tab.classList.add('active');
   });
 });
+kit.toggleGroup('.mode-tab', 'active', true);
+kit.toggleGroup('.mon-tab', 'active', true);
+kit.toggleGroup('.footer-btn:not(#btnProcess):not(#btnLoad):not(#btnTone):not(#btnModeLabel)', 'active');
 
 /* Pill toggles */
 document.querySelectorAll('.pill').forEach(btn => {
@@ -713,12 +742,13 @@ async function processAudio() {
   const statusEl = document.getElementById('status');
   statusEl.textContent = 'Processing...';
 
+  const kv = (id, d) => (getKnobValue(id) !== null ? getKnobValue(id) : d);
   const params = {
-    attack: getKnobValue('attack') !== null ? getKnobValue('attack') : 0,
-    sustain: getKnobValue('sustain') !== null ? getKnobValue('sustain') : 0,
-    fastEnv: 1.0,
-    slowEnv: 50,
-    outputGain: getKnobValue('output') !== null ? getKnobValue('output') : 0
+    attack: kv('attack', 0),
+    sustain: kv('sustain', 0),
+    fastEnv: Math.max(0.1, Math.min(10, kv('fastEnv', 1.0))),
+    slowEnv: Math.max(10, Math.min(200, kv('slowEnv', 50))),
+    outputGain: Math.max(-12, Math.min(12, kv('output', 0)))
   };
 
   const fd = new FormData();

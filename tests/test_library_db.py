@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.modules.library.db import LibraryDB
+from backend.modules.library.db import SCHEMA_VERSION, LibraryDB
 from backend.modules.library.store import LibraryStore
 
 
@@ -40,7 +40,7 @@ def _make_entry_payload(entry_id: str, **overrides) -> dict:
 
 def test_schema_migrates_on_first_open(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
-    assert db.schema_version() == 4
+    assert db.schema_version() == SCHEMA_VERSION
     assert db.count_entries() == 0
 
 

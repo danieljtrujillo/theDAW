@@ -35,6 +35,9 @@ export interface SendableAudio {
   fetcher: () => Promise<Blob>;
   /** Mime hint for the resulting File / source label. */
   mimeType?: string;
+  /** Library entry id when the audio is a library take — lets Chimera reuse
+   *  the cached analysis row (BPM / key / beats) and cached stems. */
+  entryId?: string;
 }
 
 export type AudioSendTarget =
@@ -137,6 +140,7 @@ export async function sendAudioToChimera(items: SendableAudio[]): Promise<void> 
         blob: await it.fetcher(),
         mimeType: it.mimeType || DEFAULT_AUDIO_MIME,
         label: it.label,
+        entryId: it.entryId,
       })),
     );
     addBlobsToChimera(resolved);

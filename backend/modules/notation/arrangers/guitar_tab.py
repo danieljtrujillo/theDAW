@@ -28,11 +28,14 @@ TUNINGS: dict[str, list[int]] = {
     "guitar-7-string": [35, 40, 45, 50, 55, 59, 64],  # B1 E2 A2 D3 G3 B3 E4
     "bass-standard": [28, 33, 38, 43],  # E1 A1 D2 G2
     "bass-5-string": [23, 28, 33, 38, 43],  # B0 E1 A1 D2 G2
+    # Re-entrant: the "low" string (G4) sounds above the C4 and E4 strings.
+    "ukulele-standard": [67, 60, 64, 69],  # G4 C4 E4 A4
 }
 
 _DEFAULT_TUNING_FOR_INSTRUMENT = {
     "guitar": "guitar-standard",
     "bass": "bass-standard",
+    "ukulele": "ukulele-standard",
 }
 
 # difficulty -> (max_fret, max_stretch). Higher difficulty allows higher and

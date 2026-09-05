@@ -34,6 +34,7 @@ import { useLibraryStore } from '../../state/libraryStore';
 import { logInfo, logWarn } from '../../state/logStore';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
 import { usePlayerStore } from '../../state/playerStore';
+import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { PianoRoll } from '../audio/PianoRoll';
 import { ArpeggiatorPanel } from '../audio/ArpeggiatorPanel';
 import { VirtuosoControls } from '../audio/VirtuosoControls';
@@ -602,6 +603,14 @@ export const MidiPanel: React.FC = () => {
                   <span className="text-zinc-600">none (analyze with transcription)</span>
                 )}
               </p>
+              <button
+                type="button"
+                className="btn-ghost text-[8px] py-0.5 px-1.5 mt-1 text-rose-200"
+                onClick={() => useBottomPanelStore.getState().showTab('sing')}
+                title="Sing along, edit or time the lyrics in the SING tab"
+              >
+                OPEN IN SING
+              </button>
             </section>
 
             <section>

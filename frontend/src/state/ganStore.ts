@@ -71,6 +71,34 @@ export const useGanStore = create<GanState>()((set, get) => ({
   },
 
   openById: async (id) => {
+    // Instant path: an installed plugin's entry URL is already in the list, so
+    // the stage mounts the runtime in the same tick (the backend extracts a
+    // runtime lazily on the first asset request anyway). Re-opening Ares after
+    // a tab round-trip therefore never waits on a network round trip; the
+    // confirming /open call below runs in the background.
+    const known = get().plugins.find((p) => p.id === id);
+    if (known?.entry_url) {
+      set({
+        busy: false,
+        error: null,
+        activeId: id,
+        activeUrl: known.entry_url,
+        activeName: known.name || 'plugin',
+      });
+      try {
+        const res = await ganApi.openById(id);
+        if (get().activeId !== id) return; // the user moved on meanwhile
+        const name = String(res.manifest.name ?? known.name ?? 'plugin');
+        if (res.entry_url !== known.entry_url || name !== get().activeName) {
+          set({ activeUrl: res.entry_url, activeName: name });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'open .gan failed';
+        logError('plugin', msg);
+        if (get().activeId === id) set({ error: msg });
+      }
+      return;
+    }
     set({ busy: true, error: null });
     try {
       const res = await ganApi.openById(id);
@@ -109,17 +137,22 @@ export const useGanStore = create<GanState>()((set, get) => ({
   },
 
   ensureAres: async () => {
-    // Always (re)package: package-ares is idempotent (rebuilds the .gan + extracts
-    // a fresh runtime), so this guarantees edits to the bundled Ares project.json
-    // ship even on a machine that already has an older ares.gan installed.
-    // Concurrent calls (MixView mounts fire two ensure paths in the same tick)
-    // share ONE in-flight run so the runtime is never rewritten by two
-    // package-ares requests at once.
+    // Always ask: package-ares compares the bundled source + runtime template
+    // against the installed bundle and only rewrites the .gan / runtime when
+    // they differ, so edits to the bundled Ares project.json still ship while
+    // an unchanged install costs one cheap round trip (and keeps the browser's
+    // cached runtime assets valid). Concurrent calls (MixView mounts fire two
+    // ensure paths in the same tick) share ONE in-flight run so the runtime is
+    // never rewritten by two package-ares requests at once.
     if (ensureAresInflight) return ensureAresInflight;
     ensureAresInflight = (async () => {
       try {
-        await ganApi.packageAres();
-        await get().refresh();
+        const r = await ganApi.packageAres();
+        // The list only needs refetching when the bundle actually changed (new
+        // control ids) or Ares is not in the list yet.
+        if (r.rebuilt !== false || !get().plugins.some((p) => p.id === 'ares')) {
+          await get().refresh();
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Ares package failed';
         logError('plugin', msg);

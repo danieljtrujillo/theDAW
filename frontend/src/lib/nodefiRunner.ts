@@ -1,3 +1,4 @@
+import { magentaFetch } from './magentaEngineClient';
 /**
  * Nodefi runner — drives a node graph to produce audio.
  *
@@ -197,7 +198,7 @@ export function runGraph(
           initAudioFile: style ? new File([style], 'style.wav', { type: 'audio/wav' }) : null,
         };
         const form = buildMagentaFormData(p, p.prompt.trim());
-        const res = await fetch('/api/magenta/generate', { method: 'POST', body: form, signal: ac.signal });
+        const res = await magentaFetch('/api/magenta/generate', { method: 'POST', body: form, signal: ac.signal });
         if (!res.ok) throw new Error(`magenta submit failed: ${res.status} (is the engine running?)`);
         const { job } = (await res.json()) as { job?: { id?: string } };
         if (!job?.id) throw new Error('no job id');

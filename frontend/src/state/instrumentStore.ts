@@ -1,3 +1,4 @@
+import { magentaFetch } from '../lib/magentaEngineClient';
 import { create } from 'zustand';
 
 /* ── instrumentStore ─────────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ export async function generateInstrumentFromPrompt(
   form.append('duration', String(opts.duration ?? 2));
   form.append('model_size', 'small');
 
-  const res = await fetch('/api/magenta/generate', { method: 'POST', body: form });
+  const res = await magentaFetch('/api/magenta/generate', { method: 'POST', body: form });
   if (!res.ok) throw new Error(`magenta generate failed: ${res.status}`);
   const { job } = await res.json();
 

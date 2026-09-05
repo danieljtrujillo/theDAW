@@ -32,6 +32,7 @@ import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
 import { setXrHostPosture, onXrPeersChanged, kickXrPeer, type XrPeer } from '../../state/xrControlClient';
 import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
+import { useLayoutZoom, FOOTER_H } from '../../lib/layoutScale';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
@@ -259,6 +260,9 @@ export const Shell: React.FC = () => {
     };
   }, [isResizingRail, setRightPanelWidth]);
 
+  // Continuous width+height aware shell scale (see lib/layoutScale.ts). Published
+  // inline as --layout-zoom + zoom on the root so the CSS contract is unchanged.
+  const layoutZoom = useLayoutZoom();
   const editThemeId = useEditThemeStore((s) => s.themeId);
   const editThemeImage = useEditThemeStore((s) => s.customImage);
   const editTheme = useMemo(
@@ -270,7 +274,13 @@ export const Shell: React.FC = () => {
     <div
       className="edit-theme-scope relative flex flex-col w-full bg-[#07050a] text-[#f5f3ff] overflow-hidden font-sans dense-layout"
       data-et-light={editTheme.light ? '1' : undefined}
-      style={{ height: 'calc((100vh - 3.5rem) / var(--layout-zoom))', ...(editTheme.vars as React.CSSProperties) }}
+      data-layout-zoom={layoutZoom}
+      style={{
+        ...({ '--layout-zoom': String(layoutZoom) } as React.CSSProperties),
+        zoom: layoutZoom,
+        height: 'calc((100vh - 3.5rem) / var(--layout-zoom))',
+        ...(editTheme.vars as React.CSSProperties),
+      }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
           Mobile / Docs / app-menu (right). G-Search moved to the footer. */}
@@ -394,10 +404,13 @@ export const Shell: React.FC = () => {
         onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
         title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
         aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
-        className="absolute right-0 top-1/2 -translate-y-1/2 z-50 group flex flex-col items-center justify-center gap-1.5 h-24 w-7 rounded-l-lg border border-r-0 border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/35 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all"
+        className="absolute right-0 top-1/2 -translate-y-1/2 z-50 group flex flex-col items-center justify-center gap-1.5 h-24 w-3.5 rounded-l-lg border border-r-0 border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/35 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all"
       >
-        <Library className="w-4 h-4" />
-        {isRightPanelOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        {/* Slim at rest so it never covers right-edge controls (the dock's
+            Maximize toggle sat under it); the library icon joins the chevron
+            once hovered. */}
+        <Library className="hidden group-hover:block w-4 h-4" />
+        {isRightPanelOpen ? <ChevronRight className="w-3 h-3 group-hover:w-4 group-hover:h-4" /> : <ChevronLeft className="w-3 h-3 group-hover:w-4 group-hover:h-4" />}
       </button>
       {docsOpen && (
         <Suspense fallback={null}>
@@ -619,8 +632,25 @@ export const Shell: React.FC = () => {
  *   bottom-right corner (PlayerFooter), not in this strip.
  */
 const STRIP_HEIGHT = 28;
+/** Header row height (h-11), logical px; header + strip = the 4.5rem the
+ *  maximized-dock calc reserves (72px). */
+const HEADER_HEIGHT = 44;
 const DOCK_MIN_HEIGHT = 60;
 const DOCK_MAX_FRACTION = 0.85;
+/** Open dock body ≤ this share of the work area (see effectiveMultiHeight). */
+const DOCK_MAX_FRACTION_OF_WORK = 0.6;
+
+/** window.innerHeight tracked across resizes (the zoom hook only re-renders
+ *  when the rounded zoom changes; the dock clamp needs the raw height too). */
+function useWindowInnerHeight(): number {
+  const [h, setH] = useState(() => (typeof window === 'undefined' ? 0 : window.innerHeight));
+  useEffect(() => {
+    const update = () => setH(window.innerHeight);
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  return h;
+}
 const LOG_MIN_WIDTH = 220;
 const LOG_MAX_WIDTH = 720;
 
@@ -644,9 +674,20 @@ const ShellBottomDock: React.FC = () => {
   // dock's own bottom (e.g. the Score viewer's page/zoom controls) is clipped.
   // Reserve 4.5rem inside the root for the header (h-11 = 44px) + the always-on
   // 28px strip (72px total).
+  // Clamp: the open dock body never takes more than DOCK_MAX_FRACTION_OF_WORK
+  // of the work area (shell minus header + strip, logical px), so a persisted
+  // 320px dock on a 1366x768 laptop cannot squeeze the tab above it into a
+  // clipped sliver. Re-evaluated on resize (zoom hook + innerHeight).
+  const layoutZoom = useLayoutZoom();
+  const innerH = useWindowInnerHeight();
+  const workAreaH = Math.max(0, (innerH - FOOTER_H) / layoutZoom - HEADER_HEIGHT - STRIP_HEIGHT);
+  const effectiveMultiHeight = Math.max(
+    DOCK_MIN_HEIGHT,
+    Math.min(multiHeight, Math.floor(workAreaH * DOCK_MAX_FRACTION_OF_WORK)),
+  );
   const bodyHeight = multiMaximized
     ? 'calc((100vh - 3.5rem) / var(--layout-zoom) - 4.5rem)'
-    : `${multiHeight}px`;
+    : `${effectiveMultiHeight}px`;
   // The LOG strip section auto-fits its content (the telemetry readouts + the
   // fixed action button). Mirror its measured width into logWidth so the LOG
   // body directly below it stays column-aligned (opens to the same left edge).
@@ -676,7 +717,7 @@ const ShellBottomDock: React.FC = () => {
         >
           {!multiMaximized && (
             <ColumnResizeHandle
-              currentHeight={multiHeight}
+              currentHeight={effectiveMultiHeight}
               onSet={setMultiHeight}
               title="Drag to resize the bottom dock"
             />
@@ -696,7 +737,7 @@ const ShellBottomDock: React.FC = () => {
         >
           {!multiMaximized && (
             <ColumnResizeHandle
-              currentHeight={multiHeight}
+              currentHeight={effectiveMultiHeight}
               onSet={setMultiHeight}
               title="Drag to resize the log height"
             />

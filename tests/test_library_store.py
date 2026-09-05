@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from backend.modules.library.db import LibraryDB
 from backend.modules.library import router
 from backend.modules.library.store import LibraryStore, USER_MUTABLE_FIELDS
 
@@ -196,7 +197,7 @@ def test_import_blob_creates_top_level_entry(tmp_path: Path):
 def test_user_mutable_fields_frozenset_is_locked():
     # Lock the contract — adding a new field requires an intentional update.
     assert USER_MUTABLE_FIELDS == frozenset(
-        {"favorite", "rating", "tags", "notes", "title", "chimera_sources"}
+        {"favorite", "rating", "tags", "notes", "title", "chimera_sources", "lyrics"}
     )
 
 
@@ -227,3 +228,102 @@ def test_record_reads_legacy_model_name_and_cfg_scale_aliases(tmp_path: Path):
     assert record is not None
     assert record.model == "small"
     assert record.cfg == 7.5
+
+
+# ---- lyrics field -----------------------------------------------------------
+
+
+def test_update_entry_round_trips_lyrics(tmp_path: Path):
+    item_dir = _seed_generate_entry(tmp_path, "job1", 0)
+    store = LibraryStore(tmp_path)
+
+    record = store.update_entry("job1_00", {"lyrics": "la la\nda da"})
+
+    assert record is not None
+    assert record.lyrics == "la la\nda da"
+    assert record.to_dict()["lyrics"] == "la la\nda da"
+
+    # Persisted into metadata.json, the source of truth.
+    meta = json.loads((item_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["lyrics"] == "la la\nda da"
+
+    # Survives a fresh store and both list paths (the DB mirror was synced).
+    fresh = LibraryStore(tmp_path)
+    got = fresh.get_entry("job1_00")
+    assert got is not None
+    assert got.lyrics == "la la\nda da"
+    assert {r.id: r.lyrics for r in fresh.list_entries()}["job1_00"] == "la la\nda da"
+    assert {r.id: r.lyrics for r in fresh.list_entries_fast()}["job1_00"] == (
+        "la la\nda da"
+    )
+
+
+def test_update_entry_coerces_lyrics_to_str(tmp_path: Path):
+    _seed_generate_entry(tmp_path, "job1", 0)
+    store = LibraryStore(tmp_path)
+
+    record = store.update_entry("job1_00", {"lyrics": 123})
+    assert record is not None
+    assert record.lyrics == "123"
+
+    # None / falsy clears to '' rather than the string 'None'.
+    record = store.update_entry("job1_00", {"lyrics": None})
+    assert record is not None
+    assert record.lyrics == ""
+
+
+def test_record_defaults_lyrics_to_empty_string(tmp_path: Path):
+    _seed_generate_entry(tmp_path, "job1", 0)
+    store = LibraryStore(tmp_path)
+
+    record = store.get_entry("job1_00")
+    assert record is not None
+    assert record.lyrics == ""
+    assert record.to_dict()["lyrics"] == ""
+
+
+def test_suno_metadata_lyrics_surfaces_on_record(tmp_path: Path):
+    # Suno External API cache shape: an "inferred" marker plus the nested
+    # metadata.lyrics that _flatten_suno_meta lifts to meta["lyrics"].
+    _seed_generate_entry(
+        tmp_path,
+        "suno1",
+        0,
+        extra_meta={"model": "suno", "inferred": {}, "metadata": {"lyrics": "hey"}},
+    )
+    store = LibraryStore(tmp_path)
+
+    record = store.get_entry("suno1_00")
+    assert record is not None
+    assert record.lyrics == "hey"
+
+    walked = {r.id: r.lyrics for r in store.list_entries()}
+    assert walked["suno1_00"] == "hey"
+
+    store.reindex()
+    fast = {r.id: r.lyrics for r in store.list_entries_fast()}
+    assert fast["suno1_00"] == "hey"
+
+
+def test_delete_notation_artifact(tmp_path: Path):
+    db = LibraryDB(tmp_path / "library.db")
+    try:
+        db.upsert_entry({"id": "e1", "title": "t", "audio_filename": "a.wav"})
+        db.add_notation_artifact(
+            artifact_id="e1__lyrics__lyrics",
+            entry_id="e1",
+            kind="lyrics",
+            path=str(tmp_path / "e1" / "lyrics.json"),
+            engine="lyrics",
+            engine_version="1",
+            metadata={"source": "manual"},
+        )
+        assert db.get_notation_artifact("e1__lyrics__lyrics") is not None
+
+        assert db.delete_notation_artifact("e1__lyrics__lyrics") is True
+        assert db.get_notation_artifact("e1__lyrics__lyrics") is None
+        assert db.list_notation_artifacts("e1", kind="lyrics") == []
+        # Second delete is a no-op.
+        assert db.delete_notation_artifact("e1__lyrics__lyrics") is False
+    finally:
+        db.close()

@@ -20,6 +20,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, TypedDict
 
+import numpy as np
+
 from .config import probe
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,83 @@ class StretchResult(TypedDict):
     engine: str
     clamped: bool
     note: Optional[str]
+    # v2 additions (always present):
+    filter: str  # the exact ``-af`` string handed to ffmpeg
+    pitch_semitones_used: float  # 0.0 whenever the atempo engine ran
+    span_used: Optional[tuple[float, float]]  # SOURCE seconds, None = whole file
+
+
+# ffmpeg ``rubberband`` filter enum options that callers may set through
+# ``rb_options``. Keys and values mirror ``ffmpeg -h filter=rubberband``.
+RB_OPTION_VALUES: dict[str, tuple[str, ...]] = {
+    "transients": ("crisp", "mixed", "smooth"),
+    "detector": ("compound", "percussive", "soft"),
+    "phase": ("laminar", "independent"),
+    "window": ("standard", "short", "long"),
+    "smoothing": ("off", "on"),
+    "formant": ("shifted", "preserved"),
+}
+
+
+def _validate_rb_options(rb_options: Optional[dict[str, str]]) -> list[tuple[str, str]]:
+    """Return ``rb_options`` as ``(key, value)`` pairs in sorted key order.
+
+    Raises ``ValueError`` on an unknown key or a value that is not one of the
+    ffmpeg enum names for that key.
+    """
+    if not rb_options:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for key in sorted(rb_options):
+        allowed = RB_OPTION_VALUES.get(key)
+        if allowed is None:
+            raise ValueError(
+                f"unknown rubberband option {key!r}; allowed: {sorted(RB_OPTION_VALUES)}"
+            )
+        value = str(rb_options[key])
+        if value not in allowed:
+            raise ValueError(
+                f"invalid value {value!r} for rubberband option {key!r}; "
+                f"allowed: {list(allowed)}"
+            )
+        pairs.append((key, value))
+    return pairs
+
+
+def _span_args(span: Optional[tuple[float, float]]) -> list[str]:
+    """``-ss/-t`` input options for a SOURCE-seconds window (empty when None).
+
+    Emitted BEFORE ``-i``: on WAV input the fast seek is sample-exact.
+    """
+    if span is None:
+        return []
+    start, end = float(span[0]), float(span[1])
+    start = max(0.0, start)
+    length = end - start
+    if length <= 0:
+        raise ValueError(f"span must satisfy end > start, got {span!r}")
+    return ["-ss", f"{start:.6f}", "-t", f"{length:.6f}"]
+
+
+def _rubberband_filter(
+    ratio: float,
+    pitch_semitones: float = 0.0,
+    rb_options: Optional[dict[str, str]] = None,
+) -> str:
+    """Build the ``rubberband=...`` filter string.
+
+    With ``pitch_semitones == 0`` and ``rb_options is None`` this is
+    byte-identical to the v1 string (``rubberband=tempo=X:pitchq=quality``).
+    """
+    parts = [f"rubberband=tempo={ratio:.6f}"]
+    if pitch_semitones != 0.0:
+        parts.append(f"pitch={2 ** (pitch_semitones / 12):.6f}")
+    parts.append("pitchq=quality")
+    if rb_options is not None or pitch_semitones != 0.0:
+        parts.append("channels=together")
+    for key, value in _validate_rb_options(rb_options):
+        parts.append(f"{key}={value}")
+    return ":".join(parts)
 
 
 def normalize_to_target(
@@ -79,7 +158,14 @@ def normalize_to_target(
     return str(output_path)
 
 
-def _build_rubberband_cmd(input_path: str, output_path: str, ratio: float) -> list[str]:
+def _build_rubberband_cmd(
+    input_path: str,
+    output_path: str,
+    ratio: float,
+    pitch_semitones: float = 0.0,
+    rb_options: Optional[dict[str, str]] = None,
+    span: Optional[tuple[float, float]] = None,
+) -> list[str]:
     return [
         "ffmpeg",
         "-nostdin",
@@ -87,15 +173,21 @@ def _build_rubberband_cmd(input_path: str, output_path: str, ratio: float) -> li
         "-hide_banner",
         "-loglevel",
         "error",
+        *_span_args(span),
         "-i",
         input_path,
         "-af",
-        f"rubberband=tempo={ratio:.6f}:pitchq=quality",
+        _rubberband_filter(ratio, pitch_semitones, rb_options),
         output_path,
     ]
 
 
-def _build_atempo_cmd(input_path: str, output_path: str, ratio: float) -> list[str]:
+def _build_atempo_cmd(
+    input_path: str,
+    output_path: str,
+    ratio: float,
+    span: Optional[tuple[float, float]] = None,
+) -> list[str]:
     return [
         "ffmpeg",
         "-nostdin",
@@ -103,6 +195,7 @@ def _build_atempo_cmd(input_path: str, output_path: str, ratio: float) -> list[s
         "-hide_banner",
         "-loglevel",
         "error",
+        *_span_args(span),
         "-i",
         input_path,
         "-af",
@@ -111,12 +204,24 @@ def _build_atempo_cmd(input_path: str, output_path: str, ratio: float) -> list[s
     ]
 
 
+def read_stretched(path: str | Path) -> tuple[np.ndarray, int]:
+    """Read a rendered WAV as float32 ``(frames, channels)`` plus its sample rate."""
+    import soundfile as sf
+
+    audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    return np.ascontiguousarray(audio, dtype=np.float32), int(sr)
+
+
 def stretch_audio(
     input_path: str | Path,
     output_path: str | Path,
     ratio: float,
     timeout_sec: float = 180.0,
     force_engine: Optional[str] = None,
+    *,
+    pitch_semitones: float = 0.0,
+    rb_options: Optional[dict[str, str]] = None,
+    span: Optional[tuple[float, float]] = None,
 ) -> StretchResult:
     """Stretch input audio by `ratio` (output_duration = input_duration / ratio).
 
@@ -127,10 +232,27 @@ def stretch_audio(
 
     `force_engine` ∈ {"rubberband", "atempo", None}. Used by tests; production
     callers should leave it None.
+
+    Keyword-only v2 options (defaults reproduce the v1 command byte-for-byte):
+    - `pitch_semitones`: pitch shift applied by rubberband (atempo cannot
+      shift pitch; the result then carries `pitch_semitones_used == 0.0` and
+      a note).
+    - `rb_options`: extra rubberband enum options (see `RB_OPTION_VALUES`);
+      unknown keys / values raise `ValueError` before ffmpeg is spawned.
+    - `span`: `(start_sec, end_sec)` window in SOURCE seconds; only that
+      window is decoded and stretched.
     """
 
     in_str = str(input_path)
     out_str = str(output_path)
+    span_used: Optional[tuple[float, float]] = None
+    if span is not None:
+        span_used = (max(0.0, float(span[0])), float(span[1]))
+        _span_args(span_used)  # validate early (end > start)
+    pitch_semitones = float(pitch_semitones)
+    # Validate options up front so a typo surfaces deterministically on every
+    # host, not only where rubberband is present.
+    _validate_rb_options(rb_options)
 
     clamped = False
     if ratio < RATIO_MIN:
@@ -152,7 +274,9 @@ def stretch_audio(
     note: Optional[str] = None
 
     if use_rubberband:
-        cmd = _build_rubberband_cmd(in_str, out_str, ratio)
+        cmd = _build_rubberband_cmd(
+            in_str, out_str, ratio, pitch_semitones, rb_options, span_used
+        )
         try:
             proc = subprocess.run(
                 cmd,
@@ -173,6 +297,9 @@ def stretch_audio(
                 "engine": "rubberband",
                 "clamped": clamped,
                 "note": "ratio clamped to safe range" if clamped else None,
+                "filter": cmd[cmd.index("-af") + 1],
+                "pitch_semitones_used": pitch_semitones,
+                "span_used": span_used,
             }
         log.warning(
             "rubberband failed (rc=%s), falling back to atempo. stderr: %s",
@@ -181,7 +308,11 @@ def stretch_audio(
         )
         note = "rubberband filter failed; fell back to atempo"
 
-    cmd = _build_atempo_cmd(in_str, out_str, ratio)
+    if pitch_semitones != 0.0:
+        pitch_note = "pitch shift unavailable (atempo)"
+        note = f"{note}; {pitch_note}" if note else pitch_note
+
+    cmd = _build_atempo_cmd(in_str, out_str, ratio, span_used)
     try:
         proc = subprocess.run(
             cmd,
@@ -204,4 +335,7 @@ def stretch_audio(
         "engine": "atempo",
         "clamped": clamped,
         "note": note or ("ratio clamped to safe range" if clamped else None),
+        "filter": cmd[cmd.index("-af") + 1],
+        "pitch_semitones_used": 0.0,
+        "span_used": span_used,
     }

@@ -114,33 +114,33 @@ input[type="file"]{display:none}
   <!-- VERTICAL FADERS -->
   <div class="faders-row">
     <div class="fader-unit f0">
-      <span class="fu-lbl">Grain Size</span>
+      <label class="fu-lbl" for="pGrainSize">Grain Size</label>
       <div class="fader-track">
-        <input type="range" id="pGrainSize" min="5" max="500" value="50" step="1">
+        <input type="range" id="pGrainSize" name="pGrainSize" min="5" max="500" value="50" step="1">
         <div class="fader-fill" id="ffGrainSize"></div>
       </div>
       <span class="fu-val" id="vGrainSize">50ms</span>
     </div>
     <div class="fader-unit f1">
-      <span class="fu-lbl">Density</span>
+      <label class="fu-lbl" for="pDensity">Density</label>
       <div class="fader-track">
-        <input type="range" id="pDensity" min="1" max="200" value="40" step="1">
+        <input type="range" id="pDensity" name="pDensity" min="1" max="200" value="40" step="1">
         <div class="fader-fill" id="ffDensity"></div>
       </div>
       <span class="fu-val" id="vDensity">40/s</span>
     </div>
     <div class="fader-unit f2">
-      <span class="fu-lbl">Scatter</span>
+      <label class="fu-lbl" for="pScatter">Scatter</label>
       <div class="fader-track">
-        <input type="range" id="pScatter" min="0" max="100" value="30" step="1">
+        <input type="range" id="pScatter" name="pScatter" min="0" max="100" value="30" step="1">
         <div class="fader-fill" id="ffScatter"></div>
       </div>
       <span class="fu-val" id="vScatter">30%</span>
     </div>
     <div class="fader-unit f3">
-      <span class="fu-lbl">Pitch Spread</span>
+      <label class="fu-lbl" for="pPitchSpread">Pitch Spread</label>
       <div class="fader-track">
-        <input type="range" id="pPitchSpread" min="-24" max="24" value="0" step="1">
+        <input type="range" id="pPitchSpread" name="pPitchSpread" min="-24" max="24" value="0" step="1">
         <div class="fader-fill" id="ffPitchSpread"></div>
       </div>
       <span class="fu-val" id="vPitchSpread">+0st</span>
@@ -161,8 +161,9 @@ input[type="file"]{display:none}
     <audio id="ain" controls></audio>
     <audio id="aout" controls></audio>
   </div>
-  <input type="file" id="fileinput" accept="audio/*">
+  <input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
 </div>
+<script src="module-kit.js"></script>
 
 <script>
 /* ── STATE ── */
@@ -226,10 +227,13 @@ wireFader('pScatter', 'ffScatter', 0, 100, e => { scatter = +e.target.value; doc
 wireFader('pPitchSpread', 'ffPitchSpread', -24, 24, e => { pitchSpread = +e.target.value; document.getElementById('vPitchSpread').textContent = (pitchSpread > 0 ? '+' : '') + pitchSpread + 'st'; updateGranularLive(); });
 
 /* ── FREEZE ── */
+document.getElementById('togFreeze').title = 'Freeze holds the preview grain cloud (preview only: grainlab has no freeze parameter)';
 document.getElementById('togFreeze').addEventListener('click', function() {
   this.classList.toggle('on');
   freeze = this.classList.contains('on');
 });
+window.theDAWKit.toggleGroup('#togFreeze, #bypBtn, .hdr-pill', 'on');
+window.theDAWKit.toggleGroup('.ftr-tab', 'active', true);
 
 /* ── LIVE GRANULAR AUDIO NODES ── */
 let liveDelay, liveMod, liveModGain, liveDry, liveWet;

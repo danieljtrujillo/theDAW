@@ -108,14 +108,14 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
     const tt = i / TICKS;
     const p = smoothstep(1 - Math.abs(tt - t) / FOCUS);
     const isMajor = i % 4 === 0;        // number every 4th tick (6 numbers)
-    const txt: RGB = [lerp(150, 255, p), lerp(150, 255, p), lerp(155, 255, p)];
+    const txt: RGB = [lerp(176, 255, p), lerp(176, 255, p), lerp(181, 255, p)];
     const tickCol: RGB = [lerp(150, base[0], p), lerp(150, base[1], p), lerp(155, base[2], p)];
     marks.push(
       <div key={i} className="ts-mark" style={{
         top: `${(1 - tt) * 100}%`,
         transform: `translate(${markDir * p * 5}px, -50%) scale(${1 + p * 0.55})`,
-        opacity: lerp(0.22, 1, p),
-        color: rgb(txt),
+        opacity: lerp(0.85, 1, p),
+        color: `var(--ts-mark, ${rgb(txt)})`,
         zIndex: 1 + Math.round(p * 10),
         ['--mark-glow' as string]: p > 0.02 ? `0 0 ${5 + p * 10}px ${rgba(base, 0.85 * p)}` : 'none',
       }}>
@@ -180,7 +180,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
         style={{
           fontSize: active ? '11px' : '8.5px',
           fontWeight: active ? 800 : 700,
-          color: 'var(--accent)',
+          color: 'var(--ts-readout, var(--accent-bright, var(--accent)))',
           textShadow: active ? '0 0 10px var(--accent-glow)' : 'none',
           transition: 'font-size 0.1s ease, text-shadow 0.1s ease',
         }}

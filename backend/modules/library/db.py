@@ -898,6 +898,14 @@ class LibraryDB:
             cur.close()
             return dict(row) if row else None
 
+    def delete_notation_artifact(self, artifact_id: str) -> bool:
+        """Remove one notation artifact row. Returns True when a row was
+        deleted, False when no row had that id. The file on disk is the
+        caller's responsibility."""
+        with self._txn() as cur:
+            cur.execute("DELETE FROM notation_artifacts WHERE id = ?", (artifact_id,))
+            return cur.rowcount > 0
+
     # ---- Bulk cross-entry reads ---------------------------------------------
     #
     # Batched siblings of list_stems / list_midis / list_notation_artifacts,

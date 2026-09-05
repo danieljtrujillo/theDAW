@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors, Activity, Wand2, Loader2 } from 'lucide-react';
+import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors, Activity, Wand2, Loader2, MicVocal } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
+import { useBottomPanelStore } from '../../state/bottomPanelStore';
+import { deriveLyrics } from '../../catalog/catalogSearch';
 
 interface AnalysisRow {
   bpm: number | null;
@@ -58,6 +60,16 @@ const fmtDate = (iso: string): string => {
     const d = new Date(iso);
     return d.toLocaleString();
   } catch { return iso; }
+};
+
+/** The first sung line of a lyric (markers like [Chorus] skipped). */
+const firstLyricLine = (text: string): string => {
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const t = raw.trim();
+    if (!t || /^[[(][^\])]{1,40}[\])]$/.test(t)) continue;
+    return t;
+  }
+  return '';
 };
 
 const Row: React.FC<{ icon?: React.ComponentType<{ className?: string }>; label: string; value: React.ReactNode; mono?: boolean }> = ({
@@ -298,6 +310,25 @@ export const DetailsView: React.FC = () => {
           <Row icon={Tag} label="Tags" value={entry.tags.length ? entry.tags.join(', ') : '—'} />
           <Row icon={FileAudio} label="Neg. prompt" value={entry.negativePrompt || '—'} />
           <Row icon={Send} label="Notes" value={entry.notes || '—'} mono={false} />
+          <Row
+            icon={MicVocal}
+            label="Lyrics"
+            mono={false}
+            value={(
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="truncate">{firstLyricLine(entry.lyrics || deriveLyrics(entry)) || '—'}</span>
+                <button
+                  type="button"
+                  className="btn-ghost text-[8px] py-0.5 px-1.5 shrink-0 text-rose-200"
+                  onClick={() => useBottomPanelStore.getState().showTab('sing')}
+                  aria-label="Open the SING tab"
+                  title="Sing along, edit or time these lyrics in the SING tab"
+                >
+                  OPEN IN SING
+                </button>
+              </span>
+            )}
+          />
         </div>
       </div>
 

@@ -137,15 +137,36 @@ def available() -> dict[str, Any]:
     }
 
 
-def render_musicxml_pdf(source: Path, output: Path, artist: str = "") -> dict[str, Any]:
+def render_musicxml_pdf(
+    source: Path,
+    output: Path,
+    artist: str = "",
+    *,
+    page_width: Optional[int] = None,
+    zoom: Optional[float] = None,
+    check_fit: bool = False,
+) -> dict[str, Any]:
     """Engrave ``source`` (MusicXML) into ``output`` (PDF). Never raises.
 
     ``artist`` becomes the subtitle under the title, as in the SCORE tab. Left
     empty, the renderer falls back to the score's own composer credit.
 
-    Returns ``{"ok": True, "pages": int, "bytes": int, "error": None}`` on success,
-    or ``{"ok": False, "pages": 0, "bytes": 0, "error": "..."}`` with a message the
-    caller can surface as-is.
+    ``page_width`` is the container width in CSS px the renderer sizes one page
+    from (the tab's initial 520 when omitted). ``zoom`` pins the zoom the way a
+    user's manual zoom does; left ``None`` the renderer starts at the tab's
+    default and auto-fits (lowers the zoom when a music system is taller than
+    the printable page, exactly as the SCORE tab does), so the bundle PDF
+    paginates like the sheet on screen. ``check_fit`` asks the renderer to
+    report that measurement.
+
+    Returns ``{"ok": True, "pages": int, "bytes": int, "zoom": float, "error":
+    None}`` on success, plus ``"fit": {"tallestBottom", "usable", "printable",
+    "pageHeight", "bottomMargin", "systems", "passes", "startZoom", "overflows"}``
+    (OSMD page units; ``usable`` is the fit target the renderer keeps every system
+    above, ``printable`` is OSMD's PageHeight - PageBottomMargin) when
+    ``check_fit`` is set, or ``{"ok": False, "pages": 0, "bytes": 0, "error": "..."}`` with a
+    message the caller can surface as-is. Tablature (alphaTex) renders through a
+    different script that has no zoom/fit notion; those keys are absent then.
     """
     # Absolute: the child runs with cwd set to the frontend, so a relative path
     # from the caller would resolve against the wrong directory.
@@ -187,6 +208,13 @@ def render_musicxml_pdf(source: Path, output: Path, artist: str = "") -> dict[st
     cmd = [node, str(script.as_posix()), str(source), str(output)]
     if artist.strip() and not is_tab:
         cmd += ["--artist", artist.strip()]
+    if not is_tab:
+        if page_width is not None and page_width > 0:
+            cmd += ["--page-width", str(int(page_width))]
+        if zoom is not None and zoom > 0:
+            cmd += ["--zoom", repr(float(zoom))]
+        if check_fit:
+            cmd.append("--check-fit")
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         proc = subprocess.run(
@@ -239,9 +267,25 @@ def render_musicxml_pdf(source: Path, output: Path, artist: str = "") -> dict[st
 
     if stderr:
         log.debug("notation.pdf_render: %s", stderr)
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "pages": int(summary.get("pages") or 0),
         "bytes": int(summary.get("bytes") or 0),
         "error": None,
     }
+    if isinstance(summary.get("zoom"), (int, float)):
+        result["zoom"] = float(summary["zoom"])
+    fit = summary.get("fit")
+    if isinstance(fit, dict):
+        result["fit"] = {
+            "tallestBottom": float(fit.get("tallestBottom") or 0.0),
+            "usable": float(fit.get("usable") or 0.0),
+            "printable": float(fit.get("printable") or 0.0),
+            "pageHeight": float(fit.get("pageHeight") or 0.0),
+            "bottomMargin": float(fit.get("bottomMargin") or 0.0),
+            "systems": int(fit.get("systems") or 0),
+            "passes": int(fit.get("passes") or 0),
+            "startZoom": float(fit.get("startZoom") or 0.0),
+            "overflows": bool(fit.get("overflows")),
+        }
+    return result

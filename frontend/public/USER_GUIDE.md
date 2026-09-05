@@ -114,11 +114,13 @@ Put these on the PATH first: **[uv](https://docs.astral.sh/uv/getting-started/in
 uv sync
 ```
 
-### Optional Linux CUDA wheels (Medium model)
+### Linux
 
-```bash
-uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
-```
+No separate CUDA step: `pyproject.toml` maps Linux x86_64 to the cu126
+torch/torchaudio index under `[tool.uv.sources]`, so plain `uv sync` installs
+the GPU build. The full walkthrough — prerequisites (Node from nvm, ffmpeg), the
+`pyk4a-bundle` glibc caveat, the `./theDAW.sh` launcher, and what differs from
+Windows — is [linux/setup-guide.md](linux/setup-guide.md).
 
 ### With dev dependencies
 
@@ -1682,6 +1684,8 @@ Nothing downloads at startup. The backend boots without touching a checkpoint, a
 
 The one-time download runs through the `modeldl` module (`/api/models`), which streams the weights with a live progress registry surfaced in the Settings download dock, so a first fetch shows progress instead of blocking silently.
 
+**Gated models and the Hugging Face sign-in card.** The post-trained `small` and `medium` checkpoints are gated on Hugging Face: you must accept the licence on the model page once, and downloads need a token. When a download is refused for that reason, theDAW raises a **Hugging Face sign-in card** in the bottom-right notice stack. Paste a **read** token from huggingface.co/settings/tokens into it; the backend validates the token and stores it in the same file the Hugging Face CLI uses, so every later download picks it up — no environment variable and no relaunch. The download dock's error text names the failing repo and links straight to its licence page. (`small` also has an ungated public mirror that is tried automatically; `medium` does not.)
+
 The **Models** section sits directly below the pinned Restart/Shutdown controls in Settings, with Layout Settings right under it and the backend modules as compact tiles below that. It puts the whole model story on screen:
 
 - **Local only (never download)** is **ON by default for fresh installs**, so nothing ever downloads until it is explicitly allowed; an existing explicit choice is preserved. With it on, a missing model fails with a clear message instead of downloading. The switch persists across restarts (it drives `SA3_LOCAL_ONLY`).
@@ -2066,9 +2070,9 @@ The sidecar's `/health` carries an identity field (`app: "mrt2-extended"`), and 
 
 ### 27.2 First non-Mac port of Magenta RealTime 2
 
-theDAW ships the first non-Mac port of Magenta RealTime 2, vendored as the `sidecars/magenta-rt2-nvidia` submodule. A build-system guard in upstream MRT2's CMake locks the C++ inference engine to macOS through the line `if(NOT APPLE) FATAL_ERROR "magenta-rt-v2's C++ build is macOS-only"`. The port's `port/patch_cmake.py` removes that guard, with an anchor check that aborts if upstream drifts, and flips the related switches. The port works because the inference core uses only the portable MLX C++ API, MLX now provides a native CUDA backend (`-DMLX_BUILD_CUDA=ON`), and the single piece of Apple-specific code is an autorelease-pool shim already gated behind `#if defined(__APPLE__)`.
+theDAW ships the first non-Mac port of Magenta RealTime 2, vendored as the `sidecars/magenta-rt2-nvidia` submodule. A build-system guard in upstream MRT2's CMake locks the C++ inference engine to macOS through the line `if(NOT APPLE) FATAL_ERROR "magenta-rt-v2's C++ build is macOS-only"`. The port's `engine/patch_cmake.py` removes that guard, with an anchor check that aborts if upstream drifts, and flips the related switches. The port works because the inference core uses only the portable MLX C++ API, MLX now provides a native CUDA backend (`-DMLX_BUILD_CUDA=ON`), and the single piece of Apple-specific code is an autorelease-pool shim already gated behind `#if defined(__APPLE__)`.
 
-The result runs on Windows through WSL2 with NVIDIA, on native Linux with NVIDIA, and on RunPod cloud GPUs, which extends MRT2 to platforms beyond its macOS origin. The shipped runtime uses the JAX and CUDA backend (`magenta-rt` 2.x) loading `mrt2_small`, the model behind the MAKE dropdown's `magenta-small` engine key. The submodule also includes a streaming WebSocket jam server and a RunPod-serverless path for the larger `mrt2_base`. `sidecars/magenta-rt2-nvidia/port/README.md` has the build details.
+The result runs on Windows through WSL2 with NVIDIA, on native Linux with NVIDIA, and on RunPod cloud GPUs, which extends MRT2 to platforms beyond its macOS origin. The shipped runtime uses the JAX and CUDA backend (`magenta-rt` 2.x) loading `mrt2_small`, the model behind the MAKE dropdown's `magenta-small` engine key. The submodule also includes a streaming WebSocket jam server and a RunPod-serverless path for the larger `mrt2_base`. `sidecars/magenta-rt2-nvidia/README.md` and `INSTALL.md` have the build details.
 
 ---
 
@@ -2375,7 +2379,7 @@ The app menu's **Data** section (§37) holds backup, restore, and update operati
 
 ## 40. NodeF.I. Tab
 
-The NodeF.I. tab (the tab bar reads **NODEFI**; formerly Audimate, which is still the internal identifier prefix — `AudimateView`, `audimateRunner.ts`) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
+The NodeF.I. tab (the tab bar reads **NODEFI**) is a node-graph editor for building generation pipelines. Circular node cards sit on a dark, pannable and zoomable canvas and connect through glowing bezier edges. A palette on the left adds nodes, and an inspector on the right edits the selected node's parameters.
 
 ### 40.1 Node types
 
@@ -2390,7 +2394,7 @@ The NodeF.I. tab (the tab bar reads **NODEFI**; formerly Audimate, which is stil
 
 ### 40.2 Running a graph
 
-Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/audimateRunner.ts`), so a NodeF.I. pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
+Run drives the graph through the same generate, effect, and library actions the rest of the app uses (`lib/nodefiRunner.ts`), so a NodeF.I. pipeline produces the same first-class library entries a manual MAKE render would. Each node reports its run status on the card, and outputs save back to the library on completion. The canvas is hand-built, with a CSS-transform world layer, SVG edges, and pointer-driven pan, node drag, and drag-to-connect.
 
 ---
 

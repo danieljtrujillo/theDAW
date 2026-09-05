@@ -9,7 +9,7 @@
 import React, { useState, lazy, Suspense } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic, Waves, Brush, Gauge, Radio,
+  FileMusic, Waves, Brush, Gauge, Radio, MicVocal,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
@@ -23,6 +23,8 @@ import { LevelsPanel } from '../audio/levels/LevelsPanel';
 // (AI compose + gemini vocal services). Keep it out of first paint; the chunk
 // loads only when the user first opens the MIDI tab.
 const MidiPanel = lazy(() => import('./MidiPanel').then((m) => ({ default: m.MidiPanel })));
+// Lazy too: the SING tab pulls in the pitch lane + mic capture only when opened.
+const SingView = lazy(() => import('./sing/SingView').then((m) => ({ default: m.SingView })));
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
 import { XrBusPanel } from '../dev/XrBusTester';
@@ -36,6 +38,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; desc: string; icon: R
   { id: 'step-seq',   label: 'Sequence',   desc: 'Program drum and note patterns step by step on a grid',                    icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
   { id: 'draw',       label: 'DRAW',       desc: 'Draw to play generative music; record it to the library or EDIT',          icon: Brush,      colorActive: 'border-purple-500 text-purple-300' },
   { id: 'score',      label: 'Score',      desc: 'Sheet music + tabs for the selection; convert and arrange notation',       icon: FileMusic,  colorActive: 'border-emerald-500 text-emerald-300' },
+  { id: 'sing',       label: 'Sing',       desc: 'Karaoke: lyrics follow the track word by word; paste, extract, align, tap-time and export LRC', icon: MicVocal, colorActive: 'border-rose-500 text-rose-300' },
   { id: 'details',    label: 'Details',    desc: 'Metadata, prompt and analysis for the selected library item',              icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'bucket',     label: 'Media',      desc: 'Drag-and-drop bucket for staging clips and media files',                   icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
   { id: 'slide',      label: 'SLIDE',      desc: 'Control surface: map sliders and pads to parameters',                      icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
@@ -98,7 +101,7 @@ export const BottomMultiTabPanel: React.FC = () => {
                 key={t.id}
                 data-tour={`bottom-tab-${t.id}`}
                 onClick={() => setActiveTab(t.id)}
-                className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent et-ink-2 hover:et-ink'}`}
                 title={t.desc}
               >
                 <Icon className="w-3 h-3" /> {t.label}
@@ -108,7 +111,9 @@ export const BottomMultiTabPanel: React.FC = () => {
         </div>
         {/* Right cluster — SLIDE-only controls (when active) + the always-on
             maximize toggle so any tab can fill the window. */}
-        <div className="flex items-center gap-1 pr-2 shrink-0">
+        {/* pr-5 keeps the Maximize toggle clear of the shell's library pull
+            handle (14px wide, right edge, vertically centred). */}
+        <div className="flex items-center gap-1 pr-5 shrink-0">
           {activeTab === 'slide' && (
             <>
               <SlideContentToggle />
@@ -178,6 +183,13 @@ export const BottomMultiTabPanel: React.FC = () => {
         {activeTab === 'score' && (
           <div className="absolute inset-0">
             <ScoreView />
+          </div>
+        )}
+        {activeTab === 'sing' && (
+          <div className="absolute inset-0">
+            <Suspense fallback={null}>
+              <SingView />
+            </Suspense>
           </div>
         )}
         {activeTab === 'bucket' && (

@@ -30,6 +30,8 @@ import {
   SlidersHorizontal, X,
 } from 'lucide-react';
 import { FxRack } from './FxRack';
+import { EffectControls } from './effects/EffectControls';
+import { schemaForRackEffect } from './effects/effectSchema';
 import { VstEmbedHost } from './VstEmbedHost';
 import { GanPluginStage } from './GanPluginStage';
 import { useEditorStore } from '../../state/editorStore';
@@ -258,8 +260,8 @@ const EffectWindowCard: React.FC<{
       : kind === 'gan'
         ? aresOwnsSession
           ? { width: 'min(720px, 92vw)', height: 'min(520px, 72vh)' }
-          : { width: 'min(360px, 92vw)' }
-        : { width: 'min(380px, 92vw)', maxHeight: '70vh' };
+          : { width: 'min(540px, 92vw)', maxHeight: '78vh' }
+        : { width: 'min(500px, 92vw)', maxHeight: '78vh' };
 
   const defaultX = 110 + (index % 6) * 40;
   const defaultY = 96 + (index % 6) * 34;
@@ -364,17 +366,36 @@ const EffectWindowCard: React.FC<{
             <GanPluginStage url={ganActiveUrl} name={ganActiveName ?? label} />
           </div>
         ) : (
-          <div className="p-4 flex flex-col items-center gap-2 text-center">
-            <Blocks className="w-5 h-5 text-indigo-300/60" />
-            <span className="text-[10px] font-mono text-zinc-400">
-              {aresOwnerEntryId ? 'The surface is driving another Ares insert.' : 'Surface closed.'}
-            </span>
-            <button
-              onClick={() => takeAresOwnership(win.scope, entry.id)}
-              className="px-3 py-1.5 rounded border border-indigo-500/40 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25 text-[9px] font-black uppercase tracking-widest"
-            >
-              {aresOwnerEntryId ? 'Take over surface' : 'Open surface'}
-            </button>
+          /* Surface closed: the composite is still fully editable — every
+             Ares stage (filter/delay/reverb/grains/gate + wet/dry) through
+             the schema panel, with the .gan surface one click away. */
+          <div className="p-2 overflow-y-auto min-h-0 flex flex-col gap-2">
+            <div className="flex items-center gap-2 rounded border border-indigo-500/20 bg-indigo-500/5 px-2 py-1.5">
+              <Blocks className="w-4 h-4 text-indigo-300/70 shrink-0" />
+              <span className="text-[9px] font-mono text-zinc-400 flex-1 min-w-0 truncate">
+                {aresOwnerEntryId ? 'The surface is driving another Ares insert.' : 'Surface closed — knobs below drive this insert directly.'}
+              </span>
+              <button
+                onClick={() => takeAresOwnership(win.scope, entry.id)}
+                className="shrink-0 px-2 py-1 rounded border border-indigo-500/40 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25 text-[9px] font-black uppercase tracking-widest"
+              >
+                {aresOwnerEntryId ? 'Take over surface' : 'Open surface'}
+              </button>
+            </div>
+            {(() => {
+              const def = getRackEffect(entry.effect);
+              return def ? (
+                <EffectControls
+                  schema={schemaForRackEffect(def)}
+                  params={entry.params}
+                  display={host.displayParams(paramScope, entry.id)}
+                  idPrefix={`fxwin-${entry.id}`}
+                  layout="expanded"
+                  hideHeader
+                  onChange={(p) => host.writeParams(paramScope, entry.id, p)}
+                />
+              ) : null;
+            })()}
           </div>
         )
       ) : (
@@ -382,6 +403,7 @@ const EffectWindowCard: React.FC<{
           <FxRack
             chain={[entry]}
             idPrefix={`fxwin-${entry.id}`}
+            layout="expanded"
             hideAdd
             onAdd={() => undefined}
             onRemove={(id) => removeEntry(win.scope, id)}

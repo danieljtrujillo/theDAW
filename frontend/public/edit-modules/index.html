@@ -47,6 +47,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .utility-card .card-name{font-size:11px;font-weight:700;letter-spacing:.3px;color:var(--dim)}
 .utility-card .badge{font-size:7px;font-weight:700;letter-spacing:1px;text-transform:uppercase;font-family:var(--mono);color:var(--dim);background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:4px;padding:2px 6px;align-self:flex-start}
 
+/* TOOL STACK */
+.stack-note{font-size:10px;color:var(--dim);font-family:var(--mono);line-height:1.5;margin:-4px 4px 12px}
+.stack-note a,.stack-note code{color:var(--text)}
+.stack-fam{font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;font-family:var(--mono);margin:12px 4px 6px;display:flex;align-items:center;gap:8px}
+.stack-fam::after{content:'';flex:1;height:1px;background:var(--border)}
+.stack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-bottom:8px}
+.stack-card{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);text-decoration:none;font-size:11px;font-weight:600}
+.stack-card:hover{border-color:rgba(255,255,255,.18)}
+.stack-card small{font-size:8px;font-family:var(--mono);color:var(--dim);line-height:1.3}
+.stack-card .stub{color:#f59e0b}
+.stack-card .own{color:#22c55e}
+
 /* FOOTER INFO */
 .page-footer{text-align:center;padding-top:16px;border-top:1px solid var(--border)}
 .page-footer .info{font-size:10px;color:var(--dim);font-family:var(--mono);letter-spacing:.5px}
@@ -61,7 +73,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="logo-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
     <h1>theDAW <span>Edit Tool Modules</span></h1>
   </div>
-  <div class="subtitle"><b>14</b> chain modules &middot; <b>5</b> utility tools &middot; 780&times;504 pro-grade audio processing</div>
+  <div class="subtitle"><b>14</b> chain modules &middot; <b>49</b> backend tools &middot; 780&times;504 pro-grade audio processing</div>
 </div>
 
 <div class="section-label">Chain Modules</div>
@@ -69,6 +81,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 <div class="section-label">Utility Tools</div>
 <div class="utility-grid" id="utilityGrid"></div>
+
+<div class="section-label">Tool Stack &middot; every backend tool <span id="toolStackCount"></span></div>
+<p class="stack-note">Each <code>/api/edit/&lt;family&gt;</code> tool opens in its bespoke instrument when one exists, otherwise in <a href="tool.html">tool.html</a>, the schema-driven GUI rendered from the tool's own manifest.</p>
+<div id="toolStack"></div>
 
 <div class="page-footer">
   <div class="info">theDAW Edit Toolkit &middot; Backend at <a href="http://127.0.0.1:8900">127.0.0.1:8900</a></div>
@@ -308,6 +324,61 @@ function drawCodec(ctx, W, H) {
 
 requestAnimationFrame(renderPreviews);
 window.addEventListener('resize', renderPreviews);
+
+/* ── TOOL STACK: one card per backend tool (49), linking to its GUI ── */
+const FAMILIES = [
+  { id: 'mastering', prefix: '/api/edit/mastering', label: 'Mastering & Tonal', color: '#4dd0e1',
+    tools: ['parametric_eq','maximizer','stereo_imager','dynamic_eq','match_eq','multiband_dynamics','harmonic_exciter','transient_shaper','spectral_stabilizer','loudness_meter','master_assistant'] },
+  { id: 'restoration', prefix: '/api/edit/restoration', label: 'Restoration & Cleanup', color: '#26c6da',
+    tools: ['vocal_isolate','stem_separation','neural_denoise','dereverb','declip','restore_all','spectral_repair','breath_removal','dehum','deess','declick'] },
+  { id: 'enhance', prefix: '/api/edit/enhance', label: 'Enhance / Super-Res', color: '#42a5f5',
+    tools: ['super_res','uncrush','studio_enhance','neural_codec','classical_upsample'] },
+  { id: 'creative_fx', prefix: '/api/edit/creative-fx', label: 'Creative FX & Character', color: '#ff7043',
+    tools: ['ghost_voice','alien_transmission','broken_tape','radio_room','tunnel_pa','glitch_machine','neural_reverb','pitchlift'] },
+  { id: 'creative_neural', prefix: '/api/edit/creative-neural', label: 'Creative Neural / Spectral', color: '#8b5cf6',
+    tools: ['spectramorph','timbreforge','promptfx','tokensynth','grainlab','crossfade_morph','ambientforge','voxsynth'] },
+  { id: 'delivery', prefix: '/api/edit/delivery', label: 'Delivery / Export', color: '#ffab40',
+    tools: ['codec_matrix','smart_export','high_quality_src','dither','metadata','batch_export'] },
+];
+/* Tools with a bespoke instrument page (mirrors editToolPageFor in the app). */
+const BESPOKE = {
+  'mastering/parametric_eq': 'eq.html', 'mastering/multiband_dynamics': 'dynamics.html', 'mastering/transient_shaper': 'transient.html',
+  'mastering/maximizer': 'maximizer.html', 'mastering/stereo_imager': 'imager.html', 'mastering/harmonic_exciter': 'exciter.html',
+  'creative_fx/broken_tape': 'character-fx.html', 'creative_fx/ghost_voice': 'character-fx.html', 'creative_fx/radio_room': 'character-fx.html',
+  'creative_fx/alien_transmission': 'character-fx.html', 'creative_fx/tunnel_pa': 'character-fx.html',
+  'restoration/neural_denoise': 'cleanup.html', 'restoration/declip': 'cleanup.html', 'restoration/dehum': 'cleanup.html',
+  'restoration/declick': 'repair.html', 'restoration/dereverb': 'repair.html',
+  'enhance/super_res': 'enhance.html', 'enhance/uncrush': 'enhance.html', 'enhance/studio_enhance': 'enhance.html', 'enhance/classical_upsample': 'enhance.html',
+  'enhance/neural_codec': 'neural-codec.html', 'creative_neural/voxsynth': 'vocoder.html', 'creative_neural/grainlab': 'granular.html', 'creative_neural/promptfx': 'promptfx.html',
+};
+const pretty = k => k.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+(async function renderToolStack() {
+  const host = document.getElementById('toolStack');
+  let total = 0;
+  for (const fam of FAMILIES) {
+    let tools = fam.tools.map(id => ({ id, name: pretty(id), implemented: null, params: null }));
+    try {
+      const r = await fetch(fam.prefix + '/tools');
+      if (r.ok) { const j = await r.json(); tools = j.tools.map(t => ({ id: t.id, name: t.name, implemented: t.implemented, params: t.params.length })); }
+    } catch (e) { /* backend offline: static list */ }
+    total += tools.length;
+    const h = document.createElement('div'); h.className = 'stack-fam'; h.style.color = fam.color; h.textContent = fam.label + ' \u00b7 ' + tools.length;
+    host.appendChild(h);
+    const grid = document.createElement('div'); grid.className = 'stack-grid';
+    for (const t of tools) {
+      const key = fam.id + '/' + t.id;
+      const a = document.createElement('a');
+      a.className = 'stack-card';
+      a.href = BESPOKE[key] || ('tool.html?family=' + encodeURIComponent(fam.id) + '&tool=' + encodeURIComponent(t.id));
+      a.innerHTML = '<span>' + t.name + '</span><small>' + t.id + (t.params != null ? ' \u00b7 ' + t.params + ' params' : '') +
+        (BESPOKE[key] ? ' \u00b7 <span class="own">' + BESPOKE[key].replace('.html', '') + '</span>' : ' \u00b7 generic GUI') +
+        (t.implemented === false ? ' \u00b7 <span class="stub">not wired</span>' : '') + '</small>';
+      grid.appendChild(a);
+    }
+    host.appendChild(grid);
+  }
+  document.getElementById('toolStackCount').textContent = '(' + total + ')';
+})();
 </script>
 </body>
 </html>

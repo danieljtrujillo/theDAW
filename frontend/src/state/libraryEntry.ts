@@ -28,6 +28,13 @@ export interface LibraryEntry {
   rating: 'like' | 'dislike' | null;
   tags: string[];
   notes: string;
+  /**
+   * Plain lyrics text (the user's editable copy). Mirrors the backend's
+   * `meta["lyrics"]`; Suno imports surface theirs here automatically and the
+   * lyrics module keeps it in sync with the timed `lyrics.json` document.
+   * Always a string ('' when none).
+   */
+  lyrics: string;
   source: 'generate' | 'studio' | 'import';
   chimeraSources?: string[];
   /** Persistent play counter, incremented when the track starts in the player. */
@@ -75,6 +82,7 @@ export interface LibraryEntryPatch {
   rating?: 'like' | 'dislike' | null;
   tags?: string[];
   notes?: string;
+  lyrics?: string; // must match backend USER_MUTABLE_FIELDS
   chimeraSources?: string[];
 }
 

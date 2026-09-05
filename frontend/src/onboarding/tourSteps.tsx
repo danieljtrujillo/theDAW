@@ -1,142 +1,119 @@
 /**
  * Feature-tour step definitions.
  *
- * Each step optionally names a `targetSelector` (a `[data-tour=...]` hook the
- * shell tags onto the real control) and a `tab` the tour switches to before
- * measuring, so the spotlight lands on the right on-screen element. The
- * Chimera step ships a lightweight, self-contained CSS "splice" motif instead
- * of embedding the full WebGL DNA scene — it stays cheap and always animates.
+ * Each step optionally names a `targetSelector` (a `[data-tour=...]` hook or
+ * any stable selector on the real control) and a `tab` the tour switches to
+ * before measuring, so the spotlight lands on the right on-screen element. A
+ * step whose target lives in a collapsible panel (library rail, bottom dock)
+ * carries a `prepare` hook that opens the panel and returns an undo, so the
+ * tour never rearranges the workspace permanently. A target that cannot be
+ * found still renders as a centred card — never a blank spotlight.
+ *
+ * Copy rules: short, benefit-first, no internal jargon; one idea per step.
  */
-import React, { useEffect, useRef } from 'react';
-import { type CenterTab } from '../state/appUiStore';
+import React from 'react';
+import { type CenterTab, useAppUiStore } from '../state/appUiStore';
+import { useBottomPanelStore } from '../state/bottomPanelStore';
+import { ChimeraSpliceMotif } from './ChimeraSpliceMotif';
 
 export interface TourStep {
   id: string;
   title: string;
   body: React.ReactNode;
-  /** CSS selector for the element to spotlight; centered card when absent/missing. */
+  /** Smaller secondary line under the body ("Tip: ..."). */
+  tip?: React.ReactNode;
+  /** CSS selector for the element to spotlight; centred card when absent/missing. */
   targetSelector?: string;
+  /** `first` (default) spotlights the first match; `union` the bounding box of all matches. */
+  targetMode?: 'first' | 'union';
   /** Center tab to switch to before measuring the target. */
   tab?: CenterTab;
+  /**
+   * Runs when the step becomes active (after the tab switch). May return an
+   * undo that runs when the step is left or the tour closes.
+   */
+  prepare?: () => (() => void) | void;
   /** Optional visual shown in the card (e.g. the Chimera splice motif). */
   media?: React.ReactNode;
+  /** Label for the primary button on this step (defaults to Next / Finish). */
+  primaryLabel?: string;
+  /** Tab to land on when the tour finishes from this step. */
+  finishTab?: CenterTab;
 }
 
-/**
- * Small DNA-splice animation: two colored strands of beads slide in from the
- * sides and interleave at the center, evoking the Chimera CRISPR splice. Pure
- * CSS, self-contained, and it holds still under prefers-reduced-motion.
- */
-// Two colored strands (purple A slides left->right, emerald B right->left) that
-// interleave at center. Driven by the Web Animations API rather than a CSS
-// @keyframes rule so it CANNOT be silently frozen by a `prefers-reduced-motion`
-// media rule (the earlier CSS version did nothing on machines with reduce-motion
-// on). Cadence per request: play the splice to the end, HOLD, play again, HOLD,
-// forever.
-const SPLICE_MS = 1400;
-const SPLICE_HOLD_MS = 650;
-const FRAMES_A: Keyframe[] = [
-  { transform: 'translateX(-46px)', opacity: 0.15 },
-  { transform: 'translateX(0) translateY(-6px)', opacity: 1, offset: 0.45 },
-  { transform: 'translateX(0) translateY(6px)', opacity: 1, offset: 0.55 },
-  { transform: 'translateX(46px)', opacity: 0.15 },
-];
-const FRAMES_B: Keyframe[] = [
-  { transform: 'translateX(46px)', opacity: 0.15 },
-  { transform: 'translateX(0) translateY(6px)', opacity: 1, offset: 0.45 },
-  { transform: 'translateX(0) translateY(-6px)', opacity: 1, offset: 0.55 },
-  { transform: 'translateX(-46px)', opacity: 0.15 },
-];
+const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <kbd className="inline-block rounded border border-white/15 bg-white/5 px-1 font-mono text-[9px] leading-4 text-zinc-300">
+    {children}
+  </kbd>
+);
 
-const DnaSpliceMotif: React.FC = () => {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const beads = Array.from({ length: 9 });
+const Em: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <span className="font-bold text-zinc-100">{children}</span>
+);
 
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    const els = Array.from(root.querySelectorAll<HTMLElement>('[data-strand]'));
-    if (!els.length || typeof els[0].animate !== 'function') return; // no WAAPI
+/** Open the library rail for the step; close it again afterwards if we opened it. */
+const openLibraryRail = (): (() => void) | void => {
+  const ui = useAppUiStore.getState();
+  if (ui.isRightPanelOpen) return;
+  ui.setRightPanelOpen(true);
+  return () => useAppUiStore.getState().setRightPanelOpen(false);
+};
 
-    // One paused animation per bead; the last frame is held (fill:both) so the
-    // "hold" between plays shows the completed splice, not a snap back.
-    const anims = els.map((el) => {
-      const a = el.animate(el.dataset.strand === 'a' ? FRAMES_A : FRAMES_B, {
-        duration: SPLICE_MS,
-        easing: 'ease-in-out',
-        fill: 'both',
-      });
-      a.pause();
-      return a;
-    });
-
-    let cancelled = false;
-    let timer: number | undefined;
-    const cycle = () => {
-      if (cancelled) return;
-      anims.forEach((a) => {
-        a.currentTime = 0;
-        a.play();
-      });
-      anims[0]
-        .finished.then(() => {
-          if (cancelled) return;
-          timer = window.setTimeout(cycle, SPLICE_HOLD_MS); // HOLD, then replay
-        })
-        .catch(() => {
-          /* cancelled mid-play on unmount */
-        });
-    };
-    cycle();
-
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-      anims.forEach((a) => a.cancel());
-    };
-  }, []);
-
-  return (
-    <div
-      ref={rootRef}
-      className="relative h-16 w-full overflow-hidden rounded bg-black/40 border border-white/5"
-    >
-      <div className="absolute inset-0 flex items-center justify-center gap-1.5">
-        {beads.map((_, i) => (
-          <div key={i} className="relative flex flex-col items-center gap-3">
-            <span
-              data-strand="a"
-              className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_6px_rgba(168,85,247,0.7)]"
-            />
-            <span
-              data-strand="b"
-              className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]"
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+/** Show the DRAW tab in the bottom dock; restore the dock exactly as it was afterwards. */
+const openDrawDock = (): (() => void) | void => {
+  const dock = useBottomPanelStore.getState();
+  const wasOpen = dock.isOpen;
+  const prevTab = dock.activeTab;
+  dock.showTab('draw');
+  return () => {
+    const d = useBottomPanelStore.getState();
+    if (!wasOpen) d.setOpen(false);
+    d.setActiveTab(prevTab);
+  };
 };
 
 export const TOUR_STEPS: TourStep[] = [
   {
-    id: 'settings',
-    title: 'Start here: Settings',
+    id: 'welcome',
+    title: 'Welcome to theDAW',
     body: (
       <>
-        Open the app menu (top right) and go to Settings. If a feature looks dead or something seems
-        missing, enable or download the models and modules it needs there. Most "nothing happens"
-        moments are just a disabled module.
+        Make music from a text prompt, splice sounds together, then edit, mix and perform — all in one
+        place. This one-minute tour shows you where everything is.
       </>
     ),
-    targetSelector: '[data-tour="app-menu"]',
+    tip: (
+      <>
+        <Kbd>→</Kbd> next · <Kbd>←</Kbd> back · <Kbd>Esc</Kbd> leave. Replay it any time from HOME or
+        the <Em>☰</Em> menu.
+      </>
+    ),
+    primaryLabel: 'Start tour',
+  },
+  {
+    id: 'workspaces',
+    title: 'One tab per job',
+    body: (
+      <>
+        <Em>MAKE</Em> generates audio, <Em>EDIT</Em> arranges it, <Em>MIX</Em> polishes it, and{' '}
+        <Em>PERFORM</Em>, <Em>DJ</Em> and <Em>VJ</Em> play it live. Switch any time — nothing is lost.
+      </>
+    ),
+    targetSelector: '[data-tour^="tab-"]',
+    targetMode: 'union',
   },
   {
     id: 'make',
-    title: 'Make music',
-    body: <>Type a prompt in MAKE and the AI models generate audio from it. This is the fastest way in.</>,
-    targetSelector: '[data-tour="tab-make"]',
+    title: 'Describe a sound',
+    body: (
+      <>
+        Type what you want to hear — <span className="italic text-zinc-300">“warm lo-fi beat, vinyl
+        crackle, 90 BPM”</span> — then press <Em>CREATE</Em> in the bottom-right corner. The result lands
+        in your library.
+      </>
+    ),
+    tip: <>The first run downloads a model; the download dock shows progress.</>,
+    targetSelector: 'textarea[name="gen-prompt"]',
     tab: 'make',
   },
   {
@@ -144,59 +121,61 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Splice sounds with Chimera',
     body: (
       <>
-        Chimera braids two or more sounds into one, splicing their chunks together like DNA strands.
-        Add clips to the Chimera stack in MAKE and generate the blend.
+        Drop two or more clips into the Chimera stack. Chimera cuts them into chunks and splices them
+        into one new sound — like combining DNA strands.
       </>
     ),
-    targetSelector: '[data-tour="tab-make"]',
+    targetSelector: '[data-crispr-output]',
     tab: 'make',
-    media: <DnaSpliceMotif />,
+    media: <ChimeraSpliceMotif className="h-24 w-full" />,
+  },
+  {
+    id: 'library',
+    title: 'Your library',
+    body: (
+      <>
+        Everything you make or import shows up here. It is empty right now — your first generation
+        fills it. Right-click any track for stems, MIDI and export.
+      </>
+    ),
+    tip: <>Drag tracks from here into EDIT, DJ or the Chimera stack.</>,
+    targetSelector: '[data-tour="library"]',
+    prepare: openLibraryRail,
   },
   {
     id: 'draw',
-    title: 'Draw sound',
+    title: 'Draw to play',
     body: (
       <>
-        The DRAW panel turns a sketch into generative music you can play and record straight into the
-        library or EDIT.
+        The bottom dock holds live tools. <Em>DRAW</Em> turns a sketch into generative music you can
+        record straight into the library.
       </>
     ),
     targetSelector: '[data-tour="bottom-tab-draw"]',
+    prepare: openDrawDock,
   },
   {
-    id: 'stems',
-    title: 'Stems anywhere',
+    id: 'settings',
+    title: 'Models & settings',
     body: (
       <>
-        Right-click any track in the library and choose <span className="text-zinc-200">Separate stems</span> to
-        split it into parts. You can also turn on auto-stems in Settings.
+        The <Em>☰</Em> menu opens <Em>Settings</Em>, where models and modules are downloaded and switched
+        on. If a feature seems to do nothing, check here first.
       </>
     ),
-    targetSelector: '[data-tour="library"]',
+    tip: <>The menu also replays this tour and opens HOME.</>,
+    targetSelector: '[data-tour="app-menu"]',
   },
   {
-    id: 'underfit',
-    title: 'Train your own',
+    id: 'done',
+    title: 'You’re ready',
     body: (
       <>
-        Train a custom LoRA on your own audio in UNDERFIT, then generate in your own style. It runs as
-        its own trainer dashboard inside the app.
+        Start in <Em>MAKE</Em>: type a prompt and press <Em>CREATE</Em>. When you want more,{' '}
+        <Em>UNDERFIT</Em> trains a model on your own audio and <Em>TOUR</Em> plans venues for a run.
       </>
     ),
-    targetSelector: '[data-tour="tab-underfit"]',
-    tab: 'underfit',
-  },
-  {
-    id: 'tour',
-    title: 'Book the road',
-    body: (
-      <>
-        TOUR finds venues and promoters by region so you can plan a run. Search a city, add stops
-        across as many towns as you like, then optimize the drive order or lay the stops out on a
-        calendar with per-leg drive times.
-      </>
-    ),
-    targetSelector: '[data-tour="tab-tour"]',
-    tab: 'tour',
+    primaryLabel: 'Go to MAKE',
+    finishTab: 'make',
   },
 ];

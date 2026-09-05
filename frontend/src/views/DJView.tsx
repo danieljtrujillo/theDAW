@@ -1062,15 +1062,23 @@ export const DJView: React.FC = () => {
   });
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#07050a] text-white">
-      <ControlSurface
-        surfaceId="dj"
-        registry={registry}
-        defaultLayout={defaultDjLayout}
-        targets={DJ_TARGETS}
-        legacyKeyToClear="thedaw.dj.layout.v1"
-        className="p-1.5"
-      />
+    <div className="relative h-full w-full overflow-hidden bg-[#07050a] text-white flex flex-col">
+      {/* The console is laid out on fr fractions of its area, so on a short
+          work area every cell shrinks below its content and clips. Below the
+          design minimum the surface scrolls instead: the wrapper is
+          overflow-auto and the surface keeps a minimum logical size. */}
+      <div className="flex-1 min-h-0 min-w-0 overflow-auto">
+        <div className="h-full w-full min-h-210 min-w-300">
+          <ControlSurface
+            surfaceId="dj"
+            registry={registry}
+            defaultLayout={defaultDjLayout}
+            targets={DJ_TARGETS}
+            legacyKeyToClear="thedaw.dj.layout.v1"
+            className="p-1.5"
+          />
+        </div>
+      </div>
       {midiMapOpen && (
         <DjMidiMap
           onClose={() => {
@@ -1079,7 +1087,9 @@ export const DJView: React.FC = () => {
           }}
         />
       )}
-      <div className="absolute bottom-1.5 right-2 z-10 rounded bg-black/50 backdrop-blur-sm px-2 py-0.5 pointer-events-auto">
+      {/* In flow — as an absolute bottom-right overlay it covered the
+          library's "load onto deck" buttons. */}
+      <div className="shrink-0 flex justify-end px-2 py-0.5 border-t border-white/5 bg-black/40">
         <InfiNightCredit feature="DJ" />
       </div>
     </div>
@@ -1361,7 +1371,7 @@ const StemLoadPad: React.FC<{ deck: djEngine.DeckId; entryId: string | null; col
       on={busy}
       disabled={!entryId || busy}
       onClick={() => void load()}
-      className="w-full h-full px-1 py-1 text-[7px] min-w-0"
+      className="w-full h-full px-1 py-1 text-[7px] min-w-0 min-h-0 overflow-hidden"
       shape={shape}
       title={entryId ? `Load or separate ${stemCount} stems for Deck ${deck}` : 'Load a track first'}
     >
@@ -1396,7 +1406,7 @@ const StemTogglePad: React.FC<{
         }
         else onPrepare?.();
       }}
-      className="w-full h-full px-1 py-1 text-[7px] min-w-0"
+      className="w-full h-full px-1 py-1 text-[7px] min-w-0 min-h-0 overflow-hidden"
       title={name ? `Deck ${deck} ${name}: ${on ? 'click to mute' : 'click to restore'}` : canPrepare ? `Prepare stems for Deck ${deck}` : 'Load a track first'}
     >
       {preparing && !name ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
@@ -1447,12 +1457,12 @@ const StemPadBank: React.FC<{ deck: djEngine.DeckId; entryId: string | null; col
         />
       );
     }),
-    <SlidePad key="fx" disabled className="w-full h-full px-1 py-1 text-[7px] min-w-0" title="Open slot for the next stem layer">
+    <SlidePad key="fx" disabled className="w-full h-full px-1 py-1 text-[7px] min-w-0 min-h-0 overflow-hidden" title="Open slot for the next stem layer">
       FX
     </SlidePad>,
   ];
   return (
-    <div className="h-full w-full min-w-0 min-h-0 grid grid-cols-4 grid-rows-2 gap-1 p-0.5">
+    <div className="h-full w-full min-w-0 min-h-0 grid grid-cols-4 grid-rows-[repeat(2,minmax(0,1fr))] gap-1 p-0.5">
       {(mirror ? [...cells].reverse() : cells).map((cell) => cell)}
     </div>
   );
@@ -1718,7 +1728,10 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
   );
 };
 
-const PERF_PAD_BT = 'w-full h-full px-1 py-0.5 text-[7px] min-w-0 tracking-normal leading-tight';
+const PERF_PAD_BT = 'w-full h-full px-1 py-0.5 text-[7px] min-w-0 min-h-0 overflow-hidden tracking-normal leading-tight';
+/** Pad grids are height size-containers (index.css .dj-pad-grid) so the pads
+ *  take the cell's height instead of overflowing it and being clipped. */
+const PERF_PAD_GRID = 'dj-pad-grid grid gap-1 flex-1 min-h-0 auto-rows-[minmax(0,1fr)]';
 
 const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: string | null; ctl: DeckCtl }> = ({ deck, accent, entryId, ctl }) => {
   const color = DECK_RGB[accent];
@@ -1726,7 +1739,7 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
   const hasTrack = !!entryId;
   const padLabel = (top: string, bottom: string) => (
     <span className="flex flex-col items-center gap-0.5 leading-none">
-      <span className="text-[6px] font-black opacity-80">{top}</span>
+      <span className="dj-pad-top text-[6px] font-black opacity-80">{top}</span>
       <span className="text-[8px] font-black">{bottom}</span>
     </span>
   );
@@ -1735,7 +1748,7 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
       <div className="h-full w-full min-h-0 grid grid-cols-[0.8fr_1.15fr_1.35fr] gap-1.5 items-stretch">
         <div className="min-w-0 flex flex-col gap-1">
           <div className={`text-[7px] font-black uppercase tracking-widest ${accentText}`}>Hot Cues</div>
-          <div className="grid grid-cols-4 gap-1 flex-1 min-h-0">
+          <div className={`${PERF_PAD_GRID} grid-cols-4`}>
             {Array.from({ length: HOTCUE_SLOTS }, (_, i) => {
               const c = ctl.cues?.[i] ?? null;
               const set = c != null;
@@ -1758,7 +1771,7 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
         </div>
         <div className="min-w-0 flex flex-col gap-1">
           <div className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Beat Loops</div>
-          <div className="grid grid-cols-6 gap-1 flex-1 min-h-0">
+          <div className={`${PERF_PAD_GRID} grid-cols-6`}>
             {BEAT_SIZES.map((b) => (
               <SlidePad key={b.label} className={PERF_PAD_BT} on={ctl.loopActive && ctl.activeLoopBeats === b.beats} color={color} disabled={!hasTrack} onClick={() => ctl.toggleBeatLoop(b.beats)} title={`${b.label}-beat loop`}>
                 {padLabel('Loop', b.label)}
@@ -1771,7 +1784,7 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
         </div>
         <div className="min-w-0 flex flex-col gap-1">
           <div className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Roll / Jump</div>
-          <div className="grid grid-cols-8 gap-1 flex-1 min-h-0">
+          <div className={`${PERF_PAD_GRID} grid-cols-8`}>
             {ROLL_SIZES.map((b) => (
               <SlidePad
                 key={b.label}
@@ -2787,7 +2800,10 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   };
   const knobSize = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(20, fitDim(s, opts, 26, 112));
   const toggleBox = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(24, fitDim(s, opts, 12, 84));
-  const center = (node: React.ReactNode) => <div className="h-full w-full grid place-items-center overflow-hidden">{node}</div>;
+  // grid-cols-[minmax(0,1fr)]: the single track is the cell width, so a child
+  // sized w-full (e.g. the AUTOMIX button, which truncates its label) really is
+  // the cell width instead of the label's max-content overflowing the cell.
+  const center = (node: React.ReactNode) => <div className="h-full w-full grid grid-cols-[minmax(0,1fr)] place-items-center overflow-hidden">{node}</div>;
   // Pads render LANDSCAPE (like CUE/PLAY): fill the cell width, cap the height so
   // the button stays wider than tall, centred vertically in its cell.
   const padBox = (s: { w: number; h: number }, node: React.ReactNode) => (
@@ -3121,7 +3137,7 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   ) };
 
   reg.automix = { id: 'automix', label: 'Automix', group: 'Mixer', kind: 'button', source: 'builtin', render: () => center(
-    <button onClick={p.onToggleAutomix} title="Automix — auto-sequence + beatmatch-crossfade the active set" className={`px-3 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border transition-colors ${p.automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>Automix</button>
+    <button onClick={p.onToggleAutomix} title="Automix — auto-sequence + beatmatch-crossfade the active set" className={`w-full min-w-0 px-1 py-0.5 rounded text-[8px] font-black uppercase tracking-wider truncate border transition-colors ${p.automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>{p.automixOn ? 'Automix ●' : 'Automix'}</button>
   ) };
 
   reg.keymatch = { id: 'keymatch', label: 'Key Match', group: 'Mixer', kind: 'button', source: 'builtin', render: () => center(

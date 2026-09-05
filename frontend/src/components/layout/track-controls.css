@@ -74,7 +74,7 @@
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #e4e4e7;
+  color: rgb(var(--et-ink));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -95,7 +95,7 @@
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--accent);
+  color: var(--ts-readout, var(--accent-bright, var(--accent)));
   text-shadow: 0 0 12px var(--accent-glow);
 }
 
@@ -437,12 +437,12 @@
   z-index: 8;
   pointer-events: auto;
   cursor: grab;
-  color: #52525b;
+  color: rgb(var(--et-ink-3));
   font-size: 11px;
   line-height: 1;
   padding: 2px;
 }
-.sl-grip:hover { color: #a1a1aa; }
+.sl-grip:hover { color: rgb(var(--et-ink-2)); }
 
 .sl-lock {
   position: absolute;
@@ -456,11 +456,11 @@
   border-radius: 5px;
   padding: 2px 3px;
   line-height: 1;
-  color: #52525b;
+  color: rgb(var(--et-ink-3));
   font-size: 10px;
 }
 .sl-lock.on { color: #fbbf24; text-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
-.sl-lock:hover { color: #d4d4d8; }
+.sl-lock:hover { color: rgb(var(--et-ink)); }
 
 /* translucent placeholder = open slot awaiting auto-fill */
 .sl-ph {
@@ -474,7 +474,7 @@
   border: 1px dashed rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.018);
-  color: #3f3f46;
+  color: rgb(var(--et-ink-3));
   opacity: 0.5;
   cursor: pointer;
   transition: opacity 0.15s ease, border-color 0.15s ease;
@@ -561,7 +561,7 @@
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(10, 10, 14, 0.7);
-  color: #a1a1aa;
+  color: rgb(var(--et-ink-2));
   cursor: pointer;
   font-size: 14px;
 }
@@ -593,7 +593,7 @@
   font: 800 8px/1 system-ui;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: #6b7280;
+  color: rgb(var(--et-ink-3));
   margin: 0 0 9px 2px;
   display: flex;
   align-items: center;
@@ -638,7 +638,7 @@
   background: rgba(0, 0, 0, 0.4);
   border-radius: 5px;
   padding: 2px;
-  color: #a1a1aa;
+  color: rgb(var(--et-ink-2));
   cursor: pointer;
 }
 .sl-stack-gear:hover { color: #fff; }
@@ -691,21 +691,21 @@
   letter-spacing: 0.18em;
   color: #f9a8d4;
 }
-.sl-se-head button { border: 0; background: transparent; color: #a1a1aa; cursor: pointer; }
+.sl-se-head button { border: 0; background: transparent; color: rgb(var(--et-ink-2)); cursor: pointer; }
 .sl-se-head button:hover { color: #fff; }
 
 .sl-se-label {
   font: 700 7.5px/1 system-ui;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #6b7280;
+  color: rgb(var(--et-ink-3));
   margin-top: 4px;
 }
 
 .sl-se-input {
   width: 100%;
   background: #161620;
-  color: #e4e4e7;
+  color: rgb(var(--et-ink));
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   padding: 5px 7px;
@@ -718,7 +718,7 @@
 
 .sl-se-hint {
   font: 500 8px/1.4 ui-monospace, monospace;
-  color: #71717a;
+  color: rgb(var(--et-ink-3));
 }
 
 .sl-se-target { display: flex; gap: 4px; align-items: center; }
@@ -727,7 +727,7 @@
   width: 38px;
   flex: 0 0 auto;
   background: #161620;
-  color: #e4e4e7;
+  color: rgb(var(--et-ink));
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   padding: 4px 4px;
@@ -741,7 +741,7 @@
   background: rgba(255, 255, 255, 0.06);
   border-radius: 5px;
   padding: 4px;
-  color: #a1a1aa;
+  color: rgb(var(--et-ink-2));
   cursor: pointer;
 }
 .sl-se-icon:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
@@ -806,14 +806,14 @@
   font: 700 8px/1 ui-monospace, monospace;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #71717a;
+  color: rgb(var(--et-ink-3));
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
-.sl-mapchip:hover { color: #d4d4d8; border-color: rgba(255, 255, 255, 0.25); }
+.sl-mapchip:hover { color: rgb(var(--et-ink)); border-color: rgba(255, 255, 255, 0.25); }
 .sl-mapchip.bound { color: #6ee7b7; border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.08); }
 .sl-mapchip.learning {
   color: #fcd34d;

@@ -167,3 +167,22 @@ def test_midi_to_tabs_registers_alphatex_artifact(tmp_path: Path):
         r["to_id"] == "scale__guitar__alphatex" and r["kind"] == "tabbed_as_notation"
         for r in related
     )
+
+
+def test_ukulele_tuning_produces_four_string_tab(tmp_path: Path):
+    midi = tmp_path / "uke.mid"
+    _write_sequence_midi(midi, [60, 62, 64, 65, 67, 69, 72])  # C4 .. C5
+
+    result = arrange_tabs(midi, instrument="ukulele", difficulty="medium")
+    assert result["ok"] is True, result
+    assert result["tuning_name"] == "ukulele-standard"
+    assert result["tuning"] == TUNINGS["ukulele-standard"] == [67, 60, 64, 69]
+    assert len(result["tuning"]) == 4
+    assert result["stats"]["note_count"] == 7
+    _assert_pitches_reproduced(result, "ukulele-standard")
+
+    match = re.search(r"\\tuning \(([^)]*)\)", result["alphatex"])
+    assert match, result["alphatex"]
+    names = match.group(1).split()
+    # alphaTex lists strings high to low: A4 E4 C4 G4 (re-entrant G on top).
+    assert names == ["A4", "E4", "C4", "G4"]

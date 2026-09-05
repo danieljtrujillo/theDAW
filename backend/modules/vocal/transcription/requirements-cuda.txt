@@ -1,0 +1,6 @@
+# Installed into the isolated .whisper_venv IN ADDITION to requirements.txt
+# when a CUDA GPU is detected. CTranslate2 (faster-whisper's engine) needs
+# cuBLAS for CUDA 12 and cuDNN 9 at runtime; these pip wheels carry the
+# libraries, and the sidecar points the worker at their bin/lib folders.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9

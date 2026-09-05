@@ -9,6 +9,14 @@ breathing room (default ~1.5 clips per slot on average).
 This produces an arrangement closer to a DJ collage than a stacked mashup:
 every clip appears multiple times throughout the piece, in different
 positions, with controlled overlap.
+
+Engine note (Chimera v2): ``compute_chunks_sequential`` and
+``schedule_song_arc`` are the v1 weave engine (``engine='v1'`` on
+``POST /api/chimera/mashup``), kept intact for A/B comparison and for
+``tests/test_chimera_weave.py``. The default ``engine='v2'`` path lives in
+``analysis`` / ``arrange`` / ``conform`` / ``render`` / ``master`` and only
+reuses the constants and ``bar_duration_sec`` from here. Nothing in this
+module changes behaviour between the two engines.
 """
 
 from __future__ import annotations

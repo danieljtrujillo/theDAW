@@ -105,6 +105,21 @@ function drawVst(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () =>
 }
 
 const DRAWERS: Record<string, Draw> = {
+  // Generic Edit-Tool-Stack tile: a small knob grid, deterministic per seed.
+  tool: (ctx, W, H, rng) => {
+    const cols = 3, rows = 2;
+    const cw = W / cols, ch = H / rows;
+    const r = Math.max(3, Math.min(cw, ch) * 0.28);
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+      const cx = cw * (i + 0.5), cy = ch * (j + 0.5);
+      const a = Math.PI * 0.75 + (rng ? rng() : Math.random()) * Math.PI * 1.5;
+      ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25); ctx.stroke();
+      ctx.strokeStyle = 'rgba(163,230,53,.75)';
+      ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, a); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r * 0.7); ctx.stroke();
+    }
+  },
   'eq-bars': (ctx, W, H) => {
     const bars = [0.5, 0.7, 0.4, 0.8, 0.6];
     const bw = W / bars.length - 4;

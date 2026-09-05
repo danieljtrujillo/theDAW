@@ -42,6 +42,7 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "workflows" / "autoencoder.md",
     PROJECT_ROOT / "docs" / "windows" / "setup-guide.md",
     PROJECT_ROOT / "docs" / "windows" / "troubleshooting.md",
+    PROJECT_ROOT / "docs" / "linux" / "setup-guide.md",
     # Shipped feature guides that were previously left out of the index.
     PROJECT_ROOT / "docs" / "guides" / "hrtf-spatializer.md",
     PROJECT_ROOT / "docs" / "guides" / "underfit-propagation.md",

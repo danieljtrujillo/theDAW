@@ -35,7 +35,8 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 /* ── MODE TOGGLE ── */
 .mode-bar{display:flex;flex-shrink:0;height:38px;background:#080a10;border-bottom:1px solid var(--border)}
 .mode-pill{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;font:700 12px/1 var(--mono);letter-spacing:3px;text-transform:uppercase;cursor:pointer;background:transparent;color:var(--dim);border:none;transition:color .2s,background .2s;position:relative}
-.mode-pill:first-child{border-right:1px solid var(--border)}
+.mode-pill+.mode-pill{border-left:1px solid var(--border)}
+.mode-pill{letter-spacing:2px;font-size:11px}
 .mode-pill .mp-icon{font-size:13px;opacity:.35;transition:opacity .2s}
 .mode-pill.active{color:var(--accent);background:rgba(34,211,238,.03)}
 .mode-pill.active .mp-icon{opacity:1;filter:drop-shadow(0 0 6px var(--accent))}
@@ -90,6 +91,7 @@ html,body{width:100%;height:100%;background:var(--bg);display:flex;align-items:c
 .ftr-stat.ok{color:#22c55e}
 audio{display:none}
 input[type="file"]{display:none}
+#mainKnob:focus-visible,#strengthKnob:focus-visible,.split-handle:focus-visible{outline:2px solid #22d3ee;outline-offset:2px;border-radius:50%}
 </style>
 </head>
 <body>
@@ -122,9 +124,11 @@ input[type="file"]{display:none}
 </div>
 
 <!-- MODE TOGGLE -->
-<div class="mode-bar">
-  <button class="mode-pill active" data-m="super_res" id="mSR"><span class="mp-icon">&#9650;</span>SUPER-RES</button>
-  <button class="mode-pill" data-m="uncrush" id="mUC"><span class="mp-icon">&#9830;</span>UN-CRUSH</button>
+<div class="mode-bar" role="group" aria-label="Enhance tool">
+  <button class="mode-pill active" data-m="super_res" id="mSR" title="enhance/super_res: bandwidth extension"><span class="mp-icon">&#9650;</span>SUPER-RES</button>
+  <button class="mode-pill" data-m="uncrush" id="mUC" title="enhance/uncrush: codec artifact removal"><span class="mp-icon">&#9830;</span>UN-CRUSH</button>
+  <button class="mode-pill" data-m="studio_enhance" id="mSE" title="enhance/studio_enhance: denoise + presence + loudnorm"><span class="mp-icon">&#9733;</span>STUDIO</button>
+  <button class="mode-pill" data-m="classical_upsample" id="mCU" title="enhance/classical_upsample: libsoxr VHQ sample-rate conversion"><span class="mp-icon">&#8593;</span>UPSAMPLE</button>
 </div>
 
 <!-- SPLIT SPECTROGRAM -->
@@ -144,9 +148,11 @@ input[type="file"]{display:none}
 <!-- CONTROLS -->
 <div class="ctrl-strip" id="ctrlStrip">
   <!-- SR pills -->
-  <div class="sr-pills" id="srPills">
+  <div class="sr-pills" id="srPills" role="group" aria-label="Target sample rate">
     <button class="sr-pill active" data-sr="44100">44.1k</button>
     <button class="sr-pill" data-sr="48000">48k</button>
+    <button class="sr-pill" data-sr="88200" data-only="classical_upsample">88.2k</button>
+    <button class="sr-pill" data-sr="96000" data-only="classical_upsample">96k</button>
   </div>
 
   <!-- Primary knob (large, centered) -->
@@ -156,9 +162,9 @@ input[type="file"]{display:none}
     <span class="kb-val" id="knobVal">4.6</span>
   </div>
 
-  <!-- Secondary knob: Strength -->
+  <!-- Secondary knob (STUDIO: denoise) -->
   <div class="knob-box" id="strengthBox" style="display:none">
-    <span class="kb-lbl">STRENGTH</span>
+    <span class="kb-lbl" id="strengthLabel">DENOISE</span>
     <svg viewBox="0 0 48 48" width="64" height="64" id="strengthKnob"></svg>
     <span class="kb-val" id="strengthVal">60%</span>
   </div>
@@ -167,7 +173,7 @@ input[type="file"]{display:none}
   <div class="mix-wrap">
     <span class="mw-lbl">MIX</span>
     <div class="mix-track">
-      <input type="range" min="0" max="100" value="100" id="mixSlider">
+      <input type="range" min="0" max="100" value="100" id="mixSlider" name="mixSlider" aria-label="Mix">
       <div class="mix-fill" id="mixFill" style="width:100%"></div>
     </div>
     <span class="mw-val" id="mixVal">100%</span>
@@ -185,36 +191,59 @@ input[type="file"]{display:none}
   <audio id="aout" controls></audio>
 </div>
 </div>
-<input type="file" id="fileinput" accept="audio/*">
+<input type="file" id="fileinput" name="fileinput" accept="audio/*" aria-label="Load audio file">
 
+<script src="module-kit.js"></script>
 <script>
 (function(){
 'use strict';
+const kit = window.theDAWKit;
 
 /* ── State ── */
 let actx, analyser, source, inputFile, inputBuf;
 let activeMode = 'super_res', splitPos = 0.5, splitDragging = false;
-let knobValue = 60, strengthValue = 60;
+let knobValue = 60, strengthValue = 70;
 let targetSR = 44100;
+/* Per-tool main-knob semantics (0..100 in the UI -> the backend range). */
+const MODE_CFG = {
+  super_res:          { label: 'GUIDANCE',  fmt: v => (1 + (v / 100) * 6).toFixed(1),      readout: '8kHz \u2192 22kHz',    hasMix: true,  sr: ['44100', '48000'] },
+  uncrush:            { label: 'STRENGTH',  fmt: v => Math.round(v) + '%',                   readout: '128kbps \u2192 lossless', hasMix: true,  sr: null },
+  studio_enhance:     { label: 'ENHANCE',   fmt: v => Math.round(v) + '%',                   readout: 'denoise \u2192 presence \u2192 -16 LUFS', hasMix: false, sr: null, second: 'DENOISE' },
+  classical_upsample: { label: 'PRECISION', fmt: v => Math.round(20 + (v / 100) * 8) + ' bit', readout: 'soxr VHQ',            hasMix: false, sr: ['44100', '48000', '88200', '96000'] },
+};
 const freqData = new Uint8Array(2048);
 let spectCols = [];
 
 /* ── Mode switching ── */
-document.querySelectorAll('.mode-pill').forEach(t => t.addEventListener('click', () => {
-  document.querySelectorAll('.mode-pill').forEach(x => x.classList.remove('active'));
-  t.classList.add('active'); activeMode = t.dataset.m;
-  const isSR = activeMode === 'super_res';
-  document.getElementById('srPills').style.display = isSR ? 'flex' : 'none';
-  document.getElementById('knobLabel').textContent = isSR ? 'GUIDANCE' : 'STRENGTH';
-  document.getElementById('bwReadout').textContent = isSR ? '8kHz → 22kHz' : '128kbps → lossless';
-  updateKnobDisplay(); updateEnhanceLive();
-}));
+function setMode(mode){
+  activeMode = mode;
+  const cfg = MODE_CFG[mode];
+  document.querySelectorAll('.mode-pill').forEach(x => { const on = x.dataset.m === mode; x.classList.toggle('active', on); kit.pressed(x, on); });
+  const srPills = document.getElementById('srPills');
+  srPills.style.display = cfg.sr ? 'flex' : 'none';
+  document.querySelectorAll('.sr-pill').forEach(b => {
+    const allowed = !!cfg.sr && cfg.sr.includes(b.dataset.sr);
+    b.style.display = allowed ? '' : 'none';
+  });
+  if (cfg.sr && !cfg.sr.includes(String(targetSR))) setSR(cfg.sr[0]);
+  document.getElementById('knobLabel').textContent = cfg.label;
+  document.getElementById('bwReadout').textContent = cfg.readout;
+  document.getElementById('strengthBox').style.display = cfg.second ? '' : 'none';
+  if (cfg.second) document.getElementById('strengthLabel').textContent = cfg.second;
+  const mixWrap = document.querySelector('.mix-wrap');
+  mixWrap.style.opacity = cfg.hasMix ? '' : '.45';
+  mixWrap.title = cfg.hasMix ? '' : 'Preview only: this tool has no mix parameter';
+  document.getElementById('mixSlider').setAttribute('aria-label', cfg.hasMix ? 'Mix' : 'Mix (preview only)');
+  updateKnobDisplay(); updateStrengthDisplay(); updateEnhanceLive();
+}
+document.querySelectorAll('.mode-pill').forEach(t => t.addEventListener('click', () => setMode(t.dataset.m)));
 
 /* ── SR pill buttons ── */
-document.querySelectorAll('.sr-pill').forEach(p => p.addEventListener('click', () => {
-  document.querySelectorAll('.sr-pill').forEach(x => x.classList.remove('active'));
-  p.classList.add('active'); targetSR = p.dataset.sr;
-}));
+function setSR(sr){
+  targetSR = +sr;
+  document.querySelectorAll('.sr-pill').forEach(x => { const on = x.dataset.sr === String(sr); x.classList.toggle('active', on); kit.pressed(x, on); });
+}
+document.querySelectorAll('.sr-pill').forEach(p => p.addEventListener('click', () => setSR(p.dataset.sr)));
 
 /* ── Header pills ── */
 document.querySelectorAll('.pill').forEach(b => b.addEventListener('click', () => b.classList.toggle('active')));
@@ -227,6 +256,10 @@ document.querySelectorAll('.pill').forEach(b => b.addEventListener('click', () =
   });
 });
 document.getElementById('btnBypass').addEventListener('click', function(){ this.classList.toggle('active') });
+kit.toggleGroup('.pill', 'active');
+kit.toggleGroup('#btnBypass', 'active');
+kit.toggleGroup('.ftr .ftr-btn:not(#btnBypass)', 'active', true);
+document.getElementById('tabEnhance').title = 'Ctrl+Enter processes with the current tool';
 
 /* ── SVG Rotary Knob ── */
 const mainKnobSvg = document.getElementById('mainKnob');
@@ -265,25 +298,43 @@ function renderKnob(svg, value, size, accent){
 }
 
 function updateKnobDisplay(){
-  if(activeMode === 'super_res'){
-    document.getElementById('knobVal').textContent = (1 + (knobValue / 100) * 6).toFixed(1);
-  } else {
-    document.getElementById('knobVal').textContent = Math.round(knobValue) + '%';
-  }
+  document.getElementById('knobVal').textContent = MODE_CFG[activeMode].fmt(knobValue);
   renderKnob(mainKnobSvg, knobValue, 56, '#22d3ee');
+  kit.sync(mainKnobSvg);
+}
+const strengthKnobSvg = document.getElementById('strengthKnob');
+function updateStrengthDisplay(){
+  document.getElementById('strengthVal').textContent = Math.round(strengthValue) + '%';
+  renderKnob(strengthKnobSvg, strengthValue, 48, '#22d3ee');
+  kit.sync(strengthKnobSvg);
 }
 updateKnobDisplay();
+updateStrengthDisplay();
 
-/* Knob drag */
-let knobDrag = { active: false, startY: 0, startVal: 0 };
-mainKnobSvg.addEventListener('pointerdown', e => { knobDrag = { active: true, startY: e.clientY, startVal: knobValue }; mainKnobSvg.setPointerCapture(e.pointerId) });
-mainKnobSvg.addEventListener('pointermove', e => {
-  if(!knobDrag.active) return;
-  const dy = knobDrag.startY - e.clientY;
-  knobValue = Math.max(0, Math.min(100, knobDrag.startVal + dy * 0.5));
-  updateKnobDisplay(); updateEnhanceLive();
-});
-mainKnobSvg.addEventListener('pointerup', () => { knobDrag.active = false });
+/* Knob drag + keyboard (module-kit) */
+function knobDragging(svg, get, set){
+  let drag = { active: false, startY: 0, startVal: 0 };
+  svg.addEventListener('pointerdown', e => { drag = { active: true, startY: e.clientY, startVal: get() }; svg.setPointerCapture(e.pointerId); svg.focus({ preventScroll: true }); });
+  svg.addEventListener('pointermove', e => {
+    if(!drag.active) return;
+    const dy = drag.startY - e.clientY;
+    set(Math.max(0, Math.min(100, drag.startVal + dy * (e.shiftKey ? 0.12 : 0.5))));
+  });
+  svg.addEventListener('pointerup', () => { drag.active = false });
+  svg.addEventListener('pointercancel', () => { drag.active = false });
+}
+knobDragging(mainKnobSvg, () => knobValue, v => { knobValue = v; updateKnobDisplay(); updateEnhanceLive(); });
+knobDragging(strengthKnobSvg, () => strengthValue, v => { strengthValue = v; updateStrengthDisplay(); updateEnhanceLive(); });
+kit.slider(mainKnobSvg, { min: 0, max: 100, step: 1, wheel: true, get: () => knobValue,
+  set: v => { knobValue = v; updateKnobDisplay(); updateEnhanceLive(); },
+  format: v => MODE_CFG[activeMode].fmt(v), reset: 60 });
+kit.slider(strengthKnobSvg, { label: 'Denoise', min: 0, max: 100, step: 1, wheel: true, get: () => strengthValue,
+  set: v => { strengthValue = v; updateStrengthDisplay(); updateEnhanceLive(); },
+  format: v => Math.round(v) + '%', reset: 70 });
+// The main knob's accessible name follows the mode label.
+new MutationObserver(() => mainKnobSvg.setAttribute('aria-label', document.getElementById('knobLabel').textContent))
+  .observe(document.getElementById('knobLabel'), { childList: true, characterData: true, subtree: true });
+mainKnobSvg.setAttribute('aria-label', document.getElementById('knobLabel').textContent);
 
 /* Mix slider */
 const mixSlider = document.getElementById('mixSlider');
@@ -406,7 +457,9 @@ function updateSplit(){
   afterLbl.style.left = (splitPos * W + 10) + 'px';
 }
 
-splitHandle.addEventListener('pointerdown', e => { splitDragging = true; splitHandle.setPointerCapture(e.pointerId) });
+kit.slider(splitHandle, { label: 'Before/after split position', min: 10, max: 90, step: 1, get: () => Math.round(splitPos * 100),
+  set: v => { splitPos = v / 100; updateSplit(); }, format: v => v + '%', reset: 50 });
+splitHandle.addEventListener('pointerdown', e => { splitDragging = true; splitHandle.setPointerCapture(e.pointerId); splitHandle.focus({ preventScroll: true }) });
 window.addEventListener('pointermove', e => {
   if(!splitDragging) return;
   const r = spectArea.getBoundingClientRect();
@@ -425,13 +478,15 @@ async function processEnhance(){
   if(!inputFile) return;
   const st = document.getElementById('status');
   st.className = 'ftr-stat'; st.textContent = 'processing...';
-  let effect, params;
-  if(activeMode === 'super_res'){
-    effect = 'super_res';
-    params = { targetSR, guidance: 1 + (knobValue / 100) * 6, mix: +mixSlider.value / 100 };
-  } else {
-    effect = 'uncrush';
-    params = { strength: knobValue / 100, mix: +mixSlider.value / 100 };
+  const effect = activeMode;
+  const mix = +mixSlider.value / 100;
+  let params;
+  switch (activeMode) {
+    case 'super_res':          params = { targetSR: String(targetSR), guidance: +(1 + (knobValue / 100) * 6).toFixed(2), mix }; break;
+    case 'uncrush':            params = { strength: +(knobValue / 100).toFixed(3), mix }; break;
+    case 'studio_enhance':     params = { enhance: +(knobValue / 100).toFixed(3), denoise: +(strengthValue / 100).toFixed(3) }; break;
+    case 'classical_upsample': params = { targetSR: String(targetSR), precision: Math.round(20 + (knobValue / 100) * 8) }; break;
+    default: return;
   }
   const fd = new FormData();
   fd.append('effect', effect);
@@ -450,8 +505,10 @@ async function processEnhance(){
   } catch(e){ st.textContent = 'ERR' }
 }
 
-/* Double-click enhance tab to process, or hook into keyboard shortcut */
+/* Ctrl+Enter processes; the ENHANCE footer tab does too (there was no other PROCESS button). */
 document.addEventListener('keydown', e => { if(e.key === 'Enter' && e.ctrlKey) processEnhance() });
+document.getElementById('tabEnhance').addEventListener('dblclick', processEnhance);
+setMode('super_res');
 
 /* ── Split Spectrogram Canvas ── */
 const spectCanvas = document.getElementById('spectCanvas');

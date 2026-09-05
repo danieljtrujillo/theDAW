@@ -334,7 +334,7 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
       onClick={onClose}
     >
       <div
-        className="docs-modal-window relative w-[min(1100px,95vw)] h-[min(900px,92vh)] bg-[#0a080f] border border-purple-500/30 rounded-lg shadow-[0_0_40px_rgba(139,92,246,0.2)] flex flex-col overflow-hidden"
+        className="docs-modal-window relative w-[min(1100px,95%)] h-[min(900px,92%)] bg-[#0a080f] border border-purple-500/30 rounded-lg shadow-[0_0_40px_rgba(139,92,246,0.2)] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

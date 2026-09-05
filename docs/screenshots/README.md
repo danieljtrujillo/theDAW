@@ -14,6 +14,28 @@ and generated manifests are written as `manifest.json` and
 
 ## How to regenerate
 
+The rig shoots against whichever frontend / backend pair the env points at,
+so it can run against a second stack while the developer's own app stays
+untouched:
+
+```bash
+# a second backend + frontend just for shooting (optional)
+uv run uvicorn backend.server:app --port 8601
+cd frontend && SA3_SHOTS_BACKEND=http://localhost:8601 npx vite --config vite.shots.config.ts   # :5174
+
+# the gallery, in the README's theme
+cd frontend && SA3_FRONTEND_URL=http://localhost:5174 SA3_BACKEND_URL=http://localhost:8601   SA3_SHOTS_THEME=brushed-steel SA3_SHOWCASE_TRACK="Et Tu Machina"   npx tsx ../scripts/screenshots/capture.ts
+node _capture_readme_extra.mjs      # library rail, catalogue, LEARN, NODEFI
+```
+
+`SA3_SHOTS_THEME` seeds the persisted theme (`brushed-steel` for the README;
+unset keeps the app default), `SA3_SHOWCASE_TRACK` / `SA3_NOTATION_TRACK`
+pick the hero song by title, `SA3_LYRICS_TRACK` the song for the SING scene
+(default: the entry with the most timed lyric words), and `SCENES=a,b` limits
+the run. The README images under `docs/readme/` are copies of these frames.
+
+### The original steps
+
 1. Launch theDAW via `theDAW.bat` (backend + frontend + tunnel + VJ
    sidecar all up). Wait until http://localhost:5173 responds.
 2. From the repo root:

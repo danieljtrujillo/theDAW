@@ -35,3 +35,38 @@
 .tour-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip {
   border-left-color: #17131f;
 }
+
+/* Venue / route-stop markers. Plain venues are small lime dots; route stops are
+   larger, numbered once optimized. `is-hover` mirrors the hovered list row and
+   `is-selected` the selected one, so the rail and the map always agree. */
+.tour-marker {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(163, 230, 53, 0.65);
+  border: 1.5px solid #0a080f;
+  cursor: pointer;
+  transition: box-shadow 120ms ease;
+}
+
+.tour-marker--stop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: #a3e635;
+  border: 2px solid #0a080f;
+  box-shadow: 0 0 8px rgba(163, 230, 53, 0.9);
+  color: #0a080f;
+  font: 700 10px/1 system-ui, sans-serif;
+}
+
+.tour-marker.is-hover {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35);
+}
+
+.tour-marker.is-selected {
+  background: #d9f99d;
+  box-shadow: 0 0 0 3px rgba(163, 230, 53, 0.55), 0 0 12px rgba(163, 230, 53, 0.9);
+}

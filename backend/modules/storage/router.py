@@ -520,40 +520,90 @@ def _stable_provider_status() -> dict:
 
 
 async def _magenta_provider_status() -> dict:
+    """Magenta card payload. ``engine_state`` is the sidecar's own state model
+    (running / starting / error / not_running / not_installed / probe_failed);
+    ``models`` is the real catalog — every checkpoint the vendored sidecar can
+    load, stamped installed / active / runnable on this GPU."""
     try:
         from backend.modules.magenta import sidecar
 
         health = await sidecar.health()
         setup = await asyncio.to_thread(sidecar.setup_state)
-        available = bool(health.get("available"))
-        ready = bool(setup.get("ready"))
-        if available:
+        engine_state = sidecar.engine_state(health, setup)
+        catalog = await asyncio.to_thread(sidecar.model_catalog, setup)
+        active_model = catalog["active"]
+        running_model = health.get("model") if health.get("reachable") else None
+        restart_required = bool(
+            engine_state == "running"
+            and running_model
+            and running_model != active_model
+        )
+        if engine_state == "running":
             state = "active"
-            summary = f"Engine is running at {health.get('url')}."
-        elif ready:
+            summary = f"Engine running ({running_model or active_model})."
+            if restart_required:
+                summary += f" Restart to switch to {active_model}."
+        elif engine_state == "starting":
+            state = "starting"
+            summary = f"Engine starting: {health.get('status') or 'loading'}…"
+        elif engine_state == "error":
+            state = "unavailable"
+            summary = (
+                "Engine failed to load: "
+                f"{health.get('error') or health.get('status')}. Pick another "
+                "model or restart."
+            )
+        elif engine_state == "not_running":
             state = "ready"
             summary = (
-                "Installed; start the Magenta engine from the model picker when needed."
+                f"Installed ({active_model}). Starts on its own at the first "
+                "Magenta action (about 2-3 min), or start it here."
             )
+        elif engine_state == "probe_failed":
+            state = "unavailable"
+            summary = f"Couldn't check the install: {setup.get('probe_error')}. Retry."
         else:
             state = "needs_setup"
-            summary = "Run Setup-MRT2.bat to install the WSL engine and checkpoints."
+            # No script names here: Settings renders an Install button on this
+            # card that launches the installer via /api/magenta/engine/install.
+            summary = "Not installed yet. Install sets up the engine and checkpoints."
+
+        models = []
+        for m in catalog["models"]:
+            installed = bool(m["installed"])
+            models.append(
+                {
+                    "id": m["id"],
+                    "label": f"{m['label']} · {m['params']}",
+                    "source": "local" if installed else "download",
+                    "repo_id": m["repo_id"],
+                    "active": m["id"] == active_model,
+                    "loaded": m["id"] == running_model,
+                    "recommended": installed and m["id"] == active_model,
+                    "reason": m["reason"],
+                    "installed": installed,
+                    "runnable": m["runnable"],
+                    "checkpoint": m["checkpoint"],
+                    "download": m["download"],
+                }
+            )
         return {
             "id": "magenta",
             "label": "Magenta RT2",
             "state": state,
             "summary": summary,
-            "active": available,
+            "active": engine_state == "running",
             "location": health.get("url"),
-            "models": [
-                {
-                    "id": "mrt2_small",
-                    "label": "MRT2 Small",
-                    "source": "local" if ready else "missing",
-                    "recommended": available or ready,
-                    "reason": "WSL setup ready" if ready else "setup required",
-                }
-            ],
+            "engine_state": engine_state,
+            "magenta": {
+                "active_model": active_model,
+                "running_model": running_model,
+                "restart_required": restart_required,
+                "installable": sidecar.installer_available(),
+                "gpu": catalog["gpu"],
+                "engine_status": health.get("status"),
+            },
+            "models": models,
             "details": {"health": health, "setup": setup},
         }
     except Exception as e:
@@ -600,22 +650,50 @@ def _lyria_provider_status() -> dict:
 
         status = probe()
         issues = status.get("issues") or []
+        missing = status.get("missing") or []
+        install = status.get("install") or {}
+        installing = install.get("status") in ("cloning", "installing")
         ok = not issues
         mock = is_mock()
+        if ok:
+            summary = (
+                "Mock mode: generations are free and synthesized locally."
+                if mock
+                else "Live mode: each generation costs $0.08 (Pro) / $0.04 (Clip)."
+            )
+            if status.get("gemini_key"):
+                summary += f" Gemini key: {status.get('gemini_key_source')}."
+            elif mock:
+                summary += " Add a Gemini key before switching to live mode."
+        elif installing:
+            summary = f"Installing: {install.get('message')}"
+        elif install.get("status") == "error":
+            summary = f"Install failed: {install.get('error')}"
+        else:
+            summary = " ".join(issues)
         return {
             "id": "lyria",
             "label": "Lyria 3 Pro",
             "state": "ready" if ok else "needs_setup",
-            "summary": (
-                (
-                    "Mock mode: generations are free and synthesized locally."
-                    if mock
-                    else "Live mode: each generation costs $0.08 (Pro) / $0.04 (Clip)."
-                )
-                if ok
-                else "; ".join(issues)
-            ),
+            "summary": summary,
             "active": ok,
+            "location": status.get("project_path"),
+            "lyria": {
+                "missing": missing,
+                "installable": bool(status.get("installable")),
+                "installing": installing,
+                "install": install,
+                "gemini_key": bool(status.get("gemini_key")),
+                "gemini_key_source": status.get("gemini_key_source"),
+                "mock": mock,
+                "project_path": status.get("project_path"),
+                "repo": status.get("repo"),
+                "repo_url": status.get("repo_url"),
+                "git": bool(status.get("git")),
+                "node": bool(status.get("node")),
+                "npm": bool(status.get("npm")),
+                "listening": bool(status.get("listening")),
+            },
             "models": [
                 {
                     "id": "lyria",
@@ -626,7 +704,7 @@ def _lyria_provider_status() -> dict:
                         "mock mode (free)" if mock else "live — $0.08 per generation"
                     )
                     if ok
-                    else "; ".join(issues),
+                    else summary,
                 }
             ],
         }
@@ -689,9 +767,11 @@ def _midi_provider_status() -> dict:
             "id": "midi",
             "label": "MIDI Engines",
             "state": "ready" if ready else "needs_setup",
+            # No package names: Settings renders an Install button on this card
+            # that calls /api/midi/install for the user.
             "summary": ", ".join(engines)
             if ready
-            else "Install basic-pitch or piano-transcription-inference for MIDI conversion.",
+            else "No MIDI engine installed yet. Install one to convert audio to MIDI.",
             "active": ready,
             "models": [
                 {

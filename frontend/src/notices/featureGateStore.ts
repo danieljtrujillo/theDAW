@@ -7,11 +7,18 @@
  * capability is hit; the shell renders the queue with <FeatureGateNotices />
  * (bottom-right stack). Notices are deduped by id so repeated hits refresh
  * the existing card instead of stacking duplicates.
+ *
+ * Two further kinds ride the same stack so a long-running fix and a failed
+ * save land where the user is already looking:
+ *   - 'progress' — something is being brought up on the user's behalf (the
+ *     Magenta engine start, ~2-3 min); the message is updated in place.
+ *   - 'error'    — a save or action failed and was rolled back; carries a
+ *     Retry action. 'success' is its quiet counterpart, auto-dismissed.
  */
 import { create } from 'zustand';
 import { logWarn } from '../state/logStore';
 
-export type FeatureGateKind = 'module' | 'model' | 'hf';
+export type FeatureGateKind = 'module' | 'model' | 'hf' | 'progress' | 'error' | 'success';
 
 export interface FeatureGateAction {
   /** Button label, e.g. "Enable in Settings". */
@@ -31,6 +38,8 @@ export interface FeatureGateNotice {
   action?: FeatureGateAction;
   /** Optional micro-hint pointing at docs, shown under the message. */
   docsHint?: string;
+  /** Dismiss on its own after this many ms (success toasts). */
+  autoDismissMs?: number;
 }
 
 interface FeatureGateState {
@@ -41,14 +50,19 @@ interface FeatureGateState {
   clear: () => void;
 }
 
+const autoTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 export const useFeatureGateStore = create<FeatureGateState>()((set, get) => ({
   notices: [],
 
   notifyFeatureGate: (notice) => {
     // Mirror first-time gates into the LOG dock so a dismissed card stays
-    // traceable; refreshes of an already-visible notice stay quiet.
+    // traceable; refreshes of an already-visible notice stay quiet. Progress
+    // and success notices are not warnings.
     const isNew = !get().notices.some((n) => n.id === notice.id);
-    if (isNew) logWarn('gate', `${notice.title}: ${notice.message}`);
+    if (isNew && notice.kind !== 'progress' && notice.kind !== 'success') {
+      logWarn('gate', `${notice.title}: ${notice.message}`);
+    }
     set((s) => {
       const idx = s.notices.findIndex((n) => n.id === notice.id);
       if (idx >= 0) {
@@ -58,11 +72,36 @@ export const useFeatureGateStore = create<FeatureGateState>()((set, get) => ({
       }
       return { notices: [...s.notices, notice] };
     });
+    const pending = autoTimers.get(notice.id);
+    if (pending) {
+      clearTimeout(pending);
+      autoTimers.delete(notice.id);
+    }
+    if (notice.autoDismissMs && notice.autoDismissMs > 0) {
+      autoTimers.set(
+        notice.id,
+        setTimeout(() => {
+          autoTimers.delete(notice.id);
+          get().dismiss(notice.id);
+        }, notice.autoDismissMs),
+      );
+    }
   },
 
-  dismiss: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
+  dismiss: (id) => {
+    const pending = autoTimers.get(id);
+    if (pending) {
+      clearTimeout(pending);
+      autoTimers.delete(id);
+    }
+    set((s) => ({ notices: s.notices.filter((n) => n.id !== id) }));
+  },
 
-  clear: () => set({ notices: [] }),
+  clear: () => {
+    autoTimers.forEach((t) => clearTimeout(t));
+    autoTimers.clear();
+    set({ notices: [] });
+  },
 }));
 
 /**
@@ -82,4 +121,9 @@ export const useFeatureGateStore = create<FeatureGateState>()((set, get) => ({
 export const requireFeature = (opts: FeatureGateNotice): false => {
   useFeatureGateStore.getState().notifyFeatureGate(opts);
   return false;
+};
+
+/** Dismiss a notice by id from anywhere (no hook needed). */
+export const dismissFeatureGate = (id: string): void => {
+  useFeatureGateStore.getState().dismiss(id);
 };

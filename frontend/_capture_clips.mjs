@@ -23,29 +23,37 @@
 import { chromium } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
 
 const APP = 'http://localhost:5173';
 const ROOT = path.resolve(process.cwd(), '..');
 const OUT = path.resolve(ROOT, 'showcase', 'clips-recorded');
 fs.mkdirSync(OUT, { recursive: true });
 
+// CAST — which library tracks star in the film. Library ids differ per machine, so
+// showcase/_cast.json (gitignored) overrides the defaults below; without it the
+// harness shoots the original Et Tu Machina cast.
+let CAST = {};
+try { CAST = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'showcase', '_cast.json'), 'utf8')); } catch (e) {}
+
 // "Et Tu Machina" — the song the whole film is built around. Imported to the
 // library, separated into 4 stems, and converted to MIDI before capture, so the
 // EDIT timeline, MIX source, DJ deck, and piano roll all carry the same track.
+const HERO_ID = CAST.heroId || '68006988e370427d9108e5c5d724a9f5';
 const HERO = {
-  heroUrl: '/api/library/audio/68006988e370427d9108e5c5d724a9f5',
-  heroLabel: 'Et Tu Machina',
-  heroId: '68006988e370427d9108e5c5d724a9f5',
+  heroUrl: '/api/library/audio/' + HERO_ID,
+  heroLabel: CAST.heroLabel || 'Et Tu Machina',
+  heroId: HERO_ID,
 };
-const DECK_B = { url: '/api/library/audio/81a3d137-2b6f-44fe-9e49-0f540d6ec3fc_00', label: 'Deck B' };
-const STEM_BASE = '68006988e370427d9108e5c5d724a9f5';
-const STEMS = ['drums', 'bass', 'vocals', 'other'].map((n) => ({
+const DECK_B = { url: '/api/library/audio/' + (CAST.deckBId || '81a3d137-2b6f-44fe-9e49-0f540d6ec3fc_00'), label: CAST.deckBLabel || 'Deck B' };
+const STEM_BASE = CAST.stemsBase || HERO_ID;
+const STEMS = (CAST.stems || ['drums', 'bass', 'vocals', 'other']).map((n) => ({
   name: n, url: `/api/library/stems/${STEM_BASE}__${n}/audio`,
 }));
 // Notation scenes use a track that already has MIDI + notation artifacts (tab,
 // arrangement) and analysis, so the Score panel renders a real tab + sheet and
 // the Details panel can infer a prompt. Verified to render cleanly.
-const NOTATION = { notationId: '03591710a6474479a9720780f40885a3' };
+const NOTATION = { notationId: CAST.notationId || '03591710a6474479a9720780f40885a3' };
 // Et Tu Machina's MIDI, windowed to a clean 64-step piano-roll pattern (see _make_pianoroll.py).
 let ETU_PIANO = { bpm: 120, totalSteps: 64, notes: [] };
 try { ETU_PIANO = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'showcase', '_etu_pianoroll.json'), 'utf8')); } catch (e) {}
@@ -152,7 +160,7 @@ const SCENES = [
   { id: '74_magenta-live-generate', tab: 'make', play: false, magentaCond: true, magentaLive: true, hold: 60, holdUntilComplete: 180 },
   { id: '72_crispr-dna', tab: 'make', play: false, chimeraBuild: true, crisprRun: true, hold: 150, holdUntilComplete: 330 },
   // ── nav-scenes (file://) — Magenta RT2 NVIDIA port. MUST stay last (they navigate away). ──
-  { id: '63_magenta-studio-live', nav: 'http://localhost:8778', hold: 7 },
+  { id: '63_magenta-studio-live', nav: CAST.magentaStudioUrl || 'http://localhost:8778', hold: 7 },
   { id: '61_magenta-port-ui', nav: MAGENTA_STUDIO, hold: 7 },
   { id: '62_magenta-card',    nav: MAGENTA_CARD,   hold: 7 },
 ];
@@ -305,7 +313,7 @@ async function applyScene(spec) {
     } catch (e) { log.push('studio ' + e.message); }
   }
   if (spec.fillBucket && !C.bucketFilled) {
-    try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const b = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero/bucket'); mb.getState().add(new File([b], 'Et-Tu-Machina.wav', { type: 'audio/wav' })); C.bucketFilled = true; } catch (e) { log.push('bucket ' + e.message); }
+    try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const b = await withTimeout((await fetch(spec.heroUrl)).blob(), 30000, 'fetch hero/bucket'); mb.getState().add(new File([b], spec.heroLabel.replace(/ +/g, '-') + '.wav', { type: 'audio/wav' })); C.bucketFilled = true; } catch (e) { log.push('bucket ' + e.message); }
   }
 
   // ── per-scene UI state (fully specified every time) ──
@@ -347,7 +355,7 @@ async function applyScene(spec) {
     // Guard on the CLIPS being present (not a one-time flag): non-chimera scenes clear the
     // stack, and 72_crispr-dna needs a fresh rebuild long after 23_chimera ran.
     if (spec.chimeraBuild && gp.getState().chimera.clips.length === 0) {
-      const srcs = [{ u: spec.heroUrl, l: 'Et Tu Machina' }, { u: spec.stems[0].url, l: 'Drums' }, { u: spec.stems[2].url, l: 'Vocals' }];
+      const srcs = [{ u: spec.heroUrl, l: spec.heroLabel }, { u: spec.stems[0].url, l: 'Drums' }, { u: spec.stems[2].url, l: 'Vocals' }];
       for (const s of srcs) { try { const b = await withTimeout((await fetch(s.u)).blob(), 30000, 'fetch chimera ' + s.l); gp.getState().addChimeraClip({ blob: b, mimeType: 'audio/wav', label: s.l }); } catch (e) { log.push('chimera ' + e.message); } }
       try { gp.getState().setChimeraField('targetBpm', 124); gp.getState().setChimeraField('alignMode', 'weave'); } catch (e) {}
       C.chimeraBuilt = true;
@@ -399,7 +407,7 @@ async function applyScene(spec) {
       const samp = (await imp('/src/state/djSamplerStore.ts')).useDjSampler;
       const labels = ['Kick', 'Snare', 'Hat', 'Stab', 'Vox', 'FX'];
       for (let i = 0; i < labels.length; i++) { try { samp.getState().setPad(i, { entryId: spec.heroId, name: labels[i] }); } catch (e) {} }
-      try { const sl = (await imp('/src/state/djSideListStore.ts')).useDjSideList; sl.getState().add({ entryId: spec.deckB.url, label: 'Deck B' }); sl.getState().add({ entryId: spec.heroId, label: 'Et Tu Machina' }); } catch (e) {}
+      try { const sl = (await imp('/src/state/djSideListStore.ts')).useDjSideList; sl.getState().add({ entryId: spec.deckB.url, label: spec.deckB.label }); sl.getState().add({ entryId: spec.heroId, label: 'Et Tu Machina' }); } catch (e) {}
       C.djStaged = true;
     }
   } catch (e) { log.push('djsamp ' + e.message); }
@@ -572,7 +580,7 @@ async function sceneActions(page, scene) {
     // focusing the path field opens the recent-projects list.
     await page.click('#session-import-path', { timeout: 4000 }).catch(() => {});
     await sleep(900);
-    await page.keyboard.type('C:\\Sets\\EtTuMachina.als', { delay: 55 }).catch(() => {});
+    await page.keyboard.type('C:\\Sets\\' + HERO.heroLabel.replace(/[^A-Za-z0-9]+/g, '') + '.als', { delay: 55 }).catch(() => {});
     await sleep(1400);
   }
 
@@ -679,7 +687,7 @@ async function sceneActions(page, scene) {
   }
   // EDIT commit: name the mixdown and click Commit Edit (offline 44.1k stereo render).
   if (scene.commitEdit) {
-    try { await page.evaluate(() => { const i = document.querySelector('#editor-mixdown-name'); if (i) { i.value = 'Et Tu Machina (mixdown)'; i.dispatchEvent(new Event('input', { bubbles: true })); } }); } catch (e) {}
+    try { await page.evaluate((name) => { const i = document.querySelector('#editor-mixdown-name'); if (i) { i.value = name + ' (mixdown)'; i.dispatchEvent(new Event('input', { bubbles: true })); } }, HERO.heroLabel); } catch (e) {}
     await clickByText(page, /commit\s*edit/i); await sleep(900);
   }
   // ── feature-coverage gap fills ──
@@ -1081,21 +1089,53 @@ else if (process.env.CAPX !== undefined || process.env.CAPY !== undefined) {
   const ww = +(process.env.CAPWINW || VW), wh = +(process.env.CAPWINH || VH);
   launchArgs.push(`--window-position=${wx},${wy}`, `--window-size=${ww},${wh}`);
 } else launchArgs.push('--start-fullscreen', '--start-maximized');
-const browser = await chromium.launch({ headless: HEADLESS, args: launchArgs });
-const ctx = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, recordVideo: { dir: OUT, size: REC } });
+// ATTACH mode — CDP=http://localhost:9223 drives a window that is ALREADY open (the
+// Electron app started with --remote-debugging-port=9223, or _testwin.mjs) instead of
+// launching one, and records the screen region CAPX/CAPY + CAPW/CAPH with ffmpeg
+// gdigrab (real-time, so slice marks map 1:1). The user's page is never navigated or
+// reloaded: no init script, no goto, no fullscreen promotion, and the file:// nav
+// scenes are skipped because they would take the app away.
+const CDP = process.env.CDP || '';
+function startScreenRecorder() {
+  const file = path.join(OUT, '_session-live.mp4');
+  // Desktop Duplication (ddagrab) reads the GPU's output directly: DPI-proof, cheap,
+  // and immune to the GDI virtualization a scaling-unaware ffmpeg would get. CAPMON
+  // picks the monitor; CAPX/CAPY + CAPW/CAPH crop a region of it (default: all of it).
+  const x = +(process.env.CAPX || 0), y = +(process.env.CAPY || 0);
+  const w = +(process.env.CAPW || VW), h = +(process.env.CAPH || VH);
+  const crop = (x || y || w !== VW || h !== VH) ? `crop=${w - (w % 2)}:${h - (h % 2)}:${x}:${y},` : '';
+  const args = ['-y', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', `ddagrab=output_idx=${+(process.env.CAPMON || 0)}:framerate=30:draw_mouse=0,hwdownload,format=bgra`,
+    '-vf', `${crop}fps=30,format=yuv420p`, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '17', '-g', '30', file];
+  const rec = spawn('ffmpeg', args, { stdio: ['pipe', 'ignore', 'inherit'] });
+  return { rec, recFile: file };
+}
+let browser, ctx, rec = null, recFile = null;
+if (CDP) {
+  browser = await chromium.connectOverCDP(CDP);
+  ctx = browser.contexts()[0];
+  if (!ctx) throw new Error('attach: no browser context at ' + CDP);
+} else {
+  browser = await chromium.launch({ headless: HEADLESS, args: launchArgs });
+  ctx = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, recordVideo: { dir: OUT, size: REC } });
+}
 // Playwright launches a throwaway profile, so every run looks like a genuine first
 // run: App.tsx auto-starts the onboarding tour, and on dismissing it opens the home
 // screen. Both dim the whole UI and would sit on top of all 65 clips. Seed the two
 // zustand-persist keys before any script runs so neither ever arms.
 // (Shape: zustand/middleware persist -> {state: <partialize output>, version: 0}.)
-await ctx.addInitScript(() => {
+if (!CDP) await ctx.addInitScript(() => {
   const seed = (k, state) => {
     try { localStorage.setItem(k, JSON.stringify({ state, version: 0 })); } catch (e) {}
   };
   seed('thedaw-onboarding', { seen: true, neverShow: true });
   seed('thedaw-home-screen-v1', { showAtStartup: false });
 });
-const page = await ctx.newPage();
+const page = CDP
+  ? (ctx.pages().find((p) => /localhost:5173|thedaw/i.test(p.url())) || ctx.pages()[0])
+  : await ctx.newPage();
+if (!page) throw new Error('attach: no page found at ' + CDP + ' (is the app open?)');
+if (CDP) { ({ rec, recFile } = startScreenRecorder()); console.log('attached to', page.url(), '— recording the screen region'); }
 const tRec = Date.now();       // recording starts at context/page creation → this is video t=0.
                                // (Anchoring AFTER the splash wait shifts every slice earlier by
                                // the boot duration and lands scene 1 inside the splash. It is
@@ -1106,7 +1146,7 @@ const tRec = Date.now();       // recording starts at context/page creation → 
 // promoted to fullscreen afterwards over CDP. setWindowBounds rejects windowState in
 // the same call as a geometry change, hence the two calls. Purely cosmetic for the
 // operator watching — the recorded frames are SIZE either way.
-if (!HEADLESS && process.env.CAPX !== undefined && process.env.CAPFULL !== '0') {
+if (!CDP && !HEADLESS && process.env.CAPX !== undefined && process.env.CAPFULL !== '0') {
   try {
     const cdp = await ctx.newCDPSession(page);
     const { windowId } = await cdp.send('Browser.getWindowForTarget');
@@ -1121,13 +1161,15 @@ if (!HEADLESS && process.env.CAPX !== undefined && process.env.CAPFULL !== '0') 
 page.on('filechooser', (fc) => { fc.setFiles(VJ_SOURCE).catch(() => {}); });
 
 const scenes = (onlyIds.length ? SCENES.filter((s) => onlyIds.includes(s.id)) : SCENES)
-  .filter((s) => !skipIds.includes(s.id));
+  .filter((s) => !skipIds.includes(s.id))
+  .filter((s) => !(CDP && s.nav));
+if (CDP) console.log('attach mode: file:// nav scenes skipped');
 if (skipIds.length) console.log('skipping:', skipIds.join(', '));
 const marks = [];
 const results = [];
 
-await page.goto(APP, { waitUntil: 'domcontentloaded' });
-await sleep(2600);
+if (!CDP) await page.goto(APP, { waitUntil: 'domcontentloaded' });
+await sleep(CDP ? 600 : 2600);
 await waitSplashGone(page);    // the ONLY splash wait — once, up front
 // If it is still up, the boot stalled (no backend, or the WebGL cinematic never
 // completed). LoadingScreen exposes its escape hatch at 40s / on boot error, which
@@ -1166,17 +1208,22 @@ for (const scene of scenes) {
   console.log(`${scene.id}`, err ? ('ERR ' + err) : JSON.stringify(info));
 }
 
-const video = page.video();
+const video = CDP ? null : page.video();
 const wallTotal = (Date.now() - tRec) / 1000;   // wall-clock length of the take
-await ctx.close();             // flush the recording
-await browser.close();
+if (CDP) {
+  // Stop the screen recorder and leave the user's window exactly as it is.
+  try { rec.stdin.write('q'); } catch (e) {}
+  await new Promise((r) => { rec.on('exit', r); setTimeout(r, 15000); });
+} else {
+  await ctx.close();             // flush the recording
+  await browser.close();
+}
 // Session file is stamped per run: overwriting a fixed name destroyed a completed
 // take once, and with it the ability to re-slice any scene without reshooting.
-const stamp = new Date(tRec).toISOString().replace(/[-:T]/g, '').slice(0, 15);
-const sessionWebm = path.join(OUT, `_session-${stamp}.webm`);
-try { const vp = await video.path(); fs.renameSync(vp, sessionWebm); } catch (e) { console.log('session rename', e.message); }
+const stamp = new Date(tRec).toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+const sessionWebm = path.join(OUT, `_session-${stamp}.${CDP ? 'mp4' : 'webm'}`);
+try { const vp = CDP ? recFile : await video.path(); fs.renameSync(vp, sessionWebm); } catch (e) { console.log('session rename', e.message); }
 
-const { execFileSync } = await import('node:child_process');
 const probe = (f) => {
   try {
     return parseFloat(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',

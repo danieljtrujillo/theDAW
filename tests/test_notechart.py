@@ -18,6 +18,7 @@ from typing import Any, Iterator
 import pretty_midi  # type: ignore[import]
 
 from backend.modules.notation.exporters.notechart import (
+    DRUM_VOICES,
     SCHEMA,
     SCHEMA_VERSION,
     build_notechart,
@@ -283,3 +284,152 @@ def test_empty_source_never_reports_success(tmp_path: Path):
     )
     assert result["ok"] is False
     assert not (tmp_path / "notation" / "silence.notechart.json").exists()
+
+
+def test_events_carry_beatsaber_fields(tmp_path: Path):
+    """The Beat Saber mapping rides on every event as additive ints so the
+    ``.dat`` writer and the web highway's blocks skin read the same notes."""
+    midi_path = tmp_path / "midi" / "scale.mid"
+    _write_scale_midi(midi_path)
+
+    chart = build_notechart(
+        midi_path, title="Scale", artist="GANTASMO", entry_id="track"
+    )
+
+    assert chart["schemaVersion"] == 1
+    assert _find_null(chart) == ""
+    assert chart["stats"]["beatSaberCandidates"] > 0
+
+    seen_candidate = False
+    for event in _events(chart):
+        for key in ("bsLine", "bsLayer", "bsColor", "bsCut", "bsMinDifficulty"):
+            assert key in event, key
+            assert isinstance(event[key], int) and not isinstance(event[key], bool)
+        assert 0 <= event["bsLine"] <= 3
+        assert 0 <= event["bsLayer"] <= 2
+        assert event["bsColor"] in (0, 1)
+        assert 0 <= event["bsCut"] <= 8
+        assert -1 <= event["bsMinDifficulty"] <= 4
+        if event["isRest"]:
+            assert event["bsMinDifficulty"] == -1
+        elif event["bsMinDifficulty"] >= 0:
+            seen_candidate = True
+        # Pitched material never carries a drum voice.
+        assert event["drumVoice"] == ""
+    assert seen_candidate
+
+
+def _write_kit_midi(path: Path) -> None:
+    """Kick on every beat, snare on 2 and 4, closed hat on every beat, one open
+    hat: a General MIDI drum track flagged ``is_drum``."""
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    kit = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    for i in range(8):
+        start = i * 0.5
+        pitch = 36 if i % 2 == 0 else 38
+        kit.notes.append(
+            pretty_midi.Note(velocity=100, pitch=pitch, start=start, end=start + 0.1)
+        )
+        kit.notes.append(
+            pretty_midi.Note(velocity=90, pitch=42, start=start, end=start + 0.1)
+        )
+    kit.notes.append(pretty_midi.Note(velocity=90, pitch=46, start=4.0, end=4.1))
+    pm.instruments.append(kit)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pm.write(str(path))
+
+
+def _assert_percussion_chart(chart: dict[str, Any]) -> None:
+    assert _find_null(chart) == ""
+    assert len(chart["parts"]) == 1
+    part = chart["parts"][0]
+    assert part["isPercussion"] is True
+    assert part["clefs"][0]["sign"] == "percussion"
+    assert part["clefs"][0]["glyph"] == "unpitchedPercussionClef1"
+
+    notes = [e for e in part["events"] if not e["isRest"]]
+    assert len(notes) == 17
+    voices = {e["drumVoice"] for e in notes}
+    assert voices == {"kick", "snare", "hihat"}
+    assert all(e["drumVoice"] in DRUM_VOICES for e in notes)
+    for event in part["events"]:
+        if event["isRest"]:
+            assert event["drumVoice"] == ""
+
+    kicks = [e for e in notes if e["drumVoice"] == "kick"]
+    snares = [e for e in notes if e["drumVoice"] == "snare"]
+    hats = [e for e in notes if e["drumVoice"] == "hihat"]
+    assert len(kicks) == 4 and len(snares) == 4 and len(hats) == 9
+
+    # midi carries the GM kit pitch recovered from the staff position + head.
+    assert {e["midi"] for e in kicks} == {36}
+    assert {e["midi"] for e in snares} == {38}
+    assert {e["midi"] for e in hats} == {42, 46}
+    # Kick F4 (first space) and snare C5 (third space) on a treble-positioned
+    # percussion staff: staffStep 1 and 5.
+    assert {e["staffStep"] for e in kicks} == {1}
+    assert {e["staffStep"] for e in snares} == {5}
+    assert {e["step"] for e in kicks} == {"F"} and {e["octave"] for e in kicks} == {4}
+
+    # Heads: kick/snare keep the duration head, hats are x / circle-x.
+    assert {e["noteheadGlyph"] for e in kicks + snares} == {"noteheadBlack"}
+    closed = [e for e in hats if e["midi"] == 42]
+    opened = [e for e in hats if e["midi"] == 46]
+    assert {e["noteheadGlyph"] for e in closed} == {"noteheadXBlack"}
+    assert {e["noteheadCodepoint"] for e in closed} == {0xE0A9}
+    assert len(opened) == 1
+    assert opened[0]["noteheadGlyph"] == "noteheadCircleX"
+    assert opened[0]["noteheadCodepoint"] == 0xE0B3
+    # x heads have no composite note glyph, so the bare head is the glyph.
+    assert {e["glyph"] for e in closed} == {"noteheadXBlack"}
+    # Unpitched heads never show an accidental.
+    assert all(e["accidental"] == "" and e["accidentalGlyph"] == "" for e in notes)
+
+    # Drums are never Beat Saber blocks (the drums skin owns them).
+    assert {e["bsMinDifficulty"] for e in part["events"]} == {-1}
+    assert chart["stats"]["beatSaberCandidates"] == 0
+    assert chart["stats"]["percussionPartCount"] == 1
+    assert chart["stats"]["drumHitCount"] == 17
+    assert chart["stats"]["noteCount"] == 17
+
+    # Simultaneous hits are chord members of one PercussionChord.
+    assert chart["stats"]["chordCount"] >= 8
+    onsets = [e["onsetSec"] for e in part["events"]]
+    assert onsets == sorted(onsets)
+
+
+def test_percussion_part_from_engraved_drum_staff(tmp_path: Path):
+    """A MusicXML percussion staff (PercussionClef + <unpitched> + <notehead>)
+    charts as a percussion part with drum voices and real head glyphs."""
+    from backend.modules.notation.arrangers.percussion import build_percussion_score
+
+    midi_path = tmp_path / "midi" / "drums.mid"
+    _write_kit_midi(midi_path)
+    source = tmp_path / "notation" / "drums.musicxml"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    build_percussion_score(midi_path, title="Drums").write("musicxml", fp=str(source))
+
+    chart = build_notechart(source, title="Drums", artist="GANTASMO", entry_id="track")
+    _assert_percussion_chart(chart)
+    assert chart["source"]["sourceFormat"] == "musicxml"
+
+
+def test_percussion_part_from_drum_midi_matches_the_sheet(tmp_path: Path):
+    """A kit MIDI charts through the percussion arranger, so the chart is the
+    staff MAKE SHEET engraves rather than a pitched F2/F#3 reading of channel
+    10. Raw pairing still lands on the kit pitches."""
+    midi_path = tmp_path / "midi" / "drums.mid"
+    _write_kit_midi(midi_path)
+
+    chart = build_notechart(
+        midi_path,
+        title="Drums",
+        artist="GANTASMO",
+        entry_id="track",
+        raw_midi_path=midi_path,
+        raw_midi_artifact_id="drums_mid",
+    )
+    _assert_percussion_chart(chart)
+    assert chart["source"]["sourceFormat"] == "midi"
+    assert chart["quantization"]["matchedRawEvents"] == 17
+    assert chart["quantization"]["unmatchedRawEvents"] == 0

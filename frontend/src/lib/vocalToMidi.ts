@@ -150,6 +150,22 @@ export const framesToNotes = (
   return notes;
 };
 
+/**
+ * Optional live taps on a running capture. Additive: omit for the plain
+ * record-then-segment flow (MidiPanel / Vocal2Midi).
+ */
+export interface CaptureHooks {
+  /**
+   * Called once per YIN frame, after the frame has been appended to the capture
+   * buffer. `frame.tSec` is capture-relative; `ctxSec` is the worklet's absolute
+   * AudioContext time for the same frame, so a consumer can map it onto another
+   * clock: `songSec = clock.read() - (ctx.currentTime - ctxSec)`. Runs on the
+   * main thread inside the port message handler, so keep it cheap and never
+   * throw (exceptions are swallowed so the capture keeps running).
+   */
+  onFrame?: (frame: F0Frame, ctxSec: number) => void;
+}
+
 export interface VocalCaptureController {
   stream: MediaStream;
   /** Current mic RMS level, 0..1, for a live meter (independent of YIN). */
@@ -232,10 +248,12 @@ export const queryMicPermission = async (): Promise<PermissionState | 'unknown'>
  * Begin live capture. Requests the mic with AGC / noise-suppression / echo-
  * cancellation OFF (all three distort f0), taps it into the shared engine
  * context, and runs the YIN worklet. Pass a deviceId to pick a specific input.
- * Call stop() to finalize.
+ * Pass `hooks.onFrame` to observe frames live (the SING pitch lane); the
+ * accumulated capture is unaffected. Call stop() to finalize.
  */
 export const startVocalCapture = async (
   deviceId?: string,
+  hooks?: CaptureHooks,
 ): Promise<VocalCaptureController> => {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -277,12 +295,20 @@ export const startVocalCapture = async (
   node.port.onmessage = (e: MessageEvent) => {
     const d = e.data;
     if (d?.type === 'f0') {
-      frames.push({
+      const frame: F0Frame = {
         tSec: Math.max(0, d.tSec - startTime),
         hz: d.hz,
         clarity: d.clarity,
         rms: d.rms,
-      });
+      };
+      frames.push(frame);
+      if (hooks?.onFrame) {
+        try {
+          hooks.onFrame(frame, d.tSec as number);
+        } catch {
+          /* a hook fault must not stop the capture */
+        }
+      }
     }
   };
 

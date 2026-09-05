@@ -136,7 +136,15 @@ git clone https://YOUR_USERNAME:YOUR_HF_TOKEN@huggingface.co/stabilityai/stable-
 
 ## Output audio is static / glitchy (Medium model)
 
-**Cause:** Flash Attention not installed or not working correctly.
+**Likely cause on Windows:** the pinned Flash Attention wheel did not import
+(wrong torch / CUDA / Python for the wheel), so the model is running on the
+SDPA fallback. The fallback is designed to be numerically equivalent — it is
+the normal, supported state on Linux and macOS — so static is *not* expected
+from the fallback alone. Establish which state you are in first:
+`GET http://localhost:8600/api/health` reports `flash_attention_installed`
+and `flash_attention_active`, and the backend logs a one-line notice at model
+load when the fast path is missing. If the fallback is active *and* output is
+static, please report it with the model name.
 
 **Verify:**
 ```powershell

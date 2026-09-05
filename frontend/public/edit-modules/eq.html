@@ -101,6 +101,7 @@ html,body{width:100%;height:100%;background:#07080c;display:flex;align-items:cen
 
 audio{display:none}
 input[type="file"]{display:none}
+.knob-svg:focus-visible,.fader-track:focus-visible{outline:2px solid #22d3ee;outline-offset:2px;border-radius:6px}
 </style>
 </head>
 <body>
@@ -173,8 +174,8 @@ input[type="file"]{display:none}
 
     <!-- Filter Type -->
     <div class="filter-sel">
-      <span class="filter-sel-label">Filter Type</span>
-      <select class="filter-dropdown" id="filterType">
+      <label class="filter-sel-label" for="filterType">Filter Type</label>
+      <select class="filter-dropdown" id="filterType" name="filterType">
         <option value="bell">Peak / Bell</option>
         <option value="lowShelf">Low Shelf</option>
         <option value="highShelf">High Shelf</option>
@@ -213,7 +214,7 @@ input[type="file"]{display:none}
     <button class="footer-btn bypass-active" id="btnBypass">Bypass</button>
     <button class="footer-tab active" id="tabEQ">EQ</button>
     <button class="footer-tab" id="tabAnalyzer">Analyzer</button>
-    <select class="footer-select" id="selPrePost">
+    <select class="footer-select" id="selPrePost" name="selPrePost" aria-label="Analyzer tap: pre or post EQ">
       <option value="pre">Pre/Post</option>
       <option value="pre">Pre</option>
       <option value="post" selected>Post</option>
@@ -228,7 +229,8 @@ input[type="file"]{display:none}
 
 <audio id="audioIn" crossorigin="anonymous"></audio>
 <audio id="audioOut" crossorigin="anonymous"></audio>
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" name="fileInput" accept="audio/*" aria-label="Load audio file">
+<script src="module-kit.js"></script>
 
 <script>
 (function(){
@@ -689,7 +691,27 @@ const knobFreqEl=document.getElementById('knobFreq');
 const knobGainEl=document.getElementById('knobGain');
 const knobQEl=document.getElementById('knobQ');
 
+const kit=window.theDAWKit;
 const FREQ_LIMITS=[[20,500],[20,20000],[200,8000],[20,20000],[2000,18000]];
+/* Keyboard + ARIA (module-kit): arrows step in real units, Delete resets the band value. */
+kit.slider(knobFreqEl,{label:'Frequency',min:20,max:20000,step:1,wheel:false,
+  get:()=>BANDS[activeBand].freq,
+  set:v=>{const fl=FREQ_LIMITS[activeBand];BANDS[activeBand].freq=Math.max(fl[0],Math.min(fl[1],v));updateBiquads();syncUI();},
+  format:v=>fmtFreq(v)+' Hz',reset:()=>[80,300,1000,3500,10000][activeBand],noDblClick:true});
+knobFreqEl.addEventListener('keydown',e=>{ // musical steps: a semitone-ish 3% per arrow, 1/3 octave with Shift
+  if(!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key))return;
+  e.preventDefault();e.stopImmediatePropagation();
+  const up=e.key==='ArrowUp'||e.key==='ArrowRight';const k=e.shiftKey?Math.pow(2,1/3):1.03;
+  const fl=FREQ_LIMITS[activeBand];BANDS[activeBand].freq=Math.round(Math.max(fl[0],Math.min(fl[1],BANDS[activeBand].freq*(up?k:1/k))));
+  updateBiquads();syncUI();
+},true);
+kit.slider(knobGainEl,{label:'Gain',min:GMIN,max:GMAX,step:0.5,wheel:false,
+  get:()=>BANDS[activeBand].gain,set:v=>{BANDS[activeBand].gain=v;updateBiquads();syncUI();},
+  format:v=>fmtGain(v)+' dB',reset:0,noDblClick:true});
+kit.slider(knobQEl,{label:'Q',min:0.1,max:10,step:0.1,wheel:false,
+  get:()=>BANDS[activeBand].q,set:v=>{BANDS[activeBand].q=v;updateBiquads();syncUI();},
+  format:v=>v.toFixed(2),reset:()=>(BANDS[activeBand].type==='lowShelf'||BANDS[activeBand].type==='highShelf')?0.7:1.2,noDblClick:true});
+[knobFreqEl,knobGainEl,knobQEl].forEach(el=>el.addEventListener('dblclick',()=>{el.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true}));}));
 initKnobDrag(knobFreqEl,
   ()=>freqToNorm(BANDS[activeBand].freq),
   n=>{const f=normToFreq(n);const fl=FREQ_LIMITS[activeBand];BANDS[activeBand].freq=Math.max(fl[0],Math.min(fl[1],f));},
@@ -734,8 +756,10 @@ function faderFromEvent(e){
   updateBiquads();updateFaderVisual();
 }
 
+kit.slider(faderTrack,{label:'Output Gain',min:-12,max:12,step:0.5,vertical:true,
+  get:()=>outputGain,set:v=>{outputGain=v;updateBiquads();updateFaderVisual();},format:v=>fmtGain(v)+' dB',reset:0});
 faderTrack.addEventListener('pointerdown',e=>{
-  faderDragging=true;faderTrack.setPointerCapture(e.pointerId);faderFromEvent(e);
+  faderDragging=true;faderTrack.setPointerCapture(e.pointerId);faderTrack.focus({preventScroll:true});faderFromEvent(e);
 });
 faderTrack.addEventListener('pointermove',e=>{if(faderDragging)faderFromEvent(e);});
 faderTrack.addEventListener('pointerup',()=>{faderDragging=false;});
@@ -789,6 +813,12 @@ document.getElementById('btnBypass').addEventListener('click',function(){
 document.querySelectorAll('.pill').forEach(btn=>{
   btn.addEventListener('click',()=>btn.classList.toggle('active'));
 });
+kit.toggleGroup('.pill','active');
+kit.toggleGroup('.band-btn','active',true);
+kit.toggleGroup('.stereo-btn','active',true);
+kit.toggleGroup('.footer-tab','active',true);
+document.getElementById('btnBypass').setAttribute('aria-pressed','false');
+document.getElementById('btnBypass').addEventListener('click',function(){this.setAttribute('aria-pressed',String(bypassed));});
 
 /* ════════════════════════════════════════════
    FOOTER TABS
@@ -826,6 +856,7 @@ function syncUI(){
 
   // Fader
   updateFaderVisual();
+  kit.syncAll();
 }
 
 /* ════════════════════════════════════════════

@@ -1,6 +1,6 @@
 # NodeF.I. — node graphs: AI pipelines and live performance
 
-NodeF.I. (the tab reads **NODEFI**; formerly Audimate) is a visual node-graph
+NodeF.I. (the tab reads **NODEFI**) is a visual node-graph
 editor with two personalities on one canvas:
 
 - **Run** executes a graph OFFLINE through the AI stack — Stable Audio

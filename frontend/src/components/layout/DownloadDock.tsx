@@ -7,6 +7,15 @@
  * speed, size, file counter, and destination, plus an actionable error block
  * for failed downloads.
  *
+ * Two kinds of row share the stack: Stable Audio checkpoints (Hugging Face,
+ * this PC) and Magenta RT2 checkpoints (fetched by the sidecar's CLI inside
+ * WSL — progress is parsed from its log, so the bar is indeterminate until the
+ * CLI reports a size).
+ *
+ * "Actionable" is literal for the two failures a token fixes (gated repo, rate
+ * limit): the error block embeds <HfTokenField />, so the row that failed is
+ * where the token goes in, and a good token re-fires that same download.
+ *
  * The store owns all state; this component is purely a view + a few buttons.
  */
 import React from 'react';
@@ -22,6 +31,7 @@ import {
 import { useDownloadStore } from '../../state/downloadStore';
 import { classifyDownloadError, type DownloadJob } from '../../lib/modelDownloadClient';
 import { formatBytes } from '../../lib/storageClient';
+import { HfTokenField } from '../ui/HfTokenField';
 
 /** Bytes/sec → human rate (B/s · KB/s · MB/s · GB/s). */
 const formatSpeed = (bytesPerSec: number): string => {
@@ -40,9 +50,14 @@ const formatSpeed = (bytesPerSec: number): string => {
 const isActive = (job: DownloadJob): boolean =>
   job.status === 'queued' || job.status === 'downloading';
 
-// Default resting spot: bottom-right, but lifted high enough (bottom-28 = 7rem)
-// to clear the collapsed ShellBottomDock strip so the dock isn't clipped.
-const DEFAULT_POS_CLASS = 'bottom-28 right-4';
+// Default resting spot: INSIDE the always-visible bottom strip (the long,
+// mostly empty "PANELS" toggle run, just right of its label), so the pill never
+// floats over work-area controls — at bottom-28 right-4 it covered the
+// visualizer's Fullscreen button, the DJ library's load buttons and the
+// Lineage sliders. `bottom` is in zoomed px: the strip sits directly above the
+// 5rem footer, which lives outside the zoomed shell.
+const DEFAULT_POS_CLASS = 'left-40';
+const DEFAULT_POS_STYLE: React.CSSProperties = { bottom: 'calc((5rem + 5px) / var(--layout-zoom, 1))' };
 
 export const DownloadDock: React.FC = () => {
   const jobs = useDownloadStore((s) => s.jobs);
@@ -109,14 +124,19 @@ export const DownloadDock: React.FC = () => {
   }, 0);
 
   const posClass = pos ? 'fixed z-50' : `fixed z-50 ${DEFAULT_POS_CLASS}`;
-  const posStyle = pos ? { left: pos.x, top: pos.y } : undefined;
+  const posStyle = pos ? { left: pos.x, top: pos.y } : DEFAULT_POS_STYLE;
 
   // ── Collapsed: a single draggable pill. ─────────────────────────────────
   if (!expanded) {
+    // A dock holding only failures must not wear a green tick: that is what
+    // makes a user scroll past the one row carrying the fix.
+    const failedCount = jobs.filter((j) => j.status === 'error').length;
     const label =
       activeJobs.length > 0
-        ? `${activeJobs.length} downloading · ${formatSpeed(totalSpeed)}`
-        : 'Downloads';
+        ? `${activeJobs.length} downloading${totalSpeed > 0 ? ` · ${formatSpeed(totalSpeed)}` : ''}`
+        : failedCount > 0
+          ? `${failedCount} failed — fix here`
+          : 'Downloads';
     return (
       <button
         type="button"
@@ -125,17 +145,27 @@ export const DownloadDock: React.FC = () => {
         onClick={() => {
           if (!dragRef.current?.moved) setExpanded(true);
         }}
-        aria-label="Expand downloads (drag to move)"
+        aria-label={
+          failedCount > 0 && activeJobs.length === 0
+            ? `Expand downloads — ${failedCount} failed (drag to move)`
+            : 'Expand downloads (drag to move)'
+        }
         style={posStyle}
-        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] backdrop-blur-md hover:bg-purple-500/15 hover:text-white transition-colors cursor-grab active:cursor-grabbing touch-none select-none`}
+        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest backdrop-blur-md transition-colors cursor-grab active:cursor-grabbing touch-none select-none ${
+          failedCount > 0 && activeJobs.length === 0
+            ? 'border-rose-500/50 text-rose-200 shadow-[0_0_16px_rgba(244,63,94,0.35)] hover:bg-rose-500/15 hover:text-white'
+            : 'border-purple-500/40 text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] hover:bg-purple-500/15 hover:text-white'
+        }`}
       >
         {activeJobs.length > 0 ? (
           <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+        ) : failedCount > 0 ? (
+          <AlertCircle className="w-3 h-3 text-rose-300 shrink-0" />
         ) : (
           <CheckCircle2 className="w-3 h-3 text-emerald-300 shrink-0" />
         )}
         <span className="truncate">{label}</span>
-        {activeJobs.length === 0 && <span className="text-emerald-300">✓</span>}
+        {activeJobs.length === 0 && failedCount === 0 && <span className="text-emerald-300">✓</span>}
       </button>
     );
   }
@@ -154,7 +184,9 @@ export const DownloadDock: React.FC = () => {
         <Download className="w-3.5 h-3.5 text-purple-300 shrink-0" />
         <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">Downloads</span>
         <span className="text-[8px] font-mono text-zinc-500">
-          {activeJobs.length > 0 ? `${activeJobs.length} active · ${formatSpeed(totalSpeed)}` : `${jobs.length} total`}
+          {activeJobs.length > 0
+            ? `${activeJobs.length} active${totalSpeed > 0 ? ` · ${formatSpeed(totalSpeed)}` : ''}`
+            : `${jobs.length} total`}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -195,9 +227,18 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
   const fileCount = job.files.length;
   const bytesDone = file?.bytes_done ?? 0;
   const bytesTotal = file?.bytes_total ?? 0;
-  const pct = bytesTotal > 0 ? Math.min(100, Math.round((bytesDone / bytesTotal) * 100)) : 0;
   const isError = job.status === 'error';
   const isDone = job.status === 'done';
+  const isMagenta = job.kind === 'magenta';
+  // A whole-job percent (magenta) wins over a per-file byte ratio; a job that
+  // reports neither is shown as indeterminate rather than stuck at 0 %.
+  const pct =
+    typeof job.percent === 'number' && job.percent > 0
+      ? Math.min(100, Math.round(job.percent))
+      : bytesTotal > 0
+        ? Math.min(100, Math.round((bytesDone / bytesTotal) * 100))
+        : 0;
+  const indeterminate = !isDone && !isError && pct === 0 && bytesTotal === 0;
 
   return (
     <div className={`px-2.5 py-2 ${isError ? 'bg-rose-500/5' : ''}`}>
@@ -210,7 +251,15 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
           <AlertCircle className="w-3 h-3 text-rose-300 shrink-0" />
         )}
         <span className="text-[10px] font-bold text-zinc-100 truncate" title={job.label}>{job.label}</span>
-        {fileCount > 0 && (
+        {isMagenta && (
+          <span
+            className="shrink-0 rounded border border-cyan-500/30 bg-cyan-500/10 px-1 text-[8px] font-mono uppercase tracking-wider text-cyan-200"
+            title="Fetched by the Magenta sidecar's own CLI inside WSL"
+          >
+            WSL
+          </span>
+        )}
+        {fileCount > 1 && (
           <span className="ml-auto shrink-0 text-[8px] font-mono text-zinc-500 tabular-nums">
             file {Math.min(job.current_file + 1, fileCount)} of {fileCount}
           </span>
@@ -218,7 +267,7 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
       </div>
 
       {isError ? (
-        <DownloadError detail={job.error_detail ?? ''} repoId={job.error_repo_id ?? undefined} />
+        <DownloadError job={job} />
       ) : (
         <>
           {file?.filename && (
@@ -229,19 +278,31 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
           <div
             role="progressbar"
             aria-label={`${job.label} download progress`}
-            aria-valuenow={pct}
+            aria-valuenow={indeterminate ? undefined : pct}
             aria-valuemin={0}
             aria-valuemax={100}
+            aria-valuetext={indeterminate ? 'in progress' : `${pct}%`}
             className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden"
           >
             <div
-              className={`h-full rounded-full transition-[width] duration-300 ${isDone ? 'bg-emerald-400' : 'bg-purple-400'}`}
-              style={{ width: `${isDone ? 100 : pct}%` }}
+              className={`h-full rounded-full transition-[width] duration-300 ${
+                isDone ? 'bg-emerald-400' : indeterminate ? 'bg-purple-400/60 animate-pulse' : 'bg-purple-400'
+              }`}
+              style={{ width: `${isDone ? 100 : indeterminate ? 100 : pct}%` }}
             />
           </div>
           <div className="flex items-center gap-2 mt-1 text-[8px] font-mono text-zinc-500 tabular-nums">
-            <span>{formatBytes(bytesDone)} / {formatBytes(bytesTotal)}</span>
-            {job.status === 'downloading' && <span className="text-purple-300">{formatSpeed(file?.speed ?? 0)}</span>}
+            {indeterminate ? (
+              <span>in progress · size reported by the sidecar once known</span>
+            ) : (
+              <span>
+                {formatBytes(bytesDone)} / {bytesTotal > 0 ? formatBytes(bytesTotal) : '?'}
+                {typeof job.percent === 'number' && bytesTotal === 0 ? ` · ${pct}%` : ''}
+              </span>
+            )}
+            {job.status === 'downloading' && (file?.speed ?? 0) > 0 && (
+              <span className="text-purple-300">{formatSpeed(file?.speed ?? 0)}</span>
+            )}
             {isDone && <span className="text-emerald-300">done</span>}
             {job.dest_dir && (
               <span className="ml-auto truncate text-zinc-600" title={job.dest_dir}>{job.dest_dir}</span>
@@ -253,12 +314,48 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
   );
 };
 
-const DownloadError: React.FC<{ detail: string; repoId?: string }> = ({ detail, repoId }) => {
-  const info = classifyDownloadError(detail, repoId);
+const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
+  const info = classifyDownloadError(job.error_detail ?? '', job.error_repo_id ?? undefined);
+  const startDownload = useDownloadStore((s) => s.startDownload);
+  const kind = job.kind ?? 'model';
+  // The retry arrives as a NEW job row (the backend only rejoins live jobs), so
+  // this errored row would otherwise sit here still reading as a failure. Say
+  // what happened instead of leaving two contradictory rows on screen.
+  const [retried, setRetried] = React.useState(false);
+  const [retrying, setRetrying] = React.useState(false);
+  const [retryError, setRetryError] = React.useState<string | null>(null);
+  // Only a MISSING token is fixable by pasting one. 'no_access' means the token
+  // already validated and the account simply is not allowed these files — a
+  // token box there is exactly the loop this flow exists to prevent. The
+  // Magenta repo is public (no token needed) and the CLI runs inside WSL with
+  // its own credentials, so a token here would change nothing.
+  const tokenFixable = kind === 'model' && (info.kind === 'gated' || info.kind === 'rate_limit');
+  const magentaHeadline = kind === 'magenta' && info.kind === 'unknown' ? 'Checkpoint download failed' : null;
+
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      await startDownload(job.name, kind);
+      setRetried(true);
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : 'Retry failed.');
+    } finally {
+      setRetrying(false);
+    }
+  };
   return (
     <div className="rounded border border-rose-500/30 bg-rose-500/5 px-2 py-1.5">
-      <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">{info.headline}</div>
-      <p className="mt-0.5 text-[8px] leading-relaxed text-rose-200/80">{info.fix}</p>
+      <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">{magentaHeadline ?? info.headline}</div>
+      <p className="mt-0.5 text-[8px] leading-relaxed text-rose-200/80 whitespace-pre-line line-clamp-4" title={job.error_detail ?? undefined}>
+        {info.fix}
+      </p>
+      {job.log && (
+        <p className="mt-0.5 text-[8px] font-mono text-zinc-500 truncate" title={job.log}>
+          log: {job.log}
+        </p>
+      )}
       {info.links && info.links.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
           {info.links.map((link) => (
@@ -273,6 +370,35 @@ const DownloadError: React.FC<{ detail: string; repoId?: string }> = ({ detail, 
             </a>
           ))}
         </div>
+      )}
+      {retried ? (
+        <p className="mt-1.5 flex items-center gap-1.5 text-[8px] text-emerald-300">
+          <CheckCircle2 className="w-3 h-3 shrink-0" />
+          Restarted — follow the new row.
+        </p>
+      ) : (
+        <>
+          {/* Paste here and the download that just failed starts over on its own. */}
+          {tokenFixable && (
+            <HfTokenField idPrefix={`dl-${job.id.replace(/[^a-zA-Z0-9_-]+/g, '-')}`} accent="rose" className="mt-1.5" onSignedIn={retry} />
+          )}
+          {/* Always offered: after accepting a licence on the model page, this
+              is the one click that picks the download back up. */}
+          <button
+            type="button"
+            onClick={() => void retry()}
+            disabled={retrying}
+            className="mt-1.5 inline-flex items-center gap-1 rounded border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-rose-100 hover:bg-rose-500/20 transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/70"
+          >
+            {retrying && <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />}
+            {retrying ? 'Retrying' : 'Retry'}
+          </button>
+          {retryError && (
+            <p role="alert" className="mt-0.5 text-[8px] text-rose-300">
+              {retryError}
+            </p>
+          )}
+        </>
       )}
     </div>
   );

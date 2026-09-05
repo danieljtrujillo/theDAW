@@ -12,8 +12,16 @@
  * cover its controls. While popped out, control messages are forwarded from the
  * popup back to the main window so the ares bridge (which listens on the main
  * window) keeps driving the chain.
+ *
+ * Reveal: the runtime keeps its canvas invisible until its artwork is decoded
+ * and every element frame is laid out at its final scale, then fades in and
+ * posts {type:'gan-ready'}. Until that arrives the stage shows a skeleton —
+ * the plugin's artwork letterboxed exactly where the runtime will draw it
+ * (instant from the HTTP cache on a re-open) under a soft pulse — and the
+ * iframe sits at opacity 0, so the surface appears in one beat with every
+ * control already on its art instead of popping in piecemeal.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Blocks, ExternalLink } from 'lucide-react';
 import { DetachableWindow } from '../layout/DetachableWindow';
 
@@ -29,6 +37,87 @@ const frameRef = (el: HTMLIFrameElement | null) => {
   else if (activeGanFrame && !activeGanFrame.isConnected) activeGanFrame = null;
 };
 
+/** A runtime composed before the reveal protocol existed (an older imported
+ *  .gan) never posts gan-ready; reveal it this long after its load event. */
+const LEGACY_REVEAL_MS = 1200;
+/** Skeleton stays under the fading iframe for the runtime's opacity transition. */
+const CROSSFADE_MS = 260;
+
+/** The runtime's artwork sits beside its entry document. */
+const artworkUrlFor = (entryUrl: string): string => entryUrl.replace(/[^/]*$/, 'background.png');
+
+/**
+ * The runtime iframe plus its reveal choreography. Keyed by url from the
+ * parent so a plugin change remounts it with fresh state.
+ */
+function GanFrame({ url, name, id }: { url: string; name: string; id?: string }) {
+  const [ready, setReady] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const [artOk, setArtOk] = useState(true);
+  const legacyTimer = useRef<number | null>(null);
+
+  // gan-ready arrives from the runtime (posted to its parent: the main window
+  // in place; the popup while detached, which forwards it here).
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data as { type?: unknown } | null;
+      if (d && typeof d === 'object' && d.type === 'gan-ready') setReady(true);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const t = window.setTimeout(() => setRevealed(true), CROSSFADE_MS);
+    return () => window.clearTimeout(t);
+  }, [ready]);
+
+  useEffect(() => () => { if (legacyTimer.current != null) window.clearTimeout(legacyTimer.current); }, []);
+
+  const onLoad = () => {
+    if (legacyTimer.current != null) window.clearTimeout(legacyTimer.current);
+    legacyTimer.current = window.setTimeout(() => setReady(true), LEGACY_REVEAL_MS);
+  };
+
+  return (
+    <div className="relative w-full flex-1 min-h-0 bg-[#07080c]">
+      {!revealed && (
+        <div
+          className="absolute inset-0 flex items-center justify-center overflow-hidden"
+          aria-hidden="true"
+        >
+          {artOk && (
+            <img
+              src={artworkUrlFor(url)}
+              alt=""
+              draggable={false}
+              onError={() => setArtOk(false)}
+              className="w-full h-full object-contain select-none pointer-events-none"
+            />
+          )}
+          <div className="absolute inset-0 bg-[#07080c]/35 animate-pulse pointer-events-none" />
+          <span className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-mono uppercase tracking-widest text-indigo-200/70">
+            loading {name}…
+          </span>
+        </div>
+      )}
+      {/* data-ready lets hosts (MixView's level feed) hold their pushes until
+          the runtime is actually up, instead of flooding frames that are
+          still loading. */}
+      <iframe
+        ref={frameRef}
+        id={id}
+        src={url}
+        title={name}
+        onLoad={onLoad}
+        data-ready={ready ? '1' : '0'}
+        className={`absolute inset-0 w-full h-full border-0 block transition-opacity duration-200 ease-out ${ready ? 'opacity-100' : 'opacity-0'}`}
+      />
+    </div>
+  );
+}
+
 export function GanPluginStage({ url, name }: { url: string | null; name: string | null }) {
   const [win, setWin] = useState<Window | null>(null);
   const [popupBlocked, setPopupBlocked] = useState(false);
@@ -39,13 +128,14 @@ export function GanPluginStage({ url, name }: { url: string | null; name: string
     if (!url && win) setWin(null);
   }, [url, win]);
 
-  // The .gan runtime posts control values to ITS parent window — the popup
-  // while detached. The ares bridge listens on the MAIN window, so forward.
+  // The .gan runtime posts control values (and its ready signal) to ITS parent
+  // window — the popup while detached. The ares bridge and the reveal listener
+  // live on the MAIN window, so forward.
   useEffect(() => {
     if (!win) return;
     const fwd = (e: MessageEvent) => {
       const d = e.data as { type?: unknown } | null;
-      if (d && typeof d === 'object' && d.type === 'updateValue') {
+      if (d && typeof d === 'object' && (d.type === 'updateValue' || d.type === 'gan-ready')) {
         window.postMessage(e.data, '*');
       }
     };
@@ -82,11 +172,13 @@ export function GanPluginStage({ url, name }: { url: string | null; name: string
     setWin(w);
   };
 
+  const title = name ?? 'GAN plugin';
+
   return (
     <div className="h-full w-full min-h-0 flex flex-col overflow-hidden bg-[#07080c]">
       <div className="flex items-center gap-2 px-2 py-1 shrink-0">
         <Blocks className="w-3 h-3 text-indigo-300 shrink-0" />
-        <span className="text-[10px] font-black uppercase tracking-widest text-indigo-300 truncate">{name ?? 'GAN plugin'}</span>
+        <span className="text-[10px] font-black uppercase tracking-widest text-indigo-300 truncate">{title}</span>
         <button
           onClick={togglePopOut}
           title={win ? 'Pop the plugin back into the app' : 'Pop out into its own window (like a VST editor)'}
@@ -116,27 +208,14 @@ export function GanPluginStage({ url, name }: { url: string | null; name: string
               Pop back in
             </button>
           </div>
-          <DetachableWindow win={win} title={`theDAW — ${name ?? 'GAN plugin'}`} onClose={() => setWin(null)}>
+          <DetachableWindow win={win} title={`theDAW — ${title}`} onClose={() => setWin(null)}>
             <div className="h-full w-full flex flex-col overflow-hidden bg-[#07080c]">
-              <iframe
-                key={url}
-                ref={frameRef}
-                src={url}
-                title={name ?? 'GAN plugin'}
-                className="w-full flex-1 min-h-0 border-0 block"
-              />
+              <GanFrame key={url} url={url} name={title} />
             </div>
           </DetachableWindow>
         </>
       ) : (
-        <iframe
-          key={url}
-          ref={frameRef}
-          id="gan-stage-frame"
-          src={url}
-          title={name ?? 'GAN plugin'}
-          className="w-full flex-1 min-h-0 border-0 block"
-        />
+        <GanFrame key={url} url={url} name={title} id="gan-stage-frame" />
       )}
     </div>
   );

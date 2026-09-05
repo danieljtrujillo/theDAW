@@ -15,6 +15,16 @@ formats:
     gracefully rather than raising.
   - ``notechart`` is the Unity flying-notation chart (timecode + spelled
     notes), written by :mod:`.exporters.notechart`.
+  - ``beatsaber`` is a Beat Saber custom level (Info.dat + difficulty .dat +
+    song.ogg, zipped) written by :mod:`.exporters.beatsaber` from the same
+    note chart.
+  - ``chordtrack`` (the CHORDS play-along document) is built by the router's
+    ``/chords`` route through :mod:`.exporters.chordtrack`; it is listed here
+    so the capabilities probe and the artifact kinds know about it.
+
+A drum-kit MIDI (``is_drum`` instrument, or a ``midis`` row transcribed by the
+``drum-onsets`` engine) is engraved as an unpitched percussion staff via
+:mod:`.arrangers.percussion` instead of being parsed as pitches.
 
 Heavier engines (MT3, Audiveris, alphaTab tab export) belong behind the same
 module/sidecar boundary and plug into ``convert_score`` later.
@@ -155,7 +165,15 @@ _KIND_FOR_FORMAT = {
     "pdf": "pdf",
     "svg": "svg",
     "notechart": "notechart",
+    "beatsaber": "beatsaber",
+    "chordtrack": "chordtrack",
 }
+# The Beat Saber custom-level zip, written by exporters/beatsaber from a chart.
+_BEATSABER_FORMATS = frozenset({"beatsaber"})
+# What backend/modules/midi/drums.py stamps on the ``midis`` row (and the
+# mirrored notation artifact) of a stem it transcribed as a drum kit. Kept as a
+# literal so the notation engine never imports the librosa-backed transcriber.
+_DRUM_MIDI_ENGINE = "drum-onsets"
 
 # MuseScore CLI binary names, newest first, and common Windows install paths.
 _MUSESCORE_NAMES = (
@@ -211,9 +229,20 @@ def capabilities() -> dict[str, Any]:
     from .arrangers.guitar_tab import TUNINGS as TAB_TUNINGS
     from .arrangers.score_arrange import STYLES as ARRANGEMENT_STYLES
 
+    from .exporters.beatsaber import find_ffmpeg
+
     musescore = musescore_binary()
     osmd = pdf_render.available()
-    formats = ["midi", "musicxml", "abc", "json", "alphatex", "notechart"]
+    formats = [
+        "midi",
+        "musicxml",
+        "abc",
+        "json",
+        "alphatex",
+        "notechart",
+        "beatsaber",
+        "chordtrack",
+    ]
     # PDF comes from the headless OSMD renderer, so it no longer depends on a
     # MuseScore install; MuseScore is still what engraves SVG.
     if osmd["ok"]:
@@ -237,10 +266,20 @@ def capabilities() -> dict[str, Any]:
             if osmd["ok"]
             else ("musescore" if musescore else None),
             "score_to_notechart": "notechart",
+            "score_to_beatsaber": "beatsaber",
+            "chords": "chordtrack",
             "future": ["mt3-sidecar", "audiveris-sidecar", "guitarpro-export"],
         },
         "formats": formats,
+        # song.ogg for a Beat Saber level needs ffmpeg; the UI shows the pack
+        # card's audio status from this.
+        "ffmpeg": find_ffmpeg() is not None,
         "tab_tunings": sorted(TAB_TUNINGS.keys()),
+        # Low string first, MIDI numbers; the chord-diagram generator builds
+        # shapes for any tuning listed here.
+        "tab_tuning_pitches": {
+            name: [int(p) for p in pitches] for name, pitches in TAB_TUNINGS.items()
+        },
         "arrangement_styles": list(ARRANGEMENT_STYLES),
     }
 
@@ -288,8 +327,41 @@ _KIND_FOR_SUFFIX = {
     ".svg": "svg",
 }
 
+# Double-extension JSON/zip payloads, matched on the lower-cased file name
+# BEFORE the plain-suffix map (``.json`` alone is deliberately unmapped: an
+# entry directory holds plenty of JSON that is not a notation artifact).
+_KIND_FOR_COMPOUND_SUFFIX = (
+    (".chordtrack.json", "chordtrack"),
+    (".beatsaber.zip", "beatsaber"),
+    (".notechart.json", "notechart"),
+)
+
 # Entry sub-directories that hold notation artifacts.
 _ARTIFACT_SUBDIRS = ("notation", "midi")
+# Beat Saber levels are written one directory deeper (notation/beatsaber/); the
+# unzipped level folder beside each zip is skipped because it is not a file.
+_ARTIFACT_NESTED_SUBDIRS = ("notation/beatsaber",)
+
+# The timed lyrics document lives at the entry ROOT (``<entry>/lyrics.json``),
+# not under notation/. It is recovered as its own kind under a fixed id so the
+# lyrics workflow can rely on exactly one row per entry.
+_LYRICS_FILENAME = "lyrics.json"
+_LYRICS_KIND = "lyrics"
+
+
+def lyrics_artifact_id(entry_id: str) -> str:
+    """The one notation artifact id a recovered ``<entry>/lyrics.json`` gets."""
+    return f"{entry_id}__lyrics__lyrics"
+
+
+def _kind_and_stem_for_file(path: Path) -> tuple[Optional[str], str]:
+    """Artifact ``kind`` and id stem for a file on disk, or ``(None, stem)``
+    when the file is not a notation artifact."""
+    name = path.name.lower()
+    for suffix, kind in _KIND_FOR_COMPOUND_SUFFIX:
+        if name.endswith(suffix):
+            return kind, path.name[: -len(suffix)]
+    return _KIND_FOR_SUFFIX.get(path.suffix.lower()), path.stem
 
 
 def register_on_disk_artifacts(
@@ -318,33 +390,100 @@ def register_on_disk_artifacts(
     if db.get_entry(entry_id) is None:
         return []
     recovered: list[dict[str, Any]] = []
-    for sub in _ARTIFACT_SUBDIRS:
+
+    def _recover(artifact_id: str, kind: str, path: Path, source_dir: str) -> None:
+        if db.get_notation_artifact(artifact_id) is not None:
+            return
+        db.add_notation_artifact(
+            artifact_id=artifact_id,
+            entry_id=entry_id,
+            kind=kind,
+            path=str(path),
+            source_ref=str(path),
+            engine="recovered-from-disk",
+            engine_version="1",
+            metadata={"recovered": True, "source_dir": source_dir},
+        )
+        row = db.get_notation_artifact(artifact_id)
+        if row:
+            recovered.append(row)
+
+    for sub in _ARTIFACT_SUBDIRS + _ARTIFACT_NESTED_SUBDIRS:
         directory = entry_dir / sub
         if not directory.is_dir():
             continue
         for path in sorted(directory.iterdir()):
             if not path.is_file():
                 continue
-            kind = _KIND_FOR_SUFFIX.get(path.suffix.lower())
+            kind, stem = _kind_and_stem_for_file(path)
             if kind is None:
                 continue
-            artifact_id = f"{entry_id}__{path.stem}__{kind}"
-            if db.get_notation_artifact(artifact_id) is not None:
-                continue
-            db.add_notation_artifact(
-                artifact_id=artifact_id,
-                entry_id=entry_id,
-                kind=kind,
-                path=str(path),
-                source_ref=str(path),
-                engine="recovered-from-disk",
-                engine_version="1",
-                metadata={"recovered": True, "source_dir": sub},
-            )
-            row = db.get_notation_artifact(artifact_id)
-            if row:
-                recovered.append(row)
+            _recover(f"{entry_id}__{stem}__{kind}", kind, path, sub)
+
+    lyrics = entry_dir / _LYRICS_FILENAME
+    if lyrics.is_file():
+        _recover(lyrics_artifact_id(entry_id), _LYRICS_KIND, lyrics, "")
     return recovered
+
+
+def raw_midi_for(
+    db: LibraryDB, source_ref: Optional[str]
+) -> tuple[Optional[Path], str]:
+    """The raw (unquantised) MIDI behind a notation source, if any.
+
+    A chart or Beat Saber level built from a MusicXML sheet still wants the
+    transcription's real onsets (``onsetSecRaw``), so this walks one step up the
+    lineage: a ``musicxml`` artifact's ``source_ref`` is normally the ``midi``
+    artifact it was engraved from. Returns ``(path, artifact_id)`` when that
+    MIDI exists on disk, else ``(None, "")``.
+    """
+    if not source_ref:
+        return None, ""
+    art = db.get_notation_artifact(source_ref)
+    if not art:
+        return None, ""
+    kind = str(art.get("kind") or "")
+    if kind == "midi":
+        path = Path(str(art.get("path") or ""))
+        return (
+            (path, str(art.get("id") or source_ref)) if path.is_file() else (None, "")
+        )
+    if kind == "musicxml":
+        parent_ref = str(art.get("source_ref") or "")
+        parent = db.get_notation_artifact(parent_ref) if parent_ref else None
+        if parent and parent.get("kind") == "midi":
+            path = Path(str(parent.get("path") or ""))
+            if path.is_file():
+                return path, str(parent.get("id") or parent_ref)
+    return None, ""
+
+
+def is_drum_source(db: LibraryDB, source_path: Path, source_ref: Optional[str]) -> bool:
+    """True when a MIDI source should be engraved as a percussion staff.
+
+    Either the file itself is a drum kit (``arrangers.percussion.is_drum_midi``:
+    an ``is_drum`` instrument, or kit pitches in a drum-named file) or the
+    ``midis`` row / mirrored notation artifact it came from was written by the
+    ``drum-onsets`` transcriber. MusicXML sources are never drums here (their
+    percussion clef is already in the file).
+    """
+    if source_path.suffix.lower() not in (".mid", ".midi"):
+        return False
+    if source_ref:
+        try:
+            art = db.get_notation_artifact(source_ref)
+            if art and str(art.get("engine") or "") == _DRUM_MIDI_ENGINE:
+                return True
+            midi_row = db.get_midi(source_ref)
+            if midi_row and str(midi_row.get("engine") or "") == _DRUM_MIDI_ENGINE:
+                return True
+        except Exception as exc:  # noqa: BLE001 - lineage lookup is best-effort
+            log.debug(
+                "notation: drum lineage lookup failed for %s: %s", source_ref, exc
+            )
+    from .arrangers.percussion import is_drum_midi
+
+    return is_drum_midi(source_path)
 
 
 def convert_score(
@@ -357,6 +496,10 @@ def convert_score(
     source_ref: Optional[str] = None,
     artifact_id: Optional[str] = None,
     title: str = "",
+    options: Optional[dict[str, Any]] = None,
+    audio_path: Optional[Path] = None,
+    audio_duration_sec: Optional[float] = None,
+    analysis_bpm: Optional[float] = None,
 ) -> dict[str, Any]:
     """Convert a symbolic source (MIDI or MusicXML) to another notation format
     and register the result as a notation artifact.
@@ -366,6 +509,10 @@ def convert_score(
     are engraved by the MuseScore CLI when installed; without it they return
     ``ok=False`` with an install hint. When ``title`` is given it is stamped on
     the score so the rendered sheet shows the originating song's name.
+
+    ``options`` (per-format export options), ``audio_path``,
+    ``audio_duration_sec`` and ``analysis_bpm`` are consumed by the chart-based
+    targets (``notechart``, ``beatsaber``); the other formats ignore them.
     """
     fmt = fmt.lower().strip()
     if not source_path.is_file():
@@ -410,6 +557,21 @@ def convert_score(
             source_ref=source_ref,
             artifact_id=artifact_id,
             title=title,
+            audio_duration_sec=audio_duration_sec,
+        )
+    if fmt in _BEATSABER_FORMATS:
+        return _convert_to_beatsaber(
+            db,
+            entry_id=entry_id,
+            source_path=source_path,
+            output_path=output_path,
+            source_ref=source_ref,
+            artifact_id=artifact_id,
+            title=title,
+            options=options,
+            audio_path=audio_path,
+            audio_duration_sec=audio_duration_sec,
+            analysis_bpm=analysis_bpm,
         )
     if fmt in _MUSESCORE_FORMATS:
         return _convert_with_musescore(
@@ -503,18 +665,28 @@ def _convert_to_notechart(
     source_ref: Optional[str] = None,
     artifact_id: Optional[str] = None,
     title: str = "",
+    audio_duration_sec: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Write the Unity flying-notation chart (timecode + spelled notes)."""
+    """Write the Unity flying-notation chart (timecode + spelled notes).
+
+    When the source is a MusicXML sheet engraved from a MIDI artifact, that
+    MIDI is handed to the chart builder so every event also carries its raw
+    (unquantised) onset — what the play-along judge and Beat Saber map against.
+    """
     try:
         from .exporters.notechart import write_notechart
 
+        raw_midi_path, raw_midi_artifact_id = raw_midi_for(db, source_ref)
         result = write_notechart(
             source_path,
             output_path,
             title=clean_title(title),
             artist=artist_name(),
             entry_id=entry_id,
+            audio_duration_sec=audio_duration_sec,
             source_artifact_id=source_ref or "",
+            raw_midi_path=raw_midi_path,
+            raw_midi_artifact_id=raw_midi_artifact_id,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("notation: notechart export failed for %s: %s", source_path, exc)
@@ -534,6 +706,133 @@ def _convert_to_notechart(
         engine_version="1",
     )
     registered["stats"] = result.get("stats", {})
+    return registered
+
+
+# Info.dat's ``_version`` for the levels this engine writes; also the artifact's
+# engine_version so a later map-format change is visible per artifact.
+BEATSABER_ENGINE_VERSION = "2.0.0"
+DEFAULT_BEATSABER_DIFFICULTIES = ("Normal", "Hard")
+
+
+def _first_tempo_bpm(chart: dict[str, Any]) -> float:
+    """The chart's first tempo-map BPM (120 when the chart carries none)."""
+    for entry in chart.get("tempoMap") or []:
+        try:
+            bpm = float(entry.get("bpm") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if bpm > 0:
+            return bpm
+    return 120.0
+
+
+def _convert_to_beatsaber(
+    db: LibraryDB,
+    *,
+    entry_id: str,
+    source_path: Path,
+    output_path: Path,
+    source_ref: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    title: str = "",
+    options: Optional[dict[str, Any]] = None,
+    audio_path: Optional[Path] = None,
+    audio_duration_sec: Optional[float] = None,
+    analysis_bpm: Optional[float] = None,
+) -> dict[str, Any]:
+    """Write a Beat Saber custom level (zip) from a MIDI/MusicXML source.
+
+    The note chart is built in memory (the same document ``notechart`` writes,
+    so the web HIGHWAY's 'blocks' skin and the level agree note for note) and
+    handed to :func:`.exporters.beatsaber.write_beatsaber`. Info.dat carries ONE
+    constant BPM: the analysis BPM by default (``bpm_source`` 'analysis') so the
+    in-game grid matches the recording, else the chart's first tempo.
+    """
+    opts = dict(options or {})
+    try:
+        from .exporters.beatsaber import write_beatsaber
+        from .exporters.notechart import build_notechart
+
+        raw_midi_path, raw_midi_artifact_id = raw_midi_for(db, source_ref)
+        clean = clean_title(title)
+        chart = build_notechart(
+            source_path,
+            title=clean,
+            artist=artist_name(),
+            entry_id=entry_id,
+            audio_duration_sec=audio_duration_sec,
+            source_artifact_id=source_ref or "",
+            raw_midi_path=raw_midi_path,
+            raw_midi_artifact_id=raw_midi_artifact_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - report, never raise into the route
+        log.warning(
+            "notation: beatsaber chart build failed for %s: %s", source_path, exc
+        )
+        return {"ok": False, "engine": "beatsaber", "error": repr(exc)}
+
+    bpm_source = str(opts.get("bpm_source") or "analysis").lower().strip()
+    chart_bpm = _first_tempo_bpm(chart)
+    if bpm_source == "analysis" and analysis_bpm and float(analysis_bpm) > 0:
+        bpm = float(analysis_bpm)
+    else:
+        bpm = chart_bpm
+        bpm_source = "chart"
+    try:
+        version = int(opts.get("version") or 2)
+    except (TypeError, ValueError):
+        version = 2
+    difficulties = opts.get("difficulties") or list(DEFAULT_BEATSABER_DIFFICULTIES)
+    parts = opts.get("parts")
+    part_indices: Optional[list[int]] = None
+    if isinstance(parts, list) and parts:
+        part_indices = [int(p) for p in parts]
+
+    result = write_beatsaber(
+        chart,
+        output_path,
+        song_name=clean or "Untitled",
+        artist=artist_name(),
+        bpm=bpm,
+        bpm_source=bpm_source,
+        difficulties=[str(d) for d in difficulties],
+        version=version,
+        audio_path=audio_path,
+        include_audio=bool(opts.get("include_audio", True)),
+        part_indices=part_indices,
+    )
+    if not result.get("ok"):
+        return {"ok": False, "engine": "beatsaber", **result}
+
+    extra = {
+        key: result.get(key)
+        for key in (
+            "difficulties",
+            "note_counts",
+            "bpm",
+            "bpm_source",
+            "version",
+            "song_ogg",
+            "warning",
+            "parts",
+            "folder",
+        )
+    }
+    extra["chart_bpm"] = chart_bpm
+    registered = _register_conversion(
+        db,
+        entry_id=entry_id,
+        fmt="beatsaber",
+        final_path=Path(result.get("path") or output_path),
+        source_path=source_path,
+        source_ref=source_ref,
+        artifact_id=artifact_id,
+        engine="beatsaber",
+        engine_version=BEATSABER_ENGINE_VERSION,
+        extra_metadata=extra,
+    )
+    registered.update(extra)
     return registered
 
 
@@ -616,15 +915,28 @@ def _convert_with_music21(
         }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    percussion = False
     try:
-        score = converter.parse(str(source_path))
-        if score is None:
-            raise ValueError(f"music21 could not parse {source_path}")
-        # Quantize raw transcriptions to clean, notatable rhythms. Best-effort.
-        try:
-            score = score.quantize((4, 3), inPlace=False, recurse=True)
-        except Exception as exc:  # noqa: BLE001 - quantize is best-effort
-            log.debug("notation: music21 quantize skipped for %s: %s", source_path, exc)
+        if is_drum_source(db, source_path, source_ref):
+            # A kit MIDI parsed as pitches puts the kick on F2 and the hat on
+            # F#3 — pitched garbage. Engrave it as an unpitched percussion staff
+            # (PercussionClef + <unpitched> hits with x heads); the helper already
+            # quantises to 1/16, so no second quantize pass.
+            from .arrangers.percussion import build_percussion_score
+
+            percussion = True
+            score = build_percussion_score(source_path, title=clean_title(title))
+        else:
+            score = converter.parse(str(source_path))
+            if score is None:
+                raise ValueError(f"music21 could not parse {source_path}")
+            # Quantize raw transcriptions to clean, notatable rhythms. Best-effort.
+            try:
+                score = score.quantize((4, 3), inPlace=False, recurse=True)
+            except Exception as exc:  # noqa: BLE001 - quantize is best-effort
+                log.debug(
+                    "notation: music21 quantize skipped for %s: %s", source_path, exc
+                )
         if score is None:
             raise ValueError(f"music21 quantize produced no score for {source_path}")
         # Stamp the originating song's name (and the artist as composer) so the
@@ -668,6 +980,7 @@ def _convert_with_music21(
         artifact_id=artifact_id,
         engine="music21",
         engine_version=str(getattr(music21, "__version__", "unknown")),
+        extra_metadata={"percussion": True} if percussion else None,
     )
 
 
@@ -737,9 +1050,15 @@ def _register_conversion(
     artifact_id: Optional[str],
     engine: str,
     engine_version: str,
+    extra_metadata: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     kind = _KIND_FOR_FORMAT.get(fmt, fmt)
     art_id = artifact_id or f"{entry_id}__{final_path.stem}__{kind}"
+    metadata: dict[str, Any] = {"source": str(source_path), "format": fmt}
+    if extra_metadata:
+        # Per-format facts the SCORE tab's cards read (Beat Saber difficulties,
+        # note counts, song.ogg status ...). ``source``/``format`` always win.
+        metadata = {**extra_metadata, **metadata}
     db.add_notation_artifact(
         artifact_id=art_id,
         entry_id=entry_id,
@@ -748,7 +1067,7 @@ def _register_conversion(
         source_ref=source_ref or str(source_path),
         engine=engine,
         engine_version=engine_version,
-        metadata={"source": str(source_path), "format": fmt},
+        metadata=metadata,
     )
     db.add_relation(
         from_id=source_ref or str(source_path),
