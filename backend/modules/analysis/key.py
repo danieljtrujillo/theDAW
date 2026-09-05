@@ -74,21 +74,42 @@ def _correlate(chroma_mean: list[float], profile: tuple[float, ...]) -> list[flo
     return out
 
 
+def key_profile_scores(chroma_mean: list[float]) -> tuple[list[float], list[float]]:
+    """Correlate a 12-bin mean chroma against all 24 Krumhansl-Schmuckler keys.
+
+    Returns ``(major, minor)``: two 12-element lists of Pearson correlations,
+    index 0 = C. Pure Python, importable without librosa.
+    """
+    chroma_mean = [float(c) for c in chroma_mean]
+    return (
+        _correlate(chroma_mean, _MAJOR_PROFILE),
+        _correlate(chroma_mean, _MINOR_PROFILE),
+    )
+
+
 def detect_key(
     audio_path: Path,
     *,
     # y_sr carries a pre-decoded librosa.load(path, sr=22050, mono=True) result so callers can share one decode.
     y_sr: Optional[tuple] = None,
+    # chroma_cqt hop length. 512 is librosa's default (library analysis keeps
+    # it); chimera passes 2048 for a ~8x speedup on multi-minute clips.
+    chroma_hop: int = 512,
 ) -> dict[str, Optional[float] | Optional[str]]:
-    """Return ``{key, scale, confidence}`` for the audio file.
+    """Return ``{key, scale, confidence, strength}`` for the audio file.
+
+    ``confidence`` is the winning key's profile correlation in ``[-1, 1]``;
+    ``strength`` is that correlation minus the mean of all 24 correlations
+    (how much the winner stands out — near 0 means atonal / ambiguous).
 
     On failure (no librosa, unreadable file, silent input) returns
-    ``{"key": None, "scale": None, "confidence": None}``.
+    ``{"key": None, "scale": None, "confidence": None, "strength": None}``.
     """
     out: dict[str, Optional[float] | Optional[str]] = {
         "key": None,
         "scale": None,
         "confidence": None,
+        "strength": None,
     }
     try:
         import librosa
@@ -118,15 +139,14 @@ def detect_key(
         return out
 
     try:
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+        chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=int(chroma_hop))
     except Exception as e:
         log.info("analysis.key: chroma_cqt failed for %s: %s", p.name, e)
         return out
 
     chroma_mean = [float(c) for c in chroma.mean(axis=1)]
 
-    major_corr = _correlate(chroma_mean, _MAJOR_PROFILE)
-    minor_corr = _correlate(chroma_mean, _MINOR_PROFILE)
+    major_corr, minor_corr = key_profile_scores(chroma_mean)
 
     best_major_idx = max(range(12), key=lambda i: major_corr[i])
     best_minor_idx = max(range(12), key=lambda i: minor_corr[i])
@@ -139,5 +159,9 @@ def detect_key(
         out["key"] = _NOTE_NAMES[best_minor_idx]
         out["scale"] = "minor"
         out["confidence"] = float(minor_corr[best_minor_idx])
+
+    all_corr = major_corr + minor_corr
+    mean_corr = sum(all_corr) / len(all_corr)
+    out["strength"] = float(out["confidence"]) - mean_corr
 
     return out

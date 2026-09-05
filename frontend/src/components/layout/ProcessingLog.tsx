@@ -451,7 +451,11 @@ export const LogActionButton: React.FC = () => {
         {isActive
           ? (tab === 'create' ? `ABORT ${progressPct}%` : cfg.active)
           : cfg.idle}
-        {tab === 'create' && !isGenerating && statusLabel !== 'READY' && (
+        {/* Stage caption: shown idle (PROMPT REQUIRED / STOPPED / FAILED) AND
+            while running (RENDERING CHIMERA / CHECKING MODELS / QUEUED), so
+            the pre-flight is never a frozen 'ABORT 0%'. The sampler stage
+            already carries its own percentage above. */}
+        {tab === 'create' && statusLabel !== 'READY' && !statusLabel.startsWith('SAMPLING') && (
           <span className="text-[8px] font-mono opacity-60 normal-case tracking-normal">{statusLabel}</span>
         )}
       </span>

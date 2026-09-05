@@ -641,6 +641,101 @@ def _compute_request_sample_size(
     return int(target_audio_samples)
 
 
+def _parse_inpaint_regions(raw: str) -> list[tuple[float, float]]:
+    """Parse the ``inpaint_regions`` form field into ``(start_sec, end_sec)`` pairs.
+
+    Accepts ``''`` (no regions), a JSON list of ``[start, end]`` pairs or of
+    ``{"start": s, "end": e}`` objects (``start_sec``/``end_sec`` keys are also
+    tolerated). Every value must be a finite number with ``start < end``;
+    anything else is a 400. Seconds are in the generated clip's timeline.
+    """
+    detail = "inpaint_regions must be a JSON list of [start_sec, end_sec]"
+    if raw is None or not str(raw).strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=detail) from exc
+    if parsed is None:
+        return []
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail=detail)
+
+    regions: list[tuple[float, float]] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            start_raw = item.get("start", item.get("start_sec"))
+            end_raw = item.get("end", item.get("end_sec"))
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            start_raw, end_raw = item
+        else:
+            raise HTTPException(status_code=400, detail=detail)
+        if isinstance(start_raw, bool) or isinstance(end_raw, bool):
+            raise HTTPException(status_code=400, detail=detail)
+        try:
+            start = float(start_raw)
+            end = float(end_raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        if not (math.isfinite(start) and math.isfinite(end)) or start >= end:
+            raise HTTPException(status_code=400, detail=detail)
+        regions.append((start, end))
+    return regions
+
+
+def _build_inpaint_mask(
+    regions: list[tuple[float, float]],
+    sample_rate: int,
+    sample_size: int,
+    min_region_sec: float = 0.5,
+) -> "torch.Tensor | None":
+    """Build a ``[1, sample_size]`` inpaint mask (1 = keep, 0 = regenerate).
+
+    Each region is widened symmetrically to at least ``min_region_sec`` so it
+    survives the 4096x latent downsample, clipped to ``[0, sample_size / sr]``,
+    then sorted and merged with its neighbours. Returns ``None`` when there is
+    nothing to mask. Pure; the tensor is float32 on CPU and the pipeline moves
+    it to the model device (and truncates it if the sample size is adapted).
+    """
+    import torch
+
+    if not regions or sample_size <= 0 or sample_rate <= 0:
+        return None
+    total_sec = float(sample_size) / float(sample_rate)
+    half_min = max(0.0, float(min_region_sec)) / 2.0
+
+    spans: list[tuple[float, float]] = []
+    for start, end in regions:
+        start = float(start)
+        end = float(end)
+        if end - start < 2.0 * half_min:
+            centre = (start + end) / 2.0
+            start = centre - half_min
+            end = centre + half_min
+        start = min(max(start, 0.0), total_sec)
+        end = min(max(end, 0.0), total_sec)
+        if end > start:
+            spans.append((start, end))
+    if not spans:
+        return None
+
+    spans.sort()
+    merged: list[list[float]] = [list(spans[0])]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    mask = torch.ones(1, int(sample_size), dtype=torch.float32)
+    for start, end in merged:
+        s = min(int(start * sample_rate), int(sample_size))
+        e = min(int(end * sample_rate), int(sample_size))
+        if e > s:
+            mask[:, s:e] = 0.0
+    return mask
+
+
 async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     """Decode raw audio bytes to numpy array. Returns (waveform, sample_rate).
 
@@ -1411,6 +1506,9 @@ async def generate(
     # Inpainting
     mask_start: float = Form(0.0),
     mask_end: float = Form(0.0),
+    # JSON [[start_sec, end_sec], ...]; multi-region mask used only when
+    # inpaint_audio is present and mask_start == mask_end == 0.
+    inpaint_regions: str = Form(""),
     # RF-Inversion
     inversion_steps: int = Form(8),
     inversion_gamma: float = Form(0.5),
@@ -1484,8 +1582,10 @@ async def generate(
 
         # Load inpaint audio if provided
         inpaint_audio_tuple = None
+        inpaint_region_list: list[tuple[float, float]] = []
         if inpaint_audio is not None and inpaint_audio.filename:
             inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+            inpaint_region_list = _parse_inpaint_regions(inpaint_regions)
 
         generate_args = {
             "prompt": prompt,
@@ -1524,6 +1624,19 @@ async def generate(
             if mask_start > 0 or mask_end > 0:
                 generate_args["inpaint_mask_start_seconds"] = mask_start
                 generate_args["inpaint_mask_end_seconds"] = mask_end
+            else:
+                # Multi-region mask. The seconds path is deliberately NOT set
+                # here: pipeline.generate lets start/end seconds override a
+                # prebuilt inpaint_mask.
+                inpaint_mask = _build_inpaint_mask(
+                    inpaint_region_list,
+                    int(
+                        generation_pipeline.model_config.get("sample_rate", sample_rate)
+                    ),
+                    int(generate_args["sample_size"]),
+                )
+                if inpaint_mask is not None:
+                    generate_args["inpaint_mask"] = inpaint_mask
 
         loop = asyncio.get_event_loop()
 
@@ -1816,6 +1929,9 @@ async def generate_jobs(
     custom_name: str = Form(""),
     mask_start: float = Form(0.0),
     mask_end: float = Form(0.0),
+    # JSON [[start_sec, end_sec], ...]; multi-region mask used only when
+    # inpaint_audio is present and mask_start == mask_end == 0.
+    inpaint_regions: str = Form(""),
     sampler_type: Optional[str] = Form(None),
     sigma_max: float = Form(1.0),
     duration_padding_sec: float = Form(6.0),
@@ -1904,8 +2020,10 @@ async def generate_jobs(
         )
 
         inpaint_audio_tuple = None
+        inpaint_region_list: list[tuple[float, float]] = []
         if inpaint_audio is not None and inpaint_audio.filename:
             inpaint_audio_tuple = await _load_audio_upload(inpaint_audio)
+            inpaint_region_list = _parse_inpaint_regions(inpaint_regions)
 
         dist_shift = None
         if dist_shift_type and dist_shift_type not in ("None", "none", ""):
@@ -1959,11 +2077,26 @@ async def generate_jobs(
         if init_audio_tuple:
             base_args["init_audio"] = init_audio_tuple
             base_args["init_noise_level"] = float(init_noise_level)
+        inpaint_regions_count = 0
         if inpaint_audio_tuple:
             base_args["inpaint_audio"] = inpaint_audio_tuple
             if mask_start > 0 or mask_end > 0:
                 base_args["inpaint_mask_start_seconds"] = float(mask_start)
                 base_args["inpaint_mask_end_seconds"] = float(mask_end)
+            else:
+                # Multi-region mask. The seconds path is deliberately NOT set
+                # here: pipeline.generate lets start/end seconds override a
+                # prebuilt inpaint_mask.
+                inpaint_mask = _build_inpaint_mask(
+                    inpaint_region_list,
+                    int(
+                        generation_pipeline.model_config.get("sample_rate", sample_rate)
+                    ),
+                    int(base_args["sample_size"]),
+                )
+                if inpaint_mask is not None:
+                    base_args["inpaint_mask"] = inpaint_mask
+                    inpaint_regions_count = len(inpaint_region_list)
 
         job_id = str(uuid.uuid4())
         lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(
@@ -1976,6 +2109,7 @@ async def generate_jobs(
             "model_name": normalized_model_name,
             "init_audio_type": normalized_init_audio_type,
             "lora_count": len(lora_paths),
+            "inpaint_regions_count": inpaint_regions_count,
             "status": "queued",
             "progress": {"step": 0, "steps": int(steps)},
             "created_at": time.time(),

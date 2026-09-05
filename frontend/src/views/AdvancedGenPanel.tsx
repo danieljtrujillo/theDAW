@@ -156,7 +156,7 @@ function TemplatesPanel() {
   };
   const filtered = templates.filter((t) => t.name.toLowerCase().includes(searchQuery.toLowerCase()));
   return (
-    <div className="hardware-card flex flex-col min-h-0">
+    <div className="hardware-card flex flex-col min-h-0 flex-1">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">TEMPLATES</span>
         <button className="btn-ghost cursor-pointer p-1" onClick={handleSave} title="Save current">
@@ -447,6 +447,25 @@ export const AdvancedGenPanel: React.FC<{
   // Synesteez (image → spectrogram audio composer).
   const [heroTab, setHeroTab] = useState<'chimera' | 'compare' | 'synesteez'>('chimera');
   const prevAudioRef = useRef<string | null>(null);
+
+  // Prompt-required feedback: CREATE with an empty prompt (and no Chimera
+  // stack) sets statusLabel 'PROMPT REQUIRED' + an error and fires
+  // 'thedaw:focus-prompt'; the box turns red, explains itself, takes focus,
+  // and clears the moment the user types.
+  const genError = useGenerateStore((s) => s.error);
+  const genStatusLabel = useGenerateStore((s) => s.statusLabel);
+  const promptRequired = genStatusLabel === 'PROMPT REQUIRED' && !!genError;
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const onFocusPrompt = () => {
+      const el = promptRef.current;
+      if (!el) return;
+      el.focus();
+      el.scrollIntoView({ block: 'nearest' });
+    };
+    window.addEventListener('thedaw:focus-prompt', onFocusPrompt);
+    return () => window.removeEventListener('thedaw:focus-prompt', onFocusPrompt);
+  }, []);
   useEffect(() => {
     if (lastAudioUrl && lastAudioUrl !== prevAudioRef.current) setHeroTab('compare');
     prevAudioRef.current = lastAudioUrl;
@@ -655,7 +674,7 @@ export const AdvancedGenPanel: React.FC<{
   /* ────────────────────────────────────────────────────────────────────── */
 
   return (
-    <div className="h-full w-full overflow-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
+    <div className="h-full w-full overflow-y-auto overflow-x-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
 
       {/* MIDI picker — right-click the INIT box to render a MIDI into the init slot. */}
       <LibraryMidiPicker
@@ -761,7 +780,9 @@ export const AdvancedGenPanel: React.FC<{
 
       {/* ═══ UPPER: rails span BOTH rows (no blank space below them); the
           chimera card sits in row 1, the viz/prompt row in row 2 ═══ */}
-      <div className="flex-1 min-h-0 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 156px' }}>
+      {/* min-h-150: below 600 logical px the panel scrolls (outer overflow-y-auto)
+          instead of clipping the rail's lower controls behind an open dock. */}
+      <div className="flex-1 min-h-150 grid gap-1.5" style={{ gridTemplateColumns: '240px minmax(0,1fr) 240px', gridTemplateRows: 'minmax(0,1fr) 156px' }}>
 
         {/* ── LEFT RAIL: Presets · Controls · Templates (GENERATE lives in footer CREATE) ── */}
         <div className="flex flex-col gap-1.5 min-h-0 row-span-2">
@@ -795,7 +816,7 @@ export const AdvancedGenPanel: React.FC<{
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
                 <label htmlFor="gen-model" className="text-[11px] text-zinc-300 w-16 shrink-0">Model</label>
-                <select id="gen-model" name="gen-model" className="compact-input flex-1" value={p.model} onChange={(e) => {
+                <select id="gen-model" name="gen-model" className="compact-input flex-1 min-w-0" value={p.model} onChange={(e) => {
                   const m = e.target.value; const prev = p.model;
                   const isMag = m.startsWith('magenta-');
                   // A registered local checkpoint follows its filename's ARC/RF
@@ -909,11 +930,11 @@ export const AdvancedGenPanel: React.FC<{
           </div>
 
           {/* Templates — fills the rail's lower region */}
-          <div className="flex-1 min-h-0"><TemplatesPanel /></div>
+          <div className="flex-1 min-h-24 overflow-hidden flex flex-col"><TemplatesPanel /></div>
 
           {/* SAMPLING (Magenta) ↔ TEMP/SAMPLER (SA3) — moved from the chimera card */}
           {isMagenta ? (
-            <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+            <div className={`${colBox} p-2 flex flex-col gap-1 shrink min-h-40 basis-1/2`}>
               <span className={subTitle}>SAMPLING</span>
               <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
                 <SlideKnob label="Temp" value={p.magTemperature} onChange={(v) => sf('magTemperature', v)} min={0} max={2} step={0.05} size={32} />
@@ -930,7 +951,7 @@ export const AdvancedGenPanel: React.FC<{
               </div>
             </div>
           ) : (
-            <div className={`${colBox} p-2 flex flex-col gap-1 shrink-0 h-1/2`}>
+            <div className={`${colBox} p-2 flex flex-col gap-1 shrink min-h-40 basis-1/2`}>
               <span className={subTitle}>TEMP</span>
               <div className="grid grid-cols-3 gap-1 place-items-center shrink-0">
                 <SlideKnob label="Init nz" value={p.initNoise} onChange={(v) => sf('initNoise', v)} min={0} max={1} tipKey="initNoise" size={32} />
@@ -1220,9 +1241,23 @@ export const AdvancedGenPanel: React.FC<{
             </div>
           </div>
           <div className="relative flex-1 min-h-0">
-            <textarea name="gen-prompt" className="compact-input w-full resize-none h-full"
+            <label htmlFor="gen-prompt" className="sr-only">Prompt</label>
+            <textarea id="gen-prompt" name="gen-prompt" ref={promptRef}
+              className={`compact-input w-full resize-none h-full ${promptRequired ? 'border-red-500/70' : ''}`}
               placeholder={isMagenta ? 'describe the vibe — instruments, mood, genre, era…' : '120 BPM house loop, deep sub bass, crispy hi-hats, minimal percussion…'}
-              value={p.prompt} onChange={(e) => sf('prompt', e.target.value)} maxLength={1000} />
+              aria-invalid={promptRequired || undefined}
+              aria-describedby={promptRequired ? 'gen-prompt-error' : undefined}
+              value={p.prompt}
+              onChange={(e) => {
+                sf('prompt', e.target.value);
+                if (promptRequired) useGenerateStore.setState({ error: null, statusLabel: 'READY' });
+              }}
+              maxLength={1000} />
+            {promptRequired && (
+              <span id="gen-prompt-error" role="alert" className="absolute bottom-1 left-2 right-16 truncate text-[9px] text-red-300">
+                {genError}
+              </span>
+            )}
             <span className="absolute bottom-1 right-2 text-[9px] text-zinc-500">{p.prompt.length}/1000</span>
           </div>
           {isMagenta ? (
@@ -1242,11 +1277,11 @@ export const AdvancedGenPanel: React.FC<{
               </button>
             </div>
           ) : (
-          <div className="relative shrink-0">
-            <textarea name="gen-negative-prompt" className="compact-input w-full resize-none h-9"
+          <div className="shrink-0 flex items-start gap-1">
+            <textarea name="gen-negative-prompt" className="compact-input flex-1 min-w-0 resize-none h-9"
               placeholder="negative: vocals, distortion, harshness…"
               value={p.negativePrompt} onChange={(e) => sf('negativePrompt', e.target.value)} maxLength={500} />
-            <div className="absolute top-1 right-2 flex items-center gap-1">
+            <div className="shrink-0 flex items-center gap-1 pt-1">
               <SavedPromptsDropdown type="negative" value={p.negativePrompt} onChange={(v) => sf('negativePrompt', v)} />
               <button
                 onClick={async () => {

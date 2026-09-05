@@ -106,6 +106,7 @@ export const CatalogueContextMenu: React.FC<Props> = ({ menu, onClose }) => {
     label: entry.title,
     mimeType: entry.mimeType || 'audio/wav',
     fetcher: () => fetchAudioBlob(entry),
+    entryId: entry.id,
   };
 
   const run = (fn: () => void | Promise<unknown>) => () => { void fn(); onClose(); };

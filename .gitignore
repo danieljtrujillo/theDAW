@@ -380,3 +380,6 @@ video-scripts/
 data/magenta_engine.json
 data/lyria_gemini_key.json
 logs/magenta-download-*.log
+
+# Chimera v2 per-clip analysis cache (sha256-keyed JSON)
+data/cache/
