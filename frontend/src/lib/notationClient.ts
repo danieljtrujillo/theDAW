@@ -204,6 +204,42 @@ export function notationArtifactUrl(artifactId: string): string {
   return `/api/notation/file/${encodeURIComponent(artifactId)}`;
 }
 
+// ---- artifact text cache ---------------------------------------------------
+// A MusicXML or alphaTex file is fetched once per artifact id and kept, so
+// switching PAGE <-> STRIP, or coming back to a score, does not hit the
+// network (or re-read a multi-MB file) again. Artifact ids are unique per
+// conversion, so a stale hit is only possible for the few deterministic ids;
+// loadArtifacts() clears the cache whenever the list is refreshed.
+const ARTIFACT_TEXT_CACHE_MAX = 12;
+const artifactTextCache = new Map<string, Promise<string>>();
+
+/** The artifact's text body, cached by id (bounded, oldest evicted). */
+export function fetchArtifactText(artifactId: string): Promise<string> {
+  const hit = artifactTextCache.get(artifactId);
+  if (hit) return hit;
+  const pending = fetch(notationArtifactUrl(artifactId)).then(async (res) => {
+    if (!res.ok) {
+      artifactTextCache.delete(artifactId);
+      throw new Error(`artifact HTTP ${res.status}`);
+    }
+    return res.text();
+  });
+  pending.catch(() => artifactTextCache.delete(artifactId));
+  artifactTextCache.set(artifactId, pending);
+  while (artifactTextCache.size > ARTIFACT_TEXT_CACHE_MAX) {
+    const oldest = artifactTextCache.keys().next().value;
+    if (oldest === undefined) break;
+    artifactTextCache.delete(oldest);
+  }
+  return pending;
+}
+
+/** Forget cached text (one artifact, or everything). */
+export function invalidateArtifactText(artifactId?: string): void {
+  if (artifactId) artifactTextCache.delete(artifactId);
+  else artifactTextCache.clear();
+}
+
 /** Download a score as a zip of the source + a PDF (PDF when MuseScore is
  *  installed; the MusicXML is always included). Use for musicxml sheets. */
 export function notationPackUrl(artifactId: string): string {

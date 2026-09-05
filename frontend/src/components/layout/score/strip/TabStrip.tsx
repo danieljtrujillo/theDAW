@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { AlphaTabApi } from '@coderline/alphatab';
 import type { LibraryEntry } from '../../../../state/libraryEntry';
-import { notationArtifactUrl, type NotationArtifact } from '../../../../lib/notationClient';
+import { fetchArtifactText, type NotationArtifact } from '../../../../lib/notationClient';
 import {
   clampZoom,
-  READING_POS,
+  readingPos,
   useWheelZoom,
   ZOOM_DEFAULT,
   ZOOM_STEP,
@@ -13,6 +13,7 @@ import {
 } from '../scoreShared';
 import { usePlayAlong } from '../playAlong/usePlayAlongClock';
 import { PlayAlongTransport } from '../playAlong/PlayAlongTransport';
+import { HIGHLIGHT_INKS, usePlayAlongStore } from '../../../../state/playAlongStore';
 
 export interface TabStripProps {
   artifact: NotationArtifact;
@@ -23,7 +24,7 @@ export interface TabStripProps {
  *  offset; a negative offset of READING_POS of the pane puts the bar under
  *  the same now-position the sheet strip uses. */
 const scrollOffsetFor = (scroller: HTMLElement | null): number =>
-  -Math.round((scroller?.clientWidth ?? 0) * READING_POS);
+  -Math.round((scroller?.clientWidth ?? 0) * readingPos());
 
 /**
  * STRIP view for an alphaTex tab: alphaTab's horizontal layout (one endless
@@ -85,12 +86,10 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
       const container = containerRef.current;
       if (!container) return;
       try {
-        const [alphaTab, res] = await Promise.all([
+        const [alphaTab, tex] = await Promise.all([
           import('@coderline/alphatab'),
-          fetch(notationArtifactUrl(artifact.id)),
+          fetchArtifactText(artifact.id),
         ]);
-        if (!res.ok) throw new Error(`alphaTex HTTP ${res.status}`);
-        const tex = await res.text();
         if (cancelled) return;
         // Same construction as the PAGE tab view (external media mode,
         // alphaTab cursor + highlighting, continuous scroll on our scroller)
@@ -164,11 +163,13 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
   }, [active, ready]);
 
   // The now-position is a fraction of the pane: keep alphaTab's scroll
-  // offset in step when the pane resizes.
+  // offset in step when the pane resizes or the NOW preference changes.
+  const nowLine = usePlayAlongStore((s) => s.nowLine);
+  const ink = usePlayAlongStore((s) => s.ink);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
+    const apply = () => {
       const api = apiRef.current;
       if (!api) return;
       try {
@@ -180,28 +181,32 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
       } catch {
         /* settings not ready */
       }
-    });
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [nowLine]);
 
   return (
     <div className="h-full flex flex-col bg-[#23222a]">
       <div className="relative flex-1 min-h-0">
         <div
           ref={scrollRef}
-          className="h-full overflow-x-auto overflow-y-auto bg-white text-black"
+          className="h-full overflow-x-auto overflow-y-auto bg-white text-black flex flex-col [justify-content:safe_center]"
           role="region"
           aria-label="Tab strip"
         >
           {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
-          <div ref={containerRef} className="min-h-full" />
+          {/* A tab shorter than the pane sits vertically centred; a taller one
+              starts at the top and scrolls (safe centring). */}
+          <div ref={containerRef} className="shrink-0" />
         </div>
         {/* The now-position: alphaTab scrolls the played bar to this line. */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 w-px bg-emerald-400/60"
-          style={{ left: `${READING_POS * 100}%` }}
+          className="pointer-events-none absolute inset-y-0 w-0.5 opacity-60"
+          style={{ left: `${readingPos() * 100}%`, backgroundColor: HIGHLIGHT_INKS[ink].color }}
         />
       </div>
       <PlayAlongTransport

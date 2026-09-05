@@ -1,7 +1,7 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { applyCanvasBox, measureCanvasBox, scaleContextToBox, type CanvasBox } from '../../../../lib/canvasScale';
 import { chordIndexAt, kindColor, type ChordTrack } from '../../../../lib/chordTrack';
-import { NOTE_HIGHLIGHT_COLOR, READING_POS } from '../scoreShared';
+import { highlightColor, readingPos } from '../scoreShared';
 
 export interface LyricWord {
   text: string;
@@ -69,7 +69,7 @@ function downbeatNumbers(beats: readonly number[], downbeats: readonly number[])
 
 /**
  * The CHORDS play-along strip: a 2D canvas that scrolls the chord track under
- * a fixed now-line at READING_POS of the pane width. Everything drawn is a
+ * a fixed now-line at readingPos() of the pane width. Everything drawn is a
  * pure function of the song time handed to draw(), so the parent drives it
  * from the play-along clock (rAF while playing, store subscription while
  * paused) and nothing here keeps its own timer.
@@ -127,7 +127,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
         ctx.fillStyle = BG;
         ctx.fillRect(0, 0, W, H);
 
-        const x0 = W * READING_POS;
+        const x0 = W * readingPos();
         const xOf = (sec: number): number => x0 + (sec - t) * scale;
         const t0 = t - x0 / scale;
         const t1 = t + (W - x0) / scale;
@@ -189,7 +189,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
           ctx.fillRect(xs, chordTop, w, chordH);
           ctx.globalAlpha = 1;
           if (isCurrent) {
-            ctx.strokeStyle = NOTE_HIGHLIGHT_COLOR;
+            ctx.strokeStyle = highlightColor();
             ctx.lineWidth = 2;
             ctx.strokeRect(xs + 1, chordTop + 1, w - 2, chordH - 2);
           }
@@ -233,7 +233,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
         }
 
         // NOW line.
-        ctx.strokeStyle = NOTE_HIGHLIGHT_COLOR;
+        ctx.strokeStyle = highlightColor();
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(Math.round(x0), 0);
@@ -278,7 +278,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
       const rect = canvas.getBoundingClientRect();
       // clientX is in viewport px; the box knows the cumulative CSS zoom.
       const x = (e.clientX - rect.left) / box.zoom;
-      const x0 = box.cssWidth * READING_POS;
+      const x0 = box.cssWidth * readingPos();
       const now = getTimeRef.current();
       const target = Math.max(0, now + (x - x0) / scale);
       onSeekRef.current(target);

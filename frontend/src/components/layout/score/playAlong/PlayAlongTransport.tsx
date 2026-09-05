@@ -7,6 +7,7 @@ import {
   usePlayAlongStore,
 } from '../../../../state/playAlongStore';
 import { CALIBRATOR_ID, LatencyCalibrator } from './LatencyCalibrator';
+import { LookControls } from './LookControls';
 
 export interface PlayAlongTransportProps {
   entry: LibraryEntry | null;
@@ -81,8 +82,11 @@ export const PlayAlongTransport: React.FC<PlayAlongTransportProps> = ({
         </span>
       )}
       {children}
+      <span className="ml-auto">
+        <LookControls />
+      </span>
       {showLatency && (
-        <div className="ml-auto relative flex items-center gap-1">
+        <div className="relative flex items-center gap-1">
           <label htmlFor="score-latency-ms" className="text-zinc-500 select-none" title="Visual offset: positive shows the visuals later">
             OFFSET ms
           </label>

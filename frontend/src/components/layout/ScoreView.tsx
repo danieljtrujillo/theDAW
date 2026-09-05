@@ -17,6 +17,8 @@ import {
   exportArtifact,
   getNotationCapabilities,
   listNotationArtifacts,
+  fetchArtifactText,
+  invalidateArtifactText,
   makeArrangement,
   makeChordTrack,
   makeTabs,
@@ -32,9 +34,11 @@ import {
   applySheetEngraving,
   clampZoom,
   describeArtifact,
-  NOTE_HIGHLIGHT_COLOR,
+  highlightColor,
+  readingPos,
   PAGE_GAP,
   prepareMusicXml,
+  createZoomSettler,
   useWheelZoom,
   ZOOM_DEFAULT,
   ZOOM_MAX,
@@ -44,6 +48,19 @@ import {
   type ExternalMediaOutput,
 } from './score/scoreShared';
 import { fitZoomToPage, type FitReport } from './score/scoreFit';
+
+// The zoom a score fitted to per (artifact, page width): a re-open renders
+// once at that zoom instead of measuring-and-fitting again. Bounded.
+const fitZoomCache = new Map<string, number>();
+const rememberFit = (key: string, zoom: number): void => {
+  fitZoomCache.set(key, zoom);
+  while (fitZoomCache.size > 32) {
+    const oldest = fitZoomCache.keys().next().value;
+    if (oldest === undefined) break;
+    fitZoomCache.delete(oldest);
+  }
+};
+import { LookControls } from './score/playAlong/LookControls';
 import {
   allowedModes,
   modeForInstrument,
@@ -170,6 +187,7 @@ export const ScoreView: React.FC = () => {
   const analysisBpm = typeof analysisBpmRaw === 'number' && Number.isFinite(analysisBpmRaw) ? analysisBpmRaw : null;
 
   const loadArtifacts = async () => {
+    invalidateArtifactText();
     if (!selectedEntryId) return;
     setLoading(true);
     try {
@@ -386,6 +404,21 @@ export const ScoreView: React.FC = () => {
     if (artifact?.id) setSelectedArtifactId(artifact.id);
   };
 
+  // PAGE and STRIP are the expensive mounts (an engraving pass per open); once
+  // a mode has been shown for this artifact it stays mounted, hidden, so
+  // switching back is instant. The set resets per artifact.
+  const visitedRef = useRef<{ id: string; modes: Set<string> }>({ id: '', modes: new Set() });
+  if (selectedArtifact && visitedRef.current.id !== selectedArtifact.id) {
+    visitedRef.current = { id: selectedArtifact.id, modes: new Set() };
+  }
+  if (selectedArtifact) visitedRef.current.modes.add(effectiveMode);
+  const keepAlive = (mode: string, node: React.ReactNode): React.ReactNode =>
+    visitedRef.current.modes.has(mode) ? (
+      <div key={mode} className="absolute inset-0" hidden={effectiveMode !== mode}>{node}</div>
+    ) : null;
+  const onlyWhen = (mode: string, node: React.ReactNode): React.ReactNode =>
+    effectiveMode === mode ? <div key={mode} className="absolute inset-0">{node}</div> : null;
+
   const renderPreview = (): React.ReactNode => {
     if (!selectedArtifact) {
       return (
@@ -414,14 +447,22 @@ export const ScoreView: React.FC = () => {
     );
     switch (selectedArtifact.kind) {
       case 'musicxml':
-        if (effectiveMode === 'strip') return lazy(<SheetStrip artifact={selectedArtifact} entry={entry} artifacts={artifacts} />);
-        if (effectiveMode === 'chords') return chords();
-        if (effectiveMode === 'highway') return highway();
-        return <MusicXmlPreview artifact={selectedArtifact} entry={entry} />;
+        return (
+          <>
+            {keepAlive('page', <MusicXmlPreview artifact={selectedArtifact} entry={entry} />)}
+            {keepAlive('strip', lazy(<SheetStrip artifact={selectedArtifact} entry={entry} artifacts={artifacts} />))}
+            {onlyWhen('chords', chords())}
+            {onlyWhen('highway', highway())}
+          </>
+        );
       case 'alphatex':
-        if (effectiveMode === 'strip') return lazy(<TabStrip artifact={selectedArtifact} entry={entry} />);
-        if (effectiveMode === 'chords') return chords();
-        return <TabPreview artifact={selectedArtifact} entry={entry} />;
+        return (
+          <>
+            {keepAlive('page', <TabPreview artifact={selectedArtifact} entry={entry} />)}
+            {keepAlive('strip', lazy(<TabStrip artifact={selectedArtifact} entry={entry} />))}
+            {onlyWhen('chords', chords())}
+          </>
+        );
       case 'notechart':
         return highway();
       case 'chordtrack':
@@ -709,7 +750,7 @@ export const ScoreView: React.FC = () => {
             </a>
           )}
         </div>
-        <div className="flex-1 min-h-0 bg-[#0b0810]">
+        <div className="relative flex-1 min-h-0 bg-[#0b0810]">
           {renderPreview()}
         </div>
       </div>
@@ -746,6 +787,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   // says which arrangement it is rather than looking like every other sheet.
   const footerLabelRef = useRef('');
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  const renderedZoomRef = useRef(0);
   // Last auto-fit measurement, for the zoom readout's tooltip ("fitted to the
   // page"); null while the user drives the zoom or nothing was measured.
   const [fitInfo, setFitInfo] = useState<{ zoom: number; report: FitReport } | null>(null);
@@ -797,6 +839,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
       | { GNotesUnderCursor?: () => Array<{ getSVGGElement?: () => SVGGElement | undefined }> }
       | undefined;
     if (!cursor?.GNotesUnderCursor) return;
+    const ink = highlightColor();
     try {
       for (const gn of cursor.GNotesUnderCursor()) {
         const g = gn?.getSVGGElement?.();
@@ -804,8 +847,8 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         const targets: Array<SVGElement | HTMLElement> = [g, ...Array.from(g.querySelectorAll<SVGElement>('*'))];
         for (const t of targets) {
           if (!t.style) continue;
-          t.style.fill = NOTE_HIGHLIGHT_COLOR;
-          t.style.stroke = NOTE_HIGHLIGHT_COLOR;
+          t.style.fill = ink;
+          t.style.stroke = ink;
           highlightedRef.current.push(t);
         }
       }
@@ -923,18 +966,31 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     try {
       host.style.display = 'block';
       host.style.width = `${pageWRef.current}px`;
-      if (!userZoomedRef.current) zoomRef.current = ZOOM_DEFAULT;
+      host.style.zoom = '';
+      // A score we have fitted before at this page width renders straight
+      // at that zoom: one engraving pass instead of up to three.
+      const fitKey = `${artifact.id}|${pageWRef.current}`;
+      const cachedFit = userZoomedRef.current ? undefined : fitZoomCache.get(fitKey);
+      if (!userZoomedRef.current) zoomRef.current = cachedFit ?? ZOOM_DEFAULT;
       osmd.Zoom = zoomRef.current;
       osmd.render();
       if (!userZoomedRef.current) {
-        const fit = fitZoomToPage(osmd, zoomRef.current, (z) => {
-          osmd.Zoom = z;
-          osmd.render();
-        });
+        const fit = fitZoomToPage(
+          osmd,
+          zoomRef.current,
+          (z) => {
+            osmd.Zoom = z;
+            osmd.render();
+          },
+          cachedFit !== undefined ? { maxExtraPasses: 0 } : {},
+        );
         zoomRef.current = fit.zoom;
+        rememberFit(fitKey, fit.zoom);
         setZoom(fit.zoom);
-        setFitInfo(fit.passes > 0 ? { zoom: fit.zoom, report: fit.report } : null);
+        const fitted = fit.passes > 0 || (cachedFit !== undefined && Math.abs(cachedFit - ZOOM_DEFAULT) > 1e-6);
+        setFitInfo(fitted ? { zoom: fit.zoom, report: fit.report } : null);
       }
+      renderedZoomRef.current = zoomRef.current;
       host.style.display = 'flex';
       host.style.width = 'max-content';
       const count =
@@ -947,15 +1003,21 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     } catch {
       /* render races with reload — ignore */
     }
-  }, [decoratePages, syncCursorToRender]);
+  }, [artifact.id, decoratePages, syncCursorToRender]);
 
+  // Zoom: instant CSS preview, one real layout once the wheel settles.
+  const settlerRef = useRef<ReturnType<typeof createZoomSettler> | null>(null);
+  useEffect(() => {
+    settlerRef.current = createZoomSettler(hostRef, renderedZoomRef, doRender);
+    return () => settlerRef.current?.cancel();
+  }, [doRender]);
   const applyZoom = useCallback((next: number) => {
     userZoomedRef.current = true;
     setFitInfo(null);
     zoomRef.current = clampZoom(next);
     setZoom(zoomRef.current);
-    doRender();
-  }, [doRender]);
+    settlerRef.current?.preview(zoomRef.current);
+  }, []);
 
   const goToPage = useCallback((target: number) => {
     const el = scrollRef.current;
@@ -992,14 +1054,14 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     if (c.width === 0 && c.height === 0) return; // hidden
     const v = scroller.getBoundingClientRect();
     // While the cursor sits inside the middle band, do nothing; once it leaves,
-    // glide so it lands at the reading position (38% across, vertically centred).
+    // glide so it lands at the reading position (the NOW pref across, vertically centred).
     const padX = v.width * 0.28;
     const padY = v.height * 0.2;
     const inBandX = c.left >= v.left + padX && c.right <= v.right - padX;
     const inBandY = c.top >= v.top + padY && c.bottom <= v.bottom - padY;
     if (inBandX && inBandY) return;
     const ez = effectiveZoom(scroller);
-    const targetLeft = scroller.scrollLeft + (c.left + c.width / 2 - v.left - v.width * 0.38) / ez;
+    const targetLeft = scroller.scrollLeft + (c.left + c.width / 2 - v.left - v.width * readingPos()) / ez;
     const targetTop = scroller.scrollTop + (c.top + c.height / 2 - v.top - v.height / 2) / ez;
     autoScrollUntilRef.current = now + 600;
     scroller.scrollTo({ left: Math.max(0, targetLeft), top: Math.max(0, targetTop), behavior: 'smooth' });
@@ -1064,13 +1126,11 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
       if (!host) return;
       host.innerHTML = '';
       try {
-        const [{ OpenSheetMusicDisplay, CursorType }, res, settingsRes] = await Promise.all([
+        const [{ OpenSheetMusicDisplay, CursorType }, xml, settingsRes] = await Promise.all([
           import('opensheetmusicdisplay'),
-          fetch(notationArtifactUrl(artifact.id)),
+          fetchArtifactText(artifact.id),
           fetch('/api/settings').catch(() => null),
         ]);
-        if (!res.ok) throw new Error(`MusicXML HTTP ${res.status}`);
-        const xml = await res.text();
         let artist = 'GANTASMO';
         try {
           if (settingsRes && settingsRes.ok) {
@@ -1096,7 +1156,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         // business, its own handling calls scrollIntoView({block:'center'}) on
         // the nearest scrollable ancestor, which fights the page strip.
         // cursorsOptions is consumed inside render(), so it must be set now.
-        osmd.cursorsOptions = [{ type: CursorType.ThinLeft, color: '#34d399', alpha: 0.95, follow: false }];
+        osmd.cursorsOptions = [{ type: CursorType.ThinLeft, color: highlightColor(), alpha: 0.95, follow: false }];
         osmd.FollowCursor = false;
         applySheetEngraving(osmd.EngravingRules);
         // Song as the centered title (wrapped if long), artist as the subtitle
@@ -1345,6 +1405,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
           onChange={(e) => setFollow(e.target.checked)}
         />
         <label htmlFor="score-follow" className="cursor-pointer select-none">FOLLOW</label>
+        <LookControls />
         {otherTrackLoaded && (
           <span className="text-amber-300/90" title="The player is holding a different track, so the cursor is parked. Press play here to load this score's track.">
             OTHER TRACK
@@ -1456,12 +1517,10 @@ const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | n
       const container = containerRef.current;
       if (!container) return;
       try {
-        const [alphaTab, res] = await Promise.all([
+        const [alphaTab, tex] = await Promise.all([
           import('@coderline/alphatab'),
-          fetch(notationArtifactUrl(artifact.id)),
+          fetchArtifactText(artifact.id),
         ]);
-        if (!res.ok) throw new Error(`alphaTex HTTP ${res.status}`);
-        const tex = await res.text();
         if (cancelled) return;
         // Karaoke follow: alphaTab's own beat cursor + element highlighting,
         // driven by theDAW's audio engine as the time axis (external media

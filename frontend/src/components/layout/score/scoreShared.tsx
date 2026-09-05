@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Maximize2, Minus, Plus } from 'lucide-react';
 import type { Cursor } from 'opensheetmusicdisplay';
 import type { NotationArtifact } from '../../../lib/notationClient';
+import { HIGHLIGHT_INKS, readingPosFor, usePlayAlongStore } from '../../../state/playAlongStore';
 
 /** Helpers shared by the SCORE tab's views (PAGE in ScoreView.tsx, and the
  *  STRIP / CHORDS / HIGHWAY play-along views under ./). Everything here was
@@ -9,8 +10,17 @@ import type { NotationArtifact } from '../../../lib/notationClient';
  *  exactly as before; the few NEW exports (READING_POS, createNoteHighlighter,
  *  applyStripEngraving) are additions the play-along modes build on. */
 
-/** Karaoke note colour — matches the cursor hairline so they read as one. */
-export const NOTE_HIGHLIGHT_COLOR = '#34d399';
+/** Karaoke note colour — matches the cursor hairline so they read as one.
+ *  This is the default ink; live views read highlightColor() so the INK
+ *  preference applies. */
+export const NOTE_HIGHLIGHT_COLOR = HIGHLIGHT_INKS.magenta.color;
+
+/** The current ink (playAlongStore.ink) as a CSS colour. */
+export const highlightColor = (): string => HIGHLIGHT_INKS[usePlayAlongStore.getState().ink].color;
+
+/** Where the "now" sits across the pane right now (playAlongStore.nowLine),
+ *  as a fraction of the pane width. */
+export const readingPos = (): number => readingPosFor(usePlayAlongStore.getState().nowLine);
 
 /** Where the "now" sits across the pane, as a fraction of its width. The page
  *  view glides the cursor to this position; the strip pins its now-line here. */
@@ -123,6 +133,42 @@ export function useWheelZoom(
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
   }, [scrollRef]);
+}
+
+/** How long after the last zoom change the real (slow) layout runs. */
+export const ZOOM_SETTLE_MS = 220;
+
+/**
+ * Zoom without a full engraving pass per wheel tick. Every call scales the
+ * already-rendered host with CSS `zoom` (instant), and the real layout
+ * runs once, ZOOM_SETTLE_MS after the last change. `renderedZoomRef` is
+ * the zoom the host was last engraved at; the caller's `render` must set
+ * it and clear `host.style.zoom` when it is done.
+ */
+export function createZoomSettler(
+  hostRef: React.RefObject<HTMLElement | null>,
+  renderedZoomRef: React.MutableRefObject<number>,
+  render: () => void,
+): { preview: (zoom: number) => void; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return {
+    preview: (zoom) => {
+      const host = hostRef.current;
+      if (host && renderedZoomRef.current > 0) {
+        const ratio = zoom / renderedZoomRef.current;
+        host.style.zoom = Math.abs(ratio - 1) < 1e-3 ? '' : String(ratio);
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        render();
+      }, ZOOM_SETTLE_MS);
+    },
+    cancel: () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
 }
 
 export const ZoomControls: React.FC<{
@@ -390,6 +436,7 @@ export function createNoteHighlighter(getCursor: () => Cursor | null): NoteHighl
       | { GNotesUnderCursor?: () => Array<{ getSVGGElement?: () => SVGGElement | undefined }> }
       | null;
     if (!cursor?.GNotesUnderCursor) return;
+    const ink = highlightColor();
     try {
       for (const gn of cursor.GNotesUnderCursor()) {
         const g = gn?.getSVGGElement?.();
@@ -397,8 +444,8 @@ export function createNoteHighlighter(getCursor: () => Cursor | null): NoteHighl
         const targets: Array<SVGElement | HTMLElement> = [g, ...Array.from(g.querySelectorAll<SVGElement>('*'))];
         for (const t of targets) {
           if (!t.style) continue;
-          t.style.fill = NOTE_HIGHLIGHT_COLOR;
-          t.style.stroke = NOTE_HIGHLIGHT_COLOR;
+          t.style.fill = ink;
+          t.style.stroke = ink;
           highlighted.push(t);
         }
       }

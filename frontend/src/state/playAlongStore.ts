@@ -17,6 +17,23 @@ export type HighwaySkin = 'notation' | 'blocks' | 'drums';
 export type HighwayDifficulty = 0 | 1 | 2 | 3 | 4;
 export type ChordInstrument = 'guitar' | 'bass' | 'ukulele';
 export type PlayAlongInstrument = 'all' | 'guitar' | 'bass' | 'keys' | 'drums' | 'vocals' | 'strings';
+/** Where the music sounding now sits across a follow view. */
+export type NowLinePos = 'left' | 'center';
+/** The ink the sounding note and the hairline are painted in. Every ink is a
+ *  dark, saturated colour that stays legible on white paper while it moves;
+ *  the old neon green (emerald-400, about 2:1 on white) shimmered and was
+ *  hard to track at speed. */
+export type HighlightInk = 'magenta' | 'blue' | 'orange' | 'green';
+export const NOW_LINE_POSITIONS: NowLinePos[] = ['left', 'center'];
+export const HIGHLIGHT_INKS: Record<HighlightInk, { label: string; color: string }> = {
+  magenta: { label: 'Magenta', color: '#c026d3' },
+  blue: { label: 'Blue', color: '#2563eb' },
+  orange: { label: 'Orange', color: '#ea580c' },
+  green: { label: 'Green', color: '#059669' },
+};
+/** The now-line as a fraction of the pane width for a position. 0.38 is the
+ *  reading position the PAGE view has always glided to. */
+export const readingPosFor = (pos: NowLinePos): number => (pos === 'center' ? 0.5 : 0.38);
 
 export const PLAY_ALONG_MODES: PlayAlongMode[] = ['page', 'strip', 'chords', 'highway'];
 export const PLAY_ALONG_INSTRUMENTS: PlayAlongInstrument[] = [
@@ -47,6 +64,8 @@ export interface PlayAlongPrefs {
   judgeEnabled: boolean;
   /** Instrument preset: picks the parts and a sensible mode. */
   instrument: PlayAlongInstrument;
+  nowLine: NowLinePos;
+  ink: HighlightInk;
 }
 
 export interface PlayAlongState extends PlayAlongPrefs {
@@ -64,6 +83,8 @@ export interface PlayAlongState extends PlayAlongPrefs {
   setCapo: (capo: number) => void;
   setJudgeEnabled: (enabled: boolean) => void;
   setInstrument: (instrument: PlayAlongInstrument) => void;
+  setNowLine: (pos: NowLinePos) => void;
+  setInk: (ink: HighlightInk) => void;
   setPartVisibility: (artifactId: string, visible: boolean[]) => void;
   togglePart: (artifactId: string, index: number) => void;
 }
@@ -81,6 +102,8 @@ const DEFAULT_PREFS: PlayAlongPrefs = {
   capo: 0,
   judgeEnabled: false,
   instrument: 'all',
+  nowLine: 'left',
+  ink: 'magenta',
 };
 
 const clamp = (value: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, value));
@@ -107,6 +130,8 @@ function sanitize(raw: Partial<Record<keyof PlayAlongPrefs, unknown>>): PlayAlon
     capo: clamp(Math.round(finite(raw.capo, 0)), 0, 12),
     judgeEnabled: raw.judgeEnabled === true,
     instrument: oneOf(raw.instrument, PLAY_ALONG_INSTRUMENTS, DEFAULT_PREFS.instrument),
+    nowLine: oneOf(raw.nowLine, NOW_LINE_POSITIONS, DEFAULT_PREFS.nowLine),
+    ink: oneOf(raw.ink, Object.keys(HIGHLIGHT_INKS) as HighlightInk[], DEFAULT_PREFS.ink),
   };
 }
 
@@ -139,6 +164,8 @@ function savePrefs(state: PlayAlongPrefs): void {
       capo: state.capo,
       judgeEnabled: state.judgeEnabled,
       instrument: state.instrument,
+      nowLine: state.nowLine,
+      ink: state.ink,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch {
@@ -168,6 +195,8 @@ export const usePlayAlongStore = create<PlayAlongState>()((set, get) => {
     setCapo: (capo) => update({ capo: clamp(Math.round(finite(capo, 0)), 0, 12) }),
     setJudgeEnabled: (judgeEnabled) => update({ judgeEnabled }),
     setInstrument: (instrument) => update({ instrument }),
+    setNowLine: (nowLine) => update({ nowLine: oneOf(nowLine, NOW_LINE_POSITIONS, DEFAULT_PREFS.nowLine) }),
+    setInk: (ink) => update({ ink: oneOf(ink, Object.keys(HIGHLIGHT_INKS) as HighlightInk[], DEFAULT_PREFS.ink) }),
     setPartVisibility: (artifactId, visible) =>
       set((s) => ({ partVisibility: { ...s.partVisibility, [artifactId]: visible.slice() } })),
     togglePart: (artifactId, index) =>

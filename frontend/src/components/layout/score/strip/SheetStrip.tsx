@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import type { LibraryEntry } from '../../../../state/libraryEntry';
-import { notationArtifactUrl, type NotationArtifact } from '../../../../lib/notationClient';
+import { fetchArtifactText, type NotationArtifact } from '../../../../lib/notationClient';
 import {
   defaultPartVisibility,
+  HIGHLIGHT_INKS,
   usePlayAlongStore,
   type PartDescriptor,
 } from '../../../../state/playAlongStore';
@@ -18,9 +19,10 @@ import {
   applyStripEngraving,
   clampZoom,
   createNoteHighlighter,
-  NOTE_HIGHLIGHT_COLOR,
+  createZoomSettler,
+  highlightColor,
   prepareMusicXml,
-  READING_POS,
+  readingPos,
   useWheelZoom,
   ZOOM_DEFAULT,
   ZOOM_STEP,
@@ -134,6 +136,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
   const driverRef = useRef<CursorDriver | null>(null);
   const highlighterRef = useRef<NoteHighlighter | null>(null);
   const zoomRef = useRef(ZOOM_DEFAULT);
+  const renderedZoomRef = useRef(0);
   const visibleRef = useRef<boolean[]>([]);
   const visibleKeyRef = useRef('');
   const cursorVisibleRef = useRef(false);
@@ -152,6 +155,8 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
   const [ready, setReady] = useState(false);
 
   const stored = usePlayAlongStore((s) => s.partVisibility[artifact.id]);
+  const nowLine = usePlayAlongStore((s) => s.nowLine);
+  const ink = usePlayAlongStore((s) => s.ink);
   const visible = useMemo<boolean[]>(() => {
     if (stored && stored.length === parts.length) return stored;
     return defaultPartVisibility(parts);
@@ -193,7 +198,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
     }
     const now = performance.now();
     if (!force && now < manualUntilRef.current) return;
-    const left = Math.max(0, xAtSeconds(map, xmap, sec) - scroller.clientWidth * READING_POS);
+    const left = Math.max(0, xAtSeconds(map, xmap, sec) - scroller.clientWidth * readingPos());
     if (Math.abs(scroller.scrollLeft - left) < 0.5) return;
     autoScrollUntilRef.current = now + AUTO_SCROLL_CLAIM_MS;
     scroller.scrollLeft = left;
@@ -229,6 +234,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
       return;
     }
     try {
+      host.style.zoom = '';
       if (opts.remap || !mapRef.current) mapRef.current = buildTimeMap(osmd);
       osmd.Zoom = zoomRef.current;
       osmd.render();
@@ -268,6 +274,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
       } else if (zoomRef.current < requested - 1e-6) {
         note = `Zoom capped at ${Math.round(zoomRef.current * 100)}% so the strip stays on one line`;
       }
+      renderedZoomRef.current = zoomRef.current;
       xmapRef.current = buildStripXMap(osmd, mapRef.current, zoomRef.current);
       // render() rebuilt every SVG and replaced the Cursor: the painted
       // elements are gone and the driver's index must come from the new
@@ -284,13 +291,19 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
     }
   }, [applyFrame, syncCursorVisibility]);
 
+  // Zoom: instant CSS preview of the strip, one real layout once it settles.
+  const settlerRef = useRef<ReturnType<typeof createZoomSettler> | null>(null);
+  useEffect(() => {
+    settlerRef.current = createZoomSettler(hostRef, renderedZoomRef, () => rebuild());
+    return () => settlerRef.current?.cancel();
+  }, [rebuild]);
   const applyZoom = useCallback((next: number) => {
     const z = clampZoom(next);
     if (Math.abs(z - zoomRef.current) < 1e-6) return;
     zoomRef.current = z;
     setZoom(z);
-    rebuild();
-  }, [rebuild]);
+    settlerRef.current?.preview(z);
+  }, []);
 
   /** The reset button fits the staves to the pane, which is what "reset"
    *  means for a strip: there is no page size to return to. */
@@ -326,12 +339,10 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
       if (!host) return;
       host.innerHTML = '';
       try {
-        const [{ OpenSheetMusicDisplay: Osmd, CursorType }, res] = await Promise.all([
+        const [{ OpenSheetMusicDisplay: Osmd, CursorType }, xml] = await Promise.all([
           import('opensheetmusicdisplay'),
-          fetch(notationArtifactUrl(artifact.id)),
+          fetchArtifactText(artifact.id),
         ]);
-        if (!res.ok) throw new Error(`MusicXML HTTP ${res.status}`);
-        const xml = await res.text();
         if (cancelled) return;
         const osmd = new Osmd(host, {
           backend: 'svg',
@@ -346,7 +357,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
         // Same hairline as the page view. follow:false + FollowCursor=false
         // keeps OSMD's own scrollIntoView (which it calls in single-staffline
         // mode) out of the scroller we drive ourselves.
-        osmd.cursorsOptions = [{ type: CursorType.ThinLeft, color: NOTE_HIGHLIGHT_COLOR, alpha: 0.95, follow: false }];
+        osmd.cursorsOptions = [{ type: CursorType.ThinLeft, color: highlightColor(), alpha: 0.95, follow: false }];
         osmd.FollowCursor = false;
         applyStripEngraving(osmd.EngravingRules);
         // Title/subtitle are not drawn; this still drops music21's
@@ -450,6 +461,11 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
     };
   }, [applyFrame]);
 
+  // The now-line moved: re-seat the strip under it, even mid-hold.
+  useEffect(() => {
+    if (ready) applyFrame(lastSecRef.current, true);
+  }, [nowLine, ready, applyFrame]);
+
   const visibleCount = visible.filter(Boolean).length;
   const sizeNotice = measureCount * visibleCount > STRIP_SIZE_NOTICE;
   const showFilter = parts.length > 1;
@@ -470,19 +486,21 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
       <div className="relative flex-1 min-h-0">
         <div
           ref={scrollRef}
-          className="h-full overflow-x-auto overflow-y-auto bg-white"
+          className="h-full overflow-x-auto overflow-y-auto bg-white flex [align-items:safe_center]"
           role="region"
           aria-label="Score strip"
         >
           {/* OSMD sizes the single-staffline SVG itself; the host only has to
-              be as wide as its content so the scroller can travel it. */}
-          <div ref={hostRef} className="w-max min-h-full" />
+              be as wide as its content so the scroller can travel it. A staff
+              shorter than the pane sits vertically centred (safe: a taller one
+              still starts at the top and scrolls). */}
+          <div ref={hostRef} className="w-max shrink-0" />
         </div>
         {/* The now-line: the music sounding now sits under it. */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 w-px bg-emerald-400/60"
-          style={{ left: `${READING_POS * 100}%` }}
+          className="pointer-events-none absolute inset-y-0 w-0.5 opacity-60"
+          style={{ left: `${readingPos() * 100}%`, backgroundColor: HIGHLIGHT_INKS[ink].color }}
         />
       </div>
       <PlayAlongTransport
