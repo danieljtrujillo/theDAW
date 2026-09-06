@@ -77,6 +77,7 @@ def active_job(entry_id: str) -> Optional[Job]:
     job = _active_jobs.get(entry_id)
     if job is not None and job.status in ("queued", "running"):
         return job
+    _active_jobs.pop(entry_id, None)
     return None
 
 
