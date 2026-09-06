@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { CursorStep, ScoreTimeMap } from '../../scoreTimeMap.ts';
 import {
   buildStripXMap,
+  createScrollFollower,
   fitZoomForHeight,
   fitZoomForWidth,
   STRIP_MAX_WIDTH_PX,
@@ -329,6 +330,50 @@ assert.equal(STRIP_MAX_WIDTH_PX, 32767, 'OSMD 1.9.9 SheetMaximumWidth / backend 
   // Idempotent: fitting the fitted result changes nothing.
   const once = fitZoomForWidth(60_000, cap, 1.2);
   assert.equal(fitZoomForWidth(60_000 * (once / 1.2), cap, once), once, 'fixed point after one pass');
+}
+
+// createScrollFollower: a plateau-then-jump target becomes one forward glide
+// with no step; a seek snaps; a steady target is tracked with a small lag.
+{
+  const f = createScrollFollower();
+  assert.equal(f.step(100, 0, 1000), 100, 'the first frame snaps to the target');
+  // Steady 60 px/s target at 60 fps: the follower keeps up within a notehead
+  // and never moves backwards.
+  let prev = 100;
+  let t = 0;
+  for (let i = 1; i <= 120; i += 1) {
+    t = i / 60;
+    const x = f.step(100 + 60 * t, t, 1000);
+    assert.ok(x >= prev - 1e-9, `never backwards (frame ${i})`);
+    prev = x;
+  }
+  const lag = 100 + 60 * t - prev;
+  assert.ok(lag >= 0 && lag < 20, `steady lag ${lag.toFixed(1)} px stays under a notehead`);
+  // A plateau (the target stands still 0.5 s) then a 90 px jump: no frame
+  // moves more than a few px, and the follower arrives.
+  const hold = prev;
+  const targetJump = 100 + 60 * t + 90;
+  let maxStep = 0;
+  let x = prev;
+  for (let i = 1; i <= 90; i += 1) {
+    const tt = t + i / 60;
+    const target = i <= 30 ? 100 + 60 * t : targetJump;
+    const nx = f.step(target, tt, 1000);
+    maxStep = Math.max(maxStep, Math.abs(nx - x));
+    assert.ok(nx >= x - 1e-9, `no backward drift after the plateau (frame ${i})`);
+    x = nx;
+  }
+  assert.ok(x >= hold, 'moved forward over the plateau + jump');
+  assert.ok(maxStep < 25, `largest single-frame move ${maxStep.toFixed(1)} px is a glide, not a step`);
+  assert.ok(Math.abs(targetJump - x) < 5, `arrived within 5 px of the jump target (${(targetJump - x).toFixed(1)})`);
+  // A seek (further than 60% of the pane) snaps.
+  assert.equal(f.step(5000, t + 2, 1000), 5000, 'a far target snaps');
+  assert.equal(f.step(20, t + 2.02, 1000), 20, 'a far target behind snaps too');
+  // snap() resets the motion state.
+  assert.equal(f.snap(300), 300);
+  assert.equal(f.step(300, 10, 1000), 300, 'no motion at the target');
+  // Degenerate input keeps the last position.
+  assert.equal(f.step(Number.NaN, 10.1, 1000), 300, 'NaN target -> stay');
 }
 
 console.log('stripXMap tests passed');

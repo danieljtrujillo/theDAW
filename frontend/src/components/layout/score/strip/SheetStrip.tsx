@@ -36,8 +36,10 @@ import {
   STRIP_MAX_WIDTH_PX,
   STRIP_SIZE_NOTICE,
   stripContentWidthPx,
+  createScrollFollower,
   stripSystemCount,
   xAtSeconds,
+  type ScrollFollower,
   type StripXMap,
 } from './stripXMap';
 import { usePlayAlong } from '../playAlong/usePlayAlongClock';
@@ -147,6 +149,11 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
   const autoScrollUntilRef = useRef(0);
   const expectedLeftRef = useRef(0);
   const manualUntilRef = useRef(0);
+  // Smooths the scroll target (see createScrollFollower): the x map places
+  // steps proportionally inside their measure, so a long note or a rest is a
+  // plateau followed by a jump, and some scores read as a stutter. The
+  // follower turns that into one continuous forward glide.
+  const followerRef = useRef<ScrollFollower>(createScrollFollower());
 
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [status, setStatus] = useState('Loading MusicXML renderer…');
@@ -176,9 +183,10 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
   /**
    * One frame: step the cursor to the sounding step, repaint the karaoke
    * highlight when the step changed, and put the sounding x under the
-   * now-line by writing scrollLeft directly (no smooth scrolling: the write
-   * is per frame, so smoothing would only lag). `force` ignores a manual
-   * scroll hold, for the re-sync after a rebuild.
+   * now-line by writing scrollLeft directly every frame (the browser's own
+   * smooth scrolling would only lag a per-frame write; the follower below is
+   * what smooths). `force` ignores a manual scroll hold and snaps the
+   * follower, for the re-sync after a rebuild or a resize.
    */
   const applyFrame = useCallback((sec: number, force = false) => {
     lastSecRef.current = sec;
@@ -192,13 +200,19 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
       driver.goTo(target);
       const at = driver.index();
       if (at !== lastStepRef.current) {
+        // A step backwards (seek, loop) un-inks the held trail first, so the
+        // notes ahead of the new position are not shown as already played.
+        if (at < lastStepRef.current) highlighterRef.current?.clear();
         lastStepRef.current = at;
         highlighterRef.current?.apply();
       }
     }
     const now = performance.now();
     if (!force && now < manualUntilRef.current) return;
-    const left = Math.max(0, xAtSeconds(map, xmap, sec) - scroller.clientWidth * readingPos());
+    const wantLeft = Math.max(0, xAtSeconds(map, xmap, sec) - scroller.clientWidth * readingPos());
+    const left = force
+      ? followerRef.current.snap(wantLeft)
+      : followerRef.current.step(wantLeft, now / 1000, scroller.clientWidth);
     if (Math.abs(scroller.scrollLeft - left) < 0.5) return;
     autoScrollUntilRef.current = now + AUTO_SCROLL_CLAIM_MS;
     scroller.scrollLeft = left;
