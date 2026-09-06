@@ -231,7 +231,7 @@ def place_words(
         s = max(s, last_end)
         e = max(e, s + MIN_WORD_MS)
         by_ref[i] = (s, e)
-        last_end = s  # the next word may start where this one starts (chords of words are rare; keep order)
+        last_end = e  # next word starts after this one ends
     for i, ref in enumerate(refs):
         if i not in by_ref:
             continue
