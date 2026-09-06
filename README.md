@@ -46,8 +46,8 @@
 | **EDIT** | A multitrack timeline. Cut, move and fade clips, record automation, add insert effects per track, and render the arrangement to a WAV file. |
 | **MIX** | Mastering and effects. A chain of 25 effects, each with its own control panel, Quick Master knobs, VST3 plugins, `.gan` web-plugins and LUFS metering. |
 | **SCORE** | Audio to MIDI to notation. Sheet music, tablature, arrangements, drum notation, and four play-along views that follow the track. Exports a Beat Saber level. |
-| **SING** | Lyrics that follow the song word by word. Type or paste lyrics, time them by tapping, or let whisper time them. Imports and exports LRC. Scores your pitch. |
-| **DJ** | Two decks with beat sync, key lock, hotcues, loops, live stems, an FX rack, Automix and a sampler. |
+| **SING** | Lyrics that follow the song word by word. Paste lyrics and a forced aligner times every word against the vocal, or tap the timing yourself. Imports and exports LRC. Scores your pitch. |
+| **DJ** | Two decks with beat sync, key lock, hotcues, loops, live stems, an FX rack, a sampler, and Automix that plays prepared performance sets and takes instructions from the assistant mid-show. |
 | **VJ** | The [VJ-9000](https://github.com/gantasmo/VJ-9000) visual engine: audio-reactive terrain, cameras, GLSL shaders, cymatics, a GPU effect chain, and recording. |
 | **PERFORM** | Launch scenes and clips from a grid. Opens Ableton sets and `.tasmo` projects. Pad effects and controller routing. |
 | **FOUNDRY** | Design a plugin interface on a canvas and export it as a `.gan` web-plugin. |
@@ -56,7 +56,7 @@
 | **LEARN** | A graph of your library: every remix, stem split, blend and cover, drawn in 3D or 2D. |
 | **TOUR** | Plan live dates on a map: venues, promoters, festivals, booking contacts and a route. |
 
-**Included at no cost.** Stem separation up to 12 stems, a mastering suite, VST3 hosting, the HRTF spatializer The Owl, DJ decks with sync and Automix, audio-to-MIDI with engraving, LoRA training, whisper lyric alignment, and export to WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML and LRC.
+**Included at no cost.** Stem separation up to 12 stems, a mastering suite, VST3 hosting, the HRTF spatializer The Owl, DJ decks with sync and Automix, audio-to-MIDI with engraving, LoRA training, forced-aligned lyrics with a whisper review, and export to WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML and LRC. Every model in that list runs on the GPU when there is one, one at a time, and never twice for the same song.
 
 **Only in theDAW.** [theDAW-XR](https://github.com/gantasmo/theDAW-XR) hand-tracked control on Meta Quest 3, Chimera clip fusion, DRAW (draw on a canvas to play generative music), native Audima Sway motion-controller support, The Foundry plugin designer, import of Ableton, Reaper, FL Studio, Audacity, Audition, Bitwig and Resolume projects, the first non-Mac port of Magenta RealTime 2, and sixteen themes plus a custom theme built from any image.
 
@@ -142,7 +142,9 @@ To time the lyrics:
 
 <p align="center"><img src="docs/readme/dj.png" alt="The DJ tab with a track on each deck, the mixer and the FX rack" width="820"></p>
 
-Load a track on deck A and another on deck B from the browser at the bottom. Press SYNC to match the tempo of the incoming deck to the playing deck. Each deck has pitch, key lock, a 3-band EQ, a filter, hotcues, beat loops, loop rolls, slip and quantize. The FX rack has flanger, reverb and wah per deck and a master limiter. STEMS separates a deck into stems with a fader for each one. CUE sends a deck to a headphone output. AUTOMIX plays through the NEXT list on its own. Reference: [User Guide §9](docs/USER_GUIDE.md#9-dj-tab).
+Load a track on deck A and another on deck B from the browser at the bottom. Press SYNC to match the tempo of the incoming deck to the playing deck. Each deck has pitch, key lock, a 3-band EQ, a filter, hotcues, beat loops, loop rolls, slip and quantize. The FX rack has flanger, reverb and wah per deck and a master limiter. STEMS separates a deck into stems with a fader for each one. CUE sends a deck to a headphone output. AUTOMIX plays a set on its own with beat-matched crossfades.
+
+**Prepared performance sets.** Drop a set folder with its audio files and a `performance.json` timeline (written by Z-AutoDJ, or by hand) into `data/performance-sets/`. It appears under Sets, and automix follows each track's cue-in, mix-out and transition length exactly as prepared. During the show the assistant orb can read what is on, start or stop the set, blend into the next track now, or move a track to play next. Reference: [User Guide §9](docs/USER_GUIDE.md#9-dj-tab) and [DJ guide](docs/guides/dj-and-genealogy.md).
 
 ### Run visuals: VJ
 
@@ -316,6 +318,7 @@ audio = pipe.generate(
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | The complete manual: every feature, control and endpoint. Also shown in the app by the Docs button. |
 | [docs/guides/prompting.md](docs/guides/prompting.md) | How to write prompts, conditioning signals, and a style reference. |
 | [docs/guides/notation-and-score.md](docs/guides/notation-and-score.md) | Audio to MIDI, sheet music, tabs, arrangements, play-along and prompt inference. |
+| [docs/guides/sing-along-and-lyrics.md](docs/guides/sing-along-and-lyrics.md) | SING: where lyrics come from, ALIGN and the review pass, tapping, LRC, the pitch lane, and the lyrics settings. |
 | [docs/guides/nodefi.md](docs/guides/nodefi.md) | NodeF.I. node graphs: AI pipelines and live performance. |
 | [docs/guides/sway-perform-live.md](docs/guides/sway-perform-live.md) | PERFORM, the SwayCommand deck, scenes, punches and templates. |
 | [docs/guides/dj-and-genealogy.md](docs/guides/dj-and-genealogy.md) | The DJ console, the LEARN graph and the watch-link broadcast. |

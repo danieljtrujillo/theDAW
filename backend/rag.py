@@ -33,6 +33,10 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "model-overview.md",
     PROJECT_ROOT / "docs" / "guides" / "dj-and-genealogy.md",
     PROJECT_ROOT / "docs" / "guides" / "notation-and-score.md",
+    # SING: lyrics sources, forced alignment (MMS) + the whisper review pass,
+    # tapping, LRC, the pitch lane, the lyrics settings and the pipeline
+    # coordinator that schedules stems / whisper / MIDI on one GPU lane.
+    PROJECT_ROOT / "docs" / "guides" / "sing-along-and-lyrics.md",
     PROJECT_ROOT / "docs" / "guides" / "foundry.md",
     PROJECT_ROOT / "docs" / "guides" / "underfit.md",
     PROJECT_ROOT / "docs" / "UI" / "hover-text-guide.md",

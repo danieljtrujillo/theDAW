@@ -649,7 +649,7 @@ DJ MIDI-learn binds a hardware controller to deck, mixer, and hotcue actions. It
 
 ### 9.7 Automix, Sampler, and Side List
 
-- **Automix** sequences a setlist hands-free, beatmatching each transition. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9).
+- **Automix** sequences a setlist hands-free, beatmatching each transition. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9). **Prepared performance sets** load from `data/performance-sets/<Set>/performance.json` (a folder of audio files plus a timeline, as written by Z-AutoDJ or by hand; `GET /api/library/setlists` lists them and the audio is registered in the library in place). A prepared track carries a cue-in point, a mix-out point and a transition length, and automix follows them instead of its fixed distance-from-end rule. The assistant orb can steer a running set: read what is on, make a set active, start or stop automix, blend into the next track now, or move a named track to play next.
 - **Sampler bank**: drag a clip onto a pad to load it, then trigger pads during a set. Each pad has a **Loop** toggle (the pad holds the sample until pressed again) and a **Choke** toggle (firing one choke pad cuts the others, for mutually exclusive sounds like open and closed hats). Pad assignments and their loop and choke settings persist across reloads.
 - **Side List**: a play-next staging lane above the browser. Stage upcoming tracks, reorder them, and pull them onto a deck when ready.
 
@@ -907,6 +907,8 @@ Important endpoints:
 - `POST /api/midi/{entry_id}/run?from_stems=true` runs conversion for one entry.
 - `GET /api/midi/{entry_id}` lists MIDI rows for an entry.
 - `GET /api/midi/file/{midi_id}` streams `.mid` bytes for import into Piano Roll or Step Sequencer.
+
+**How stems, MIDI and lyrics are scheduled.** Stem separation, MIDI conversion, lyric alignment and whisper share one coordinator (`backend/core/pipeline.py`). For any one entry each of them runs once at a time: a second request, whether from the auto-on-import queue, a manual run, the SING tab or favouriting, joins the run already in flight instead of starting another process. An artifact that exists is not redone. MIDI conversion waits for a stem separation in flight, so the per-stem conversions see the stems. The heavy models share a single GPU lane (Demucs, whisper, the MMS aligner, basic-pitch through ONNX Runtime's CUDA provider, and piano transcription) so two never run on the card together, and the idle-gated background queue stays parked while a foreground job holds the lane. Without a GPU every engine falls back to the CPU, whisper with its CPU-sized model.
 
 ### 13.8 Video and Image Media
 
@@ -1173,6 +1175,10 @@ theDAW holds the only `requestMIDIAccess()` and relays MIDI to the cockpit, so a
 The Sway's six expressive-motion dimensions (`strike`, `sway`, `pulse`, `glide`, `press`, `sculpt`) are published on a shared bus that the VJ engine consumes for motion-driven visuals (§10.9) and the Perform tab consumes as a modulation source (§35.3). Playing a set from the hardware is covered end to end in [guides/sway-perform-live.md](guides/sway-perform-live.md).
 
 ---
+
+### 16.11 Sing
+
+The Sing tab shows the selected song's lyrics large and centred and moves them with the track line by line and word by word. Lyrics come from the entry's Lyrics field (Suno imports and tagged files fill it), a paste, an LRC file or whisper. **ALIGN** keeps your words and times every one of them against the vocal stem with a forced aligner; whisper then reviews the result in a separate job and underlines words it heard differently. **TAP** stamps line starts by hand while the song plays. **AUTO** runs ALIGN by itself when a song opens with lyrics but no timings. **PITCH** shows the vocal's melody and scores what you sing into the microphone. **EXPORT** writes LRC. The full walkthrough, the `lyrics` settings and the API are in [guides/sing-along-and-lyrics.md](guides/sing-along-and-lyrics.md).
 
 ## 17. Player Footer
 
@@ -1491,6 +1497,8 @@ POST  /api/admin/shutdown
 
 `PATCH /api/settings` accepts a partial nested object and silently drops unknown keys, so newer and older frontends stay compatible. Module enablement is persisted in module manifests and settings and takes effect according to each module's loader behavior; a backend restart may be required for import-time changes.
 
+The background processing an import or a generation triggers is per section, each with `auto_on_import` and `auto_on_generate` flags: `analysis` (on), `stems` (`default_count`, `device`, `quality`), `lyrics` (`auto_transcribe`, `language`, `aligner`, `review`; see [guides/sing-along-and-lyrics.md](guides/sing-along-and-lyrics.md)), `midi` (`from_stems`) and `notation`. The jobs run in that order on the idle-gated queue, through the pipeline coordinator (§13.7), so a song is singable before it is notated.
+
 ![Settings modal toggles and admin actions](screenshots/07-settings-modal-with-shutdown__settings-toggles.png)
 
 ### 19.13 Disk-backed Library
@@ -1541,7 +1549,7 @@ POST /api/stems/{entry_id}/abort
 GET  /api/stems/{entry_id}
 ```
 
-Stem runs operate on disk-backed library entries, hold the backend idle gate while running, and persist rows in the library database so stems appear in details, bundles, lineage, and send-target workflows.
+Stem runs operate on disk-backed library entries, go through the pipeline coordinator (one separation per entry at a time, on the shared GPU lane; a run already in flight is joined, §13.7), and persist rows in the library database so stems appear in details, bundles, lineage, and send-target workflows. `device` defaults to the `stems.device` setting, with `auto` resolving to the GPU when there is one.
 
 ### 19.16 MIDI
 
@@ -1553,7 +1561,7 @@ GET  /api/midi/{entry_id}
 GET  /api/midi/file/{midi_id}
 ```
 
-MIDI conversion runs on full entries and, when available, separated stems. The streamed `.mid` files import into the Piano Roll or attach to bundles as downloadable artifacts.
+MIDI conversion runs on full entries and, when available, separated stems, on the GPU when there is one (basic-pitch through ONNX Runtime's CUDA provider, piano transcription on CUDA), one conversion per entry at a time through the pipeline coordinator (§13.7). The streamed `.mid` files import into the Piano Roll or attach to bundles as downloadable artifacts.
 
 ### 19.17 VJ
 
@@ -1562,6 +1570,22 @@ The VJ module powers the VJ center tab and its embedded iframe. The frontend fet
 ### 19.18 Notation and Prompt Inference
 
 The `notation` module exposes `/api/notation/*` for symbolic music (MIDI to MusicXML, tabs, arrangements, and exports), and the `analysis` module exposes `GET /api/analysis/{entry_id}/prompt` for inferred prompts. Both are documented with the feature in §33.7.
+
+### 19.19 Lyrics
+
+```http
+GET    /api/lyrics/{entry_id}
+PUT    /api/lyrics/{entry_id}
+DELETE /api/lyrics/{entry_id}
+POST   /api/lyrics/{entry_id}/align
+POST   /api/lyrics/{entry_id}/transcribe
+GET    /api/lyrics/{entry_id}/job
+GET    /api/lyrics/jobs/{job_id}
+POST   /api/lyrics/{entry_id}/import
+GET    /api/lyrics/{entry_id}/export?format=lrc|txt&words=0|1
+```
+
+The `lyrics` module keeps one timed document per entry (`lyrics.json` next to the audio). `align` times the entry's own words against its vocal stem with the MMS forced aligner and then runs a whisper review job; `transcribe` lets whisper write the words. Both return `{"job": {"id"}, "reused": bool}`, and a second call while a job runs for the entry returns that job. The tab and the settings are in [guides/sing-along-and-lyrics.md](guides/sing-along-and-lyrics.md).
 
 ---
 

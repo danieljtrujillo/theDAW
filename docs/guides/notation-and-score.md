@@ -71,9 +71,30 @@ The Score panel follows the audio note by note rather than page by page.
 
 For **sheet music**, the staff strip glides continuously with the playback cursor
 instead of jumping a page at a time, and the notehead (or chord) currently under
-the cursor is highlighted. Centering is zoom-aware, so following stays accurate
-whatever the shell's zoom. Page-at-a-time movement is still available from the
-keyboard and the footer navigation.
+the cursor is painted in the ink colour. Centering is zoom-aware, so following stays
+accurate whatever the shell's zoom. Page-at-a-time movement is still available from
+the keyboard and the footer navigation.
+
+Three look settings sit in the play-along footer and apply to every follow view
+(PAGE, STRIP, TAB, CHORDS, HIGHWAY):
+
+- **NOW** puts the music sounding now at the left third of the pane or at the
+  centre.
+- **INK** picks the colour of the played notes and the now-line: magenta (the
+  default), blue, orange or green. Every ink is a dark colour that stays legible
+  on white paper.
+- **TRAIL** decides what happens to a note after it sounds. **Hold** (the
+  default) keeps every played note in the ink, so the score fills in behind the
+  now-line and nothing turns on and off. **Flash** paints only the note that is
+  sounding and restores it when the next one sounds. Fast passages under Flash
+  blink several times a second, which is why Hold is the default and the
+  setting for anyone sensitive to flashing. A seek backwards clears the held
+  trail. In the HIGHWAY, Hold keeps a played note in the ink while it fades out
+  instead of switching it back to its lane colour.
+
+In **STRIP** the scroll position runs through a smoothing follower: a long note
+or a rest, which would otherwise hold the strip still and then jump it, becomes
+one steady forward glide, and the strip never moves backwards unless you seek.
 
 For **tabs**, alphaTab runs in external-media player mode: theDAW's transport is
 the clock, and the beat cursor and highlighted elements are driven from it every

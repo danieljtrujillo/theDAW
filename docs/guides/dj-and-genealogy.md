@@ -35,6 +35,8 @@ The center mixer sits between the decks.
 - **Play-next lane** — a staging area above the browser to queue tracks and assign them to a deck.
 - **Key matching** — each track shows its musical key in Camelot notation to guide harmonic transitions.
 - **Automix** — plays a setlist hands-free with beat-matched crossfades between tracks.
+- **Prepared performance sets** — a set folder dropped into `data/performance-sets/<Set>/` with the audio files and a `performance.json` timeline (as written by Z-AutoDJ, or by hand) appears under Sets on startup. Each track can carry a cue-in point, a mix-out point and a transition length; automix follows them instead of its fixed distance-from-end rule, so a set plays exactly as it was prepared. The audio files are registered in the library in place, so the decks, analysis and stems treat them like any other track.
+- **Assistant control mid-show** — the assistant orb can steer a running set: ask what is on (active set, now playing, running order), make a set active, start or stop automix, blend into the next track now, or move a named track to play next. The set keeps playing itself between instructions.
 
 ## DJ tab — MIDI control
 
