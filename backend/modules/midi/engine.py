@@ -58,6 +58,17 @@ def _piano_transcription_available() -> bool:
         return False
 
 
+def engine_devices() -> dict:
+    """Which device each pitched engine runs on right now."""
+    return {
+        "basic_pitch": "cuda"
+        if onnx_providers()[0] == "CUDAExecutionProvider"
+        else "cpu",
+        "piano_transcription_inference": torch_device(),
+        "drum_onsets": "cpu",
+    }
+
+
 def engine_capabilities() -> dict:
     return {
         "basic_pitch": _basic_pitch_available(),
@@ -257,12 +268,98 @@ def _run_drum_onsets(
     return transcribe_drums(audio_path, output_path, bpm=bpm, beats=beats)
 
 
+def _preload_cuda_dlls() -> None:
+    """onnxruntime-gpu loads cuBLAS / cuDNN by name; on Windows the DLLs
+    live in torch's wheel, so importing torch (and registering its lib
+    folder) before the session is created is what makes the CUDA provider
+    resolve. Harmless without torch or on POSIX."""
+    try:
+        import os
+
+        import torch  # noqa: F401
+
+        lib = Path(torch.__file__).resolve().parent / "lib"
+        if lib.is_dir() and hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(str(lib))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def onnx_providers() -> list[str]:
+    """The ONNX Runtime providers to run basic-pitch with: CUDA first when
+    the installed runtime has it (onnxruntime-gpu) and torch sees a card,
+    CPU otherwise. Never raises."""
+    try:
+        _preload_cuda_dlls()
+        import onnxruntime as ort  # type: ignore[import]
+
+        available = set(ort.get_available_providers())
+    except Exception:  # noqa: BLE001
+        return ["CPUExecutionProvider"]
+    want_cuda = False
+    try:
+        import torch
+
+        want_cuda = bool(torch.cuda.is_available())
+    except Exception:  # noqa: BLE001
+        want_cuda = False
+    if want_cuda and "CUDAExecutionProvider" in available:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def torch_device() -> str:
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:  # noqa: BLE001
+        return "cpu"
+
+
+_basic_pitch_model = None
+_basic_pitch_providers: list[str] = []
+
+
+def _load_basic_pitch_model():
+    """basic-pitch's Model, with its ONNX session rebuilt on the CUDA
+    provider when there is one (the library hard-codes CPU). Cached: the
+    session is reused across every stem of every entry."""
+    global _basic_pitch_model, _basic_pitch_providers
+    if _basic_pitch_model is not None:
+        return _basic_pitch_model
+    from basic_pitch import ICASSP_2022_MODEL_PATH  # type: ignore[import]
+    from basic_pitch.inference import Model  # type: ignore[import]
+
+    model = Model(ICASSP_2022_MODEL_PATH)
+    providers = onnx_providers()
+    if (
+        providers[0] != "CPUExecutionProvider"
+        and getattr(model, "model_type", None) == Model.MODEL_TYPES.ONNX
+    ):
+        try:
+            import onnxruntime as ort  # type: ignore[import]
+
+            model.model = ort.InferenceSession(
+                str(ICASSP_2022_MODEL_PATH), providers=providers
+            )
+            providers = list(model.model.get_providers())
+        except Exception as e:  # noqa: BLE001 - CPU session stays
+            log.warning("midi.engine: basic-pitch CUDA session failed (%s); CPU", e)
+            providers = ["CPUExecutionProvider"]
+    _basic_pitch_model = model
+    _basic_pitch_providers = providers
+    log.info("midi.engine: basic-pitch on %s", providers[0])
+    return model
+
+
 def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
     """Use basic-pitch's predict_and_save in a temp dir, then move
     its output to the caller's path. basic-pitch writes files named
     ``<input_stem>_basic_pitch.mid`` so we rename to honour our path."""
     from basic_pitch.inference import predict_and_save  # type: ignore[import]
-    from basic_pitch import ICASSP_2022_MODEL_PATH  # type: ignore[import]
+
+    model = _load_basic_pitch_model()
 
     # Use a tempdir adjacent to the output path so the final move is
     # always on the same volume (Path.replace() fails cross-drive on
@@ -287,7 +384,7 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
                 sonify_midi=False,
                 save_model_outputs=False,
                 save_notes=False,
-                model_or_model_path=ICASSP_2022_MODEL_PATH,
+                model_or_model_path=model,
             )
         captured = chatter.getvalue().strip()
         if captured:
@@ -308,6 +405,9 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
         "engine": "basic_pitch",
         "engine_version": version,
         "notes_count": notes_count,
+        "device": "cuda"
+        if _basic_pitch_providers[:1] == ["CUDAExecutionProvider"]
+        else "cpu",
     }
 
 
@@ -434,8 +534,9 @@ def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
 
     checkpoint_path = _ensure_piano_checkpoint()
     audio, _ = load_audio(str(audio_path), sr=sample_rate, mono=True)
+    device = torch_device()
     transcriptor = PianoTranscription(
-        device="cpu", checkpoint_path=str(checkpoint_path)
+        device=device, checkpoint_path=str(checkpoint_path)
     )
     transcriptor.transcribe(audio, str(output_path))
 
@@ -446,6 +547,7 @@ def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
         "engine": "piano_transcription_inference",
         "engine_version": version,
         "notes_count": notes_count,
+        "device": device,
     }
 
 

@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.modules.library.router import get_store as get_library_store
 
-from .engine import get_progress, request_abort, separate_entry
+from .engine import get_progress, request_abort
 from .sidecar import get_sidecar, install_dependencies, probe, reset_sidecar
 
 log = logging.getLogger(__name__)
@@ -152,16 +152,23 @@ async def run_separation(
         pass
 
     try:
-        result = await separate_entry(
-            store.db,
-            entry_id,
-            Path(audio_path),
-            entry_dir,
-            stems=stems,
-            device=device,
-            quality=quality,
+        from backend.core import pipeline
+
+        # A manual run re-separates on purpose (a different stem count), but
+        # never alongside a separation already in flight for the entry: that
+        # one is joined instead, and the GPU lane serialises it with whisper
+        # and MIDI conversion.
+        if pipeline.in_flight(f"stems:{entry_id}"):
+            await pipeline.ensure_stems(entry_id)
+            return {
+                "entry_id": entry_id,
+                "joined": True,
+                "stems": store.db.list_stems(entry_id),
+            }
+        await pipeline.ensure_stems(
+            entry_id, force=True, stems=stems, device=device, quality=quality
         )
-        return result
+        return {"entry_id": entry_id, "stems": store.db.list_stems(entry_id)}
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     finally:

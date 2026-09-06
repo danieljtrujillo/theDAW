@@ -43,6 +43,10 @@ class LyricWord(BaseModel):
     text: str
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None
+    # What whisper heard where this word should be, when it was NOT this word
+    # (ALIGN sets it; ``""`` means whisper heard nothing there). ``None`` means
+    # the word matched, or no alignment has run.
+    heard: Optional[str] = None
 
 
 class LyricLine(BaseModel):
@@ -59,6 +63,14 @@ class LyricsStats(BaseModel):
     total: int = 0
     asr_words: int = 0
     audio_source: str = ""
+    # Words whose ``heard`` is set: the pasted text and the vocal disagree there.
+    mismatched: int = 0
+    # What produced the timings: "mms" (forced alignment of the user's words)
+    # or "whisper" (whisper's words matched to the user's). "" = untimed.
+    aligner: str = ""
+    # The whisper review pass ran AND could follow the vocal well enough for
+    # its differences to mean anything (else nothing is flagged).
+    reviewed: bool = False
 
 
 class LyricsDoc(BaseModel):
@@ -96,6 +108,10 @@ class TranscribeRequest(BaseModel):
 
 class AlignRequest(TranscribeRequest):
     text: Optional[str] = None
+    # 'mms' | 'whisper' | '' (the lyrics.aligner setting decides).
+    aligner: str = ""
+    # After a forced alignment, run the whisper review pass (heard flags).
+    review: bool = True
 
 
 class ImportRequest(BaseModel):

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from backend.core.jobs import Job, create_job, get_job
+from backend.core.jobs import Job, get_job
 from backend.modules.library.router import get_store
 from backend.modules.vocal.transcription import available as transcription_available
 
@@ -84,18 +84,25 @@ def delete_lyrics(entry_id: str) -> dict[str, Any]:
 async def transcribe_lyrics(entry_id: str, req: TranscribeRequest) -> dict[str, Any]:
     _entry_or_404(entry_id)
     _require_transcription()
-    job = create_job("lyrics", f"Transcribe lyrics ({entry_id})")
-    service.start_transcribe(job, entry_id, req.model_dump())
-    return {"ok": True, "job": {"id": job.id}}
+    job, reused = service.begin_transcribe(entry_id, req.model_dump())
+    return {"ok": True, "job": {"id": job.id}, "reused": reused}
 
 
 @router.post("/{entry_id}/align")
 async def align_lyrics(entry_id: str, req: AlignRequest) -> dict[str, Any]:
     _entry_or_404(entry_id)
     _require_transcription()
-    job = create_job("lyrics", f"Align lyrics ({entry_id})")
-    service.start_align(job, entry_id, req.model_dump())
-    return {"ok": True, "job": {"id": job.id}}
+    job, reused = service.begin_align(entry_id, req.model_dump())
+    return {"ok": True, "job": {"id": job.id}, "reused": reused}
+
+
+@router.get("/{entry_id}/job")
+def active_lyrics_job(entry_id: str) -> dict[str, Any]:
+    """The align / transcribe job running for the entry, if any (the auto
+    pipeline may have started one before the SING tab opened)."""
+    _entry_or_404(entry_id)
+    job = service.active_job(entry_id)
+    return {"job": _job_payload(job) if job else None}
 
 
 @router.post("/{entry_id}/import")

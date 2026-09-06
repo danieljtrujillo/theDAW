@@ -209,7 +209,16 @@ def test_worker_falls_back_to_cpu_when_cuda_fails(monkeypatch, capsys):
     out = json.loads(captured.out.strip().splitlines()[-1])
     assert out["ok"] is True and out["device_used"] == "cpu"
     assert calls == [("cuda", "float16"), ("cpu", "int8")]
-    assert "retrying on cpu" in captured.err
+    assert "retrying" in captured.err and "cpu int8" in captured.err
+    # The GPU-sized model is swapped for the CPU-sized one on the way down:
+    # large-v3 on a CPU is minutes per song.
+    calls.clear()
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO(json.dumps({**req, "model": "large-v3"}))
+    )
+    assert worker.main() == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["device_used"] == "cpu" and out["model"] == "small"
 
 
 def test_worker_auto_language_is_detection(monkeypatch, capsys):

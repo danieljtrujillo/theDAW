@@ -81,6 +81,34 @@ def test_substitution_insertion_deletion_keep_neighbours():
     assert stats.matched >= 7
 
 
+def test_mismatched_words_are_flagged_with_what_whisper_heard():
+    lines = split_text("night falls on the quiet town\nwe walk home")
+    words = asr("night falls on the silent town we walk home".split())
+    out, stats = align_words(lines, words, 30_000)
+    w = _lyric_words(out)
+    assert w[4].text == "quiet" and w[4].heard == "silent"
+    assert all(x.heard is None for x in w if x is not w[4])
+    assert stats.mismatched == 1
+    # Whisper skipped a substantial word: flagged as heard nothing.
+    words = asr("night falls on the town we walk home".split())
+    out, stats = align_words(lines, words, 30_000)
+    w = _lyric_words(out)
+    assert w[4].heard == "" and stats.mismatched == 1
+    # A lone stopword is never an anchor, but whisper heard it: no flag.
+    assert w[3].text == "the" and w[3].heard is None
+    # Lyrics for another song: every word differs.
+    other = split_text("hello bright world")
+    out, stats = align_words(other, asr("goodbye pale moon".split()), 30_000)
+    assert [x.heard for x in _lyric_words(out)] == ["goodbye", "pale", "moon"]
+    assert stats.mismatched == 3
+    # Timings still transfer around a mismatch (the exact case above).
+    out, _ = align_words(
+        lines, asr("night falls on the silent town we walk home".split()), 30_000
+    )
+    w = _lyric_words(out)
+    assert w[3].end_ms <= w[4].start_ms <= w[5].start_ms
+
+
 def test_normalization_and_hyphens():
     assert normalize_token("Don't!") == "dont"
     assert normalize_token("Yeahhh") == "yeahh"

@@ -120,6 +120,40 @@ def _sec_ms(sec: Any) -> int:
     return int(round(float(sec) * 1000.0))
 
 
+def _heard_in_gaps(
+    user: list[str], asr_raw: list[str], anchors: list[tuple[int, int]]
+) -> dict[int, str]:
+    """For every user token that did not anchor: the whisper words that sit in
+    the same gap between anchors, shared out proportionally (``""`` when
+    whisper heard nothing there, only for tokens substantial enough for that
+    to mean something). A gap word that normalizes to the user's own word is
+    not a mismatch (short words and stopwords are never anchors on their own,
+    yet whisper heard them fine)."""
+    heard: dict[int, str] = {}
+    bounds = [(-1, -1), *anchors, (len(user), len(asr_raw))]
+    for (ai, aj), (bi, bj) in zip(bounds, bounds[1:]):
+        gap_user = list(range(ai + 1, bi))
+        gap_asr = list(range(aj + 1, bj))
+        if not gap_user:
+            continue
+        n_user, n_asr = len(gap_user), len(gap_asr)
+        for k, ui in enumerate(gap_user):
+            if n_asr == 0:
+                if len(user[ui]) > 2 and user[ui] not in STOPWORDS:
+                    heard[ui] = ""
+                continue
+            lo = (k * n_asr) // n_user
+            hi = ((k + 1) * n_asr) // n_user
+            if hi <= lo:
+                hi = lo + 1  # more user words than heard words: share one
+            lo, hi = min(lo, n_asr - 1), min(hi, n_asr)
+            text = " ".join(asr_raw[j].strip() for j in gap_asr[lo:hi]).strip()
+            if normalize_token(text) == user[ui]:
+                continue
+            heard[ui] = text
+    return heard
+
+
 def _spread(weights: list[int], t0: int, t1: int) -> list[_Timed]:
     """Place words proportionally to their weight across [t0, t1]."""
     total = max(1, sum(weights))
@@ -239,13 +273,19 @@ def align_words(
     ``asr_words`` (sidecar shape: ``{word, start, end}`` in SECONDS), plus
     the match statistics."""
     out = [line.model_copy(deep=True) for line in lines]
+    for line in out:
+        for word in line.words:
+            word.heard = None
     tokens = tokenize(out)
     asr: list[tuple[str, int, int]] = []
+    asr_raw: list[str] = []
     for w in asr_words or []:
-        norm = normalize_token(str(w.get("word") or ""))
+        raw = str(w.get("word") or "")
+        norm = normalize_token(raw)
         if not norm or w.get("start") is None or w.get("end") is None:
             continue
         asr.append((norm, _sec_ms(w["start"]), _sec_ms(w["end"])))
+        asr_raw.append(raw.strip())
     stats = LyricsStats(matched=0, total=len(tokens), asr_words=len(asr_words or []))
     if not tokens or not asr:
         for line in out:
@@ -261,6 +301,7 @@ def align_words(
     for ui, aj in anchors:
         matched[ui] = _Timed(asr[aj][1], asr[aj][2])
     stats.matched = len(matched)
+    heard = _heard_in_gaps(user_norms, asr_raw[: len(asr_norms)], anchors)
 
     if duration_ms <= 0:
         duration_ms = max(a[2] for a in asr)
@@ -272,6 +313,7 @@ def align_words(
     per_word: dict[tuple[int, int], list[_Timed]] = {}
     per_line_total: dict[int, int] = {}
     per_line_matched: dict[int, int] = {}
+    per_word_heard: dict[tuple[int, int], list[str]] = {}
     for i, tok in enumerate(tokens):
         per_line_total[tok.line_idx] = per_line_total.get(tok.line_idx, 0) + 1
         if i in matched:
@@ -279,6 +321,8 @@ def align_words(
         t = placed[i]
         if t is not None:
             per_word.setdefault((tok.line_idx, tok.word_idx), []).append(t)
+        if i in heard:
+            per_word_heard.setdefault((tok.line_idx, tok.word_idx), []).append(heard[i])
     for li, line in enumerate(out):
         if line.kind != "lyric" or not line.text.strip():
             line.confidence = None
@@ -291,6 +335,10 @@ def align_words(
             else:
                 word.start_ms = None
                 word.end_ms = None
+            heard_parts = per_word_heard.get((li, wi))
+            if heard_parts is not None:
+                word.heard = " ".join(p for p in heard_parts if p).strip()
+                stats.mismatched += 1
         total = per_line_total.get(li, 0)
         line.confidence = (per_line_matched.get(li, 0) / total) if total else 0.0
 

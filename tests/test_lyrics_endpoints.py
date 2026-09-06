@@ -263,7 +263,11 @@ def test_run_align_times_every_line(client, tmp_path, monkeypatch):
     async def fake_transcribe(path, language="en", cfg=None, extra=None):
         assert language == "auto"  # detection by default
         assert extra["initial_prompt"].startswith("hello world")
-        assert extra["vad_filter"] is False
+        # Sung-vocal decoding: VAD on (timestamps stay absolute), the song's
+        # vocabulary as hotwords for every window, no snowballing.
+        assert extra["vad_filter"] is True
+        assert extra["condition_on_previous_text"] is False
+        assert "hello" in extra["hotwords"] and "world" in extra["hotwords"]
         return {
             "ok": True,
             "language": "en",
@@ -285,6 +289,7 @@ def test_run_align_times_every_line(client, tmp_path, monkeypatch):
 
     monkeypatch.setattr(service, "_resolve_vocal_audio", fake_resolve)
     monkeypatch.setattr(service.transcription, "transcribe", fake_transcribe)
+    monkeypatch.setattr(service, "aligner_choice", lambda: "whisper")
     job = create_job("lyrics", "align")
     asyncio.run(service.run_align(job, eid, {"isolate": True, "sync_vocal": False}))
     assert job.status == "done", job.error
@@ -489,7 +494,8 @@ def test_resolve_vocal_audio_mixes_every_vocal_stem(client, tmp_path, monkeypatc
     db.delete_entry  # noqa: B018 - presence check; stems rows go with the entry
     (stems_dir / "backup_vocals.wav").unlink()
     path2, source2 = asyncio.run(service._resolve_vocal_audio(eid, work, True))
-    assert source2 == "stem" and path2 == stems_dir / "vocals.wav"
+    # Lead only: still normalised into the work file (whisper likes a level).
+    assert source2 == "stem" and path2 == work / "vocals_mix.wav"
 
 
 def test_resolve_vocal_audio_runs_the_stemmer_when_installed(
@@ -518,7 +524,7 @@ def test_resolve_vocal_audio_runs_the_stemmer_when_installed(
     work = tmp_path / "work"
     work.mkdir()
     path, source = asyncio.run(service._resolve_vocal_audio(eid, work, True, job))
-    assert calls == [eid] and source == "stem" and path == stems_dir / "vocals.wav"
+    assert calls == [eid] and source == "stem" and path == work / "vocals_mix.wav"
     assert "separating stems" in job.message
 
 
@@ -552,3 +558,167 @@ def test_language_helpers():
     assert service._language_detected({"language": "es"}, "auto") == "es"
     assert service._language_detected({"language": "es"}, "fr") == "fr"
     assert service._language_detected({}, "auto") == "en"
+
+
+def test_hotwords_and_decode_options_for_sung_vocals():
+    """The song's own vocabulary rides every whisper window; the pasted text
+    primes the first one; both stay inside whisper's 224-token prompt."""
+    from backend.modules.lyrics.service import (
+        HOTWORDS_MAX,
+        PROMPT_WORDS,
+        decode_options,
+        hotwords_for,
+    )
+
+    text = "Run with me now\nRun with me now\nDrum of glass wings\nPulling us up\n" * 3
+    hot = hotwords_for(text)
+    words = hot.split()
+    assert words[0] == "Run"  # most frequent content word first
+    assert "with" not in words and "me" not in words and "of" not in words
+    assert "Drum" in words and "glass" in words and "wings" in words
+    assert len(set(w.lower() for w in words)) == len(words)  # distinct
+    many = " ".join(f"word{i}" for i in range(500))
+    assert len(hotwords_for(many).split()) == HOTWORDS_MAX
+    opts = decode_options(text)
+    assert opts["hotwords"] == hot
+    assert len(opts["initial_prompt"].split()) <= PROMPT_WORDS
+    assert opts["vad_filter"] is True and opts["condition_on_previous_text"] is False
+    assert opts["beam_size"] >= 5 and opts["hallucination_silence_threshold"] > 0
+    # No text: the title primes the first window, no hotwords.
+    bare = decode_options(None, "Drum of Glass Wings")
+    assert bare["initial_prompt"] == "Drum of Glass Wings" and "hotwords" not in bare
+    assert "initial_prompt" not in decode_options(None, "")
+
+
+def test_run_align_forced_alignment_times_every_word_then_reviews(
+    client, tmp_path, monkeypatch
+):
+    """The default ALIGN: the MMS forced aligner places the user's own words
+    (no transcription), the document is saved and the job is done, and the
+    whisper review pass is registered as the entry's next job."""
+    eid = _seed(tmp_path, client)
+    client.put(f"/api/lyrics/{eid}", json={"text": "hello world\nsecond line"})
+    wav = _entry_dir(eid) / "output.wav"
+
+    async def fake_resolve(entry_id, work, isolate, job=None):
+        return wav, "stem"
+
+    def fake_align_lines(path, lines, *, duration_ms, scale, progress=None, **_):
+        assert path == wav and scale == 1.0
+        progress("listening")
+        t = 1000
+        for ln in lines:
+            for w in ln.words:
+                w.start_ms, w.end_ms = t, t + 300
+                t += 400
+            ln.confidence = 1.0
+        from backend.modules.lyrics.align import _finish_lines
+        from backend.modules.lyrics.schema import LyricsStats
+
+        _finish_lines(lines)
+        return lines, LyricsStats(matched=4, total=4, aligner="mms")
+
+    reviews = []
+    monkeypatch.setattr(service, "_resolve_vocal_audio", fake_resolve)
+    monkeypatch.setattr(service.forced_align, "align_lines", fake_align_lines)
+    monkeypatch.setattr(service, "aligner_choice", lambda: "mms")
+    monkeypatch.setattr(service.transcription, "available", lambda: True)
+    monkeypatch.setattr(
+        service, "begin_review", lambda e, text, lang: reviews.append((e, text))
+    )
+    job = create_job("lyrics", "align")
+    asyncio.run(service.run_align(job, eid, {"isolate": True}))
+    assert job.status == "done", job.error
+    assert "timed 4/4" in job.message
+    doc = service.load_doc(eid)
+    assert doc is not None and doc.source == "aligned"
+    assert doc.stats is not None and doc.stats.aligner == "mms"
+    words = [w for ln in doc.lines for w in ln.words]
+    assert [w.start_ms for w in words] == [1000, 1400, 1800, 2200]
+    assert doc.lines[0].start_ms == 1000 and doc.lines[1].start_ms == 1800
+    assert reviews == [(eid, "hello world\nsecond line")]
+    # review off: no review job.
+    reviews.clear()
+    job2 = create_job("lyrics", "align")
+    asyncio.run(service.run_align(job2, eid, {"isolate": True, "review": False}))
+    assert job2.status == "done" and reviews == []
+
+
+def test_run_review_flags_words_whisper_heard_differently(
+    client, tmp_path, monkeypatch
+):
+    eid = _seed(tmp_path, client)
+    client.put(f"/api/lyrics/{eid}", json={"text": "night falls on the quiet town"})
+    doc = service.load_doc(eid)
+    t = 1000
+    for w in doc.lines[0].words:
+        w.start_ms, w.end_ms = t, t + 300
+        t += 400
+    doc.lines[0].start_ms, doc.lines[0].end_ms = 1000, 3300
+    service.save_doc(doc)
+    wav = _entry_dir(eid) / "output.wav"
+
+    async def fake_resolve(entry_id, work, isolate, job=None):
+        return wav, "stem"
+
+    async def fake_transcribe(path, language="en", cfg=None, extra=None):
+        words = "night falls on the silent town".split()
+        return {
+            "ok": True,
+            "language": "en",
+            "text": " ".join(words),
+            "segments": [
+                {
+                    "text": " ".join(words),
+                    "start": 1.0,
+                    "end": 3.3,
+                    "words": [
+                        {"word": w, "start": 1.0 + 0.4 * i, "end": 1.3 + 0.4 * i}
+                        for i, w in enumerate(words)
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(service, "_resolve_vocal_audio", fake_resolve)
+    monkeypatch.setattr(service.transcription, "transcribe", fake_transcribe)
+    job = create_job("lyrics", "review")
+    asyncio.run(service.run_review(job, eid, {"text": doc.text, "language": "auto"}))
+    assert job.status == "done", job.error
+    reviewed = service.load_doc(eid)
+    words = reviewed.lines[0].words
+    assert words[4].text == "quiet" and words[4].heard == "silent"
+    assert all(w.heard is None for w in words if w.text != "quiet")
+    # The aligner's timings are untouched by the review.
+    assert [w.start_ms for w in words] == [1000, 1400, 1800, 2200, 2600, 3000]
+    assert reviewed.stats.mismatched == 1 and reviewed.stats.reviewed is True
+    assert "1 words differ" in job.message
+
+    # Whisper heard something else entirely: not evidence, nothing flagged.
+    async def babble(path, language="en", cfg=None, extra=None):
+        words = "la la la la la la".split()
+        return {
+            "ok": True,
+            "language": "en",
+            "text": " ".join(words),
+            "segments": [
+                {
+                    "text": " ".join(words),
+                    "start": 1.0,
+                    "end": 3.3,
+                    "words": [
+                        {"word": w, "start": 1.0 + 0.4 * i, "end": 1.3 + 0.4 * i}
+                        for i, w in enumerate(words)
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(service.transcription, "transcribe", babble)
+    job2 = create_job("lyrics", "review")
+    asyncio.run(service.run_review(job2, eid, {"text": doc.text, "language": "auto"}))
+    assert job2.status == "done", job2.error
+    again = service.load_doc(eid)
+    assert all(w.heard is None for w in again.lines[0].words)
+    assert again.stats.mismatched == 0 and again.stats.reviewed is False
+    assert "could not follow" in job2.message

@@ -8,10 +8,16 @@ go to stderr so stdout stays clean for the parent to parse.
 Request  : {"audio": str, "language": str|null, "model": str, "device": str,
             "compute_type": str,
             # optional decoding knobs (defaults in parentheses):
-            "initial_prompt": str|null (none),
+            "initial_prompt": str|null (none), "hotwords": str|null (none),
             "condition_on_previous_text": bool (true),
-            "vad_filter": bool (true), "beam_size": int (5)}
+            "vad_filter": bool (true), "vad_parameters": dict|null,
+            "hallucination_silence_threshold": float|null,
+            "beam_size": int (5), "best_of": int (5),
+            "temperature": float|list|null,
+            "no_speech_threshold" / "log_prob_threshold" /
+            "compression_ratio_threshold": float|null}
 Response : {"ok": true, "language": str, "text": str, "device_used": str,
+            "model": str,
             "segments": [{"text", "start", "end",
                           "words": [{"word", "start", "end"}]}]}   (seconds)
             or {"ok": false, "error": str}
@@ -73,6 +79,21 @@ def main() -> int:
     cond = bool(req.get("condition_on_previous_text", True))
     vad = bool(req.get("vad_filter", True))
     beam = int(req.get("beam_size") or 5)
+    # Every other knob is passed through only when the request set it, so
+    # faster-whisper keeps its own defaults otherwise.
+    decode: dict = {}
+    for key in (
+        "hotwords",
+        "vad_parameters",
+        "hallucination_silence_threshold",
+        "best_of",
+        "temperature",
+        "no_speech_threshold",
+        "log_prob_threshold",
+        "compression_ratio_threshold",
+    ):
+        if req.get(key) is not None:
+            decode[key] = req[key]
 
     _load_cuda_lib_dirs()
     try:
@@ -80,8 +101,8 @@ def main() -> int:
     except Exception as e:
         return _fail(f"faster-whisper import failed: {e!r}")
 
-    def _run(dev: str, compute: str):
-        model = WhisperModel(model_size, device=dev, compute_type=compute)
+    def _run(size: str, dev: str, compute: str):
+        model = WhisperModel(size, device=dev, compute_type=compute)
         return model.transcribe(
             audio,
             language=language,
@@ -90,21 +111,27 @@ def main() -> int:
             condition_on_previous_text=cond,
             vad_filter=vad,
             beam_size=beam,
+            **decode,
         )
 
     device_used = device
+    model_used = model_size
     try:
         try:
-            segments, info = _run(device, compute_type)
+            segments, info = _run(model_size, device, compute_type)
         except Exception as e:  # noqa: BLE001 - any CUDA failure -> CPU
             if not device.lower().startswith("cuda"):
                 raise
+            # A GPU-sized model on the CPU is minutes per song; the CPU
+            # fallback runs the CPU-sized one so a broken driver costs
+            # accuracy, not the whole afternoon.
+            model_used = "small" if model_size.startswith("large") else model_size
             sys.stderr.write(
-                f"[whisper] {device} failed ({e!r}); retrying on cpu int8\n"
+                f"[whisper] {device} failed ({e!r}); retrying {model_used} on cpu int8\n"
             )
             sys.stderr.flush()
             device_used = "cpu"
-            segments, info = _run("cpu", "int8")
+            segments, info = _run(model_used, "cpu", "int8")
         seg_out = []
         text_parts = []
         for seg in segments:
@@ -136,6 +163,7 @@ def main() -> int:
             "text": "".join(text_parts).strip(),
             "segments": seg_out,
             "device_used": device_used,
+            "model": model_used,
         }
     )
     return 0
