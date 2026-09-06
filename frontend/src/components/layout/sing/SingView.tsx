@@ -376,7 +376,7 @@ export const SingView: React.FC = () => {
         <input id="sing-follow" name="sing-follow" type="checkbox" className="accent-rose-400" checked={follow} onChange={(e) => store().setFollow(e.target.checked)} />
         <label htmlFor="sing-follow" className="cursor-pointer select-none" title="Highlight and scroll the lyrics with the track">FOLLOW</label>
         <input id="sing-auto-align" name="sing-auto-align" type="checkbox" className="accent-rose-400" checked={autoAlign} onChange={(e) => store().setAutoAlign(e.target.checked)} />
-        <label htmlFor="sing-auto-align" className="cursor-pointer select-none" title="When a song opens with lyrics but no timings, run ALIGN by itself (whisper times your words against the vocal)">AUTO</label>
+        <label htmlFor="sing-auto-align" className="cursor-pointer select-none" title="When a song opens with lyrics but no timings, run ALIGN automatically (times your words against the vocal)">AUTO</label>
         <input id="sing-tap" name="sing-tap" type="checkbox" className="accent-rose-400" checked={tapMode} onChange={(e) => store().setTapMode(e.target.checked)} disabled={!hasText} />
         <label htmlFor="sing-tap" className="cursor-pointer select-none" title="Tap mode: Space or Enter stamps the next untimed line at the current time; Backspace undoes">TAP</label>
         <button type="button" className="btn-ghost text-[8px] py-0.5 px-2 border border-rose-500/40 text-rose-200 disabled:opacity-40" onClick={() => store().tap(posRef.current)} disabled={!tapMode || !handle.isSameTrack} aria-label="Stamp the next line at the current time" title="Stamp the next untimed line now (Space)">
