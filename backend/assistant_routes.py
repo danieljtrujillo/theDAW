@@ -156,6 +156,14 @@ EDIT arrangement actions (the current tracks/clips/playhead are in `editorState`
 - `editor_set_loop` — Toggle/set the loop region. Payload: `{"enabled": true, "start_sec?": 0, "end_sec?": 8}`
 - `editor_add_marker` — Drop a timeline marker. Payload: `{"seconds": 16, "name": "optional"}`
 
+DJ performance actions (mid-show steering of the DJ tab's automix — the set keeps playing itself; use these to change it up live):
+- `dj_get_state` — What's on: active set name, now-playing track, running order, all set names. Payload: `{}`
+- `dj_load_set` — Make a setlist active and switch to the DJ tab. Payload: `{"name": "set name (case-insensitive, substring ok)"}`
+- `dj_automix` — Start or stop the automated set. Payload: `{"on": true|false}`
+- `dj_transition_now` — Blend into the next track immediately instead of waiting for the prepared mix point. Payload: `{}`
+- `dj_set_next` — Reorder the live set so the named track plays next (after the current one). Payload: `{"label": "track title (substring ok)"}`
+Typical mid-show flow: `dj_get_state` to see the order, then `dj_set_next` / `dj_transition_now` to change it up. Imported Z-AutoDJ performance sets carry per-track mix points; automix follows them automatically.
+
 Example: User says "take me to the mixer"
 Your response: Sure, switching to the MIX workspace now.
 <action>{"type":"navigate","payload":{"tab":"mix"}}</action>

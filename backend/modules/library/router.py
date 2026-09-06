@@ -19,9 +19,11 @@ the player to scrub) and there's no in-memory copy of large files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -440,6 +442,152 @@ def import_folder(
         "name": root.name,
         "entries": entries,
     }
+
+
+_PERF_SETS_DIRNAME = "performance-sets"
+
+
+def _perf_sets_root() -> Path:
+    """`<project>/data/performance-sets/` — where external set builders
+    (Z-AutoDJ) drop prepared sets: one folder per set containing the audio
+    files plus a `performance.json` timeline."""
+    project_root = Path(__file__).resolve().parents[3]
+    return project_root / "data" / _PERF_SETS_DIRNAME
+
+
+def _load_perf_set(store: LibraryStore, set_dir: Path) -> Optional[dict[str, Any]]:
+    """Turn one `<set_dir>/performance.json` into a frontend Setlist dict.
+
+    Audio files are registered reference-in-place as library entries so the
+    DJ decks + analysis pipeline treat them like any other track. A sidecar
+    `.thedaw-import.json` in the set folder maps filename -> entryId so
+    repeated calls reuse entries instead of duplicating them."""
+    perf_path = set_dir / "performance.json"
+    try:
+        perf = json.loads(perf_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("performance set %s unreadable: %s", set_dir.name, e)
+        return None
+    tracks = perf.get("tracks")
+    if not isinstance(tracks, list) or not tracks:
+        log.warning("performance set %s has no tracks", set_dir.name)
+        return None
+
+    sidecar_path = set_dir / ".thedaw-import.json"
+    try:
+        sidecar: dict[str, Any] = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        sidecar = {}
+    if not isinstance(sidecar, dict):
+        sidecar = {}
+    sidecar_dirty = False
+
+    resolved_set_dir = set_dir.resolve()
+    entries: list[dict[str, Any]] = []
+    for t in tracks:
+        if not isinstance(t, dict):
+            continue
+        fname = t.get("file")
+        if not isinstance(fname, str) or not fname:
+            continue
+        if (
+            fname.startswith(("/", "\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", fname)
+            or ".." in fname
+        ):
+            log.warning(
+                "performance set %s: rejecting unsafe file %r", set_dir.name, fname
+            )
+            continue
+        audio_path = (set_dir / fname).resolve()
+        try:
+            audio_path.relative_to(resolved_set_dir)
+        except ValueError:
+            log.warning(
+                "performance set %s: file escapes set dir %r", set_dir.name, fname
+            )
+            continue
+        if not audio_path.is_file():
+            log.warning("performance set %s: missing audio %r", set_dir.name, fname)
+            continue
+        entry_id = sidecar.get(fname)
+        if not (isinstance(entry_id, str) and store.get_entry(entry_id) is not None):
+            rec = store.register_reference(
+                str(audio_path),
+                {
+                    "source": "performance-set",
+                    "title": t.get("title") or audio_path.stem,
+                },
+            )
+            if rec is None:
+                continue
+            entry_id = rec.id
+            sidecar[fname] = entry_id
+            sidecar_dirty = True
+        perf_block: dict[str, Any] = {}
+        for src_key, dst_key in (
+            ("cue_in_s", "cueIn"),
+            ("mix_out_s", "mixOut"),
+            ("transition_s", "transitionSec"),
+        ):
+            v = t.get(src_key)
+            if isinstance(v, (int, float)) and v >= 0:
+                perf_block[dst_key] = float(v)
+        entry: dict[str, Any] = {
+            "entryId": entry_id,
+            "label": t.get("title") or audio_path.stem,
+            "kind": "audio",
+        }
+        if perf_block:
+            entry["perf"] = perf_block
+        entries.append(entry)
+
+    if sidecar_dirty:
+        try:
+            sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+        except OSError as e:
+            log.warning("performance set %s: sidecar write failed: %s", set_dir.name, e)
+
+    if not entries:
+        return None
+    name = perf.get("name") if isinstance(perf.get("name"), str) else set_dir.name
+    # Deterministic id including a content hash: a rebuilt set (new timeline)
+    # gets a NEW id, so the frontend's merge-by-id import picks it up instead
+    # of keeping a stale copy. Old copies stay in localStorage (harmless).
+    digest = hashlib.sha1(
+        json.dumps([e for e in entries], sort_keys=True).encode("utf-8")
+    ).hexdigest()[:8]
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-") or "set"
+    mtime_ms = int(perf_path.stat().st_mtime * 1000)
+    return {
+        "id": f"zad-{slug}-{digest}",
+        "name": str(name),
+        "entries": entries,
+        "createdAt": mtime_ms,
+        "updatedAt": mtime_ms,
+        "notes": "Imported performance set (Z-AutoDJ)",
+    }
+
+
+@router.get("/setlists")
+def list_bundled_setlists() -> dict[str, Any]:
+    """Bundled/prepared setlists for the DJ tab. Scans
+    `data/performance-sets/<Set>/performance.json` folders (dropped there by
+    Z-AutoDJ or by hand) and returns them in the frontend Setlist shape.
+    The frontend calls this on startup and merges by id (setlistStore
+    `importBundled`); an empty list is a valid, cheap response."""
+    root = _perf_sets_root()
+    if not root.is_dir():
+        return {"setlists": []}
+    store = get_store()
+    setlists: list[dict[str, Any]] = []
+    for set_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        if not (set_dir / "performance.json").is_file():
+            continue
+        loaded = _load_perf_set(store, set_dir)
+        if loaded is not None:
+            setlists.append(loaded)
+    return {"setlists": setlists}
 
 
 @router.post("/reindex")

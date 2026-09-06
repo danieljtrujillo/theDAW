@@ -3,6 +3,8 @@ import { buildGenerateParamsFromState, useGenerateStore } from '../state/generat
 import type { GenerateParamsState } from '../state/generateParamsStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useEditorStore } from '../state/editorStore';
+import { useSetlistStore } from '../state/setlistStore';
+import { useDjAutomix } from '../state/djAutomixStore';
 import { logInfo } from '../state/logStore';
 
 export interface AssistantActionPayload {
@@ -358,6 +360,72 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
         }
 
         // --- Status ---
+        // ---- DJ performance control (mid-show assistant steering) ----
+        case 'dj_get_state': {
+            const sl = useSetlistStore.getState();
+            const active = sl.activeId ? sl.setlists[sl.activeId] : null;
+            const now = useDjAutomix.getState().nowPlayingEntryId;
+            return JSON.stringify({
+                activeSet: active ? active.name : null,
+                nowPlaying: active?.entries.find((e) => e.entryId === now)?.label ?? null,
+                order: active ? active.entries.map((e) => e.label) : [],
+                sets: Object.values(sl.setlists).map((s) => s.name),
+            });
+        }
+
+        case 'dj_load_set': {
+            const name = stringValue(action.payload, ['name', 'set']).trim();
+            if (!name) return 'No set name provided. Pass a set name to switch to it.';
+            const sl = useSetlistStore.getState();
+            const match = Object.values(sl.setlists).find(
+                (s) => s.name.toLowerCase() === name.toLowerCase(),
+            ) ?? Object.values(sl.setlists).find(
+                (s) => s.name.toLowerCase().includes(name.toLowerCase()),
+            );
+            if (!match) return `No setlist named "${name}". Known sets: ${Object.values(sl.setlists).map((s) => s.name).join(', ') || 'none'}`;
+            sl.setActive(match.id);
+            useAppUiStore.getState().setCenterTab('dj');
+            return `Active set is now "${match.name}" (${match.entries.length} tracks). Say dj_automix on to run it.`;
+        }
+
+        case 'dj_automix': {
+            const on = booleanValue(action.payload, ['on', 'enabled'], true);
+            if (on) {
+                useAppUiStore.getState().setCenterTab('dj');
+                useDjAutomix.getState().requestStart();
+                return 'Automix start requested — the DJ tab will run the active set.';
+            }
+            useDjAutomix.getState().requestStop();
+            return 'Automix stop requested.';
+        }
+
+        case 'dj_transition_now': {
+            useDjAutomix.getState().requestTransition();
+            return 'Forcing the blend into the next track at the next automix tick.';
+        }
+
+        case 'dj_set_next': {
+            const label = stringValue(action.payload, ['label', 'track', 'title']).trim();
+            if (!label) return 'No track label provided. Pass a title or track label to queue next.';
+            const sl = useSetlistStore.getState();
+            const active = sl.activeId ? sl.setlists[sl.activeId] : null;
+            if (!active) return 'No active setlist.';
+            const idx = active.entries.findIndex(
+                (e) => e.label.toLowerCase().includes(label.toLowerCase()),
+            );
+            if (idx < 0) return `No track matching "${label}" in "${active.name}".`;
+            const now = useDjAutomix.getState().nowPlayingEntryId;
+            const nowIdx = now ? active.entries.findIndex((e) => e.entryId === now) : -1;
+            if (idx === nowIdx) return `"${active.entries[idx].label}" is already playing.`;
+            const entries = [...active.entries];
+            const [moved] = entries.splice(idx, 1);
+            // After the currently-playing track; to the front when nothing plays.
+            const target = nowIdx >= 0 ? (idx < nowIdx ? nowIdx : nowIdx + 1) : 0;
+            entries.splice(target, 0, moved);
+            sl.setEntries(active.id, entries);
+            return `"${moved.label}" plays next in "${active.name}".`;
+        }
+
         case 'get_status':
         case 'status': {
             const g = useGenerateStore.getState();

@@ -42,6 +42,7 @@ import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
+import { useDjAutomix } from '../state/djAutomixStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
@@ -559,7 +560,7 @@ export const DJView: React.FC = () => {
   const [midiMapOpen, setMidiMapOpen] = useState(false);
   const [automixOn, setAutomixOn] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
-  const automixRef = useRef<{ current: djEngine.DeckId; fading: boolean; fadeStart: number; fadeFrom: number; fadeTo: number } | null>(null);
+  const automixRef = useRef<{ current: djEngine.DeckId; fading: boolean; fadeStart: number; fadeFrom: number; fadeTo: number; fadeSec: number } | null>(null);
   const [source, setSource] = useState<Source>({ kind: 'library' });
   // Lifted out of the old Mixer so the surface widget closures can drive them.
   const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
@@ -926,32 +927,58 @@ export const DJView: React.FC = () => {
     });
   }, []);
 
+  // "Send to DJ" bridge: a caller (suggester, imported performance set)
+  // staged the active setlist and tripped the one-shot pendingStart flag —
+  // consume it and switch automix on so the prepared set runs itself.
+  const automixPendingStart = useDjAutomix((s) => s.pendingStart);
+  const automixPendingStop = useDjAutomix((s) => s.pendingStop);
+  useEffect(() => {
+    if (!automixPendingStart) return;
+    useDjAutomix.getState().consumeStart();
+    setAutomixOn(true);
+  }, [automixPendingStart]);
+  useEffect(() => {
+    if (!automixPendingStop) return;
+    useDjAutomix.getState().consumeStop();
+    setAutomixOn(false);
+  }, [automixPendingStop]);
+
   // Automix (D7): auto-sequence the active set across the 2 decks — beatmatch
   // the next track and crossfade at each tail, then advance. Pure orchestration
   // over the existing engine (no new deps). Drives the real deck loaders + sync.
   useEffect(() => {
-    if (!automixOn) { automixRef.current = null; return; }
-    const seq = (): string[] => {
+    if (!automixOn) { automixRef.current = null; useDjAutomix.getState().setNowPlaying(null); return; }
+    const seqEntries = (): SetlistEntry[] => {
       const sl = useSetlistStore.getState();
       const set = sl.activeId ? sl.setlists[sl.activeId] : null;
-      return (set?.entries ?? []).map((e) => e.entryId).filter((x): x is string => !!x);
+      return (set?.entries ?? []).filter((e): e is SetlistEntry & { entryId: string } => !!e.entryId);
     };
+    const seq = (): string[] => seqEntries().map((e) => e.entryId as string);
+    // Prepared-performance data for a track in the active set (undefined for
+    // classic setlists — everything below falls back to the fixed constants).
+    const perfOf = (entryId: string | null) =>
+      entryId ? seqEntries().find((e) => e.entryId === entryId)?.perf : undefined;
     const list = seq();
     if (list.length < 2) { setFlash('Automix needs an active set with ≥2 tracks'); setAutomixOn(false); return; }
     const other = (d: djEngine.DeckId): djEngine.DeckId => (d === 'A' ? 'B' : 'A');
     const loadOnto = (d: djEngine.DeckId, entryId: string) => (d === 'A' ? setDeckATrack : setDeckBTrack)(entryId);
-    const loadNextAfter = (entryId: string | null, onto: djEngine.DeckId) => {
+    const nextEntryIdAfter = (entryId: string | null): string | null => {
       const l = seq();
       const i = entryId ? l.indexOf(entryId) : -1;
       const ni = i >= 0 ? i + 1 : 1;
-      if (ni < l.length && l[ni] !== deckATrackRef.current && l[ni] !== deckBTrackRef.current) loadOnto(onto, l[ni]);
+      return ni < l.length ? l[ni] : null;
+    };
+    const loadNextAfter = (entryId: string | null, onto: djEngine.DeckId) => {
+      const nextId = nextEntryIdAfter(entryId);
+      if (nextId && nextId !== deckATrackRef.current && nextId !== deckBTrackRef.current) loadOnto(onto, nextId);
     };
 
     // Init: current = a playing deck, else Deck A seeded with the first track.
     const current: djEngine.DeckId = djEngine.getStatus('A').playing ? 'A' : djEngine.getStatus('B').playing ? 'B' : 'A';
     const curEntry = current === 'A' ? deckATrackRef.current : deckBTrackRef.current;
     if (!curEntry) { loadOnto(current, list[0]); pendingPlayRef.current = current; }
-    automixRef.current = { current, fading: false, fadeStart: 0, fadeFrom: 0, fadeTo: 0 };
+    automixRef.current = { current, fading: false, fadeStart: 0, fadeFrom: 0, fadeTo: 0, fadeSec: AUTOMIX_XFADE };
+    useDjAutomix.getState().setNowPlaying(curEntry ?? list[0]);
     loadNextAfter(curEntry ?? list[0], other(current));
     setFlash('Automix on — sequencing the set');
 
@@ -964,21 +991,41 @@ export const DJView: React.FC = () => {
       const ns = djEngine.getStatus(nxt);
       const now = performance.now();
       if (!mix.fading) {
-        if (cs.playing && cs.duration > 0 && cs.duration - cs.currentTime <= AUTOMIX_TAIL && ns.hasBuffer) {
+        const outEntry = cur === 'A' ? deckATrackRef.current : deckBTrackRef.current;
+        // Reconcile the idle deck every tick: a mid-show reorder (assistant
+        // dj_set_next) must replace a stale pre-load. No-op when it already
+        // holds the right track.
+        loadNextAfter(outEntry, nxt);
+        const outPerf = perfOf(outEntry);
+        // Prepared sets carry an exact mix-out point on the OUTGOING track;
+        // classic sets use the fixed distance-from-end rule.
+        let due = outPerf?.mixOut != null
+          ? cs.currentTime >= outPerf.mixOut
+          : cs.duration > 0 && cs.duration - cs.currentTime <= AUTOMIX_TAIL;
+        // Assistant override: "transition NOW" jumps the blend regardless of
+        // the prepared mix-out point (consumed only once it can actually act).
+        if (!due && useDjAutomix.getState().pendingTransition && ns.hasBuffer) due = true;
+        if (cs.playing && due && ns.hasBuffer) {
+          useDjAutomix.getState().consumeTransition();
+          const incomingEntryId = nextEntryIdAfter(outEntry);
+          const inPerf = incomingEntryId ? perfOf(incomingEntryId) : undefined;
           syncDeck(nxt);              // beatmatch the incoming deck to the outgoing tempo + phase
-          djEngine.seekDeck(nxt, 0);
+          djEngine.seekDeck(nxt, inPerf?.cueIn ?? 0);
           djEngine.playDeck(nxt);
           mix.fading = true; mix.fadeStart = now; mix.fadeFrom = djEngine.getCrossfade(); mix.fadeTo = nxt === 'B' ? 1 : -1;
+          mix.fadeSec = outPerf?.transitionSec != null && outPerf.transitionSec > 0 ? outPerf.transitionSec : AUTOMIX_XFADE;
           setFlash(`Automix: blending → Deck ${nxt}`);
         }
       } else {
-        const t = Math.min(1, (now - mix.fadeStart) / (AUTOMIX_XFADE * 1000));
+        const t = Math.min(1, (now - mix.fadeStart) / (mix.fadeSec * 1000));
         applyCrossfade(mix.fadeFrom + (mix.fadeTo - mix.fadeFrom) * t);
         if (t >= 1 || !cs.playing) {
           if (cs.playing) djEngine.pauseDeck(cur);
           mix.current = nxt;
           mix.fading = false;
-          loadNextAfter(nxt === 'A' ? deckATrackRef.current : deckBTrackRef.current, cur); // queue the following track on the freed deck
+          const nowEntry = nxt === 'A' ? deckATrackRef.current : deckBTrackRef.current;
+          useDjAutomix.getState().setNowPlaying(nowEntry);
+          loadNextAfter(nowEntry, cur); // queue the following track on the freed deck
         }
       }
     }, 500);
