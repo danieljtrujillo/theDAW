@@ -1,34 +1,101 @@
-/* SING tab: the karaoke scroller's per-frame states. Everything that changes
-   every frame is a data attribute or a CSS variable, never a React render. */
+/* SING tab: the karaoke scroller. Large, centred text that reads from across
+   the room; every per-frame change is a data attribute or a CSS variable,
+   never a React render. Nothing flashes: a word fills left to right, a line
+   brightens once when it starts and dims once when it ends. */
+
+/* The pane around the scroller is the size container the text scales with
+   (cqw = 1% of the pane width, cqh = 1% of its height). */
+.sing-stage {
+  container-type: size;
+}
+
+.sing-scroller {
+  padding: 44cqh 6cqw;
+  scrollbar-width: none;
+  /* Soft edges: the text fades in at the top and out at the bottom. */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14%, #000 84%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14%, #000 84%, transparent 100%);
+}
+
+.sing-scroller::-webkit-scrollbar {
+  display: none;
+}
 
 .sing-lines {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(6px, 1.6cqh, 18px);
+  font-size: clamp(20px, 3.4cqw, 46px);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: rgb(161 161 170);
+  text-align: center;
 }
 
 .sing-lines li {
-  transition: opacity 180ms ease, transform 180ms ease, color 180ms ease;
-  transform-origin: left center;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  min-height: 1.25em;
+  transition: opacity 260ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1), color 260ms ease;
+  transform-origin: center;
+  opacity: 0.55;
+}
+
+.sing-lines li[data-blank] {
+  min-height: 0.6em;
 }
 
 .sing-lines li[data-state='past'] {
-  opacity: 0.35;
-}
-
-.sing-lines li[data-state='active'] {
-  color: #fff;
-  transform: scale(1.12);
+  opacity: 0.22;
 }
 
 .sing-lines li[data-state='next'] {
-  opacity: 0.7;
+  opacity: 0.8;
+  color: rgb(212 212 216);
+}
+
+.sing-lines li[data-state='active'] {
+  opacity: 1;
+  color: #fff;
+  transform: scale(1.16);
+  text-shadow: 0 0 24px rgb(251 113 133 / 0.35), 0 2px 12px rgb(0 0 0 / 0.6);
+}
+
+.sing-lines li[data-kind='marker'] {
+  opacity: 0.5;
 }
 
 .sing-lines li[data-kind='marker'] .sing-text {
-  font-variant: small-caps;
-  letter-spacing: 0.12em;
-  opacity: 0.55;
+  font-size: 0.5em;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgb(251 113 133 / 0.9);
+}
+
+.sing-text {
+  display: block;
+  max-width: 100%;
+  background: none;
+  border: 0;
+  padding: 0 0.15em;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: center;
+  text-wrap: balance;
+}
+
+button.sing-text:hover {
+  color: #fff;
 }
 
 /* The word being sung: a left-to-right fill driven by --p (0..1). */
@@ -36,23 +103,47 @@
   background: linear-gradient(
     90deg,
     rgb(251 113 133) calc(var(--p, 0) * 100%),
-    rgb(212 212 216) calc(var(--p, 0) * 100%)
+    currentColor calc(var(--p, 0) * 100%)
   );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
+/* A word whisper heard differently: an amber wavy underline, hover for what
+   it heard. The decoration colour is explicit so it survives the transparent
+   text of the filling word. */
+.sing-lines span[data-word][data-heard] {
+  text-decoration: underline wavy;
+  text-decoration-color: rgb(251 191 36 / 0.85);
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.16em;
+}
+
+/* Line time chips: hidden while singing, shown in TAP mode and on hover. */
 .sing-chip {
-  display: inline-block;
-  min-width: 3.4em;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  min-width: 3.6em;
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
-  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.6;
+  padding: 0 5px;
   border-radius: 3px;
   border: 1px solid rgb(255 255 255 / 0.12);
   color: rgb(161 161 170);
+  text-shadow: none;
+}
+
+.sing-lines[data-tap] .sing-chip,
+.sing-lines li:hover .sing-chip {
+  display: inline-block;
 }
 
 .sing-chip[data-untimed] {
@@ -63,4 +154,45 @@
 .sing-chip[data-low] {
   border-color: rgb(251 191 36 / 0.6);
   color: rgb(252 211 77);
+}
+
+.sing-chip[data-heard] {
+  border-color: rgb(251 191 36 / 0.6);
+}
+
+/* TAP mode nudge buttons on the right edge of a timed line. */
+.sing-nudge {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgb(161 161 170);
+  text-shadow: none;
+}
+
+.sing-nudge button {
+  min-width: 1.8em;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  background: rgb(0 0 0 / 0.3);
+  color: inherit;
+  font: inherit;
+  line-height: 1.6;
+}
+
+.sing-nudge button:hover {
+  background: rgb(255 255 255 / 0.1);
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sing-lines li {
+    transition: none;
+  }
 }

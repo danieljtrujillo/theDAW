@@ -11,6 +11,10 @@ export interface LyricWord {
   text: string;
   start_ms: number | null;
   end_ms: number | null;
+  /** What whisper heard where this word should be, when it was NOT this word
+   *  (ALIGN sets it; '' means whisper heard nothing there). Absent or null
+   *  when the word matched or no alignment has run. */
+  heard?: string | null;
 }
 
 export interface LyricLine {
@@ -27,6 +31,12 @@ export interface LyricsStats {
   total: number;
   asr_words: number;
   audio_source: string;
+  /** Words whose `heard` is set: the pasted text and the vocal disagree there. */
+  mismatched?: number;
+  /** 'mms' (forced alignment of your words) | 'whisper' (whisper's words matched to yours). */
+  aligner?: string;
+  /** The whisper review ran and could follow the vocal (its differences are shown). */
+  reviewed?: boolean;
 }
 
 export interface LyricsDoc {
@@ -171,6 +181,15 @@ async function pollJob(
 
 export const pollLyricsJob = (jobId: string, onUpdate?: (job: LyricsJob) => void, intervalMs = 1000) =>
   pollJob(`/api/lyrics/jobs/${enc(jobId)}`, onUpdate, intervalMs);
+
+/** The align / transcribe job running for the entry right now, if any: the
+ *  auto pipeline (import, favourite) may have started one before SING opened. */
+export async function fetchActiveLyricsJob(entryId: string): Promise<LyricsJob | null> {
+  const res = await fetch(`/api/lyrics/${enc(entryId)}/job`);
+  if (!res.ok) return null;
+  const payload = (await res.json()) as { job?: LyricsJob | null };
+  return payload.job ?? null;
+}
 
 /** The vocal module's jobs (the sidecar install) share the same payload shape. */
 export const pollVocalJob = (jobId: string, onUpdate?: (job: LyricsJob) => void, intervalMs = 1500) =>
