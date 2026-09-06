@@ -10,6 +10,7 @@
  */
 import { create } from 'zustand';
 import {
+  fetchActiveLyricsJob,
   deleteLyrics,
   fetchLyrics,
   fetchTranscriptionProbe,
@@ -46,6 +47,7 @@ const KEY_FOLLOW = 'sing.follow';
 const KEY_PITCH = 'sing.showPitch';
 const KEY_MIC_OFFSET = 'sing.micOffsetMs';
 const KEY_LANGUAGE = 'sing.language';
+const KEY_AUTO_ALIGN = 'sing.autoAlign';
 
 /** Whisper language codes offered in the picker; 'auto' lets whisper detect. */
 export const SING_LANGUAGES: Array<[string, string]> = [
@@ -104,6 +106,8 @@ export interface LyricsState {
   micOffsetMs: number;
   /** Whisper language for transcribe / align; 'auto' detects. */
   language: string;
+  /** Time the words automatically when a song opens with lyrics but no timings. */
+  autoAlign: boolean;
   transcription: TranscriptionState;
   /** Doc line index of the last tapped line; the next tap goes after it. */
   lastTapped: number;
@@ -124,6 +128,10 @@ export interface LyricsState {
   setMicOn: (on: boolean) => void;
   setMicOffsetMs: (ms: number) => void;
   setLanguage: (code: string) => void;
+  setAutoAlign: (on: boolean) => void;
+  /** ALIGN without a click: the doc has words but no times, whisper is
+   *  installed, nothing is running. Joins a job the auto pipeline started. */
+  maybeAutoAlign: () => Promise<void>;
   probeTranscription: () => Promise<void>;
   installTranscription: () => Promise<void>;
   runTranscribe: () => Promise<void>;
@@ -190,6 +198,7 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
     micOn: false,
     micOffsetMs: readNumber(KEY_MIC_OFFSET, 20),
     language: readString(KEY_LANGUAGE, 'auto'),
+    autoAlign: readBool(KEY_AUTO_ALIGN, true),
     transcription: 'unknown',
     lastTapped: -1,
 
@@ -208,6 +217,7 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
           loading: false,
           dirty: false,
         });
+        void get().maybeAutoAlign();
       } catch (e) {
         if (generation !== loadGeneration) return;
         set({ doc: null, loading: false, error: errorMessage(e) });
@@ -342,6 +352,39 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
       writeStorage(KEY_LANGUAGE, v);
     },
 
+    setAutoAlign: (on) => {
+      set({ autoAlign: on });
+      writeStorage(KEY_AUTO_ALIGN, on ? '1' : '0');
+      if (on) void get().maybeAutoAlign();
+    },
+
+    maybeAutoAlign: async () => {
+      const { entryId, doc, job, transcription, autoAlign } = get();
+      if (!entryId || !doc || job) return;
+      const hasText = doc.text.trim().length > 0;
+      const timed = doc.lines.some((l) => l.start_ms !== null);
+      // A job the import pipeline started for this song is picked up whether
+      // or not auto-align is on: its result belongs on screen either way.
+      try {
+        const running = await fetchActiveLyricsJob(entryId);
+        if (running && get().entryId === entryId && !get().job) {
+          const kind: JobKind = /transcribe/i.test(running.message) || !hasText ? 'transcribe' : 'align';
+          const result = await trackJob(kind, running.id, pollLyricsJob);
+          if (result && get().entryId === entryId) {
+            snapshots = [];
+            set({ doc: result, dirty: false, persisted: true, lastTapped: -1 });
+            patchLibraryEntry(entryId, result.text);
+          }
+          return;
+        }
+      } catch {
+        /* no job to join */
+      }
+      if (!autoAlign || !hasText || timed || transcription !== 'ready') return;
+      logInfo('sing', 'Timing the lyrics against the vocal (auto-align)');
+      await get().runAlign();
+    },
+
     probeTranscription: async () => {
       try {
         const probe = await fetchTranscriptionProbe();
@@ -349,6 +392,7 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
       } catch {
         set({ transcription: 'missing' });
       }
+      if (get().transcription === 'ready') void get().maybeAutoAlign();
     },
 
     installTranscription: async () => {
@@ -397,6 +441,9 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
           snapshots = [];
           set({ doc: result, dirty: false, persisted: true, lastTapped: -1 });
           patchLibraryEntry(entryId, result.text);
+          // The review pass (whisper underlining what it heard differently)
+          // runs as its own job after a forced alignment: pick it up.
+          void get().maybeAutoAlign();
         }
       } catch (e) {
         if (e instanceof LyricsUnavailableError) set({ transcription: 'missing', job: null });

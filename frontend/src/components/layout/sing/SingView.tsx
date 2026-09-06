@@ -62,6 +62,7 @@ export const SingView: React.FC = () => {
   const notesCandidate = useLyricsStore((s) => s.notesCandidate);
   const persisted = useLyricsStore((s) => s.persisted);
   const language = useLyricsStore((s) => s.language);
+  const autoAlign = useLyricsStore((s) => s.autoAlign);
 
   const [editing, setEditing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -179,6 +180,7 @@ export const SingView: React.FC = () => {
 
   const stats = doc?.stats ?? null;
   const pct = stats && stats.total > 0 ? Math.round((100 * stats.matched) / stats.total) : null;
+  const mismatched = stats?.mismatched ?? 0;
   const hasText = !!doc?.text.trim();
   const hasTimings = !!doc?.lines.some((l) => l.start_ms !== null);
   const busy = !!job;
@@ -206,6 +208,14 @@ export const SingView: React.FC = () => {
             title={`${stats?.matched} of ${stats?.total} words matched whisper's transcript`}
           >
             {pct}% matched
+          </span>
+        )}
+        {mismatched > 0 && (
+          <span
+            className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-amber-200"
+            title="Whisper heard different words at these places. They are underlined in the lyrics; hover one to read what was heard."
+          >
+            {mismatched} {mismatched === 1 ? 'word differs' : 'words differ'}
           </span>
         )}
         <span className="flex-1" />
@@ -304,7 +314,7 @@ export const SingView: React.FC = () => {
             <PitchLane entryId={entry.id} getPosMs={() => posRef.current} activeLineRef={activeLineRef} />
           </Suspense>
         )}
-        <div className="flex-1 min-h-0 relative">
+        <div className="sing-stage flex-1 min-h-0 relative">
           {loading || !doc ? (
             <div className="h-full flex items-center justify-center text-[10px] font-mono text-zinc-500">
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'No lyrics loaded.'}
@@ -365,6 +375,8 @@ export const SingView: React.FC = () => {
         </button>
         <input id="sing-follow" name="sing-follow" type="checkbox" className="accent-rose-400" checked={follow} onChange={(e) => store().setFollow(e.target.checked)} />
         <label htmlFor="sing-follow" className="cursor-pointer select-none" title="Highlight and scroll the lyrics with the track">FOLLOW</label>
+        <input id="sing-auto-align" name="sing-auto-align" type="checkbox" className="accent-rose-400" checked={autoAlign} onChange={(e) => store().setAutoAlign(e.target.checked)} />
+        <label htmlFor="sing-auto-align" className="cursor-pointer select-none" title="When a song opens with lyrics but no timings, run ALIGN automatically (times your words against the vocal)">AUTO</label>
         <input id="sing-tap" name="sing-tap" type="checkbox" className="accent-rose-400" checked={tapMode} onChange={(e) => store().setTapMode(e.target.checked)} disabled={!hasText} />
         <label htmlFor="sing-tap" className="cursor-pointer select-none" title="Tap mode: Space or Enter stamps the next untimed line at the current time; Backspace undoes">TAP</label>
         <button type="button" className="btn-ghost text-[8px] py-0.5 px-2 border border-rose-500/40 text-rose-200 disabled:opacity-40" onClick={() => store().tap(posRef.current)} disabled={!tapMode || !handle.isSameTrack} aria-label="Stamp the next line at the current time" title="Stamp the next untimed line now (Space)">

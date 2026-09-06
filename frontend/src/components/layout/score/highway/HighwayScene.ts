@@ -28,7 +28,7 @@
  */
 
 import type { CanvasBox } from '../../../../lib/canvasScale';
-import { NOTE_HIGHLIGHT_COLOR } from '../scoreShared';
+import { highlightColor, inkHolds } from '../scoreShared';
 import type { GlyphAtlas } from './glyphAtlas';
 import {
   DEFAULT_LAYOUT,
@@ -360,7 +360,7 @@ export class HighwayScene {
     this.camera.lookAt(0, 0.6, -8);
 
     this.colors = {
-      hit: new three.Color(NOTE_HIGHLIGHT_COLOR),
+      hit: new three.Color(highlightColor()),
       items: ITEM_COLORS.map((c) => new three.Color(c)),
       red: new three.Color(BLOCK_RED),
       blue: new three.Color(BLOCK_BLUE),
@@ -517,7 +517,11 @@ export class HighwayScene {
       const s = this.freeSlots[this.freeCount];
       this.bindSlot(s, items[i], i);
     }
-    // Move + tint everything that is bound.
+    // Move + tint everything that is bound. With the 'hold' trail a played
+    // item keeps the hit colour while it fades out, so each note changes
+    // colour once (a strobe-free trail); with 'flash' it returns to its base
+    // colour after the hit window.
+    const hold = inkHolds();
     for (let s = 0; s < this.slots.length; s += 1) {
       const slot = this.slots[s];
       if (slot.itemIndex < 0) continue;
@@ -530,7 +534,7 @@ export class HighwayScene {
         slot.material.opacity = 1;
         if (slot.decalMaterial) slot.decalMaterial.opacity = 1;
       } else {
-        slot.material.color.copy(slot.base);
+        slot.material.color.copy(hold && phase === 'past' ? this.colors.hit : slot.base);
         const alpha = phase === 'past' ? pastAlpha(item.hitTime, t) : 1;
         slot.material.opacity = slot.baseOpacity * alpha;
         if (slot.decalMaterial) slot.decalMaterial.opacity = alpha;
@@ -715,7 +719,7 @@ export class HighwayScene {
     // Hit bar shared by every skin.
     const hitBar = new three.Mesh(
       new three.BoxGeometry(width + 0.4, 0.02, 0.06),
-      new three.MeshBasicMaterial({ color: NOTE_HIGHLIGHT_COLOR, transparent: true, opacity: 0.9 }),
+      new three.MeshBasicMaterial({ color: highlightColor(), transparent: true, opacity: 0.9 }),
     );
     hitBar.position.set(0, -0.005, 0);
     this.staticGroup.add(hitBar);

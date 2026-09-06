@@ -24,7 +24,18 @@ export type NowLinePos = 'left' | 'center';
  *  the old neon green (emerald-400, about 2:1 on white) shimmered and was
  *  hard to track at speed. */
 export type HighlightInk = 'magenta' | 'blue' | 'orange' | 'green';
+/** What happens to a note once it has sounded. 'hold' keeps every played
+ *  note in the ink until a seek back or a re-render, so the score fills in
+ *  behind the now-line without anything blinking; 'flash' paints only the
+ *  sounding note and restores it when the cursor moves on (the old look, and
+ *  at fast passages a strobe in the 3-30 Hz band photosensitive readers must
+ *  avoid, so it is not the default). */
+export type InkTrail = 'hold' | 'flash';
 export const NOW_LINE_POSITIONS: NowLinePos[] = ['left', 'center'];
+export const INK_TRAILS: Record<InkTrail, { label: string; title: string }> = {
+  hold: { label: 'Hold', title: 'Played notes stay in the ink (no flashing)' },
+  flash: { label: 'Flash', title: 'Only the sounding note is inked; it turns off when the next one sounds' },
+};
 export const HIGHLIGHT_INKS: Record<HighlightInk, { label: string; color: string }> = {
   magenta: { label: 'Magenta', color: '#c026d3' },
   blue: { label: 'Blue', color: '#2563eb' },
@@ -66,6 +77,7 @@ export interface PlayAlongPrefs {
   instrument: PlayAlongInstrument;
   nowLine: NowLinePos;
   ink: HighlightInk;
+  inkTrail: InkTrail;
 }
 
 export interface PlayAlongState extends PlayAlongPrefs {
@@ -85,6 +97,7 @@ export interface PlayAlongState extends PlayAlongPrefs {
   setInstrument: (instrument: PlayAlongInstrument) => void;
   setNowLine: (pos: NowLinePos) => void;
   setInk: (ink: HighlightInk) => void;
+  setInkTrail: (trail: InkTrail) => void;
   setPartVisibility: (artifactId: string, visible: boolean[]) => void;
   togglePart: (artifactId: string, index: number) => void;
 }
@@ -104,6 +117,7 @@ const DEFAULT_PREFS: PlayAlongPrefs = {
   instrument: 'all',
   nowLine: 'left',
   ink: 'magenta',
+  inkTrail: 'hold',
 };
 
 const clamp = (value: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, value));
@@ -132,6 +146,7 @@ function sanitize(raw: Partial<Record<keyof PlayAlongPrefs, unknown>>): PlayAlon
     instrument: oneOf(raw.instrument, PLAY_ALONG_INSTRUMENTS, DEFAULT_PREFS.instrument),
     nowLine: oneOf(raw.nowLine, NOW_LINE_POSITIONS, DEFAULT_PREFS.nowLine),
     ink: oneOf(raw.ink, Object.keys(HIGHLIGHT_INKS) as HighlightInk[], DEFAULT_PREFS.ink),
+    inkTrail: oneOf(raw.inkTrail, Object.keys(INK_TRAILS) as InkTrail[], DEFAULT_PREFS.inkTrail),
   };
 }
 
@@ -166,6 +181,7 @@ function savePrefs(state: PlayAlongPrefs): void {
       instrument: state.instrument,
       nowLine: state.nowLine,
       ink: state.ink,
+      inkTrail: state.inkTrail,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch {
@@ -197,6 +213,8 @@ export const usePlayAlongStore = create<PlayAlongState>()((set, get) => {
     setInstrument: (instrument) => update({ instrument }),
     setNowLine: (nowLine) => update({ nowLine: oneOf(nowLine, NOW_LINE_POSITIONS, DEFAULT_PREFS.nowLine) }),
     setInk: (ink) => update({ ink: oneOf(ink, Object.keys(HIGHLIGHT_INKS) as HighlightInk[], DEFAULT_PREFS.ink) }),
+    setInkTrail: (inkTrail) =>
+      update({ inkTrail: oneOf(inkTrail, Object.keys(INK_TRAILS) as InkTrail[], DEFAULT_PREFS.inkTrail) }),
     setPartVisibility: (artifactId, visible) =>
       set((s) => ({ partVisibility: { ...s.partVisibility, [artifactId]: visible.slice() } })),
     togglePart: (artifactId, index) =>

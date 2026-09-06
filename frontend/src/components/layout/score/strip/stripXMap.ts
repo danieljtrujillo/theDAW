@@ -271,3 +271,74 @@ export function fitZoomForHeight(
   if (!(contentHeightPx > 0) || !(avail > 0)) return clampZoom(zoom);
   return clampZoom((zoom * avail) / contentHeightPx);
 }
+
+/** Rise time of the strip's scroll follower, seconds: how long a jump in the
+ *  target takes to be (mostly) absorbed. The x map is proportional inside a
+ *  measure, so a whole note or a rest is a plateau and the next attack a
+ *  jump; ~0.35 s turns that into one glide while the lag behind a steady
+ *  target stays under a notehead (2v/omega: ~13 px at 60 px/s). */
+export const SCROLL_FOLLOW_RISE_SEC = 0.35;
+/** A target further than this fraction of the pane from the current position
+ *  is a seek (or the first frame): snap instead of gliding across the pane. */
+export const SCROLL_SNAP_FRACTION = 0.6;
+/** Frames longer than this (a hidden tab, a stall) are integrated as this. */
+const FOLLOW_MAX_DT = 0.05;
+
+export interface ScrollFollower {
+  /** Advance toward `target` (px) at time `nowSec`; returns the position to
+   *  write. `paneWidth` sizes the seek-snap threshold. */
+  step: (target: number, nowSec: number, paneWidth: number) => number;
+  /** Jump to `target` and forget the motion state (rebuild, resize, seek). */
+  snap: (target: number) => number;
+}
+
+/**
+ * A critically damped spring on the scroll position: continuous position AND
+ * velocity, so a plateau-then-jump target becomes an accelerate-and-settle
+ * glide with no visible step. While the target is ahead of the follower the
+ * follower never moves backwards (a critically damped approach cannot
+ * overshoot, and a target that is briefly behind by less than the snap
+ * threshold is only ever a plateau's worth of over-run). A target far behind
+ * (a seek back) or far ahead (a seek forward) snaps.
+ */
+export function createScrollFollower(): ScrollFollower {
+  const omega = (2 * Math.PI) / SCROLL_FOLLOW_RISE_SEC;
+  let x = Number.NaN;
+  let v = 0;
+  let last = Number.NaN;
+  const jump = (target: number): number => {
+    x = target;
+    v = 0;
+    return x;
+  };
+  return {
+    // A public snap also forgets the clock: the next step() re-times from
+    // its own `nowSec` instead of integrating the gap since the last frame.
+    snap: (target) => {
+      last = Number.NaN;
+      return jump(target);
+    },
+    step: (target, nowSec, paneWidth) => {
+      if (!Number.isFinite(target)) return Number.isFinite(x) ? x : 0;
+      const threshold = Math.max(1, paneWidth) * SCROLL_SNAP_FRACTION;
+      if (!Number.isFinite(x) || !Number.isFinite(last) || Math.abs(target - x) > threshold) {
+        last = nowSec;
+        return jump(target);
+      }
+      const dt = Math.min(FOLLOW_MAX_DT, Math.max(0, nowSec - last));
+      last = nowSec;
+      if (dt <= 0) return x;
+      // Semi-implicit Euler on x'' = -2*omega*x' - omega^2 (x - target).
+      v += (-2 * omega * v - omega * omega * (x - target)) * dt;
+      const next = x + v * dt;
+      // Forward-only while the music is ahead: never drift back toward a
+      // target that is behind by less than a seek.
+      if (target >= x && next < x) {
+        v = 0;
+        return x;
+      }
+      x = next;
+      return x;
+    },
+  };
+}

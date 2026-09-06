@@ -35,6 +35,7 @@ import {
   clampZoom,
   describeArtifact,
   highlightColor,
+  inkHolds,
   readingPos,
   PAGE_GAP,
   prepareMusicXml,
@@ -834,7 +835,9 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   // expose their rendered <g> (getSVGGElement) — an inline style on every
   // child out-specifies VexFlow's fill attributes, no OSMD fork needed.
   const applyNoteHighlight = useCallback(() => {
-    clearNoteHighlight();
+    // With the 'hold' trail played notes keep the ink (nothing blinks); with
+    // 'flash' the previous note is restored first.
+    if (!inkHolds()) clearNoteHighlight();
     const cursor = osmdRef.current?.cursor as
       | { GNotesUnderCursor?: () => Array<{ getSVGGElement?: () => SVGGElement | undefined }> }
       | undefined;
@@ -1086,6 +1089,9 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     // forced layouts) is paid then rather than on every frame.
     const at = driver.index();
     if (at !== lastStepRef.current) {
+      // Backwards (seek, loop): the held trail must not show notes that have
+      // not sounded yet from here.
+      if (at < lastStepRef.current) clearNoteHighlight();
       lastStepRef.current = at;
       applyNoteHighlight();
       keepCursorVisible();

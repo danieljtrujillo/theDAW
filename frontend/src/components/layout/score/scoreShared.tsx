@@ -18,6 +18,10 @@ export const NOTE_HIGHLIGHT_COLOR = HIGHLIGHT_INKS.magenta.color;
 /** The current ink (playAlongStore.ink) as a CSS colour. */
 export const highlightColor = (): string => HIGHLIGHT_INKS[usePlayAlongStore.getState().ink].color;
 
+/** True when played notes keep the ink (playAlongStore.inkTrail === 'hold'):
+ *  nothing is un-painted as the cursor moves on, so the score never blinks. */
+export const inkHolds = (): boolean => usePlayAlongStore.getState().inkTrail === 'hold';
+
 /** Where the "now" sits across the pane right now (playAlongStore.nowLine),
  *  as a fraction of the pane width. */
 export const readingPos = (): number => readingPosFor(usePlayAlongStore.getState().nowLine);
@@ -395,9 +399,11 @@ export const applyStripEngraving = (rules: any): void => {
 /** Something with a live OSMD cursor: the note-highlighter only needs
  *  GNotesUnderCursor, which every OSMD 1.x Cursor exposes. */
 export interface NoteHighlighter {
-  /** Paint the notehead(s) under the cursor in NOTE_HIGHLIGHT_COLOR, clearing
-   *  the previous paint first. Safe to call every step; cheap when nothing
-   *  changed underneath. */
+  /** Paint the notehead(s) under the cursor in the current ink. With the
+   *  'hold' trail the previous paint stays (the played score fills in); with
+   *  'flash' it is cleared first. Safe to call every step; cheap when nothing
+   *  changed underneath. Callers clear() before apply() when the cursor went
+   *  backwards, so a held trail never shows notes that have not sounded yet. */
   apply: () => void;
   /** Restore every element painted by apply(). */
   clear: () => void;
@@ -431,7 +437,7 @@ export function createNoteHighlighter(getCursor: () => Cursor | null): NoteHighl
   };
 
   const apply = (): void => {
-    clear();
+    if (!inkHolds()) clear();
     const cursor = getCursor() as
       | { GNotesUnderCursor?: () => Array<{ getSVGGElement?: () => SVGGElement | undefined }> }
       | null;

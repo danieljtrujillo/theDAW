@@ -680,6 +680,7 @@ class LibraryStore:
         # idle-gated, serialized background queue (stems -> midi -> score).
         if bool(patch.get("favorite")):
             _maybe_enqueue_stems(self, entry_id, source="favorite", force=True)
+            _maybe_enqueue_lyrics(self, entry_id, source="favorite", force=True)
             _maybe_enqueue_midi(self, entry_id, source="favorite", force=True)
             _maybe_enqueue_score(self, entry_id, source="favorite", force=True)
         return record
@@ -761,8 +762,12 @@ class LibraryStore:
         self._sync_record_to_db(record, record_meta)
         # Opt-in: enqueue background analysis / stems / midi if the
         # user has those toggles on (defaults are all OFF).
+        # Serial idle queue, in this order: stems first (everything after
+        # wants the vocal / the parts), lyrics next (the song is singable
+        # sooner than it is notated), then MIDI and the sheet.
         _maybe_enqueue_analysis(self, entry_id, source="import")
         _maybe_enqueue_stems(self, entry_id, source="import")
+        _maybe_enqueue_lyrics(self, entry_id, source="import")
         _maybe_enqueue_midi(self, entry_id, source="import")
         _maybe_enqueue_score(self, entry_id, source="import")
         return record
@@ -1084,15 +1089,11 @@ def _maybe_enqueue_stems(
     stem_count = int(settings.get("default_count") or 4)
 
     async def _run() -> None:
-        from backend.modules.stems.engine import separate_entry
+        from backend.core import pipeline
 
-        await separate_entry(
-            store.db,  # type: ignore[arg-type]
-            entry_id,
-            audio_path,
-            entry_dir,
-            stems=stem_count,
-        )
+        # Device and quality come from the settings inside; a separation the
+        # user started meanwhile (SING's ALIGN, a manual run) is joined.
+        await pipeline.ensure_stems(entry_id, stems=stem_count)
 
     try:
         get_background_queue().enqueue(f"stems:{entry_id}", _run)
@@ -1144,26 +1145,59 @@ def _maybe_enqueue_midi(
     from_stems_flag = bool(settings.get("from_stems", True))
 
     async def _run() -> None:
-        from backend.modules.midi.runner import convert_entry
+        from backend.core import pipeline
 
-        import asyncio
-
-        # convert_entry is CPU/model-bound and may run piano transcription over
-        # many segments. Keep it off the asyncio event loop so health/static
-        # endpoints do not stall while the idle worker is busy.
-        await asyncio.to_thread(
-            convert_entry,
-            store.db,  # type: ignore[arg-type]
-            entry_id,
-            audio_path,
-            entry_dir,
-            from_stems=from_stems_flag,
-        )
+        # Off the event loop (the coordinator threads it), on the GPU lane,
+        # after any stem separation in flight, and never twice for one entry.
+        await pipeline.ensure_midi(entry_id, from_stems=from_stems_flag)
 
     try:
         get_background_queue().enqueue(f"midi:{entry_id}", _run)
     except Exception as e:
         log.debug("library.store: failed to enqueue midi for %s: %s", entry_id, e)
+
+
+def _maybe_enqueue_lyrics(
+    store: "LibraryStore",
+    entry_id: str,
+    *,
+    source: str,
+    force: bool = False,
+) -> None:
+    """If ``lyrics.auto_on_<source>`` is on and the entry has lyric text
+    (a Suno import, an embedded tag, the notes), queue an ALIGN so the song
+    is ready to sing along to without a click: whisper times the user's own
+    words against the vocal stem. With ``lyrics.auto_transcribe`` on, an
+    entry with no text is transcribed instead. Skipped when a timed
+    document exists, or whisper is not installed. ``force`` bypasses the
+    settings gate (favoriting)."""
+    if store.db is None:
+        return
+    try:
+        from backend.core.background_workers import get_background_queue
+        from backend.modules.settings.router import get_store as get_settings_store
+    except ImportError:
+        return
+    try:
+        settings = get_settings_store().get_section("lyrics")
+    except Exception:
+        settings = {}
+    if not force and not settings.get(f"auto_on_{source}", False):
+        return
+    record = store.get_entry(entry_id)
+    has_text = bool(str(getattr(record, "lyrics", "") or "").strip())
+    if not has_text and not settings.get("auto_transcribe", False):
+        return
+
+    async def _run() -> None:
+        from backend.core import pipeline
+
+        await pipeline.ensure_lyrics(entry_id)
+
+    try:
+        get_background_queue().enqueue(f"lyrics:{entry_id}", _run)
+    except Exception as e:
+        log.debug("library.store: failed to enqueue lyrics for %s: %s", entry_id, e)
 
 
 def _generate_score_for_entry(

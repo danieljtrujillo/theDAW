@@ -65,6 +65,27 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_on_generate": False,
         "from_stems": True,
     },
+    "lyrics": {
+        # After an import with lyric text (Suno, embedded tags, notes), time
+        # the words against the vocal stem so SING is ready without a click.
+        # Whisper runs on the GPU when there is one; default-ON because the
+        # job is idle-gated and skipped when a timed document exists.
+        "auto_on_import": True,
+        "auto_on_generate": False,
+        # An entry with no lyric text is transcribed instead (whisper writes
+        # the words). Off: the user's own words are the truth for SING.
+        "auto_transcribe": False,
+        # Whisper language for the auto jobs: 'auto' detects.
+        "language": "auto",
+        # How ALIGN times the words. 'mms' = forced alignment of the user's
+        # own words with torchaudio's MMS aligner (every word gets a time,
+        # no transcription involved); 'whisper' = match whisper's transcript
+        # to the words (the old way); 'auto' = mms when torchaudio has it.
+        "aligner": "auto",
+        # After a forced alignment, let whisper listen too and underline the
+        # words it heard differently (the review pass; costs a transcription).
+        "review": True,
+    },
     "idle": {
         "min_idle_seconds": 30,
         "respect_vram_pressure": True,

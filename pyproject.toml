@@ -35,7 +35,12 @@ dependencies = [
     # cross-check used by the analyzer + metering (loudness itself comes from FFmpeg loudnorm).
     "scipy>=1.11",
     "pyloudnorm>=0.1.1",
-    "onnxruntime<1.24",
+    # basic-pitch's inference runtime. The GPU build carries the CUDA
+    # execution provider (cuBLAS / cuDNN come from torch's wheel), so
+    # audio-to-MIDI runs on the card next to Demucs and whisper instead of
+    # on the CPU; macOS has no CUDA build.
+    "onnxruntime<1.24 ; sys_platform == 'darwin'",
+    "onnxruntime-gpu<1.24 ; sys_platform != 'darwin'",
     # Windows-only: pre-built CUDA 12.8 wheel for Python 3.10. Pinned here so
     # `uv sync` never removes it. The wheel URL lives in [tool.uv.sources].
     # Update both when upgrading torch/CUDA.

@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { blankChartEvent, type ChartEvent, type ChartPart, type NoteChart } from '../../../../lib/notechart.ts';
 import { computeCanvasBox } from '../../../../lib/canvasScale.ts';
 import { NOTE_HIGHLIGHT_COLOR } from '../scoreShared.tsx';
+import { usePlayAlongStore } from '../../../../state/playAlongStore.ts';
 import {
   atlasSizeFor,
   cellsPerRow,
@@ -371,10 +372,17 @@ assert.equal(scene.inspect(far), null);
 const keepSlot = scene.inspect(ahead)!.slot;
 scene.frame(2.4);
 assert.equal(scene.inspect(ahead)!.slot, keepSlot);
-// The item at 2 s is now fading (past the hit window).
+// The item at 2 s is now fading (past the hit window). With the default
+// 'hold' trail it keeps the ink while it fades (one colour change per note,
+// nothing strobes); with 'flash' it returns to its base colour.
 const fading = scene.inspect(onLine)!;
 assert.ok(fading.opacity < 1 && fading.opacity > 0);
-assert.notEqual(fading.colorHex, hitHex);
+assert.equal(fading.colorHex, hitHex, 'hold: a played note keeps the ink while fading');
+usePlayAlongStore.getState().setInkTrail('flash');
+scene.frame(2.4);
+assert.notEqual(scene.inspect(onLine)!.colorHex, hitHex, 'flash: a played note returns to its base colour');
+usePlayAlongStore.getState().setInkTrail('hold');
+scene.frame(2.4);
 // Past PAST_SEC it is released.
 scene.frame(2.6);
 assert.equal(scene.inspect(onLine), null);

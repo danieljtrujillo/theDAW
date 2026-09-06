@@ -205,6 +205,45 @@ async function menuItem(page: Page, name: string): Promise<void> {
 }
 
 
+/** Load a library track onto a DJ deck the way a user does: search the DJ
+ *  browser for its title, then press that row's →A / →B button. The deck view
+ *  (title, key/BPM, waveform) is fed by this path, not by djEngine.loadDeck. */
+async function djLoadViaBrowser(page: Page, title: string, deck: 'A' | 'B'): Promise<boolean> {
+  const search = page.locator('input[placeholder="search…"], input[placeholder="search..."]').first();
+  if (await search.isVisible().catch(() => false)) {
+    await search.fill(title.slice(0, 24)).catch(() => undefined);
+    await page.waitForTimeout(400);
+  }
+  // The browser is filtered to the title now; the rows are plain divs, so the
+  // first matching load button belongs to the first (best) match.
+  const ok = await page.evaluate((d) => {
+    const btn = document.querySelector<HTMLButtonElement>(`button[title="Load onto Deck ${d}"]:not([disabled])`);
+    if (btn) { btn.click(); return true; }
+    return false;
+  }, deck).catch(() => false);
+  await page.waitForTimeout(400);
+  return ok;
+}
+
+/** Click a control inside an embedded app (VJ, Foundry, Underfit) by its text. */
+async function clickInFrame(page: Page, frameTitle: string, re: RegExp): Promise<boolean> {
+  try {
+    const frame = page.frameLocator(`iframe[title="${frameTitle}"]`);
+    const target = frame.getByText(re).first();
+    await target.waitFor({ state: 'visible', timeout: 8000 });
+    // A status overlay (VJ's "No camera found") can sit over the controls, so
+    // the click is dispatched on the element itself rather than at its point.
+    await target.evaluate((el) => ((el.closest('button') as HTMLElement | null) ?? (el as HTMLElement)).click());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The PERFORM live set authored for the README (linked Et Tu Machina stems). */
+const TASMO_PATH = process.env.SA3_TASMO_PATH
+  ?? path.join(process.env.USERPROFILE || process.env.HOME || '', 'Documents', 'theDAW Projects', 'Et Tu Machina - Live Set.tasmo');
+
 /** In the SCORE rail, click the first artifact button of the given kind (the
  *  rail prints each artifact's kind under its label). */
 async function pickScoreArtifact(page: Page, kind: string): Promise<boolean> {
@@ -291,6 +330,10 @@ interface MediaSpec extends Partial<HeroCtx> {
   djDecks?: boolean;
   djStems?: boolean;
   initAudio?: boolean;
+  /** Stage the hero as the inpaint source too (the INPAINT slot is filled). */
+  inpaintAudio?: boolean;
+  /** Open a PERFORM live set (.tasmo path on this machine) in the session grid. */
+  tasmoPath?: string;
   chimeraBuild?: boolean;
   spectro?: boolean;
   model?: string;
@@ -490,6 +533,16 @@ async function applyMedia(spec: MediaSpec): Promise<{ tracks: number; clips: num
       } catch (e) { out.push('magcond ' + e.message); }
     }
     if (spec.initAudio) { const f = await getSrcFile(); gp.getState().setField('initAudioFile', f); gp.getState().setField('initAudioEnabled', true); gp.getState().setField('inpaintEnabled', false); }
+    if (spec.inpaintAudio) {
+      // The inpaint slot takes its own File; a painted region shows what the
+      // brush does. Set after initAudio, which switches inpainting off.
+      try {
+        const f = await getSrcFile();
+        gp.getState().setField('inpaintAudioFile', new File([f], 'et-tu-machina-inpaint.wav', { type: 'audio/wav' }));
+        gp.getState().setField('inpaintEnabled', true);
+        gp.getState().setField('inpaintRegions', [[0.36, 0.52]]);
+      } catch (e) { out.push('inpaint ' + e.message); }
+    }
     if (spec.chimeraBuild && gp.getState().chimera.clips.length === 0) {
       const srcs = [{ u: spec.heroUrl!, l: 'Et Tu Machina' }];
       if (spec.stems && spec.stems[0]) srcs.push({ u: spec.stems[0].url, l: 'Drums' });
@@ -506,9 +559,17 @@ async function applyMedia(spec: MediaSpec): Promise<{ tracks: number; clips: num
     try {
       const piano = (await imp('/src/state/pianoRollStore.ts')).usePianoRollStore;
       piano.getState().setTotalSteps(spec.piano.totalSteps || 64);
-      piano.getState().replaceAll((spec.piano.notes || []).map((x: any) => ({ ...x })));
+      // The showcase JSON has no ids; PianoNote needs a unique one per note.
+      piano.getState().replaceAll((spec.piano.notes || []).map((x: any, i: number) => ({ id: x.id ?? `shot-${i}`, ...x })));
       piano.getState().setPlaying(true);
     } catch (e) { out.push('piano ' + e.message); }
+  }
+
+  if (spec.tasmoPath) {
+    try {
+      const di = (await imp('/src/state/dawImportStore.ts')).useDawImportStore;
+      await di.getState().loadTasmoAsSession(spec.tasmoPath);
+    } catch (e) { out.push('tasmo ' + e.message); }
   }
 
   if (spec.fillBucket) { try { const mb = (await imp('/src/state/mediaBucketStore.ts')).useMediaBucketStore; const f = await getSrcFile(); mb.getState().add(f); } catch (e) { out.push('bucket ' + e.message); } }
@@ -574,8 +635,9 @@ const SCENES: Scene[] = [
       // The spectrogram viewer reads generateStore.lastAudioUrl; pointing it at
       // the hero makes the COMPARE spectrogram available while the generation
       // shell stays on screen with the prompt filled.
-      await media(page, { loadHero: true, spectro: true, promptText: 'cinematic downtempo, dusty rhodes, tape saturation, 92 bpm' });
+      await media(page, { loadHero: true, spectro: true, initAudio: true, inpaintAudio: true, promptText: 'cinematic downtempo, dusty rhodes, tape saturation, 92 bpm' });
       await clickTab(page, 'make');
+      await page.waitForTimeout(1500);
       await snapScene(page, '01-shell-make');
     },
   },
@@ -624,7 +686,9 @@ const SCENES: Scene[] = [
       await boot(page);
       await media(page, { buildStems: true });
       await clickTab(page, 'edit');
-      await page.waitForTimeout(800);
+      // Each clip decodes its own stem for the waveform; six 28 MB WAVs take a
+      // few seconds, and an empty clip body is what we are avoiding.
+      await page.waitForTimeout(9000);
       await snapScene(page, '05-edit-timeline');
     },
   },
@@ -635,7 +699,7 @@ const SCENES: Scene[] = [
       await boot(page);
       await media(page, { buildStems: true, automationWrite: true });
       await clickTab(page, 'edit');
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(6000);
       await snapScene(page, '06-edit-automation');
     },
   },
@@ -646,7 +710,7 @@ const SCENES: Scene[] = [
       await boot(page);
       await media(page, { buildStems: true, fxRack: true });
       await clickTab(page, 'edit');
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(6000);
       await snapScene(page, '07-edit-fx-rack');
     },
   },
@@ -655,9 +719,13 @@ const SCENES: Scene[] = [
     description: 'MIX categorized effect rail with Et Tu Machina loaded',
     run: async (page) => {
       await boot(page);
-      await media(page, { studioSource: true });
+      await media(page, { studioSource: true, mixChain: true });
       await clickTab(page, 'mix');
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(1200);
+      // Open a Studio module so the instrument stage is filled too.
+      await page.getByText('Maximizer', { exact: true }).first().click({ timeout: 4000 }).catch(() => undefined);
+      // The module's control surface is an embedded page; give it time to mount.
+      await page.waitForTimeout(5000);
       await snapScene(page, '08-mix-effect-rail');
     },
   },
@@ -696,7 +764,10 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await boot(page);
       await clickTab(page, 'session');
-      await page.waitForTimeout(800);
+      await media(page, { tasmoPath: TASMO_PATH });
+      // Six linked stems x eight scenes: let the grid fetch and decode.
+      await page.waitForFunction(() => document.body.textContent?.includes('DROP - everything'), undefined, { timeout: 20000 }).catch(() => undefined);
+      await page.waitForTimeout(6000);
       await snapScene(page, '11-perform-grid');
     },
   },
@@ -706,8 +777,18 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await boot(page);
       await clickTab(page, 'dj');
-      await media(page, { djDecks: true });
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(800);
+      // Through the browser table, so the deck view gets the track, its key
+      // and BPM, and the scroll waveforms (djEngine.loadDeck alone only feeds
+      // the audio engine).
+      await djLoadViaBrowser(page, heroCtx!.heroLabel, 'A');
+      await djLoadViaBrowser(page, heroCtx!.deckBLabel, 'B');
+      await page.waitForTimeout(4000);
+      await page.evaluate(async () => {
+        const dj = await ((p: string) => import(p))('/src/state/djEngine.ts');
+        dj.playDeck('A');
+      }).catch(() => undefined);
+      await page.waitForTimeout(2500);
       await snapScene(page, '12-dj-console');
     },
   },
@@ -717,8 +798,12 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await boot(page);
       await clickTab(page, 'dj');
-      await media(page, { djDecks: true, djStems: true });
-      await page.waitForTimeout(1400);
+      await page.waitForTimeout(800);
+      await djLoadViaBrowser(page, heroCtx!.heroLabel, 'A');
+      await djLoadViaBrowser(page, heroCtx!.deckBLabel, 'B');
+      await page.waitForTimeout(4000);
+      await media(page, { djStems: true, djDecks: false });
+      await page.waitForTimeout(2500);
       await snapScene(page, '13-dj-stems');
     },
   },
@@ -731,6 +816,11 @@ const SCENES: Scene[] = [
       await clickTab(page, 'vj');
       await page.locator('iframe[title="VJ — Live visuals"]').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
       await page.waitForTimeout(2500);
+      // No camera on a capture box: pick a source that renders on its own.
+      if (!(await clickInFrame(page, 'VJ — Live visuals', /^\s*SHADER\s*$/i))) {
+        await clickInFrame(page, 'VJ — Live visuals', /^\s*CYMATICS\s*$/i);
+      }
+      await page.waitForTimeout(4000);
       await snapScene(page, '14-vj-visualizer');
     },
   },
@@ -743,6 +833,21 @@ const SCENES: Scene[] = [
       await clickTab(page, 'foundry');
       await page.locator('iframe[title="VST Foundry"]').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
       await page.waitForTimeout(2500);
+      // Open the bundled Ares .gan (the plugin MIX also hosts) as the design
+      // on the canvas: Open .gan raises a file chooser, which is answered with
+      // the file from data/plugins.
+      const chooser = page.waitForEvent('filechooser', { timeout: 8000 }).catch(() => null);
+      await clickInFrame(page, 'VST Foundry', /^\s*open \.gan\s*$/i);
+      const fc = await chooser;
+      if (fc) await fc.setFiles(path.join(REPO_ROOT, 'data', 'plugins', 'ares.gan')).catch(() => undefined);
+      await page.waitForTimeout(4000);
+      // Fit the whole face into view: reset the pan, then step the zoom out.
+      await clickInFrame(page, 'VST Foundry', /^\s*reset\s*$/i);
+      for (let i = 0; i < 3; i += 1) {
+        await clickInFrame(page, 'VST Foundry', /^\s*-\s*$/);
+        await page.waitForTimeout(150);
+      }
+      await page.waitForTimeout(800);
       await snapScene(page, '15-foundry-canvas');
     },
   },
@@ -755,6 +860,9 @@ const SCENES: Scene[] = [
       await boot(page);
       await clickTab(page, 'underfit');
       await page.locator('iframe[title="Underfit"]').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
+      await page.waitForTimeout(2500);
+      // A fresh trainer has no runs; the NEW FINETUNE form shows what a run is.
+      await clickInFrame(page, 'Underfit', /new finetune/i);
       await page.waitForTimeout(2500);
       await snapScene(page, '16-underfit-dashboard');
     },
@@ -841,8 +949,11 @@ const SCENES: Scene[] = [
     run: async (page) => {
       await boot(page);
       await media(page, { bottomTab: 'step-seq', maximizePanel: true });
-      await clickTitle(page, /add track/i);
-      await page.waitForTimeout(200);
+      // Fill the panel: eight voices instead of the default five.
+      for (let i = 0; i < 3; i += 1) {
+        await clickTitle(page, /add track/i);
+        await page.waitForTimeout(200);
+      }
       await clickTitle(page, /randomize all step/i);
       await page.waitForTimeout(300);
       await clickTitle(page, /^\s*play\s*$/i);
@@ -1037,9 +1148,9 @@ const SCENES: Scene[] = [
     // Chrome — selecting the Magenta model reveals its conditioning surface.
     run: async (page) => {
       await boot(page);
-      await media(page, { model: 'magenta-small', magentaCond: true });
+      await media(page, { model: 'magenta-small', magentaCond: true, initAudio: true, chimeraBuild: true });
       await clickTab(page, 'make');
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(1500);
       await snapScene(page, '36-magenta-live');
     },
   },
@@ -1106,16 +1217,18 @@ const SCENES: Scene[] = [
         const m = await ((p: string) => import(p))('/src/state/playAlongStore.ts');
         m.usePlayAlongStore.getState().setNowLine('center');
         m.usePlayAlongStore.getState().setInk('magenta');
+        m.usePlayAlongStore.getState().setInkTrail('hold');
       }).catch(() => undefined);
       await clickRadio(page, /strip/i);
       // OSMD engraves the whole score as one system; give it a beat, then let
-      // the cursor travel a few bars so the highlight is mid-phrase.
+      // the music play for a while so the held ink trail fills the bars
+      // behind the now-line.
       await page.waitForTimeout(6000);
       await page.evaluate(async () => {
         const p = (await ((p: string) => import(p))('/src/state/playerStore.ts')).usePlayerStore.getState();
-        p.seek(24);
+        p.seek(14);
       }).catch(() => undefined);
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(10000);
       await snapScene(page, '41-score-strip');
     },
   },
@@ -1164,25 +1277,37 @@ const SCENES: Scene[] = [
       await media(page, { bottomTab: 'draw', maximizePanel: true });
       await page.waitForTimeout(800);
       // Paint a couple of strokes across the panel's canvas.
-      const canvas = page.locator('canvas').last();
+      // The drawing surface by its label: the panel is not the last canvas in
+      // the document (the orb and the analyzer draw on their own).
+      const canvas = page.locator('canvas[aria-label="Drawing canvas - draw to make music"]').first();
       const box = await canvas.boundingBox().catch(() => null);
       if (box) {
         const strokes: Array<Array<[number, number]>> = [
-          [[0.15, 0.7], [0.3, 0.35], [0.45, 0.6], [0.6, 0.3], [0.75, 0.55]],
-          [[0.2, 0.8], [0.5, 0.75], [0.8, 0.85]],
+          [[0.08, 0.7], [0.22, 0.35], [0.36, 0.6], [0.5, 0.3], [0.64, 0.55], [0.8, 0.28], [0.92, 0.5]],
+          [[0.1, 0.85], [0.35, 0.78], [0.6, 0.88], [0.9, 0.8]],
+          [[0.12, 0.2], [0.3, 0.12], [0.55, 0.22], [0.78, 0.1]],
+          [[0.45, 0.45], [0.5, 0.5], [0.55, 0.42], [0.6, 0.52], [0.65, 0.4]],
+          [[0.2, 0.55], [0.28, 0.62], [0.36, 0.5], [0.44, 0.66]],
         ];
-        for (const stroke of strokes) {
+        // Freehand strokes fade within a second and each brush grows its own
+        // figure over time, so strokes alternate brushes (ORGANIC, NEBULOUS,
+        // FIBONACCI) and the frame is taken right after the last one.
+        const brushes = [/^\s*organic\s*$/i, /^\s*nebulous\s*$/i, /^\s*fibonacci\s*$/i, /^\s*neural\s*$/i, /^\s*organic\s*$/i];
+        for (let i = 0; i < strokes.length; i += 1) {
+          await clickText(page, brushes[i % brushes.length]);
+          await page.waitForTimeout(120);
+          const stroke = strokes[i];
           const [x0, y0] = stroke[0];
           await page.mouse.move(box.x + box.width * x0, box.y + box.height * y0);
           await page.mouse.down();
           for (const [fx, fy] of stroke.slice(1)) {
-            await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy, { steps: 18 });
+            await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy, { steps: 24 });
           }
           await page.mouse.up();
-          await page.waitForTimeout(300);
+          await page.waitForTimeout(250);
         }
       }
-      await page.waitForTimeout(900);
+      await page.waitForTimeout(350);
       await snapScene(page, '44-draw');
     },
   },

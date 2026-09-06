@@ -26,6 +26,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -51,9 +52,17 @@ _TRANSCRIBE_TIMEOUT_SEC = 30 * 60
 # else in ``extra`` is dropped so the request stays a closed, known shape.
 _EXTRA_KEYS: tuple[str, ...] = (
     "initial_prompt",
+    "hotwords",
     "condition_on_previous_text",
     "vad_filter",
+    "vad_parameters",
+    "hallucination_silence_threshold",
     "beam_size",
+    "best_of",
+    "temperature",
+    "no_speech_threshold",
+    "log_prob_threshold",
+    "compression_ratio_threshold",
 )
 
 
@@ -420,36 +429,66 @@ async def transcribe(
             {k: v for k, v in extra.items() if k in _EXTRA_KEYS and v is not None}
         )
     request = json.dumps(request_dict)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            str(cfg.python_exe),
-            str(_WORKER),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=worker_env(cfg),
-        )
-    except OSError as e:
-        return {"ok": False, "error": f"failed to spawn whisper worker: {e!r}"}
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(request.encode("utf-8")),
-            timeout=_TRANSCRIBE_TIMEOUT_SEC,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        return {
-            "ok": False,
-            "error": f"whisper worker timed out after {_TRANSCRIBE_TIMEOUT_SEC}s",
-        }
-    err_tail = stderr.decode("utf-8", "replace").strip()[-500:]
+    # The GPU lane: one heavy model on the card at a time (Demucs, basic-pitch
+    # and this worker share it), and the background queue parks meanwhile.
+    from backend.core import pipeline
+
+    async with pipeline.gpu("whisper"):
+        started = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(cfg.python_exe),
+                str(_WORKER),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=worker_env(cfg),
+            )
+        except OSError as e:
+            return {"ok": False, "error": f"failed to spawn whisper worker: {e!r}"}
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(request.encode("utf-8")),
+                timeout=_TRANSCRIBE_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {
+                "ok": False,
+                "error": f"whisper worker timed out after {_TRANSCRIBE_TIMEOUT_SEC}s",
+            }
+    elapsed = time.monotonic() - started
+    err_text = stderr.decode("utf-8", "replace").strip()
+    err_tail = err_text[-500:]
     if proc.returncode != 0 and not stdout.strip():
         return {"ok": False, "error": f"whisper worker failed: {err_tail}"}
     try:
         last = stdout.decode("utf-8", "replace").strip().splitlines()[-1]
-        return json.loads(last)
+        out = json.loads(last)
     except (ValueError, IndexError) as e:
         return {"ok": False, "error": f"whisper worker bad output: {e}; {err_tail}"}
+    out["elapsed"] = round(elapsed, 2)
+    if out.get("ok"):
+        used = out.get("device_used")
+        if cfg.wants_cuda and used != cfg.device:
+            # The card was asked for and the worker fell back: say so loudly,
+            # this is the difference between 10 s and 10 min.
+            log.warning(
+                "vocal.whisper: %s requested but the worker ran on %s (%s): %s",
+                cfg.device,
+                used,
+                out.get("model"),
+                err_tail,
+            )
+        else:
+            log.info(
+                "vocal.whisper: %s on %s in %.1fs (%s)",
+                out.get("model"),
+                used,
+                elapsed,
+                audio_path.name,
+            )
+    return out
 
 
 __all__ = [
