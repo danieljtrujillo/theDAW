@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 These are non-negotiable. Violating them has burned the user before.
 
 ### 1. NEVER downgrade external models, APIs, libraries, or capabilities
+
 Your training cutoff is older than the user's reality. The user is a
 working developer with access to the latest releases — Gemini 3.5,
 Claude 4.x, GPT-5 variants, whatever's actually current. If a model
@@ -14,6 +15,7 @@ name, API endpoint, library version, or product feature looks unfamiliar
 or "doesn't exist," **assume YOUR knowledge is stale, not theirs**.
 
 Concrete rules:
+
 - **Do NOT remove model entries** from catalogs (e.g. `GEMINI_MODELS`,
   Claude/OpenAI/Grok caps maps in `backend/assistant_routes.py`)
   because you don't recognize them.
@@ -32,6 +34,7 @@ If you accidentally do downgrade, immediately fetch the docs and
 restore the full catalog.
 
 ### 2. NEVER allow ruff version drift
+
 Exactly ONE ruff version exists in this repo's tooling chain at all
 times. It's pinned in `pyproject.toml` (`dependency-groups.dev`) AND
 `.github/workflows/lint.yml` (the `RUFF_VERSION` env var) AND used via
@@ -40,6 +43,7 @@ violation: `ruff format --check` complains about reformatting files
 that were clean last commit, with no semantic edits in between.
 
 Concrete rules:
+
 - **Never `pip install ruff` or `pipx install ruff`** globally without
   matching the pinned version exactly.
 - **Never edit only one of the two pin sites** — always update both in
@@ -51,10 +55,12 @@ Concrete rules:
   before you "fix" the drift.
 
 ### 3. Form controls MUST have real labels and valid ARIA
+
 Every form/control change must include an accessibility check before it is
 considered done.
 
 Concrete rules:
+
 - Native fields (`input`, `select`, `textarea`) must have stable `id` and
   `name` values, plus either `<label htmlFor="that-id">` or a valid wrapping
   `<label>`.
@@ -157,10 +163,12 @@ The model supports variable-length sequences without wasting compute on padding.
 Ruff excludes `stable_audio_3/models`, `stable_audio_3/inference`, `stable_audio_3/interface`, and `stable_audio_3/data` from linting. Only top-level files (`pipeline.py`, `model.py`, `model_configs.py`, `loading_utils.py`, `verbose.py`) are checked.
 
 **Always run from the repo root, never on a subset of dirs:**
-```
+
+```bash
 uv run ruff check .
 uv run ruff format .
 ```
+
 CI runs at the repo root, so `ruff format backend/ tests/` alone will silently miss `stable_audio_3/*.py` drift. Local-dev workflow: run BOTH commands above before every commit; the pre-commit chain checks both.
 
 ## Testing
@@ -184,16 +192,49 @@ This project uses **Tailwind CSS v4**. The following v3 forms are forbidden and 
 | `min-w-[160px]` when scale token exists | `min-w-40` |
 | `min-h-[80px]` when scale token exists | `min-h-20` |
 | `bg-white/[0.03]`, `bg-purple-500/[0.04]` | `bg-white/3`, `bg-purple-500/4` |
+| `grid-cols-[repeat(N,minmax(0,1fr))]` | `grid-cols-N` |
+| `grid-rows-[repeat(N,minmax(0,1fr))]` | `grid-rows-N` |
+| `grid-cols-[minmax(0,1fr)]` | `grid-cols-1` (`repeat(1,X)` is `X`) |
+| `auto-rows-[minmax(0,1fr)]` | `auto-rows-fr` |
+| `auto-cols-[minmax(0,1fr)]` | `auto-cols-fr` |
 
 **Scale token rule:** Tailwind v4 spacing scale is `value ÷ 4`. A `[Npx]` arbitrary value maps to `N/4` as a scale token whenever N is divisible by 4 (or to the nearest 0.5 step). Prefer scale tokens over arbitrary values at all times.
 
-**Before writing any className string, mentally check it against this table.**
+**The general rule this table only gives examples of:** an arbitrary value
+`[...]` is FORBIDDEN whenever a built-in token produces the identical
+declaration. The table cannot list every case — tailwindcss-intellisense reports
+these as `suggestCanonicalClasses`, and each one is a VS Code Problems entry the
+user sees. Arbitrary values are correct ONLY when nothing built-in expresses the
+value: viewport/container units (`max-w-[92vw]`, `w-[min(640px,95vw)]`),
+`clamp()`, `ch`/`em`, explicit track lists (`grid-cols-[auto_1fr]`),
+`repeat(auto-fit,...)`, CSS vars (`text-[var(--et-fg)]`), and raw hex.
+
+**Before writing any className string, check it against this rule.**
+
+**Before finishing ANY task that touched a `.tsx`/`.ts` file, SWEEP for
+violations — never rely on having written them correctly:**
+
+```bash
+cd frontend/src
+# v3 legacy forms
+grep -rnE '(flex-shrink-0|flex-grow|bg-gradient-to-|bg-opacity-|text-opacity-|border-opacity-)' .
+# arbitrary values that have canonical equivalents
+grep -rnE '(grid-cols|grid-rows|auto-rows|auto-cols)-\[(repeat\([0-9]+,)?minmax\(0,1fr\)\)?\]' .
+grep -rnE '(w|h|min-w|max-w|min-h|max-h|size|p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|top|bottom|left|right|inset|z)-\[[0-9.]+(px)?\]' .
+grep -rnE '/\[0?\.[0-9]+\]' .
+```
+
+Every hit is either fixed, or left with a comment saying why it cannot be. To
+prove two forms are identical before swapping them, compile both with the
+project's OWN tailwindcss — never `npx`, which fetches a different version —
+using `compile()` from the `tailwindcss` package, and diff the declarations.
 
 ## Windows-Specific Setup
 
 `pyproject.toml` maps the CUDA wheels per-platform under `[tool.uv.sources]`
 (Linux x86_64 → cu126, Windows → cu128), so `uv sync` on Windows installs the
 right stack automatically:
+
 - torch + torchaudio come from the cu128 index (no manual `--index-url` step)
 - `soundfile` is a base dependency (torchaudio's Windows backend), installed by `uv sync`
 - Flash Attention installs from the pinned `kingbri1` cu128/cp310 wheel, gated to `sys_platform == 'win32' and python_version < '3.11'` (so the venv must be Python 3.10; `.python-version` pins it)

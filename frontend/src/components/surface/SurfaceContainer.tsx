@@ -165,6 +165,9 @@ export const SurfaceContainer: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
       {framed && (
         <>
           <div className="absolute inset-0 pointer-events-none" style={{ ...shapeCss, background: borderCol, filter: glowCss }} />
+          {/* inset-[1.5px] stays arbitrary on purpose: the fill sits 1.5px inside
+              the border layer to draw a hairline frame, and Tailwind's scale has
+              only inset-px (1px) and inset-0.5 (2px). No canonical token fits. */}
           <div className="absolute inset-[1.5px] pointer-events-none" style={{ ...shapeCss, background: fillCol }} />
         </>
       )}

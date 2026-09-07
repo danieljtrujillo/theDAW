@@ -1462,7 +1462,7 @@ const StemPadBank: React.FC<{ deck: djEngine.DeckId; entryId: string | null; col
     </SlidePad>,
   ];
   return (
-    <div className="h-full w-full min-w-0 min-h-0 grid grid-cols-4 grid-rows-[repeat(2,minmax(0,1fr))] gap-1 p-0.5">
+    <div className="h-full w-full min-w-0 min-h-0 grid grid-cols-4 grid-rows-2 gap-1 p-0.5">
       {(mirror ? [...cells].reverse() : cells).map((cell) => cell)}
     </div>
   );
@@ -1731,7 +1731,7 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
 const PERF_PAD_BT = 'w-full h-full px-1 py-0.5 text-[7px] min-w-0 min-h-0 overflow-hidden tracking-normal leading-tight';
 /** Pad grids are height size-containers (index.css .dj-pad-grid) so the pads
  *  take the cell's height instead of overflowing it and being clipped. */
-const PERF_PAD_GRID = 'dj-pad-grid grid gap-1 flex-1 min-h-0 auto-rows-[minmax(0,1fr)]';
+const PERF_PAD_GRID = 'dj-pad-grid grid gap-1 flex-1 min-h-0 auto-rows-fr';
 
 const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; entryId: string | null; ctl: DeckCtl }> = ({ deck, accent, entryId, ctl }) => {
   const color = DECK_RGB[accent];
@@ -2800,10 +2800,10 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   };
   const knobSize = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(20, fitDim(s, opts, 26, 112));
   const toggleBox = (s: { w: number; h: number }, opts?: SizeOpts) => Math.max(24, fitDim(s, opts, 12, 84));
-  // grid-cols-[minmax(0,1fr)]: the single track is the cell width, so a child
-  // sized w-full (e.g. the AUTOMIX button, which truncates its label) really is
-  // the cell width instead of the label's max-content overflowing the cell.
-  const center = (node: React.ReactNode) => <div className="h-full w-full grid grid-cols-[minmax(0,1fr)] place-items-center overflow-hidden">{node}</div>;
+  // grid-cols-1 (= repeat(1,minmax(0,1fr))): the single track is the cell width,
+  // so a child sized w-full (e.g. the AUTOMIX button, which truncates its label)
+  // really is the cell width instead of the label's max-content overflowing it.
+  const center = (node: React.ReactNode) => <div className="h-full w-full grid grid-cols-1 place-items-center overflow-hidden">{node}</div>;
   // Pads render LANDSCAPE (like CUE/PLAY): fill the cell width, cap the height so
   // the button stays wider than tall, centred vertically in its cell.
   const padBox = (s: { w: number; h: number }, node: React.ReactNode) => (
