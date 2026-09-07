@@ -1,0 +1,26 @@
+{
+  // Only these two rules are turned off; everything else keeps markdownlint's
+  // defaults, so real problems (heading spacing, list spacing, fence language,
+  // broken tables) still surface in the VS Code Problems tab and must be fixed.
+
+  // MD033/no-inline-html — the README badge rows, centred screenshots and
+  // <sub> captions require raw HTML. GitHub-flavoured Markdown has no way to
+  // centre an image or lay out a badge row, so there is no markdown form to
+  // migrate to. Disabling here is the only correct resolution; do NOT strip
+  // the HTML to satisfy the rule.
+  "MD033": false,
+
+  // MD060/table-column-style — flags `|---|---|` delimiter rows as
+  // inconsistent with padded header cells. Both render identically on GitHub
+  // and in every viewer, and the repo has 131 markdown files using the compact
+  // delimiter. Churning all of them for zero rendered difference is not worth
+  // the diff.
+  "MD060": false,
+
+  // MD013/line-length — these docs write one paragraph per line and let the
+  // renderer wrap, which is standard for GitHub markdown. The VS Code extension
+  // does not report MD013 here, so leaving it on would make `markdownlint-cli2`
+  // disagree with the Problems tab and bury real findings under hundreds of
+  // false ones.
+  "MD013": false
+}
