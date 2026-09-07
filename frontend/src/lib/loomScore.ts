@@ -29,8 +29,15 @@
  * suffixes `:N` length in steps, `^` re-roll every lap, `^N` every N laps ·
  * `?60` chance gate · `!2:4` cycle gate (lap 2 of 4; `!1,3:4`) ·
  * `=gain-6,cut.35` absolute lock · `+trans12` relative lock · `->name` jump.
+ * Generators (v2, lib/loomGen.ts): `fib(k s):16`, `euclid(k; hits=5):16`,
+ * `life(k s h; density=.35):16`, `fractal(k . s; kind=thue)`, `rand(k s . .)`,
+ * `frag(k s; size=1)`, `echo(v; every=3)`, `accel(k; from=1 to=2)`,
+ * `gliss(v; from=-12 to=12)` — a rule that owns `span` rail cells.
+ * Score directives: `seed 7` (reproducible dice), `form AABA` (song
+ * structure by lap), `ramp bpm 120 150 8` (tempo ramp over laps).
  * `;` starts a comment.
  */
+import { GEN_KINDS, GEN_DEFAULT_OPTS, serializeGenOpts, type GenKind, type GenOpts, type GenTile } from './loomGen';
 
 export type LoomRole =
   | 'drums' | 'kick' | 'snare' | 'hihat' | 'cymbals' | 'toms'
@@ -101,7 +108,12 @@ export type LoomTile =
   | { kind: 'chance'; pct: number }
   | { kind: 'cycle'; period: number; laps: number[] }
   | { kind: 'lock'; mode: 'abs' | 'rel'; params: Partial<Record<LockParam, number>> }
-  | { kind: 'jump'; target: string };
+  | { kind: 'jump'; target: string }
+  | GenTile;
+
+export type { GenTile, GenKind, GenOpts } from './loomGen';
+
+export interface LoomRamp { param: 'bpm'; from: number; to: number; laps: number; curve?: number }
 
 export interface LoomLane {
   name: string;
@@ -119,6 +131,12 @@ export interface LoomScore {
   /** 'follow' = the beat clock's source key; else a tonic like 'A'. */
   key?: string;
   scale?: 'major' | 'minor';
+  /** Seed for every chance gate and generator; omitted = the engine's default. */
+  seed?: number;
+  /** Song form by lap, e.g. 'AABA': generators replay a section's generation. */
+  form?: string;
+  /** Tempo ramp applied at the master wrap. */
+  ramp?: LoomRamp;
   lanes: LoomLane[];
 }
 
@@ -129,9 +147,17 @@ export const DEFAULT_LENGTH = 16;
 
 /* ── parsing ──────────────────────────────────────────────────────────────── */
 
+/** Drop a `;` comment — but a `;` inside a generator's parentheses or a
+ *  query's braces separates its alphabet from its options, not a comment. */
 const stripComment = (s: string) => {
-  const i = s.indexOf(';');
-  return i >= 0 ? s.slice(0, i) : s;
+  let depth = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '(' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === '}') depth = Math.max(0, depth - 1);
+    else if (ch === ';' && depth === 0) return s.slice(0, i);
+  }
+  return s;
 };
 
 function parseKey(s: string): { key?: string; scale?: 'major' | 'minor' } | null {
@@ -212,6 +238,18 @@ function parseQueryLiteral(body: string, line: number, errors: LoomParseError[])
   return q;
 }
 
+/** `alphabet; opts` — the first top-level `;` splits them. */
+function splitGenBody(inner: string): [string, string] {
+  let depth = 0;
+  for (let i = 0; i < inner.length; i += 1) {
+    const ch = inner[i];
+    if (ch === '{' || ch === '<') depth += 1;
+    else if (ch === '}' || ch === '>') depth = Math.max(0, depth - 1);
+    else if (ch === ';' && depth === 0) return [inner.slice(0, i), inner.slice(i + 1)];
+  }
+  return [inner, ''];
+}
+
 /** A single step token → a tile, `'tie'`, or null (empty). */
 function parseToken(tok: string, line: number, errors: LoomParseError[]): LoomTile | 'tie' | null {
   if (tok === '.' || tok === '~') return null;
@@ -246,6 +284,32 @@ function parseToken(tok: string, line: number, errors: LoomParseError[]): LoomTi
     if (sfx[2]) steps = Math.max(1, Number(sfx[2]));
     if (sfx[3] !== undefined) roll = sfx[3] === '' ? 1 : Math.max(1, Number(sfx[3]));
   }
+  // Generator: name(alphabet; opts)
+  const gm = /^([a-z]+)\((.*)\)$/s.exec(body);
+  if (gm) {
+    const gen = gm[1].toLowerCase() as GenKind;
+    if (!(GEN_KINDS as readonly string[]).includes(gen)) { errors.push({ line, message: `unknown generator "${gm[1]}" (${GEN_KINDS.join(', ')})` }); return null; }
+    const [alphaText, optText] = splitGenBody(gm[2]);
+    const alphabet: (LoomQuery | null)[] = [];
+    for (const a of tokenizeRow(alphaText)) {
+      const t = parseToken(a, line, errors);
+      if (t === 'tie') { errors.push({ line, message: `generator alphabet cannot hold a tie` }); continue; }
+      if (t === null) { alphabet.push(null); continue; }
+      if (t.kind !== 'shard') { errors.push({ line, message: `generator alphabet holds shards and rests only — got "${a}"` }); continue; }
+      alphabet.push(t.query);
+    }
+    const opts: GenOpts = { ...GEN_DEFAULT_OPTS[gen] };
+    for (const part of optText.split(/[\s,]+/).filter(Boolean)) {
+      const om = /^([a-zA-Z_]+)\s*=\s*(.+)$/.exec(part);
+      if (!om) { errors.push({ line, message: `generator option looks like name=value — got "${part}"` }); continue; }
+      const v = Number(om[2]);
+      opts[om[1].toLowerCase()] = Number.isFinite(v) && om[2].trim() !== '' && !/[A-Za-z\/]/.test(om[2]) ? v : om[2];
+    }
+    // No `:N`: the span is 1 and rail ties (`-`) extend it, like a shard.
+    if (!sfx?.[2]) steps = Math.max(1, Math.min(256, Math.round(Number(opts.span) || 1)));
+    delete opts.span;
+    return { kind: 'gen', gen, alphabet, span: steps, opts, roll };
+  }
   let query: LoomQuery | null = null;
   if (body.startsWith('<') && body.endsWith('>')) {
     const inner = body.slice(1, -1);
@@ -278,12 +342,15 @@ function tokenizeRow(row: string): string[] {
   let cur = '';
   let braces = 0; // { … } query literal — may contain '>' and '<' comparators
   let angles = 0; // < … > pin
+  let parens = 0; // name( … ) generator — alphabet and options have spaces
   for (const ch of row) {
     if (ch === '{') braces += 1;
     else if (ch === '}') braces = Math.max(0, braces - 1);
+    else if (ch === '(' && braces === 0) parens += 1;
+    else if (ch === ')' && braces === 0) parens = Math.max(0, parens - 1);
     else if (ch === '<' && braces === 0) angles += 1;
     else if (ch === '>' && braces === 0 && angles > 0) angles -= 1;
-    if (/\s/.test(ch) && braces === 0 && angles === 0) {
+    if (/\s/.test(ch) && braces === 0 && angles === 0 && parens === 0) {
       if (cur) out.push(cur);
       cur = '';
     } else cur += ch;
@@ -306,17 +373,18 @@ export function parseLoom(text: string): { score: LoomScore; errors: LoomParseEr
       const isRail = r === pendingRows.length - 1;
       const row: (LoomTile | null)[] = new Array(lane.length).fill(null);
       if (tokens.length > lane.length) errors.push({ line, message: `row has ${tokens.length} steps, lane is x${lane.length}` });
-      let lastShard: { kind: 'shard'; query: LoomQuery; steps: number; roll: number } | null = null;
+      let lastShard: LoomTile | null = null;
       for (let s = 0; s < Math.min(tokens.length, lane.length); s += 1) {
         const t = parseToken(tokens[s], line, errors);
         if (t === 'tie') {
           if (!isRail) errors.push({ line, message: 'a tie (-) only extends a shard on the rail row' });
-          else if (lastShard) lastShard.steps += 1;
+          else if (lastShard?.kind === 'shard') lastShard.steps += 1;
+          else if (lastShard?.kind === 'gen') lastShard.span += 1;
           else errors.push({ line, message: 'a tie (-) needs a shard before it' });
           continue;
         }
         row[s] = t;
-        if (t && t.kind === 'shard') lastShard = t; else if (t) lastShard = null;
+        lastShard = t && (t.kind === 'shard' || t.kind === 'gen') ? t : null;
       }
       rows.push(row);
     }
@@ -351,6 +419,26 @@ export function parseLoom(text: string): { score: LoomScore; errors: LoomParseEr
       const k = parseKey(rest.join(' '));
       if (!k) errors.push({ line: lineNo, message: `key looks like "Am", "F#", "Bb major", or "follow"` });
       else { score.key = k.key; score.scale = k.scale; }
+    } else if (h === 'seed') {
+      flushLane();
+      const n = Number(rest[0]);
+      if (!Number.isFinite(n)) errors.push({ line: lineNo, message: 'seed needs a number' });
+      else score.seed = Math.floor(n);
+    } else if (h === 'form') {
+      flushLane();
+      const f = (rest[0] ?? '').replace(/[^A-Za-z]/g, '');
+      if (!f) errors.push({ line: lineNo, message: 'form is letters by lap, e.g. AABA' });
+      else score.form = f.toUpperCase();
+    } else if (h === 'ramp') {
+      flushLane();
+      const m = /^bpm\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+)(?:\s+(\d+(?:\.\d+)?))?$/i.exec(rest.join(' '));
+      if (!m) errors.push({ line: lineNo, message: 'ramp is "ramp bpm FROM TO LAPS [curve]", e.g. ramp bpm 120 150 8' });
+      else {
+        const from = Number(m[1]);
+        const to = Number(m[2]);
+        if (from < 20 || from > 300 || to < 20 || to > 300) errors.push({ line: lineNo, message: 'ramp bpm is 20–300' });
+        else score.ramp = { param: 'bpm', from, to, laps: Math.max(1, Number(m[3])), curve: m[4] ? Number(m[4]) : undefined };
+      }
     } else if (h === 'lane') {
       flushLane();
       const name = rest[0];
@@ -368,7 +456,7 @@ export function parseLoom(text: string): { score: LoomScore; errors: LoomParseEr
       if (score.lanes.some((x) => x.name === name)) errors.push({ line: lineNo, message: `lane "${name}" is defined twice` });
       lane = l;
     } else {
-      errors.push({ line: lineNo, message: `unknown directive "${head}" (bpm, key, lane)` });
+      errors.push({ line: lineNo, message: `unknown directive "${head}" (bpm, key, seed, form, ramp, lane)` });
     }
   }
   flushLane();
@@ -422,6 +510,14 @@ export function serializeTile(t: LoomTile | null, withSteps = true): string {
       if (t.roll === 1) s += '^'; else if (t.roll > 1) s += `^${t.roll}`;
       return s;
     }
+    case 'gen': {
+      const alpha = t.alphabet.map((q) => (q ? serializeQuery(q) : '.')).join(' ');
+      const opts = serializeGenOpts(t);
+      let s = `${t.gen}(${alpha}${opts ? `; ${opts}` : ''})`;
+      if (withSteps && t.span > 1) s += `:${t.span}`;
+      if (t.roll === 1) s += '^'; else if (t.roll > 1) s += `^${t.roll}`;
+      return s;
+    }
     case 'chance': return `?${num(t.pct)}`;
     case 'cycle': return `!${t.laps.join(',')}:${t.period}`;
     case 'lock': return (t.mode === 'abs' ? '=' : '+') + Object.entries(t.params).map(([k, v]) => `${LOCK_SHORT[k as LockParam]}${num(v as number)}`).join(',');
@@ -433,6 +529,9 @@ export function serializeLoom(score: LoomScore): string {
   const out: string[] = [];
   if (score.bpm) out.push(`bpm ${num(score.bpm)}`);
   if (score.key) out.push(`key ${score.key === 'follow' ? 'follow' : score.key + (score.scale === 'minor' ? 'm' : '')}`);
+  if (score.seed != null) out.push(`seed ${score.seed}`);
+  if (score.form) out.push(`form ${score.form}`);
+  if (score.ramp) out.push(`ramp bpm ${num(score.ramp.from)} ${num(score.ramp.to)} ${score.ramp.laps}${score.ramp.curve != null ? ` ${num(score.ramp.curve)}` : ''}`);
   for (const lane of score.lanes) {
     if (out.length) out.push('');
     const opts = [`1/${lane.div}`, `x${lane.length}`];
@@ -449,10 +548,11 @@ export function serializeLoom(score: LoomScore): string {
       for (let s = 0; s < lane.length; s += 1) {
         const t = row[s];
         if (!t) continue;
-        if (t.kind === 'shard' && t.steps > 1) {
-          const fits = isRail && s + t.steps <= lane.length && row.slice(s + 1, s + t.steps).every((x) => !x);
+        const len = t.kind === 'shard' ? t.steps : t.kind === 'gen' ? t.span : 1;
+        if ((t.kind === 'shard' || t.kind === 'gen') && len > 1) {
+          const fits = isRail && s + len <= lane.length && row.slice(s + 1, s + len).every((x) => !x);
           toks[s] = serializeTile(t, !fits);
-          if (fits) for (let k = 1; k < t.steps; k += 1) toks[s + k] = '-';
+          if (fits) for (let k = 1; k < len; k += 1) toks[s + k] = '-';
         } else {
           toks[s] = serializeTile(t);
         }

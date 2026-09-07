@@ -8,6 +8,23 @@ Newest first.
 
 ## 2026-09-07
 
+### LOOM v2 — rules, growth, a tempo that moves (verified by build + tests; live check pending)
+
+- **Generator tiles.** `fib`, `fractal` (thue / cantor / dragon /
+  sierpinski), `euclid`, `life`, `rand`, `frag`, `echo`, `accel`, `gliss` as
+  `name(alphabet; opts):span` rail tiles; upper-row generators modulate the
+  column below. Ghost cells draw what a rule plays this lap. Every die roll
+  hashes (seed, lane, step, lap).
+- **Directives** `seed`, `form AABA` (Life replays a section's generation),
+  `ramp bpm FROM TO LAPS` (phase-preserving at the master wrap).
+- **GROW pane**: Grow, Breed, Fragment, seed, form, lineage with revert,
+  per-lane keep. Sample *Garden of Forking Beats*. Woven surface, threaded
+  tiles, breathing live column.
+- **DETAILS + Media merged** into one lower-panel tab with a Details / Both /
+  Media layout toggle; the library opens details from a hover button and the
+  context menu; import-from-link (YouTube, SoundCloud, Bandcamp, direct URL)
+  lives in the library header.
+
 ### In-app updater
 
 - **Settings > Check for Updates now updates.** Check, confirm, install, in

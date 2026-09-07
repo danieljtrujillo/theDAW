@@ -30,11 +30,15 @@ import {
   type LoomLane,
   type LoomRole,
   type LoomTile,
+  parseLoom,
+  serializeQuery,
 } from '../lib/loomScore';
 import { beatClock } from '../lib/beatClock';
 import * as shards from '../lib/shardEngine';
+import { GEN_BLURB, GEN_DEFAULT_OPTS, GEN_GLYPH, GEN_KINDS, genCell, lifePopulation, sectionOf, serializeGenOpts, type GenKind, type GenTile } from '../lib/loomGen';
+import { DEFAULT_SEED } from '../lib/loomEngine';
 
-type Pane = 'code' | 'tile' | 'crate';
+type Pane = 'code' | 'tile' | 'grow' | 'crate';
 
 const DIVS = [1, 2, 4, 8, 16, 32, 64];
 
@@ -96,6 +100,16 @@ export function LoomView(): React.ReactElement {
             className={`${input} w-16 tabular-nums`}
           />
         </div>
+          {applied.form && (
+            <span className="text-[10px] font-mono uppercase tracking-widest et-ink-2 rounded border border-white/10 px-1.5 py-0.5" title={`form ${applied.form}: section by lap`}>
+              form {applied.form}
+            </span>
+          )}
+          {applied.ramp && (
+            <span className="text-[10px] font-mono et-ink-3" title={`tempo ramps ${applied.ramp.from} → ${applied.ramp.to} over ${applied.ramp.laps} laps`}>
+              ramp → {applied.ramp.to}
+            </span>
+          )}
         <div className="flex items-center gap-1.5">
           <span className={label}>Key</span>
           <span className="text-[11px] font-mono et-ink-2">{keyText}</span>
@@ -116,7 +130,7 @@ export function LoomView(): React.ReactElement {
       </header>
 
       <div className="flex-1 min-h-0 flex">
-        <section className="flex-1 min-w-0 overflow-auto p-3" aria-label="The plane">
+        <section className="flex-1 min-w-0 overflow-auto p-3 loom-plane" aria-label="The plane">
           {applied.lanes.length === 0 && (
             <p className="text-[11px] font-mono et-ink-3">No lanes. Add one, load a template in CODE, or write a score.</p>
           )}
@@ -130,7 +144,7 @@ export function LoomView(): React.ReactElement {
 
         <aside className="w-96 shrink-0 border-l border-white/10 bg-black/20 flex flex-col min-h-0">
           <div role="tablist" aria-label="Loom panes" className="flex border-b border-white/10">
-            {(['code', 'tile', 'crate'] as Pane[]).map((p) => (
+            {(['code', 'tile', 'grow', 'crate'] as Pane[]).map((p) => (
               <button
                 key={p}
                 type="button"
@@ -150,6 +164,7 @@ export function LoomView(): React.ReactElement {
           <div id={`loom-pane-${pane}`} role="tabpanel" aria-labelledby={`loom-tab-${pane}`} className="flex-1 min-h-0 overflow-auto">
             {pane === 'code' && <CodePane />}
             {pane === 'tile' && <TilePane />}
+            {pane === 'grow' && <GrowPane />}
             {pane === 'crate' && <CratePane />}
           </div>
         </aside>
@@ -180,7 +195,10 @@ const TILE_FILL: Record<LoomTile['kind'], string> = {
   cycle: 'bg-teal-400/20 border-teal-400/40 [[data-et-light]_&]:bg-teal-500/45 [[data-et-light]_&]:border-teal-800/70',
   lock: 'bg-sky-400/20 border-sky-400/40 [[data-et-light]_&]:bg-sky-500/45 [[data-et-light]_&]:border-sky-800/70',
   jump: 'bg-fuchsia-400/20 border-fuchsia-400/40 [[data-et-light]_&]:bg-fuchsia-500/45 [[data-et-light]_&]:border-fuchsia-800/70',
+  gen: 'bg-violet-400/25 border-violet-400/50 loom-gen [[data-et-light]_&]:bg-violet-500/50 [[data-et-light]_&]:border-violet-800/70',
 };
+/** A rail cell a generator owns: shows what the rule plays there this lap. */
+const GEN_GHOST_FILL = 'bg-violet-400/10 border-violet-400/25 border-dashed loom-ghost [[data-et-light]_&]:bg-violet-500/30 [[data-et-light]_&]:border-violet-800/50';
 const HELD_FILL = 'bg-amber-400/10 border-amber-400/20 [[data-et-light]_&]:bg-amber-500/45 [[data-et-light]_&]:border-amber-800/60';
 const DANGER_TEXT = 'text-rose-400 [[data-et-light]_&]:text-rose-900';
 const MASTER_TEXT = 'text-amber-300/90 [[data-et-light]_&]:text-amber-900';
@@ -198,7 +216,24 @@ function tileFace(t: LoomTile): { glyph: string; sub: string } {
     case 'cycle': return { glyph: '!', sub: `${t.laps.join(',')}:${t.period}` };
     case 'lock': return { glyph: t.mode === 'abs' ? '=' : '+', sub: Object.keys(t.params).slice(0, 2).map((k) => k.slice(0, 3)).join(' ') };
     case 'jump': return { glyph: '→', sub: t.target.slice(0, 6) };
+    case 'gen': {
+      const alpha = t.alphabet.map((q) => (q ? (q.role ? LETTER_FOR_ROLE[q.role] ?? q.role[0] : q.shardId ? '#' : '∗') : '.')).join('').slice(0, 5);
+      return { glyph: GEN_GLYPH[t.gen], sub: `${t.gen.slice(0, 4)} ${alpha}`.trim() };
+    }
   }
+}
+
+/** The face of a cell a generator owns, for the lap on the plane. */
+function ghostFace(owner: GenTile, offset: number, lap: number, seed: number, form: string | undefined, laneIdx: number, col0: number): { glyph: string; sub: string } {
+  const cell = genCell(owner, offset, lap, seed, form, laneIdx, col0);
+  if (!cell || !cell.query) {
+    const mod = cell?.warp ? `×${(1 / cell.warp).toFixed(2)}` : cell?.transpose != null ? `${cell.transpose > 0 ? '+' : ''}${cell.transpose.toFixed(1)}` : '';
+    return { glyph: '·', sub: mod };
+  }
+  const q = cell.query;
+  const glyph = q.role ? LETTER_FOR_ROLE[q.role] ?? q.role[0] : q.shardId ? '#' : '∗';
+  const sub = cell.gain ? `${cell.gain > 0 ? '+' : ''}${Math.round(cell.gain)}dB` : cell.transpose != null ? `${cell.transpose > 0 ? '+' : ''}${cell.transpose.toFixed(1)}` : cell.warp && cell.warp !== 1 ? `×${(1 / cell.warp).toFixed(2)}` : q.entry ? q.entry.slice(0, 7) : '';
+  return { glyph, sub };
 }
 
 const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, onOpenTile }) => {
@@ -212,8 +247,13 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
   const setLaneOpts = useLoomStore((s) => s.setLaneOpts);
   const removeLane = useLoomStore((s) => s.removeLane);
   const lanes = useLoomStore((s) => s.applied.lanes);
+  const seed = useLoomStore((s) => s.applied.seed ?? DEFAULT_SEED);
+  const form = useLoomStore((s) => s.applied.form);
   const resolvedFor = useLoomStore((s) => s.resolvedFor);
+  const keepLanes = useLoomStore((s) => s.keepLanes);
+  const toggleKeepLane = useLoomStore((s) => s.toggleKeepLane);
   const menu = useContextMenu<TileSel>();
+  const laneIdx = lanes.indexOf(lane);
 
   // Live step in THIS lane: its own runner, or a runner that jumped here.
   const { liveStep, lap } = useMemo(() => {
@@ -222,6 +262,7 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
     }
     return { liveStep: -1, lap: cursors[lane.name]?.lap ?? 0 };
   }, [cursors, lane.name, lane.isTarget]);
+  const section = sectionOf(form, lap);
 
   const ids = `loom-${lane.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   const isMaster = lanes.find((l) => !l.isTarget)?.name === lane.name;
@@ -240,6 +281,14 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
       { type: 'item', label: 'Cycle gate', hint: '!2:4', onSelect: set({ kind: 'cycle', period: 4, laps: [2] }) },
       { type: 'item', label: 'Lock', hint: '=gain-6', onSelect: set({ kind: 'lock', mode: 'abs', params: { gain: -6 } }) },
       { type: 'item', label: 'Jump', hint: others[0] ? `->${others[0].name}` : 'needs a lane', disabled: others.length === 0, onSelect: set({ kind: 'jump', target: others[0]?.name ?? '' }) },
+      { type: 'separator' },
+      { type: 'header', label: 'Generator' },
+      ...GEN_KINDS.map((g) => ({
+        type: 'item' as const,
+        label: g,
+        hint: GEN_GLYPH[g],
+        onSelect: set({ kind: 'gen', gen: g, alphabet: g === 'gliss' || g === 'echo' ? [{ role: 'vocals' }] : [{ role: 'kick' }, { role: 'snare' }], span: Math.min(8, Math.max(1, lane.length - sel.step)), opts: { ...GEN_DEFAULT_OPTS[g] }, roll: 0 }),
+      })),
       { type: 'separator' },
       { type: 'item', label: 'Clear', danger: true, onSelect: set(null) },
     ];
@@ -295,7 +344,11 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
             <input id={`${ids}-target`} name={`${ids}-target`} type="checkbox" checked={lane.isTarget} onChange={(e) => setLaneOpts(lane.name, { isTarget: e.target.checked })} />
             target
           </label>
-          <span className="ml-auto tabular-nums et-ink-3" title="lap">lap {lap + 1}</span>
+          <label className="flex items-center gap-1" title="GROW leaves this lane alone">
+            <input id={`${ids}-keep`} name={`${ids}-keep`} type="checkbox" checked={keepLanes.includes(lane.name)} onChange={() => toggleKeepLane(lane.name)} />
+            keep
+          </label>
+          <span className="ml-auto tabular-nums et-ink-3" title="lap">{section ? `${section}·` : ''}lap {lap + 1}</span>
         </div>
         <div className="flex items-center gap-1 mt-auto">
           <button type="button" onClick={() => addRow(lane.name)} className={btn} aria-label={`Add a stack row above lane ${lane.name}`}>+ row</button>
@@ -316,10 +369,13 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
                 const isLive = step === liveStep;
                 const beatStart = step % Math.max(1, lane.div / 4) === 0;
                 const groupGap = step > 0 && step % 4 === 0 ? 'ml-1.5' : '';
-                // A rail cell inside a longer shard's span shows the span continuing.
-                const spanOwner = !tile && isRail ? row.slice(0, step).findIndex((t, i) => t && t.kind === 'shard' && i + t.steps > step) : -1;
-                const covered = spanOwner >= 0;
-                const face = tile ? tileFace(tile) : null;
+                // A rail cell inside a longer shard's span shows the span continuing;
+                // inside a generator's span it shows what the rule plays there this lap.
+                const spanOwner = !tile && isRail ? row.slice(0, step).findIndex((t, i) => t && (t.kind === 'shard' ? i + t.steps > step : t.kind === 'gen' ? i + t.span > step : false)) : -1;
+                const ownerTile = spanOwner >= 0 ? row[spanOwner] : null;
+                const ghost = ownerTile?.kind === 'gen' ? ghostFace(ownerTile, step - spanOwner, lap, seed, form, laneIdx, spanOwner) : null;
+                const covered = spanOwner >= 0 && !ghost;
+                const face = tile ? tileFace(tile) : ghost;
                 const resolved = tile && tile.kind === 'shard' ? resolvedFor(tile) : null;
                 const title = tile
                   ? `${serializeTile(tile)}${resolved ? ` → ${resolved.stem_name} #${resolved.bar_index}` : tile.kind === 'shard' ? ' → (unresolved)' : ''}`
@@ -328,7 +384,7 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
                   <button
                     key={step}
                     type="button"
-                    aria-label={`${lane.name} row ${r + 1} step ${step + 1}${tile ? `: ${serializeTile(tile)}` : covered ? ': held' : ''}`}
+                    aria-label={`${lane.name} row ${r + 1} step ${step + 1}${tile ? `: ${serializeTile(tile)}` : ghost ? `: generated ${ghost.glyph}` : covered ? ': held' : ''}`}
                     aria-pressed={isSel}
                     title={title}
                     onClick={() => { select(sel); onOpenTile(); }}
@@ -336,16 +392,18 @@ const LaneBand: React.FC<{ lane: LoomLane; onOpenTile: () => void }> = ({ lane, 
                     className={`${CELL} ${groupGap} relative rounded-md border flex flex-col items-center justify-center leading-none transition-[transform,background-color,border-color] duration-75 ${
                       tile
                         ? `${TILE_FILL[tile.kind]} et-ink`
+                        : ghost
+                          ? `${GEN_GHOST_FILL} et-ink-2`
                         : covered
                           ? HELD_FILL
                           : isRail
                             ? `bg-white/4 ${beatStart ? 'border-white/20' : 'border-white/8'} hover:bg-white/8`
                             : `bg-white/2 ${beatStart ? 'border-white/12' : 'border-white/5'} hover:bg-white/6`
-                    } ${isLive ? 'ring-2 ring-amber-300/90 scale-105 z-10' : ''} ${isSel ? 'outline-2 outline-offset-1 outline-sky-400/80' : ''}`}
+                    } ${isLive ? 'ring-2 ring-amber-300/90 scale-105 z-10 loom-live' : ''} ${isSel ? 'outline-2 outline-offset-1 outline-sky-400/80' : ''}`}
                   >
                     {face ? (
                       <>
-                        <span className={`font-mono font-black ${tile?.kind === 'shard' ? 'text-base' : 'text-lg'}`}>{face.glyph}</span>
+                        <span className={`font-mono font-black ${tile?.kind === 'shard' || ghost ? 'text-base' : 'text-lg'}`}>{face.glyph}</span>
                         {face.sub ? <span className="text-[8px] font-mono et-ink-2 truncate max-w-10 mt-0.5">{face.sub}</span> : null}
                       </>
                     ) : covered ? (
@@ -458,6 +516,7 @@ const TilePane: React.FC = () => {
     if (k === 'cycle') return update({ kind: 'cycle', period: 4, laps: [2] });
     if (k === 'lock') return update({ kind: 'lock', mode: 'abs', params: { gain: -6 } });
     if (k === 'jump') return update({ kind: 'jump', target: others[0]?.name ?? '' });
+    if (k === 'gen') return update({ kind: 'gen', gen: 'euclid', alphabet: [{ role: 'kick' }, { role: 'snare' }], span: Math.min(8, lane.length), opts: { ...GEN_DEFAULT_OPTS.euclid }, roll: 0 });
   };
 
   return (
@@ -475,8 +534,11 @@ const TilePane: React.FC = () => {
           <option value="cycle">cycle gate</option>
           <option value="lock">lock</option>
           <option value="jump">jump</option>
+          <option value="gen">generator</option>
         </select>
       </div>
+
+      {tile?.kind === 'gen' && <GenEditor id={id} tile={tile} laneLength={lane.length} update={update} />}
 
       {tile?.kind === 'shard' && (
         <div className="grid grid-cols-2 gap-x-3 gap-y-2">
@@ -569,6 +631,150 @@ const TilePane: React.FC = () => {
           </select>
         </Field>
       )}
+    </div>
+  );
+};
+
+/** Generator tile editor: rule, alphabet (as notation), options, span. */
+const GenEditor: React.FC<{ id: string; tile: GenTile; laneLength: number; update: (t: LoomTile | null) => void }> = ({ id, tile, laneLength, update }) => {
+  const alphaText = tile.alphabet.map((q) => (q ? serializeQuery(q) : '.')).join(' ');
+  const [alphaDraft, setAlphaDraft] = useState(alphaText);
+  const [optsDraft, setOptsDraft] = useState(serializeGenOpts(tile));
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { setAlphaDraft(alphaText); setOptsDraft(serializeGenOpts(tile)); setErr(null); }, [alphaText, tile]);
+  const commitText = () => {
+    // Round-trip through the notation so the editor and the code agree.
+    const tok = `${tile.gen}(${alphaDraft}${optsDraft.trim() ? `; ${optsDraft.trim()}` : ''}):${tile.span}${tile.roll === 1 ? '^' : tile.roll > 1 ? `^${tile.roll}` : ''}`;
+    const { score, errors } = parseLoom(`lane x x${Math.max(tile.span, 1)}\n  ${tok}`);
+    if (errors.length) { setErr(errors[0].message); return; }
+    const parsed = score.lanes[0]?.rows[0]?.[0];
+    if (parsed?.kind !== 'gen') { setErr('could not read the generator'); return; }
+    setErr(null);
+    update(parsed);
+  };
+  const seed = useLoomStore((s) => s.applied.seed ?? DEFAULT_SEED);
+  const pop = tile.gen === 'life' ? lifePopulation(tile, seed, 0) : null;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+        <Field id={`${id}-gen`} label="rule">
+          <select id={`${id}-gen`} name={`${id}-gen`} value={tile.gen} onChange={(e) => { const g = e.target.value as GenKind; update({ ...tile, gen: g, opts: { ...GEN_DEFAULT_OPTS[g] } }); }} className={`${input} form-select w-full`} style={{ colorScheme: 'dark' }}>
+            {GEN_KINDS.map((g) => <option key={g} value={g}>{GEN_GLYPH[g]} {g}</option>)}
+          </select>
+        </Field>
+        <Field id={`${id}-span`} label="span (cells)">
+          <input id={`${id}-span`} name={`${id}-span`} type="number" min={1} max={laneLength} value={tile.span} onChange={(e) => update({ ...tile, span: Math.max(1, Math.min(laneLength, Number(e.target.value) || 1)) })} className={`${input} w-full`} />
+        </Field>
+      </div>
+      <p className="text-[10px] font-mono et-ink-3 leading-snug">{GEN_BLURB[tile.gen]}</p>
+      <Field id={`${id}-alpha`} label="alphabet (shard tokens, . = rest)">
+        <input id={`${id}-alpha`} name={`${id}-alpha`} value={alphaDraft} onChange={(e) => setAlphaDraft(e.target.value)} onBlur={commitText} onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }} placeholder="k s <song:bass> {role=vocals text=love}" className={`${input} w-full`} />
+      </Field>
+      <Field id={`${id}-opts`} label="options (name=value)">
+        <input id={`${id}-opts`} name={`${id}-opts`} value={optsDraft} onChange={(e) => setOptsDraft(e.target.value)} onBlur={commitText} onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }} placeholder={serializeGenOpts({ ...tile, opts: { ...GEN_DEFAULT_OPTS[tile.gen], x: 0 } }).replace(' x=0', '') || 'defaults'} className={`${input} w-full`} />
+      </Field>
+      <div className="text-[10px] font-mono et-ink-3">
+        defaults: {Object.entries(GEN_DEFAULT_OPTS[tile.gen]).map(([k, v]) => `${k}=${v}`).join(' ') || '—'}
+        {pop != null ? ` · generation 0 has ${pop} live cells` : ''}
+      </div>
+      {err && <p className="text-[10px] font-mono text-rose-300" role="alert">{err}</p>}
+    </div>
+  );
+};
+
+/* ── GROW ────────────────────────────────────────────────────────────────── */
+
+/** Scores that grow and breed: mutate, cross with a sample or pasted score,
+ *  fragment, reseed, keep a song form, walk back through the lineage. */
+const GrowPane: React.FC = () => {
+  const applied = useLoomStore((s) => s.applied);
+  const history = useLoomStore((s) => s.history);
+  const keepLanes = useLoomStore((s) => s.keepLanes);
+  const running = useLoomStore((s) => s.running);
+  const mutate = useLoomStore((s) => s.mutate);
+  const breed = useLoomStore((s) => s.breed);
+  const fragmentize = useLoomStore((s) => s.fragmentize);
+  const setSeed = useLoomStore((s) => s.setSeed);
+  const setForm = useLoomStore((s) => s.setForm);
+  const revert = useLoomStore((s) => s.revert);
+  const [intensity, setIntensity] = useState(2);
+  const [partner, setPartner] = useState('');
+  const [pasted, setPasted] = useState('');
+  const [formDraft, setFormDraft] = useState(applied.form ?? '');
+  const [breedErr, setBreedErr] = useState<string | null>(null);
+  useEffect(() => { setFormDraft(applied.form ?? ''); }, [applied.form]);
+  const seed = applied.seed ?? DEFAULT_SEED;
+  const doBreed = () => {
+    const src = partner || pasted.trim();
+    if (!src) { setBreedErr('pick a sample or paste a score'); return; }
+    setBreedErr(breed(src) ? null : 'that score does not parse');
+  };
+  return (
+    <div className="flex flex-col gap-3 p-3 text-[11px] font-mono et-ink">
+      <p className="et-ink-3 leading-snug">Every action makes a new generation from the applied score{running ? ' and swaps it in at the master wrap' : ''}. Tick <span className="et-ink">keep</span> on a lane to leave it alone.</p>
+
+      <div className="flex flex-col gap-1.5 rounded border border-white/10 p-2">
+        <div className="flex items-center gap-2">
+          <label htmlFor="loom-grow-intensity" className={label}>mutate</label>
+          <input id="loom-grow-intensity" name="loom-grow-intensity" type="range" min={1} max={6} value={intensity} onChange={(e) => setIntensity(Number(e.target.value))} className="flex-1" aria-valuetext={`${intensity} edits`} />
+          <span className="tabular-nums et-ink-2 w-5 text-right">{intensity}</span>
+          <button type="button" onClick={() => mutate(intensity)} className={`${btn} border-violet-400/50`}>Grow</button>
+        </div>
+        <p className="text-[10px] et-ink-3">Adds, drops, nudges or swaps cells from the lane's own vocabulary, flips gates, nudges locks and rules.</p>
+      </div>
+
+      <div className="flex flex-col gap-1.5 rounded border border-white/10 p-2">
+        <div className="flex items-center gap-2">
+          <label htmlFor="loom-grow-partner" className={label}>breed with</label>
+          <select id="loom-grow-partner" name="loom-grow-partner" value={partner} onChange={(e) => setPartner(e.target.value)} className={`${input} form-select flex-1`} style={{ colorScheme: 'dark' }}>
+            <option value="">— pasted score below —</option>
+            {LOOM_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {history.map((g, i) => <option key={`h${i}`} value={g.text}>{g.label}</option>)}
+          </select>
+          <button type="button" onClick={doBreed} className={`${btn} border-violet-400/50`}>Breed</button>
+        </div>
+        {!partner && (
+          <>
+            <label htmlFor="loom-grow-pasted" className="sr-only">Partner score</label>
+            <textarea id="loom-grow-pasted" name="loom-grow-pasted" value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="paste a .loom score to cross with" spellCheck={false} className={`${input} h-20 resize-none whitespace-pre`} />
+          </>
+        )}
+        {breedErr && <p className="text-[10px] text-rose-300" role="alert">{breedErr}</p>}
+        <p className="text-[10px] et-ink-3">Lanes cross by name (else by shape); rows split at a random point; the partner's extra lanes come along on a coin flip.</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded border border-white/10 p-2">
+        <Field id="loom-grow-seed" label="seed (dice)">
+          <div className="flex items-center gap-1">
+            <input id="loom-grow-seed" name="loom-grow-seed" type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value) || 0)} className={`${input} w-full tabular-nums`} />
+            <button type="button" onClick={() => setSeed(Math.floor(Math.random() * 100000))} className={btn} title="new dice">⚄</button>
+          </div>
+        </Field>
+        <Field id="loom-grow-form" label="form (section per lap)">
+          <input id="loom-grow-form" name="loom-grow-form" value={formDraft} placeholder="AABA" onChange={(e) => setFormDraft(e.target.value.toUpperCase())} onBlur={() => setForm(formDraft)} onKeyDown={(e) => { if (e.key === 'Enter') setForm(formDraft); }} className={`${input} w-full uppercase`} />
+        </Field>
+        <div className="col-span-2 flex items-center gap-2">
+          <label htmlFor="loom-grow-frag" className={label}>fragment</label>
+          <select id="loom-grow-frag" name="loom-grow-frag" defaultValue="1" className={`${input} form-select`} style={{ colorScheme: 'dark' }} onChange={(e) => fragmentize(Number(e.target.value))}>
+            <option value="1">1-beat pieces</option>
+            <option value="4">1-bar pieces</option>
+          </select>
+          <span className="text-[10px] et-ink-3">every rail becomes a shuffled frag() rule</span>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <span className={label}>lineage {keepLanes.length ? `· keeping ${keepLanes.join(', ')}` : ''}</span>
+        {history.length === 0 && <span className="text-[10px] et-ink-3">no generations yet</span>}
+        {history.map((g, i) => (
+          <button key={i} type="button" onClick={() => revert(i)} className={`${btn} text-left flex items-center gap-2`} title="go back to this generation">
+            <span className="et-ink">{g.label}</span>
+            <span className="et-ink-3 truncate flex-1">{g.text.split('\n').find((l) => l.startsWith('lane'))?.slice(0, 32) ?? ''}</span>
+            <span className="et-ink-3">{new Date(g.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </button>
+        ))}
+        <span className="text-[10px] et-ink-3">now: gen {history.length}</span>
+      </div>
     </div>
   );
 };

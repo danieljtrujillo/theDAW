@@ -29,10 +29,15 @@ import { localCandidates, resolveEntryRef, useShardIndexStore, type ShardRow } f
 import { useLibraryStore } from './libraryStore';
 import { logInfo } from './logStore';
 import { loomTemplateById } from '../data/loomTemplates';
+import { breedScores, fragmentScore, mutateScore } from '../lib/loomEvolve';
+import { DEFAULT_SEED } from '../lib/loomEngine';
 
 export interface TileSel { lane: string; row: number; step: number }
 
 export interface FireInfo { step: number; at: number; title: string }
+
+/** One generation in the GROW pane's lineage. */
+export interface LoomGeneration { text: string; label: string; at: number }
 
 interface LoomState {
   text: string;
@@ -46,6 +51,10 @@ interface LoomState {
   unresolved: string[];
   selected: TileSel | null;
   bpm: number;
+  /** Lineage of scores the GROW pane produced (newest last). */
+  history: LoomGeneration[];
+  /** Lanes GROW leaves alone. */
+  keepLanes: string[];
 
   setText: (t: string) => void;
   apply: () => boolean;
@@ -61,6 +70,18 @@ interface LoomState {
   removeLane: (lane: string) => void;
   setBpm: (bpm: number) => void;
   resetStarter: () => void;
+  /** GROW: a mutated child of the applied score becomes the score. */
+  mutate: (intensity: number) => void;
+  /** GROW: cross the applied score with another (a template id or score text). */
+  breed: (partner: string) => boolean;
+  /** GROW: every rail becomes a one-beat fragment generator. */
+  fragmentize: (size: number) => void;
+  /** GROW: reseed the dice (chance gates and generators). */
+  setSeed: (seed: number) => void;
+  setForm: (form: string) => void;
+  toggleKeepLane: (lane: string) => void;
+  /** Return to an earlier generation. */
+  revert: (index: number) => void;
   /** Load a sample score: text + apply + its songs into the crate. Returns the
    *  song references that could not be found in the library. */
   loadTemplate: (id: string) => string[];
@@ -169,8 +190,11 @@ function getEngine(): LoomEngine {
       const title = `${entryTitle(shard.entry_id)} · ${shard.stem_name} #${shard.bar_index}`;
       useLoomStore.setState((s) => ({ fired: { ...s.fired, [lane]: { step, at: when, title } } }));
     },
+    onBpm: (bpm) => useLoomStore.setState({ bpm }),
     onUnresolved: (lane, tile) => {
-      const key = `${lane}: ${tile.query.entry ?? tile.query.role ?? tile.query.shardId ?? '?'}`;
+      const key = tile.kind === 'gen'
+        ? `${lane}: ${tile.gen}(…)`
+        : `${lane}: ${tile.query.entry ?? tile.query.role ?? tile.query.shardId ?? '?'}`;
       useLoomStore.setState((s) => (s.unresolved.includes(key) ? s : { unresolved: [...s.unresolved, key].slice(-8) }));
     },
     onMasterWrap: () => {
@@ -212,6 +236,8 @@ export const useLoomStore = create<LoomState>()(
         unresolved: [],
         selected: null,
         bpm: initial.score.bpm ?? beatClock.bpm,
+        history: [],
+        keepLanes: [],
 
         setText: (t) => {
           const { score, errors } = parseLoom(t);
@@ -327,6 +353,69 @@ export const useLoomStore = create<LoomState>()(
           const text = serializeLoom(next);
           set({ applied: next, text, bpm: v });
           getEngine().setScore(next, { immediate: true });
+        },
+
+        mutate: (intensity) => {
+          const st = get();
+          const parent = st.applied;
+          const seed = (parent.seed ?? DEFAULT_SEED) * 31 + st.history.length * 7 + Math.floor(Math.random() * 1e6);
+          const child = mutateScore(parent, seed, { intensity, keep: st.keepLanes });
+          const gen = st.history.length + 1;
+          set({ history: [...st.history, { text: st.text, label: `gen ${gen - 1}`, at: Date.now() }].slice(-24), selected: null });
+          commit(child);
+          logInfo('loom', `Grew generation ${gen} (${intensity} edits)`);
+        },
+
+        breed: (partner) => {
+          const st = get();
+          const tpl = loomTemplateById(partner);
+          const { score: other, errors } = parseLoom(tpl ? tpl.text : partner);
+          if (errors.length || other.lanes.length === 0) return false;
+          const seed = (st.applied.seed ?? DEFAULT_SEED) ^ (other.seed ?? 0x51) ^ Math.floor(Math.random() * 1e6);
+          const child = breedScores(st.applied, other, seed, { keep: st.keepLanes });
+          const gen = st.history.length + 1;
+          set({ history: [...st.history, { text: st.text, label: `gen ${gen - 1}`, at: Date.now() }].slice(-24), selected: null });
+          commit(child);
+          if (tpl) {
+            const idx = useShardIndexStore.getState();
+            for (const ref of tpl.songs) { const id = resolveEntryRef(ref); if (id) idx.addToCrate(id); }
+          }
+          logInfo('loom', `Bred generation ${gen} with ${tpl ? tpl.name : 'the pasted score'}`);
+          return true;
+        },
+
+        fragmentize: (size) => {
+          const st = get();
+          const gen = st.history.length + 1;
+          set({ history: [...st.history, { text: st.text, label: `gen ${gen - 1}`, at: Date.now() }].slice(-24), selected: null });
+          commit(fragmentScore(st.applied, size));
+          logInfo('loom', `Fragmented every rail into ${size}-beat pieces`);
+        },
+
+        setSeed: (seed) => {
+          const next = clone(get().applied);
+          next.seed = Math.max(0, Math.floor(seed));
+          commit(next);
+        },
+
+        setForm: (form) => {
+          const next = clone(get().applied);
+          const f = form.replace(/[^A-Za-z]/g, '').toUpperCase();
+          if (f) next.form = f; else delete next.form;
+          commit(next);
+        },
+
+        toggleKeepLane: (lane) => set((s) => ({ keepLanes: s.keepLanes.includes(lane) ? s.keepLanes.filter((l) => l !== lane) : [...s.keepLanes, lane] })),
+
+        revert: (index) => {
+          const st = get();
+          const g = st.history[index];
+          if (!g) return;
+          const { score, errors } = parseLoom(g.text);
+          if (errors.length) return;
+          set({ history: st.history.slice(0, index), selected: null });
+          commit(score);
+          logInfo('loom', `Back to ${g.label}`);
         },
 
         resetStarter: () => {

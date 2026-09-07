@@ -101,7 +101,7 @@ const shardAt = (tiles: (LoomTile | null)[], i: number) => {
   const { LOOM_TEMPLATES } = await import('../data/loomTemplates.ts');
   assert.ok(LOOM_TEMPLATES.length >= 4);
   assert.equal(LOOM_TEMPLATES.filter((t) => t.level === 'simple').length, 2);
-  assert.equal(LOOM_TEMPLATES.filter((t) => t.level === 'complex').length, 2);
+  assert.equal(LOOM_TEMPLATES.filter((t) => t.level === 'complex').length, 3);
   for (const t of LOOM_TEMPLATES) {
     const { score, errors } = parseLoom(t.text);
     assert.deepEqual(errors, [], `${t.name}:\n${errors.map((e) => `line ${e.line}: ${e.message}`).join('\n')}`);
@@ -121,6 +121,17 @@ const shardAt = (tiles: (LoomTile | null)[], i: number) => {
     const kinds = new Set(score.lanes.flatMap((l) => l.rows.flatMap((r) => r.filter(Boolean).map((x) => x!.kind))));
     for (const k of ['shard', 'chance', 'cycle', 'lock', 'jump']) assert.ok(kinds.has(k as never), `${t.name} should use a ${k} tile`);
     assert.ok(score.lanes.some((l) => l.isTarget), `${t.name} should have a @target lane`);
+  }
+  // The generative sample uses every rule family at least once.
+  const garden = LOOM_TEMPLATES.find((t) => t.id === 'garden-of-forking-beats');
+  assert.ok(garden, 'generative sample present');
+  if (garden) {
+    const { score } = parseLoom(garden.text);
+    const gens = new Set(score.lanes.flatMap((l) => l.rows.flatMap((r) => r.filter((x) => x?.kind === 'gen').map((x) => (x as { gen: string }).gen))));
+    for (const g of ['euclid', 'fractal', 'life', 'fib', 'gliss', 'accel', 'echo']) assert.ok(gens.has(g), `garden should use ${g}`);
+    assert.equal(score.form, 'AABA');
+    assert.equal(score.seed, 2026);
+    assert.ok(score.ramp && score.ramp.to === 132);
   }
 }
 

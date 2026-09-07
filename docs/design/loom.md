@@ -237,6 +237,74 @@ EACC under the Prologue vocal, in key" is one tool call.
   is in the tree; word-level vocal shards from the lyrics doc as a `v` role
   with text search.
 
+## 9. v2 — rules, growth, and a tempo that moves (2026-09-07)
+
+The user's brief for v2: spice up the look, add complex interactions and
+"cool math": fractal and Fibonacci sequencers, accelerando and glissando
+builders, Game-of-Life-like growth and breeding where songs take on a life of
+their own while keeping a song-like structure when wanted, recursion,
+fragmentation, randomisation.
+
+### Generator tiles (`lib/loomGen.ts`)
+
+A generator is a rail tile that owns `span` cells and answers, per (cell, lap),
+what plays there. It is a pure function of (tile, offset, lap, seed, form), so
+the plane draws what a lap will play (ghost cells) and the engine agrees.
+Notation: `name(alphabet; options):span`, alphabet = shard tokens or `.` for
+a rest, options = `name=value`.
+
+| rule | what it is | options |
+| --- | --- | --- |
+| `fib(k s):16` | Fibonacci word over two symbols; >2 symbols index by Fibonacci numbers | `drift` (steps per lap) |
+| `fractal(k . s; kind=thue)` | Thue–Morse, `cantor` dust, `dragon` curve turns, `sierpinski` (lap = triangle row) | `kind`, `drift`, `depth` |
+| `euclid(k; hits=5):16` | Bjorklund's Euclidean rhythm, rotated per lap | `hits`, `rotate` |
+| `life(k s h; density=.35)` | Conway's Life; rows are the alphabet, one generation per lap; a crowded column plays louder; a dead world gets a spark | `density`, `rule=B3/S23`, `rows` |
+| `rand(k s . .; p=.75)` | seeded pick per cell per lap | `p` |
+| `frag(k s; size=1)` | one-beat (or one-bar) fragments, shuffled and re-resolved every lap | `size` |
+| `echo(v; every=3 decay=6)` | a shard and its decaying repeats — recursion | `every`, `decay`, `depth` |
+| `accel(k; from=1 to=2)` | accelerando / ritardando: the lane's step time warps across the span | `from`, `to`, `curve` |
+| `gliss(v; from=-12 to=12)` | glissando: transpose sweeps across the span | `from`, `to`, `curve` |
+
+In an upper row a generator fires nothing and only modulates the column
+below (warp, transpose, gain) — a lock that changes shape as the laps run.
+
+### Score directives
+
+- `seed N` — every chance gate and every rule rolls dice from
+  hash(seed, lane, step, lap); the same score plays the same way twice.
+- `form AABA` — song structure by lap. Life replays the generation of a
+  section's first appearance inside a cycle (A A B A: laps 1 and 2 are the
+  same A, lap 3 is B), and keeps evolving across cycles. The lane header
+  shows `A·lap 3`.
+- `ramp bpm 118 132 12 [curve]` — tempo ramps at each master wrap,
+  phase-preserving on the beat clock.
+
+### GROW pane (`lib/loomEvolve.ts`)
+
+- **Grow** — a mutated child: add/drop a rail cell from the lane's own
+  vocabulary, nudge a row, swap cells, flip a chance gate, tweak a lock or a
+  rule option, stretch a shard. Intensity 1–6. Lanes ticked **keep** are
+  untouched.
+- **Breed** — cross the score with a sample, an earlier generation, or a
+  pasted score: lanes match by name (else by shape), rows split at a random
+  point, the partner's extra lanes come along on a coin flip.
+- **Fragment** — every rail becomes a `frag()` rule over its vocabulary.
+- **Seed / form** live here too; the lineage lists every generation with a
+  one-click revert.
+
+### Look
+
+The plane is woven cloth: a faint warp/weft grid on the surface, generator
+tiles carry a diagonal thread, ghost cells are dashed, the live column
+breathes (off under reduced motion). Theme tokens only.
+
+### Sample
+
+*Garden of Forking Beats* — no pinned songs; a Euclidean kick, a Thue–Morse
+hat, a Life colony over bass/vocal/other, a Fibonacci fill, a glissando lift
+with an accelerando, decaying vocal echoes, `form AABA`, `seed 2026`, and a
+118→132 ramp over twelve laps.
+
 ## 8. Deliberately not doing
 
 - A learned embedding now — nothing in the tree has one; handcrafted

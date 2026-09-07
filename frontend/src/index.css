@@ -733,3 +733,25 @@ select optgroup {
     opacity: 1;
   }
 }
+
+/* LOOM (views/LoomView.tsx): the plane reads as woven cloth. A faint warp/weft
+ * grid on the surface, generator tiles carry a diagonal thread, a live column
+ * breathes. Everything sits on theme tokens so light themes keep contrast. */
+.loom-surface {
+  background-image:
+    repeating-linear-gradient(0deg, rgb(var(--et-ink) / 0.035) 0 1px, transparent 1px 11px),
+    repeating-linear-gradient(90deg, rgb(var(--et-ink) / 0.035) 0 1px, transparent 1px 11px);
+}
+.loom-plane { scrollbar-gutter: stable; }
+.loom-gen {
+  background-image: repeating-linear-gradient(135deg, rgb(var(--et-ink) / 0.10) 0 2px, transparent 2px 7px);
+}
+.loom-ghost {
+  background-image: repeating-linear-gradient(135deg, rgb(var(--et-ink) / 0.05) 0 1px, transparent 1px 6px);
+}
+@keyframes loom-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(251 191 36 / 0.45); }
+  50% { box-shadow: 0 0 14px 3px rgb(251 191 36 / 0.25); }
+}
+.loom-live { animation: loom-breathe 0.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .loom-live { animation: none; } }

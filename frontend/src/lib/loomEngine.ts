@@ -1,6 +1,6 @@
 /**
  * loomEngine — plays a LOOM score with Jacquard's rules on the shared beat clock
- * (docs/design/loom.md §4).
+ * (docs/design/loom.md §4, §9).
  *
  * Every channel lane has a runner: (current lane, step, lap, next step time).
  * A 25 ms ticker evaluates every step that falls inside a 160 ms lookahead:
@@ -10,7 +10,14 @@
  * lane from the step after; a shard tile launches its resolved shard at the
  * step's exact clock time. A target lane runs until its end and returns to the
  * runner's home lane. The first channel lane is the master: when it wraps, a
- * queued score replaces the running one.
+ * queued score replaces the running one and a tempo ramp advances.
+ *
+ * v2: a GENERATOR tile on the rail owns `span` cells and answers per (cell,
+ * lap) what plays there (lib/loomGen.ts) — Fibonacci, fractal, Euclidean,
+ * Life, random, fragment, echo, accelerando, glissando. In an upper row it is
+ * a modulator for the column below (a time warp, a transpose sweep, a gain).
+ * Every die roll is a hash of (seed, lane, step, lap), so a score with a
+ * `seed` plays the same way twice.
  *
  * Shard queries are resolved ahead of time (on score set, and one lap early for
  * rolling tiles) so nothing awaits inside the audio-time path; an unresolved
@@ -19,7 +26,8 @@
 import { beatClock } from './beatClock';
 import { getEngineCtx } from '../state/playerStore';
 import { logInfo } from '../state/logStore';
-import type { LoomLane, LoomQuery, LoomScore, LoomTile, LockParam } from './loomScore';
+import { serializeQuery, type LoomLane, type LoomQuery, type LoomScore, type LoomTile, type LockParam } from './loomScore';
+import { genAlphabet, genCell, unit, type GenCell, type GenTile } from './loomGen';
 import type { ShardRow } from '../state/shardIndexStore';
 import * as shards from './shardEngine';
 
@@ -42,11 +50,13 @@ export interface LoomEngineHooks {
   onCursors?: (cursors: Record<string, LaneCursor>) => void;
   onFire?: (info: { lane: string; step: number; shard: ShardRow; when: number }) => void;
   onMasterWrap?: (lap: number) => void;
-  onUnresolved?: (lane: string, tile: ShardTile) => void;
+  onUnresolved?: (lane: string, tile: ShardTile | GenTile) => void;
+  onBpm?: (bpm: number) => void;
 }
 
 const LOOKAHEAD_SEC = 0.16;
 const TICK_MS = 25;
+export const DEFAULT_SEED = 0x10c;
 
 type Effective = Record<LockParam, number>;
 const DEFAULT_EFFECTIVE: Effective = {
@@ -61,23 +71,16 @@ interface Runner {
   lap: number;
   nextTime: number;
   pendingJump: string | null;
+  /** Step-duration multiplier set by an accelerando cell for this step. */
+  warp: number;
 }
 
 interface CrossLock { laneIdx: number; from: number; until: number; mode: 'abs' | 'rel'; params: Partial<Record<LockParam, number>> }
 
 interface Resolved { row: ShardRow | null; lap: number; pending: boolean }
 
-/** Deterministic PRNG so a chance gate is reproducible per seed. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/** Which generator owns a rail cell, and at what offset. */
+interface GenOwner { tile: GenTile; col0: number; offset: number }
 
 export class LoomEngine {
   private score: LoomScore | null = null;
@@ -85,8 +88,10 @@ export class LoomEngine {
   private runners: Runner[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private resolved = new Map<ShardTile, Resolved>();
+  /** Generator cells resolve by (lane, column, query text[, lap]) so a cloned
+   *  score keeps its resolutions and a fresh cell can roll new dice per lap. */
+  private genResolved = new Map<string, Resolved>();
   private crossLocks: CrossLock[] = [];
-  private rng = mulberry32(0x10c);
   private cursorsDirty = false;
   running = false;
 
@@ -108,11 +113,14 @@ export class LoomEngine {
 
   get hasQueued(): boolean { return this.queued != null; }
 
+  get seed(): number { return this.score?.seed ?? DEFAULT_SEED; }
+
   start(): void {
     if (this.running || !this.score) return;
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
-    if (this.score.bpm) beatClock.setBpm(this.score.bpm, 'loom');
+    const bpm0 = this.score.ramp ? this.score.ramp.from : this.score.bpm;
+    if (bpm0) beatClock.setBpm(bpm0, 'loom');
     const t0 = beatClock.nextGrid('bar');
     this.rebuildRunners(t0);
     this.running = true;
@@ -144,23 +152,26 @@ export class LoomEngine {
     return (beatClock.beatSec() * 4) / lane.div;
   }
 
-  private beatsFor(tile: ShardTile, lane: LoomLane): number {
-    return (tile.steps * 4) / lane.div;
+  private beatsFor(steps: number, lane: LoomLane): number {
+    return (steps * 4) / lane.div;
   }
 
   private rebuildRunners(t0: number): void {
     if (!this.score) return;
     this.runners = this.score.lanes
       .filter((l) => !l.isTarget)
-      .map((l) => ({ home: l, cur: l, step: 0, lap: 0, nextTime: t0, pendingJump: null }));
+      .map((l) => ({ home: l, cur: l, step: 0, lap: 0, nextTime: t0, pendingJump: null, warp: 1 }));
     this.emitCursors(true);
   }
 
   private preResolve(score: LoomScore): void {
     for (const lane of score.lanes) {
       for (const row of lane.rows) {
-        for (const tile of row) {
-          if (tile && tile.kind === 'shard' && !this.resolved.has(tile)) this.resolveTile(tile, lane, 0);
+        for (let col = 0; col < row.length; col += 1) {
+          const tile = row[col];
+          if (!tile) continue;
+          if (tile.kind === 'shard' && !this.resolved.has(tile)) this.resolveTile(tile, lane, 0);
+          if (tile.kind === 'gen') for (const q of genAlphabet(tile)) this.resolveGen(lane, col, q, 0, null);
         }
       }
     }
@@ -171,7 +182,7 @@ export class LoomEngine {
     if (prev?.pending) return;
     const entry: Resolved = { row: prev?.row ?? null, lap, pending: true };
     this.resolved.set(tile, entry);
-    const ctx: ResolveCtx = { lane, tile, lap, beats: this.beatsFor(tile, lane), bpm: beatClock.bpm };
+    const ctx: ResolveCtx = { lane, tile, lap, beats: this.beatsFor(tile.steps, lane), bpm: beatClock.bpm };
     Promise.resolve(this.hooks.resolve(tile.query, ctx))
       .then((row) => {
         entry.row = row;
@@ -180,6 +191,46 @@ export class LoomEngine {
         if (row) shards.prefetch([row], beatClock.bpm, (s) => this.hooks.semitonesFor(s));
       })
       .catch(() => { entry.pending = false; });
+  }
+
+  private genKey(lane: LoomLane, col: number, q: LoomQuery, freshLap: number | null): string {
+    return `${lane.name}|${col}|${serializeQuery(q)}|${freshLap ?? '-'}`;
+  }
+
+  /** Resolve one generator symbol. `freshLap` null = shared across laps. */
+  private resolveGen(lane: LoomLane, col: number, q: LoomQuery, lap: number, freshLap: number | null): Resolved {
+    const key = this.genKey(lane, col, q, freshLap);
+    const prev = this.genResolved.get(key);
+    if (prev && (prev.pending || prev.row)) return prev;
+    const entry: Resolved = { row: prev?.row ?? null, lap, pending: true };
+    this.genResolved.set(key, entry);
+    if (this.genResolved.size > 512) {
+      const first = this.genResolved.keys().next().value;
+      if (first !== undefined) this.genResolved.delete(first);
+    }
+    const tile: ShardTile = { kind: 'shard', query: q, steps: 1, roll: 0 };
+    const ctx: ResolveCtx = { lane, tile, lap, beats: q.beats ?? 4, bpm: beatClock.bpm };
+    Promise.resolve(this.hooks.resolve(q, ctx))
+      .then((row) => {
+        entry.row = row;
+        entry.pending = false;
+        if (row) shards.prefetch([row], beatClock.bpm, (s) => this.hooks.semitonesFor(s));
+      })
+      .catch(() => { entry.pending = false; });
+    return entry;
+  }
+
+  /** The generator that owns rail cell `col` of `lane`, if any. */
+  private genOwner(lane: LoomLane, col: number): GenOwner | null {
+    const rail = lane.rows[lane.rows.length - 1];
+    if (!rail) return null;
+    for (let c = col; c >= 0 && col - c < 256; c -= 1) {
+      const t = rail[c];
+      if (!t) continue;
+      if (t.kind === 'gen' && col < c + t.span) return { tile: t, col0: c, offset: col - c };
+      return null; // a shard or gate between us and any generator
+    }
+    return null;
   }
 
   private tick(): void {
@@ -209,16 +260,35 @@ export class LoomEngine {
     return eff;
   }
 
+  /** Fold a generator cell's modulation into the effective params. */
+  private applyCell(eff: Effective, r: Runner, cell: GenCell | null): void {
+    if (!cell) return;
+    if (cell.gain) eff.gain += cell.gain;
+    if (cell.transpose) eff.transpose += cell.transpose;
+    if (cell.warp && cell.warp > 0) r.warp = cell.warp;
+  }
+
   private evaluate(r: Runner, runnerIdx: number, t: number): void {
     const lane = r.cur;
     const step = r.step;
     const stepSec = this.stepSec(lane);
     const eff = this.effectiveAt(runnerIdx, t);
-    for (const row of lane.rows) {
-      const tile = row[step];
+    r.warp = 1;
+    const seed = this.seed;
+    const laneIdx = this.score ? this.score.lanes.indexOf(lane) : runnerIdx;
+    const railIdx = lane.rows.length - 1;
+    for (let rowIdx = 0; rowIdx < lane.rows.length; rowIdx += 1) {
+      const row = lane.rows[rowIdx];
+      const isRail = rowIdx === railIdx;
+      let tile = row[step];
+      let owner: GenOwner | null = null;
+      if (!tile && isRail) {
+        owner = this.genOwner(lane, step);
+        if (owner) tile = owner.tile;
+      }
       if (!tile) continue;
       if (tile.kind === 'chance') {
-        if (this.rng() * 100 >= tile.pct) return; // gate closed: stop the descent
+        if (unit(seed, 3, laneIdx, step, r.lap) * 100 >= tile.pct) return; // gate closed: stop the descent
         continue;
       }
       if (tile.kind === 'cycle') {
@@ -235,6 +305,19 @@ export class LoomEngine {
         r.pendingJump = tile.target;
         continue;
       }
+      if (tile.kind === 'gen') {
+        const col0 = owner ? owner.col0 : step;
+        const offset = owner ? owner.offset : 0;
+        const cell = genCell(tile, offset, r.lap, seed, this.score?.form, laneIdx, col0);
+        this.applyCell(eff, r, cell);
+        if (!isRail) continue; // upper row: a modulator only
+        if (!cell || !cell.query) continue;
+        const res = this.resolveGen(lane, col0, cell.query, r.lap, cell.fresh ? r.lap : null);
+        const row_ = res.row ?? (cell.fresh ? this.resolveGen(lane, col0, cell.query, r.lap, null).row : null);
+        if (!row_) { if (!res.pending) this.hooks.onUnresolved?.(r.home.name, tile); continue; }
+        this.launch(r, row_, cell.steps ?? 1, t, eff);
+        continue;
+      }
       this.fire(r, tile, t, eff);
     }
   }
@@ -242,7 +325,6 @@ export class LoomEngine {
   private fire(r: Runner, tile: ShardTile, t: number, eff: Effective): void {
     const lane = r.cur;
     const laneName = r.home.name;
-    const stepSec = this.stepSec(lane);
     const res = this.resolved.get(tile);
     const rollEvery = tile.roll > 0 ? tile.roll : eff.roll > 0 ? Math.round(eff.roll) : 0;
     if (!res) {
@@ -259,7 +341,14 @@ export class LoomEngine {
       if (!res.pending) this.hooks.onUnresolved?.(laneName, tile);
       return;
     }
-    const durationSec = Math.max(0.03, tile.steps * stepSec * Math.max(0.05, eff.gate));
+    this.launch(r, row, tile.steps, t, eff);
+  }
+
+  private launch(r: Runner, row: ShardRow, steps: number, t: number, eff: Effective): void {
+    const lane = r.cur;
+    const laneName = r.home.name;
+    const stepSec = this.stepSec(lane) * r.warp;
+    const durationSec = Math.max(0.03, steps * stepSec * Math.max(0.05, eff.gate));
     shards.setLaneParams(laneName, {
       gainDb: 0, // per-voice gain carries the lock so stacked shards keep their own levels
       pan: eff.pan,
@@ -285,7 +374,7 @@ export class LoomEngine {
   }
 
   private advance(r: Runner, t: number): void {
-    r.nextTime = t + this.stepSec(r.cur);
+    r.nextTime = t + this.stepSec(r.cur) * r.warp;
     r.step += 1;
     this.cursorsDirty = true;
     if (r.pendingJump && this.score) {
@@ -298,32 +387,51 @@ export class LoomEngine {
       }
     }
     if (r.step >= r.cur.length) {
-      const wasTarget = r.cur.isTarget;
       r.cur = r.home;
       r.step = 0;
       r.lap += 1;
       // Re-resolve rolling tiles one lap ahead so the next lap never waits.
-      for (const row of r.home.rows) for (const tile of row) {
-        if (tile && tile.kind === 'shard' && tile.roll > 0) {
+      for (const row of r.home.rows) for (let col = 0; col < row.length; col += 1) {
+        const tile = row[col];
+        if (!tile) continue;
+        if (tile.kind === 'shard' && tile.roll > 0) {
           const res = this.resolved.get(tile);
           if (res && !res.pending && r.lap - res.lap >= tile.roll) this.resolveTile(tile, r.home, r.lap);
         }
-      }
-      if (!wasTarget || true) {
-        const master = this.runners[0];
-        if (r === master) {
-          this.hooks.onMasterWrap?.(r.lap);
-          if (this.queued) {
-            const next = this.queued;
-            this.queued = null;
-            this.score = next;
-            if (next.bpm) beatClock.setBpm(next.bpm, 'loom');
-            this.rebuildRunners(r.nextTime);
-            logInfo('loom', 'Score swapped at the master wrap');
+        if (tile.kind === 'gen') {
+          // Cells that roll fresh dice next lap get their queries in flight now.
+          for (let o = 0; o < tile.span; o += 1) {
+            const cell = genCell(tile, o, r.lap, this.seed, this.score?.form, this.score?.lanes.indexOf(r.home) ?? 0, col);
+            if (cell?.query && cell.fresh) this.resolveGen(r.home, col, cell.query, r.lap, r.lap);
           }
         }
       }
+      const master = this.runners[0];
+      if (r === master) {
+        this.hooks.onMasterWrap?.(r.lap);
+        this.applyRamp(r.lap);
+        if (this.queued) {
+          const next = this.queued;
+          this.queued = null;
+          this.score = next;
+          if (next.ramp) beatClock.setBpm(next.ramp.from, 'loom');
+          else if (next.bpm) beatClock.setBpm(next.bpm, 'loom');
+          this.rebuildRunners(r.nextTime);
+          logInfo('loom', 'Score swapped at the master wrap');
+        }
+      }
     }
+  }
+
+  /** `ramp bpm FROM TO LAPS`: tempo at the start of lap `lap`, phase-preserving. */
+  private applyRamp(lap: number): void {
+    const ramp = this.score?.ramp;
+    if (!ramp) return;
+    const x = Math.min(1, lap / Math.max(1, ramp.laps));
+    const shaped = Math.pow(x, Math.max(0.1, ramp.curve ?? 1));
+    const bpm = ramp.from + (ramp.to - ramp.from) * shaped;
+    beatClock.setBpm(bpm, 'loom');
+    this.hooks.onBpm?.(bpm);
   }
 
   private emitCursors(force = false): void {

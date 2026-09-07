@@ -141,6 +141,42 @@ lane break 1/8 x16 @target
   <nature:other>:8 - - - - - - - | <nature:piano>:4 - - - <nature:bass>:2 - <nature:kick> <nature:snare>
 `,
   },
+  {
+    id: 'garden-of-forking-beats',
+    name: 'Garden of Forking Beats — generative',
+    level: 'complex',
+    songs: [],
+    blurb: 'No pinned songs: put anything on deck. A Euclidean kick under a Thue–Morse hat, a Life colony over the bass and vocal shards that breathes generation by generation (form AABA replays the A sections), a Fibonacci fill lane, a glissando lift and a tempo ramp from 118 to 132 over twelve laps. Grow or breed it from the GROW pane.',
+    text: `; Garden of Forking Beats — every rail is a rule
+; seed fixes the dice; form AABA makes laps 1,2,4 the same A and lap 3 the B; ramp lifts the tempo.
+bpm 118
+key follow
+seed 2026
+form AABA
+ramp bpm 118 132 12
+
+lane pulse 1/16 x16
+  .  .  .  .  ?70 .  .  .  | .  .  .  .  !3,4:4 .  .  ->lift
+  euclid(k s; hits=5 rotate=1) - - - - - - - - - - - - - - -
+
+lane hats 1/16 x16
+  =gain-8 .  .  .  .  .  .  .  | +gain2 .  .  .  .  .  .  .
+  fractal(h . h c; kind=thue) - - - - - - - - - - - - - - -
+
+lane colony 1/8 x16
+  life(b v o; density=.35 rule=B3/S23) - - - - - - - - - - - - - - -
+
+lane fill 1/16 x8 @target
+  fib(s h) - - - - - - -
+
+lane lift 1/4 x8 @target
+  gliss(v; from=0 to=7) - - - accel(o; from=1 to=1.6) - - -
+
+lane echoes 1/8 x16
+  !2,3,4:4 .  .  .  .  .  .  .  | .  .  .  .  .  .  .  .
+  echo(v; every=4 decay=5 depth=2) - - - - - - - - - - - v:4 - - -
+`,
+  },
 ];
 
 export const loomTemplateById = (id: string): LoomTemplate | undefined => LOOM_TEMPLATES.find((t) => t.id === id);

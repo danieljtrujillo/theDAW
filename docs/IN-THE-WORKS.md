@@ -171,6 +171,24 @@ driven in the live app yet; items stay here until that happens.
   the 0/1/2 depth labels are theme-ink over the always-dark graph canvas. — XS
 - [ ] **DJ "BPM" 7 px tag** inherits an accent colour at 3.6:1. — XS
 
+### v2 — coded 2026-09-07, tsc + `npm run test:loom` green, NOT yet seen in the running app
+
+- [ ] **Generator tiles** (`lib/loomGen.ts`): fib, fractal (thue / cantor /
+  dragon / sierpinski), euclid, life, rand, frag, echo, accel, gliss —
+  `name(alphabet; opts):span` on the rail owns the span; in an upper row it
+  modulates. Ghost cells on the plane show what the rule plays this lap. —
+  verify: load *Garden of Forking Beats*, put any song on deck, play; watch
+  the colony lane change per lap and repeat on the A laps. —
+  `frontend/src/lib/{loomGen,loomScore,loomEngine}.ts`, `frontend/src/views/LoomView.tsx`
+- [ ] **`seed` / `form` / `ramp` directives** — reproducible dice, song form
+  by lap, tempo ramp at the master wrap. — verify: the header shows `form
+  AABA` and `ramp → 132`; the BPM box climbs each lap.
+- [ ] **GROW pane** — Grow (mutate), Breed (sample / generation / pasted
+  score), Fragment, seed, form, lineage with revert, per-lane keep. —
+  `frontend/src/lib/loomEvolve.ts`, `frontend/src/state/loomStore.ts`
+- [ ] **Look** — woven surface, threaded generator tiles, breathing live
+  column. — verify on Midnight and Porcelain with `_audit_contrast.mjs`.
+
 ### Phase 1 — next
 
 - [ ] DJ sampler pads: *shard mode* (pad = query, `launch(query, {at:'beat'})`
