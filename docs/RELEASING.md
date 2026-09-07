@@ -64,6 +64,23 @@ version.
 - Docker: run `docker compose up` from the repo root to build and start
   the image locally.
 
+## Required repository secret
+
+The installer jobs stage the SwayCommand embed bundle (the SWAY tab) with
+`electron-ui/scripts/fetch-sway-build.mjs`. SwayCommand lives in the
+private `danieljtrujillo/SwayCommand` repo, which the workflow's built-in
+`GITHUB_TOKEN` cannot read, so the workflow needs one extra secret:
+
+- `SWAY_REPO_TOKEN`: a fine-grained personal access token with
+  `Contents: read` on `danieljtrujillo/SwayCommand`, stored as an Actions
+  repository secret on `gantasmo/theDAW` (Settings > Secrets and
+  variables > Actions). The script downloads the `dist-embed.zip` asset of
+  the latest SwayCommand release (pin one with `SWAY_RELEASE`).
+
+`version-check` fails in seconds when the secret is missing, before either
+installer job starts. The v0.1.4 tag build failed for exactly this reason:
+both installer jobs died in the SwayCommand fetch step.
+
 ## Signing status
 
 - The Windows installer is unsigned. SmartScreen shows a warning on first
