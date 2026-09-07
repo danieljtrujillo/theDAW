@@ -168,7 +168,11 @@ jobs:
           path: electron-ui/release/theDAW-Setup-${{ env.VERSION }}.exe
           if-no-files-found: error
           retention-days: 7
-      - name: Attach the installer to the draft release
+      # latest.yml + the .blockmap are the electron-updater feed: the packaged
+      # app reads latest.yml from the newest published release to find and
+      # download the installer in place (electron-ui/main/index.ts). Without
+      # them Settings > Update can only open the release page.
+      - name: Attach the installer and the update feed to the draft release
         if: github.ref_type == 'tag'
         shell: bash
         env:

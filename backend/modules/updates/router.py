@@ -1,7 +1,17 @@
 """FastAPI router for the updates module (prefix ``/api/updates``).
 
-    GET /check     compare the installed version against the latest GitHub release
-    GET /releases  up to 10 recent releases for a restore-previous-version picker
+    GET  /check         compare the installed version against the latest GitHub release
+    GET  /releases      up to 10 recent releases for a restore-previous-version picker
+    POST /apply         update a git-clone install in place (pull, then restart)
+    GET  /apply-status  progress of the last /apply
+
+Install kinds. A clone (theDAW.bat, theDAW.sh, Pinokio, dev Electron) has a
+``.git`` at the repo root: ``/apply`` pulls it and exits the backend with code
+89 so the spawning supervisor syncs dependencies and respawns (see
+backend/_update_sync.py). The packaged Electron app has no ``.git``: there the
+Electron shell updates itself with electron-updater and the renderer never
+calls ``/apply``; ``/check`` reports ``install_kind`` and the release assets so
+the shell (or a macOS user, where the unsigned dmg cannot self-update) can act.
 
 The installed version is read once from ``pyproject.toml`` at the repo root
 (regex, cached for the process lifetime). The latest-release data comes from
@@ -21,14 +31,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
+from backend._update_sync import UPDATE_EXIT_CODE, run_dependency_sync
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +141,15 @@ def _fetch_releases() -> list[dict[str, Any]]:
                 "draft": bool(item.get("draft")),
                 "prerelease": bool(item.get("prerelease")),
                 "body": str(item.get("body") or ""),
+                "assets": [
+                    {
+                        "name": str(a.get("name") or ""),
+                        "url": a.get("browser_download_url"),
+                        "size": a.get("size"),
+                    }
+                    for a in (item.get("assets") or [])
+                    if isinstance(a, dict) and a.get("browser_download_url")
+                ],
             }
         )
     return releases
@@ -174,6 +198,29 @@ def _is_newer(latest: str, current: str) -> bool | None:
     return latest_t > current_t
 
 
+def _install_kind() -> str:
+    """'git' for a clone (bat/sh/Pinokio/dev Electron), 'packaged' for the
+    installer build, whose resources/python tree carries no .git."""
+    return "git" if (_REPO_ROOT / ".git").is_dir() else "packaged"
+
+
+def _supervisor_present() -> bool:
+    return os.environ.get("SA3_SUPERVISOR_PRESENT") == "1"
+
+
+def _install_facts() -> dict[str, Any]:
+    kind = _install_kind()
+    return {
+        "install_kind": kind,
+        # A clone can be pulled by this backend; the packaged app is updated by
+        # the Electron shell. Both are reported so the modal can pick a path.
+        "can_apply": kind == "git" and shutil.which("git") is not None,
+        # With a supervisor the backend restarts itself after the pull;
+        # without one (raw `backend.run`) the user has to relaunch.
+        "restart_mode": "auto" if _supervisor_present() else "manual",
+    }
+
+
 @router.get("/check")
 def check_updates(force: bool = False) -> dict[str, Any]:
     """Compare the installed version with the newest published GitHub release."""
@@ -196,6 +243,8 @@ def check_updates(force: bool = False) -> dict[str, Any]:
             "release_url": None,
             "published_at": None,
             "notes_excerpt": None,
+            "assets": [],
+            **_install_facts(),
             "error": error,
         }
 
@@ -212,7 +261,188 @@ def check_updates(force: bool = False) -> dict[str, Any]:
         "release_url": latest.get("url"),
         "published_at": latest.get("published_at"),
         "notes_excerpt": excerpt,
+        "assets": list(latest.get("assets") or []),
+        **_install_facts(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Apply (git-clone installs)
+# ---------------------------------------------------------------------------
+
+_apply_lock = threading.Lock()
+_apply: dict[str, Any] = {
+    "state": "idle",  # idle | running | restarting | done | error
+    "step": None,
+    "message": "",
+    "log_tail": "",
+    "returncode": None,
+    "restart_mode": None,
+}
+_LOG_TAIL_LINES = 40
+
+
+def _apply_log(tail: list[str], line: str) -> None:
+    tail.append(line.rstrip())
+    del tail[:-_LOG_TAIL_LINES]
+    with _apply_lock:
+        _apply["log_tail"] = "\n".join(tail)
+
+
+def _run_git(args: list[str], tail: list[str]) -> int:
+    cmd = ["git", *args]
+    _apply_log(tail, "$ " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(_REPO_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        _apply_log(tail, f"could not run git: {exc}")
+        return 1
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        _apply_log(tail, line)
+    return proc.wait()
+
+
+def _tree_dirty() -> bool:
+    """Refuse to pull over local edits; True on any git failure (fail safe)."""
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return out.returncode != 0 or bool(out.stdout.strip())
+
+
+def _set_apply(**fields: Any) -> None:
+    with _apply_lock:
+        _apply.update(fields)
+
+
+def _apply_worker() -> None:
+    global _current_version
+    tail: list[str] = []
+    try:
+        _set_apply(step="pull", message="Pulling the latest code.")
+        rc = _run_git(["pull", "--ff-only"], tail)
+        if rc != 0:
+            _set_apply(
+                state="error",
+                returncode=rc,
+                message="git pull failed. The log below says why (a diverged branch "
+                "needs a manual merge).",
+            )
+            return
+        _set_apply(
+            step="submodules", message="Refreshing the Magenta sidecar submodule."
+        )
+        rc = _run_git(["submodule", "update", "--init", "--recursive"], tail)
+        if rc != 0:
+            _set_apply(
+                state="error",
+                returncode=rc,
+                message="git submodule update failed; see the log below.",
+            )
+            return
+        # The version string is read once per process; forget it so a poll
+        # during the restart window does not report the old number.
+        with _version_lock:
+            _current_version = None
+
+        if _supervisor_present():
+            # Dependencies sync in the supervisor after this process is gone
+            # (backend/_update_sync.py) - never against a live venv.
+            _set_apply(
+                state="restarting",
+                step="restart",
+                message="Code updated. theDAW is installing dependencies and restarting; "
+                "this page reconnects by itself.",
+                returncode=0,
+            )
+            time.sleep(0.8)
+            from backend.core.teardown import stop_all_sidecars
+
+            try:
+                stop_all_sidecars()
+            except Exception:  # pragma: no cover - best effort before exit
+                log.warning("updates: sidecar teardown failed", exc_info=True)
+            os._exit(UPDATE_EXIT_CODE)
+
+        # No supervisor: sync here (the only option) and ask for a relaunch.
+        _set_apply(step="sync", message="Installing dependencies.")
+        rc = run_dependency_sync(_REPO_ROOT, lambda line: _apply_log(tail, line))
+        _set_apply(
+            state="done" if rc == 0 else "error",
+            step="relaunch",
+            returncode=rc,
+            message="Update installed. Close theDAW and launch it again to run the new version."
+            if rc == 0
+            else f"Dependency sync exited {rc}; relaunch theDAW (theDAW.bat / theDAW.sh) "
+            "to finish the install.",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.exception("updates: apply failed")
+        _set_apply(state="error", message=f"{type(exc).__name__}: {exc}")
+
+
+@router.get("/apply-status")
+def apply_status() -> dict[str, Any]:
+    with _apply_lock:
+        return dict(_apply)
+
+
+@router.post("/apply")
+def apply_update() -> dict[str, Any]:
+    """Pull the latest code into a git-clone install and restart.
+
+    409 when the tree has local edits or an apply is already running, 400 for
+    the packaged app (the Electron shell updates that one), 503 when git is
+    missing. The work runs on a thread; poll ``/apply-status``.
+    """
+    facts = _install_facts()
+    if facts["install_kind"] != "git":
+        raise HTTPException(
+            status_code=400,
+            detail="This is the installed (packaged) app; it updates through the desktop shell.",
+        )
+    if shutil.which("git") is None:
+        raise HTTPException(
+            status_code=503,
+            detail="git is not on the backend's PATH, so the clone cannot be pulled.",
+        )
+    with _apply_lock:
+        if _apply["state"] in ("running", "restarting"):
+            return dict(_apply)
+    if _tree_dirty():
+        raise HTTPException(
+            status_code=409,
+            detail="This clone has uncommitted local changes, so the update would overwrite "
+            "them. Commit or stash them, then update again.",
+        )
+    _set_apply(
+        state="running",
+        step="pull",
+        message="Starting the update.",
+        log_tail="",
+        returncode=None,
+        restart_mode=facts["restart_mode"],
+    )
+    threading.Thread(target=_apply_worker, daemon=True, name="updates-apply").start()
+    with _apply_lock:
+        return dict(_apply)
 
 
 @router.get("/releases")

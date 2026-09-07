@@ -16,6 +16,9 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+from backend._update_sync import UPDATE_EXIT_CODE, run_dependency_sync
 
 RESTART_EXIT_CODE = 88
 
@@ -44,6 +47,25 @@ def main() -> int:
                 flush=True,
             )
             time.sleep(0.5)
+            continue
+        if rc == UPDATE_EXIT_CODE:
+            # /api/updates/apply pulled new code and asked for a dependency
+            # sync before the respawn (rc=89). It has to happen here, with no
+            # backend running, because uv cannot replace a DLL a live
+            # interpreter holds open on Windows.
+            print(
+                "[supervisor] update pulled (rc=89) - syncing dependencies, then respawning",
+                flush=True,
+            )
+            sync_rc = run_dependency_sync(
+                Path(os.getcwd()), lambda line: print(f"[update] {line}", flush=True)
+            )
+            if sync_rc != 0:
+                print(
+                    f"[supervisor] dependency sync exited {sync_rc}; respawning anyway "
+                    "(the app reports what is missing)",
+                    flush=True,
+                )
             continue
         print(
             f"[supervisor] inner exited with rc={rc} — supervisor terminating",

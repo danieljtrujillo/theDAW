@@ -23,4 +23,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('open-file', handler)
     return () => ipcRenderer.removeListener('open-file', handler)
   },
+  // In-place update of the packaged app (electron-updater, GitHub releases).
+  // check() resolves {supported, version?, available?, reason?}; download()
+  // streams progress through onProgress and resolves when the installer is
+  // staged; install() kills the backend, quits and runs the installer.
+  updater: {
+    check: () => ipcRenderer.invoke('updates:check'),
+    download: () => ipcRenderer.invoke('updates:download'),
+    install: () => ipcRenderer.invoke('updates:install'),
+    onProgress: (cb: (info: { percent: number; transferred: number; total: number }) => void) => {
+      const handler = (_e: unknown, info: { percent: number; transferred: number; total: number }) => cb(info)
+      ipcRenderer.on('updates:progress', handler)
+      return () => ipcRenderer.removeListener('updates:progress', handler)
+    },
+  },
 })

@@ -26,6 +26,9 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from pathlib import Path
+
+from backend._update_sync import UPDATE_EXIT_CODE, run_dependency_sync
 
 RESTART_EXIT_CODE = 88
 FRONTEND_URL = "http://localhost:5173"
@@ -159,6 +162,20 @@ def _run_backend(children: list) -> None:
         if rc == RESTART_EXIT_CODE and not _shutdown.is_set():
             _emit("stack", "restart requested (rc=88) — respawning backend")
             time.sleep(0.5)
+            continue
+        if rc == UPDATE_EXIT_CODE and not _shutdown.is_set():
+            # In-app update: the code is pulled; sync wheels + npm packages
+            # while no backend holds the venv, then respawn (see
+            # backend/_update_sync.py). Vite keeps running and picks up new
+            # frontend packages on the next request.
+            _emit(
+                "stack", "update pulled (rc=89) - syncing dependencies before respawn"
+            )
+            sync_rc = run_dependency_sync(
+                Path(os.getcwd()), lambda line: _emit("update", line)
+            )
+            if sync_rc != 0:
+                _emit("stack", f"dependency sync exited {sync_rc} - respawning anyway")
             continue
         if not _shutdown.is_set():
             _emit("stack", f"backend exited rc={rc} — stopping the stack")

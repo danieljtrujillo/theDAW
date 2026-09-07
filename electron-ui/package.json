@@ -20,7 +20,9 @@
     "dist:win:ci": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && npm run fetch:sway && npm run fetch:notation && electron-vite build && electron-builder --win --publish never",
     "dist:mac:ci": "npm run fetch:tools && npm run fetch:vj && npm run fetch:foundry && npm run fetch:sway && npm run fetch:notation && electron-vite build && electron-builder --mac --publish never"
   },
-  "dependencies": {},
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
   "devDependencies": {
     "electron": "^42.4.1",
     "electron-vite": "^5.0.0",

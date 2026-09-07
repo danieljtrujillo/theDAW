@@ -1,6 +1,18 @@
 appId: com.gantasmo.thedaw
 productName: theDAW
 copyright: Copyright (c) 2026 GANTASMO
+# Update feed for electron-updater (main/index.ts). electron-builder writes
+# latest.yml + the installer's .blockmap into release/ because this key exists
+# (the --publish never flag only stops the upload); the release workflow
+# attaches them next to the installer, and the packaged app on Windows reads
+# them from the newest PUBLISHED GitHub release to download and install
+# updates in place. macOS cannot self-update unsigned, so the renderer opens
+# the dmg from the release assets there instead.
+publish:
+  provider: github
+  owner: gantasmo
+  repo: theDAW
+
 directories:
   output: release
   # buildResources holds resources/icon.png (1024x1024), which electron-builder

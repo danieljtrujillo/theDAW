@@ -9,6 +9,7 @@ import {
   shell,
 } from 'electron'
 import { ChildProcess, spawn, execFile } from 'child_process'
+import { autoUpdater } from 'electron-updater'
 import * as fs from 'fs'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
@@ -691,6 +692,84 @@ function registerIpcHandlers(): void {
     } catch {
       return null
     }
+  })
+
+  registerUpdaterHandlers()
+}
+
+// ---------------------------------------------------------------------------
+// In-place updates for the packaged app (electron-updater over GitHub releases)
+// ---------------------------------------------------------------------------
+//
+// Windows only in practice: the NSIS installer updates unsigned. The macOS
+// dmg is unsigned, and Squirrel.Mac refuses to install an unsigned update, so
+// check() reports unsupported there and the renderer opens the dmg download
+// instead. In dev (not packaged) there is no app-update.yml, so the renderer
+// falls back to the backend's git-pull path.
+
+function updaterSupport(): { supported: boolean; reason?: string } {
+  if (!app.isPackaged) return { supported: false, reason: 'dev' }
+  if (process.platform === 'darwin') return { supported: false, reason: 'unsigned-mac' }
+  return { supported: true }
+}
+
+let updateDownloaded = false
+
+function registerUpdaterHandlers(): void {
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.logger = {
+    info: (m: unknown) => log(`[updater] ${String(m)}`),
+    warn: (m: unknown) => log(`[updater] warn: ${String(m)}`),
+    error: (m: unknown) => log(`[updater] error: ${String(m)}`),
+    debug: () => {},
+  }
+  autoUpdater.on('download-progress', (p) => {
+    mainWindow?.webContents.send('updates:progress', {
+      percent: p.percent,
+      transferred: p.transferred,
+      total: p.total,
+    })
+  })
+  autoUpdater.on('update-downloaded', () => {
+    updateDownloaded = true
+  })
+
+  ipcMain.handle('updates:check', async () => {
+    const support = updaterSupport()
+    if (!support.supported) return support
+    try {
+      const result = await autoUpdater.checkForUpdates()
+      const version = result?.updateInfo?.version ?? null
+      const available = version !== null && version !== app.getVersion()
+      return { supported: true, version, available, current: app.getVersion() }
+    } catch (err) {
+      return { supported: true, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('updates:download', async () => {
+    const support = updaterSupport()
+    if (!support.supported) return support
+    try {
+      updateDownloaded = false
+      await autoUpdater.downloadUpdate()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('updates:install', async () => {
+    if (!updateDownloaded) return { ok: false, error: 'No update has been downloaded yet.' }
+    // The installer overwrites resources/python, so the backend (and the venv
+    // interpreters under it) must be gone first. before-quit would do this
+    // too, but the installer is already launching by then.
+    isQuitting = true
+    await killBackend()
+    // isSilent=false shows the NSIS UI; isForceRunAfter=true relaunches theDAW.
+    autoUpdater.quitAndInstall(false, true)
+    return { ok: true }
   })
 }
 

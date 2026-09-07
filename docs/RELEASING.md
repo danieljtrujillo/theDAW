@@ -64,6 +64,24 @@ version.
 - Docker: run `docker compose up` from the repo root to build and start
   the image locally.
 
+## In-app updates
+
+Settings > Check for Updates installs releases in place, so a release is not
+finished until it is **published** (drafts are invisible to every updater):
+
+- **Packaged Windows app**: electron-updater reads `latest.yml` from the
+  newest published release, downloads `theDAW-Setup-X.Y.Z.exe` (with its
+  `.blockmap` for delta downloads), quits and runs it. The workflow attaches
+  all three; `publish: github` in `electron-ui/electron-builder.yml` is what
+  makes electron-builder emit the feed files.
+- **Packaged macOS app**: unsigned, so it cannot self-update; the button
+  downloads the new dmg from the release assets.
+- **Clones** (theDAW.bat, theDAW.sh, Pinokio): the backend runs
+  `git pull --ff-only`, exits with code 89, and the supervisor
+  (`backend/_supervisor.py`, `backend/_devstack.py`) runs `uv sync` and
+  `npm install` before respawning (`backend/_update_sync.py`). Clones follow
+  `main`, so what they get is whatever is on `main` at that moment.
+
 ## Required repository secret
 
 The installer jobs build the SwayCommand embed bundle (the SWAY tab) from a

@@ -6,6 +6,24 @@ by build, test, or observed behaviour.
 
 Newest first.
 
+## 2026-09-07
+
+### In-app updater
+
+- **Settings > Check for Updates now updates.** Check, confirm, install, in
+  one dialog. Clones (theDAW.bat, theDAW.sh, Pinokio, dev Electron):
+  `POST /api/updates/apply` pulls `main` fast-forward, refreshes the Magenta
+  submodule and exits the backend with code 89; the supervisor and the dev
+  stack run `uv sync --group dev` and `npm install` with no backend holding
+  the venv, then respawn, and the page reconnects on its own. Packaged
+  Windows app: electron-updater downloads the installer from the published
+  release (progress in the dialog), quits and runs it. Packaged macOS app:
+  downloads the new dmg (unsigned builds cannot self-update). Local edits in
+  a clone block the pull with a 409 instead of being overwritten.
+- `GET /api/updates/check` reports `install_kind`, `can_apply`,
+  `restart_mode` and the release assets. The release workflow attaches
+  `latest.yml` and the `.blockmap` next to the Windows installer.
+
 ## 2026-09-06
 
 ### Release
