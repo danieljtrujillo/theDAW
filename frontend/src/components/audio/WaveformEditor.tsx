@@ -40,6 +40,9 @@ import type { PianoNote } from '../../state/pianoRollStore';
 import { LibraryMidiPicker } from './LibraryMidiPicker';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
+import { classifyModelGate } from '../../lib/modelDownloadClient';
+import { setLocalOnly } from '../../lib/storageClient';
+import { requireFeature } from '../../notices/featureGateStore';
 import { logError, logInfo } from '../../state/logStore';
 import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/editorPlaybackBridge';
 import { publishSelectedTracks } from '../../state/editorSelectionBridge';
@@ -1305,6 +1308,58 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     };
   }, [inpaintPanel]);
 
+  // The inpaint retry the gate cards call back into. A ref because the cards
+  // are raised from the poll effect above submitInpaint's definition.
+  const retryInpaintRef = useRef<(() => void) | null>(null);
+
+  // Route an inpaint failure through the same model-gate cards MAKE raises
+  // (generateStore.submitGeneration). A fresh Pinokio install defaults to
+  // local-only, so the first INPAINT REGION fails on the model load; the 502
+  // detail already says so, but as raw text in the panel there was nothing
+  // to click (GH-132). Returns true when a card carried the fix.
+  const surfaceInpaintGate = (msg: string): boolean => {
+    const gate = classifyModelGate(msg);
+    if (!gate) return false;
+    const retry = () => retryInpaintRef.current?.();
+    if (gate.kind === 'local-only') {
+      requireFeature({
+        id: 'model:local-only',
+        kind: 'model',
+        title: 'Downloads are turned off',
+        message:
+          'This model is not on the machine, and local-only mode blocks fetching it. Allowing downloads gets it now.',
+        action: {
+          label: 'Allow downloads & retry',
+          run: async () => {
+            await setLocalOnly(false);
+            retry();
+          },
+        },
+      });
+    } else if (gate.kind === 'sign-in') {
+      requireFeature({
+        id: 'hf:generate',
+        kind: 'hf',
+        title: 'Hugging Face sign-in needed',
+        message: 'This model is gated — paste a token and inpainting runs again.',
+        action: { label: 'Retry inpaint', run: retry },
+      });
+    } else {
+      const repoUrl = gate.repoUrl;
+      requireFeature({
+        id: 'hf:no-access',
+        kind: 'model',
+        title: 'Access not granted',
+        message:
+          "Your token works — this Hugging Face account is not on the model's allow list. Open the model page, click 'Agree and access', then inpaint again.",
+        action: repoUrl
+          ? { label: 'Open model page', run: () => { window.open(repoUrl, '_blank', 'noopener'); } }
+          : undefined,
+      });
+    }
+    return true;
+  };
+
   // Drive polling reactively: starts when phase is 'generating', stops on cleanup.
   useEffect(() => {
     if (inpaintPanel?.kind !== 'generating') return;
@@ -1324,6 +1379,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           } else if (job.status === 'failed') {
             const msg = job.error ?? 'unknown';
             logError('editor', `Inpaint job failed: ${msg}`);
+            surfaceInpaintGate(msg);
             setInpaintPanel({ kind: 'params', error: msg });
           }
         } catch (e) {
@@ -1391,6 +1447,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         }
         const msg = `HTTP ${res.status}${detail ? ` — ${detail}` : ''}`;
         logError('editor', `Inpaint submit ${msg}`);
+        surfaceInpaintGate(detail || msg);
         setInpaintPanel({ kind: 'params', error: msg });
         return;
       }
@@ -1405,6 +1462,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       logError('editor', `Inpaint submit failed: ${e instanceof Error ? e.message : e}`);
     }
   };
+
+  retryInpaintRef.current = () => { void submitInpaint(); };
 
   const acceptInpaint = (blob: Blob) => {
     const sel = useEditorStore.getState().inpaintSelection;

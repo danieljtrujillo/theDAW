@@ -98,9 +98,11 @@ def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
-#: Packages the dashboard imports at module scope. If any is absent the venv is
-#: broken and `server.py` dies on import, so a repair must be offered.
-_REQUIRED_VENV_PACKAGES = ("numpy", "torch", "soundfile")
+#: Packages the dashboard imports at module scope (numpy, torch, soundfile,
+#: PIL): if any is absent the venv is broken and `server.py` dies on import.
+#: `stable_audio_3` is the diffusion backend every launch needs; `uv sync`
+#: alone never installs it (GH-131), so its absence must offer the repair too.
+_REQUIRED_VENV_PACKAGES = ("numpy", "torch", "soundfile", "PIL", "stable_audio_3")
 
 
 def _venv_site_packages(cfg: UnderfitConfig) -> Optional[Path]:
@@ -288,12 +290,75 @@ def _setup_worker(cfg: UnderfitConfig, uv: str) -> None:
                 _setup["log_tail"] = "\n".join(tail)
     rc = proc.wait()
     ok = rc == 0 and cfg.python_path.is_file()
+    if ok:
+        # `uv sync` deliberately leaves the diffusion backend out of
+        # underfit/pyproject.toml (the wizard installs it afterwards, see
+        # underfit/install.sh). Without this step the venv had torch and numpy
+        # but no `stable_audio_3`, so the dashboard refused every launch with
+        # "Run ./install.sh --backend sa3" — a bash script, on a packaged
+        # Windows install with no terminal (GH-131). The tree ships beside the
+        # backend (repo root in dev, resources/python in the installer), so
+        # install it editable with the wizard's own extras.
+        rc, backend_tail = _install_sa3_backend(cfg, uv, env)
+        tail.extend(backend_tail)
+        del tail[:-12]
+        ok = rc == 0
+        with _setup_lock:
+            _setup["log_tail"] = "
+".join(tail)
     with _setup_lock:
         _setup.update(
             state="done" if ok else "error",
             returncode=rc,
-            message="Underfit environment ready." if ok else f"uv sync exited {rc}.",
+            message="Underfit environment ready."
+            if ok
+            else f"uv sync exited {rc}."
+            if not cfg.python_path.is_file()
+            else f"installing the stable_audio_3 backend into the Underfit venv exited {rc}.",
         )
+
+
+def _install_sa3_backend(
+    cfg: UnderfitConfig, uv: str, env: dict[str, str]
+) -> tuple[int, list[str]]:
+    """`uv pip install -e <repo root>[lora,ui]` into underfit/.venv.
+
+    Mirrors underfit/underfit/cli/setup.py::_editable_install for the sa3
+    backend: the `lora` extra brings dill + pytorch_lightning, which the
+    trainer's dataloader imports. Returns (exit code, last log lines).
+    """
+    if not (_REPO_ROOT / "pyproject.toml").is_file():
+        return 1, [f"stable_audio_3 source tree not found at {_REPO_ROOT}"]
+    cmd = [
+        uv,
+        "pip",
+        "install",
+        "--python",
+        str(cfg.python_path),
+        "-e",
+        f"{_REPO_ROOT}[lora,ui]",
+    ]
+    tail: list[str] = [f"$ {' '.join(cmd)}"]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cfg.project_path),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as e:
+        return 1, [f"could not run uv pip install: {e}"]
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            tail.append(line.rstrip())
+            del tail[:-12]
+            with _setup_lock:
+                _setup["log_tail"] = "
+".join(tail)
+    return proc.wait(), tail
 
 
 def start_setup() -> dict:

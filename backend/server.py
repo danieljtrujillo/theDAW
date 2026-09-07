@@ -1643,9 +1643,19 @@ async def generate(
         )
         # Off the event loop (see /api/generate-jobs): a synchronous model load here
         # would block the single worker and stall /health + media streaming.
-        generation_pipeline = await asyncio.get_event_loop().run_in_executor(
-            None, _get_or_load_generation_pipeline, _active_model_name
-        )
+        try:
+            generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+                None, _get_or_load_generation_pipeline, _active_model_name
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # Same contract as /api/generate-jobs: the resolver's explanation
+            # ("local-only mode is ON", "Cannot access gated repo") must reach
+            # the client as JSON detail, not die as a bare 500 (GH-132).
+            raise HTTPException(
+                status_code=502, detail=f"{type(exc).__name__}: {exc}"
+            ) from exc
 
         # Build dist_shift object
         dist_shift = None

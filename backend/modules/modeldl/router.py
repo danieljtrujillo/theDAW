@@ -32,7 +32,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
-from tqdm.auto import tqdm
+from huggingface_hub.utils import tqdm
 
 from stable_audio_3.model_configs import (
     AutoencoderModelConfig,
@@ -64,6 +64,14 @@ _MAX_TERMINAL_JOBS = 25
 
 class _JobTqdm(tqdm):
     """tqdm subclass that mirrors transfer progress into the active job entry.
+
+    The base is huggingface_hub's own tqdm wrapper, not ``tqdm.auto.tqdm``:
+    ``hf_hub_download`` constructs the bar with ``name="huggingface_hub.http_get"``,
+    a kwarg only that wrapper accepts. On a plain tqdm subclass the kwarg
+    reaches tqdm's validator and every download died with
+    ``TqdmKeyError: Unknown argument(s): {'name': ...}`` — but only when stderr
+    is a terminal (tqdm skips validation when it disables itself on a pipe),
+    which is why Pinokio users saw it and the piped test runs never did.
 
     The job id is bound to the (sub)class via ``_bound_tqdm`` rather than a
     contextvar: huggingface_hub's Xet backend drives ``update()`` from a native

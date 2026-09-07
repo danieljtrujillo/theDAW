@@ -277,7 +277,15 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
                 if first_err and not out.get("demucs_error"):
                     out["demucs_error"] = f"{first}: {first_err}"
     else:
-        out["demucs_error"] = f"python_exe not found: {cfg.python_exe}"
+        # The user-facing reason must say what to do; the raw interpreter path
+        # is already in out["python_exe"] for diagnostics. A bare
+        # "python_exe not found: <path>" in the Settings tooltip left the first
+        # Pinokio user hunting for a folder that does not exist yet.
+        out["demucs_error"] = (
+            "Demucs is not set up yet. Click Install dependencies on the Stems "
+            "card (it builds the sidecar environment automatically), or run any "
+            "stem separation and the app sets it up on first use."
+        )
         out["missing_critical"] = list(_CRITICAL_PACKAGES)
 
     port_file = _port_file(cfg)

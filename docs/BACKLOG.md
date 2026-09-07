@@ -365,19 +365,19 @@ above caught them. Three of the five are the same underlying problem: the packag
 distributions do not provision what the code assumes is present. Ids track the issue number and are
 permanent like every other id here.
 
-- [ ] **GH-131** P0 M Underfit sidecar ships with no Python dependencies, so the feature is dead in the
+- [x] **GH-131** (2026-09-06: underfit ships in the installer, half-built venvs get Repair, setup now installs the `stable_audio_3` backend into the venv, Pillow is health-checked) P0 M Underfit sidecar ships with no Python dependencies, so the feature is dead in the
   installed app `resources/python/underfit/dashboard/server.py`
   - `ModuleNotFoundError: No module named 'numpy'`, then torch, then more. The user was told to install
     every module by hand. Reported against the packaged build with the sidecar log quoted.
   - Related to `PKG-001`. The dev clone hides this because the repo venv already has everything.
 
-- [ ] **GH-133** P0 M Model downloads fail and the model picker shows nothing, so generation cannot start
+- [x] **GH-133** (2026-09-06: registries ship, medium and small-sfx fall back to the public mirror, the catalog sees a mirror-populated cache, the dashboard names the checkpoint it needs) P0 M Model downloads fail and the model picker shows nothing, so generation cannot start
   - Hugging Face access errors repeatedly for SA3 small (eventually succeeded after many retries) and
     never for medium, despite the user holding access. Then no model appears in Underfit's selector.
   - Two separate failures worth separating: gated-repo auth handling with no useful error, and a picker
     that renders empty rather than saying why. Check the HF token path and the gated-repo flow.
 
-- [ ] **GH-132** P1 M Inpainting always errors on the Pinokio install
+- [x] **GH-132** (2026-09-06: model selection honoured, empty region is a 400, failed loads are a 502 with detail on both generate routes, EDIT raises the same fix cards as MAKE) P1 M Inpainting always errors on the Pinokio install
   - The reporter attached a full log (`thedaw-log-20260803-005221.txt` on the issue). Start there rather
     than guessing; it is the one report here with a stack trace already supplied.
 

@@ -5617,9 +5617,18 @@ window._warnUnregisteredModel = function(modelKey) {
   const meta = _remoteModels[modelKey] || {};
   if (meta.registered !== false) return;
   const label = _escAttr(meta.label || modelKey);
+  const baseRepo = (meta.hf_repo && meta.hf_repo.base) || '';
+  const mono = 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent2)';
+  // Say which checkpoint and where it has to land. "Run the installer again"
+  // was wrong: the installer never downloads model packs (GH-133).
   const bodyHtml =
-    `<span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent2)">${label}</span>`
-    + ` isn’t downloaded on this machine. Please run the installer again.`;
+    `<span style="${mono}">${label}</span> needs its base (RF) checkpoint, and it is not on this machine.`
+    + (baseRepo
+      ? ` Download <span style="${mono}">${_escAttr(baseRepo)}</span> (model_config.json + model.safetensors)`
+        + ` into your Hugging Face cache — for example <span style="${mono}">hf download ${_escAttr(baseRepo)}</span>`
+        + ` — then Stop and Start the dashboard so it links the files.`
+      : ` Download its base checkpoint into your Hugging Face cache, then Stop and Start the dashboard.`)
+    + ` The ARC checkpoint theDAW generates with is not the one training needs.`;
   _showSeedDialog('Base model not downloaded', bodyHtml, [{label: 'OK', primary: true}]);
 };
 

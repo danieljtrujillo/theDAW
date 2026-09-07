@@ -330,6 +330,9 @@ def _load_models_from_json():
         MODELS_UI_PAYLOAD[key] = {
             "key":                  key,
             "label":                m.get("label", key),
+            # The gated Hub repos the pack is built from, so the UI can name
+            # exactly what is missing instead of "run the installer again".
+            "hf_repo":              m.get("hf_repo") or {},
             "description":          m.get("description", ""),
             "backends":             backends,
             "diffusion_objective":  m["diffusion_objective"],

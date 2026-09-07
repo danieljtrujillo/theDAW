@@ -16,6 +16,37 @@ Newest first.
   missing; that missing pass-through is why the v0.1.4 tag never produced
   installers. Pinokio launcher updated in lockstep.
 
+### Open-issue triage (GH-127, 131, 132, 133, 134 and the Pinokio launcher issue)
+
+- **Model downloads no longer die on the first byte under Pinokio.** The
+  download progress class was a plain tqdm subclass, and huggingface_hub
+  passes it a `name` kwarg only its own wrapper accepts; tqdm validates that
+  only when stderr is a terminal, so Pinokio users saw
+  `Unknown argument(s): {'name': 'huggingface_hub.http_get'}` while piped test
+  runs never did. Now built on `huggingface_hub.utils.tqdm`, with a tty
+  regression test.
+- **Medium and small-sfx fall back to the public mirror** like small-music
+  already did, and the Settings catalog recognises a mirror-populated cache
+  instead of re-asking for a download that 403s (GH-133).
+- **Underfit's missing-model dialog names the base checkpoint repo** and how to
+  fetch it; "run the installer again" was wrong (GH-133). Underfit setup now
+  installs the `stable_audio_3` backend into its venv (`uv sync` never did, so
+  every launch ended in "run ./install.sh"), and Pillow plus the backend are
+  part of the venv health check so Repair offers itself (GH-131).
+- **EDIT inpaint raises the same fix cards as MAKE** (allow downloads, sign in,
+  open the model page) when the model load is what failed; `/api/generate`
+  returns the load error as a 502 with detail like `/api/generate-jobs`
+  (GH-132).
+- **Stems tooltip** says how to set Demucs up instead of printing the missing
+  interpreter path (Pinokio launcher issue #1).
+- **npm audit** fixes applied in `frontend/` and `electron-ui/` (23
+  vulnerabilities cleared; every lockfile change verified upward). The
+  deprecation warnings on install are transitive (`gl` under
+  opensheetmusicdisplay, `@google/genai` 1.x, electron-builder's own tree).
+- GH-134 (Linux) is answered by `theDAW.sh` and `docs/linux/setup-guide.md`;
+  GH-127 (Flash Attention 3 wheels) does not apply: those kernels target
+  Hopper/Blackwell datacenter parts and need torch 2.8.
+
 ### Queue re-check
 
 - **IN-THE-WORKS re-verified against `main`.** All 75 open items were checked

@@ -84,6 +84,11 @@ def resolution_seq() -> int:
 # SA3_MODEL_MIRRORS="official=mirror,other=" (an empty mirror disables one).
 _DEFAULT_MIRRORS: dict[str, str] = {
     "stabilityai/stable-audio-3-small-music": "cocktailpeanut/stable-audio-3-small-music",
+    # Same story for the other gated ARC checkpoints (verified 2026-09-06 on
+    # the Hub: ungated, identical parameter counts). Without these a 403 on
+    # medium was terminal, which is GH-133's "no access at all for Medium".
+    "stabilityai/stable-audio-3-medium": "cocktailpeanut/stable-audio-3-medium",
+    "stabilityai/stable-audio-3-small-sfx": "cocktailpeanut/stable-audio-3-small-sfx",
 }
 
 

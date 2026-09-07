@@ -381,16 +381,28 @@ def _catalog_availability() -> list[dict]:
     """Built-in Stable Audio catalog, stamped with local/cache/download source."""
     from huggingface_hub import try_to_load_from_cache
 
+    from stable_audio_3.model_configs import _model_mirrors
+
+    mirrors = _model_mirrors()
+
+    def _in_cache(repo_id: str) -> bool:
+        return isinstance(try_to_load_from_cache(repo_id, cfg.config_path), str) and (
+            isinstance(try_to_load_from_cache(repo_id, cfg.ckpt_path), str)
+        )
+
     catalog = []
     for name, cfg in {**arc_models, **rf_models}.items():
         local = (
             _local_override(cfg.repo_id, cfg.config_path) is not None
             and _local_override(cfg.repo_id, cfg.ckpt_path) is not None
         )
-        cached = local or (
-            isinstance(try_to_load_from_cache(cfg.repo_id, cfg.config_path), str)
-            and isinstance(try_to_load_from_cache(cfg.repo_id, cfg.ckpt_path), str)
-        )
+        # The resolver reuses a mirror-populated cache (model_configs
+        # _resolve_one_file), so the catalog has to see it too. Checking only
+        # the official id kept showing a Download chip for a model that was
+        # already on disk via the mirror, and every click re-hit the gated
+        # repo's 403 (GH-133's "no access, many times").
+        mirror = mirrors.get(cfg.repo_id)
+        cached = local or _in_cache(cfg.repo_id) or bool(mirror and _in_cache(mirror))
         catalog.append(
             {
                 "name": name,

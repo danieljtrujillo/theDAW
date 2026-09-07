@@ -200,3 +200,27 @@ def test_jobtqdm_publishes_from_foreign_thread():
     finally:
         with modeldl._LOCK:
             modeldl._REGISTRY.pop(job_id, None)
+
+
+def test_job_tqdm_accepts_huggingface_hub_name_kwarg():
+    """hf_hub_download builds the bar as ``tqdm_class(..., name="huggingface_hub.http_get")``.
+
+    A subclass of plain ``tqdm`` rejects that kwarg with ``TqdmKeyError`` — but
+    only when stderr is a terminal, because tqdm validates kwargs after the
+    early return it takes when it disables itself on a pipe. Pinokio runs the
+    backend in a pty, so every model download there died on the first byte
+    while piped test runs never noticed. The class must be built on
+    ``huggingface_hub.utils.tqdm``, which owns the ``name`` kwarg.
+    """
+
+    class _Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    cls = modeldl._bound_tqdm("job-tty")
+    bar = cls(total=4, disable=None, file=_Tty(), name="huggingface_hub.http_get")
+    try:
+        bar.update(2)
+        assert bar.n == 2
+    finally:
+        bar.close()
