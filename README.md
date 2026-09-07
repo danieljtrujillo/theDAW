@@ -49,6 +49,8 @@
 | **SING** | Lyrics that follow the song word by word. Paste lyrics and a forced aligner times every word against the vocal, or tap the timing yourself. Imports and exports LRC. Scores your pitch. |
 | **DJ** | Two decks with beat sync, key lock, hotcues, loops, live stems, an FX rack, a sampler, and Automix that plays prepared performance sets and takes instructions from the assistant mid-show. |
 | **VJ** | The [VJ-9000](https://github.com/gantasmo/VJ-9000) visual engine: audio-reactive terrain, cameras, GLSL shaders, cymatics, a GPU effect chain, and recording. |
+| **LOOM** | A living colony of loops cut from your own library. Cells divide, envelop and wither on the beat clock while it plays. |
+| **SWAY** | The SwayCommand gesture cockpit: scenes, a timeline and gesture axes bound to macros, driven by a camera or the Audima Sway. |
 | **PERFORM** | Launch scenes and clips from a grid. Opens Ableton sets and `.tasmo` projects. Pad effects and controller routing. |
 | **FOUNDRY** | Design a plugin interface on a canvas and export it as a `.gan` web-plugin. |
 | **NODEFI** | Connect generation, effects and library nodes into a graph. Run it as a pipeline or play it live. |
@@ -91,11 +93,10 @@ EDIT is a multitrack timeline. Drag clips along a track or onto another track wi
 Add effects from the EFFECTS list to the CHAIN. Audio flows through the chain from left to right. The 25 effects cover mastering, compression, filters, vocal processing, lo-fi, stereo widening, reverb, delay, LUFS normalization and pitch shift, and each one opens its own control panel. The four QUICK MASTER knobs (PUNCH, AIR, DRIVE, CEIL) set the most common mastering moves in one place. VST3 plugins found in the standard plugin folders appear in the same list, and `.gan` web-plugins open in the effect stage. Press PROCESS CHAIN to render. Reference: [User Guide §8](docs/USER_GUIDE.md#8-mix-tab).
 
 <p align="center">
-  <img src="docs/readme/owl.png" alt="The Owl .gan web-plugin: the HRTF spatializer with the azimuth and elevation pad and the room pad" width="410">
-  <img src="docs/readme/ares.png" alt="Ares .gan web-plugin: a multi-effect with filter, delay, reverb, grains and gate" width="410">
+  <img src="docs/readme/owl.png" alt="The Owl .gan web-plugin: the HRTF spatializer with the azimuth and elevation pad, the room pad and the source positions" width="640">
 </p>
 
-<sub align="center">The Owl and Ares are `.gan` web-plugins included with theDAW. Any FOUNDRY design exports to the same format.</sub>
+<sub align="center">The Owl is a `.gan` web-plugin included with theDAW, alongside the Ares multi-effect shown under FOUNDRY below. Any FOUNDRY design exports to the same format.</sub>
 
 ### Turn audio into sheet music: SCORE
 
@@ -160,9 +161,21 @@ Open an Ableton set or a `.tasmo` project in the OPEN field. Each column is a tr
 
 ### Design a plugin interface: FOUNDRY
 
-<p align="center"><img src="docs/readme/foundry.png" alt="The Foundry canvas with the Ares plugin face open: its knobs on the canvas and its 29 layers listed" width="820"></p>
+<p align="center"><img src="docs/readme/foundry-ares.png" alt="The Foundry canvas in edit mode with the Ares plugin face open, its controls live on the canvas and the AI design panel alongside" width="900"></p>
 
-The Foundry is a canvas for plugin interfaces. Drag knobs, sliders, meters, buttons, displays and images from the left palette. Upload a background image or pick a texture. OPEN .GAN opens an existing plugin to edit, such as the included Ares shown above. DEMO MODE switches between editing the controls and operating them. EXPORT CODE and PACKAGE write the design as a `.gan` web-plugin, GANTASMO's plugin format, which loads in the MIX chain next to VST3 plugins and the built-in effects.
+The Foundry is a canvas for plugin interfaces, shown above with the included Ares multi-effect open as an editable design. Drag knobs, sliders, meters, buttons, displays and images from the left palette, or describe what you want to the AI panel on the right and let it place and style them. Upload a background image or pick a texture. OPEN .GAN opens an existing plugin to edit, such as the included Ares shown above. DEMO MODE switches between editing the controls and operating them. EXPORT CODE and PACKAGE write the design as a `.gan` web-plugin, GANTASMO's plugin format, which loads in the MIX chain next to VST3 plugins and the built-in effects.
+
+### Grow a colony of loops: LOOM
+
+<p align="center"><img src="docs/readme/loom.png" alt="The LOOM dish: seventeen cells, nested colonies drawn as glass bubbles, tendril wires and polymetric labels" width="900"></p>
+
+Every song in the library is torn into bar- and beat-aligned fragments of each stem, indexed with its key, energy, rhythm, chords and words. LOOM plays that index as one dish that grows while it runs. It starts as a single spore you click; from there cells divide on the beat (a child is born on its parent at zero vitality and ripens over three bars), colonies form around existing loops, and idle cells are hollowed out over two bars and removed. Loops, rules, gates and mods wire to each other with rope-physics tendrils, and a colony is itself a cell with its own meter, so 7/8 grouped 3+2+2 can run inside a 4/4 dish at half speed. Reference: [docs/design/loom.md](docs/design/loom.md).
+
+### Conduct it with your hands: SWAY
+
+<p align="center"><img src="docs/readme/sway.png" alt="The SwayCommand cockpit: the scene list, the timeline, and gesture axes bound to macro knobs and named pads" width="900"></p>
+
+SWAY embeds the [SwayCommand](https://github.com/danieljtrujillo/SwayCommand) cockpit whole: scenes down the left, a timeline underneath, and gesture axes (X, Y, PULSE, PRESS, SWAY) bound to macro knobs and named pads. Move in front of a camera, or move the Audima Sway motion controller, and you are playing those controls. theDAW owns the only `requestMIDIAccess()` in the app and relays hardware into the cockpit over `postMessage`, so a controller you plug in reaches it with no extra setup. Reference: [Sway Perform](docs/guides/sway-perform-live.md).
 
 ### Connect nodes: NODEFI
 
@@ -215,7 +228,13 @@ The library is on disk, with its metadata in `data/library.db`. Every generated 
 
 Reference: [User Guide §14](docs/USER_GUIDE.md#14-step-sequencer) through [§16](docs/USER_GUIDE.md#16-bottom-panel-tabs).
 
-### Controllers, XR, phone and Tour
+### Book the road: TOUR
+
+<p align="center"><img src="docs/readme/tour.png" alt="The TOUR tab: 513 Austin venues plotted on the map with the venue list, addresses and booking contacts" width="900"></p>
+
+Search a city and TOUR returns the venues in it — 513 for Austin above — each with its type, address, and the website, email and phone to book it. Add the ones you want as stops and it works out the drive between them, with EV charging stops if that is what you drive. Reference: [User Guide §41](docs/USER_GUIDE.md#41-tour-tab).
+
+### Controllers, XR and phone
 
 Controller recognition knows about 110 device profiles, detects a connected controller, learns one by capture, and **Controller Vision** identifies a controller from a photo. The Audima Sway motion controller works natively. [theDAW-XR](https://github.com/gantasmo/theDAW-XR) turns a Meta Quest 3 into a hands-only controller with hand-tracked MIDI, passthrough video into VJ and co-located multiplayer. A phone web app pairs with the desktop for remote MAKE, transport, DJ and library control. The TOUR tab plans live dates on a map with venue, promoter and festival search, booking-contact lookup and a route. Reference: [User Guide §31](docs/USER_GUIDE.md#31-controller-vision), [§34](docs/USER_GUIDE.md#34-quest-and-xr-integrations), [§41](docs/USER_GUIDE.md#41-tour-tab) and [§42](docs/USER_GUIDE.md#42-mobile-companion-app).
 
@@ -351,7 +370,7 @@ The GitHub **[Wiki](https://github.com/gantasmo/theDAW/wiki)** has the same inde
 | **ML pipeline** | `stable_audio_3/` | The DiT diffusion transformer, the SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | The HTTP server on port 8600: a generation job queue, FFmpeg audio processing, and model introspection. |
 | **Backend modules** | `backend/modules/` | A plugin system. Each subdirectory has a `module.json` and a `router.py`. The loader mounts every enabled module and isolates failures: `analysis`, `chimera`, `effects`, `library`, `lyrics`, `midi`, `notation`, `stems`, `vocal`, `suno`, `magenta`, the XR bridges, `foundry`, `underfit`, and the rest. |
-| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Eleven tabs (MAKE, EDIT, MIX, PERFORM, DJ, VJ, FOUNDRY, UNDERFIT, NODEFI, LEARN, TOUR), the library and Catalogue, and the bottom panel (Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Details, Media, SLIDE, SWAY). The dev server on port 5173 proxies `/api/*` to the backend. |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Thirteen tabs (MAKE, EDIT, MIX, PERFORM, DJ, VJ, SWAY, FOUNDRY, UNDERFIT, NODEFI, LOOM, LEARN, TOUR), the library and Catalogue, and the bottom panel (Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Details, Media, SLIDE, SWAY). The dev server on port 5173 proxies `/api/*` to the backend. |
 | **Sidecars** | `sidecars/` | The vendored `magenta-rt2-nvidia` port, the `questcast` and `queststitch` Quest bridges, and the `magenta` studio sidecar. Demucs and whisper build their own isolated environments on first use. |
 
 ```text
