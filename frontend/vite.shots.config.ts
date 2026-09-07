@@ -12,9 +12,17 @@ export default defineConfig(async (env) => {
   const cfg = (await (base as unknown as (e: typeof env) => Promise<UserConfig> | UserConfig)(env)) as UserConfig;
   const server = { ...(cfg.server ?? {}) };
   server.port = PORT;
+  // Re-target EVERY proxy entry that points at the developer's backend, not
+  // just '/api'. The sidecar iframes ('/vj-app', '/sway-app') are proxied the
+  // same way, so leaving them on :8600 makes the VJ and SWAY tabs fail to load
+  // whenever the rig runs without the developer's own stack up.
   const proxy = { ...((server.proxy ?? {}) as Record<string, unknown>) };
-  const api = { ...((proxy['/api'] ?? {}) as Record<string, unknown>), target: BACKEND };
-  proxy['/api'] = api;
+  for (const [route, entry] of Object.entries(proxy)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.target !== 'string' || !/\/\/(localhost|127\.0\.0\.1):8600/.test(e.target)) continue;
+    proxy[route] = { ...e, target: BACKEND };
+  }
   server.proxy = proxy as UserConfig['server'] extends infer S ? S extends { proxy?: infer P } ? P : never : never;
   return { ...cfg, server };
 });
