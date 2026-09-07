@@ -2471,7 +2471,7 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   {lastSeen.channel !== null && (
                     <button
                       type="button"
-                      onClick={() => ignoreChannel(lastSeen.kind, lastSeen.channel)}
+                      onClick={() => { if (lastSeen.channel !== null) ignoreChannel(lastSeen.kind, lastSeen.channel); }}
                       className="shrink-0 px-1.5 py-0.5 rounded border border-rose-500/20 bg-rose-500/5 text-[8px] font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/15"
                       title={`Ignore all ${lastSeen.kind.toUpperCase()} messages on channel ${lastSeen.channel + 1}`}
                     >
