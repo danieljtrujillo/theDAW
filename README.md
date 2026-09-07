@@ -24,7 +24,7 @@
 
 ---
 
-**theDAW is a free music studio that runs on your own computer.** You can generate a track from a text prompt, edit and mix it, turn it into sheet music, sing along to it with timed lyrics, DJ it, play it live, and run visuals behind it. Everything stays on your machine. There is no account and no subscription.
+**theDAW is a free music studio that runs on your own computer.** You can generate a track from a text prompt, edit and mix it, turn it into sheet music, sing along to it with timed lyrics, DJ it, play it live, and run visuals behind it. Everything stays on your machine. There is no account and no subscription. The generator is Stable Audio 3, trained on licensed, ethically sourced audio, and UNDERFIT turns your own recordings into your own LoRA on your own GPU, so even the training step never touches a datacenter.
 
 <p align="center">
   <img src="docs/readme/make.png" alt="The MAKE tab with a prompt, init audio, an inpaint region, the Chimera stack and the spectrogram viewer, in the Brushed Steel theme" width="900">
@@ -354,7 +354,7 @@ The GitHub **[Wiki](https://github.com/gantasmo/theDAW/wiki)** has the same inde
 | **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Eleven tabs (MAKE, EDIT, MIX, PERFORM, DJ, VJ, FOUNDRY, UNDERFIT, NODEFI, LEARN, TOUR), the library and Catalogue, and the bottom panel (Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Details, Media, SLIDE, SWAY). The dev server on port 5173 proxies `/api/*` to the backend. |
 | **Sidecars** | `sidecars/` | The vendored `magenta-rt2-nvidia` port, the `questcast` and `queststitch` Quest bridges, and the `magenta` studio sidecar. Demucs and whisper build their own isolated environments on first use. |
 
-```
+```text
 theDAW/
 |-- theDAW.bat / theDAW.sh   <-- double-click or run to install everything and launch
 |-- backend/                 <-- FastAPI server and the plugin modules behind /api/*
