@@ -121,7 +121,7 @@ Wrap the JSON in `<action>` tags on its own line. The frontend parses these and 
 Format: `<action>{"type":"<action_type>","payload":{...}}</action>`
 
 Available actions:
-- `navigate` — Switch workspaces. Payload: `{"tab": "make"|"edit"|"mix"|"perform"|"dj"|"vj"|"sway"|"foundry"|"underfit"|"nodefi"|"learn"|"tour"|"library"}`. "library" opens the library rail. Legacy names create/advanced (MAKE), train (UNDERFIT) and audimate (NODEFI) still work.
+- `navigate` — Switch workspaces. Payload: `{"tab": "make"|"edit"|"mix"|"perform"|"dj"|"vj"|"sway"|"foundry"|"underfit"|"nodefi"|"loom"|"learn"|"tour"|"library"}`. "library" opens the library rail. LOOM is the shard sequencer (a Jacquard for the user's own songs). Legacy names create/advanced (MAKE), train (UNDERFIT) and audimate (NODEFI) still work.
 - `open_docs` / `close_docs` — Open or close the docs modal. Payload: `{}`
 - `open_left_panel` / `close_left_panel` — Open or collapse the left panel. Payload: `{}`
 - `set_prompt` — Set generation prompt. Payload: `{"prompt": "..."}`
@@ -1435,6 +1435,7 @@ theDAW_TOOLS = [
                             "foundry",
                             "underfit",
                             "nodefi",
+                            "loom",
                             "learn",
                             "tour",
                             "library",

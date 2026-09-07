@@ -36,7 +36,7 @@ from typing import Any, Iterator, Optional
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 # Each tuple is (schema_version_after_running, statements list).
@@ -242,6 +242,58 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             # rows unflagged.
             "ALTER TABLE stems ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE midis ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
+        ],
+    ),
+    (
+        6,
+        [
+            # The Shard Index (docs/design/loom.md): bar/beat-aligned fragments
+            # of every source (stem or mix) with the descriptors LOOM, the DJ
+            # pads and PERFORM query. Rows are rebuilt per entry by
+            # backend.modules.shards.extract; the filesystem stays the truth
+            # for audio, the row only says WHERE to cut.
+            """
+            CREATE TABLE IF NOT EXISTS shards (
+                id TEXT PRIMARY KEY,
+                entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+                stem_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                start_sec REAL NOT NULL,
+                end_sec REAL NOT NULL,
+                beats INTEGER NOT NULL,
+                bar_index INTEGER NOT NULL,
+                bpm REAL NOT NULL,
+                key TEXT NOT NULL DEFAULT '',
+                scale TEXT NOT NULL DEFAULT '',
+                camelot TEXT NOT NULL DEFAULT '',
+                pc_root INTEGER NOT NULL DEFAULT -1,
+                rms_db REAL NOT NULL DEFAULT -90,
+                low_frac REAL NOT NULL DEFAULT 0,
+                onset_density REAL NOT NULL DEFAULT 0,
+                centroid_hz REAL NOT NULL DEFAULT 0,
+                onset_mask INTEGER NOT NULL DEFAULT 0,
+                energy REAL NOT NULL DEFAULT 0,
+                section TEXT NOT NULL DEFAULT '',
+                chord TEXT NOT NULL DEFAULT '',
+                words TEXT NOT NULL DEFAULT '',
+                chroma_json TEXT NOT NULL DEFAULT '[]',
+                mfcc_json TEXT NOT NULL DEFAULT '[]',
+                version INTEGER NOT NULL DEFAULT 1
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_shards_entry ON shards(entry_id)",
+            "CREATE INDEX IF NOT EXISTS idx_shards_role_beats ON shards(role, beats)",
+            "CREATE INDEX IF NOT EXISTS idx_shards_camelot ON shards(camelot)",
+            # Kept pairings: the user's taste memory for the complement ranking.
+            """
+            CREATE TABLE IF NOT EXISTS shard_pairings (
+                a_id TEXT NOT NULL,
+                b_id TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 1,
+                kept_at REAL NOT NULL,
+                PRIMARY KEY (a_id, b_id)
+            )
+            """,
         ],
     ),
 ]
@@ -955,6 +1007,156 @@ class LibraryDB:
             ).fetchall()
             cur.close()
             return [dict(r) for r in rows]
+
+    # ---- Shards (docs/design/loom.md) ----------------------------------------
+
+    _SHARD_COLUMNS = (
+        "id",
+        "entry_id",
+        "stem_name",
+        "role",
+        "start_sec",
+        "end_sec",
+        "beats",
+        "bar_index",
+        "bpm",
+        "key",
+        "scale",
+        "camelot",
+        "pc_root",
+        "rms_db",
+        "low_frac",
+        "onset_density",
+        "centroid_hz",
+        "onset_mask",
+        "energy",
+        "section",
+        "chord",
+        "words",
+        "chroma_json",
+        "mfcc_json",
+        "version",
+    )
+
+    def replace_shards(self, entry_id: str, rows: list[dict[str, Any]]) -> None:
+        """Drop the entry's shards and insert ``rows`` (one transaction)."""
+        cols = self._SHARD_COLUMNS
+        sql = (
+            f"INSERT OR REPLACE INTO shards ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)})"
+        )
+        with self._txn() as cur:
+            cur.execute("DELETE FROM shards WHERE entry_id = ?", (entry_id,))
+            cur.executemany(sql, [tuple(r.get(c) for c in cols) for r in rows])
+
+    def list_shards(self, entry_id: str) -> list[dict[str, Any]]:
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                "SELECT * FROM shards WHERE entry_id = ? ORDER BY stem_name, beats, bar_index",
+                (entry_id,),
+            ).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
+    def get_shard(self, shard_id: str) -> Optional[dict[str, Any]]:
+        with self._writelock:
+            cur = self._conn.cursor()
+            row = cur.execute(
+                "SELECT * FROM shards WHERE id = ?", (shard_id,)
+            ).fetchone()
+            cur.close()
+            return dict(row) if row else None
+
+    def select_shards(
+        self,
+        *,
+        role: Optional[str] = None,
+        beats: Optional[int] = None,
+        entry_id: Optional[str] = None,
+        exclude_entry: Optional[str] = None,
+        section: Optional[str] = None,
+        text: Optional[str] = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """SQL pre-filter for the ranker. ``role='drums'`` also admits the
+        LARSNET drum parts; ``text`` matches chord symbols and lyric words."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if role:
+            if role == "drums":
+                clauses.append(
+                    "role IN ('drums','kick','snare','hihat','cymbals','toms')"
+                )
+            else:
+                clauses.append("role = ?")
+                params.append(role)
+        if beats:
+            clauses.append("beats = ?")
+            params.append(int(beats))
+        if entry_id:
+            clauses.append("entry_id = ?")
+            params.append(entry_id)
+        if exclude_entry:
+            clauses.append("entry_id != ?")
+            params.append(exclude_entry)
+        if section:
+            clauses.append("section = ?")
+            params.append(section)
+        if text:
+            clauses.append("(words LIKE ? OR chord LIKE ?)")
+            like = f"%{text}%"
+            params.extend([like, like])
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                f"SELECT * FROM shards {where} ORDER BY entry_id, stem_name, bar_index LIMIT ?",
+                [*params, int(limit)],
+            ).fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+
+    def count_shards(self) -> int:
+        with self._writelock:
+            cur = self._conn.cursor()
+            n = cur.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+            cur.close()
+            return int(n)
+
+    def bump_pairing(self, a_id: str, b_id: str) -> float:
+        """Record (or strengthen) a kept pairing; symmetric on (a, b)."""
+        lo, hi = sorted((a_id, b_id))
+        with self._txn() as cur:
+            cur.execute(
+                """
+                INSERT INTO shard_pairings (a_id, b_id, weight, kept_at)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(a_id, b_id) DO UPDATE SET weight = weight + 1, kept_at = excluded.kept_at
+                """,
+                (lo, hi, _now()),
+            )
+            row = cur.execute(
+                "SELECT weight FROM shard_pairings WHERE a_id = ? AND b_id = ?",
+                (lo, hi),
+            ).fetchone()
+            return float(row["weight"]) if row else 1.0
+
+    def pairing_counts(self) -> dict[str, int]:
+        """How many kept pairings each shard takes part in (novelty term)."""
+        with self._writelock:
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                """
+                SELECT id, SUM(w) AS n FROM (
+                    SELECT a_id AS id, weight AS w FROM shard_pairings
+                    UNION ALL
+                    SELECT b_id AS id, weight AS w FROM shard_pairings
+                ) GROUP BY id
+                """
+            ).fetchall()
+            cur.close()
+            return {str(r["id"]): int(r["n"] or 0) for r in rows}
 
     # ---- Schema info --------------------------------------------------------
 

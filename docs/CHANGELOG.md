@@ -6,6 +6,185 @@ by build, test, or observed behaviour.
 
 Newest first.
 
+## 2026-09-06
+
+### Release
+
+- **v0.1.5** — LOOM Phase 0, the Magenta GPU lane, stems resilience, the
+  duotone themes and everything below. The release workflow now passes
+  `SWAY_REPO_TOKEN` to the installer builds and fails fast when the secret is
+  missing; that missing pass-through is why the v0.1.4 tag never produced
+  installers. Pinokio launcher updated in lockstep.
+
+### Queue re-check
+
+- **IN-THE-WORKS re-verified against `main`.** All 75 open items were checked
+  against the code; 22 were found done and merged and are retired here.
+  - P0: the footer action button is keyed on the real tab (`activeView`
+    cluster); `navigate('train')` can no longer brick CREATE; the assistant
+    approval stack is live (T2 tools park as `pendingAction` and render the
+    confirmation card).
+  - Feedback: MAKE's empty-prompt error is rendered; the Magenta setup gate was
+    rebuilt and dict `detail` payloads are unwrapped; Underfit's 503 diagnosis
+    is rendered; a failed Settings PATCH rolls back and shows a notice.
+  - Dead controls: "Send to DJ" automix handoff is consumed; assistant
+    navigation reaches all 12 workspaces; Media bucket "Send to INIT" lands on
+    MAKE.
+  - Wrong output: NodeF.I. Effect node no longer 400s on first run; NodeF.I.
+    wires are deletable; Underfit's dashboard URL derives from the live port.
+  - Ableton: `performRouting` hydrates on both project-load paths, CcMods
+    included.
+  - P2 / frontier: OPFS autosave and crash recovery; stems-on-a-clip explode to
+    tracks; the 12-tool `editor_*` assistant vocabulary with a real arrangement
+    context.
+  - Second session: NodeF.I. cursor offset; NodeF.I. node-editor toolset;
+    lower-panel toggles (superseded by the footer action button); `.swayproj`
+    import; Sway deck factory CC/note map.
+- **Retired as stale:** "the staged SwayCommand build ignores `sway/visibility`"
+  — the bundle handles it and SwayView pushes it.
+- **Theme picker previews without a scrim** — the overlay no longer darkens
+  the editor while a theme is chosen, so colours can be judged live. Last
+  Tailwind v3 form in the tree (`z-[300]`) removed.
+- **Twelve duotone themes** added to the picker (Navy & Gold, Charcoal & Amber,
+  Forest & Cream, Burgundy & Rose, Slate & Copper, Ink & Cyan, Plum & Mint,
+  Cocoa & Sand, Olive & Bone, Cream & Navy, Blush & Charcoal, Sage &
+  Terracotta).
+
+### Evening: Magenta GPU lane, stems resilience, LOOM samples (verified by build + tests; live check pending)
+
+- **Magenta engine start waits its turn for the GPU.** Both bring-up paths take
+  the pipeline's single GPU lane, so a Demucs / whisper / MIDI run can no longer
+  sit on the card while JAX loads (the `RESOURCE_EXHAUSTED` failure from the
+  full-suite pass). Status reports "waiting for the GPU" while queued; an error
+  state carries a classified `error_kind` and a one-sentence `fix` that the
+  Restart card shows.
+- **Stems polling survives a dropped sidecar connection** (six retries with
+  reconnect) and any remaining failure is a 503 with a cause, not an ASGI
+  traceback.
+- **LOOM**: uniform Jacquard-style square tiles with a step ruler and per-tile
+  glyphs; rebuilt on theme tokens after the contrast audit found 58 light-theme
+  text failures on the first cut; four sample scores (two simple, two involved)
+  in the CODE pane; quoted values in query literals.
+
+## 2026-09-05
+
+### SING, SCORE, pipeline, docs
+
+- **SING tab** — large centred lyrics, glide scroll, mismatch underlines, AUTO
+  align; whisper alignment on the GPU, stems-first vocals, language picker.
+- **SCORE** — NOW/INK look prefs, TRAIL hold/flash for the ink, centred strips,
+  one layout per zoom, kept-alive views, smooth forward-only strip scroll.
+- **Pipeline** — one coordinator for stems, MIDI and lyrics; forced-aligned
+  lyrics; GPU everywhere.
+- **Docs** — README how-to per tab; SING guide; play-along look settings;
+  prepared DJ sets; pipeline scheduling.
+
+## 2026-09-04
+
+### Chimera v2, SCORE play-along, release
+
+- **Chimera v2** — phrase engine, seam healing, and a CREATE that never stalls
+  silently.
+- **SCORE** — play-along modes, percussion notation, drum transcription, chord
+  track, Beat Saber export.
+- **Attention** — flash attention gated on GPU compute capability (Turing GPUs
+  fall back cleanly).
+- **Shell** — width- and height-aware scale; Tour view rewrite; control polish.
+- **Library** — lyrics groundwork for SING.
+- **Release** — v0.1.4; six stale test assertions caught up.
+
+## 2026-09-03
+
+- **Telemetry** — every GPU reported, not just `cuda:0`, with device-wide VRAM.
+
+## 2026-09-02
+
+### Settings, Levels, effects, onboarding
+
+- **Settings** — one screen; six-state Magenta engine gate; real model list;
+  Lyria install; one-click Magenta install; HF token field; real error text for
+  gated models.
+- **LEVELS** — a conventional meter bridge (dBFS ladder, LUFS tiles against
+  target presets, true peak, correlation, balance, 60 s history) replacing the
+  six icon-switched views.
+- **Effects** — a real control panel for every effect, rack entry and tool;
+  BACKLOG FX-001 closed. MIX viz rack collapsible, ARES controls on their art at
+  first paint, one-shot `.gan` reveal; viz-row icon buttons labelled with
+  pressed state.
+- **Onboarding** — Chimera DNA splice fixed, tour rebuilt, one-screen HOME,
+  guided TOUR.
+- **Underfit** — dashboard no longer crashes on an empty seq-info table;
+  diagnosis payloads without an issues array tolerated.
+- **Showcase capture** — attach mode drives an already-open window and
+  screen-records it; the film's cast comes from `showcase/_cast.json`.
+
+## 2026-08-31
+
+### DJ prepared sets, merges
+
+- **DJ prepared performance sets** — automated timeline automix plus assistant
+  control (PR #140); review fixes for automix and performance-set path handling.
+- **Merged to main** — NodeF.I. rename and premium pass; slim bottom chrome;
+  Underfit venv self-repair (a half-built venv is detected and repaired);
+  inpaint model selection; POSIX dev stack; errors that were being discarded
+  are now surfaced.
+- **Sway** — a request body can no longer widen the media allowlist.
+
+## 2026-08-28
+
+### NodeF.I. tendrils, PERFORM rail (verified live)
+
+- **NodeF.I. tendril controls** replace the SLIDE sliders — filament-under-
+  tension ranged params, asymmetric cells for short selects; drag, wheel, keys,
+  double-click reset, click-to-type. Type ramp raised everywhere.
+- **PERFORM right rail** — ROUTES (filterable, grouped) and PARAMS (per-track
+  device browser pushing tendril edits into the running chains). Default
+  closed, drag-resizable, zero footprint when closed.
+
+## 2026-08-27 (later passes)
+
+### Issue triage #127 #131 #132 #133 #134
+
+- Inpaint sends the selected model; MAKE inpaint refuses an empty region with a
+  "drag a region" message; the model picker persists; HF sign-in card raised
+  from gated download failures; Underfit venv probe, Repair vs Create, `log_tail`
+  rendered, 503 detail rendered, port from `diag.port`; installer ships
+  `underfit/`; Underfit model registry JSONs vendored; Linux launcher
+  `theDAW.sh` + guide; flash-attention visibility in `/api/health`; five docs
+  that were wrong corrected.
+
+### Sway Perform, Kargyraa, NodeF.I. passes
+
+- **PERFORM pads punch FX** (note-driven CcMods, momentary or `latch`); chain
+  param pushes keep sibling params; new `kargyraa` subharmonic rack effect;
+  `.tasmo` VST nodes stay inert in PERFORM; per-song templates regenerated.
+- **Open-in-all-surfaces** — a project opens in EDIT and PERFORM from one load;
+  grid-only projects land on PERFORM. Bottom chrome slimmed ~30 px.
+- **NodeF.I. (then Audimate)** — premium pass (glass dock, goo rail, pull-a-
+  node-out-of-the-goo), template patches, LIVE performance engine (Stem, Filter,
+  VCA, Echo, Crossfade, LFO, Live Out, mod wires), Rack FX live node, one live
+  set per song, square node rail, resizable rails, saved sets with export/
+  import, Suno cloud node, inspector redesign, rename to NodeF.I.
+- **Every-theme contrast** — translucent hex chrome surfaces remapped for light
+  themes; hover and pale-accent text darkened. Verified on Porcelain.
+- **De-icon / de-glow sweep** — icons only where they are the control;
+  decorative LED dots removed. Footer owns the action button; per-frame tick
+  isolated so the footer shell stops re-rendering at 60 Hz.
+- **docs/guides/audimate.md** rewritten.
+
+## 2026-08-26 (third session)
+
+### The P0 cluster and the big builds (coded that day, merged 2026-08-31 → 09-04)
+
+- `activeView` cluster, approval stack, agentic editor vocabulary, Media bucket
+  "Send to INIT", OPFS autosave, NodeF.I. node-editor tools, footer-styled
+  lower-panel toggles, `.swayproj` import, stems-on-a-clip explode, XR BUS
+  tester moved to a dev-only dock tab, EDIT FX/ARES panels portaled and plugin
+  windows detachable, unified effect control windows, SWAY tab track add/save/
+  playback made real, Sway performance template + the `perform_routing.ccMods`
+  persistence it exposed, note-by-note notation follow, EDIT toolbar
+  decluttered.
+
 ## 2026-08-27
 
 ### Per-song Sway performance templates

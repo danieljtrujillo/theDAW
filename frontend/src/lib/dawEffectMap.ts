@@ -14,6 +14,7 @@
  */
 import type { DawDevice } from './dawImportClient';
 import type { EffectChainNode } from './projectClient';
+import { getRackEffect, type RackParamDescriptor } from './rackEffects';
 
 /** Ordered name patterns -> theDAW effect id. Specific before generic. */
 const NATIVE_FX_PATTERNS: Array<[RegExp, string]> = [
@@ -61,6 +62,119 @@ export function matchNativeEffect(name: string): string | null {
   return null;
 }
 
+/** A device name that is ALREADY a theDAW rack id (a `.tasmo` round-trip) wins
+ *  over the fuzzy patterns — "gater" would otherwise fail to match itself. */
+export function resolveLiveEffectId(name: string): string | null {
+  const n = (name || '').trim();
+  if (getRackEffect(n)) return n;
+  return matchNativeEffect(n);
+}
+
+/* ── Parameter-name translation ──────────────────────────────────────────────
+ * Ableton emits `Threshold`, `DryWet`, `DecayTime`, `MacroControls.3`; the rack
+ * expects `threshold`, `wet`, `decay`. Without this, every mapped effect
+ * instantiated at rack defaults and every device-FX controller mapping routed
+ * nothing. Names are folded (lower-case, alphanumerics only) and looked up per
+ * effect first, then in the generic table; the result is validated against the
+ * effect's own descriptor so a translation can never name a param that does
+ * not exist. `__mix` is a stand-in for "this effect's wet/dry key".
+ */
+const fold = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const GENERIC_PARAM_ALIASES: Record<string, string> = {
+  // wet / dry / amount-of-effect
+  drywet: '__mix', wetdry: '__mix', wet: '__mix', mix: '__mix', amount: '__mix', on: '__mix', deviceon: '__mix',
+  // filters
+  frequency: 'frequency', freq: 'frequency', cutoff: 'frequency', cutofffrequency: 'frequency', midfreq: 'frequency',
+  resonance: 'resonance', reso: 'resonance', q: 'resonance',
+  // dynamics
+  threshold: 'threshold', thresh: 'threshold', ratio: 'ratio', knee: 'knee',
+  attack: 'attack', attacktime: 'attack', release: 'release', releasetime: 'release',
+  gain: 'makeup', outputgain: 'makeup', makeup: 'makeup', makeupgain: 'makeup',
+  // time-based
+  feedback: 'feedback', fb: 'feedback',
+  time: 'time', delaytime: 'time', delay: 'time', delayline: 'time',
+  decay: 'decay', decaytime: 'decay', size: 'decay', roomsize: 'decay',
+  predelay: 'predelay', predelaytime: 'predelay',
+  tone: 'tone', damping: 'tone', highcut: 'tone', lowpass: 'tone',
+  // rhythm
+  rate: 'rate', speed: 'rate', lforate: 'rate', depth: 'depth', shape: 'shape', waveform: 'shape',
+  // colour
+  bits: 'bits', bitdepth: 'bits', bit: 'bits', drive: 'drive', width: 'width', stereowidth: 'width',
+};
+
+/** Per-effect overrides, applied before the generic table. */
+const EFFECT_PARAM_ALIASES: Record<string, Record<string, string>> = {
+  parametric_eq: { lowgain: 'low', low: 'low', lowshelf: 'low', midgain: 'mid', mid: 'mid', highgain: 'high', high: 'high', highshelf: 'high', frequency: 'midFreq', midfreq: 'midFreq' },
+  exciter: { drive: 'amount', amount: 'amount', frequency: 'frequency', mix: 'mix', drywet: 'mix' },
+  phantom_bass: { drive: 'drive', harmonics: 'drive', amount: 'blend', blend: 'blend', drywet: 'blend', crossover: 'crossover', frequency: 'crossover' },
+  stereo_widener: { amount: 'width', width: 'width', bassmono: 'bassMonoFreq', frequency: 'bassMonoFreq' },
+  gater: { amount: 'depth', depth: 'depth', rate: 'rate', frequency: 'rate', shape: 'shape', waveform: 'shape', sync: 'sync', division: 'div', div: 'div' },
+  chop: { interval: 'rate', grid: 'slice', gate: 'gate', chance: 'mix', mix: 'mix', drywet: 'mix' },
+  bitcrush: { samplerate: 'bits', bitdepth: 'bits', bits: 'bits' },
+  ringmod: { fine: 'frequency', coarse: 'frequency', frequency: 'frequency' },
+  loudness_contour: { amount: 'amount', level: 'level' },
+  crossfeed: { amount: 'amount', cut: 'cutFreq', frequency: 'cutFreq' },
+};
+
+/** Unit conversions from the DAW's native scale to the rack's descriptor scale,
+ *  keyed `<effectId>.<rackKey>`. Ableton stores reverb/delay times in ms and the
+ *  rack's `decay` is seconds; everything else already agrees. */
+const UNIT_CONVERT: Record<string, (v: number) => number> = {
+  'reverb.decay': (v) => (v > 20 ? v / 1000 : v),
+};
+
+export interface TranslatedParam {
+  key: string;
+  descriptor: RackParamDescriptor;
+}
+
+/**
+ * Translate a DAW parameter name onto one of `effectId`'s rack params.
+ * Rack macros (`is_macro`, or names like `MacroControls.N`) land on the effect's
+ * wet/dry key when it has one — a macro's fan-out is not recoverable from the
+ * mapping alone, and "how much of this effect" is what a macro almost always
+ * means on a performance rack.
+ */
+export function translateDawParam(effectId: string, dawName: string, isMacro = false): TranslatedParam | null {
+  const def = getRackEffect(effectId);
+  if (!def) return null;
+  const folded = fold(dawName);
+  const byKey = (k: string): TranslatedParam | null => {
+    const key = k === '__mix' ? def.mixKey : k;
+    if (!key) return null;
+    const d = def.params.find((p) => p.key === key);
+    return d ? { key, descriptor: d } : null;
+  };
+  if (isMacro || /^macrocontrols?\d*$/.test(folded)) return byKey('__mix') ?? byKey(def.params[0]?.key ?? '');
+  // The exact rack key itself (a .tasmo round-trip).
+  const direct = def.params.find((p) => fold(p.key) === folded || fold(p.label) === folded);
+  if (direct) return { key: direct.key, descriptor: direct };
+  const specific = EFFECT_PARAM_ALIASES[effectId]?.[folded];
+  if (specific) { const r = byKey(specific); if (r) return r; }
+  const generic = GENERIC_PARAM_ALIASES[folded];
+  if (generic) { const r = byKey(generic); if (r) return r; }
+  // Partial match on the folded rack label ("delaytime" ⊇ "time", "reverbdecay" ⊇ "decay").
+  const partial = def.params.find((p) => folded.endsWith(fold(p.key)) || folded.endsWith(fold(p.label)));
+  return partial ? { key: partial.key, descriptor: partial } : null;
+}
+
+/** Re-key a device's native parameter dict onto the rack's keys, converting
+ *  units where the two scales differ and clamping to the descriptor range.
+ *  Unknown names are kept verbatim (harmless to the rack, useful to the user). */
+export function translateDawParams(effectId: string, params: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [name, raw] of Object.entries(params)) {
+    const t = translateDawParam(effectId, name);
+    if (!t) { out[name] = raw; continue; }
+    const conv = UNIT_CONVERT[`${effectId}.${t.key}`];
+    const v = conv ? conv(raw) : raw;
+    const { min, max } = t.descriptor;
+    out[t.key] = Math.max(min, Math.min(max, v));
+  }
+  return out;
+}
+
 /**
  * Convert one parsed DAW device into a persisted EffectChainNode.
  *  - VST3/AU with a resolvable path  -> a VST node (re-hostable).
@@ -87,13 +201,15 @@ export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
     };
   }
 
-  const mapped = matchNativeEffect(device.name);
+  const mapped = resolveLiveEffectId(device.name);
   return {
     node_type: 'builtin',
     // A mapped theDAW id when we recognized it, else the original name so the
     // user still sees what the source project had (loader shows it inactive).
     effect_name: mapped ?? device.name,
-    parameters: params,
+    // Translate the DAW's parameter names onto the rack's so the mapped effect
+    // instantiates with the SOURCE settings instead of rack defaults.
+    parameters: mapped ? translateDawParams(mapped, params) : params,
     bypass,
   };
 }

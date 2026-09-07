@@ -39,6 +39,7 @@ const SwayView = lazy(() => import('../../views/SwayView').then((m) => ({ defaul
 const FoundryView = lazy(() => import('../../views/FoundryView').then((m) => ({ default: m.FoundryView })));
 const UnderfitView = lazy(() => import('../../views/UnderfitView').then((m) => ({ default: m.UnderfitView })));
 const NodefiView = lazy(() => import('../../views/NodefiView').then((m) => ({ default: m.NodefiView })));
+const LoomView = lazy(() => import('../../views/LoomView').then((m) => ({ default: m.LoomView })));
 const TourView = lazy(() => import('../../views/TourView').then((m) => ({ default: m.TourView })));
 
 const TabFallback: React.FC = () => (
@@ -57,7 +58,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // and the LEARN genealogy graph's fetch + layout + pan/zoom.
   const [warmedTabs, setWarmedTabs] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'sway' || centerTab === 'foundry' || centerTab === 'underfit' || centerTab === 'nodefi' || centerTab === 'learn' || centerTab === 'tour') {
+    if (centerTab === 'dj' || centerTab === 'vj' || centerTab === 'sway' || centerTab === 'foundry' || centerTab === 'underfit' || centerTab === 'nodefi' || centerTab === 'loom' || centerTab === 'learn' || centerTab === 'tour') {
       setWarmedTabs((prev) => {
         if (prev.has(centerTab)) return prev;
         const next = new Set(prev);
@@ -167,6 +168,14 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               style={{ display: centerTab === 'nodefi' ? undefined : 'none' }}
             >
               <Suspense fallback={<TabFallback />}><NodefiView /></Suspense>
+            </div>
+          )}
+          {warmedTabs.has('loom') && (
+            <div
+              className="absolute inset-0"
+              style={{ display: centerTab === 'loom' ? undefined : 'none' }}
+            >
+              <Suspense fallback={<TabFallback />}><LoomView /></Suspense>
             </div>
           )}
           {warmedTabs.has('tour') && (

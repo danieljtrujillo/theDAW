@@ -547,10 +547,41 @@ class StemsSidecar:
         return r.json()
 
     async def poll_status(self, task_id: str) -> dict:
-        client = await self._ensure_client()
-        r = await client.get(f"/status/{task_id}")
-        r.raise_for_status()
-        return r.json()
+        """One status poll. A dropped connection (the sidecar's single worker
+        is busy inside Demucs, or the GPU is contended and it stalls) is
+        retried a few times before it is reported — one blip must not turn a
+        20-minute separation into a 500."""
+        last: Exception | None = None
+        for attempt in range(6):
+            try:
+                client = await self._ensure_client()
+                r = await client.get(f"/status/{task_id}")
+                r.raise_for_status()
+                return r.json()
+            except (httpx.TransportError, httpx.RemoteProtocolError) as e:
+                last = e
+                log.warning(
+                    "stems.sidecar: status poll %s failed (%s: %s), retry %d/5",
+                    task_id,
+                    type(e).__name__,
+                    e,
+                    attempt + 1,
+                )
+                # Drop the client so the next attempt reconnects cleanly.
+                if self._client is not None:
+                    try:
+                        await self._client.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._client = None
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise RuntimeError(
+            "the stems sidecar stopped answering while separating "
+            f"({type(last).__name__ if last else 'unknown'}). It is usually "
+            "starved of GPU memory by another model (Magenta loading, whisper, "
+            "the resident SA3 model) — wait for that to finish, or stop it, and "
+            "run the separation again."
+        )
 
     async def list_stems(self, task_id: str) -> dict:
         client = await self._ensure_client()

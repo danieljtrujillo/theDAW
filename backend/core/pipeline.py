@@ -185,9 +185,55 @@ async def ensure_stems(
             await separate_entry(
                 db, entry_id, audio, entry_dir, stems=count, device=dev, quality=qual
             )
-        return db.list_stems(entry_id)
+        rows = db.list_stems(entry_id)
+        # Stems change what a shard IS (mix shards → per-stem shards), so a
+        # sharded entry is re-cut in the background once the parts exist.
+        if rows and db.list_shards(entry_id):
+            asyncio.create_task(
+                _reshard_quietly(entry_id), name=f"shards:{entry_id}:after-stems"
+            )
+        return rows
 
     return await run_once(f"stems:{entry_id}", _run)
+
+
+async def _reshard_quietly(entry_id: str) -> None:
+    try:
+        await ensure_shards(entry_id, force=True)
+    except Exception as e:  # noqa: BLE001 - background refresh, the row set is still valid
+        log.info("pipeline: re-shard after stems skipped for %s (%s)", entry_id, e)
+
+
+# ---- shards -----------------------------------------------------------------
+
+
+async def ensure_shards(entry_id: str, *, force: bool = False) -> list[dict[str, Any]]:
+    """The entry's shard rows, cutting them first when there are none (or when
+    ``force``). Waits for a separation in flight so the cut sees the stems, and
+    runs the beat analysis first when the entry has none. CPU only."""
+    db, audio, entry_dir = _entry_paths(entry_id)
+    if not force:
+        rows = db.list_shards(entry_id)
+        if rows:
+            return rows
+
+    async def _run() -> list[dict[str, Any]]:
+        from backend.modules.shards.extract import extract_shards
+
+        await wait_for(f"stems:{entry_id}")
+        if not (db.get_analysis(entry_id) or {}).get("beats_json"):
+            from backend.modules.analysis.engine import analyze_and_persist
+
+            await asyncio.to_thread(
+                analyze_and_persist,
+                db,
+                entry_id,
+                audio,
+                metadata_path=entry_dir / "metadata.json",
+            )
+        return await asyncio.to_thread(extract_shards, db, entry_id, audio, entry_dir)
+
+    return await run_once(f"shards:{entry_id}", _run)
 
 
 # ---- midi -------------------------------------------------------------------
@@ -296,6 +342,7 @@ __all__ = [
     "active_keys",
     "ensure_lyrics",
     "ensure_midi",
+    "ensure_shards",
     "ensure_stems",
     "gpu",
     "gpu_device",

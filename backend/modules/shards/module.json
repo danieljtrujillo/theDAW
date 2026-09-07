@@ -1,0 +1,10 @@
+{
+  "name": "shards",
+  "label": "Shards",
+  "enabled": true,
+  "icon": "Grid3x3",
+  "sidebar": false,
+  "api_prefix": "/api/shards",
+  "backend": true,
+  "description": "The Shard Index: every library song torn into bar- and beat-aligned fragments of each stem, with the descriptors the analysis already computes (key, energy, rhythm mask, chroma, chords, words). Queried by LOOM, the DJ pads, PERFORM slots and NodeF.I. for quantized, key- and tempo-matched launches."
+}

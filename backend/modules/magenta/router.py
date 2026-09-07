@@ -181,36 +181,50 @@ async def _bring_up_sidecar(
                 "card in Settings → Models."
             )
         if on_state:
-            on_state("starting", "starting the Magenta engine")
-        # Park SA3 so the engine's JAX runtime finds a free GPU, then (re)spawn.
-        if not (h.get("reachable") and h.get("protocol_ok")):
-            try:
-                from backend import server as srv
+            on_state(
+                "starting", "waiting for the GPU, then starting the Magenta engine"
+            )
+        # The load takes the pipeline's single GPU lane so a Demucs / whisper /
+        # basic-pitch run cannot sit on the card while JAX allocates its
+        # weights (that overlap is the RESOURCE_EXHAUSTED failure).
+        from backend.core import pipeline
 
-                await srv.offload_model()
-            except Exception:
-                log.debug(
-                    "magenta: SA3 offload before engine start failed", exc_info=True
-                )
-            await loop.run_in_executor(None, sidecar.stop_engine)
-            await loop.run_in_executor(None, sidecar.start_engine)
-        # Model load can take a while on a cold start; poll until ready.
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            await asyncio.sleep(2.0)
-            h = await sidecar.health()
-            if h.get("available"):
+        async with pipeline.gpu("magenta"):
+            # Park SA3 so the engine's JAX runtime finds a free GPU, then (re)spawn.
+            if not (h.get("reachable") and h.get("protocol_ok")):
                 if on_state:
-                    on_state("running", "generating")
-                return
-            if on_state and h.get("status"):
-                on_state("starting", str(h.get("status")))
-            if sidecar.engine_state(h, None) == "error":
-                raise RuntimeError(
-                    "The Magenta RT2 engine failed to load its model: "
-                    f"{h.get('error') or h.get('status')}. Pick another model in "
-                    "Settings → Models or check logs/magenta-sidecar.log."
-                )
+                    on_state("starting", "starting the Magenta engine")
+                try:
+                    from backend import server as srv
+
+                    await srv.offload_model()
+                except Exception:
+                    log.debug(
+                        "magenta: SA3 offload before engine start failed",
+                        exc_info=True,
+                    )
+                await loop.run_in_executor(None, sidecar.stop_engine)
+                await loop.run_in_executor(None, sidecar.start_engine)
+            # Model load can take a while on a cold start; poll until ready.
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                await asyncio.sleep(2.0)
+                h = await sidecar.health()
+                if h.get("available"):
+                    if on_state:
+                        on_state("running", "generating")
+                    return
+                if on_state and h.get("status"):
+                    on_state("starting", str(h.get("status")))
+                if sidecar.engine_state(h, None) == "error":
+                    hint = _classify_engine_error(h).get("fix") or (
+                        "Pick another model in Settings → Models or check "
+                        "logs/magenta-sidecar.log."
+                    )
+                    raise RuntimeError(
+                        "The Magenta RT2 engine failed to load its model: "
+                        f"{h.get('error') or h.get('status')}. {hint}"
+                    )
         raise RuntimeError(
             "The Magenta RT2 engine started but did not become ready in time. "
             "Check the WSL sidecar, then try again."
@@ -255,23 +269,88 @@ async def _start_engine(refresh: bool) -> dict:
     if gate:
         raise gate
 
-    # Park SA3 first so the engine's JAX runtime finds a free GPU. The import is
-    # deferred to request time: the server module is fully initialized by then.
-    from backend import server as srv
+    # The engine's JAX runtime grabs its weights on the GPU at load. Anything
+    # else on the card meanwhile — a Demucs separation, whisper, basic-pitch,
+    # the resident SA3 model — makes that load die with RESOURCE_EXHAUSTED
+    # (seen 2026-09-06: a stems run and an engine start overlapped, the engine
+    # OOM'd at 96 MiB and the sidecar connection dropped). So the load takes
+    # the pipeline's single GPU lane: it waits for a separation in flight, and
+    # holds the lane until the engine reports ready (or fails), so nothing
+    # heavy starts underneath it. The HTTP reply does not wait; /engine/status
+    # reports "starting" (with a "waiting for the GPU" message while queued).
+    global _start_task
+    if _start_task is not None and not _start_task.done():
+        return {
+            "ok": True,
+            "already_running": False,
+            "state": "starting",
+            "queued": True,
+        }
+    _start_task = asyncio.create_task(_start_engine_on_gpu_lane(), name="magenta:start")
+    return {"ok": True, "already_running": False, "state": "starting", "queued": True}
 
-    parked = await srv.offload_model()
 
-    # Stop every other magenta engine first (idempotent): a bundled Studio on a
-    # DIFFERENT port still holds GPU memory even though the 8777 probe missed it.
-    await loop.run_in_executor(None, sidecar.stop_engine)
-    spawn = await loop.run_in_executor(None, sidecar.start_engine)
-    return {
-        "ok": True,
-        "already_running": False,
-        "parked": parked,
-        "state": "starting",
-        **spawn,
-    }
+_start_task: "asyncio.Task[None] | None" = None
+_start_note: str = ""
+_ENGINE_LOAD_TIMEOUT_SEC = 240
+
+
+async def _start_engine_on_gpu_lane() -> None:
+    global _start_note
+    from backend.core import pipeline
+
+    loop = asyncio.get_event_loop()
+    _start_note = "waiting for the GPU (a separation, whisper or MIDI run is using it)"
+    try:
+        async with pipeline.gpu("magenta"):
+            _start_note = "parking the SA3 model and spawning the engine"
+            from backend import server as srv
+
+            await srv.offload_model()
+            await loop.run_in_executor(None, sidecar.stop_engine)
+            await loop.run_in_executor(None, sidecar.start_engine)
+            _start_note = "loading the checkpoint on the GPU"
+            deadline = loop.time() + _ENGINE_LOAD_TIMEOUT_SEC
+            while loop.time() < deadline:
+                await asyncio.sleep(2.0)
+                h = await sidecar.health()
+                state = sidecar.engine_state(h, None)
+                if state in ("running", "error"):
+                    break
+                if state == "not_running" and not sidecar.engine_process_alive():
+                    break
+    except Exception as e:  # noqa: BLE001 - reported through /engine/status
+        log.exception("magenta: engine start failed")
+        _start_note = f"start failed: {e}"
+        return
+    _start_note = ""
+
+
+def _classify_engine_error(h: dict) -> dict:
+    """Turn the engine's raw error into something a user can act on."""
+    err = str(h.get("error") or h.get("status") or "")
+    low = err.lower()
+    if "resource_exhausted" in low or "out of memory" in low or "oom" in low:
+        return {
+            "error_kind": "gpu_oom",
+            "fix": (
+                "The GPU ran out of memory while the engine loaded its checkpoint. "
+                "Something else was on the card (a stem separation, whisper, MIDI "
+                "transcription or the SA3 model). Wait for it to finish, then press "
+                "Restart engine — the load now waits its turn for the GPU."
+            ),
+        }
+    if "checkpoint" in low or "no such file" in low or "not found" in low:
+        return {
+            "error_kind": "checkpoint_missing",
+            "fix": "The picked checkpoint is not on disk — download it under Models, then Restart engine.",
+        }
+    if err:
+        return {
+            "error_kind": "engine_error",
+            "fix": "Restart the engine; if it fails again the sidecar log has the traceback.",
+        }
+    return {}
 
 
 @router.post("/engine/start")
@@ -356,6 +435,22 @@ async def engine_status(refresh: bool = False):
         )
         out["setup"] = setup
     out["state"] = sidecar.engine_state(h, setup)
+    # A start queued behind the GPU lane reads as "starting", with the reason.
+    if (
+        _start_task is not None
+        and not _start_task.done()
+        and out["state"]
+        in (
+            "not_running",
+            "starting",
+        )
+    ):
+        out["state"] = "starting"
+        out["message"] = _start_note
+    if out["state"] == "error":
+        out.update(_classify_engine_error(h))
+        if out.get("fix"):
+            out["message"] = out["fix"]
     return out
 
 

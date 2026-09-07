@@ -15,7 +15,7 @@ import {
   type EditTheme,
 } from '../../lib/editThemes';
 
-const GROUP_ORDER = ['Dark', 'Metal', 'Light', 'Pastel', 'Gradient'];
+const GROUP_ORDER = ['Dark', 'Metal', 'Duotone', 'Light', 'Light Duotone', 'Pastel', 'Gradient'];
 
 function swatchStyle(theme: EditTheme): React.CSSProperties {
   const { vars } = resolveEditThemeVars(theme.id, null);
@@ -66,8 +66,10 @@ export function ThemeModal({ open, onClose }: { open: boolean; onClose: () => vo
   const activeIsImage = themeId === CUSTOM_IMAGE_ID && !!customImage;
 
   return createPortal(
+    // No scrim: the editor behind is the live preview, so it must not be
+    // darkened while a swatch is being judged. Click-outside still closes.
     <div
-      className="fixed inset-0 z-[300] grid place-items-center bg-black/60 p-4"
+      className="fixed inset-0 z-300 grid place-items-center p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -81,7 +83,7 @@ export function ThemeModal({ open, onClose }: { open: boolean; onClose: () => vo
         <div className="flex items-center gap-2 mb-3">
           <Palette className="w-4 h-4 text-teal-300" />
           <h2 className="text-[12px] font-mono uppercase tracking-widest text-zinc-200">Change Theme</h2>
-          <span className="text-[9px] font-mono text-zinc-500">EDIT layout backgrounds &amp; borders</span>
+          <span className="text-[9px] font-mono text-zinc-500">Live preview — the editor behind updates as you pick</span>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -108,7 +110,7 @@ export function ThemeModal({ open, onClose }: { open: boolean; onClose: () => vo
                     }`}
                   >
                     <span className="relative w-8 h-8 rounded border shrink-0 overflow-hidden" style={swatchStyle(t)}>
-                      <span className="absolute left-1 right-1 bottom-1 h-2.5 rounded-[2px] border" style={swatchInnerStyle(t)} />
+                      <span className="absolute left-1 right-1 bottom-1 h-2.5 rounded-xs border" style={swatchInnerStyle(t)} />
                     </span>
                     <span className="min-w-0 flex-1 text-[10px] text-zinc-200 truncate">{t.label}</span>
                     {active ? <Check className="w-3.5 h-3.5 text-teal-300 shrink-0" /> : null}

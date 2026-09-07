@@ -770,6 +770,7 @@ class LibraryStore:
         _maybe_enqueue_lyrics(self, entry_id, source="import")
         _maybe_enqueue_midi(self, entry_id, source="import")
         _maybe_enqueue_score(self, entry_id, source="import")
+        _maybe_enqueue_shards(self, entry_id, source="import")
         return record
 
     def register_reference(
@@ -1099,6 +1100,46 @@ def _maybe_enqueue_stems(
         get_background_queue().enqueue(f"stems:{entry_id}", _run)
     except Exception as e:
         log.debug("library.store: failed to enqueue stems for %s: %s", entry_id, e)
+
+
+def _maybe_enqueue_shards(
+    store: "LibraryStore",
+    entry_id: str,
+    *,
+    source: str,
+    force: bool = False,
+) -> None:
+    """If ``shards.auto_on_<source>`` is on, queue the Shard Index cut for the
+    entry (docs/design/loom.md). Last in the chain so it sees stems when the
+    user has those on too; otherwise it shards the mix and is re-cut later."""
+    if store.db is None:
+        return
+    try:
+        from backend.core.background_workers import get_background_queue
+        from backend.modules.settings.router import get_store as get_settings_store
+    except ImportError:
+        return
+    try:
+        settings = get_settings_store().get_section("shards")
+    except Exception:
+        settings = {}
+    if not force and not settings.get(f"auto_on_{source}", False):
+        return
+    try:
+        if store.db.list_shards(entry_id):
+            return
+    except Exception:
+        pass
+
+    async def _run() -> None:
+        from backend.core import pipeline
+
+        await pipeline.ensure_shards(entry_id)
+
+    try:
+        get_background_queue().enqueue(f"shards:{entry_id}", _run)
+    except Exception as e:
+        log.debug("library.store: failed to enqueue shards for %s: %s", entry_id, e)
 
 
 def _maybe_enqueue_midi(

@@ -13,25 +13,196 @@ attached to start immediately.
   verified — build, tests, or observed behaviour. Editing a file is not done.
 - **On removal, add a line to [CHANGELOG.md](CHANGELOG.md).** Nothing is deleted
   silently.
+- **Session journals do not live here.** "Implemented, awaiting verification"
+  notes go straight to CHANGELOG under an *Unverified* heading, and the queue
+  item stays ticked-off-pending until it is observed. (The 2026-08-26 → 08-28
+  journals grew to 75% of this file and hid the queue; see "Revision notes".)
 - **Every item carries a `file:line`.** An item without evidence cannot be picked
   up cold, which defeats the point of the list.
 - **Effort** is XS (<2h), S (half day), M (1–3 days), L (1–2 weeks), XL (multi-week).
-- New findings get appended to the right section as they are discovered.
+- **Status tags**: none = still open as written · `[partial]` = some of the
+  claim landed, the rest is described · `[verify]` = code changed since the
+  audit and probably fixes it; one live check retires it.
 - If an item already has a permanent BACKLOG id, reference the id rather than
   restating it here.
 
 Sources: the EDIT-tab audit, the Ableton `.als` import audit, and the tab sweep
-(2026-08-26). Findings were adversarially verified before landing here.
+(2026-08-26), re-checked against `main` on 2026-09-06.
+
+---
+
+## Revision notes (2026-09-06)
+
+Re-check of all 75 open boxes against the code as of `bb43620`.
+
+| Outcome | Count |
+| --- | --- |
+| Done, merged — remove and log in CHANGELOG | 22 |
+| Probably done — one live check retires it (`[verify]`) | 5 |
+| Partly landed (`[partial]`) | 6 |
+| Still open as written | 42 |
+
+Of the 42 still open, 9 were confirmed by direct code evidence this pass; the
+rest were left untouched by every commit since the audit. Evidence `file:line`s
+were refreshed where they had drifted. Nine days of shipped work (2026-08-29 →
+09-05) appear nowhere in this file or in CHANGELOG; they are listed at the end.
+
+---
+
+## NOW — LOOM, shards and the beat clock (started 2026-09-06)
+
+Design: [design/loom.md](design/loom.md). The user's brief: tear tracks apart
+with the analysis we have, reassemble them beatmatched / syncopated /
+harmonized, store the parts so pairings can be found, use them as quantized
+samples in every performance surface, make granular bleed a one-gesture move,
+and start live-coding with a Jacquard variation.
+
+### Phase 0 — coded 2026-09-06, tsc + ruff + tests green, NOT yet seen in the running app
+
+Everything below passes `tsc --noEmit`, `ruff check` / `format --check`,
+`pytest tests/test_shards.py` (8) and `npm run test:loom`. None of it has been
+driven in the live app yet; items stay here until that happens.
+
+- [ ] **Shard Index (backend).** `backend/modules/shards/` + DB migration v6
+  (`shards`, `shard_pairings`). One-bar / 2-bar / 4-bar shards per stem (or the
+  mix), 1-beat sub-shards for percussive roles, one STFT per source for rms /
+  low_frac / centroid / chroma / mfcc / 16-slot onset mask / energy percentile,
+  chord + lyric joins, Camelot code. Routes: `GET /api/shards/{entry}`,
+  `POST /{entry}/run`, `POST /query` (ranked), `POST /pairings` (complements),
+  `POST /keep`, `GET /{shard}/audio?bpm=&semitones=` (crop, conform, cache).
+  `pipeline.ensure_shards` waits for stems in flight and runs analysis first
+  when missing; stems landing re-cuts a sharded entry; `shards.auto_on_import`
+  / `auto_on_generate` default ON. — verify: import a song, watch
+  `/api/shards/{id}` fill; run stems, watch it re-cut per stem. —
+  `backend/modules/shards/{extract,service,router}.py`,
+  `backend/core/pipeline.py`, `backend/modules/library/db.py`
+- [ ] **Beat Clock.** One bpm / beatsPerBar / anchor on the shared
+  AudioContext; `nextGrid('16th'|'beat'|'bar'|…)`, phase-preserving `setBpm`.
+  Nothing else has been re-pointed at it yet (PERFORM's `nextLaunchTime`, DJ
+  SYNC, NodeF.I. Live Out are Phase 1). — `frontend/src/lib/beatClock.ts`
+- [ ] **Shard Engine.** Lanes (`input → lowpass → pan → gain → [Signalsmith] →
+  bus → master`), buffer LRU keyed by (shard, bpm, semitones), 24-voice pool
+  with quietest-steal / quieter-is-dropped, `releaseLane` seams. Tempo conform
+  and per-shard key transposition happen server-side in the audio route;
+  the lane-level `transpose` lock uses the Signalsmith worklet. Granular
+  (Metamorph) seams inside the engine are Phase 2 — today a `bleed` lock is an
+  equal-power overlap. — `frontend/src/lib/shardEngine.ts`,
+  `frontend/src/lib/stretchWorklet.ts`
+- [ ] **LOOM tab.** Registered (`loom` in `CENTER_TABS`, tab bar, HOME card,
+  centre panel, assistant navigate enum + aliases weave/shards/jacquard).
+  The plane: lanes with per-lane step length and length, stacks (last row =
+  rail), chance and cycle gates, absolute/relative locks with cross-lane
+  scope, jumps into `@target` lanes that return home, master-lane wrap applies
+  a queued score. Notation parser + serializer are two-way; CODE pane applies
+  on Ctrl+Enter; TILE pane edits the selected cell; CRATE pane puts songs on
+  deck, shows sharding status, browses one-bar shards with audition + pin.
+  Lock params live today: gain, pan, transpose, bleed, cutoff, resonance, gate,
+  attack, release, roll; stretch/drive/crush/delay/reverb parse but are
+  flagged "not yet live". — `frontend/src/views/LoomView.tsx`,
+  `frontend/src/state/loomStore.ts`, `frontend/src/lib/{loomEngine,loomScore,loomKey}.ts`,
+  `frontend/src/state/shardIndexStore.ts`
+- [ ] **EDIT: granular bleed from the clip menu.** With two clips selected,
+  right-click → "Bleed into this clip" (other clip = donor, this = host) or
+  "Bleed the seam" when they overlap (only the overlap is rendered, placed as
+  a seam clip on a new track); "Bleed live…" arms the same pair in Metamorph
+  and opens the panel. — verify: two overlapping clips → seam clip appears at
+  the overlap. — `frontend/src/components/audio/WaveformEditor.tsx`
+  (`bleedClips`, `bleedPartnerFor`)
+- [ ] **Ableton device-FX mappings route into PERFORM's live chains.**
+  `autoRoutePerformFromProject` now emits `fx` CcMods for `target_kind ==
+  'device'` (DryWet / On / macros / cutoff …) using a DAW→rack parameter-name
+  translation (`translateDawParam`: per-effect aliases, generic aliases, label
+  match, macro → wet/dry) and flattened→chain index conversion; imported
+  devices also instantiate with their SOURCE parameter values instead of rack
+  defaults (`translateDawParams`, with the reverb ms→s conversion). Closes the
+  "108 of 110 mappings do nothing" and "parameter names never translated"
+  items in the stated form. — verify: load the DNB Sway set, turn a DryWet
+  knob, hear the chain. — `frontend/src/lib/dawEffectMap.ts`,
+  `frontend/src/state/performRouting.ts`
+- [ ] **Theme picker** previews without a scrim; twelve duotone themes added
+  (`Duotone`, `Light Duotone` groups). Last v3 Tailwind form (`z-[300]`)
+  removed; a tree-wide sweep found no others. — verify on Porcelain + Navy &
+  Gold. — `frontend/src/components/menu/ThemeModal.tsx`, `frontend/src/lib/editThemes.ts`
+
+### 2026-09-06 evening — from the user's full-suite pass (coded, green, awaiting a live check)
+
+- [ ] **Magenta engine OOM'd while loading (RESOURCE_EXHAUSTED at 96 MiB).**
+  Root cause: the JAX load ran while a Demucs separation held the GPU. Both
+  engine bring-up paths (`/engine/start` and the on-demand start inside
+  `/generate`) now take the pipeline's single GPU lane, so the load waits for
+  stems / whisper / MIDI to finish and holds the card until the engine is
+  ready. `/engine/status` reports `starting` with "waiting for the GPU" while
+  queued, and an `error` state now carries `error_kind` (`gpu_oom`,
+  `checkpoint_missing`, …) plus a one-sentence `fix`, which the Restart card
+  shows instead of the raw JAX traceback. — verify: start stems, then Magenta;
+  the engine should wait, then load. — `backend/modules/magenta/router.py`,
+  `frontend/src/lib/magentaEngineClient.ts`
+- [ ] **Stems separation surfaced as an ASGI traceback (`httpx.ReadError`).**
+  The sidecar's connection dropped mid-poll (GPU contention with the Magenta
+  load). Status polls now retry six times with backoff and reconnect, and the
+  route turns any remaining failure into a 503 with a sentence that names the
+  likely cause. — `backend/modules/stems/sidecar.py`, `backend/modules/stems/router.py`
+- [ ] **LOOM plane redesigned to Jacquard's uniform squares.** Every tile is
+  the same `size-11` square across every lane; lane headers sit in a fixed
+  left column so step columns align; a step ruler; glyph + sub-line per tile
+  (`k`/`?`/`!`/`=`/`→`), held cells show the span; live column ring; lap
+  counter and master badge per lane. — `frontend/src/views/LoomView.tsx`
+- [ ] **LOOM contrast on light themes.** The audit (the user's
+  `_audit_contrast.mjs`) found 58/94 text failures on Porcelain: the view used
+  a hard-coded dark surface under theme-remapped ink. Rebuilt on theme tokens
+  (`et-ink*`, remapped `bg-black/*`, `border-white/*`); tile fills get denser
+  light-theme variants (`[[data-et-light]_&]:`). Re-audit: 0 text failures on
+  Midnight/Navy & Gold, 3 on Porcelain/Cocoa & Sand (fixed after the run).
+  Elsewhere the audit found MAKE/EDIT/MIX/Settings clean on all six themes
+  tried; LEARN has 4 light-theme failures (labels over the dark graph canvas)
+  and DJ has 2 (a 7 px "BPM" tag) — see below.
+- [ ] **Four sample LOOM scores** in the CODE pane's *sample* picker
+  (`frontend/src/data/loomTemplates.ts`): *Just Give Up — skeleton* and *Et Tu
+  Machina — pulse* (one song each; the second is a 16-against-12 polyrhythm),
+  *The Elements × Thank Jeb — weave* (two songs sharing 143.5 BPM / E minor;
+  cycle gates trade leads, locks duck the bass, a chance-gated fill branch) and
+  *Nature's Tomb → Glass Wings — arc* (an eight-lap energy arc with lyric-search
+  vocal words pulled into C minor and a two-bar break lane). Loading a sample
+  puts its songs in the crate and cuts them on first use. Every sample is
+  parse-tested in `npm run test:loom`. Query literals now accept quoted values
+  (`entry="glass wings normal"`), and song references match titles with any
+  separator.
+- [ ] **LEARN light-theme labels**: the "drag to pan · wheel to zoom" hint and
+  the 0/1/2 depth labels are theme-ink over the always-dark graph canvas. — XS
+- [ ] **DJ "BPM" 7 px tag** inherits an accent colour at 3.6:1. — XS
+
+### Phase 1 — next
+
+- [ ] DJ sampler pads: *shard mode* (pad = query, `launch(query, {at:'beat'})`
+  on the master deck's clock) and pad actions in the MIDI map. — M
+- [ ] PERFORM: `shard:` clip slots that re-resolve per launch;
+  `nextLaunchTime` delegates to the Beat Clock (beat / half / 16th grids, phase
+  that survives a stop). — M
+- [ ] NodeF.I.: `shard` live node with a `roll` input; Live Out BPM binds to
+  the Beat Clock; Live Out joins the master bus (it connects to
+  `ctx.destination` today, `nodefiLive.ts:347`). — M
+- [ ] Weave → EDIT: print a LOOM lap onto tracks as clips. — S
+- [ ] Sway dims → LOOM lane locks through the `fx` CcMod path; pads punch
+  momentary shard tiles. — M
+
+### Phase 2
+
+- [ ] Granular seam inside the Shard Engine (Metamorph worklet fed the running
+  voice + the incoming shard) so the `bleed` lock is a real identity bleed. — M
+- [ ] Pairing intelligence in the UI: a kept stack posts `/keep`; complements
+  surface in the CRATE pane; server-side conform cache warm-up. — M
+- [ ] Assistant `loom_set_score` / `loom_query` / `loom_keep` tools. — S
+- [ ] `.loom` inside `.tasmo`. — S
+- [ ] `backend/modules/analyzer` imports a package that does not exist
+  (`edit_tools_backend`), so `/api/edit/analyzer/*` 500s. Not on LOOM's path;
+  fix or retire. — S — `backend/modules/analyzer/descriptors.py:25`
 
 ---
 
 ## P0 — breaks the app's primary action
 
-- [ ] **Footer CREATE/PROCESS/TRAIN button is driven by `activeView`, which the tab bar never writes.** Every writer sets it to `'create'`, so on EDIT the footer button fires a text-to-audio generation instead of processing the arrangement. The same stale field means `inEditorMode` is never true (footer PLAY never triggers the editor render path) and the assistant is always told the user is on CREATE. — M — `frontend/src/components/layout/ProcessingLog.tsx:316`, `frontend/src/components/audio/PlayerFooter.tsx:84`, `frontend/src/orb-kit/appContext.ts:58`
-- [ ] **One assistant `navigate("train")` permanently bricks CREATE.** Sets `activeView='train'`; nothing resets it, so the footer stays a red TRAIN button on every tab for the session — and TRAIN posts to a hard 501. — S — `frontend/src/components/layout/ProcessingLog.tsx:316`, `frontend/src/state/appUiStore.ts:39`
-- [ ] **The assistant's entire confirmation/approval stack is dead code.** `pendingAction` is read and cleared but never assigned; `orb-kit/tool-tiers.ts` and `state/assistantBridgeStore.ts` have zero importers. Every tool call — including `generate` (spends GPU) and `abort` (kills a job) — executes ungated. — M — `frontend/src/orb-kit/AssistantPanel.tsx:1011`
-- [ ] **ABORT is client-side only.** No cancel route exists; the job finishes on the GPU, writes artifacts to the library, and holds `_generation_job_lock` so the next CREATE queues behind it. — M — `frontend/src/state/generateStore.ts:807`
-- [ ] **Footer CREATE silently runs local SA3 when Suno/Lyria is selected**, then labels the SA3 result with the cloud model's name. — S — `frontend/src/components/layout/ProcessingLog.tsx:370`
+- [ ] **ABORT is client-side only.** No cancel route exists; the job finishes on the GPU, writes artifacts to the library, and holds `_generation_job_lock` so the next CREATE queues behind it. — M — `backend/server.py:105,1351`, `frontend/src/state/generateStore.ts:759`
+- [ ] `[verify]` **Footer CREATE silently runs local SA3 when Suno/Lyria is selected**, then labels the result with the cloud model's name. The footer button moved into `PlayerFooter` and `generateStore` grew a model-resolution preflight ("No usable model is configured…"); whether a cloud selection now routes to the cloud path is unverified. — S — `frontend/src/state/generateStore.ts:463-511`, `frontend/src/components/audio/PlayerFooter.tsx`
 
 ## P1 — user-visible defects
 
@@ -39,89 +210,82 @@ Sources: the EDIT-tab audit, the Ableton `.als` import audit, and the tab sweep
 
 > The single most common failure in this codebase: a message is produced and never rendered.
 
-- [ ] **DJ: 15 distinct status/error messages are produced and never rendered** — bad file drop, "create a set first", BPM out of range, sync/eject confirmations. All read as buttons that do nothing. — XS — `frontend/src/views/DJView.tsx:561`
-- [ ] **MIX: PROCESS CHAIN fails with zero visible feedback** — no toast, no log, nothing. — S
-- [ ] **MAKE: empty-prompt CREATE is a silent no-op** — the `error` field is rendered by no component. — XS — `frontend/src/state/generateStore.ts:457`
-- [ ] **MAKE: Magenta's actionable setup message is swallowed into "HTTP 412"** — `detail` is a dict, the unwrapper only handles strings. — XS — `backend/modules/magenta/router.py:265`
-- [ ] **Underfit: "Start Underfit" discards the backend's precise 503 diagnosis**; the same panel returns forever. — XS — `frontend/src/views/UnderfitView.tsx:102`
-- [ ] **VJ: failure path is a 40-second silent retry then a bare message**; the backend's reason is discarded and the `detail` state is never rendered. SwayView does this correctly. — XS — `frontend/src/views/VJView.tsx:296`
-- [ ] **Settings: a failed PATCH is swallowed** — toggles appear saved and silently revert. — S — `frontend/src/state/featureToggleStore.ts:177`
+- [ ] **DJ: 16 status messages are produced and never rendered.** The old status var became `flash`; there are 16 `setFlash(...)` writers and an effect that clears it, but no JSX reads it. Bad file drop, "create a set first", BPM out of range, sync/eject confirmations still read as buttons that do nothing. — XS — `frontend/src/views/DJView.tsx:562,709`
+- [ ] **MIX: PROCESS CHAIN fails with zero visible feedback** — no toast, no log. No error path found in `MixView` this pass. — S — `frontend/src/views/MixView.tsx`
+- [ ] **VJ: failure path is a 40-second silent retry then a bare message**; `MAX_LOAD_RETRIES = 20`, `detail` is set and never rendered. SwayView does this correctly. — XS — `frontend/src/views/VJView.tsx:60,285,329`
 
 ### Dead controls and dead state
 
-- [ ] **DJ: MIDI "Ignore" buttons persist to localStorage and are never consulted.** — XS — `frontend/src/state/midiIgnoreStore.ts:99`
-- [ ] **DJ: `DeckRack` (~180 lines) is defined and never rendered** — including the only Abort button, so a running stem separation cannot be cancelled. — M — `frontend/src/views/DJView.tsx:1414`
-- [ ] **DJ: "Send to DJ" automix handoff has no consumer**; `pendingStart` is write-only. — S — `frontend/src/state/djAutomixStore.ts:52`
-- [ ] **DJ: automix never beatmatches** — the `setInterval` captures a stale `syncDeck` closure. — S — `frontend/src/views/DJView.tsx:987`
+- [ ] `[verify]` **DJ: MIDI "Ignore" buttons.** The store is now consumed by the MIDI-map panel; whether the live MIDI input handler actually filters ignored controls is unverified. — XS — `frontend/src/views/DJView.tsx:2398`
+- [ ] **DJ: `DeckRack` (~180 lines) is defined and never rendered.** Downgraded to cleanup: a stem-separation Abort now exists outside it (`abortStems`), so the only user-facing consequence is gone. Delete the component. — XS — `frontend/src/views/DJView.tsx:1290,1471` (abort: `:1521,1624`)
+- [ ] **DJ: automix never beatmatches** — the `setInterval` captures a stale `syncDeck` closure. The prepared-sets work (`#140`) touched the loader in this interval but not the closure. — S — `frontend/src/views/DJView.tsx:728,985,1012`
 - [ ] **DJ: sampler per-pad gain / loop / choke are dead state** — `setPadOpts` has no caller. — S — `frontend/src/state/djSamplerStore.ts:23`
-- [ ] **MAKE: the `DL` auto-download toggle has no consumer** — nothing is ever downloaded. — XS — `frontend/src/views/AdvancedGenPanel.tsx:1077`
-- [ ] **Underfit: `trainingStore` is dead state** — no writer for the payload, no callers for 6 of 9 actions (~250 lines). — M — `frontend/src/state/trainingStore.ts:105`
-- [ ] **`thedaw:set-left-panel` has three dispatchers and no listener**; the assistant reports success anyway. — XS — `frontend/src/orb-kit/actionHandlers.ts:108`
-- [ ] **Assistant navigate reaches only 3 of 12 workspaces** — the backend tool enum still lists retired legacy view names; unknown tabs no-op while the handler returns "Navigated to X". — S — `backend/assistant_routes.py:1400`
-- [ ] **Assistant quick-commands advertise features that do not exist** ("Trending", "Full Sync", "discovery radio") — leftovers from a different product. — XS — `frontend/src/orb-kit/AssistantPanel.tsx:65`
-- [ ] **Media bucket "Send to INIT" navigates to a view that does not exist** (`'generate'`). — XS — `frontend/src/components/layout/MediaBucketView.tsx:111`
+- [ ] **MAKE: the `DL` auto-download toggle has no consumer** — persisted, mirrored to the assistant, rendered twice, downloads nothing. — XS — `frontend/src/views/AdvancedGenPanel.tsx:1182,1203`, `frontend/src/state/generateParamsStore.ts:236`
+- [ ] **`thedaw:set-left-panel` has three dispatchers and no listener.** This is also the root cause of LEARN's "Open lineage rooted here" / "Open in Library" no-ops (they dispatch this event), and the assistant reports success anyway. Fix once in `Shell`/library-rail state. — XS — `frontend/src/orb-kit/actionHandlers.ts:157,161`, `frontend/src/components/library/LineageModal.tsx:3320-3356`
+- [ ] **Assistant quick-commands advertise features that do not exist** ("Trending", "Full Sync", "discovery radio"). Emojis were removed in the de-icon sweep; the labels stayed. — XS — `frontend/src/orb-kit/AssistantPanel.tsx:65-77`
+- [ ] **TRAIN button + `trainingStore` front a hard 501.** `ProcessingLog` reads `isTraining` and calls `triggerTraining`, which POSTs to `train_lora_stub`; 6 of 9 store actions have no caller. Either hide TRAIN until LoRA training exists (see P2) or point it at the Underfit sidecar. — S — `frontend/src/state/trainingStore.ts:105`, `frontend/src/components/layout/ProcessingLog.tsx:362,428`, `backend/server.py:2273`
 
 ### Wrong output
 
-- [ ] **MIX: the rack is applied twice to the processed output you audition.** — S
-- [ ] **MIX: "Send to Edit" sends nothing.** — S
-- [ ] **Library: bulk "Download → MIDI" always 404s** (wrong id space — the route wants a midis-row id). — S — `frontend/src/views/LibraryView.tsx:1322`
-- [ ] **NodeF.I.: the Effect node 400s on first run** — displayed params are never stored, and the default node cannot be fixed without switching effect away and back. — S — `frontend/src/lib/nodefiTypes.ts:148`
-- [ ] **NodeF.I.: wires can never be deleted** — `removeEdge` has no caller and the edge layer is `pointer-events-none`. — S — `frontend/src/state/nodefiStore.ts:133`
-- [ ] **LEARN: node menu "Open lineage rooted here" / "Open in Library" silently no-op** whenever the library rail is closed (the default on a fresh install). — S — `frontend/src/components/library/LineageModal.tsx:3365`
-- [ ] **LEARN: the Track tab fetches a 4-hop lineage and renders 1 hop.** — M — `frontend/src/components/library/LineageModal.tsx:762`
-- [ ] **MAKE: the seed actually used is never captured** — default-seed takes are unreproducible, filenames emit `seed_-1`, metadata records `-1`. — M — `backend/server.py:1620`
-- [ ] **DJ: transport pads are live during decode**, so the first PLAY press silently does nothing. — S — `frontend/src/views/DJView.tsx:343`
-- [ ] **MAKE: `RF-Inv` is an exposed option that guarantees a 501.** — S — `backend/server.py:390`
-- [ ] **Underfit: the port is hardcoded to `8791`** while the live port is fetched and displayed right above the Start button. — XS — `frontend/src/views/UnderfitView.tsx:20`
+- [ ] **MIX: the rack is applied twice to the processed output you audition.** Unverified since the audit. — S — `frontend/src/views/MixView.tsx`
+- [ ] `[verify]` **MIX: "Send to Edit".** Now fetches the output blob, loads it into `playerStore`, and switches to EDIT; whether EDIT's mount picks that buffer up as a clip is unverified. — XS — `frontend/src/views/MixView.tsx:1357`, `frontend/src/components/audio/WaveformEditor.tsx:82`
+- [ ] **Library: bulk "Download → MIDI" always 404s** — still builds `/api/midi/file/${entry.id}` from the library-entry id; the per-row path correctly uses the midi row id. — S — `frontend/src/views/LibraryView.tsx:1322` (correct form: `:1969`)
+- [ ] **LEARN: the Track tab fetches a 4-hop lineage and renders 1 hop.** Unverified since the audit. — M — `frontend/src/components/library/LineageModal.tsx`
+- [ ] **MAKE: the seed actually used is never captured** — `seed: int = Form(-1)`, filenames emit `seed_-1`, metadata records `-1`. — M — `backend/server.py:488,1581,2027`
+- [ ] `[verify]` **DJ: transport pads live during decode.** A `pendingPlayRef` now defers PLAY until `hasBuffer && !decoding`; confirm the first press lands. — XS — `frontend/src/views/DJView.tsx:654`
+- [ ] **MAKE: `RF-Inv` is an exposed option that guarantees a 501.** Downgraded: the 501 now carries a plain-language explanation. Decision needed — hide the option, or implement RF-Inversion. — S (hide) / L (implement) — `backend/server.py:418`, `frontend/src/components/ui/tooltips.ts:30`
 
 ### Sway / VJ
 
-- [ ] **The Sway DAW-control toggle arbitrates nothing** — one pad fires theDAW's synth AND the cockpit; auto-enabled by default for exactly this hardware. — S — `frontend/src/views/SwayView.tsx:195`
-- [ ] **While VJ is popped out (the headline live mode) every inbound message is discarded** — the SET chip spins forever, export errors vanish. — S — `frontend/src/views/VJView.tsx:224`
-- [ ] **The staged SwayCommand build ignores `sway/visibility`** — the host posts it, the child never reads it, so a hidden cockpit keeps rendering WebGL. — M — `frontend/src/views/SwayView.tsx:184`
-- [ ] **SWAY "Input device" does not open an input device** — visuals react to the cockpit's internal 120 BPM groove. — M — `frontend/src/views/SwayView.tsx:204`
+- [ ] **The Sway DAW-control mirror arbitrates nothing** — one pad fires theDAW's synth AND the cockpit; auto-enabled for exactly this hardware. Code moved since the audit; behaviour unverified. — S — `frontend/src/App.tsx:295,349`, `frontend/src/components/sway/SwayLinkPanel.tsx:343`
+- [ ] **While VJ is popped out every inbound message is discarded** — `isFromVj` accepts only the in-tab iframe's `contentWindow`, never `poppedWindowRef`. Confirmed. — S — `frontend/src/views/VJView.tsx:224,215`
+- [ ] `[verify]` **SWAY "Input device".** SwayView now tells the cockpit to open its own input device in that mode; confirm visuals follow the mic rather than the internal groove. — XS — `frontend/src/views/SwayView.tsx:231,339`
 
 ## P1 — Ableton import (remaining)
 
-- [ ] **MIDI notes are not rebased onto the loop window**, and looped regions are never expanded — notes land outside the clip; an 8-bar region over a 1-bar loop yields 1 bar and 7 of silence. — M — `backend/modules/dawimport/ableton.py:552,670`
-- [ ] **`<Disabled>` clips are unread** — a deactivated clip will sound. — XS
-- [ ] **Group tracks are dropped with no warning**; children surface as unrelated top-level tracks. — S (warning) / M (support) — `backend/modules/dawimport/ableton.py:42`
-- [ ] **Sends / returns**: return tracks import with nothing feeding them; every imported mix is dry. `send_amounts` has zero producers and zero consumers. — L (needs a bus model)
-- [ ] **Nested device parameters are invisible** — direct children only, capped at 12, so an Eq8's whole curve is lost; VST/AU params hardcoded `{}`. — M — `backend/modules/dawimport/ableton.py:935`
-- [ ] **Device parameter names are never translated** — Ableton emits `Threshold`, the rack expects `threshold`, so mapped effects instantiate at rack defaults. — M — `frontend/src/lib/dawEffectMap.ts:70`
+- [ ] `[partial]` **MIDI notes are not rebased onto the loop window, looped regions never expanded.** `LoopStart` is now read and applied as the source offset; region expansion (8 bars over a 1-bar loop) is still not done. — M — `backend/modules/dawimport/ableton.py:589-624`
+- [ ] **`<Disabled>` clips are unread** — a deactivated clip will sound. No reference in the parser. — XS — `backend/modules/dawimport/ableton.py`
+- [ ] **Group tracks are dropped with no warning**; only device-rack groups are handled. — S (warning) / M (support) — `backend/modules/dawimport/ableton.py:110-131`
+- [ ] **Sends / returns**: `send_amounts` exists only on the model — zero producers, zero consumers. Every imported mix is dry. — L (needs a bus model) — `backend/modules/project/tasmo_project.py:104`
+- [ ] `[partial]` **Nested device parameters.** Rack containers are now flattened into first-class chain entries; VST/AU params and the 12-param cap are unverified. — S — `backend/modules/dawimport/ableton.py:135,876,921,943`
+- [ ] `[verify]` **Device parameter names are never translated** — `translateDawParams` now re-keys Ableton names onto rack keys (per-effect and generic aliases, ms→s for reverb decay, clamped to the descriptor). Verify an imported Compressor lands at its source Threshold/Ratio. — `frontend/src/lib/dawEffectMap.ts`
 - [ ] **Live Library / Pack sample refs are unresolvable** — `RelativePathType`, `SearchHint`, CRC all unread. — M
-- [ ] **`media_status` on `DawClip`** — `resolve_audio` returns the same shape for a hit and a miss, so no caller can distinguish resolved / relinked / missing. — M — `backend/modules/dawimport/media.py:102`
-- [ ] **`performRouting` leaks between projects** — globally persisted, keyed by bare track index, `hydrate` only called on the `.tasmo` path. — S — `frontend/src/state/performRouting.ts:96`
-- [ ] **Automation envelopes and tempo map** — zero grep hits. Tempo automation is the dangerous subset: it makes every clip, locator and note progressively wrong down the timeline. — XL
-- [ ] **No `.als` fixture in the test suite** — coverage is `assert callable(parse_als)`. Commit the synthetic-set builders used during the audit. — M — `tests/test_vst_daw_tasmo.py:152`
+- [ ] **`media_status` on `DawClip`** — not present; `resolve_audio` still returns one shape for hit and miss. — M — `backend/modules/dawimport/media.py`
+- [ ] **Automation envelopes and tempo map** — zero grep hits. Tempo automation is the dangerous subset. — XL
+- [ ] **No `.als` fixture in the test suite** — coverage is still `assert callable(parse_als)`. — M — `tests/test_vst_daw_tasmo.py:153-156`
 
 ## P1 — EDIT (remaining)
 
-- [ ] **`.tasmo` still drops automation lanes, master FX and master VST chains** — the backend model already validates automation and locators; nothing writes them. — M
-- [ ] **Export is one hardcoded 16-bit WAV.** `/api/edit/delivery` is a complete loudness/dither/SRC/6-codec backend with zero frontend callers. Blocked on extracting `renderRange()` out of `commitEdit`, which is also the prerequisite for stem export and region-regenerate. — M
-- [ ] **Live MIDI reverb/chorus still bypasses the track chain** — dry signal routes correctly; output 0 is a shared effects bus. — M
+- [ ] **`.tasmo` still drops automation lanes, master FX and master VST chains** — `tasmoToSession` hardcodes `locators: []`; nothing writes automation on save. — M — `frontend/src/lib/tasmoToSession.ts:94`
+- [ ] `[partial]` **Export is one hardcoded 16-bit WAV.** The delivery backend is now reachable as EDIT *tools* (codec matrix, smart export, SRC, dither, metadata, batch) but the Export button still calls `encodeWav`, and `renderRange()` is still inside `commitEdit` — the prerequisite for stem export and region-regenerate. — M — `frontend/src/components/audio/WaveformEditor.tsx:2099,2306`, `frontend/src/components/audio/effects/editToolStack.ts:64`
+- [ ] **Live MIDI reverb/chorus still bypasses the track chain** — output 0 is a shared effects bus. — M
 - [ ] **Automation lanes can only be born by riding a control with WRITE armed**; no curve shapes, no hold. — M
-- [ ] **No per-track metering or master fader in EDIT.** — M
+- [ ] `[partial]` **No per-track metering or master fader in EDIT.** LEVELS now has a full master meter bridge (dBFS, LUFS, true peak, correlation — 2026-09-02); per-track meters and an EDIT master fader are still absent. — M — `frontend/src/components/audio/levels/LevelsPanel.tsx`
 
 ## P2 — larger builds
 
-- [ ] **Autosave and crash recovery** via a content-addressed OPFS asset layer. Clip audio is in-memory Blobs; a refresh destroys the arrangement. The dirty flag + `beforeunload` + Ctrl+S guard is in place as interim insurance. — L
-- [ ] **Tempo map and time-signature model.** BPM + tap tempo shipped; a bars/beats ruler is M, a real tempo map is L. — M–L
-- [ ] **Buses**: sends, returns, groups, sidechain. `liveMixer` hard-codes every track's destination and there is no seam. — XL
-- [ ] **Recording at the playhead**: armed-track targeting, punch, takes. Gated on the transport fix (already landed). — XL
+- [ ] **Tempo map and time-signature model.** BPM + tap tempo shipped; no time-signature or tempo-map field on `editorStore`. — M–L — `frontend/src/state/editorStore.ts`
+- [ ] **Buses**: sends, returns, groups, sidechain. `liveMixer` hard-codes every track's destination. — XL
+- [ ] **Recording at the playhead**: `armed` exists on the track type; no punch, takes, or armed-target recording. — XL — `frontend/src/state/editorStore.ts:125,257`
 - [ ] **Marquee / time-range selection and ripple edit.** — L
-- [ ] **LoRA training endpoints are hard 501 stubs behind a live TRAIN button**; real training only exists in the vendored Underfit sidecar. — M — `backend/server.py:1945`
-- [ ] **Underfit's upstream updater is fully implemented in the backend with zero frontend callers.** — S — `backend/modules/underfit/router.py:72`
+- [ ] **LoRA training endpoints are hard 501 stubs behind a live TRAIN button**; real training only exists in the vendored Underfit sidecar. Pairs with the TRAIN item above. — M — `backend/server.py:2273`
+- [ ] **Underfit's upstream updater is fully implemented in the backend with zero frontend callers.** — S — `backend/modules/underfit/router.py:72,78`
 
 ## P2 — frontier (uniquely enabled by the resident model)
 
-- [ ] **Generative extend / continue** — drag a clip's edge past its source and the model writes the continuation. Needs no backend change: `CAUSAL_MASK` is already a trained mask type and the server accepts `inpaint_audio` plus bounds. — M
-- [ ] **Clip variation ladder (SDEdit re-roll with a strength dial)** — `init_audio` + `init_noise_level` are already on the wire; EDIT sends neither. — M
-- [ ] **Stem separation on a timeline clip → explode to tracks** — the Demucs sidecar exists, keyed only on library entries. — M
-- [ ] **SAME latent workspace** — `/api/autoencoder/encode`, `/decode` and `/api/jobs/pre-encode` are 501 stubs. — L
-- [ ] **Non-destructive generative lineage** — record `{parent, prompt, mask, seed, model, LoRA, strength}` per clip. The schema already waits: `Clip.generation_prompt` / `generation_seed` / `generation_params` are unwritten. — M
-- [ ] **Agentic assistant with a real `editor.*` tool vocabulary** — three of four layers exist; the model is architecturally blind because `buildtheDAWAppContext` never reports a track, clip, playhead or selection. Gated on the P0 approval-stack and navigate items. — L
+- [ ] **Generative extend / continue** — `CAUSAL_MASK` is a trained mask type and the server accepts `inpaint_audio` + bounds; no frontend caller. — M
+- [ ] **Clip variation ladder (SDEdit re-roll with a strength dial)** — `init_noise_level` is sent by MAKE only; EDIT sends neither. — M — `frontend/src/state/generateStore.ts:337`
+- [ ] **SAME latent workspace** — `/api/autoencoder/encode`, `/decode`, `/api/jobs/pre-encode` remain 501 stubs. — L — `backend/server.py:2280-2296`
+- [ ] **Non-destructive generative lineage** — `Clip.generation_prompt` / `generation_seed` / `generation_params` are still never written. — M
+
+## P1 — added 2026-08-26 (second session), still open
+
+(The Perform device-FX routing and theme-picker scrim items moved to the NOW
+section above — coded 2026-09-06, awaiting a live check.)
+
+## P2 — added 2026-08-26 (second session), still open
+
+- [ ] **Boot: sequence the emergence** — no commits to either file since 2026-08-27. — S — `frontend/src/components/layout/LiquidChromeTitle.tsx:200`, `frontend/src/components/layout/LoadingScreen.tsx:78`
 
 ## Deliberately not doing
 
@@ -131,489 +295,40 @@ Recorded so they are not re-proposed:
 - MIDI clock / Ableton Link / MTC — no hardware-sync workflow in the app; Link has no browser implementation.
 - Take lanes / comping — needs non-uniform per-track heights, which `editorStore` documents as a deliberate deferral.
 - Real-time multiplayer CRDT editing — gated on the asset layer, and EDIT unmounts on tab switch.
-- Neural restoration marketed as such — SA3 is not a super-resolution model; it hallucinates rather than restores.
+- Neural restoration marketed as such — SA3 is not a super-resolution model.
 - A bespoke export/encode DSP layer — `/api/edit/delivery` and `/api/convert/file` already do this properly.
+- **Sway `sway/visibility`** (retired 2026-09-06) — the staged bundle handles it and `SwayView` pushes it; the original claim was stale.
 
-## Added 2026-08-26 (second session)
+---
 
-### P1
+## Removed this revision — to be logged in CHANGELOG (approval needed)
 
-- [ ] **Perform: 108 of the DNB set's 110 Sway mappings do nothing in PERFORM.** Auto-routing only lifts mixer/volume-named mappings into the mix; the device-FX mappings (DryWet/On/macros) resolve to the editor, not the Perform grid's live chains. Route `target_kind==='device'` mappings onto the grid chains via CcMod `fx` (plumbing exists — the deck already creates fx CcMods by hand). — M — `frontend/src/state/performRouting.ts:243`, `frontend/src/components/session/DawSessionGrid.tsx:713`
-- [ ] **NodeF.I. canvas cursor offset — node ends don't match the pointer.** `screenToWorld` ignores the shell's CSS `zoom` (the same class of bug the EDIT audit fixed with `effectiveZoom`). — S — `frontend/src/views/NodefiView.tsx:234`
-- [ ] **Theme picker: selection happens under the dark overlay, so theme colors can't be judged; several themes have unreadable popups.** Drop the scrim while the picker is open, then contrast-audit every theme's overlays/popups. — M — `frontend/src/components/menu/ThemeModal.tsx:1`, `frontend/src/lib/editThemes.ts:1`
+All merged to `main` between 2026-08-31 and 2026-09-05 (`facb78a`, `57f7863`,
+`10310f1`, `62990e8`, `3ada4c3`, `39ac5e6`).
 
-### P2
+P0: footer button keyed on the real tab (`activeView` cluster) · `navigate('train')` no longer bricks CREATE · assistant approval stack live (T2 tools park as `pendingAction`).
+P1 feedback: MAKE empty-prompt error rendered (`AdvancedGenPanel.tsx:455`) · Magenta setup gate rebuilt, dict `detail` unwrapped (`drawEngine.ts:675`) · Underfit 503 detail rendered · Settings PATCH rolls back + notice.
+P1 dead controls: "Send to DJ" `pendingStart` consumed (`DJView.tsx:933`) · assistant `navigateTo` reaches all 12 workspaces · Media bucket "Send to INIT" → `make`.
+P1 wrong output: NodeF.I. Effect node 400 · NodeF.I. wires deletable · Underfit port from `diag.port`.
+Ableton: `performRouting` hydrated on both load paths (ccMods included).
+P2: OPFS autosave + crash recovery · stems-on-a-clip → tracks · agentic `editor_*` vocabulary (12 tools).
+Second session: NodeF.I. cursor offset · NodeF.I. node-editor toolset · lower-panel toggles (superseded by the footer action button) · `.swayproj` import · Sway deck factory map (`DECK_FACTORY`).
 
-- [ ] **Boot: sequence the emergence** — still sheet → vibration ramps in → ONE cymatic pattern forms → the wordmark plops forward; today the waves run continuously while it rises. Also verify the GANTASMO logo no longer clips at reveal, and kill the orb's window/mask look outside the corner. — S — `frontend/src/components/layout/LiquidChromeTitle.tsx:200`, `frontend/src/components/layout/LoadingScreen.tsx:78`
-- [ ] **NodeF.I.: standard node-editor/synth tools** (multi-select, box-select, duplicate, delete key, undo, zoom-to-fit, param inspector). — L — `frontend/src/views/NodefiView.tsx:1`
-- [ ] **Lower-panel toggles should read as part of the footer, with the panel emerging from those buttons.** — M — `frontend/src/components/audio/PlayerFooter.tsx:217`
-- [ ] **`.swayproj` import** (binary format, D:\sway examples; strings confirm the six dims + grid modes). — M — `backend/modules/library/router.py:1`
-- [ ] **Sway deck buttons have no factory CC/note map** (SwayCommand doesn't define one) — learn-only today; capture a hardware monitor session and pin them. — XS — `frontend/src/components/session/swaydeck/deckState.ts:13`
+## Session journals to relocate (approval needed)
 
-## Status 2026-08-26 (third session) — implemented, awaiting verification
+Lines 153–619 of the old file — the twelve "implemented, awaiting verification"
+/ "verified live" blocks from 2026-08-26 through 2026-08-28 — belong in
+CHANGELOG under their dates. Everything in them has since been merged; the
+CHANGELOG currently ends at 2026-08-27.
 
-Everything below is CODED and passes `tsc --noEmit`, `ruff check`, `ruff format --check`
-and a backend import smoke, but has NOT been verified by observed behaviour in the
-running app. Items stay in their sections above until that verification happens.
+## Landed since 2026-08-28 and recorded nowhere
 
-- **P0 `activeView` cluster** — tab bar now syncs `activeView`; footer action button
-  and PLAY are keyed on `centerTab` (EDIT→PROCESS, UNDERFIT→TRAIN, else CREATE);
-  `navigate('train')` can no longer brick CREATE. New `appUiStore.navigateTo()`
-  reaches all 12 workspaces + library, returns false (reported to the model) on
-  unknown targets. — `frontend/src/state/appUiStore.ts`,
-  `frontend/src/components/layout/ProcessingLog.tsx`,
-  `frontend/src/components/audio/PlayerFooter.tsx`, `frontend/src/orb-kit/actionHandlers.ts`,
-  `backend/assistant_routes.py` (navigate enum + prompt)
-- **P0 approval stack** — wired live: T2 tools (generate/abort/destructive editor ops/
-  unknown) park as `pendingAction` and render the existing confirmation card; inline
-  `<action>` blocks are now allowlist-validated and tier-gated too (and executed
-  outside the setMessages updater — StrictMode-safe). — `frontend/src/orb-kit/AssistantPanel.tsx`,
-  `tool-tiers.ts` (real backend names + editor tiers), `assistantEvents.ts`
-- **Agentic editor vocabulary** — 12 `editor_*` tools (get_state/add_track/remove_track/
-  set_track/move_clip/remove_clip/split_clip/select_clip/set_playhead/set_bpm/set_loop/
-  add_marker) defined backend-side, allowlisted, tiered, and implemented against
-  editorStore with honest error strings; app context now reports the REAL tab plus a
-  bounded arrangement summary (tracks/clips/playhead/selection/loop/bpm). —
-  `backend/assistant_routes.py`, `frontend/src/orb-kit/{actionHandlers,appContext,assistantEvents,tool-tiers}.ts`
-- **Media bucket "Send to INIT"** — navigates to `make` (was the nonexistent 'generate').
-- **Autosave/crash recovery** — content-addressed OPFS asset layer
-  (`assets/<sha256>.bin`, one write per unique Blob — split/duplicate clips share),
-  debounced manifest of tracks/clips/FX/automation/markers/bpm/loop, recovery offer
-  at startup (saving stays paused until answered), restore rebuilds blobs + peaks and
-  lands on EDIT. — `frontend/src/lib/editorAutosave.ts`,
-  `frontend/src/components/layout/AutosaveRecoveryNotice.tsx`, `Shell.tsx`
-- **NodeF.I. node-editor tools** — multi-select (ctrl-click), shift-drag marquee,
-  multi-drag, Ctrl+D duplicate (edge-remapping), Delete, Ctrl+Z/Y undo-redo (history
-  middleware), Ctrl+A, Esc, F/zoom-to-fit + toolbar buttons, clickable/selectable
-  wires (fat hit paths; double-click or Del removes), node + wire context menus,
-  key-scope arbitration. Also fixed here: the cursor-offset bug (`effectiveZoom` in
-  screenToWorld/pan/wheel/spawn), wires-undeletable, and the Effect-node 400 (params
-  seeded at addNode + persist migrate v2 + runner merges defaults). —
-  `frontend/src/views/NodefiView.tsx`, `frontend/src/state/nodefiStore.ts`,
-  `frontend/src/lib/nodefiRunner.ts`, `frontend/src/components/nodefi/NodefiInspector.tsx`
-- **Lower-panel toggles read as part of the footer** — strip restyled in the footer's
-  language (tinted blur + hairline border), the anonymous flex-1 slab is now a
-  labelled PANELS toggle showing the active tab, and both dock bodies emerge from
-  their buttons (`dock-emerge` keyframes). — `frontend/src/components/layout/Shell.tsx`,
-  `BottomMultiTabPanel.tsx`, `frontend/src/index.css`
-- **`.swayproj` import** — binary parser (magic FF 02; presets 231+79·N bytes; zones
-  with rect/CC-slots/notes; 6-slot CC array — the 7th byte is NOT a CC) verified
-  against all four D:\sway projects (36 presets each; PULSE=35/SWAY=37 corroborate the
-  factory swaymap). Wired end-to-end: detect + `POST /api/dawimport/sway`, file
-  filters, PERFORM auto-seeding of dims via preset names, honest "0 tracks" status. —
-  `backend/modules/dawimport/swayproj.py`, `router.py`,
-  `frontend/src/lib/{dawImportClient,fileFilters}.ts`, `frontend/src/state/dawImportStore.ts`,
-  `frontend/src/views/SessionView.tsx`
-- **Stem separation on a timeline clip → explode to tracks** — clip context menu
-  "Separate Stems → Tracks…" (StemsRunModal for count/device/quality), clip blob
-  bridges to the entry-keyed Demucs API via `importEntry` (id written back to the
-  clip so re-runs hit the cache), `ensureStems` progress banner with Abort, one new
-  colour-coded track per stem placed exactly at the source clip's position/trim, and
-  the source clip muted (reversible). — `frontend/src/components/audio/WaveformEditor.tsx`
-- **XR BUS tester moved** (user request, this session) — no longer floats over the
-  footer's Download/More buttons; it is a dev-only "XR Bus" tab in the bottom dock
-  next to MIDI/SLIDE/SWAY, laid out as a multi-column panel; prod builds hide the tab
-  and remap a persisted selection. — `frontend/src/components/dev/XrBusTester.tsx`,
-  `BottomMultiTabPanel.tsx`, `frontend/src/state/bottomPanelStore.ts`, `App.tsx`
-- **EDIT FX/ARES panels + plugin windows** (user request, this session) — Master
-  FX/VST/Metamorph column, Ares popup and automation panel are portaled to
-  document.body (one coordinate space with the track-FX popover; no more zoom
-  clipping), Ares cascades above the VST popup instead of stacking on it; the `.gan`
-  EXPAND now pops the plugin into its OWN window (DetachableWindow; ares bridge +
-  level meter keep working via message forwarding and a frame accessor); the VST
-  expanded overlay is body-portaled at z-100 so Collapse/Close can't be buried, and
-  its native-window geometry now multiplies local px by `effectiveZoom` (MIX sizing
-  was off by the zoom factor); the ARES "weird text scaling" root cause is fixed in
-  the runtime generator — element iframes are zoomed by rendered/native canvas width
-  (repackages automatically on next open). — `frontend/src/components/audio/
-  {GanPluginStage,VstEmbedHost,WaveformEditor}.tsx`, `frontend/src/views/MixView.tsx`,
-  `backend/modules/plugin/owl_import.py`
+Neither this file nor CHANGELOG mentions any of it. Each line is a CHANGELOG entry.
 
-Still untouched from the P0 list: ABORT is client-side only; footer CREATE silently
-runs local SA3 when Suno/Lyria is selected.
-
-### Batch 2 (same day) — implemented, awaiting verification
-
-- **Unified effect control windows (user mandate: effects/VST/.gan are ONE thing).**
-  New `frontend/src/components/audio/EffectWindows.tsx`: one draggable floating
-  window per chain entry (keyed by entry id — reopening focuses, never
-  duplicates), hosting exactly what MIX renders (VstEmbedHost / GanPluginStage /
-  the shared param tiles). `FxChainList` replaces EDIT's FxRack-popover + separate
-  VST insert list + Master VST panel: ONE FX button per track and ONE master FX
-  button open a compact chain list (FX/VST/GAN rows identical), click a row →
-  its control window. The bespoke centered VST popup, the Ares popup, the
-  aresPanel state and the MASTER FX / VST toolbar-button pair are deleted; the
-  Ares bridge ownership moved into the window host; Live/Frozen moved into the
-  unified master panel. — `WaveformEditor.tsx` (toolbar, master panel, track
-  popover, helpers), `EffectWindows.tsx`
-- **SWAY tab: track add / save / playback made real.**
-  Root causes from the staged-bundle teardown: the cockpit booted onto the
-  SYSTEM splash with no project loaded (`addTrack`/`play` are silent no-ops on a
-  null timeline), and template audio 403'd from `/api/project/clip-audio`
-  (absolute paths outside media roots; decode errors swallowed into an
-  unrendered warnings array). Fixes: SwayView boots the iframe with
-  `?autoplay=` — the most recent cockpit-saved project (`swayproject:/` recents
-  from shared localStorage), else the `will-i-dream` template — which loads a
-  project AND skips the splash; the sway backend registers every staged
-  template's (and saved project's) media paths with media_access before handing
-  out the iframe URL; `will-i-dream` is reordered FIRST in `templates/index.json`
-  (fetch script re-applies on every restage). Saving is now durable: a new
-  count-verified BUNDLE_PATCH mirrors the cockpit's `project.write` to the new
-  `POST /api/sway/project-save` (writes `data/sway-projects/*.sway`, allowlists
-  its media); `GET /api/sway/projects` lists them. Both patches applied to the
-  currently staged bundle. — `frontend/src/views/SwayView.tsx`,
-  `backend/modules/sway/router.py`, `electron-ui/scripts/fetch-sway-build.mjs`,
-  staged `sway-dist/embed.bundle.js` + `templates/index.json`
-- Note from the bundle teardown: the staged build DOES handle `sway/visibility`
-  (the P1 item above claiming it is ignored appears stale — verify and retire).
-
-### Batch 3 (same day) — implemented, awaiting verification
-
-- **Sway performance template + the plumbing it exposed.** New
-  `scripts/make_sway_template.py` authors
-  `C:\Users\Cyboman\Documents\theDAW Projects\Sway Live Template - Madman x Machina.tasmo`
-  (8 stem columns from Madman Returns + Et Tu Machina, 44 looping clips, 16
-  scenes on the 16 pads incl. cross-song CLASH rows, knobs CC20-27 = column
-  volumes, gestures pulse/strike/sway/press on drums/bass/vox/mute, XY pad =
-  resonant low-pass sweep + dub-delay bloom on every column: X amount
-  20 kHz→160 Hz, Y tone resonance→scream + feedback→self-oscillation; transport
-  on notes 40-43 + CC19). Round-trip verified through TasmoFile.load. Three
-  gaps fixed so it actually works: `perform_routing.ccMods` now persist +
-  hydrate (`performRouting.ts`, with `ccModsHydrated` so SessionView's
-  auto-router can't wipe a loaded set's routes), `.tasmo` tracks now hand their
-  `effect_chain` to PERFORM as live devices (`tasmoToSession.ts` — fx routes
-  finally have something to hit), and clip loop/trim fields survive the
-  round-trip so launches SUSTAIN. Deck fx/knob assignments now save with the
-  project too (they were session-only). Deck buttons still have no factory
-  hardware map (existing XS item) — transport is authored on learnable codes.
-- **Notation follow is note-by-note (karaoke) instead of page-by-page.** Sheet:
-  the strip now GLIDES continuously with the OSMD cursor (zoom-aware
-  centering; page snap retired to keyboard/footer nav) and the notehead(s)
-  under the cursor are painted emerald via GNotesUnderCursor →
-  getSVGGElement (`ScoreView.tsx`, `keepCursorVisible`/`applyNoteHighlight`).
-  Tabs: alphaTab now runs in external-media player mode with beat cursor +
-  element highlighting driven per-frame by the same latency-compensated clock,
-  with its own Follow toggle (`TabPreview`); feature-detected so an older
-  bundle degrades to a static tab. Backend: `guitar_tab.py` now emits RESTS
-  for silence, clips overlapping durations to the next onset, and always
-  writes `\tempo 120` — the tab tick timeline finally equals audio wall-clock
-  (existing alphatex artifacts predate this; re-run tabs to regenerate).
-- **EDIT toolbar decluttered.** MAGENTA + METAMORPH collapsed into one TOOLS ▾
-  dropdown (shared ContextMenu anchored under the button); WRITE/AUTO/LOOP/MARK
-  are now an icon-only group styled like the tool/undo clusters; FX and TOOLS
-  are the only labeled buttons left (`WaveformEditor.tsx` toolbar).
-
-### 2026-08-27 — per-song Sway Perform templates (user request)
-
-- **Three per-song Sway Perform templates** authored to
-  `C:\Users\Cyboman\Documents\theDAW Projects\Sway Perform - {Prologue,EACC,Just Give Up}.tasmo`
-  by the new `scripts/make_sway_song_templates.py` (same rig as the Madman x
-  Machina template, one song per file): 6 stem columns from each song's
-  htdemucs_6s split, 45 looping clips, 16 scenes on the pads, knobs CC20-25 =
-  column volumes + CC26/27 = delay time/tone across all columns, gestures
-  pulse/strike/sway/press, XY pad = filter sweep + dub-delay bloom, transport
-  on notes 40-43 + CC19. Real analyzed tempos baked in (134.75 / 129.49 /
-  147.55 BPM) with the delay defaulting to a dotted eighth. All three
-  round-trip verified through `TasmoFile.load`. "Prelude" turned out to be
-  `01 - Prologue.wav` (library `8e02e54d…`), same album as `04 - eacc.wav`
-  (`19e25941…`) and `14 - Just Give Up.wav` (`b59f7029…`).
-- **Stems sidecar venv was dead on this machine** — its `pyvenv.cfg` pointed at
-  a base Python under a stale user profile (`C:\Users\dtruj\…`), so every
-  separation 503'd. Re-pointed `home` to the installed
-  `cpython-3.10.21` (packages were intact); 6-stem separations for Prologue and
-  Just Give Up then ran clean through `POST /api/stems/{id}/run?stems=6`. —
-  `integration-package/backend/.sidecar_venv/pyvenv.cfg`
-
-### 2026-08-27 — GitHub issue triage (#127 #131 #132 #133 #134): coded, tsc+ruff clean, NOT yet verified in the running app
-
-Standing rule applied throughout: no dead-end errors — self-repair, or say exactly what fixes it.
-
-- **#132 inpaint always errored.** `submitInpaint` never sent `model_name` and `/api/generate-jobs` defaulted to `Form("medium")`, so EDIT inpaint always asked for the gated checkpoint. Endpoint now `Optional[str]=None` → resident model; the panel sends the selection. — `backend/server.py`, `WaveformEditor.tsx`
-- **MAKE inpaint silently discarded the upload.** 0–0 region → all-zero mask → plain text-to-audio, no error. The panel now defaults the region to the middle third on load, and both endpoints 400 with a "drag a region" message on `mask_end <= mask_start` (`_require_inpaint_region`). — `AdvancedGenPanel.tsx`, `server.py`
-- **Model picker reset on reload.** `generateParamsStore` persists `model` only (`partialize`), so a user on `small` stops silently reverting to the gated `medium`. — `generateParamsStore.ts`
-- **HF sign-in was unreachable dead code.** `requireFeature` had zero call sites. A gated download failure now raises the `kind:'hf'` card from `DownloadError`; the classifier's fix text points at it instead of "set HF_TOKEN". Closes the "I have access but it 401s" half of #133/#132. — `DownloadDock.tsx`, `modelDownloadClient.ts`
-- **#131 Underfit dead ends.** Probe now inspects site-packages (numpy/torch/soundfile) and reports "venv is incomplete"; `start_setup` no longer short-circuits on `python.exe` alone; the panel says Repair vs Create, states the 2.5 GB / 10–30 min cost, and now renders `log_tail` during the build (was returned, never shown). Start's 503 detail is rendered. Dashboard URL derives from `diag.port` (was hardcoded 8791). — `underfit/sidecar.py`, `UnderfitView.tsx`
-- **Installer shipped no `underfit/`.** Added to `electron-builder.yml` extraResources with the .gitignore runtime excludes. — `electron-ui/electron-builder.yml`
-- **#133 empty Underfit model picker.** `.gitignore`'s bare `models/` swallowed `underfit/dashboard/models/`; anchored to `/models/` and vendored the six registry/template JSONs from upstream dada-bots/underfit. — `.gitignore`, `underfit/dashboard/models/**`
-- **#134 Linux.** `backend/_devstack.py` `_spawn` shlex-splits string commands off Windows (was `shell=False` + string → FileNotFoundError). New `theDAW.sh` (POSIX port of theDAW.bat incl. the pyk4a glibc<2.38 retry) and `docs/linux/setup-guide.md`, registered in RAG; README + USER_GUIDE link it and the stale "Optional Linux CUDA wheels" section is gone. — `_devstack.py`, `theDAW.sh`, `docs/linux/`, `rag.py`
-- **#127 / FA visibility.** `/api/health` + `/api/model-info` report `flash_attention_installed` / `flash_attention_active`; one-shot log line at model load when the fast path is absent (info on Linux/macOS where it is expected, warning on Windows where it means the wheel failed). — `server.py`
-- **Docs that were wrong.** `tests/conftest.py` no longer tells users to run a nonexistent `uv sync --extra flash-attn`; USER_GUIDE §27.2 cited `sidecars/magenta-rt2-nvidia/port/` (it is `engine/`); `docs/guides/underfit.md` claimed the env is "already provisioned" (false in the shipped app); README and `docs/windows/troubleshooting.md` asserted static Medium output = missing Flash Attention — now framed honestly against the equivalent SDPA fallback with the health fields to check. Coverage report regenerated.
-
-### 2026-08-27 (second pass) — pad punches, Kargyraa Sub, full-device templates (user request; coded, tsc+ruff clean, NOT yet verified in the running app)
-
-- **PERFORM pads can now punch FX (notes were a dead routing path).** The grid's
-  MIDI handler accepted only CC ccMods and dropped note-offs entirely; note-driven
-  ccMods now fire — momentary (note-on -> max, note-off -> min) or `latch: true`
-  (toggle on press), with latch state cleared when a mod disappears and a
-  note-off guard so learn can't bind a phantom release. New optional `latch`
-  field on `CcMod`. — `frontend/src/components/session/DawSessionGrid.tsx`,
-  `frontend/src/state/performRouting.ts`
-- **Chain param pushes no longer reset sibling params to catalog defaults.**
-  `buildEffectChain` instances keep full sticky param state (seeded from the
-  authored entry params); `updateParams` merges into it. Previously any
-  single-key push (one XY axis, a pad punch) silently reverted every other
-  param of that device to defaults — authored delay times, gater rates etc.
-  All other callers push full param objects, so behavior is unchanged for
-  them. — `frontend/src/lib/rackEffects.ts` (buildEffectChain)
-- **New `kargyraa` builtin rack effect ("Kargyraa Sub", Low end group).**
-  Subharmonic throat-growl bass modeled on the actual kargyraa mechanism:
-  octave-divider worklet (Schmitt flip-flop -> f/2 + f/4, envelope-followed;
-  new `frontend/public/subharmonic.worklet.js`), period-doubling AM growl gate
-  (rate ≈ half the fundamental), morphing 3-band vowel formant bank with an
-  LFO wobble, high-Q sygyt whistle band (0.8–2.4 kHz), drive, wet/dry.
-  Degrades to graph-only (silent sub path) if the worklet module is absent.
-  PERFORM now preloads chop/granular/subharmonic worklets on the engine ctx
-  (Ares grains were silently passthrough in PERFORM before this). —
-  `frontend/src/lib/rackEffects.ts`, `DawSessionGrid.tsx`
-- **.tasmo VST nodes no longer mangle in PERFORM.** `tasmoToSession` hardcoded
-  `plugin_path: null`, so a vst3 node fell into the builtin name-match ("…Verb"
-  -> rack reverb at defaults). It now carries `vst_state.plugin_path`; vst3
-  nodes classify as plugins and stay cleanly inert in the live grid, exactly
-  like EDIT. — `frontend/src/lib/tasmoToSession.ts`
-- **SwayDeck pads show punch labels** (scene name first, else the note-driven
-  route's label). — `frontend/src/components/session/SwayDeck.tsx`
-- **Per-song templates regenerated with the new layout** (pads 0-7 = 8 scenes,
-  pads 8-15 = punches: KARGYRAA latch / THROAT VOX / GATER / CRUSH / ROBOT /
-  THROW / FREEZE latch / SLAM; XY also morphs kargyraa vowel + growl + whistle
-  on bass/vox). Every device kind rides along: builtins live in PERFORM, Ares
-  (.gan surface in EDIT/MIX) on Vox, TAL-Vocoder-2 vst3 with full vst_state on
-  Vox. 6 tracks · 26 clips · 29 devices · 8 scene pads · 29 punch routes · 47
-  knob/XY routes per song; round-trip verified incl. latch flags + vst_state.
-  — `scripts/make_sway_song_templates.py`, `C:\Users\Cyboman\Documents\theDAW
-  Projects\Sway Perform - {Prologue,EACC,Just Give Up}.tasmo`
-
-### 2026-08-27 (third pass) — open-in-all-surfaces, slim bottom chrome, Audimate premium + Gantasmo templates (user request; tsc+ruff clean, verified in the running app via Playwright)
-
-- **Opening a project now opens it in every surface it applies to.**
-  `loadProjectIntoEditor` seeds PERFORM from the SAME `/api/project/load`
-  payload (session grid via `tasmoLoadedToDawProject` + `perform_routing`
-  hydrate/clear, exactly mirroring SessionView's own opener — no second
-  backend load), and the landing tab is chosen by content: grid-only projects
-  (all clips scene/slot — e.g. the Sway Perform templates) land on PERFORM,
-  anything with linear clips lands on EDIT as before. Sway controller
-  bindings were already restored; VJ/Audimate have no .tasmo concept and are
-  untouched. VERIFIED: opening "Sway Perform — EACC" from the project modal
-  lands on PERFORM with 6 columns, scenes, punch pads and 81 hydrated routes.
-  — `frontend/src/lib/projectImport.ts`
-- **Bottom chrome slimmed ~30 px.** Footer `h-20`→`h-14` (play `w-9`, tighter
-  transport gap) with the coupled `5rem`→`3.5rem` in Shell's root height and
-  the OrbTipBubble comment; dock strip 36→28 px (`STRIP_HEIGHT`) with the
-  maximized-dock reserve recomputed (`4.5rem`); log toolbar `py-1`→`py-0.5`;
-  bottom-panel tab row `py-1.5`→`py-1`; CREATE panel: INIT/INPAINT row
-  128→108 (waves 88→72), bottom grid row 180→156, CRISPR head `h-28`→`h-24`.
-  — `PlayerFooter.tsx`, `Shell.tsx`, `ProcessingLog.tsx`,
-  `BottomMultiTabPanel.tsx`, `OrbTipBubble.tsx`, `AdvancedGenPanel.tsx`
-- **Audimate premium pass.** Header toolbar row DELETED — Run/Stop, undo/redo,
-  fit/reset and clear now live in a floating glass command dock at the
-  canvas's bottom centre; in-view accents unified on the tab's teal (live
-  wire, marquee, selected-wire core, Run button); canvas gets a teal/violet
-  aurora + edge vignette; rail and inspector get glass (`bg-black/30
-  backdrop-blur-xl`). The left rail (now `w-56`) is a node foundry: search
-  box (labelled), grouped rows with glossy mini-orbs sitting in accent goo
-  pools + one-line hints (new `hint` field on NodeDef), and **pull-a-node-
-  out-of-the-goo**: pointer-drag an orb and a gooey metaball strand
-  (SVG blur+contrast filter) stretches from the well until it SNAPS
-  (150 px), then the free ghost orb follows the pointer — release over the
-  canvas drops the node at the pointer, release elsewhere cancels, plain
-  click/Enter still drops at centre (a click-guard stops the double-add the
-  first Playwright pass caught). — `AudimateView.tsx`, `AudimatePalette.tsx`,
-  `audimateTypes.ts`
-- **Audimate template patches (new system) — 7 GANTASMO graphs.** New
-  `frontend/src/data/audimateTemplates.ts` + `audimateStore.loadTemplate`
-  (fresh ids, effect params seeded from EFFECT_DEFAULTS, one undo step) + a
-  TEMPLATE PATCHES rack in the rail. Source songs resolve at load time —
-  known entry id first, then case-insensitive title match — and unresolved
-  songs show an amber "needs import" badge but still load with the Library
-  node unset. Shipped: Dream Cascade (Will I Dream, feedback reverb wash),
-  Accelerator (EACC, sub/wide + Magenta industrial fuse), Surrender Loop
-  (Just Give Up, pitch-down echo spiral), Gravy Boat (Gravy, funk re-roll +
-  squeeze), Signal 18301208 (dark-ambient transmission), Dollar Store (I'd
-  Buy That For A Dollar, crush + detroit re-roll), Renegade Law (Renegade,
-  hot tempo + ping-pong feedback). VERIFIED: Dream Cascade loads wired +
-  framed with its source resolved; Gravy and Dollar correctly flag "needs
-  import" (Gravy exists only as `C:\Users\Cyboman\Music\GANTASMO EP
-  20251109\5 - Gravy.mp3`; no "I'd Buy That For A Dollar" audio exists
-  anywhere on disk — import either into the Library and the templates pick
-  them up by title, no code change needed).
-- **Docs/RAG follow-up (approval needed per CLAUDE.md):**
-  `docs/guides/audimate.md` is now stale (no toolbar row, new rail,
-  templates, goo drag) — proposing a rewrite + RAG re-index next session.
-
-### 2026-08-27 (fourth pass) — Audimate LIVE, de-icon/de-glow sweep, footer action button (user request; tsc+ruff clean, verified in the running app via Playwright)
-
-- **Audimate is now a live performance surface (no AI required to run it).**
-  New real-time engine `frontend/src/lib/audimateLive.ts` + seven node kinds
-  (`audimateTypes.ts`): Stem (any demucs stem of a library song, looping,
-  resolved through `/api/stems/{id}` + `/api/library/stems/{sid}/audio` —
-  registry verified live), Filter/VCA/Echo/Crossfade (Live FX group, native
-  Web Audio), LFO (Automation group; sine/tri/square/saw, free-Hz or
-  beat-synced 1/16…4bar off the Live Out BPM, depth in target units), and
-  Live Out (master + BPM). New `mod` port type: LFO wires render DASHED and
-  connect at audio rate to filter freq / VCA gain / echo mix / crossfade pos;
-  `connect()` now type-checks ports. LIVE button in the dock arms the graph
-  (sources start phase-locked on one clock edge); inspector edits STREAM into
-  the running graph (setTargetAtTime-smoothed); structural edits auto-stop
-  it; Run and LIVE are mutually exclusive. Offline Run keeps every AI node
-  untouched — and the Stem node doubles as an offline source; live-only kinds
-  error with "press LIVE". VERIFIED running: Pressure Rig armed with "LIVE —
-  17 node(s), 12 audio + 4 mod wire(s), 129.49 BPM", live freq edit streamed,
-  clean stop. — `audimateLive.ts`, `audimateTypes.ts`, `audimateStore.ts`,
-  `audimateRunner.ts`, `AudimateInspector.tsx` (new stem picker field),
-  `AudimateView.tsx`
-- **Two live rig templates, denser than anything before** (top of the rack):
-  Pressure Rig (EACC — 17 nodes/16 wires: drum gate 1/8, bass wobble 1bar,
-  tex sweep 4bar, vox dub throw 2bar) and Undertow Rig (Just Give Up — 16
-  nodes/15 wires: 4bar drum dives, 1/4 sidechain duck, gtr↔keys crossfade
-  drift, dotted-8th vox throws in 2bar blocks). Real analyzed BPMs baked in.
-  — `frontend/src/data/audimateTemplates.ts`
-- **De-icon sweep (user mandate: icons only where they ARE the control).**
-  Header tab bar is text-only; HOME cards + task row lost their icons; the
-  assistant quick-command emojis and the Underfit "⚠️ Error" emoji are gone.
-  Icon-only controls (lock, trash, transport, chevrons, ★ ratings, ✓ status)
-  kept. — `CenterTabBar.tsx`, `HomeScreen.tsx`, `AssistantPanel.tsx`,
-  `UnderfitAssistantOrb.tsx`
-- **De-glow sweep.** Removed decorative/duplicative LED dots (template rows,
-  Audimate inspector, ModuleSidebar "Optimized", AdvancedVisualizer
-  LIVE/SILENT, DJ "Automix ●" + pulse) and de-glowed functional ones (FxRack
-  enable toggle, SlidePanel MIDI dot, VJ input dot).
-- **Footer: performant, responsive, and now owns the action button.** The
-  per-frame `currentTime` tick is isolated into `TransportProgressRow` so the
-  footer shell no longer re-renders 60×/s; transport shrinks (min-w-72), Up
-  Next hides below lg, the tip bubble below xl. The CREATE / PROCESS / TRAIN
-  / SEND TO VJ / PROCESS CHAIN button moved OUT of the dock strip into the
-  footer's bottom-right on every tab: rounded 2×1 (80×40), icon-free, idle =
-  muted translucent chip whose classes the footer's new own `edit-theme-scope`
-  remaps (theme-derivative), running = high-contrast inverse (light chip,
-  dark text) with a dark progress fill. Strip is now PANELS + LOG only.
-  — `PlayerFooter.tsx`, `ProcessingLog.tsx`, `Shell.tsx`
-
-### 2026-08-27 (fifth pass) — every-theme contrast, per-song live sets, Rack FX node, square node rail, resizable rails, audimate.md rewrite (user request; tsc+ruff clean, verified live incl. Porcelain theme)
-
-- **Every-theme contrast fix (the real bugs, found and closed).** The
-  header/footer/strip use `/α` hex classes (`bg-[#0a080f]/80`, `/95`, …) that
-  were NOT in the theme remap list — so light themes darkened the text but
-  left the chrome near-black (invisible header buttons, the user's exact
-  complaint). New color-mix remaps for every translucent hex surface in use;
-  light themes also gained hover-state text remaps (`hover:text-white`,
-  `hover:text-zinc-100/200/300/400`, common group-hovers) and pale accent
-  text darkening (`text-{17 hues}-100/200/300→700`, `-400→600`, literal
-  hexes) so active tabs and colored chips stay readable. Audimate's canvas
-  + vignette went var-based so it themes too. VERIFIED on Porcelain: header
-  tabs, footer, MAKE and Audimate all legible. — `frontend/src/index.css`,
-  `AudimateView.tsx`
-- **Rack FX live node (`lrack`).** Any of the 19 rack effects (Kargyraa,
-  Gater, Chop, Ring Mod, Bitcrush, Ares — the .gan grain engine —, The Owl,
-  Phantom Bass, compressor/EQ/reverb/delay…) instantiated per-node in the
-  live graph, worklets preloaded so nothing silently bypasses. LFO→Rack FX
-  mod wires modulate at CONTROL rate (30 Hz ticker off the audio clock)
-  driving the param named in the node's `modParam` field, clamped to its
-  descriptor range; inspector grew a grouped rack-effect picker with each
-  effect's own params. (VST3 still cannot run live in-browser — repo
-  constraint — so "VSTs" stay an EDIT/offline concern.) — `audimateTypes.ts`,
-  `audimateStore.ts`, `audimateLive.ts`, `audimateRunner.ts`,
-  `AudimateInspector.tsx`
-- **Live sets: ONE per song, titled by the SONG only** (replaces the named
-  rigs + the 7 AI templates): Will I Dream (Ares vox + Owl orbit + Phantom
-  low), EACC (bitcrush/kargyraa-vowel/ringmod industrial rack), Just Give Up
-  (dives/duck/drift + Chop + reverb→delay chain), Gravy (parallel
-  squeeze-vs-glitch crossfade), 18301208 (scanner band → ring-mod carrier →
-  echo well vs Owl orbit), I'd Buy That For A Dollar (crush→gate + robot
-  band + dry lane), Renegade (pursuit-vs-growl crossfade into dub). All
-  distinct architectures, 9–18 nodes, heavy LFO automation. VERIFIED: EACC
-  armed "LIVE — 18 node(s), 12 audio + 5 mod wire(s), 129.49 BPM"; the
-  mix-based 18301208 set armed with zero node errors. —
-  `frontend/src/data/audimateTemplates.ts`
-- **Node legibility + rail grid.** Every kind now carries a lucide glyph
-  (new `components/audimate/nodeIcons.ts`) rendered inside the canvas discs
-  and the rail; the rail's node list became a SQUARE tile grid (3-up: orb
-  glyph, name beneath, description on hover). — `AudimatePalette.tsx`,
-  `AudimateView.tsx`
-- **Both side rails drag-resize, collapse and expand** (chevrons; collapsed
-  = slim labeled strip), widths + open state persisted in the audimate
-  store. — `audimateStore.ts`, `AudimateView.tsx`
-- **docs/guides/audimate.md fully rewritten** (approved this session):
-  layout, goo rail, LIVE mode, mod wires, Rack FX, live sets, rails,
-  offline Run. Already registered in `backend/rag.py` DOC_PATHS — the RAG
-  re-indexes it on the next backend restart.
-
-### 2026-08-27 (sixth pass) — NodeF.I. rename, saved sets, Suno cloud node, inspector redesign (user request; tsc+ruff clean, verified live)
-
-- **Renamed Audimate → NodeF.I.** (display-level: tab reads NODEFI; internal
-  ids/keys unchanged so persisted graphs survive). Tab bar + HOME card + orb
-  tip + assistant navigate aliases (`nodefi`, `nodef.i.`) + guide title. —
-  `CenterTabBar.tsx`, `HomeScreen.tsx`, `OrbTipBubble.tsx`, `appUiStore.ts`,
-  `docs/guides/audimate.md`
-- **Saved sets.** New `state/audimateSetsStore.ts` (persist
-  `thedaw-audimate-sets-v1`): the rail's My sets section saves the current
-  canvas under a name, lists/loads (fresh ids via loadTemplate — one undo
-  restores), deletes, exports each set to `.nodefi.json` and imports them
-  back (validated shape). VERIFIED: save → clear → load round-tripped
-  9 nodes/9 edges. — `AudimatePalette.tsx`, `AudimateView.tsx`
-- **Suno (Cloud) node** — cloud generation with ZERO local GPU: submits
-  simple/custom jobs through the existing server-side-key Suno proxy
-  (`/api/suno/*`), polls, and returns the MP3 as the node's output; honest
-  errors when the key is unset. All 7 live sets already run with no AI at
-  all (that is what LIVE mode is). Lyria stays out — it is an embedded
-  iframe app with no plain generate API. — `audimateTypes.ts`,
-  `audimateRunner.ts`, `nodeIcons.ts`
-- **Inspector redesigned** (user: "cooler than number fields"): ranged params
-  are SLIDE glass sliders (drag/wheel/keys/double-click-reset) with a small
-  precise value box — Rack FX descriptors map straight onto them; ≤4-option
-  selects are segmented pills in the node's accent; stem picking is chips;
-  the header is the node's glossy orb + glyph with an accent underline.
-  VERIFIED: Ring Mod node shows FREQ/MIX sliders; Suno node shows
-  Simple/Custom + Yes/No pills. — `AudimateInspector.tsx`
-- Note: the rail collapse state persisting across sessions was incidentally
-  verified (test profile reopened collapsed and expanded cleanly).
-
-### 2026-08-28 — NodeF.I. tendril controls + bold type ramp (user request; tsc+ruff clean, verified live)
-
-- **Tendril controls replace the SLIDE sliders in NodeF.I.** New
-  `components/audimate/NodefiControls.tsx` — an original control language,
-  deliberately outside the SLIDE style guide and its colors: ranged params
-  are a FILAMENT UNDER TENSION (quadratic curve bowing through a bead node,
-  spent portion thickened, root tether to a dashed rest line, growth marks),
-  colored by the node's accent MUTED toward slate (nothing neon) over
-  theme-var neutrals. Full input surface: drag (pointer-capture hardened),
-  wheel ±(shift ×10), arrow keys/Home/End, double-click reset, click-to-type
-  exact value (underline input, no box). Short selects are alternating
-  asymmetric-radius CELLS; stems are cells too; unbounded numbers are quiet
-  underline rows. VERIFIED: Ring Mod freq/mix tendrils render + a click at
-  85% of the filament set 0.85. — `NodefiControls.tsx`,
-  `AudimateInspector.tsx`
-- **NodeF.I. type ramp: bolder + bigger everywhere** (user: "too tiny").
-  Scoped CSS raises `.mono-label` to 11px/700 and `.compact-input` to 12px
-  inside the surface (composes with the app text-scale setting); node canvas
-  labels 10→12px bold, rail tile names 10px semibold, set rows 12px
-  semibold, dock buttons 11px bold, value readouts 12px semibold, empty
-  state 13px. — `index.css`, `AudimateView.tsx`, `AudimatePalette.tsx`,
-  `NodefiControls.tsx`, `AudimateInspector.tsx`
-- **PERFORM: the route chip wall is gone; right rail with ROUTES + PARAMS**
-  (user request; tsc+ruff clean, verified live). The active-route chips that
-  wrapped into a giant wall under the Sway deck (81 rows of grid stolen) are
-  now the right rail's ROUTES tab: a filterable, grouped (CC routes / Sway
-  dims), scrollable list of compact rows — no glyphs in the rows (Zap and ⇢
-  removed). The PARAMS tab is a per-track device browser (VST devices listed
-  but marked inert) whose selected device renders tendril controls pushing
-  straight into the grid's RUNNING chains via a new bridge
-  (`registerPerformChainPush` — same `perform-{t}-{d}` entry ids the CC
-  routes drive, sticky-state merge so single keys are safe). The rail is
-  drag-resizable (208–440), collapsible, **DEFAULT CLOSED** (user mandate;
-  store v2 migration re-closes profiles that saw the brief open default) and
-  contributes ZERO right-edge footprint when closed — it opens from a
-  PanelRight toggle in Perform's header, so the right side stays ONE rail.
-  VERIFIED: EACC set → 76 CC + 5 dim routes listed, 28 live devices, lowpass
-  Freq tendril drove the live chain. — `frontend/src/components/session/
-  {PerformRail.tsx,PerformRoutingPanel.tsx,DawSessionGrid.tsx}`,
-  `frontend/src/state/performRailStore.ts`, `frontend/src/views/SessionView.tsx`
-- **SwayCommand upstreaming + theming** — answered as a plan (no code yet):
-  repo is `danieljtrujillo/SwayCommand` (private; consumed via
-  `electron-ui/scripts/fetch-sway-build.mjs`: SWAY_DIST → SWAY_PROJECT →
-  sibling checkout → pinned release w/ SWAY_REPO_TOKEN). Upstreaming = port
-  the staged BUNDLE_PATCHes into cockpit source in a sibling checkout, PR
-  there, cut an embed release, bump the pin, delete the patches. Theming =
-  (a) Perform deck: swap `swaydeck.css` `--sd-*` values onto theme vars +
-  add optional per-theme `--et-accent`/`--et-accent2`; (b) cockpit iframe is
-  SAME-ORIGIN (/sway-app) so SwayView can inject a style overriding the
-  cockpit's CSS custom props today, with a proper `sway/theme` postMessage
-  upstreamed later.
+- 2026-08-31 — DJ prepared performance sets: timeline automix + assistant control (`019f7e9`, PR #140).
+- 2026-09-02 — One-screen Settings, six-state Magenta engine gate, Lyria install, one-click Magenta install, HF token field (`3ada4c3`, `97c5731`).
+- 2026-09-02 — LEVELS meter bridge (`ef9c1d7`); a real control panel for every effect, rack entry and tool, BACKLOG FX-001 closed (`3a72507`); collapsible MIX viz rack (`d20d5a0`).
+- 2026-09-02 — Onboarding: Chimera DNA splice fixed, one-screen HOME, guided TOUR (`7926228`); showcase capture attach mode (`a2e7a7a`).
+- 2026-09-03 — GPU telemetry reports every device (`398ba59`).
+- 2026-09-04 — Chimera v2 phrase engine + seam healing (`299fcf4`); SCORE play-along modes, percussion notation, drum transcription, chord track, Beat Saber export (`fae1180`); flash-attention capability gate for Turing GPUs (`f73dd17`); width/height-aware shell scale + Tour rewrite (`660f0bf`); v0.1.4 (`715dddd`).
+- 2026-09-05 — SING tab with whisper alignment, stems-first vocals, language picker (`b9a2b94`, `00db96a`); SCORE NOW/INK/TRAIL prefs, kept-alive views (`cb9429b`, `eb14d8f`); one pipeline coordinator for stems/MIDI/lyrics (`7e5beb3`); README how-to rewrite (`ada5431`, `4e58894`); SING guide + DJ prepared sets docs (`bb43620`).

@@ -14,7 +14,7 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
  *  VJ / FOUNDRY / UNDERFIT / LEARN / TOUR. All workspaces live here; the legacy
  *  left-side tabs (CREATE/PROCESS) are subsumed by these. LoRA training is the
  *  UNDERFIT tab (the standalone TRAIN workspace was retired in its favor). */
-export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'sway', 'foundry', 'underfit', 'nodefi', 'learn', 'tour'] as const;
+export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'sway', 'foundry', 'underfit', 'nodefi', 'loom', 'learn', 'tour'] as const;
 export type CenterTab = typeof CENTER_TABS[number];
 
 /** Tabs that were removed or renamed but may still appear in persisted state or
@@ -62,6 +62,10 @@ const NAVIGATE_ALIASES: Record<string, CenterTab> = {
   // by CENTER_TAB_ALIASES, which normalizeCenterTab consults first.
   'nodef.i.': 'nodefi',
   'node f.i.': 'nodefi',
+  // LOOM — the shard sequencer (docs/design/loom.md).
+  weave: 'loom',
+  shards: 'loom',
+  jacquard: 'loom',
 };
 
 /** The legacy 5-view enum still hangs off a few readers; keep it loosely in

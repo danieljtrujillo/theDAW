@@ -65,6 +65,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_on_generate": False,
         "from_stems": True,
     },
+    "shards": {
+        # The Shard Index (LOOM, DJ shard pads, PERFORM shard slots). One STFT
+        # per source on the CPU — cheap next to stems — so it is default-ON;
+        # an entry is re-cut automatically when its stems land.
+        "auto_on_import": True,
+        "auto_on_generate": True,
+    },
     "lyrics": {
         # After an import with lyric text (Suno, embedded tags, notes), time
         # the words against the vocal stem so SING is ready without a click.

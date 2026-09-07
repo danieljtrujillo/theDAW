@@ -171,6 +171,16 @@ async def run_separation(
         return {"entry_id": entry_id, "stems": store.db.list_stems(entry_id)}
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 - never let a sidecar hiccup become an ASGI traceback
+        log.exception("stems: separation failed for %s", entry_id)
+        raise HTTPException(
+            503,
+            f"stem separation failed ({type(e).__name__}: {e}). The sidecar "
+            "log has the details; if Magenta or whisper was loading at the same "
+            "time, the GPU ran out — let it finish and run again.",
+        )
     finally:
         try:
             from backend.core.idle import get_idle_manager

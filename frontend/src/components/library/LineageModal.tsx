@@ -1591,7 +1591,10 @@ const GenealogyView: React.FC<{
           return (
             <span
               key={g.layer}
-              className="absolute top-2 -translate-x-1/2 text-[12px] font-mono font-bold tracking-widest text-zinc-300"
+              // Literal light ink: this label floats over the graph canvas, which
+              // stays dark on every theme, so the theme's remapped zinc ink
+              // (dark on light themes) would vanish against it.
+              className="absolute top-2 -translate-x-1/2 text-[12px] font-mono font-bold tracking-widest text-[#e4e0f2]"
               style={{ left: centerX }}
             >
               {g.layer}
@@ -1610,7 +1613,7 @@ const GenealogyView: React.FC<{
       </div>
 
       {/* Help hint */}
-      <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-zinc-600 pointer-events-none">
+      <div className="absolute bottom-2 left-2 z-10 text-[8px] font-mono text-[#a29eb6] pointer-events-none">
         drag to pan · wheel to zoom · click a node for details · {connected.nodes.length} entries · {connected.edges.length} relationships
       </div>
 

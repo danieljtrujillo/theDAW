@@ -23,6 +23,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { SWAY_DIMS, seedSwayBinding, type SwayDim } from './swayBus';
+import { resolveLiveEffectId, translateDawParam } from '../lib/dawEffectMap';
+import { getRackEffect } from '../lib/rackEffects';
 
 export type PerformFn = 'select' | 'launch' | 'stop' | 'next' | 'prev';
 
@@ -245,9 +247,16 @@ export function autoRoutePerformFromProject(project: {
     track_name: string;
     track_index: number;
     device_name: string;
+    /** Index into the track's FLATTENED devices (-1 when unresolved). */
+    device_index?: number;
     param_name: string;
+    is_macro?: boolean;
+    is_instrument_target?: boolean;
   }[] | null;
-  tracks: { name: string }[];
+  tracks: {
+    name: string;
+    devices?: { name: string; plugin_type?: string; plugin_path?: string | null; is_instrument?: boolean; is_rack?: boolean }[];
+  }[];
 }): { ccMods: CcMod[]; seededDims: number } {
   const mods: CcMod[] = [];
   const seen = new Set<string>();
@@ -267,7 +276,37 @@ export function autoRoutePerformFromProject(project: {
     const pn = m.param_name.toLowerCase();
     const isMixer = m.target_kind === 'mixer' || m.device_name.toLowerCase().replace(/[^a-z]/g, '') === 'utility';
     const isDeviceVolume = m.target_kind === 'device' && /(^|[^a-z])(volume|level|gain)([^a-z]|$)/.test(pn);
-    if ((!isMixer && !isDeviceVolume) || m.is_note || m.track_index < 0 || m.track_index >= project.tracks.length) continue;
+    const trackOk = m.track_index >= 0 && m.track_index < project.tracks.length;
+
+    // Device-FX mappings (DryWet, On, macros, cutoff, …): route them onto the
+    // Perform grid's LIVE chain for that track. The grid indexes chain entries
+    // by the device list with instruments and rack containers removed
+    // (`perform-<mix>-<i>`), while the mapping's device_index counts the
+    // flattened list — convert. VST3/AU are inert live, so they are skipped.
+    if (m.target_kind === 'device' && !isDeviceVolume && !m.is_instrument_target && trackOk) {
+      const fx = deviceFxRoute(m, project.tracks[m.track_index]);
+      if (fx) {
+        const id = `${m.is_note ? 'note' : 'cc'}:${m.channel}:${m.number}:${m.track_index}:fx${fx.deviceIndex}:${fx.paramKey}`;
+        if (!seen.has(id)) {
+          seen.add(id);
+          mods.push({
+            id,
+            channel: m.channel,
+            number: m.number,
+            isNote: m.is_note,
+            trackIndex: m.track_index,
+            target: 'fx',
+            deviceIndex: fx.deviceIndex,
+            paramKey: fx.paramKey,
+            min: fx.min,
+            max: fx.max,
+            label: `${String(m.track_index + 1).padStart(2, '0')} ${project.tracks[m.track_index]?.name ?? m.track_name} · ${fx.label}`,
+          });
+        }
+      }
+      continue;
+    }
+    if ((!isMixer && !isDeviceVolume) || m.is_note || !trackOk) continue;
     if (pn.includes('pan')) continue; // perform mix has no pan lane
     const id = `cc:${m.channel}:${m.number}:${m.track_index}`;
     if (seen.has(id)) continue;
@@ -284,6 +323,36 @@ export function autoRoutePerformFromProject(project: {
     });
   }
   return { ccMods: mods, seededDims };
+}
+
+/** Resolve one device-parameter mapping to a live-chain route, or null when the
+ *  device has no live rack equivalent or the parameter has no translation. */
+function deviceFxRoute(
+  m: { device_index?: number; device_name: string; param_name: string; is_macro?: boolean },
+  track: { devices?: { name: string; plugin_type?: string; plugin_path?: string | null; is_instrument?: boolean; is_rack?: boolean }[] },
+): { deviceIndex: number; paramKey: string; min: number; max: number; label: string } | null {
+  const devices = track.devices ?? [];
+  // Locate the device: by flattened index when the parser resolved it, else by name.
+  let flat = m.device_index ?? -1;
+  if (flat < 0 || flat >= devices.length) {
+    flat = devices.findIndex((d) => d.name.toLowerCase() === (m.device_name || '').toLowerCase());
+  }
+  if (flat < 0) return null;
+  const device = devices[flat];
+  if (device.is_instrument || device.is_rack) return null;
+  if (device.plugin_type === 'vst3' || device.plugin_type === 'audiounit' || device.plugin_path) return null;
+  const effectId = resolveLiveEffectId(device.name);
+  if (!effectId) return null;
+  const t = translateDawParam(effectId, m.param_name, !!m.is_macro);
+  if (!t) return null;
+  // Flattened index → chain-entry index (instruments and rack containers removed).
+  let deviceIndex = 0;
+  for (let i = 0; i < flat; i += 1) {
+    const d = devices[i];
+    if (!d.is_instrument && !d.is_rack) deviceIndex += 1;
+  }
+  const effectLabel = getRackEffect(effectId)?.label ?? effectId;
+  return { deviceIndex, paramKey: t.key, min: t.descriptor.min, max: t.descriptor.max, label: `${effectLabel} ${t.descriptor.label}` };
 }
 
 function trySeedSwayDim(haystack: string, channel: number, cc: number): boolean {

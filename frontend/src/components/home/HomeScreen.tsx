@@ -8,6 +8,7 @@ import {
   FileAudio,
   FlaskConical,
   FolderOpen,
+  Grid3x3,
   Hammer,
   Route,
   Rows3,
@@ -158,6 +159,13 @@ const HOME_TABS: HomeTab[] = [
     desc: 'NodeF.I. — wire node graphs: AI pipelines offline, stems + rack FX live',
     icon: Waypoints,
     accent: { borderL: 'border-l-teal-500/50', hoverBorderL: 'hover:border-l-teal-400/90', icon: 'text-teal-300' },
+  },
+  {
+    id: 'loom',
+    label: 'Loom',
+    desc: 'Sequence shards of your own songs — beat-matched, in key, on one clock',
+    icon: Grid3x3,
+    accent: { borderL: 'border-l-amber-500/50', hoverBorderL: 'hover:border-l-amber-400/90', icon: 'text-amber-300' },
   },
   {
     id: 'learn',

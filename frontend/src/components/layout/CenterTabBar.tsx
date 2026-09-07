@@ -12,6 +12,7 @@ import {
   Waypoints,
   Route,
   Waves,
+  Grid3x3,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
 
@@ -169,6 +170,19 @@ const TABS: Array<{
       text: 'text-teal-100',
       iconText: 'text-teal-300',
       hoverBorder: 'hover:border-teal-400',
+    },
+  },
+  {
+    id: 'loom',
+    label: 'Loom',
+    desc: 'LOOM — a Jacquard for your own catalogue: sequence shards of your songs on one beat clock',
+    icon: Grid3x3,
+    accent: {
+      border: 'border-amber-500',
+      bg: 'bg-amber-500/20',
+      text: 'text-amber-100',
+      iconText: 'text-amber-300',
+      hoverBorder: 'hover:border-amber-400',
     },
   },
   {

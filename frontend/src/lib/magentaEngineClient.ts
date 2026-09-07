@@ -71,6 +71,12 @@ export interface MagentaEngineStatus {
   /** The engine's own status line while loading ("loading mrt2_small + compiling"). */
   status?: string;
   error?: string | null;
+  /** Backend classification of `error` ("gpu_oom", "checkpoint_missing", …) and
+   *  the sentence that tells the user what to do about it. */
+  error_kind?: string;
+  fix?: string;
+  /** Free-text progress while a start is queued behind the GPU lane. */
+  message?: string;
   /** Model the running engine loaded (from its /health). */
   model?: string;
   device?: string;
@@ -358,7 +364,7 @@ export function ensureMagentaEngine(): Promise<boolean> {
       }
       if (s.state === 'error') {
         setField('magentaEngine', 'error');
-        raiseMagentaSetupGate(s.error || s.status || undefined, true, 'error');
+        raiseMagentaSetupGate(s.fix || s.message || s.error || s.status || undefined, true, 'error');
         return false;
       }
       setField('magentaEngine', 'starting');
@@ -401,7 +407,7 @@ export function ensureMagentaEngine(): Promise<boolean> {
         if (s.state === 'error') {
           dismissFeatureGate(MAGENTA_ENGINE_NOTICE_ID);
           setField('magentaEngine', 'error');
-          raiseMagentaSetupGate(s.error || s.status || undefined, true, 'error');
+          raiseMagentaSetupGate(s.fix || s.message || s.error || s.status || undefined, true, 'error');
           logError('magenta', `Engine failed to load: ${s.error || s.status || 'unknown error'}`);
           return false;
         }

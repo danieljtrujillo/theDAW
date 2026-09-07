@@ -12,6 +12,7 @@ import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from './SlideTrack';
 import { SemanticWave } from './SemanticWave';
 import { MetamorphPanel } from './MetamorphPanel';
+import { useMorphStore } from '../../state/morphEngine';
 import { MagentaToolStage } from './MagentaToolStage';
 import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../../lib/magentaToolCatalog';
 import { AutomationLane } from './AutomationLane';
@@ -864,6 +865,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const fadeDragRef = useRef<{ clipId: string; edge: 'in' | 'out'; startX: number; initialFade: number } | null>(null);
   const [isCommitting, setIsCommitting] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
+  // Granular bleed rendering from the clip menu (Metamorph offline pass).
+  const [isBleeding, setIsBleeding] = useState(false);
   const [mixdownName, setMixdownName] = useState('');
   // ONE master FX panel — built-in rack effects, VST3s and .gan surfaces are
   // the same concept (chain entries) and share a single list + add menu.
@@ -1539,6 +1542,89 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
     return [];
   }, [clips, selectedClipIds, selectedTrackIds, selectedClipId]);
+
+  // ── Granular bleed straight from the clip menu ─────────────────────────
+  // Metamorph (granular identity bleed) used to live only in the TOOLS
+  // dropdown with two pickers. Here the selection IS the pickers: the
+  // right-clicked clip is the HOST (structure) and the other selected clip
+  // is the DONOR (identity). When the two overlap in time, only the overlap
+  // is bled — a granular seam where a crossfade would normally go. The
+  // render lands on a new track at the host's position as an ordinary
+  // clip; nothing is modified in place. "Live" arms the same pair in the
+  // real-time engine and opens the panel so the dials can be ridden.
+  const bleedPartnerFor = useCallback((hostId: string): AudioClip | null => {
+    const host = clips.find((c) => c.id === hostId);
+    if (!host) return null;
+    const others = clips.filter((c) => c.id !== hostId && selectedClipIds.includes(c.id));
+    if (others.length === 0) return null;
+    const hostEnd = host.startSec + host.durationSec;
+    const overlapping = others.filter((c) => c.startSec < hostEnd && c.startSec + c.durationSec > host.startSec);
+    const pool = overlapping.length > 0 ? overlapping : others;
+    return [...pool].sort((a, b) => Math.abs(a.startSec - host.startSec) - Math.abs(b.startSec - host.startSec))[0] ?? null;
+  }, [clips, selectedClipIds]);
+
+  const clipOverlap = (a: AudioClip, b: AudioClip): { startSec: number; endSec: number } | null => {
+    const s = Math.max(a.startSec, b.startSec);
+    const e = Math.min(a.startSec + a.durationSec, b.startSec + b.durationSec);
+    return e - s > 0.05 ? { startSec: s, endSec: e } : null;
+  };
+
+  const bleedClips = useCallback(async (hostId: string, mode: 'render' | 'live') => {
+    const host = clips.find((c) => c.id === hostId);
+    const donor = bleedPartnerFor(hostId);
+    if (!host || !donor) return;
+    const title = (c: AudioClip) => c.label || tracks.find((t) => t.id === c.trackId)?.name || 'clip';
+    const morph = useMorphStore.getState();
+    try {
+      await morph.loadA({ id: `clip:${donor.id}`, title: title(donor), blob: donor.audioBlob });
+      await morph.loadB({ id: `clip:${host.id}`, title: title(host), blob: host.audioBlob });
+    } catch (e) {
+      logError('edit', `Bleed: could not load the pair — ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (mode === 'live') {
+      setShowMetamorph(true);
+      await useMorphStore.getState().play();
+      return;
+    }
+    setIsBleeding(true);
+    try {
+      const blob = await useMorphStore.getState().renderToBlob();
+      if (!blob) return;
+      const ed = useEditorStore.getState();
+      const seam = clipOverlap(host, donor);
+      const name = `${title(donor)}→${title(host)}`.slice(0, 24);
+      const trackId = ed.addTrack({ name });
+      const color = ed.tracks.find((t) => t.id === trackId)?.color;
+      const { peaks, duration } = await computePeaks(blob, 240);
+      // The render spans the host's whole SOURCE; place it under the host's
+      // window (or only the seam) so it lines up sample-for-sample.
+      const startSec = seam ? seam.startSec : host.startSec;
+      const durationSec = Math.min(
+        seam ? seam.endSec - seam.startSec : host.durationSec,
+        Math.max(0.05, duration - (host.offsetIntoSource + (startSec - host.startSec))),
+      );
+      const clipId = ed.addClipToTrack({
+        trackId,
+        label: seam ? `${name} · seam` : name,
+        audioBlob: blob,
+        mimeType: 'audio/wav',
+        sourceDuration: duration,
+        offsetIntoSource: host.offsetIntoSource + (startSec - host.startSec),
+        durationSec,
+        startSec,
+        color,
+      });
+      ed.cachePeaks(clipId, peaks);
+      logInfo('edit', seam
+        ? `Bled the ${(seam.endSec - seam.startSec).toFixed(2)}s seam of "${title(donor)}" into "${title(host)}"`
+        : `Bled "${title(donor)}" into "${title(host)}" on a new track`);
+    } catch (e) {
+      logError('edit', `Bleed render failed — ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsBleeding(false);
+    }
+  }, [bleedPartnerFor, clips, tracks]);
 
   const sendSelectionToInit = useCallback(async () => {
     const selection = getSelectionForInit();
@@ -4408,6 +4494,30 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             onSwitchTab?.('create');
           },
         });
+        // Granular bleed: needs a second selected clip to act as the donor.
+        // Overlapping pair → only the seam is bled; otherwise the whole host.
+        if (clip && !clip.sourcePianoRoll) {
+          const donor = bleedPartnerFor(clip.id);
+          if (donor && !donor.sourcePianoRoll) {
+            const seam = clipOverlap(clip, donor);
+            const donorName = (donor.label || tracks.find((t) => t.id === donor.trackId)?.name || 'clip').slice(0, 18);
+            items.push({ type: 'separator' });
+            items.push({
+              type: 'item',
+              label: seam ? 'Bleed the seam' : 'Bleed into this clip',
+              icon: <Wand2 className="w-3 h-3" />,
+              hint: `${donorName} →`,
+              disabled: isBleeding,
+              onSelect: () => { void bleedClips(clip.id, 'render'); },
+            });
+            items.push({
+              type: 'item',
+              label: 'Bleed live…',
+              hint: 'audition',
+              onSelect: () => { void bleedClips(clip.id, 'live'); },
+            });
+          }
+        }
         if (clip && !clip.sourcePianoRoll) {
           items.push({
             type: 'item',
