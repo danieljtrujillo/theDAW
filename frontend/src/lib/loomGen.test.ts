@@ -111,7 +111,9 @@ lane fib 1/16 x16 @target
   const again = parseLoom(serializeLoom(score));
   assert.deepEqual(again.errors, []);
   assert.equal(serializeLoom(again.score), serializeLoom(score), 'generator round-trip');
-  assert.match(serializeLoom(score), /euclid\(k s; hits=5\)/);
+  // Defaults (hits=5 rotate=1) are omitted on the way out; non-defaults stay.
+  assert.match(serializeLoom(score), /euclid\(k s\)/);
+  assert.match(serializeLoom(score), /life\(<eacc:bass> v \.; density=0\.3 rule=B36\/S23\)/);
   assert.match(serializeLoom(score), /seed 7/);
   assert.match(serializeLoom(score), /ramp bpm 120 150 8/);
   // Errors that a performer needs to see.

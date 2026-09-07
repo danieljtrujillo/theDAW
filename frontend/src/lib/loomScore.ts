@@ -559,10 +559,12 @@ export function serializeLoom(score: LoomScore): string {
       }
       return toks;
     });
-    const width = Math.max(1, ...cells.flat().map((c) => c.length));
+    // Pad per column (not to the widest token in the lane) so one long
+    // generator does not push every other cell of the block out of view.
+    const widths = Array.from({ length: lane.length }, (_, i) => Math.max(1, ...cells.map((toks) => toks[i].length)));
     const barEvery = lane.length > lane.div ? lane.div : 0;
     for (const toks of cells) {
-      const line = toks.map((c, i) => c.padEnd(width) + (barEvery && i > 0 && (i + 1) % barEvery === 0 && i < lane.length - 1 ? ' |' : '')).join(' ').trimEnd();
+      const line = toks.map((c, i) => c.padEnd(widths[i]) + (barEvery && i > 0 && (i + 1) % barEvery === 0 && i < lane.length - 1 ? ' |' : '')).join(' ').trimEnd();
       out.push(`  ${line}`);
     }
   }
