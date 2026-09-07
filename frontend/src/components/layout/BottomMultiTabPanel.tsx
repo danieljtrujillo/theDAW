@@ -13,9 +13,8 @@ import {
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
-import { DetailsView } from './DetailsView';
+import { DetailsMediaView } from './DetailsMediaView';
 import { ScoreView } from './ScoreView';
-import { MediaBucketView } from './MediaBucketView';
 import { SlidePanel } from './SlidePanel';
 import { SwayPanel } from './SwayPanel';
 import { LevelsPanel } from '../audio/levels/LevelsPanel';
@@ -39,8 +38,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; desc: string; icon: R
   { id: 'draw',       label: 'DRAW',       desc: 'Draw to play generative music; record it to the library or EDIT',          icon: Brush,      colorActive: 'border-purple-500 text-purple-300' },
   { id: 'score',      label: 'Score',      desc: 'Sheet music + tabs for the selection; convert and arrange notation',       icon: FileMusic,  colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'sing',       label: 'Sing',       desc: 'Karaoke: lyrics follow the track word by word; paste, extract, align, tap-time and export LRC', icon: MicVocal, colorActive: 'border-rose-500 text-rose-300' },
-  { id: 'details',    label: 'Details',    desc: 'Metadata, prompt and analysis for the selected library item',              icon: Info,       colorActive: 'border-emerald-500 text-emerald-300' },
-  { id: 'bucket',     label: 'Media',      desc: 'Drag-and-drop bucket for staging clips and media files',                   icon: FolderOpen, colorActive: 'border-amber-500 text-amber-300' },
+  { id: 'details',    label: 'Details',    desc: 'The selected library item (metadata, prompt, analysis) and the media bucket for staging clips and files', icon: Info, colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'slide',      label: 'SLIDE',      desc: 'Control surface: map sliders and pads to parameters',                      icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
   { id: 'sway',       label: 'SWAY',       desc: 'Pose control: drive music and effects from body movement',                 icon: Waves,      colorActive: 'border-fuchsia-500 text-fuchsia-300' },
   // Dev-only: the simulated XR/phone controller that drives the control bus.
@@ -114,6 +112,7 @@ export const BottomMultiTabPanel: React.FC = () => {
         {/* pr-5 keeps the Maximize toggle clear of the shell's library pull
             handle (14px wide, right edge, vertically centred). */}
         <div className="flex items-center gap-1 pr-5 shrink-0">
+          {activeTab === 'details' && <DetailsPaneToggle />}
           {activeTab === 'slide' && (
             <>
               <SlideContentToggle />
@@ -160,7 +159,7 @@ export const BottomMultiTabPanel: React.FC = () => {
         )}
         {activeTab === 'details' && (
           <div className="absolute inset-0">
-            <DetailsView />
+            <DetailsMediaView />
           </div>
         )}
         {activeTab === 'midi' && (
@@ -190,11 +189,6 @@ export const BottomMultiTabPanel: React.FC = () => {
             <Suspense fallback={null}>
               <SingView />
             </Suspense>
-          </div>
-        )}
-        {activeTab === 'bucket' && (
-          <div className="absolute inset-0">
-            <MediaBucketView />
           </div>
         )}
         {activeTab === 'sway' && (
@@ -239,6 +233,33 @@ export const BottomMultiTabPanel: React.FC = () => {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+/**
+ * DETAILS / BOTH / MEDIA layout toggle for the merged DETAILS tab, in the
+ * tab row like the SLIDE toggle. Drives bottomPanelStore.detailsPane.
+ */
+const DetailsPaneToggle: React.FC = () => {
+  const pane = useBottomPanelStore((s) => s.detailsPane);
+  const setPane = useBottomPanelStore((s) => s.setDetailsPane);
+  const btn = 'px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-colors';
+  const on = 'bg-emerald-500/15 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.5)]';
+  const off = 'text-zinc-500 hover:text-zinc-200';
+  return (
+    <div className="flex items-center pr-2 shrink-0" role="group" aria-label="Details tab layout">
+      <div className="flex rounded-md border border-white/10 overflow-hidden">
+        <button onClick={() => setPane('details')} className={`${btn} ${pane === 'details' ? on : off}`} title="Only the selected item's details" aria-pressed={pane === 'details'}>
+          <span className="inline-flex items-center gap-1"><Info className="w-3 h-3" /> Details</span>
+        </button>
+        <button onClick={() => setPane('split')} className={`${btn} ${pane === 'split' ? on : off}`} title="Details and the media bucket side by side" aria-pressed={pane === 'split'}>
+          Both
+        </button>
+        <button onClick={() => setPane('media')} className={`${btn} ${pane === 'media' ? on : off}`} title="Only the media bucket" aria-pressed={pane === 'media'}>
+          <span className="inline-flex items-center gap-1"><FolderOpen className="w-3 h-3" /> Media</span>
+        </button>
       </div>
     </div>
   );

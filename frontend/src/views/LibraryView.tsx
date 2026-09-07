@@ -5,8 +5,9 @@ import {
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
-  Film, Image as ImageIcon, Upload, RefreshCw, Tv2, Repeat,
+  Film, Image as ImageIcon, Upload, RefreshCw, Tv2, Repeat, Info, Link2,
 } from 'lucide-react';
+import { importUrlToLibrary } from '../lib/onlineImport';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
 import { LineageModal } from '../components/library/LineageModal';
@@ -441,10 +442,42 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
   const showBottomTab = useBottomPanelStore((s) => s.showTab);
+  const setDetailsPane = useBottomPanelStore((s) => s.setDetailsPane);
 
   const openScoreForEntry = (entryId: string) => {
     setSelectedEntry(entryId);
     showBottomTab('score');
+  };
+
+  // DETAILS tab with the details pane in view (the merged tab may be showing
+  // only the media bucket).
+  const openDetailsForEntry = (entryId: string) => {
+    setSelectedEntry(entryId);
+    if (useBottomPanelStore.getState().detailsPane === 'media') setDetailsPane('split');
+    showBottomTab('details');
+  };
+
+  // Import from link: YouTube / SoundCloud / Bandcamp / direct audio URL
+  // straight into the library (same path as the DJ source tree).
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkErr, setLinkErr] = useState<string | null>(null);
+  const runLinkImport = async () => {
+    const u = linkUrl.trim();
+    if (!u || linkBusy) return;
+    setLinkBusy(true);
+    setLinkErr(null);
+    try {
+      const entry = await importUrlToLibrary(u);
+      setLinkUrl('');
+      setLinkOpen(false);
+      openDetailsForEntry(entry.id);
+    } catch (e) {
+      setLinkErr(e instanceof Error ? e.message : 'Import failed');
+    } finally {
+      setLinkBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -794,6 +827,15 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           >
             <FileMusic className="w-3 h-3" />
           </button>
+          <button
+            onClick={() => setLinkOpen((v) => !v)}
+            className={`p-1 rounded ${linkOpen ? 'bg-white/10 text-purple-200' : 'text-zinc-500 hover:text-purple-300'}`}
+            title="Import from link: YouTube, SoundCloud, Bandcamp or a direct audio URL"
+            aria-expanded={linkOpen}
+            aria-controls="library-link-import"
+          >
+            <Link2 className="w-3 h-3" />
+          </button>
           <button onClick={() => setViewMode('list')} className={`p-1 rounded ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-zinc-600'}`} title="List view">
             <ListIcon className="w-3 h-3" />
           </button>
@@ -807,6 +849,36 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           )}
         </div>
       }>
+        {linkOpen && (
+          <div id="library-link-import" className="px-2 py-1.5 flex flex-col gap-1 border-b border-white/5 bg-black/20">
+            <div className="flex items-center gap-1 bg-black/40 border border-white/10 rounded px-1.5">
+              <Link2 className="w-3 h-3 text-zinc-600 shrink-0" />
+              <input
+                id="library-link-import-url"
+                name="library-link-import-url"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void runLinkImport(); if (e.key === 'Escape') setLinkOpen(false); }}
+                placeholder="paste a link…"
+                disabled={linkBusy}
+                aria-label="Import from link URL"
+                autoFocus
+                className="flex-1 min-w-0 bg-transparent text-[9px] font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600 disabled:opacity-50"
+              />
+              <button
+                onClick={() => void runLinkImport()}
+                disabled={linkBusy || !linkUrl.trim()}
+                className="shrink-0 text-purple-300 hover:text-purple-100 disabled:opacity-30"
+                title="Download into the library"
+                aria-label="Import link"
+              >
+                {linkBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+              </button>
+            </div>
+            {linkErr && <span className="text-[8px] font-mono text-rose-400 px-1 truncate" title={linkErr}>{linkErr}</span>}
+            <span className="text-[7px] font-mono text-zinc-600 px-1 leading-tight">YouTube · SoundCloud · Bandcamp · direct audio URL — Spotify is DRM-locked</span>
+          </div>
+        )}
         {/* Mic-in recorder. Hidden by default; toggled from the LIBRARY
             header. Saving to library triggers a refresh so the recording
             shows up immediately as a fresh import entry. */}
@@ -1028,6 +1100,13 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
                         </button>
                         <button
                           className="p-1 hover:bg-white/10 rounded"
+                          onClick={(e) => { e.stopPropagation(); openDetailsForEntry(entry.id); }}
+                          title="Open details (metadata, prompt, analysis)"
+                        >
+                          <Info className="w-2.5 h-2.5 text-zinc-500 hover:text-emerald-300" />
+                        </button>
+                        <button
+                          className="p-1 hover:bg-white/10 rounded"
                           onClick={(e) => { e.stopPropagation(); handleSendToNewTrack(entry); }}
                           title="Send to editor as a new track"
                         >
@@ -1181,6 +1260,13 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             hint: 'basic-pitch',
             disabled: isRunning('midi'),
             onSelect: () => { void runJobForEntry(ctxEntryId, 'midi'); },
+          },
+          {
+            type: 'item',
+            label: 'Open details',
+            icon: <Info className="w-3 h-3" />,
+            hint: 'DETAILS tab',
+            onSelect: () => openDetailsForEntry(ctxEntryId),
           },
           {
             type: 'item',

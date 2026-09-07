@@ -321,7 +321,7 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
         )}
       </div>
       {bucket.length === 0 && (
-        <div className="sl-se-hint">No media in the bucket yet — add files in the Media tab.</div>
+        <div className="sl-se-hint">No media in the bucket yet — add files in the DETAILS tab's Media pane.</div>
       )}
 
       <label className="sl-se-label">Effect targets (slider fans out to each)</label>

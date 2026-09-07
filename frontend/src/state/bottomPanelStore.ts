@@ -22,13 +22,16 @@ export type BottomPanelTab =
   | 'midi'
   | 'step-seq'
   | 'draw'
-  | 'bucket'
   | 'slide'
   | 'sway'
   | 'xrbus'; // dev-only tab; hidden (and remapped on rehydrate) in production builds
 
+/** Layout of the merged DETAILS tab: both panes, or one of them full-width. */
+export type DetailsPane = 'split' | 'details' | 'media';
+
 interface BottomPanelState {
   activeTab: BottomPanelTab;
+  detailsPane: DetailsPane;
   isOpen: boolean;          // multi-tab panel body open
   isLogOpen: boolean;       // log panel body open
   logVerbose: boolean;      // LOG shows every raw entry; false = folded SIMPLE view
@@ -36,6 +39,7 @@ interface BottomPanelState {
   logWidth: number;         // px width of the log column (independent)
   multiMaximized: boolean;  // multi-tab fills the work area
   setActiveTab: (t: BottomPanelTab) => void;
+  setDetailsPane: (p: DetailsPane) => void;
   setOpen: (v: boolean) => void;
   setLogOpen: (v: boolean) => void;
   setLogVerbose: (v: boolean) => void;
@@ -55,6 +59,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
   persist(
     (set) => ({
       activeTab: 'spectral',
+      detailsPane: 'split',
       isOpen: false,
       isLogOpen: false,
       logVerbose: false,
@@ -62,6 +67,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       logWidth: 320,
       multiMaximized: false,
       setActiveTab: (t) => set({ activeTab: t }),
+      setDetailsPane: (p) => set({ detailsPane: p }),
       setOpen: (v) => set({ isOpen: v }),
       setLogOpen: (v) => set({ isLogOpen: v }),
       setLogVerbose: (v) => set({ logVerbose: v }),
@@ -86,6 +92,10 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         if (p.activeTab === 'piano-roll' || p.activeTab === 'vocal') {
           p.activeTab = 'midi';
         }
+        // The Media bucket merged into the DETAILS tab (2026-09-07).
+        if (p.activeTab === 'bucket') {
+          p.activeTab = 'details';
+        }
         // The XR Bus tab only exists in dev builds; a persisted selection must
         // not leave a production dock with no active tab.
         if (p.activeTab === 'xrbus' && !import.meta.env.DEV) {
@@ -98,6 +108,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       // sizes are remembered.
       partialize: (s) => ({
         activeTab: s.activeTab,
+        detailsPane: s.detailsPane,
         multiHeight: s.multiHeight,
         logWidth: s.logWidth,
         logVerbose: s.logVerbose,
