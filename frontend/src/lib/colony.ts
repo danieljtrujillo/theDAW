@@ -36,7 +36,22 @@ export interface LoopNode {
   transpose: number;
   /** Keep looping until the next trigger instead of stopping after `beats`. */
   hold: boolean;
+  /** Stereo position, -1 (left) … 1 (right). */
+  pan: number;
+  /** Low-pass, 0..1 (1 = open). */
+  cutoff: number;
+  /** Filter Q, 0.1..18 (0.7 = flat). */
+  resonance: number;
+  /** How the loop moves in the stereo field while it plays. */
+  space: SpaceMode;
+  /** Portamento: semitones the pitch glides across the loop's length (0 = none). */
+  glide: number;
 }
+export const SPACE_MODES = ['fixed', 'orbit', 'pingpong', 'random'] as const;
+export type SpaceMode = typeof SPACE_MODES[number];
+export const LOOP_DEFAULTS = { pan: 0, cutoff: 1, resonance: 0.7, space: 'fixed' as SpaceMode, glide: 0 };
+/** Shard lengths the index cuts, in beats — the grain a colony picks from. */
+export const GRAINS = [1, 2, 4, 8, 16] as const;
 export interface RuleNode {
   kind: 'rule';
   id: string;
@@ -62,12 +77,20 @@ export interface ColonyGraph {
   edges: ColonyEdge[];
 }
 
+/** `grow RATE max=N`: the colony buds, prunes and mutates on every root bar. */
+export interface GrowSpec { rate: number; max: number }
+
 export interface ColonyScore {
   bpm?: number;
   key?: string;
   scale?: 'major' | 'minor';
   seed?: number;
   form?: string;
+  grow?: GrowSpec;
+  /** 0.5 = straight; 0.67 = triplet feel. Odd steps of every rule land late. */
+  swing?: number;
+  /** Beats per shard the colony reaches for when it buds (1 … 16). */
+  grain?: number;
   root: ColonyGraph;
 }
 
@@ -126,28 +149,40 @@ export function symbolIndex(q: LoomQuery | null): number | null {
 
 const ID_RE = /^[A-Za-z][A-Za-z0-9_\-.]*$/;
 
-function stripComment(s: string): string {
-  let depth = 0;
+/** Bracket depth walker: `< >` only bracket a `<song:role>` token at the top
+ *  level — inside `{ }` they are the energy comparisons (`energy<.55`). */
+function walkDepth(s: string, onChar: (ch: string, depth: number, i: number) => boolean | void): void {
+  let curly = 0;
+  let round = 0;
+  let angle = 0;
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i];
-    if (ch === '(' || ch === '{' || ch === '<') depth += 1;
-    else if (ch === ')' || ch === '}' || ch === '>') depth = Math.max(0, depth - 1);
-    else if (ch === ';' && depth === 0) return s.slice(0, i);
+    if (ch === '{') curly += 1;
+    else if (ch === '}') curly = Math.max(0, curly - 1);
+    else if (ch === '(') round += 1;
+    else if (ch === ')') round = Math.max(0, round - 1);
+    else if (ch === '<' && curly === 0 && round === 0) angle += 1;
+    else if (ch === '>' && curly === 0 && round === 0) angle = Math.max(0, angle - 1);
+    if (onChar(ch, curly + round + angle, i) === false) return;
   }
-  return s;
 }
 
-/** `k=v k=v` (and bare flags) after a head token, respecting `< >` and `{ }`. */
+function stripComment(s: string): string {
+  let cut = -1;
+  walkDepth(s, (ch, depth, i) => { if (ch === ';' && depth === 0) { cut = i; return false; } return undefined; });
+  return cut < 0 ? s : s.slice(0, cut);
+}
+
+/** `k=v k=v` (and bare flags) after a head token, respecting `< >`, `{ }` and `( )`. */
 function splitArgs(s: string): string[] {
   const out: string[] = [];
   let cur = '';
-  let depth = 0;
-  for (const ch of s) {
-    if (ch === '<' || ch === '{' || ch === '(') depth += 1;
-    else if (ch === '>' || ch === '}' || ch === ')') depth = Math.max(0, depth - 1);
-    if (/\s/.test(ch) && depth === 0) { if (cur) out.push(cur); cur = ''; continue; }
+  walkDepth(s, (ch, depth) => {
+    // Depth is measured after the bracket itself, so a closing bracket still belongs to the token.
+    if (/\s/.test(ch) && depth === 0) { if (cur) out.push(cur); cur = ''; return undefined; }
     cur += ch;
-  }
+    return undefined;
+  });
   if (cur) out.push(cur);
   return out;
 }
@@ -217,6 +252,28 @@ export function parseColony(text: string): { score: ColonyScore; errors: LoomPar
     }
     if (h === 'seed') { const n = Number(rest[0]); if (!Number.isFinite(n)) err(lineNo, 'seed needs a number'); else score.seed = Math.floor(n); continue; }
     if (h === 'form') { const f = (rest[0] ?? '').replace(/[^A-Za-z]/g, ''); if (!f) err(lineNo, 'form is letters by lap, e.g. AABA'); else score.form = f.toUpperCase(); continue; }
+    if (h === 'swing') {
+      const v = Number(rest[0]);
+      if (!Number.isFinite(v) || v < 0.5 || v > 0.85) err(lineNo, 'swing is 0.5 (straight) to 0.85, e.g. swing .58'); else score.swing = v;
+      continue;
+    }
+    if (h === 'grain') {
+      const v = Number(rest[0]);
+      if (!(GRAINS as readonly number[]).includes(v)) err(lineNo, `grain is beats per shard: ${GRAINS.join(', ')}`); else score.grain = v;
+      continue;
+    }
+    if (h === 'grow') {
+      const rate = Number(rest[0]);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) { err(lineNo, 'grow is a rate 0–1, e.g. grow .5 max=20'); continue; }
+      const spec: GrowSpec = { rate, max: 24 };
+      for (const a of rest.slice(1)) {
+        const m = /^max=(\d+)$/.exec(a);
+        if (!m) { err(lineNo, `grow option looks like max=20 — got "${a}"`); continue; }
+        spec.max = Math.max(2, Math.min(96, Number(m[1])));
+      }
+      score.grow = spec;
+      continue;
+    }
     if (h === 'meter') {
       const m = parseMeter(rest[0] ?? '');
       if (!m) { err(lineNo, 'meter looks like 7/8 (optionally groups=3+2+2)'); continue; }
@@ -263,14 +320,25 @@ export function parseColony(text: string): { score: ColonyScore; errors: LoomPar
       if (h === 'loop') {
         const q = body[0] ? parseQueryToken(body[0], lineNo, errors) : null;
         if (!q) { if (!body[0]) err(lineNo, 'loop needs a shard token: loop NAME = <song:drums> beats=8'); continue; }
-        const node: LoopNode = { kind: 'loop', id, query: q, beats: 4, gain: 0, transpose: 0, hold: false };
+        const node: LoopNode = { kind: 'loop', id, query: q, beats: 4, gain: 0, transpose: 0, hold: false, ...LOOP_DEFAULTS };
         for (const a of body.slice(1)) {
           if (a === 'hold') { node.hold = true; continue; }
-          const m = /^(beats|gain|transpose|trans)=(.+)$/.exec(a);
-          if (!m) { err(lineNo, `loop option looks like beats=8, gain=-3, transpose=5 or hold — got "${a}"`); continue; }
+          const sm = /^space=([a-z]+)$/.exec(a);
+          if (sm) {
+            if ((SPACE_MODES as readonly string[]).includes(sm[1])) node.space = sm[1] as SpaceMode; else err(lineNo, `space is ${SPACE_MODES.join(', ')} — got "${sm[1]}"`);
+            continue;
+          }
+          const m = /^(beats|gain|transpose|trans|pan|cut|cutoff|res|resonance|glide)=(.+)$/.exec(a);
+          if (!m) { err(lineNo, `loop option looks like beats=8, gain=-3, transpose=5, pan=-.5, cut=.4, res=2, glide=-5, space=orbit or hold — got "${a}"`); continue; }
           const v = Number(m[2]);
           if (!Number.isFinite(v)) { err(lineNo, `${m[1]} needs a number`); continue; }
-          if (m[1] === 'beats') node.beats = Math.max(0.25, v); else if (m[1] === 'gain') node.gain = v; else node.transpose = v;
+          if (m[1] === 'beats') node.beats = Math.max(0.25, v);
+          else if (m[1] === 'gain') node.gain = v;
+          else if (m[1] === 'pan') node.pan = Math.max(-1, Math.min(1, v));
+          else if (m[1] === 'cut' || m[1] === 'cutoff') node.cutoff = Math.max(0, Math.min(1, v));
+          else if (m[1] === 'res' || m[1] === 'resonance') node.resonance = Math.max(0.1, Math.min(18, v));
+          else if (m[1] === 'glide') node.glide = Math.max(-24, Math.min(24, v));
+          else node.transpose = v;
         }
         if (node.query.beats == null) node.query = { ...node.query, beats: [1, 4, 8, 16].includes(node.beats) ? node.beats : undefined };
         g.nodes.push(node);
@@ -307,7 +375,7 @@ export function parseColony(text: string): { score: ColonyScore; errors: LoomPar
       }
       continue;
     }
-    err(lineNo, `unknown line "${head}" (bpm, key, seed, form, meter, tempo, loop, rule, gate, mod, colony, or an a -> b edge)`);
+    err(lineNo, `unknown line "${head}" (bpm, key, seed, form, swing, grain, grow, meter, tempo, loop, rule, gate, mod, colony, or an a -> b edge)`);
   }
   if (stack.length > 1) err(0, `${stack.length - 1} colony block${stack.length > 2 ? 's are' : ' is'} missing a closing }`);
 
@@ -336,6 +404,11 @@ function serializeNode(n: ColonyNode, indent: string, out: string[]): void {
       const opts = [`beats=${num(n.beats)}`];
       if (n.gain) opts.push(`gain=${num(n.gain)}`);
       if (n.transpose) opts.push(`transpose=${num(n.transpose)}`);
+      if (n.pan) opts.push(`pan=${num(n.pan)}`);
+      if (n.cutoff !== LOOP_DEFAULTS.cutoff) opts.push(`cut=${num(n.cutoff)}`);
+      if (n.resonance !== LOOP_DEFAULTS.resonance) opts.push(`res=${num(n.resonance)}`);
+      if (n.space !== 'fixed') opts.push(`space=${n.space}`);
+      if (n.glide) opts.push(`glide=${num(n.glide)}`);
       if (n.hold) opts.push('hold');
       out.push(`${indent}loop ${n.id} = ${serializeQuery(q)} ${opts.join(' ')}`);
       return;
@@ -378,6 +451,9 @@ export function serializeColony(score: ColonyScore): string {
   if (score.key) out.push(`key ${score.key === 'follow' ? 'follow' : score.key + (score.scale === 'minor' ? 'm' : '')}`);
   if (score.seed != null) out.push(`seed ${score.seed}`);
   if (score.form) out.push(`form ${score.form}`);
+  if (score.swing != null) out.push(`swing ${num(score.swing)}`);
+  if (score.grain != null) out.push(`grain ${score.grain}`);
+  if (score.grow) out.push(`grow ${num(score.grow.rate)} max=${score.grow.max}`);
   out.push(`meter ${meterText(score.root.meter)}`);
   if (score.root.tempo !== 1) out.push(`tempo ${num(score.root.tempo)}`);
   out.push('');
@@ -395,30 +471,55 @@ export function walkNodes(g: ColonyGraph, path: string[] = []): { node: ColonyNo
   return out;
 }
 
-export const STARTER_COLONY = `; LOOM colony — cells, not lanes. Triggers travel along the arrows.
-; A rule fires symbols on the colony's bar; a loop plays a stem loop when hit;
-; a colony is a cell that is itself a whole graph, with its own meter.
-bpm 120
-key follow
-seed 11
-meter 4/4
-
-loop kick = {role=drums beats=8} beats=8 hold
-loop bass = b beats=4
-loop word = v beats=1
-rule pulse = euclid(hits=5 steps=8)
-rule swarm = life(steps=16 rows=3 density=.35)
-gate maybe = ?60
-mod dark = =cut.35,gain-6
-
-colony seven meter=7/8 groups=3+2+2 {
-  rule tick = euclid(hits=3 steps=7)
-  loop hat = h beats=1
-  tick -> hat
+/** The path key of a node: colony ids then the node id, joined by "/". */
+export function nodeKey(path: string[], id: string): string {
+  return [...path, id].join('/');
 }
 
-pulse -> kick
-swarm -> bass on=0
-swarm -> maybe -> dark -> word
-pulse -> seven on=0
+/** The node at a path key, with its graph and path. */
+export function findNode(root: ColonyGraph, key: string): { node: ColonyNode; path: string[]; graph: ColonyGraph } | null {
+  for (const w of walkNodes(root)) if (nodeKey(w.path, w.node.id) === key) return w;
+  return null;
+}
+
+/** The graph a path key points into: null = root, "seven" = that colony's graph. */
+export function graphAt(root: ColonyGraph, key: string | null): ColonyGraph | null {
+  if (!key) return root;
+  const w = findNode(root, key);
+  return w && w.node.kind === 'colony' ? w.node.graph : null;
+}
+
+/** `bass`, then `bass2`, `bass3` … — an id no node in the graph has. */
+export function uniqueId(g: ColonyGraph, base: string): string {
+  const stem = base.replace(/[^A-Za-z0-9_\-.]/g, '').replace(/^[^A-Za-z]+/, '') || 'cell';
+  if (!g.nodes.some((n) => n.id === stem)) return stem;
+  for (let n = 2; n < 10000; n += 1) if (!g.nodes.some((x) => x.id === `${stem}${n}`)) return `${stem}${n}`;
+  return `${stem}${Date.now()}`;
+}
+
+/** Wires a cell can carry: a rule fires on its symbols; a loop fires when it
+ *  ENDS (a -> b chains b after a; a -> a repeats a); gates, mods and colonies
+ *  pass what they get. Nothing can point at a rule, and only a loop can
+ *  point at itself. */
+export function canWire(from: ColonyNode, to: ColonyNode): boolean {
+  if (to.kind === 'rule') return false;
+  if (from.id === to.id) return from.kind === 'loop';
+  return true;
+}
+
+export const STARTER_COLONY = `; LOOM colony — a spore. Click it. It plays, repeats, and GROWS from there:
+; cells divide off it and wire in, ripen over a few bars, and wither when they
+; fall silent. A rule fires on its steps (with swing); a loop fires its wires
+; when it ENDS (spore -> spore repeats). grain = beats per shard it reaches for.
+bpm 96
+key follow
+seed 11
+swing .58
+grain 8
+grow .5 max=18
+meter 4/4
+
+loop spore = {role=drums beats=8} beats=8 hold
+
+spore -> spore
 `;

@@ -8,6 +8,11 @@
          across sessions) so the version query is the cleanest
          "please refetch" signal. Bump when /favicon.svg changes. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4" />
+    <!-- The boot screen's credit logo and wordmark model start downloading
+         before the JS bundle, so "by GANTASMO" is ready the moment the
+         cinematic asks for it. -->
+    <link rel="preload" as="image" href="/GANTASMO_LOGO.webp" />
+    <link rel="preload" as="fetch" href="/theDAW.glb" crossorigin />
     <title>theDAW · by GANTASMO</title>
     <!-- Instant boot cover. Pure inline HTML/CSS so it paints on the FIRST byte,
          before the JS bundle, React, or any /api request — the user never sees a

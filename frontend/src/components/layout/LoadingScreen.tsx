@@ -25,6 +25,12 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete
   // theDAW, then by, then GANTASMO. They used to run on fixed 1.6s/2.0s timers
   // and so appeared while the wordmark was still assembling.
   const [formed, setFormed] = useState(false);
+  // The cinematic reports its own completion, but the screen only lifts once
+  // the GANTASMO logo has had its moment: it used to fade in 0.75 s after the
+  // wordmark formed and take 1.1 s to land — after the screen had already
+  // gone, so the credit was never actually seen.
+  const [modelDone, setModelDone] = useState(false);
+  const [logoSeen, setLogoSeen] = useState(false);
   const bootStatus = useBootStatusStore((s) => s.status);
   const bootLogs = useBootStatusStore((s) => s.logs);
   const bootError = useBootStatusStore((s) => s.error);
@@ -40,6 +46,21 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete
     if (cinematicActive === false && elapsed >= 1) onComplete?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cinematicActive, elapsed]);
+
+  // Complete = the wordmark resolved AND the logo has been on screen ~1 s.
+  useEffect(() => {
+    if (!modelDone || !logoSeen) return;
+    const t = setTimeout(() => onComplete?.(), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelDone, logoSeen]);
+  // The logo counts as seen once its fade has finished (or, if the image is
+  // slow, once a second has passed since the credits were released).
+  useEffect(() => {
+    if (!formed || logoSeen) return;
+    const t = setTimeout(() => setLogoSeen(true), 1400);
+    return () => clearTimeout(t);
+  }, [formed, logoSeen]);
 
   // Same fallback for the credit reveal: with no WebGL there is no formation to
   // wait on, so release "by"/GANTASMO on the static branding instead of leaving
@@ -62,7 +83,7 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete
       <LiquidChromeTitle
         className="absolute inset-0 block h-full w-full"
         onActive={setCinematicActive}
-        onComplete={onComplete}
+        onComplete={() => setModelDone(true)}
         onFormed={() => setFormed(true)}
       />
 
@@ -93,7 +114,7 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete
           color: 'transparent',
           textShadow: '0 1px 0 rgba(255,255,255,0.18), 0 3px 6px rgba(0,0,0,0.6)',
           // Delays are now relative to the wordmark resolving, not to page load.
-          animation: 'bootCreditFade 0.9s ease 0.05s both',
+          animation: 'bootCreditFade 0.45s ease 0s both',
         }}
       >
         by
@@ -101,20 +122,24 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ onSkip, onComplete
       )}
 
       {/* GANTASMO — the animated logo, ~30% size, tight under "by". Comes in
-          after "by", completing the theDAW -> by -> GANTASMO order. */}
-      {formed && (
-        <img
-          src="/GANTASMO_LOGO.webp"
-          alt="GANTASMO"
-          className="relative z-10 shrink-0 object-contain select-none"
-          draggable={false}
-          style={{
-            height: 'clamp(34px, 8vh, 110px)',
-            maxWidth: '70vw',
-            animation: 'bootCreditFade 1.1s ease 0.75s both',
-          }}
-        />
-      )}
+          right after "by", completing the theDAW -> by -> GANTASMO order. It
+          is MOUNTED from the first frame (invisible) so the 0.9 MB image is
+          already decoded when its moment comes — mounting it on `formed`
+          used to start the download at the reveal, which is why the word
+          GANTASMO so often never showed. */}
+      <img
+        src="/GANTASMO_LOGO.webp"
+        alt="GANTASMO"
+        className="relative z-10 shrink-0 object-contain select-none"
+        draggable={false}
+        onAnimationEnd={() => setLogoSeen(true)}
+        style={{
+          height: 'clamp(34px, 8vh, 110px)',
+          maxWidth: '70vw',
+          opacity: formed ? undefined : 0,
+          animation: formed ? 'bootCreditFade 0.6s ease 0.2s both' : 'none',
+        }}
+      />
 
       {/* First-run bootstrap status, so a slow or failed setup is visible
           instead of a silent hang. Low-key under the logo; errors stand out. */}

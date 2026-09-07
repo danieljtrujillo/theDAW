@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -34,10 +33,13 @@ interface LiquidChromeTitleProps {
   className?: string;
 }
 
-const FORM_SECONDS = 5.2;
+// Trimmed from 5.2 s: the formation is the whole wait on a fast machine, and
+// the credits (by / GANTASMO) need their own time on screen after it.
+const FORM_SECONDS = 3.4;
 // The wordmark is legible well before the easing fully settles; reveal the
-// credits at this point rather than waiting for the last few percent.
-const FORMED_AT = 0.82;
+// credits at this point rather than waiting for the last few percent (it was
+// 0.82, which left GANTASMO landing after the screen had already lifted).
+const FORMED_AT = 0.5;
 const easeOutCubic = (x: number) => 1 - Math.pow(1 - x, 3);
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
@@ -64,7 +66,9 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
 
     let renderer: THREE.WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      // No MSAA: the bloom pass softens edges anyway, and the goo sheet is the
+      // cost centre — every fragment we skip is a frame we keep.
+      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false, powerPreference: 'high-performance' });
       onActive?.(true);
     } catch {
       onActive?.(false);
@@ -72,7 +76,9 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
     }
     let w = canvas.clientWidth || window.innerWidth;
     let h = canvas.clientHeight || window.innerHeight;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    // 1.0, not 1.5: the boot screen is a soft, blooming picture; a HiDPI
+    // buffer doubled the fill cost for no visible gain.
+    renderer.setPixelRatio(1);
     renderer.setSize(w, h, false);
     renderer.setClearColor(0x000000, 0); // transparent — the DOM background shows through
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -190,7 +196,10 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
     // Oversized on purpose: the sheet must fill the whole window at any aspect
     // ratio, and it is resized again in onResize from the camera frustum so a
     // wide monitor never sees its edges.
-    const gooGeo = new THREE.PlaneGeometry(1, 1, 360, 240);
+    // 160×100 (was 360×240, 86k verts): the Chladni waves are low-frequency,
+    // so a quarter of the vertices draw the same picture at a quarter of the
+    // vertex-shader cost (three chladni() evaluations per vertex per frame).
+    const gooGeo = new THREE.PlaneGeometry(1, 1, 160, 100);
     // The SAME material as the wordmark — same black albedo, same near-mirror.
     // They are one substance; the only thing separating them on screen is the
     // angle each surface reflects the lights back at the camera.
@@ -285,12 +294,11 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
 
     // Env reflections. The chrome is a near-perfect mirror, so without an env map
     // it renders black (invisible). A synchronous RoomEnvironment is installed
-    // immediately so the model is reflective the instant it loads — the formation
-    // then starts on the model alone and no longer waits on the EXR download. The
-    // EXR upgrades the reflections when it arrives.
+    // immediately so the model is reflective the instant it loads. The 0.9 MB
+    // EXR that used to replace it mid-boot is gone: it competed with the model
+    // and the logo for bandwidth, cost a PMREM bake on the GPU at the worst
+    // moment, and was (by its own comment) darker than the room it replaced.
     const pmrem = new THREE.PMREMGenerator(renderer);
-    pmrem.compileEquirectangularShader();
-    let envRT: THREE.WebGLRenderTarget | null = null;
     // Kept for the LIFETIME of the scene, not disposed when the EXR lands. A
     // black mirror in a black environment is black — the wordmark gets away with
     // it because its bevels catch the key lights edge-on, but the goo sheet is
@@ -312,22 +320,6 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
     } catch {
       /* fallback environment is best-effort */
     }
-    new EXRLoader().load('/piz_compressed.exr', (tex) => {
-      if (disposed) {
-        tex.dispose();
-        return;
-      }
-      tex.mapping = THREE.EquirectangularReflectionMapping;
-      const exrRT = pmrem.fromEquirectangular(tex);
-      // Only the WORDMARK upgrades to the EXR. The goo stays on the bright room
-      // env — swapping it to the dark EXR is exactly what made the sheet vanish.
-      chrome.envMap = exrRT.texture;
-      scene.environment = exrRT.texture;
-      tex.dispose();
-      envRT?.dispose();
-      envRT = exrRT;
-    });
-
     new GLTFLoader().load('/theDAW.glb', (gltf) => {
       if (disposed) return;
       // Smooth the faceted normals: weld duplicate verts (-> indexed) then average
@@ -371,7 +363,9 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
     // Post: bloom gives the chrome its hot highlights.
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.85, 0.55, 0.62);
+    // Bloom at half resolution: it is a blur, so the half-size mip chain looks
+    // identical and costs a quarter of the fill.
+    const bloom = new UnrealBloomPass(new THREE.Vector2(w / 2, h / 2), 0.85, 0.55, 0.62);
     composer.addPass(bloom);
 
     const clockStart = performance.now(); // elapsed seconds, no deprecated THREE.Clock
@@ -449,6 +443,7 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
       h = canvas.clientHeight || window.innerHeight;
       renderer.setSize(w, h, false);
       composer.setSize(w, h);
+      bloom.setSize(w / 2, h / 2);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       fitGoo();   // re-cover the window at the new aspect
@@ -463,7 +458,6 @@ export const LiquidChromeTitle: React.FC<LiquidChromeTitleProps> = ({ onActive, 
       ro.disconnect();
       canvas.removeEventListener('webglcontextlost', onContextLost);
       window.removeEventListener('pointermove', onPointerMove);
-      envRT?.dispose();
       roomEnvRT?.dispose();
       pmrem.dispose();
       gooGeo.dispose();

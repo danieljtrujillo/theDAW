@@ -271,6 +271,11 @@ function lifeGenerations(t: GenTile, seed: number, upTo: number): boolean[][][] 
   return gens;
 }
 
+/** The grid of a Life generator's generation (rows × span), for the canvas. */
+export function lifeGrid(t: GenTile, seed: number, generation: number): boolean[][] {
+  return lifeGenerations(t, seed, generation)[generation];
+}
+
 /** Population of a Life generator's generation, for the plane's badge. */
 export function lifePopulation(t: GenTile, seed: number, generation: number): number {
   const g = lifeGenerations(t, seed, generation)[generation];

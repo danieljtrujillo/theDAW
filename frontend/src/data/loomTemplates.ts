@@ -192,6 +192,9 @@ bpm 112
 key follow
 seed 74
 form AABA
+swing .6
+grain 8
+grow .35 max=32
 meter 4/4
 
 loop drums = {role=drums beats=8} beats=8 hold

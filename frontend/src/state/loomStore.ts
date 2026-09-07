@@ -31,8 +31,10 @@ import { logInfo } from './logStore';
 import { loomTemplateById } from '../data/loomTemplates';
 import { breedScores, fragmentScore, mutateScore } from '../lib/loomEvolve';
 import { DEFAULT_SEED } from '../lib/loomEngine';
-import { parseColony, serializeColony, STARTER_COLONY, walkNodes, type ColonyNode, type ColonyScore } from '../lib/colony';
+import { canWire, findNode, graphAt, LOOP_DEFAULTS, nodeKey, parseColony, serializeColony, STARTER_COLONY, uniqueId, walkNodes, type ColonyGraph, type ColonyNode, type ColonyScore, type GrowSpec, type Meter } from '../lib/colony';
+import { GEN_DEFAULT_OPTS } from '../lib/loomGen';
 import { ColonyEngine, type ColonyEvent } from '../lib/colonyEngine';
+import { growColony, vitalityOf, WITHER_LAPS, type Activity } from '../lib/colonyGrow';
 import { logError } from './logStore';
 
 export interface TileSel { lane: string; row: number; step: number }
@@ -44,6 +46,9 @@ export interface LoomGeneration { text: string; label: string; at: number }
 
 export type LoomMode = 'plane' | 'colony';
 export interface NodePos { x: number; y: number }
+export type ColonyKind = 'loop' | 'rule' | 'gate' | 'mod' | 'colony';
+/** A wire: the graph it lives in (null = root) and its ends. */
+export interface EdgeSel { parent: string | null; from: string; to: string }
 
 interface LoomState {
   text: string;
@@ -71,10 +76,35 @@ interface LoomState {
   /** Node positions on the canvas, keyed by path ("seven/hat"), colony-local. */
   colonyPositions: Record<string, NodePos>;
   colonySelected: string | null;
+  /** The wire under the inspector, if any. */
+  colonySelectedEdge: EdgeSel | null;
+  /** The colony the canvas has dived into (null = the root dish). */
+  colonyFocus: string | null;
   /** Names of loop nodes that resolved to nothing. */
   colonyUnresolved: string[];
+  /** Root lap the engine is on (updates once a bar). */
+  colonyLap: number;
+  /** Growth steps that changed the colony since it was applied. */
+  colonyGen: number;
 
   setMode: (m: LoomMode) => void;
+  selectColonyEdge: (sel: EdgeSel | null) => void;
+  setColonyFocus: (key: string | null) => void;
+  /** Add a cell of `kind` into the graph at `parent` (null = root), near a spot. Returns its key. */
+  addColonyNode: (parent: string | null, kind: ColonyKind, near?: NodePos) => string | null;
+  removeColonyNode: (key: string) => void;
+  duplicateColonyNode: (key: string) => string | null;
+  addColonyEdge: (parent: string | null, from: string, to: string) => boolean;
+  removeColonyEdge: (parent: string | null, from: string, to: string) => void;
+  setColonyEdgeOn: (parent: string | null, from: string, to: string, on: number | undefined) => void;
+  /** The root's meter and tempo (a nested colony's live on its node). */
+  setRootMeter: (meter: Meter, tempo?: number) => void;
+  setGrow: (spec: GrowSpec | null) => void;
+  setSwing: (swing: number) => void;
+  setGrain: (grain: number) => void;
+  setColonySeed: (seed: number) => void;
+  /** One growth step now; with a key, bud from that cell. */
+  growNow: (force?: string) => void;
   setColonyText: (t: string) => void;
   applyColony: () => boolean;
   setColonyPosition: (key: string, pos: NodePos) => void;
@@ -300,6 +330,47 @@ function getEngine(): LoomEngine {
 }
 
 const colonyListeners = new Set<(e: ColonyEvent) => void>();
+
+/** What fired when, who was born when, who is withering — the growth
+ *  bookkeeping (module state: it changes many times a bar). */
+const activity: Activity = { fires: {}, born: {}, dying: {} };
+let rootLap = 0;
+/** Laps counted by hand while the engine is stopped (each GROW press). */
+let manualLap = 0;
+
+/** The root lap, fractional while playing, for ripening and withering. */
+function lapNow(): number {
+  return colonyEngine?.running ? colonyEngine.lapFloat : manualLap;
+}
+
+/** How alive a cell is right now (0 newborn or withering, 1 ripe) — for the canvas. */
+export function colonyVitality(key: string): number {
+  return vitalityOf(activity, key, lapNow());
+}
+
+/** Whether a cell is withering (the canvas hollows it out). */
+export function colonyWithering(key: string): boolean {
+  return activity.dying[key] != null;
+}
+
+/** Where a newborn cell appears: ON its parent (it divides off; the bonds
+ *  push it out), or at the centre of a newborn colony. */
+function birthPosition(positions: Record<string, NodePos>, key: string, parent: string | null, k: number): NodePos {
+  const angle = ((k * 137.5) % 360) * (Math.PI / 180);
+  if (parent && key.startsWith(`${parent}/`)) return { x: Math.round(Math.cos(angle) * 12), y: Math.round(Math.sin(angle) * 12) };
+  const p = parent ? positions[parent] ?? { x: 0, y: 0 } : { x: 0, y: 0 };
+  return { x: Math.round(p.x + Math.cos(angle) * 8), y: Math.round(p.y + Math.sin(angle) * 8) };
+}
+
+/** Re-key one record when a cell moves (enveloped) or dies. */
+function rekey<T>(rec: Record<string, T>, from: string, to: string | null): void {
+  for (const k of Object.keys(rec)) {
+    if (k !== from && !k.startsWith(`${from}/`)) continue;
+    const v = rec[k];
+    delete rec[k];
+    if (to) rec[`${to}${k.slice(from.length)}`] = v;
+  }
+}
 /** The canvas subscribes here; events carry their audio-clock time. */
 export function subscribeColonyEvents(fn: (e: ColonyEvent) => void): () => void {
   colonyListeners.add(fn);
@@ -319,11 +390,23 @@ function getColonyEngine(): ColonyEngine {
       if (!t || !shard.key) return 0;
       return Math.max(-6, Math.min(6, transposeSemitones(shard.key, shard.scale, t.key, t.scale)));
     },
-    onEvent: (e) => { for (const fn of colonyListeners) fn(e); },
+    onEvent: (e) => {
+      if (e.kind === 'fire') activity.fires[e.path.join('/')] = rootLap;
+      else if (e.kind === 'bar' && e.path.length === 0) {
+        rootLap = e.lap ?? 0;
+        useLoomStore.setState({ colonyLap: rootLap });
+        // The organism grows at the top of every root bar; the new body is
+        // queued and takes over at the next bar boundary.
+        const st = useLoomStore.getState();
+        if (st.colonyApplied.grow && st.colonyApplied.grow.rate > 0 && !st.colonyDirty && st.colonyErrors.length === 0) st.growNow();
+      }
+      for (const fn of colonyListeners) fn(e);
+    },
     onUnresolved: (path, node) => {
       const key = [...path, node.id].join('/');
       useLoomStore.setState((s) => (s.colonyUnresolved.includes(key) ? s : { colonyUnresolved: [...s.colonyUnresolved, key].slice(-8) }));
     },
+    vitality: (path, id, lap) => vitalityOf(activity, nodeKey(path, id), lap),
   });
   return colonyEngine;
 }
@@ -360,6 +443,30 @@ export const useLoomStore = create<LoomState>()(
         set({ colonyApplied: next, colonyText: text, colonyErrors: [], colonyDirty: false, queued: eng.running && eng.hasQueued, colonyUnresolved: [] });
       };
 
+      /** Default cells for the + buttons: each plays something on its own. */
+      const freshNode = (g: ColonyGraph, kind: ColonyKind): ColonyNode => {
+        switch (kind) {
+          case 'loop': return { kind: 'loop', id: uniqueId(g, 'drums'), query: { role: 'drums', beats: 4 }, beats: 4, gain: 0, transpose: 0, hold: false, ...LOOP_DEFAULTS };
+          case 'rule': { const steps = g.meter.num * (g.meter.den >= 8 ? 1 : 2); return { kind: 'rule', id: uniqueId(g, 'pulse'), gen: 'euclid', steps, symbols: 2, opts: { ...GEN_DEFAULT_OPTS.euclid, hits: Math.max(1, Math.round(steps * 0.6)) } }; }
+          case 'gate': return { kind: 'gate', id: uniqueId(g, 'maybe'), pct: 50 };
+          case 'mod': return { kind: 'mod', id: uniqueId(g, 'dark'), mode: 'abs', params: { cutoff: 0.4 } };
+          case 'colony': {
+            const child: ColonyGraph = { meter: { num: 7, den: 8, groups: [3, 2, 2] }, tempo: 1, nodes: [], edges: [] };
+            child.nodes.push({ kind: 'rule', id: 'tick', gen: 'euclid', steps: 7, symbols: 2, opts: { ...GEN_DEFAULT_OPTS.euclid, hits: 3 } });
+            child.nodes.push({ kind: 'loop', id: 'hat', query: { role: 'hihat', beats: 1 }, beats: 1, gain: -6, transpose: 0, hold: false, ...LOOP_DEFAULTS });
+            child.edges.push({ from: 'tick', to: 'hat' });
+            return { kind: 'colony', id: uniqueId(g, 'seven'), graph: child };
+          }
+        }
+      };
+
+      /** Drop every saved position under a key (the node and, for a colony, its cells). */
+      const dropPositions = (positions: Record<string, NodePos>, key: string): Record<string, NodePos> => {
+        const out: Record<string, NodePos> = {};
+        for (const [k, v] of Object.entries(positions)) if (k !== key && !k.startsWith(`${key}/`)) out[k] = v;
+        return out;
+      };
+
       return {
         text: STARTER_SCORE,
         applied: initial.score,
@@ -374,14 +481,170 @@ export const useLoomStore = create<LoomState>()(
         bpm: initial.score.bpm ?? beatClock.bpm,
         history: [],
         keepLanes: [],
-        mode: 'plane',
+        mode: 'colony',
         colonyText: STARTER_COLONY,
         colonyApplied: initialColony.score,
         colonyErrors: initialColony.errors,
         colonyDirty: false,
         colonyPositions: {},
         colonySelected: null,
+        colonySelectedEdge: null,
+        colonyFocus: null,
         colonyUnresolved: [],
+        colonyLap: 0,
+        colonyGen: 0,
+
+        selectColonyEdge: (sel) => set({ colonySelectedEdge: sel, colonySelected: sel ? null : get().colonySelected }),
+        setColonyFocus: (key) => set({ colonyFocus: key }),
+
+        addColonyNode: (parent, kind, near) => {
+          const next = clone(get().colonyApplied);
+          const g = graphAt(next.root, parent);
+          if (!g) return null;
+          const node = freshNode(g, kind);
+          g.nodes.push(node);
+          const key = parent ? `${parent}/${node.id}` : node.id;
+          const k = walkNodes(next.root).length;
+          const angle = ((k * 137.5) % 360) * (Math.PI / 180);
+          const pos = near ?? { x: Math.round(Math.cos(angle) * 110), y: Math.round(Math.sin(angle) * 110) };
+          set((s) => ({ colonyPositions: { ...s.colonyPositions, [key]: pos }, colonySelected: key, colonySelectedEdge: null }));
+          commitColony(next);
+          logInfo('loom', `Added ${kind} "${node.id}"${parent ? ` in ${parent}` : ''}`);
+          return key;
+        },
+
+        removeColonyNode: (key) => {
+          const next = clone(get().colonyApplied);
+          const w = findNode(next.root, key);
+          if (!w) return;
+          w.graph.nodes.splice(w.graph.nodes.indexOf(w.node), 1);
+          w.graph.edges = w.graph.edges.filter((e) => e.from !== w.node.id && e.to !== w.node.id);
+          set((s) => ({
+            colonyPositions: dropPositions(s.colonyPositions, key),
+            colonySelected: s.colonySelected === key || s.colonySelected?.startsWith(`${key}/`) ? null : s.colonySelected,
+            colonySelectedEdge: null,
+            colonyFocus: s.colonyFocus === key || s.colonyFocus?.startsWith(`${key}/`) ? null : s.colonyFocus,
+          }));
+          commitColony(next);
+        },
+
+        duplicateColonyNode: (key) => {
+          const next = clone(get().colonyApplied);
+          const w = findNode(next.root, key);
+          if (!w) return null;
+          const copy = clone(w.node);
+          copy.id = uniqueId(w.graph, w.node.id.replace(/\d+$/, ''));
+          w.graph.nodes.push(copy);
+          // The copy hears what the original hears.
+          for (const e of [...w.graph.edges]) if (e.to === w.node.id && e.from !== w.node.id) w.graph.edges.push({ from: e.from, to: copy.id, on: e.on });
+          const parent = w.path.length ? w.path.join('/') : null;
+          const newKey = parent ? `${parent}/${copy.id}` : copy.id;
+          const p = get().colonyPositions[key] ?? { x: 0, y: 0 };
+          set((s) => ({ colonyPositions: { ...s.colonyPositions, [newKey]: { x: p.x + 70, y: p.y + 40 } }, colonySelected: newKey, colonySelectedEdge: null }));
+          commitColony(next);
+          return newKey;
+        },
+
+        addColonyEdge: (parent, from, to) => {
+          const next = clone(get().colonyApplied);
+          const g = graphAt(next.root, parent);
+          if (!g) return false;
+          const a = g.nodes.find((n) => n.id === from);
+          const b = g.nodes.find((n) => n.id === to);
+          if (!a || !b || !canWire(a, b)) return false;
+          if (g.edges.some((e) => e.from === from && e.to === to)) return false;
+          g.edges.push({ from, to });
+          set({ colonySelectedEdge: { parent, from, to }, colonySelected: null });
+          commitColony(next);
+          return true;
+        },
+
+        removeColonyEdge: (parent, from, to) => {
+          const next = clone(get().colonyApplied);
+          const g = graphAt(next.root, parent);
+          if (!g) return;
+          g.edges = g.edges.filter((e) => !(e.from === from && e.to === to));
+          set({ colonySelectedEdge: null });
+          commitColony(next);
+        },
+
+        setColonyEdgeOn: (parent, from, to, on) => {
+          const next = clone(get().colonyApplied);
+          const g = graphAt(next.root, parent);
+          const e = g?.edges.find((x) => x.from === from && x.to === to);
+          if (!e) return;
+          e.on = on;
+          commitColony(next);
+        },
+
+        setRootMeter: (meter, tempo) => {
+          const next = clone(get().colonyApplied);
+          next.root.meter = meter;
+          if (tempo != null) next.root.tempo = tempo;
+          commitColony(next);
+        },
+
+        setGrow: (spec) => {
+          const next = clone(get().colonyApplied);
+          if (spec) next.grow = spec; else delete next.grow;
+          commitColony(next);
+        },
+
+        setSwing: (swing) => {
+          const next = clone(get().colonyApplied);
+          next.swing = Math.round(Math.max(0.5, Math.min(0.85, swing)) * 100) / 100;
+          commitColony(next);
+        },
+
+        setGrain: (grain) => {
+          const next = clone(get().colonyApplied);
+          next.grain = grain;
+          commitColony(next);
+        },
+
+        setColonySeed: (seed) => {
+          const next = clone(get().colonyApplied);
+          next.seed = Math.max(0, Math.floor(seed));
+          commitColony(next);
+        },
+
+        growNow: (force) => {
+          const st = get();
+          // Stopped, every press is its own lap (so the dice move); a manual
+          // press also grows eagerly — it is "one step of life", not a maybe.
+          const lap = st.running ? rootLap : (manualLap += 1);
+          const res = growColony(st.colonyApplied, lap, activity, force ? { force, rate: 1 } : st.running ? undefined : { rate: Math.max(st.colonyApplied.grow?.rate ?? 0, 0.8) });
+          if (!res.born.length && !res.died.length && !res.withering.length && !res.moved.length && !res.changed.length) return;
+          let positions = { ...st.colonyPositions };
+          let selected = st.colonySelected;
+          let focus = st.colonyFocus;
+          // Enveloped cells keep their place: the new membrane sits where the
+          // cell was and the cell moves to its centre.
+          for (const m of res.moved) {
+            const colKey = m.to.slice(0, m.to.lastIndexOf('/'));
+            const at = positions[m.from] ?? { x: 0, y: 0 };
+            positions = dropPositions(positions, m.from);
+            positions[colKey] = at;
+            positions[m.to] = { x: 0, y: 0 };
+            rekey(activity.born, m.from, m.to);
+            rekey(activity.fires, m.from, m.to);
+            rekey(activity.dying, m.from, m.to);
+            if (selected === m.from) selected = m.to;
+            if (focus === m.from) focus = null;
+          }
+          res.born.forEach((b, i) => { if (!positions[b.key]) positions[b.key] = birthPosition(positions, b.key, b.parent, lap * 7 + i); activity.born[b.key] = lap; });
+          for (const w of res.withering) activity.dying[w] = lap + WITHER_LAPS;
+          for (const d of res.died) {
+            positions = dropPositions(positions, d);
+            rekey(activity.born, d, null); rekey(activity.fires, d, null); rekey(activity.dying, d, null);
+            if (selected === d || selected?.startsWith(`${d}/`)) selected = null;
+            if (focus === d || focus?.startsWith(`${d}/`)) focus = null;
+          }
+          set({ colonyPositions: positions, colonySelected: force ? res.born[0]?.key ?? selected : selected, colonyFocus: focus, colonySelectedEdge: null, colonyGen: st.colonyGen + 1 });
+          commitColony(res.score);
+          const what = [res.born.length ? `+${res.born.length}` : '', res.moved.length ? `⊂${res.moved.length}` : '', res.withering.length ? `↓${res.withering.length}` : '', res.died.length ? `−${res.died.length}` : '', res.changed.length ? `~${res.changed.length}` : ''].filter(Boolean).join(' ');
+          logInfo('loom', `${force ? 'Bud' : 'Grew'}: ${what} (${walkNodes(res.score.root).length} cells)`);
+        },
 
         setMode: (m) => {
           if (get().running) get().stop();
@@ -398,7 +661,7 @@ export const useLoomStore = create<LoomState>()(
           const eng = getColonyEngine();
           eng.setScore(score);
           if (score.bpm && !eng.running) beatClock.setBpm(score.bpm, 'loom');
-          set({ colonyApplied: score, colonyErrors: [], colonyDirty: false, queued: eng.running && eng.hasQueued, colonyUnresolved: [], bpm: score.bpm ?? beatClock.bpm });
+          set({ colonyApplied: score, colonyErrors: [], colonyDirty: false, queued: eng.running && eng.hasQueued, colonyUnresolved: [], bpm: score.bpm ?? beatClock.bpm, colonyGen: 0 });
           logInfo('loom', eng.running ? 'Colony queued for the next bar' : 'Colony applied');
           return true;
         },
@@ -407,11 +670,18 @@ export const useLoomStore = create<LoomState>()(
         updateColonyNode: (key, node) => {
           const next = clone(get().colonyApplied);
           for (const w of walkNodes(next.root)) {
-            if ([...w.path, w.node.id].join('/') === key) {
+            if (nodeKey(w.path, w.node.id) === key) {
               const i = w.graph.nodes.indexOf(w.node);
-              // Renames carry the edges with them.
+              // Renames carry the edges, the saved positions and the selection with them.
               if (node.id !== w.node.id) {
+                if (w.graph.nodes.some((n) => n !== w.node && n.id === node.id)) return;
                 for (const e of w.graph.edges) { if (e.from === w.node.id) e.from = node.id; if (e.to === w.node.id) e.to = node.id; }
+                const newKey = nodeKey(w.path, node.id);
+                set((s) => {
+                  const positions: Record<string, NodePos> = {};
+                  for (const [k, v] of Object.entries(s.colonyPositions)) positions[k === key ? newKey : k.startsWith(`${key}/`) ? `${newKey}${k.slice(key.length)}` : k] = v;
+                  return { colonyPositions: positions, colonySelected: s.colonySelected === key ? newKey : s.colonySelected, colonyFocus: s.colonyFocus === key ? newKey : s.colonyFocus };
+                });
               }
               w.graph.nodes[i] = node;
               break;
@@ -421,7 +691,11 @@ export const useLoomStore = create<LoomState>()(
         },
         resetColonyStarter: () => {
           const { score, errors } = parseColony(STARTER_COLONY);
-          set({ colonyText: STARTER_COLONY, colonyApplied: score, colonyErrors: errors, colonyDirty: false, colonySelected: null });
+          activity.fires = {};
+          activity.born = {};
+          activity.dying = {};
+          manualLap = 0;
+          set({ colonyText: STARTER_COLONY, colonyApplied: score, colonyErrors: errors, colonyDirty: false, colonySelected: null, colonySelectedEdge: null, colonyFocus: null, colonyPositions: {}, colonyGen: 0 });
           getColonyEngine().setScore(score);
         },
         refreshResolutions: () => {
@@ -468,7 +742,8 @@ export const useLoomStore = create<LoomState>()(
         stop: () => {
           getEngine().stop();
           getColonyEngine().stop();
-          set({ running: false, queued: false, cursors: {} });
+          set({ running: false, queued: false, cursors: {}, colonyLap: 0 });
+          rootLap = 0;
         },
         toggle: () => { if (get().running) get().stop(); else get().play(); },
 
@@ -633,7 +908,7 @@ export const useLoomStore = create<LoomState>()(
             const ceng = getColonyEngine();
             ceng.setScore(c.score);
             if (c.score.bpm) beatClock.setBpm(c.score.bpm, 'loom');
-            set({ mode: 'colony', colonyText: t.text, colonyApplied: c.score, colonyErrors: c.errors, colonyDirty: false, colonySelected: null, colonyUnresolved: [], bpm: c.score.bpm ?? beatClock.bpm });
+            set({ mode: 'colony', colonyText: t.text, colonyApplied: c.score, colonyErrors: c.errors, colonyDirty: false, colonySelected: null, colonySelectedEdge: null, colonyFocus: null, colonyPositions: {}, colonyUnresolved: [], bpm: c.score.bpm ?? beatClock.bpm, colonyGen: 0 });
             const missingC: string[] = [];
             const idxC = useShardIndexStore.getState();
             for (const ref of t.songs) { const eid = resolveEntryRef(ref); if (eid) idxC.addToCrate(eid); else missingC.push(ref); }
@@ -662,10 +937,13 @@ export const useLoomStore = create<LoomState>()(
     },
     {
       name: 'thedaw-loom-v1',
-      version: 1,
+      version: 2,
+      migrate: (persisted) => ({ ...(persisted as object), mode: 'colony' }),
       partialize: (s) => ({ text: s.text, colonyText: s.colonyText, mode: s.mode, colonyPositions: s.colonyPositions }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
+        // The LOOM tab has one view now: the colony.
+        if (state.mode !== 'colony') useLoomStore.setState({ mode: 'colony' });
         const { score, errors } = parseLoom(state.text);
         useLoomStore.setState({ applied: score, errors, dirty: false, bpm: score.bpm ?? beatClock.bpm });
         getEngine().setScore(score);

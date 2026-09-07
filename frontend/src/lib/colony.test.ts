@@ -1,9 +1,58 @@
 import assert from 'node:assert/strict';
-import { barSeconds, groupStarts, parseColony, serializeColony, STARTER_COLONY, walkNodes } from './colony.ts';
+import { barSeconds, canWire, findNode, graphAt, groupStarts, nodeKey, parseColony, serializeColony, STARTER_COLONY, uniqueId, walkNodes } from './colony.ts';
 
-// The starter parses, has the shapes the picture promises, and round-trips.
+// The starter is a SPORE — one loop that repeats itself, and it grows.
 {
   const { score, errors } = parseColony(STARTER_COLONY);
+  assert.deepEqual(errors, []);
+  assert.equal(score.bpm, 96);
+  assert.equal(score.seed, 11);
+  assert.equal(score.swing, 0.58);
+  assert.equal(score.grain, 8);
+  assert.deepEqual(score.grow, { rate: 0.5, max: 18 });
+  assert.deepEqual(score.root.nodes.map((n) => n.kind), ['loop']);
+  assert.deepEqual(score.root.edges, [{ from: 'spore', to: 'spore', on: undefined }]);
+  const text = serializeColony(score);
+  assert.equal(serializeColony(parseColony(text).score), text, 'round-trip fixed point');
+  assert.match(text, /^swing 0\.58$/m);
+  assert.match(text, /^grain 8$/m);
+  assert.match(text, /^grow 0\.5 max=18$/m);
+  assert.match(parseColony('swing 1').errors[0].message, /0\.5/);
+  assert.match(parseColony('grain 3').errors[0].message, /beats per shard/);
+  const g = parseColony('loop a = o beats=16 glide=-5 hold');
+  assert.deepEqual(g.errors, []);
+  const a = g.score.root.nodes[0];
+  if (a.kind === 'loop') assert.equal(a.glide, -5);
+  assert.match(serializeColony(g.score), /glide=-5 hold/);
+}
+
+// A full colony parses, has the shapes the picture promises, and round-trips.
+const FULL = `bpm 120
+key follow
+seed 11
+meter 4/4
+
+loop kick = {role=drums beats=8} beats=8 hold
+loop bass = b beats=4
+loop word = v beats=1
+rule pulse = euclid(hits=5 steps=8)
+rule swarm = life(steps=16 rows=3 density=.35)
+gate maybe = ?60
+mod dark = =cut.35,gain-6
+
+colony seven meter=7/8 groups=3+2+2 {
+  rule tick = euclid(hits=3 steps=7)
+  loop hat = h beats=1
+  tick -> hat
+}
+
+pulse -> kick
+swarm -> bass on=0
+swarm -> maybe -> dark -> word
+pulse -> seven on=0
+`;
+{
+  const { score, errors } = parseColony(FULL);
   assert.deepEqual(errors, []);
   assert.equal(score.bpm, 120);
   assert.equal(score.seed, 11);
@@ -11,7 +60,7 @@ import { barSeconds, groupStarts, parseColony, serializeColony, STARTER_COLONY, 
   const kinds = score.root.nodes.map((n) => n.kind);
   assert.deepEqual(kinds, ['loop', 'loop', 'loop', 'rule', 'rule', 'gate', 'mod', 'colony']);
   const kick = score.root.nodes[0];
-  if (kick.kind === 'loop') { assert.equal(kick.beats, 8); assert.equal(kick.hold, true); assert.equal(kick.query.role, 'drums'); assert.equal(kick.query.beats, 8); }
+  if (kick.kind === 'loop') { assert.equal(kick.beats, 8); assert.equal(kick.hold, true); assert.equal(kick.query.role, 'drums'); assert.equal(kick.query.beats, 8); assert.equal(kick.space, 'fixed'); assert.equal(kick.pan, 0); }
   const seven = score.root.nodes[7];
   assert.equal(seven.kind, 'colony');
   if (seven.kind === 'colony') {
@@ -35,6 +84,25 @@ import { barSeconds, groupStarts, parseColony, serializeColony, STARTER_COLONY, 
   assert.match(text, /colony seven meter=7\/8 groups=3\+2\+2 \{/);
   assert.match(text, /swarm -> bass on=0/);
   assert.equal(walkNodes(score.root).length, 10);
+}
+
+// Path helpers: keys, lookup, the graph a key points into, unique ids, wiring rules.
+{
+  const { score } = parseColony(FULL);
+  assert.equal(nodeKey(['seven'], 'hat'), 'seven/hat');
+  assert.equal(findNode(score.root, 'seven/hat')?.node.id, 'hat');
+  assert.deepEqual(findNode(score.root, 'seven/hat')?.path, ['seven']);
+  assert.equal(graphAt(score.root, null), score.root);
+  assert.equal(graphAt(score.root, 'seven')?.meter.num, 7);
+  assert.equal(graphAt(score.root, 'kick'), null);
+  assert.equal(uniqueId(score.root, 'kick'), 'kick2');
+  assert.equal(uniqueId(score.root, 'snare'), 'snare');
+  const [kick, bass, , pulse, , maybe] = score.root.nodes;
+  assert.equal(canWire(pulse, kick), true);
+  assert.equal(canWire(kick, pulse), false, 'nothing points at a rule');
+  assert.equal(canWire(kick, kick), true, 'a loop repeats itself');
+  assert.equal(canWire(maybe, maybe), false);
+  assert.equal(canWire(kick, bass), true, 'loop -> loop chains at the end');
 }
 
 // Meter arithmetic: 7/8 at 120 BPM is 3.5 beats; groups accent 3+2+2.
@@ -94,6 +162,7 @@ a -> b
     const { score, errors } = parseColony(t.text);
     assert.deepEqual(errors, [], `${t.name}: ${errors.map((e) => `line ${e.line}: ${e.message}`).join(' / ')}`);
     assert.ok(score.root.nodes.some((n) => n.kind === 'colony'), `${t.name} nests a colony`);
+    assert.ok(score.grow && score.grow.rate > 0, `${t.name} grows`);
     const again = parseColony(serializeColony(score));
     assert.deepEqual(again.errors, []);
     assert.equal(serializeColony(again.score), serializeColony(score), `${t.name} round-trip`);
