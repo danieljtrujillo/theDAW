@@ -16,6 +16,8 @@ export interface LoomTemplate {
   songs: string[];
   blurb: string;
   text: string;
+  /** 'colony' scores load into the node mode; default is the plane. */
+  mode?: 'plane' | 'colony';
 }
 
 export const LOOM_TEMPLATES: LoomTemplate[] = [
@@ -175,6 +177,64 @@ lane lift 1/4 x8 @target
 lane echoes 1/8 x16
   !2,3,4:4 .  .  .  .  .  .  .  | .  .  .  .  .  .  .  .
   echo(v; every=4 decay=5 depth=2) - - - - - - - - - - - v:4 - - -
+`,
+  },
+  {
+    id: 'zappa-colonies',
+    name: 'Inca Roads — colonies in 7/8, 11/8 and 5/4',
+    level: 'complex',
+    mode: 'colony',
+    songs: [],
+    blurb: 'A colony score: the root breathes in 4/4 while a 7/8 cell (3+2+2), an 11/8 cell (3+3+3+2) at half tempo and a 5/4 cell (3+2) at 1.5× run inside it — each a graph of its own. Stem loops for drums and bass, a Life swarm on the words, Euclidean ticks on the hats. Any song on deck; stems get cut on first play.',
+    text: `; Inca Roads — three colonies inside one, each with its own meter and tempo
+; Root: 4/4. seven: 7/8 (3+2+2). eleven: 11/8 (3+3+3+2) at half tempo. five: 5/4 (3+2) at 1.5x.
+bpm 112
+key follow
+seed 74
+form AABA
+meter 4/4
+
+loop drums = {role=drums beats=8} beats=8 hold
+loop bass = b beats=4
+loop word = v beats=1 gain=-2
+rule ground = euclid(hits=3 steps=8)
+rule swarm = life(steps=16 rows=4 density=.3)
+gate some = ?55
+mod low = =cut.3
+
+colony seven meter=7/8 groups=3+2+2 {
+  loop hat = h beats=1 gain=-6
+  loop snap = s beats=1
+  rule tick = euclid(hits=5 steps=7)
+  rule off = fractal(steps=7 kind=thue)
+  tick -> hat
+  off -> snap on=1
+}
+
+colony eleven meter=11/8 groups=3+3+3+2 tempo=0.5 {
+  loop pad = o beats=4 hold
+  loop deep = b beats=2 transpose=-12
+  rule slow = fib(steps=11)
+  gate half = !1,3:4
+  slow -> pad on=0
+  slow -> half -> deep
+}
+
+colony five meter=5/4 groups=3+2 tempo=1.5 {
+  loop kick = k beats=1
+  loop tom = t beats=1
+  rule run = euclid(hits=3 steps=5)
+  rule roll = rand(steps=10 p=.4)
+  run -> kick
+  roll -> tom
+}
+
+ground -> drums
+swarm -> bass on=0
+swarm -> some -> low -> word
+ground -> seven on=0
+ground -> eleven on=0
+swarm -> five on=1
 `,
   },
 ];

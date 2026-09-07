@@ -8,6 +8,18 @@ Newest first.
 
 ## 2026-09-07
 
+### LOOM v3 — colony mode (verified by build + tests; live check pending)
+
+- **Cells, not lanes.** A PLANE | COLONY switch; colony scores are graphs of
+  `loop`, `rule`, `gate`, `mod` and nested `colony` cells joined by arrows.
+  Colonies carry their own meter (`7/8 groups=3+2+2`, `11/8`, `5/4`) and
+  tempo, and nest without limit. Living canvas: membranes, step rings,
+  sparks, slime-mould trails; dive into a colony with a double-click.
+- **Silence fixed**: a role with no stem plays the mix at once and asks for
+  stems; shards re-read and scores re-resolve when they land. Stem loops of
+  2 and 4 bars (`{role=drums beats=8}`).
+- Sample *Inca Roads — colonies in 7/8, 11/8 and 5/4*.
+
 ### LOOM v2 — rules, growth, a tempo that moves (verified by build + tests; live check pending)
 
 - **Generator tiles.** `fib`, `fractal` (thue / cantor / dragon /

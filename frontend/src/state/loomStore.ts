@@ -31,6 +31,9 @@ import { logInfo } from './logStore';
 import { loomTemplateById } from '../data/loomTemplates';
 import { breedScores, fragmentScore, mutateScore } from '../lib/loomEvolve';
 import { DEFAULT_SEED } from '../lib/loomEngine';
+import { parseColony, serializeColony, STARTER_COLONY, walkNodes, type ColonyNode, type ColonyScore } from '../lib/colony';
+import { ColonyEngine, type ColonyEvent } from '../lib/colonyEngine';
+import { logError } from './logStore';
 
 export interface TileSel { lane: string; row: number; step: number }
 
@@ -38,6 +41,9 @@ export interface FireInfo { step: number; at: number; title: string }
 
 /** One generation in the GROW pane's lineage. */
 export interface LoomGeneration { text: string; label: string; at: number }
+
+export type LoomMode = 'plane' | 'colony';
+export interface NodePos { x: number; y: number }
 
 interface LoomState {
   text: string;
@@ -55,6 +61,29 @@ interface LoomState {
   history: LoomGeneration[];
   /** Lanes GROW leaves alone. */
   keepLanes: string[];
+
+  /** Plane (lanes) or colony (cells and arrows). */
+  mode: LoomMode;
+  colonyText: string;
+  colonyApplied: ColonyScore;
+  colonyErrors: LoomParseError[];
+  colonyDirty: boolean;
+  /** Node positions on the canvas, keyed by path ("seven/hat"), colony-local. */
+  colonyPositions: Record<string, NodePos>;
+  colonySelected: string | null;
+  /** Names of loop nodes that resolved to nothing. */
+  colonyUnresolved: string[];
+
+  setMode: (m: LoomMode) => void;
+  setColonyText: (t: string) => void;
+  applyColony: () => boolean;
+  setColonyPosition: (key: string, pos: NodePos) => void;
+  selectColony: (key: string | null) => void;
+  /** Replace one node (found by path key) and re-serialize. */
+  updateColonyNode: (key: string, node: ColonyNode) => void;
+  resetColonyStarter: () => void;
+  /** Re-resolve every tile (stems landed, crate changed). */
+  refreshResolutions: () => void;
 
   setText: (t: string) => void;
   apply: () => boolean;
@@ -170,7 +199,72 @@ async function resolveQuery(q: LoomQuery, ctx: ResolveCtx, score: LoomScore): Pr
   let cands = localCandidates({ ...q, beats }, entryIds);
   if (cands.length === 0 && beats !== 4) cands = localCandidates({ ...q, beats: 4 }, entryIds);
   if (cands.length === 0) cands = localCandidates({ ...q, beats: undefined }, entryIds);
+  if (cands.length === 0 && q.role && q.role !== 'mix') {
+    // No stem for that role yet: play the mix now and get the stems cut in
+    // the background; the score re-resolves when they land. Silence is the
+    // one thing a first press of Play must never produce.
+    const unstemmed = entryIds.filter((id) => !(idx.byEntry[id] ?? []).some((r) => r.stem_name !== 'mix'));
+    for (const id of unstemmed) void requestStems(id);
+    const mixQ: LoomQuery = { ...q, role: 'mix' };
+    cands = localCandidates({ ...mixQ, beats }, entryIds);
+    if (cands.length === 0 && beats !== 4) cands = localCandidates({ ...mixQ, beats: 4 }, entryIds);
+    if (cands.length === 0) cands = localCandidates({ ...mixQ, beats: undefined }, entryIds);
+  }
   return pickRanked(cands, target);
+}
+
+const stemsRequested = new Set<string>();
+
+/** Separate an entry's stems once, then re-read its shards and re-resolve. */
+async function requestStems(entryId: string): Promise<void> {
+  if (stemsRequested.has(entryId)) return;
+  stemsRequested.add(entryId);
+  try {
+    const r = await fetch(`/api/stems/${encodeURIComponent(entryId)}/run?stems=4`, { method: 'POST' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      logError('loom', `Stems for "${entryTitle(entryId)}": ${(body as { detail?: string }).detail ?? r.status}`);
+      return;
+    }
+    logInfo('loom', `Cutting stems for "${entryTitle(entryId)}" so drum, bass and vocal loops can play`);
+  } catch (e) {
+    logError('loom', `Stems request failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  // Poll until the separation is over, then refresh the shard rows.
+  const deadline = Date.now() + 25 * 60 * 1000;
+  let seenRunning = false;
+  while (Date.now() < deadline) {
+    await new Promise((res) => setTimeout(res, 4000));
+    try {
+      const p = await fetch(`/api/stems/${encodeURIComponent(entryId)}/progress`, { cache: 'no-store' });
+      const j = (await p.json()) as { phase?: string };
+      const phase = j.phase ?? 'idle';
+      if (phase !== 'idle') seenRunning = true;
+      if (/^(idle|done|complete|completed|finished|error|failed)$/.test(phase) && (seenRunning || phase !== 'idle')) break;
+    } catch { /* keep polling */ }
+  }
+  try {
+    const r = await fetch(`/api/shards/${encodeURIComponent(entryId)}`);
+    if (r.ok) {
+      const j = (await r.json()) as { shards: ShardRow[] };
+      const rows = j.shards ?? [];
+      const hasStems = rows.some((row) => row.stem_name !== 'mix');
+      if (!hasStems) {
+        // Stems landed but the shards were not re-cut yet: ask for a cut.
+        await fetch(`/api/shards/${encodeURIComponent(entryId)}/run`, { method: 'POST' });
+        const r2 = await fetch(`/api/shards/${encodeURIComponent(entryId)}`);
+        const j2 = (await r2.json()) as { shards: ShardRow[] };
+        useShardIndexStore.setState((s) => ({ byEntry: { ...s.byEntry, [entryId]: j2.shards ?? rows } }));
+      } else {
+        useShardIndexStore.setState((s) => ({ byEntry: { ...s.byEntry, [entryId]: rows } }));
+      }
+      logInfo('loom', `Stems ready for "${entryTitle(entryId)}" — re-resolving at the next wrap`);
+      useLoomStore.getState().refreshResolutions();
+    }
+  } catch (e) {
+    logError('loom', `Shard refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 let engine: LoomEngine | null = null;
@@ -205,6 +299,39 @@ function getEngine(): LoomEngine {
   return engine;
 }
 
+const colonyListeners = new Set<(e: ColonyEvent) => void>();
+/** The canvas subscribes here; events carry their audio-clock time. */
+export function subscribeColonyEvents(fn: (e: ColonyEvent) => void): () => void {
+  colonyListeners.add(fn);
+  return () => { colonyListeners.delete(fn); };
+}
+
+let colonyEngine: ColonyEngine | null = null;
+
+function getColonyEngine(): ColonyEngine {
+  if (colonyEngine) return colonyEngine;
+  colonyEngine = new ColonyEngine({
+    resolve: (q, ctx) => resolveQuery(q, ctx, useLoomStore.getState().applied),
+    semitonesFor: (shard) => {
+      const st = useLoomStore.getState();
+      const c = st.colonyApplied;
+      const t = c.key && c.key !== 'follow' ? { key: c.key, scale: c.scale ?? 'major' } : targetKey(st.applied);
+      if (!t || !shard.key) return 0;
+      return Math.max(-6, Math.min(6, transposeSemitones(shard.key, shard.scale, t.key, t.scale)));
+    },
+    onEvent: (e) => { for (const fn of colonyListeners) fn(e); },
+    onUnresolved: (path, node) => {
+      const key = [...path, node.id].join('/');
+      useLoomStore.setState((s) => (s.colonyUnresolved.includes(key) ? s : { colonyUnresolved: [...s.colonyUnresolved, key].slice(-8) }));
+    },
+  });
+  return colonyEngine;
+}
+
+export function colonyResolvedFor(query: LoomQuery): ShardRow | null {
+  return colonyEngine ? colonyEngine.resolvedFor(query) : null;
+}
+
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 function laneOf(score: LoomScore, name: string): LoomLane | undefined {
@@ -223,6 +350,15 @@ export const useLoomStore = create<LoomState>()(
       };
 
       const initial = parseLoom(STARTER_SCORE);
+      const initialColony = parseColony(STARTER_COLONY);
+
+      /** Commit a colony edited from the canvas or inspector. */
+      const commitColony = (next: ColonyScore) => {
+        const text = serializeColony(next);
+        const eng = getColonyEngine();
+        eng.setScore(next);
+        set({ colonyApplied: next, colonyText: text, colonyErrors: [], colonyDirty: false, queued: eng.running && eng.hasQueued, colonyUnresolved: [] });
+      };
 
       return {
         text: STARTER_SCORE,
@@ -238,6 +374,61 @@ export const useLoomStore = create<LoomState>()(
         bpm: initial.score.bpm ?? beatClock.bpm,
         history: [],
         keepLanes: [],
+        mode: 'plane',
+        colonyText: STARTER_COLONY,
+        colonyApplied: initialColony.score,
+        colonyErrors: initialColony.errors,
+        colonyDirty: false,
+        colonyPositions: {},
+        colonySelected: null,
+        colonyUnresolved: [],
+
+        setMode: (m) => {
+          if (get().running) get().stop();
+          set({ mode: m, selected: null, colonySelected: null });
+        },
+        setColonyText: (t) => {
+          const { score, errors } = parseColony(t);
+          const dirty = errors.length === 0 ? serializeColony(score) !== serializeColony(get().colonyApplied) : true;
+          set({ colonyText: t, colonyErrors: errors, colonyDirty: dirty });
+        },
+        applyColony: () => {
+          const { score, errors } = parseColony(get().colonyText);
+          if (errors.length) { set({ colonyErrors: errors }); return false; }
+          const eng = getColonyEngine();
+          eng.setScore(score);
+          if (score.bpm && !eng.running) beatClock.setBpm(score.bpm, 'loom');
+          set({ colonyApplied: score, colonyErrors: [], colonyDirty: false, queued: eng.running && eng.hasQueued, colonyUnresolved: [], bpm: score.bpm ?? beatClock.bpm });
+          logInfo('loom', eng.running ? 'Colony queued for the next bar' : 'Colony applied');
+          return true;
+        },
+        setColonyPosition: (key, pos) => set((s) => ({ colonyPositions: { ...s.colonyPositions, [key]: pos } })),
+        selectColony: (key) => set({ colonySelected: key }),
+        updateColonyNode: (key, node) => {
+          const next = clone(get().colonyApplied);
+          for (const w of walkNodes(next.root)) {
+            if ([...w.path, w.node.id].join('/') === key) {
+              const i = w.graph.nodes.indexOf(w.node);
+              // Renames carry the edges with them.
+              if (node.id !== w.node.id) {
+                for (const e of w.graph.edges) { if (e.from === w.node.id) e.from = node.id; if (e.to === w.node.id) e.to = node.id; }
+              }
+              w.graph.nodes[i] = node;
+              break;
+            }
+          }
+          commitColony(next);
+        },
+        resetColonyStarter: () => {
+          const { score, errors } = parseColony(STARTER_COLONY);
+          set({ colonyText: STARTER_COLONY, colonyApplied: score, colonyErrors: errors, colonyDirty: false, colonySelected: null });
+          getColonyEngine().setScore(score);
+        },
+        refreshResolutions: () => {
+          const st = get();
+          getEngine().setScore(clone(st.applied));
+          getColonyEngine().setScore(clone(st.colonyApplied));
+        },
 
         setText: (t) => {
           const { score, errors } = parseLoom(t);
@@ -258,6 +449,14 @@ export const useLoomStore = create<LoomState>()(
 
         play: () => {
           const st = get();
+          if (st.mode === 'colony') {
+            if (st.colonyDirty && !get().applyColony()) return;
+            const eng = getColonyEngine();
+            eng.setScore(get().colonyApplied, { immediate: true });
+            eng.start();
+            set({ running: true, queued: false, colonyUnresolved: [] });
+            return;
+          }
           if (st.dirty || !getEngine()['score']) {
             if (!get().apply()) return;
           }
@@ -268,6 +467,7 @@ export const useLoomStore = create<LoomState>()(
         },
         stop: () => {
           getEngine().stop();
+          getColonyEngine().stop();
           set({ running: false, queued: false, cursors: {} });
         },
         toggle: () => { if (get().running) get().stop(); else get().play(); },
@@ -427,6 +627,19 @@ export const useLoomStore = create<LoomState>()(
         loadTemplate: (id) => {
           const t = loomTemplateById(id);
           if (!t) return [];
+          if (t.mode === 'colony') {
+            if (get().running) get().stop();
+            const c = parseColony(t.text);
+            const ceng = getColonyEngine();
+            ceng.setScore(c.score);
+            if (c.score.bpm) beatClock.setBpm(c.score.bpm, 'loom');
+            set({ mode: 'colony', colonyText: t.text, colonyApplied: c.score, colonyErrors: c.errors, colonyDirty: false, colonySelected: null, colonyUnresolved: [], bpm: c.score.bpm ?? beatClock.bpm });
+            const missingC: string[] = [];
+            const idxC = useShardIndexStore.getState();
+            for (const ref of t.songs) { const eid = resolveEntryRef(ref); if (eid) idxC.addToCrate(eid); else missingC.push(ref); }
+            logInfo('loom', `Loaded colony "${t.name}"`);
+            return missingC;
+          }
           const { score, errors } = parseLoom(t.text);
           const eng = getEngine();
           eng.setScore(score);
@@ -450,12 +663,15 @@ export const useLoomStore = create<LoomState>()(
     {
       name: 'thedaw-loom-v1',
       version: 1,
-      partialize: (s) => ({ text: s.text }),
+      partialize: (s) => ({ text: s.text, colonyText: s.colonyText, mode: s.mode, colonyPositions: s.colonyPositions }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
         const { score, errors } = parseLoom(state.text);
         useLoomStore.setState({ applied: score, errors, dirty: false, bpm: score.bpm ?? beatClock.bpm });
         getEngine().setScore(score);
+        const c = parseColony(state.colonyText || STARTER_COLONY);
+        useLoomStore.setState({ colonyApplied: c.score, colonyErrors: c.errors, colonyDirty: false });
+        getColonyEngine().setScore(c.score);
       },
     },
   ),

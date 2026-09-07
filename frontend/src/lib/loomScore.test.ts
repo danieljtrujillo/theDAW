@@ -98,7 +98,10 @@ const shardAt = (tiles: (LoomTile | null)[], i: number) => {
 
 // Every shipped template parses clean, names real lanes, and round-trips.
 {
-  const { LOOM_TEMPLATES } = await import('../data/loomTemplates.ts');
+  const { LOOM_TEMPLATES: ALL_TEMPLATES } = await import('../data/loomTemplates.ts');
+  // Colony scores have their own notation and their own test (colony.test.ts).
+  const LOOM_TEMPLATES = ALL_TEMPLATES.filter((t) => t.mode !== 'colony');
+  assert.ok(ALL_TEMPLATES.some((t) => t.mode === 'colony'), 'a colony sample ships');
   assert.ok(LOOM_TEMPLATES.length >= 4);
   assert.equal(LOOM_TEMPLATES.filter((t) => t.level === 'simple').length, 2);
   assert.equal(LOOM_TEMPLATES.filter((t) => t.level === 'complex').length, 3);

@@ -37,6 +37,9 @@ import { beatClock } from '../lib/beatClock';
 import * as shards from '../lib/shardEngine';
 import { GEN_BLURB, GEN_DEFAULT_OPTS, GEN_GLYPH, GEN_KINDS, genCell, lifePopulation, sectionOf, serializeGenOpts, type GenKind, type GenTile } from '../lib/loomGen';
 import { DEFAULT_SEED } from '../lib/loomEngine';
+import { ColonyCanvas } from '../components/loom/ColonyCanvas';
+import { meterText, parseColony, walkNodes, type ColonyNode } from '../lib/colony';
+import * as colonySer from '../lib/colony';
 
 type Pane = 'code' | 'tile' | 'grow' | 'crate';
 
@@ -63,6 +66,12 @@ export function LoomView(): React.ReactElement {
   const addLane = useLoomStore((s) => s.addLane);
   const crate = useShardIndexStore((s) => s.crate);
   const status = useShardIndexStore((s) => s.status);
+  const mode = useLoomStore((s) => s.mode);
+  const setMode = useLoomStore((s) => s.setMode);
+  const colony = useLoomStore((s) => s.colonyApplied);
+  const colonyErrors = useLoomStore((s) => s.colonyErrors);
+  const colonyDirty = useLoomStore((s) => s.colonyDirty);
+  const colonyUnresolved = useLoomStore((s) => s.colonyUnresolved);
   const [pane, setPane] = useState<Pane>('code');
 
   const sharding = crate.filter((id) => status[id] === 'sharding' || status[id] === 'loading').length;
@@ -100,6 +109,16 @@ export function LoomView(): React.ReactElement {
             className={`${input} w-16 tabular-nums`}
           />
         </div>
+          <div className="flex rounded-md border border-white/15 overflow-hidden" role="group" aria-label="Loom mode">
+            {(['plane', 'colony'] as const).map((m) => (
+              <button key={m} type="button" onClick={() => setMode(m)} aria-pressed={mode === m} className={`px-2 py-1 text-[10px] font-mono uppercase tracking-widest ${mode === m ? 'bg-amber-400/20 et-ink' : 'et-ink-3 hover:et-ink-2'}`} title={m === 'plane' ? 'Lanes and tiles (Jacquard)' : 'Cells, arrows and colonies (fractal graph)'}>
+                {m}
+              </button>
+            ))}
+          </div>
+          {mode === 'colony' && (
+            <span className="text-[10px] font-mono et-ink-2" title="root meter">{meterText(colony.root.meter)}</span>
+          )}
           {applied.form && (
             <span className="text-[10px] font-mono uppercase tracking-widest et-ink-2 rounded border border-white/10 px-1.5 py-0.5" title={`form ${applied.form}: section by lap`}>
               form {applied.form}
@@ -121,8 +140,10 @@ export function LoomView(): React.ReactElement {
         <span className="text-[10px] font-mono et-ink-3" aria-live="polite">
           {sharding > 0 ? `sharding ${sharding} song${sharding === 1 ? '' : 's'}…` : ''}
           {queued ? ' · new score waits for the master wrap' : ''}
-          {errors.length > 0 ? ` · ${errors.length} error${errors.length === 1 ? '' : 's'} in the code` : dirty ? ' · code edited — apply to hear it' : ''}
-          {unresolved.length > 0 ? ` · silent: ${unresolved.slice(-2).join(', ')}` : ''}
+          {mode === 'plane' && errors.length > 0 ? ` · ${errors.length} error${errors.length === 1 ? '' : 's'} in the code` : mode === 'plane' && dirty ? ' · code edited — apply to hear it' : ''}
+          {mode === 'colony' && colonyErrors.length > 0 ? ` · ${colonyErrors.length} error${colonyErrors.length === 1 ? '' : 's'} in the code` : mode === 'colony' && colonyDirty ? ' · code edited — apply to hear it' : ''}
+          {mode === 'plane' && unresolved.length > 0 ? ` · silent: ${unresolved.slice(-2).join(', ')}` : ''}
+          {mode === 'colony' && colonyUnresolved.length > 0 ? ` · silent: ${colonyUnresolved.slice(-2).join(', ')}` : ''}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button type="button" onClick={addLane} className={btn}>+ Lane</button>
@@ -130,7 +151,12 @@ export function LoomView(): React.ReactElement {
       </header>
 
       <div className="flex-1 min-h-0 flex">
-        <section className="flex-1 min-w-0 overflow-auto p-3 loom-plane" aria-label="The plane">
+        {mode === 'colony' && (
+          <section className="flex-1 min-w-0 relative" aria-label="The colony">
+            <ColonyCanvas />
+          </section>
+        )}
+        <section className={`flex-1 min-w-0 overflow-auto p-3 loom-plane ${mode === 'colony' ? 'hidden' : ''}`} aria-label="The plane" aria-hidden={mode === 'colony'}>
           {applied.lanes.length === 0 && (
             <p className="text-[11px] font-mono et-ink-3">No lanes. Add one, load a template in CODE, or write a score.</p>
           )}
@@ -162,8 +188,8 @@ export function LoomView(): React.ReactElement {
             ))}
           </div>
           <div id={`loom-pane-${pane}`} role="tabpanel" aria-labelledby={`loom-tab-${pane}`} className="flex-1 min-h-0 overflow-auto">
-            {pane === 'code' && <CodePane />}
-            {pane === 'tile' && <TilePane />}
+            {pane === 'code' && (mode === 'colony' ? <ColonyCodePane /> : <CodePane />)}
+            {pane === 'tile' && (mode === 'colony' ? <ColonyInspector /> : <TilePane />)}
             {pane === 'grow' && <GrowPane />}
             {pane === 'crate' && <CratePane />}
           </div>
@@ -494,6 +520,107 @@ const CodePane: React.FC = () => {
   );
 };
 
+/* ── COLONY CODE ─────────────────────────────────────────────────────────── */
+
+const ColonyCodePane: React.FC = () => {
+  const text = useLoomStore((s) => s.colonyText);
+  const errors = useLoomStore((s) => s.colonyErrors);
+  const dirty = useLoomStore((s) => s.colonyDirty);
+  const running = useLoomStore((s) => s.running);
+  const setText = useLoomStore((s) => s.setColonyText);
+  const apply = useLoomStore((s) => s.applyColony);
+  const reset = useLoomStore((s) => s.resetColonyStarter);
+  const loadTemplate = useLoomStore((s) => s.loadTemplate);
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 border-b border-white/5">
+        <label htmlFor="loom-colony-template" className={label}>sample</label>
+        <select id="loom-colony-template" name="loom-colony-template" value="" onChange={(e) => { if (e.target.value) loadTemplate(e.target.value); }} className={`${input} form-select max-w-44`} style={{ colorScheme: 'dark' }}>
+          <option value="">— load a colony —</option>
+          {LOOM_TEMPLATES.filter((t) => t.mode === 'colony').map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <div className="ml-auto flex gap-1">
+          <button type="button" onClick={reset} className={btn}>starter</button>
+          <button type="button" onClick={() => apply()} disabled={!dirty || errors.length > 0} className={`${btn} border-amber-400/50`}>Apply ⏎</button>
+        </div>
+      </div>
+      <div className="px-3 py-1 text-[10px] font-mono et-ink-3">
+        {dirty ? 'edited' : 'applied'}{running && dirty ? ' · Apply queues to the next bar' : ''} · cells: loop / rule / gate / mod / colony · arrows: a -&gt; b [on=N]
+      </div>
+      <label htmlFor="loom-colony-code" className="sr-only">Colony score</label>
+      <textarea
+        id="loom-colony-code"
+        name="loom-colony-code"
+        value={text}
+        spellCheck={false}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); apply(); } }}
+        className="flex-1 min-h-40 resize-none bg-transparent px-3 py-2 text-[11px] leading-5 font-mono et-ink focus:outline-none whitespace-pre overflow-auto"
+        aria-describedby="loom-colony-errors"
+      />
+      <ul id="loom-colony-errors" className="max-h-28 overflow-auto border-t border-white/5 px-3 py-1.5 text-[10px] font-mono text-rose-300" aria-live="polite">
+        {errors.length === 0 && <li className="et-ink-3">no errors</li>}
+        {errors.map((e, i) => <li key={i}>{e.line ? `line ${e.line}: ` : ''}{e.message}</li>)}
+      </ul>
+    </div>
+  );
+};
+
+/** The selected cell: edit its line of notation (round-trips through the parser). */
+const ColonyInspector: React.FC = () => {
+  const selected = useLoomStore((s) => s.colonySelected);
+  const colony = useLoomStore((s) => s.colonyApplied);
+  const update = useLoomStore((s) => s.updateColonyNode);
+  const found = selected ? walkNodes(colony.root).find((w) => [...w.path, w.node.id].join('/') === selected) : null;
+  const [draft, setDraft] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const line = found ? nodeLine(found.node) : '';
+  useEffect(() => { setDraft(line); setErr(null); }, [line]);
+  if (!found) return <p className="p-3 text-[11px] font-mono et-ink-3">Click a cell in the colony.</p>;
+  const n = found.node;
+  const commitLine = () => {
+    if (n.kind === 'colony') return;
+    const { score, errors } = parseColony(draft);
+    if (errors.length) { setErr(errors[0].message); return; }
+    const parsed = score.root.nodes[0];
+    if (!parsed || parsed.kind !== n.kind) { setErr(`expected a ${n.kind} line`); return; }
+    setErr(null);
+    update(selected!, parsed);
+  };
+  const edgesIn = found.graph.edges.filter((e) => e.to === n.id);
+  const edgesOut = found.graph.edges.filter((e) => e.from === n.id);
+  return (
+    <div className="flex flex-col gap-3 p-3 text-[11px] font-mono et-ink">
+      <div className="et-ink-2"><span className="et-ink font-semibold">{selected}</span> · {n.kind}{found.path.length ? ` · in ${found.path.join('/')} (${meterText(found.graph.meter)})` : ''}</div>
+      {n.kind === 'colony' ? (
+        <p className="et-ink-3 leading-snug">{n.id}: {meterText(n.graph.meter)}{n.graph.tempo !== 1 ? ` × ${n.graph.tempo}` : ''}, {n.graph.nodes.length} cells, {n.graph.edges.length} arrows. Edit its block in CODE; double-click it on the canvas to dive in.</p>
+      ) : (
+        <>
+          <label htmlFor="loom-colony-line" className={label}>notation</label>
+          <textarea id="loom-colony-line" name="loom-colony-line" value={draft} spellCheck={false} onChange={(e) => setDraft(e.target.value)} onBlur={commitLine} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitLine(); } }} className={`${input} h-14 resize-none whitespace-pre`} />
+          {err && <p className="text-[10px] text-rose-300" role="alert">{err}</p>}
+          <p className="text-[10px] et-ink-3 leading-snug">
+            {n.kind === 'loop' && 'loop NAME = <song:drums> beats=8 [gain=-3] [transpose=5] [hold] — a stem loop; hold keeps it rolling until the next trigger.'}
+            {n.kind === 'rule' && 'rule NAME = euclid(hits=5 steps=8) · life(steps=16 rows=3 density=.35) · fib(steps=13) · fractal(kind=dragon steps=8) · rand(steps=8 p=.5) · echo(...) — steps per colony bar; symbols=N for on= filters.'}
+            {n.kind === 'gate' && 'gate NAME = ?60 (chance) or !2:4 (open on lap 2 of every 4).'}
+            {n.kind === 'mod' && 'mod NAME = =cut.3,gain-6 (absolute) or +trans12 (relative) — colours what passes through.'}
+          </p>
+        </>
+      )}
+      <div className="text-[10px] et-ink-3">
+        <div>in: {edgesIn.length ? edgesIn.map((e) => `${e.from}${e.on != null ? ` on=${e.on}` : ''}`).join(', ') : '—'}</div>
+        <div>out: {edgesOut.length ? edgesOut.map((e) => `${e.to}${e.on != null ? ` on=${e.on}` : ''}`).join(', ') : '—'}</div>
+      </div>
+    </div>
+  );
+};
+
+function nodeLine(n: ColonyNode): string {
+  const { serializeColony } = colonySer;
+  const one = serializeColony({ root: { meter: { num: 4, den: 4, groups: [] }, tempo: 1, nodes: [n], edges: [] } });
+  return one.split('\n').filter((l) => l && !l.startsWith('meter')).join('\n');
+}
+
 /* ── TILE ────────────────────────────────────────────────────────────────── */
 
 const TilePane: React.FC = () => {
@@ -687,6 +814,7 @@ const GenEditor: React.FC<{ id: string; tile: GenTile; laneLength: number; updat
 /** Scores that grow and breed: mutate, cross with a sample or pasted score,
  *  fragment, reseed, keep a song form, walk back through the lineage. */
 const GrowPane: React.FC = () => {
+  const mode = useLoomStore((s) => s.mode);
   const applied = useLoomStore((s) => s.applied);
   const history = useLoomStore((s) => s.history);
   const keepLanes = useLoomStore((s) => s.keepLanes);
@@ -709,6 +837,7 @@ const GrowPane: React.FC = () => {
     if (!src) { setBreedErr('pick a sample or paste a score'); return; }
     setBreedErr(breed(src) ? null : 'that score does not parse');
   };
+  if (mode === 'colony') return <p className="p-3 text-[11px] font-mono et-ink-3">GROW works on the plane today. Colonies grow by their rules: change a seed, a density, a meter, or add a cell in CODE.</p>;
   return (
     <div className="flex flex-col gap-3 p-3 text-[11px] font-mono et-ink">
       <p className="et-ink-3 leading-snug">Every action makes a new generation from the applied score{running ? ' and swaps it in at the master wrap' : ''}. Tick <span className="et-ink">keep</span> on a lane to leave it alone.</p>

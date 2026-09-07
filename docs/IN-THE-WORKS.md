@@ -189,6 +189,20 @@ driven in the live app yet; items stay here until that happens.
 - [ ] **Look** — woven surface, threaded generator tiles, breathing live
   column. — verify on Midnight and Porcelain with `_audit_contrast.mjs`.
 
+### v3 — colony mode, coded 2026-09-07, tsc + tests green, NOT yet seen in the running app
+
+- [ ] **Colony mode** (PLANE | COLONY switch in the LOOM header): `loop` /
+  `rule` / `gate` / `mod` / `colony` cells and `a -> b [on=N]` arrows;
+  nested colonies with their own `meter` (7/8 groups=3+2+2, 11/8, 5/4) and
+  `tempo`; the canvas is a living dish (membranes, step rings, sparks,
+  slime-mould trails); double-click a colony to dive. — verify: COLONY,
+  load *Inca Roads*, a song on deck, Play; the 7/8 body ticks 3+2+2 while
+  the root breathes in 4/4. — `frontend/src/lib/{colony,colonyEngine}.ts`,
+  `frontend/src/components/loom/ColonyCanvas.tsx`
+- [ ] **Stems on first play**: a role with no stem plays the mix and
+  requests separation; shards re-read when it lands. — verify: fresh song,
+  Play, drums lane sounds immediately, then switches to the drum stem.
+
 ### Phase 1 — next
 
 - [ ] DJ sampler pads: *shard mode* (pad = query, `launch(query, {at:'beat'})`

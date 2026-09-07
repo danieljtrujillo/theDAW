@@ -305,6 +305,60 @@ hat, a Life colony over bass/vocal/other, a Fibonacci fill, a glissando lift
 with an accelerando, decaying vocal echoes, `form AABA`, `seed 2026`, and a
 118→132 ramp over twelve laps.
 
+## 10. v3 — the colony: cells, not lanes (2026-09-07)
+
+The user's verdict on v2: lanes are a glorified beat sequencer; the notation
+should work more like NodeF.I., with nodes that are themselves systems of
+nodes up and down in scale like a fractal, the math applied to nodes and
+loops, complex meters made easy (Zappa complex), and visuals that look like
+a living colony rather than squares on squares.
+
+### Model (`lib/colony.ts`)
+
+A colony is a graph. Cells: `loop` (a stem loop or any shard query, `beats`
+long, `hold` keeps it rolling until re-triggered), `rule` (a generator that
+emits a symbol per step of the colony's bar), `gate` (`?60` / `!2:4`), `mod`
+(a lock), `colony` (a whole graph as one cell with its own `meter` and
+`tempo`; colonies nest without limit). Arrows carry triggers:
+`pulse -> kick`, `swarm -> bass on=0`, `a -> gate -> mod -> loop`. A trigger
+into a colony starts one bar of it; a colony nothing points at runs free.
+
+Meters: `meter 7/8 groups=3+2+2`, `11/8 groups=3+3+3+2`, `5/4 groups=3+2`.
+A bar is num/den whole notes at the colony's tempo (relative to its parent);
+group downbeats accent by +1.5 dB and draw as ticks on the body.
+
+### Engine (`lib/colonyEngine.ts`)
+
+The plane's scheduler (25 ms ticker, 160 ms lookahead, exact clock times).
+Each colony instance has a bar cursor; rules step bar/steps; symbols walk the
+arrows through gates and mods to loops (own shard-engine lane per loop, so a
+re-trigger chokes) and colonies (arm a bar). Events (`bar`, `step`,
+`trigger`, `fire`) go out with their audio time for the canvas.
+
+### Canvas (`components/loom/ColonyCanvas.tsx`)
+
+Cells in a dish: loops are round cells with a membrane that blooms on fire,
+rules are rings of steps with the live step lit (Life shows its symbols),
+gates diamonds, mods hexagons, colonies translucent bodies with meter ticks
+holding their cells at 0.42 scale — double-click to dive, Escape to surface.
+Sparks run the arrows on triggers. A slime-mould field of agents senses
+recent fires and crawls toward them, leaving trails. Force layout; positions
+persist per node path.
+
+### Stems on first play
+
+A role query with no stem yet plays the mix shard now and asks the stems
+module to separate the entry; when the stems land the shards are re-read and
+every score re-resolves at the next wrap. Loops of 2 and 4 bars come from the
+8- and 16-beat shard aggregates (`{role=drums beats=8}`).
+
+### Sample
+
+*Inca Roads — colonies in 7/8, 11/8 and 5/4*: root in 4/4 with a Euclidean
+ground and a Life swarm; `seven` (3+2+2) on hats and snaps; `eleven`
+(3+3+3+2) at half tempo on pads and a sub-octave bass; `five` (3+2) at 1.5×
+on kick and toms.
+
 ## 8. Deliberately not doing
 
 - A learned embedding now — nothing in the tree has one; handcrafted
