@@ -120,6 +120,73 @@ button.sing-text:hover {
   text-underline-offset: 0.16em;
 }
 
+/* A detected literary device on a word, painted from the render path as
+   data-device. The treatment is a BORDER, never a background or a colour: the
+   sung word above is a gradient clipped to its glyphs with transparent text,
+   and anything that touches background or color would blank that fill out.
+   The line's SHAPE carries the family (solid / dotted / double / dashed /
+   overline) so the overlay still reads with no colour vision at all; the hue
+   only seconds it. The pane's filter row wears the same rules as its legend. */
+:is(.sing-lines, .la-legend) [data-device] {
+  --dev-rgb: 161 161 170;
+  --dev-a: 0.8;
+  border-bottom: 0.08em solid rgb(var(--dev-rgb) / var(--dev-a));
+  /* Clears the wavy "heard differently" underline above, on a word carrying
+     both. Vertical padding on an inline box moves the border without touching
+     the line height, so nothing in the karaoke shifts. */
+  padding-bottom: 0.12em;
+  transition: border-color 200ms ease;
+}
+
+:is(.sing-lines, .la-legend) [data-device='rhyme'] {
+  --dev-rgb: 251 113 133;
+}
+
+:is(.sing-lines, .la-legend) [data-device='sound'] {
+  --dev-rgb: 56 189 248;
+  border-bottom-style: dotted;
+  border-bottom-width: 0.1em;
+}
+
+:is(.sing-lines, .la-legend) [data-device='repetition'] {
+  --dev-rgb: 167 139 250;
+  border-bottom-style: double;
+  border-bottom-width: 0.14em;
+}
+
+:is(.sing-lines, .la-legend) [data-device='structure'] {
+  --dev-rgb: 52 211 153;
+  border-bottom-style: dashed;
+}
+
+/* Meaning is the interpretive layer, so it rides above the word instead of
+   under it — and never collides with the wavy "whisper heard this differently"
+   underline the same word may already carry. */
+:is(.sing-lines, .la-legend) [data-device='meaning'] {
+  --dev-rgb: 232 121 249;
+  border-bottom: 0;
+  border-top: 0.08em dotted rgb(var(--dev-rgb) / var(--dev-a));
+}
+
+/* The finding selected in the analysis pane: full strength, and an outline
+   box, which paints outside the text and so cannot touch the fill either. */
+:is(.sing-lines, .la-legend) [data-device][data-device-on] {
+  --dev-a: 1;
+  border-bottom-width: 0.12em;
+  border-radius: 0.06em;
+  outline: 0.03em solid rgb(var(--dev-rgb) / 0.7);
+  outline-offset: 0.1em;
+}
+
+/* The legend swatches in the pane: an empty box wearing the same border. */
+.la-legend [data-device] {
+  display: inline-block;
+  width: 1.4em;
+  height: 0.7em;
+  padding-bottom: 0;
+  vertical-align: middle;
+}
+
 /* Line time chips: hidden while singing, shown in TAP mode and on hover. */
 .sing-chip {
   position: absolute;
@@ -193,6 +260,10 @@ button.sing-text:hover {
 
 @media (prefers-reduced-motion: reduce) {
   .sing-lines li {
+    transition: none;
+  }
+
+  :is(.sing-lines, .la-legend) [data-device] {
     transition: none;
   }
 }

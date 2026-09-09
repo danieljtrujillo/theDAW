@@ -1,5 +1,10 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
 import type { LyricsDoc } from '../../../lib/lyricsClient';
+import {
+  buildWordDeviceIndex,
+  useLyricAnalysisStore,
+  wordMarkKey,
+} from '../../../state/lyricAnalysisStore';
 import {
   buildIndex,
   findActiveLine,
@@ -80,6 +85,32 @@ export const LyricsScroller = forwardRef<LyricsScrollerHandle, LyricsScrollerPro
     const targetTopRef = useRef<number | null>(null);
     const glideRafRef = useRef(0);
     const glideLastRef = useRef(0);
+
+    // The literary-analysis overlay. Resolved HERE, in the render path, and
+    // never in setPosition() below: that runs on every animation frame and
+    // must not walk the findings. A device is one more data attribute on a
+    // span that already exists, so the frame loop never learns it is there.
+    const analysis = useLyricAnalysisStore((s) => s.doc);
+    const analysisStale = useLyricAnalysisStore((s) => s.stale);
+    const overlayOn = useLyricAnalysisStore((s) => s.overlay);
+    const families = useLyricAnalysisStore((s) => s.families);
+    const minConfidence = useLyricAnalysisStore((s) => s.minConfidence);
+    const selectedGroup = useLyricAnalysisStore((s) => s.selectedGroup);
+    // Two guards, and both matter, because a device anchored to (line, word)
+    // paints whatever word now sits at those indices:
+    //   - entry: the store may still hold the last song's findings for a beat
+    //     after SING switches, and those anchors are for other words entirely;
+    //   - stale: the lyrics were edited after the analysis ran, so the lines
+    //     have shifted underneath it. Marking the wrong words is worse than
+    //     marking none, so the overlay goes away until it is re-analysed —
+    //     which is exactly what the backend sets `stale` for.
+    const marks = useMemo(
+      () =>
+        overlayOn && analysis && !analysisStale && analysis.entry_id === doc.entry_id
+          ? buildWordDeviceIndex(analysis, families, minConfidence)
+          : null,
+      [overlayOn, analysis, analysisStale, families, minConfidence, doc.entry_id],
+    );
 
     // Re-collect the element tables after every doc render.
     useLayoutEffect(() => {
@@ -277,13 +308,24 @@ export const LyricsScroller = forwardRef<LyricsScrollerHandle, LyricsScrollerPro
                     {line.words.length
                       ? line.words.map((w, j) => {
                           const heard = w.heard !== undefined && w.heard !== null;
+                          const mark = marks?.get(wordMarkKey(i, j));
+                          const heardTitle = heard
+                            ? w.heard
+                              ? `Whisper heard “${w.heard}”`
+                              : 'Whisper did not hear this word'
+                            : '';
+                          const title = [heardTitle, mark?.title].filter(Boolean).join(' · ');
                           return (
                             <React.Fragment key={j}>
                               {j > 0 ? ' ' : null}
                               <span
                                 data-word={j}
                                 {...(heard ? { 'data-heard': '' } : {})}
-                                title={heard ? (w.heard ? `Whisper heard “${w.heard}”` : 'Whisper did not hear this word') : undefined}
+                                {...(mark ? { 'data-device': mark.family } : {})}
+                                {...(mark && selectedGroup && mark.groups.includes(selectedGroup)
+                                  ? { 'data-device-on': '' }
+                                  : {})}
+                                title={title || undefined}
                               >
                                 {w.text}
                               </span>
