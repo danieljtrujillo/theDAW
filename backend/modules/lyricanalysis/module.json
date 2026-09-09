@@ -1,0 +1,10 @@
+{
+  "name": "lyricanalysis",
+  "label": "Lyric Analysis",
+  "enabled": true,
+  "icon": "SpellCheck",
+  "sidebar": false,
+  "api_prefix": "/api/lyricanalysis",
+  "backend": true,
+  "description": "Reads a song's words back to it: rhyme scheme, near and multisyllabic rhymes, assonance, consonance and alliteration, syllable and stress patterns, and the literary devices an LLM pass can name on top of them."
+}

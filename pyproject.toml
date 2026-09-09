@@ -90,6 +90,11 @@ dependencies = [
     "msgpack>=1.2.1",
     # FL Studio .flp project parsing (Image-Line NEM binary format). PyPI.
     "pyflp>=2.0.0",
+    # lyricanalysis module (backend/modules/lyricanalysis) — the CMU
+    # Pronouncing Dictionary behind the rhyme/assonance detectors. The module
+    # guards its import and falls back to its own letter-to-sound rules, so
+    # the backend still boots if this is absent.
+    "cmudict>=1.0.0",
 ]
 
 [project.optional-dependencies]
