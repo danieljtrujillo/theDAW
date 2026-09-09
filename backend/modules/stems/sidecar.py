@@ -69,6 +69,16 @@ def _probe_packages(python_exe: Path) -> dict:
         "    try:\n"
         "        m = importlib.import_module(p)\n"
         "        out[p] = {'ok': True, 'version': getattr(m, '__version__', None)}\n"
+        # The venv can hold a CPU-only torch while the app asks for CUDA. Report
+        # what the sidecar can actually DO, not just what is installed, so the
+        # caller can stop claiming a device it will never get.
+        "        if p == 'torch':\n"
+        "            try:\n"
+        "                out[p]['cuda_build'] = m.version.cuda\n"
+        "                out[p]['cuda_available'] = bool(m.cuda.is_available())\n"
+        "                out[p]['device_count'] = int(m.cuda.device_count())\n"
+        "            except Exception as e:\n"
+        "                out[p]['cuda_error'] = repr(e)[:200]\n"
         "    except Exception as e:\n"
         "        out[p] = {'ok': False, 'error': repr(e)[:300]}\n"
         "print(json.dumps(out))\n"

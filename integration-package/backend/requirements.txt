@@ -9,8 +9,14 @@ aiofiles==24.1.0
 audio-separator>=0.20.0  # BS-RoFormer wrapper with auto-download
 demucs  # Audio source separation
 torchcrepe>=0.0.21  # F0 pitch tracking for vocal separation
-torch>=2.0.0
-torchaudio>=2.0.0
+# CUDA build, pinned to the same cu128 stack as the main venv (pyproject's
+# [[tool.uv.index]] pytorch-cu128). Without the index-url pip takes the default
+# PyPI wheel, which on Windows is CPU-ONLY: demucs then separates on the CPU on
+# a machine with GPUs, ~6x realtime instead of near-instant. Keep the extra
+# index line whenever these are bumped.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
 torchcodec  # torchaudio 2.9+ decodes through torchcodec; needs FFmpeg shared libs on PATH/DLL search path
 numpy==1.24.3
 scipy==1.11.4

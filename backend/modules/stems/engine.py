@@ -87,6 +87,39 @@ def clear_progress(entry_id: str) -> None:
         _PROGRESS.pop(entry_id, None)
 
 
+def _effective_device_label(requested: Optional[str]) -> str:
+    """What the separation will ACTUALLY run on.
+
+    The app can be configured to ask for CUDA while the sidecar venv holds a
+    CPU-only torch — which is the shipped state on this machine. Echoing the
+    request then tells the user "device=cuda" through a whole separation that
+    is running on the CPU at a fraction of the speed, and there is nothing in
+    the UI to contradict it. Ask the sidecar what it can do and say that.
+    """
+    wanted = (requested or "").strip().lower()
+    try:
+        from .sidecar import probe
+
+        torch_info = probe().get("packages", {}).get("torch", {})
+    except Exception as e:  # noqa: BLE001 - a label is never worth failing a run
+        log.debug("stems: device probe failed: %s", e)
+        return requested or "auto (sidecar picks)"
+
+    available = torch_info.get("cuda_available")
+    if wanted in ("cuda", "mps") and available is False:
+        build = torch_info.get("version") or "unknown"
+        log.warning(
+            "stems: %s was requested but the sidecar's torch (%s) has no CUDA; "
+            "separation will run on the CPU",
+            wanted,
+            build,
+        )
+        return f"cpu ({wanted} unavailable: sidecar torch is {build})"
+    if not wanted:
+        return "cuda (sidecar)" if available else "cpu (sidecar)"
+    return wanted
+
+
 async def separate_entry(
     db: LibraryDB,
     entry_id: str,
@@ -120,7 +153,7 @@ async def separate_entry(
         _IN_FLIGHT.add(entry_id)
 
     _set_status(db, entry_id, "running")
-    device_label = device or "auto (sidecar picks)"
+    device_label = _effective_device_label(device)
     quality_label = quality or "hq (sidecar default)"
     # Stash the device + quality + stems so every later progress tick
     # can include them in its message — the sidecar's own status updates
