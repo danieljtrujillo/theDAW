@@ -19,6 +19,7 @@ export type BottomPanelTab =
   | 'details'
   | 'score'
   | 'sing'
+  | 'lyric'
   | 'midi'
   | 'step-seq'
   | 'draw'
@@ -40,6 +41,7 @@ interface BottomPanelState {
   detailsPane: DetailsPane;
   singPane: SingPane;
   singSplit: number;        // 0..1 fraction of the SING split the lyrics take
+  lyricSplit: number;       // 0..1 fraction of the LYRIC split the editor takes
   isOpen: boolean;          // multi-tab panel body open
   isLogOpen: boolean;       // log panel body open
   logVerbose: boolean;      // LOG shows every raw entry; false = folded SIMPLE view
@@ -50,6 +52,7 @@ interface BottomPanelState {
   setDetailsPane: (p: DetailsPane) => void;
   setSingPane: (p: SingPane) => void;
   setSingSplit: (f: number) => void;
+  setLyricSplit: (f: number) => void;
   setOpen: (v: boolean) => void;
   setLogOpen: (v: boolean) => void;
   setLogVerbose: (v: boolean) => void;
@@ -76,6 +79,9 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       detailsPane: 'split',
       singPane: 'sing',
       singSplit: 0.5,
+      // The writing surface gets the wider half: the analysis is a reference
+      // column, the words are the work.
+      lyricSplit: 0.58,
       isOpen: false,
       isLogOpen: false,
       logVerbose: false,
@@ -86,6 +92,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       setDetailsPane: (p) => set({ detailsPane: p }),
       setSingPane: (p) => set({ singPane: p }),
       setSingSplit: (f) => set({ singSplit: Math.max(SING_SPLIT_MIN, Math.min(SING_SPLIT_MAX, f)) }),
+      setLyricSplit: (f) => set({ lyricSplit: Math.max(SING_SPLIT_MIN, Math.min(SING_SPLIT_MAX, f)) }),
       setOpen: (v) => set({ isOpen: v }),
       setLogOpen: (v) => set({ isLogOpen: v }),
       setLogVerbose: (v) => set({ logVerbose: v }),
@@ -129,6 +136,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         detailsPane: s.detailsPane,
         singPane: s.singPane,
         singSplit: s.singSplit,
+        lyricSplit: s.lyricSplit,
         multiHeight: s.multiHeight,
         logWidth: s.logWidth,
         logVerbose: s.logVerbose,

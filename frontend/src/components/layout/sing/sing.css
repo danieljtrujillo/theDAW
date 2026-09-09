@@ -126,8 +126,10 @@ button.sing-text:hover {
    and anything that touches background or color would blank that fill out.
    The line's SHAPE carries the family (solid / dotted / double / dashed /
    overline) so the overlay still reads with no colour vision at all; the hue
-   only seconds it. The pane's filter row wears the same rules as its legend. */
-:is(.sing-lines, .la-legend) [data-device] {
+   only seconds it. The pane's filter row wears the same rules as its legend,
+   and so does the analysis sheet (.la-text), so a device looks the same
+   wherever it is drawn. */
+:is(.sing-lines, .la-legend, .la-text) [data-device] {
   --dev-rgb: 161 161 170;
   --dev-a: 0.8;
   border-bottom: 0.08em solid rgb(var(--dev-rgb) / var(--dev-a));
@@ -138,23 +140,23 @@ button.sing-text:hover {
   transition: border-color 200ms ease;
 }
 
-:is(.sing-lines, .la-legend) [data-device='rhyme'] {
+:is(.sing-lines, .la-legend, .la-text) [data-device='rhyme'] {
   --dev-rgb: 251 113 133;
 }
 
-:is(.sing-lines, .la-legend) [data-device='sound'] {
+:is(.sing-lines, .la-legend, .la-text) [data-device='sound'] {
   --dev-rgb: 56 189 248;
   border-bottom-style: dotted;
   border-bottom-width: 0.1em;
 }
 
-:is(.sing-lines, .la-legend) [data-device='repetition'] {
+:is(.sing-lines, .la-legend, .la-text) [data-device='repetition'] {
   --dev-rgb: 167 139 250;
   border-bottom-style: double;
   border-bottom-width: 0.14em;
 }
 
-:is(.sing-lines, .la-legend) [data-device='structure'] {
+:is(.sing-lines, .la-legend, .la-text) [data-device='structure'] {
   --dev-rgb: 52 211 153;
   border-bottom-style: dashed;
 }
@@ -162,7 +164,7 @@ button.sing-text:hover {
 /* Meaning is the interpretive layer, so it rides above the word instead of
    under it — and never collides with the wavy "whisper heard this differently"
    underline the same word may already carry. */
-:is(.sing-lines, .la-legend) [data-device='meaning'] {
+:is(.sing-lines, .la-legend, .la-text) [data-device='meaning'] {
   --dev-rgb: 232 121 249;
   border-bottom: 0;
   border-top: 0.08em dotted rgb(var(--dev-rgb) / var(--dev-a));
@@ -170,7 +172,7 @@ button.sing-text:hover {
 
 /* The finding selected in the analysis pane: full strength, and an outline
    box, which paints outside the text and so cannot touch the fill either. */
-:is(.sing-lines, .la-legend) [data-device][data-device-on] {
+:is(.sing-lines, .la-legend, .la-text) [data-device][data-device-on] {
   --dev-a: 1;
   border-bottom-width: 0.12em;
   border-radius: 0.06em;
@@ -185,6 +187,349 @@ button.sing-text:hover {
   height: 0.7em;
   padding-bottom: 0;
   vertical-align: middle;
+}
+
+/* --- the same marks at reading size ------------------------------------- */
+/* The karaoke sizes its underlines in em because its type runs 20-46px and
+   the mark has to scale with it. The pane draws the SAME marks at 9-12px,
+   where em collapses: measured in Chromium at 12px, 0.05em, 0.08em, 0.1em,
+   0.11em and 0.14em ALL come back as a used width of 1px — so confidence was
+   invisible (every tier 1px), and `double` under 3px is painted as one solid
+   line, which made REPETITION identical to RHYME for anyone reading the shape
+   rather than the hue. Below reading size the encoding has to be in whole
+   pixels or it is not an encoding at all. */
+:is(.la-legend, .la-text) [data-device] {
+  border-bottom-width: 2px;
+  padding-bottom: 2px;
+}
+
+:is(.la-legend, .la-text) [data-device='sound'],
+:is(.la-legend, .la-text) [data-device='structure'] {
+  border-bottom-width: 2px;
+}
+
+/* Three bands and two gaps: the least a `double` needs to read as two lines. */
+:is(.la-legend, .la-text) [data-device='repetition'] {
+  border-bottom-width: 4px;
+}
+
+:is(.la-legend, .la-text) [data-device='meaning'] {
+  border-top-width: 2px;
+}
+
+.la-legend [data-device] {
+  padding-bottom: 0;
+}
+
+/* --- the annotated lyric sheet ----------------------------------------- */
+/* The analysis pane's centrepiece: the lyric itself with the findings drawn
+   on it. Unlike the karaoke above, nothing here is on a per-frame path and
+   nothing carries a clipped gradient, so this layer may tint a background and
+   may cut a word at a character offset — which is how "ele|VATION" gets marked
+   as the rhyme it is instead of the whole word. */
+
+/* Its own size container: the stress column and the wider gutter drop out
+   when the pane is narrow, so the same sheet reads in the SING split and
+   full width. */
+.la-sheet {
+  container-type: inline-size;
+  position: relative;
+}
+
+/* The text track is capped at a reading measure, so a wide pane gives a
+   readable column with the numbers beside it rather than a metre of dead
+   space between the words and the margin. */
+.la-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 72ch) auto;
+  /* Without this the auto tracks share out the leftover width of a wide pane
+     and the gutter drifts a hand's width away from the words it brackets. */
+  justify-content: start;
+  align-items: stretch;
+  column-gap: 6px;
+  transition: opacity 160ms ease, background-color 160ms ease;
+}
+
+/* Isolating a rhyme class pushes everything else back rather than hiding it:
+   the shape of the lyric has to stay readable while one class is read. */
+.la-row[data-dim] {
+  opacity: 0.24;
+}
+
+.la-row[data-hit] {
+  background: rgb(255 255 255 / 0.05);
+}
+
+/* The rhyme spines. One lane per overlapping class; every cell is the full
+   height of its row, so consecutive rows draw one unbroken bracket down the
+   gutter however the text wraps. */
+.la-gutter {
+  display: flex;
+  align-self: stretch;
+}
+
+.la-lane {
+  position: relative;
+  width: 7px;
+}
+
+/* Only a lane that is actually carrying a class draws a spine. Without the
+   [data-state] here every EMPTY lane painted a full-height grey rule too, so
+   a line that rhymes with nothing still got a bracket beside it and the
+   gutter stopped meaning "these lines rhyme". */
+.la-lane[data-state]::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: var(--lane-w, 1.5px) var(--lane-style, solid)
+    rgb(var(--lane-rgb, 161 161 170) / var(--lane-a, 0.55));
+}
+
+/* The bracket starts and stops at the middle of its first and last member. */
+.la-lane[data-state='start']::before {
+  top: 50%;
+}
+
+.la-lane[data-state='end']::before {
+  bottom: 50%;
+}
+
+/* A node marker on every member of a class. The SHAPE is the class's second
+   channel: eight of them, so two classes in the same gutter never differ by
+   hue alone. */
+.la-node {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  transform: translate(-50%, -50%);
+  background: rgb(var(--lane-rgb) / 0.95);
+}
+
+.la-node[data-shape='0'] {
+  border-radius: 50%;
+}
+
+.la-node[data-shape='1'] {
+  border-radius: 1px;
+}
+
+.la-node[data-shape='2'] {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.la-node[data-shape='3'] {
+  width: 0;
+  height: 0;
+  background: none;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-bottom: 6px solid rgb(var(--lane-rgb) / 0.95);
+}
+
+.la-node[data-shape='4'] {
+  border-radius: 50%;
+  background: #07050a;
+  border: 1.5px solid rgb(var(--lane-rgb) / 0.95);
+}
+
+.la-node[data-shape='5'] {
+  background: #07050a;
+  border: 1.5px solid rgb(var(--lane-rgb) / 0.95);
+}
+
+.la-node[data-shape='6'] {
+  background: #07050a;
+  border: 1.5px solid rgb(var(--lane-rgb) / 0.95);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.la-node[data-shape='7'] {
+  width: 9px;
+  height: 2px;
+}
+
+.la-text {
+  padding: 3px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgb(228 228 231);
+  overflow-wrap: break-word;
+}
+
+.la-row[data-kind='marker'] .la-text {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgb(251 113 133 / 0.85);
+}
+
+/* A marked stretch is a real button — it is how the finding is opened, from a
+   pointer or from the keyboard — but it has to sit in the text as if it were
+   just text, so every button default is stripped. The device rules above win
+   on specificity, which is what keeps the underline. */
+.la-text button {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
+.la-text [data-device]:hover,
+.la-text [data-device]:focus-visible {
+  --dev-a: 1;
+}
+
+/* Confidence, in thickness as well as in alpha: a 0.6 slant rhyme must not
+   look as settled as a perfect one. The line's SHAPE stays the family's, so
+   this never competes with the family encoding — and the steps are whole
+   pixels, because at 12px an em-sized step is rounded away (see above).
+   These come after the selected-finding rule on purpose: being the finding
+   you happen to have open must not make a loose rhyme look certain. The
+   outline and the full-strength ink already say it is selected. */
+:is(.la-legend, .la-text) [data-device][data-sure='low'] {
+  border-bottom-width: 1px;
+}
+
+:is(.la-legend, .la-text) [data-device][data-sure='high'] {
+  border-bottom-width: 3px;
+}
+
+:is(.la-legend, .la-text) [data-device='repetition'][data-sure='low'] {
+  border-bottom-width: 3px;
+}
+
+:is(.la-legend, .la-text) [data-device='repetition'][data-sure='high'] {
+  border-bottom-width: 6px;
+}
+
+:is(.la-legend, .la-text) [data-device='meaning'][data-sure='low'] {
+  border-top-width: 1px;
+}
+
+:is(.la-legend, .la-text) [data-device='meaning'][data-sure='high'] {
+  border-top-width: 3px;
+}
+
+/* Where findings pile up, the words themselves go warm — that is the density
+   of the lyric, read without leaving the words. */
+.la-text [data-device][data-stack='2'] {
+  background: rgb(var(--dev-rgb) / 0.05);
+  border-radius: 2px;
+}
+
+.la-text [data-device][data-stack='3'] {
+  background: rgb(var(--dev-rgb) / 0.11);
+  border-radius: 2px;
+}
+
+/* Internal and cross-line rhymes, drawn as arcs over the sheet instead of
+   listed under it: in a rap lyric they are the whole point and a list hides
+   them completely. The layer never eats a click except on a stroke. */
+.la-links {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.la-links path {
+  fill: none;
+  pointer-events: stroke;
+  cursor: pointer;
+  transition: stroke-opacity 160ms ease, stroke-width 160ms ease;
+}
+
+/* The whole-lyric shape: one column per line — syllables, device density, and
+   the rhyme class — so where the writing is dense and where it is bare is one
+   glance, and a click jumps the sheet there. */
+.la-shape {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.la-shape-col {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 3px;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.la-shape-col > span {
+  position: relative;
+  display: block;
+  width: 100%;
+  background: rgb(255 255 255 / 0.05);
+}
+
+.la-shape-col > span > i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: block;
+}
+
+.la-shape-col:hover {
+  outline: 1px solid rgb(255 255 255 / 0.3);
+}
+
+.la-shape-col[data-on] {
+  outline: 1px solid rgb(251 113 133 / 0.9);
+}
+
+/* The stress pattern: one dot per syllable, filled for a primary stress. */
+.la-stress {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.la-stress i {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.14);
+}
+
+.la-stress i[data-s='1'] {
+  width: 5px;
+  height: 5px;
+  background: rgb(244 244 245);
+}
+
+.la-stress i[data-s='2'] {
+  background: rgb(161 161 170);
+}
+
+/* Narrow pane: the syllable count and the class letter still carry the shape,
+   so the per-syllable stress row is the first thing to go. */
+@container (max-width: 420px) {
+  .la-stress {
+    display: none;
+  }
 }
 
 /* Line time chips: hidden while singing, shown in TAP mode and on hover. */
@@ -263,7 +608,12 @@ button.sing-text:hover {
     transition: none;
   }
 
-  :is(.sing-lines, .la-legend) [data-device] {
+  :is(.sing-lines, .la-legend, .la-text) [data-device] {
+    transition: none;
+  }
+
+  .la-row,
+  .la-links path {
     transition: none;
   }
 }

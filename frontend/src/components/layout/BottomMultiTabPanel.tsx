@@ -9,7 +9,7 @@
 import React, { useState, lazy, Suspense } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic, Waves, Brush, Gauge, Radio, MicVocal,
+  FileMusic, Waves, Brush, Gauge, Radio, MicVocal, NotebookPen,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
@@ -26,6 +26,12 @@ const MidiPanel = lazy(() => import('./MidiPanel').then((m) => ({ default: m.Mid
 // It lazy-loads both panes itself, so the pitch lane and mic capture still only
 // arrive when the tab is opened.
 import { SingScoreView } from './sing/SingScoreView';
+// The LYRIC tab (writing surface + the analysis pane beside it) is its own
+// chunk: nothing else imports the notebook, and the analysis pane it mounts is
+// already lazy in SING.
+const LyricStudioView = lazy(() =>
+  import('./lyricstudio/LyricStudioView').then((m) => ({ default: m.LyricStudioView })),
+);
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
 import { XrBusPanel } from '../dev/XrBusTester';
@@ -40,6 +46,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; desc: string; icon: R
   { id: 'draw',       label: 'DRAW',       desc: 'Draw to play generative music; record it to the library or EDIT',          icon: Brush,      colorActive: 'border-purple-500 text-purple-300' },
   { id: 'score',      label: 'Score',      desc: 'Sheet music + tabs for the selection; convert and arrange notation',       icon: FileMusic,  colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'sing',       label: 'Sing',       desc: 'Karaoke: lyrics follow the track word by word; paste, extract, align, tap-time and export LRC', icon: MicVocal, colorActive: 'border-rose-500 text-rose-300' },
+  { id: 'lyric',      label: 'Lyric',      desc: 'Write, edit and analyse lyrics with no song attached; save a draft into a song when it is ready', icon: NotebookPen, colorActive: 'border-rose-500 text-rose-300' },
   { id: 'details',    label: 'Details',    desc: 'The selected library item (metadata, prompt, analysis) and the media bucket for staging clips and files', icon: Info, colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'slide',      label: 'SLIDE',      desc: 'Control surface: map sliders and pads to parameters',                      icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
   { id: 'sway',       label: 'SWAY',       desc: 'Pose control: drive music and effects from body movement',                 icon: Waves,      colorActive: 'border-fuchsia-500 text-fuchsia-300' },
@@ -190,6 +197,13 @@ export const BottomMultiTabPanel: React.FC = () => {
         {activeTab === 'sing' && (
           <div className="absolute inset-0">
             <SingScoreView />
+          </div>
+        )}
+        {activeTab === 'lyric' && (
+          <div className="absolute inset-0">
+            <Suspense fallback={null}>
+              <LyricStudioView />
+            </Suspense>
           </div>
         )}
         {activeTab === 'sway' && (

@@ -54,6 +54,12 @@ const GLIDE_SNAP_VIEWPORTS = 1.5;
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
+/** How sure the detector was, as ink: a 0.6 slant rhyme has to look less
+ *  certain than a perfect one. Written as the same `--dev-a` the analysis pane
+ *  uses, and only ever from the render path — never from setPosition(). */
+const deviceAlpha = (confidence: number): React.CSSProperties =>
+  ({ '--dev-a': (0.34 + 0.66 * clamp01(confidence)).toFixed(2) }) as React.CSSProperties;
+
 /**
  * The karaoke text: large, centred, the active line brightest and biggest,
  * past lines dimmed, the next one half-lit. Rendered ONCE per doc; every
@@ -325,6 +331,7 @@ export const LyricsScroller = forwardRef<LyricsScrollerHandle, LyricsScrollerPro
                                 {...(mark && selectedGroup && mark.groups.includes(selectedGroup)
                                   ? { 'data-device-on': '' }
                                   : {})}
+                                {...(mark ? { style: deviceAlpha(mark.confidence) } : {})}
                                 title={title || undefined}
                               >
                                 {w.text}
