@@ -11,6 +11,7 @@ import { HoverTip, InfoTip } from '../components/ui/Tooltip';
 import { formatDuration, formatDate, formatSize } from './catalogFormat';
 import { CatalogueProviderBadge } from './CatalogueProviderBadge';
 import { CatalogueLineage } from './CatalogueLineage';
+import { CoverArt } from './CoverArt';
 import { inferProvider } from './catalogProviders';
 import { deriveLyrics, deriveStyle } from './catalogSearch';
 import { useBottomPanelStore } from '../state/bottomPanelStore';
@@ -190,6 +191,17 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar p-3 flex flex-col gap-3">
+        {/* Cover art, when the file carried any. Unlike the grid there is no
+            placeholder here — a blank square in a field list reads as a
+            failure, an absent block reads as "this track has no art". */}
+        {entry.coverUrl && (
+          <CoverArt
+            coverUrl={entry.coverUrl}
+            title={entry.title}
+            className="w-full aspect-square rounded border border-white/8"
+          />
+        )}
+
         {/* Favorite / rating + provider */}
         <div className="flex items-center gap-2">
           <HoverTip text={entry.favorite ? 'Remove from favorites.' : 'Mark as a favorite (star).'}>

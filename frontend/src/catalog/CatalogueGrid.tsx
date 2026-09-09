@@ -1,6 +1,7 @@
 import React from 'react';
-import { Play, Pause, Star, Music, GitBranch } from 'lucide-react';
+import { Play, Pause, Star, GitBranch } from 'lucide-react';
 import type { LibraryEntry } from '../state/libraryEntry';
+import { CoverArt } from './CoverArt';
 import { useLibraryStore } from '../state/libraryStore';
 import { usePlayerStore } from '../state/playerStore';
 import { HoverTip } from '../components/ui/Tooltip';
@@ -47,8 +48,12 @@ export const CatalogueGrid: React.FC<Props> = ({ entries, onContextMenu }) => {
               className={`hardware-card group cursor-pointer flex flex-col transition-all hover:bg-white/4
                 ${isSelected ? 'ring-1 ring-purple-500/60 bg-purple-500/6' : ''}`}
             >
-              <div className="aspect-square bg-black/40 flex items-center justify-center relative">
-                <Music className="w-6 h-6 text-zinc-800" />
+              <div className="aspect-square bg-black/40 relative">
+                <CoverArt
+                  coverUrl={entry.coverUrl}
+                  title={entry.title}
+                  className="absolute inset-0 w-full h-full"
+                />
                 <HoverTip text={isCurrent && isPlaying ? 'Pause playback.' : 'Play this track through the global player.'}>
                   <button
                     className="absolute top-1 right-1 p-1 bg-black/80 rounded opacity-0 group-hover:opacity-100 transition-opacity"

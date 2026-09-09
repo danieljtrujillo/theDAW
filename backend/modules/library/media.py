@@ -207,7 +207,13 @@ def _thumb_image(path: Path, out_path: Path) -> bool:
     except ImportError:
         return _thumb_video(path, out_path)  # ffmpeg can still poster an image
     try:
+        from PIL import ImageOps
+
         with Image.open(path) as im:
+            # Phone cameras record rotation in EXIF rather than in the pixels,
+            # and the JPEG written below carries no EXIF — so without this the
+            # poster is stored sideways with nothing downstream able to fix it.
+            im = ImageOps.exif_transpose(im) or im
             im = im.convert("RGBA")
             im.thumbnail((_THUMB_MAX_W, _THUMB_MAX_W * 4))
             bg = Image.new("RGB", im.size, _THUMB_BG)

@@ -8,6 +8,7 @@ import { logError } from '../state/logStore';
 import { HoverTip } from '../components/ui/Tooltip';
 import { formatDuration, formatDate, formatSize } from './catalogFormat';
 import { CatalogueProviderBadge } from './CatalogueProviderBadge';
+import { CoverArt } from './CoverArt';
 
 const ROW_HEIGHT = 52;
 
@@ -85,6 +86,13 @@ function Row({
               : <Play className="w-3 h-3 text-zinc-400" />}
           </button>
         </HoverTip>
+
+        <CoverArt
+          coverUrl={entry.coverUrl}
+          title={entry.title}
+          className="w-8 h-8 shrink-0 rounded-sm"
+          iconClassName="w-3.5 h-3.5"
+        />
 
         <div className="flex-1 min-w-0 flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5">

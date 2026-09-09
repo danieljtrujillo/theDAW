@@ -7,6 +7,7 @@ import {
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
   Film, Image as ImageIcon, Upload, RefreshCw, Tv2, Repeat, Info, Link2,
 } from 'lucide-react';
+import { CoverArt } from '../catalog/CoverArt';
 import { importUrlToLibrary } from '../lib/onlineImport';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
@@ -24,7 +25,9 @@ import { useStatusBarStore } from '../state/statusBarStore';
 import { useFeatureToggleStore } from '../state/featureToggleStore';
 import { logError, logInfo } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
-import { listMedia, importMedia, deleteMedia, MEDIA_ACCEPT } from '../lib/mediaLibrary';
+import {
+  listMedia, importMedia, deleteMedia, MEDIA_ACCEPT, backfillCoverArt, refreshCoverArt,
+} from '../lib/mediaLibrary';
 import { setAudioDragData } from '../lib/audioDnD';
 import { renderMidiBufferToBlob } from '../lib/midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from '../lib/fetchRetry';
@@ -408,6 +411,34 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const removeEntry = useLibraryStore((s) => s.removeEntry);
   const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
   const getFiltered = useLibraryStore((s) => s.getFiltered);
+  const refreshLibrary = useLibraryStore((s) => s.refresh);
+
+  // Cover art. Both actions re-list afterwards: the entry record is what
+  // carries the (version-stamped) cover URL, so the rail only repaints once
+  // the store has the new one.
+  const fetchCoverForEntry = React.useCallback(async (id: string) => {
+    const title = useLibraryStore.getState().entries.find((e) => e.id === id)?.title ?? id;
+    try {
+      await refreshCoverArt(id);
+      await refreshLibrary();
+      logInfo('library', `Cover art attached to "${title}".`);
+    } catch (e) {
+      logError('library', `No cover art for "${title}": ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [refreshLibrary]);
+
+  const fetchMissingCovers = React.useCallback(async () => {
+    try {
+      const result = await backfillCoverArt();
+      await refreshLibrary();
+      logInfo(
+        'library',
+        `Cover art: ${result.written} attached, ${result.no_cover} without any, ${result.skipped} already had one.`,
+      );
+    } catch (e) {
+      logError('library', `Cover backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [refreshLibrary]);
 
   // Gate the library fetch on backend readiness. The Shell mounts
   // immediately (so state stores initialize), but a /api/library/entries
@@ -990,6 +1021,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             void handleSendToInpaint(target);
             onSwitchTab?.('create');
           }}
+          onFetchMissingCovers={fetchMissingCovers}
           onClearNonFavorites={async () => {
             const targets = entries.filter((e) => !e.favorite);
             if (targets.length === 0) return;
@@ -1049,8 +1081,12 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
               title="Click to inspect metadata. Drag onto a Waveform Editor track."
             >
               {viewMode === 'grid' && (
-                <div className="flex-1 bg-black/40 flex items-center justify-center relative">
-                  <Music className="w-6 h-6 text-zinc-800" />
+                <div className="flex-1 bg-black/40 relative">
+                  <CoverArt
+                    coverUrl={entry.coverUrl}
+                    title={entry.title}
+                    className="absolute inset-0 w-full h-full"
+                  />
                   <button
                     className="absolute top-1 right-1 p-1 bg-black/80 rounded opacity-0 group-hover:opacity-100 transition-opacity"
                     onClick={() => handlePlay(entry)}
@@ -1058,6 +1094,15 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
                     {engineEntryId === entry.id && engineIsPlaying ? <Pause className="w-3 h-3 text-purple-300" /> : <Play className="w-3 h-3 text-zinc-300" />}
                   </button>
                 </div>
+              )}
+
+              {viewMode === 'list' && (
+                <CoverArt
+                  coverUrl={entry.coverUrl}
+                  title={entry.title}
+                  className="w-8 h-8 ml-0.5 shrink-0 rounded-sm"
+                  iconClassName="w-3.5 h-3.5"
+                />
               )}
 
               <div className={`p-1.5 flex flex-col gap-0.5 ${viewMode === 'list' ? 'flex-1 min-w-0' : ''}`}>
@@ -1263,6 +1308,13 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           },
           {
             type: 'item',
+            label: 'Fetch cover art',
+            icon: <ImageIcon className="w-3 h-3" />,
+            hint: 'embedded',
+            onSelect: () => { void fetchCoverForEntry(ctxEntryId); },
+          },
+          {
+            type: 'item',
             label: 'Open details',
             icon: <Info className="w-3 h-3" />,
             hint: 'DETAILS tab',
@@ -1361,6 +1413,7 @@ interface LibraryActionsToolbarProps {
   onDeleteSelected: () => void | Promise<void>;
   onFuseSelected: () => void;
   onInpaintSelected: () => void;
+  onFetchMissingCovers: () => void | Promise<void>;
   onClearNonFavorites: () => void | Promise<void>;
   onClearAll: () => void | Promise<void>;
 }
@@ -1379,6 +1432,7 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
   onDeleteSelected,
   onFuseSelected,
   onInpaintSelected,
+  onFetchMissingCovers,
   onClearNonFavorites,
   onClearAll,
 }) => {
@@ -1475,8 +1529,18 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
     },
   ];
 
+  const missingCovers = allEntries.filter((e) => !e.coverUrl).length;
   const optionsItems: ContextMenuItem[] = [
     { type: 'header', label: 'Library maintenance' },
+    {
+      type: 'item',
+      label: `Fetch cover art (${missingCovers} without)`,
+      icon: <ImageIcon className="w-3 h-3" />,
+      hint: 'embedded art',
+      disabled: missingCovers === 0,
+      onSelect: () => void onFetchMissingCovers(),
+    },
+    { type: 'separator' },
     {
       type: 'item',
       label: `Clear non-favorites (${allEntries.filter((e) => !e.favorite).length})`,

@@ -5,12 +5,15 @@ Endpoints (prefix from module.json → `/api/library`):
     GET    /entries            list entries (?kind=audio|video|image|media|all)
     GET    /entries/{id}       single entry record
     GET    /audio/{id}         stream the audio file
+    GET    /audio/{id}/cover   cover art for an audio entry
+    POST   /audio/{id}/cover   attach/refresh one entry's cover art
     GET    /media/{id}         stream a video/image entry (Range-capable)
     GET    /media/{id}/thumb   poster thumbnail for a media entry
     PATCH  /entries/{id}       update user-mutable fields
     DELETE /entries/{id}       remove the entry (audio + metadata)
     POST   /import             accept an audio upload, return new entry
     POST   /import-media       accept a video/image upload, return new entry
+    POST   /covers/backfill    re-read embedded art for entries with none
     POST   /reindex            re-sync the SQLite mirror from the filesystem
 
 The audio stream uses FileResponse so range requests work (essential for
@@ -35,6 +38,7 @@ from pydantic import BaseModel
 
 from .bundle import build_bundle_bytes
 from .store import LibraryStore, _read_metadata, default_library_root
+from .tags import MAX_EMBEDDED_COVER_BYTES
 
 log = logging.getLogger(__name__)
 
@@ -270,6 +274,88 @@ async def stream_audio(entry_id: str) -> Response:
             except Exception as exc:  # noqa: BLE001
                 log.warning("library: CDN proxy failed for %s: %s", entry_id, exc)
     raise HTTPException(404, f"Audio for entry {entry_id!r} not found")
+
+
+@router.get("/audio/{entry_id}/cover")
+def stream_audio_cover(entry_id: str) -> FileResponse:
+    """Serve the cover art for an audio entry (JPEG). Same shape as the media
+    poster route: the store normalises everything to one file, so there is no
+    content negotiation and a missing cover is a plain 404."""
+    store = get_store()
+    cover_path = store.get_cover_path(entry_id)
+    if cover_path is None or not cover_path.is_file():
+        raise HTTPException(404, f"Cover for entry {entry_id!r} not found")
+    return FileResponse(path=str(cover_path), media_type="image/jpeg")
+
+
+@router.post("/audio/{entry_id}/cover")
+async def set_audio_cover(
+    entry_id: str,
+    file: Optional[UploadFile] = File(None),
+) -> dict[str, Any]:
+    """Attach or refresh an entry's cover art.
+
+    With an uploaded image, that picture becomes the cover; with no upload,
+    the entry's audio file is re-read for its embedded front cover. Both go
+    through the same normalisation, so an entry can never end up holding a
+    30MB PNG. 404 when the entry is unknown, 422 when nothing usable came
+    back (no embedded picture, or an image we refused).
+    """
+    store = get_store()
+    entry = store.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(404, f"Entry {entry_id!r} not found")
+    # Audio only. A video/image entry has its own poster route and every list
+    # path reports its cover_url as None, so accepting one here would write
+    # art no surface can ever show and answer 200 for it.
+    if entry.kind != "audio":
+        raise HTTPException(404, f"Entry {entry_id!r} is not an audio entry")
+
+    image_bytes: Optional[bytes] = None
+    if file is not None:
+        # Bounded read: an oversized upload is rejected without ever being
+        # held in memory in full.
+        image_bytes = await file.read(MAX_EMBEDDED_COVER_BYTES + 1)
+        if not image_bytes:
+            raise HTTPException(400, "empty image")
+        if len(image_bytes) > MAX_EMBEDDED_COVER_BYTES:
+            raise HTTPException(413, f"image exceeds {MAX_EMBEDDED_COVER_BYTES} bytes")
+
+    cover_url = store.attach_cover(entry_id, image_bytes)
+    if cover_url is None:
+        raise HTTPException(
+            422,
+            "uploaded image could not be used as cover art"
+            if file is not None
+            else f"Entry {entry_id!r} has no embedded cover art",
+        )
+    return {
+        "id": entry_id,
+        "cover_url": cover_url,
+        "source": "upload" if file is not None else "embedded",
+    }
+
+
+class CoverBackfillRequest(BaseModel):
+    """``overwrite`` re-reads entries that already have art (use after a
+    re-tag); ``limit`` caps how many entries one pass touches."""
+
+    overwrite: bool = False
+    limit: Optional[int] = None
+
+
+@router.post("/covers/backfill")
+def backfill_covers(
+    req: CoverBackfillRequest = Body(default=CoverBackfillRequest()),
+) -> dict[str, Any]:
+    """Give already-imported audio entries the cover art their files carry.
+
+    Entries imported before covers existed have none on disk; this walks them
+    and extracts what is embedded. Idempotent, so it is safe to re-run."""
+    limit = req.limit
+    if limit is not None and limit < 1:
+        raise HTTPException(400, "limit must be >= 1")
+    return get_store().backfill_covers(overwrite=req.overwrite, limit=limit)
 
 
 @router.get("/stems/{stem_id}/audio")

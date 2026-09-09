@@ -1,11 +1,13 @@
 /**
- * Client for the library's media (video / image) endpoints.
+ * Client for the library's media (video / image) endpoints, plus the cover-art
+ * routes that produce the other images the library shows.
  *
  * The audio library flows through the StorageProvider abstraction
  * (`backendLocalProvider`), which is audio-centric and has cloud-provider
  * implications. Media is a separate concern with its own small surface,
  * so it talks to `/api/library/import-media` and `?kind=media` directly
- * rather than widening that interface.
+ * rather than widening that interface. Cover art lives here for the same
+ * reason: it is picture plumbing, not part of the audio storage contract.
  */
 
 import type { LibraryEntry } from '../state/libraryEntry';
@@ -29,6 +31,7 @@ interface ServerMediaRecord {
   kind?: 'audio' | 'video' | 'image';
   media_url?: string;
   thumb_url?: string | null;
+  cover_url?: string | null;
   width?: number | null;
   height?: number | null;
   has_alpha?: boolean;
@@ -58,6 +61,9 @@ const toEntry = (r: ServerMediaRecord): LibraryEntry => ({
   kind: r.kind ?? 'video',
   mediaUrl: r.media_url ?? r.audio_url,
   thumbUrl: r.thumb_url ?? null,
+  // Media entries poster themselves via thumbUrl; the field is carried anyway
+  // so one LibraryEntry shape survives both endpoints.
+  coverUrl: r.cover_url ?? null,
   width: r.width ?? null,
   height: r.height ?? null,
   hasAlpha: !!r.has_alpha,
@@ -124,6 +130,41 @@ export async function importFolder(
     name?: string;
     entries: { id: string; title: string }[];
   };
+}
+
+/** Counts one cover backfill pass returns. */
+export interface CoverBackfillResult {
+  scanned: number;
+  written: number;
+  skipped: number;
+  no_cover: number;
+}
+
+/** Give already-imported entries the artwork their files carry. Idempotent —
+ *  entries that already have a cover are left alone unless `overwrite`. */
+export async function backfillCoverArt(overwrite = false): Promise<CoverBackfillResult> {
+  const r = await fetch(`${BASE}/covers/backfill`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ overwrite }),
+  });
+  if (!r.ok) throw new Error(`covers.backfill: ${await errorText(r)}`);
+  return (await r.json()) as CoverBackfillResult;
+}
+
+/** Attach or refresh ONE entry's cover: the given image, or (with no image)
+ *  whatever picture is embedded in the entry's audio file. Returns the cover
+ *  URL. Rejects when the track has no usable art. */
+export async function refreshCoverArt(id: string, image?: File): Promise<string> {
+  const init: RequestInit = { method: 'POST' };
+  if (image) {
+    const form = new FormData();
+    form.append('file', image, image.name);
+    init.body = form;
+  }
+  const r = await fetch(`${BASE}/audio/${encodeURIComponent(id)}/cover`, init);
+  if (!r.ok) throw new Error(`covers.refresh(${id}): ${await errorText(r)}`);
+  return ((await r.json()) as { cover_url: string }).cover_url;
 }
 
 /** The MIME types the media import input accepts. */

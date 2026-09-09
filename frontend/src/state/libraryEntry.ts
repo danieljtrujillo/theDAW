@@ -51,6 +51,13 @@ export interface LibraryEntry {
   kind?: 'audio' | 'video' | 'image';
   mediaUrl?: string;
   thumbUrl?: string | null;
+  /**
+   * Album/track artwork, extracted from the audio file's embedded picture at
+   * import (`/api/library/audio/<id>/cover`). Null when the track shipped
+   * without art — the presence is on the record precisely so the UI can draw
+   * its placeholder without probing the route for a 404.
+   */
+  coverUrl?: string | null;
   width?: number | null;
   height?: number | null;
   /** True for transparent PNG/WebP or alpha WebM — overlay-capable media. */

@@ -89,6 +89,10 @@ class LibraryRecord:
     width: Optional[int] = None
     height: Optional[int] = None
     has_alpha: bool = False
+    # Album/track artwork for an audio entry, extracted from the file's
+    # embedded picture at import. None when the track has none, so the UI
+    # can draw its placeholder without probing the route for a 404.
+    cover_url: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +124,7 @@ class LibraryRecord:
             "width": self.width,
             "height": self.height,
             "has_alpha": self.has_alpha,
+            "cover_url": self.cover_url,
         }
 
 
@@ -144,6 +149,49 @@ def _thumb_url_for(api_prefix: str, entry_id: str) -> str:
     return f"{api_prefix}/media/{entry_id}/thumb"
 
 
+# Normalised cover art for an audio entry. One fixed name, chosen by us: the
+# filename and MIME string embedded next to the picture are attacker-supplied
+# and never reach the filesystem.
+COVER_FILENAME = "cover.jpg"
+
+
+def _cover_url_for(api_prefix: str, entry_id: str) -> str:
+    return f"{api_prefix}/audio/{entry_id}/cover"
+
+
+def _cover_url_if_present(
+    entry_dir: Path, api_prefix: str, entry_id: str
+) -> Optional[str]:
+    """The cover URL when the entry has artwork on disk, else None — one stat,
+    mirroring how the media poster is surfaced.
+
+    The URL carries the cover's mtime, so refreshing an entry's art produces a
+    NEW url. Without it a re-read would write different bytes behind an
+    unchanged ``src`` and every browser on screen would keep showing the old
+    picture out of its cache.
+    """
+    try:
+        stamp = int((entry_dir / COVER_FILENAME).stat().st_mtime * 1000)
+    except OSError:
+        return None
+    return f"{_cover_url_for(api_prefix, entry_id)}?v={stamp}"
+
+
+def extract_cover_for(entry_dir: Path, audio_path: Path) -> bool:
+    """Pull the front cover out of ``audio_path`` into ``entry_dir``.
+
+    Best-effort by design: a track with no picture is the normal case, and a
+    corrupt or absurd one must never fail an import. Returns True only when a
+    normalised cover was written.
+    """
+    from .tags import extract_embedded_cover, write_cover_image
+
+    data = extract_embedded_cover(audio_path)
+    if not data:
+        return False
+    return write_cover_image(data, entry_dir / COVER_FILENAME)
+
+
 _MEDIA_EXTS = {
     ".mp4",
     ".webm",
@@ -165,15 +213,15 @@ _MEDIA_EXTS = {
 
 def _resolve_media_file(entry_dir: Path, meta: dict[str, Any]) -> Optional[Path]:
     """Resolve a video/image file for a media entry: the declared name
-    first, then the first recognized media file in the directory (the
-    poster thumbnail is skipped)."""
+    first, then the first recognized media file in the directory (our own
+    derived images — the poster thumbnail and the cover art — are skipped)."""
     declared = meta.get("media_filename") or meta.get("filename")
     if declared:
         candidate = entry_dir / declared
         if candidate.is_file():
             return candidate
     for path in sorted(entry_dir.iterdir()):
-        if path.name == "thumb.jpg":
+        if path.name in ("thumb.jpg", COVER_FILENAME):
             continue
         if path.is_file() and path.suffix.lower() in _MEDIA_EXTS:
             return path
@@ -352,6 +400,7 @@ def _record_from_metadata(
         chimera_sources=list(meta.get("chimera_sources") or []),
         lyrics=str(meta.get("lyrics") or ""),
         spectrogram_paths=dict(meta.get("spectrogram_paths") or {}),
+        cover_url=_cover_url_if_present(entry_dir, api_prefix, entry_id),
     )
 
 
@@ -504,6 +553,10 @@ class LibraryStore:
                 record.id = entry_id
                 if record.kind == "audio":
                     record.audio_url = _audio_url_for(self.api_prefix, entry_id)
+                    if record.cover_url:
+                        record.cover_url = _cover_url_if_present(
+                            inner, self.api_prefix, entry_id
+                        )
                 else:
                     record.media_url = _media_url_for(self.api_prefix, entry_id)
                     record.audio_url = record.media_url
@@ -551,10 +604,12 @@ class LibraryStore:
                     if (entry_dir / "thumb.jpg").is_file()
                     else None
                 )
+                cover_url: Optional[str] = None
             else:
                 media_url = None
                 audio_url = _audio_url_for(self.api_prefix, entry_id)
                 thumb_url = None
+                cover_url = _cover_url_if_present(entry_dir, self.api_prefix, entry_id)
             # mime_type must come from metadata, not the DB mime column:
             # upsert_entry coerces an empty mime to 'audio/wav', which would
             # break the walk's '' default for media and 'audio/mpeg' for audio.
@@ -593,6 +648,7 @@ class LibraryStore:
                     width=_int_or_none(meta.get("width")) if is_media else None,
                     height=_int_or_none(meta.get("height")) if is_media else None,
                     has_alpha=bool(meta.get("has_alpha", False)) if is_media else False,
+                    cover_url=cover_url,
                 )
             )
         # The walk emits entries in sorted(root.iterdir()) order; sorting by
@@ -608,9 +664,28 @@ class LibraryStore:
         if meta is None:
             return None
         record = _record_from_metadata(entry_dir, meta, self.api_prefix)
-        if record is not None:
-            record.id = entry_id
+        if record is None:
+            return None
+        # The nested "<job>/<index>" layout resolves against the inner dir, so
+        # every per-entry URL is re-stamped with the id callers actually use.
+        record.id = entry_id
+        if record.kind in ("video", "image"):
+            # A media entry streams from /media/<id>. This used to rewrite
+            # audio_url to the audio route unconditionally, so the single-entry
+            # read disagreed with both list paths, which set audio_url ==
+            # media_url. (The old URL did resolve — /audio/<id> falls back to
+            # the declared filename and happily serves the mp4 — so this is a
+            # consistency fix, not a 404 fix.)
+            record.media_url = _media_url_for(self.api_prefix, entry_id)
+            record.audio_url = record.media_url
+            if record.thumb_url:
+                record.thumb_url = _thumb_url_for(self.api_prefix, entry_id)
+        else:
             record.audio_url = _audio_url_for(self.api_prefix, entry_id)
+            if record.cover_url:
+                record.cover_url = _cover_url_if_present(
+                    entry_dir, self.api_prefix, entry_id
+                )
         return record
 
     def get_audio_path(self, entry_id: str) -> Optional[Path]:
@@ -638,6 +713,14 @@ class LibraryStore:
             return None
         thumb = entry_dir / "thumb.jpg"
         return thumb if thumb.is_file() else None
+
+    def get_cover_path(self, entry_id: str) -> Optional[Path]:
+        """Resolve the cover art for an entry, if the track had any."""
+        entry_dir = self._dir_for(entry_id)
+        if entry_dir is None:
+            return None
+        cover = entry_dir / COVER_FILENAME
+        return cover if cover.is_file() else None
 
     # ---- Write --------------------------------------------------------------
 
@@ -720,6 +803,10 @@ class LibraryStore:
         from .tags import extract_embedded_tags
 
         embedded = extract_embedded_tags(target_path)
+        # Same frames, the other half of what they carry: the front cover.
+        # Written before the record is built so the first response already
+        # says the entry has artwork.
+        extract_cover_for(entry_dir, target_path)
         meta_in = dict(metadata or {})
 
         def _pick(field: str, embedded_keys: list[str], default: Any) -> Any:
@@ -826,6 +913,11 @@ class LibraryStore:
             "saved_at": time.time(),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        # The audio stays where it is, but its artwork is copied in: the cover
+        # has to live under the library root for the route to serve it. A
+        # folder import runs this per file — a track with no picture costs a
+        # tag read, and one with a picture pays the normalise it needs.
+        extract_cover_for(entry_dir, src)
         _write_metadata(entry_dir, record_meta)
         record = _record_from_metadata(entry_dir, record_meta, self.api_prefix)
         if record is None:
@@ -904,6 +996,70 @@ class LibraryStore:
         assert record is not None, "freshly imported media must resolve"
         self._sync_record_to_db(record, record_meta)
         return record
+
+    # ---- Cover art ----------------------------------------------------------
+
+    def attach_cover(
+        self, entry_id: str, image_bytes: Optional[bytes] = None
+    ) -> Optional[str]:
+        """Attach or refresh one entry's cover art, replacing any existing one.
+
+        With ``image_bytes`` the caller's picture is normalised and written;
+        without, the entry's audio file is re-read for an embedded front cover.
+        Returns the cover URL on success, None when the entry is unknown, is
+        not an audio entry, has no audio to read, or carries nothing usable as
+        artwork.
+
+        Audio only, deliberately: a video/image entry posters itself from
+        ``thumb.jpg`` and every read path reports ``cover_url`` as None for it,
+        so writing art here would leave bytes on disk that nothing can ever
+        show.
+        """
+        entry_dir = self._dir_for(entry_id)
+        if entry_dir is None:
+            return None
+        meta = _read_metadata(entry_dir) or {}
+        if str(meta.get("kind") or "audio") != "audio":
+            return None
+        if image_bytes is not None:
+            from .tags import write_cover_image
+
+            written = write_cover_image(image_bytes, entry_dir / COVER_FILENAME)
+        else:
+            audio_path = self.get_audio_path(entry_id)
+            if audio_path is None:
+                return None
+            written = extract_cover_for(entry_dir, audio_path)
+        if not written:
+            return None
+        return _cover_url_if_present(entry_dir, self.api_prefix, entry_id)
+
+    def backfill_covers(
+        self, *, overwrite: bool = False, limit: Optional[int] = None
+    ) -> dict[str, int]:
+        """Re-read embedded artwork for audio entries that predate cover art.
+
+        Idempotent: entries that already have a cover are skipped unless
+        ``overwrite``. Returns per-outcome counts so the caller can report
+        what a maintenance pass actually did.
+        """
+        counts = {"scanned": 0, "written": 0, "skipped": 0, "no_cover": 0}
+        for record in self.list_entries_fast(kinds={"audio"}):
+            if limit is not None and counts["scanned"] >= limit:
+                break
+            entry_dir = self._dir_for(record.id)
+            if entry_dir is None:
+                continue
+            counts["scanned"] += 1
+            if not overwrite and (entry_dir / COVER_FILENAME).is_file():
+                counts["skipped"] += 1
+                continue
+            audio_path = self.get_audio_path(record.id)
+            if audio_path is None or not extract_cover_for(entry_dir, audio_path):
+                counts["no_cover"] += 1
+                continue
+            counts["written"] += 1
+        return counts
 
     # ---- DB sync / reindex --------------------------------------------------
 

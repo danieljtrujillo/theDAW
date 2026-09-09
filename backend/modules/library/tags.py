@@ -15,13 +15,21 @@ Supported containers:
   - Vorbis comments (FLAC, OGG)
   - MP4/M4A iTunes atoms, including ``----:com.apple.iTunes:<key>``
   - RIFF INFO chunks (WAV)
+
+The same frames also carry the front-cover picture (ID3 ``APIC``, FLAC
+``Picture`` blocks, Vorbis ``metadata_block_picture``, MP4 ``covr``); see
+``extract_embedded_cover`` / ``write_cover_image`` at the bottom of this
+module for how a track's artwork is read and normalised.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
@@ -338,3 +346,237 @@ def extract_embedded_tags(path: Path) -> dict[str, str]:
         if detected:
             cleaned["generator"] = detected
     return cleaned
+
+
+# ---- Cover art --------------------------------------------------------------
+#
+# An embedded picture is attacker-controlled data in a file the user merely
+# dragged in, so every step below bounds something BEFORE the next one runs:
+# the raw frame length, then the header's pixel count (Pillow's ``open()``
+# only parses the header, so this lands before any decode), then the edge
+# length we write. The picture's own filename and MIME string are never used
+# for anything — the caller writes to a fixed name it chose itself.
+
+# Bigger than any plausible album cover; a 7MB original is a tagging accident,
+# a 40MB one is a decompression bomb wearing a hat.
+MAX_EMBEDDED_COVER_BYTES = 24 * 1024 * 1024
+# 4000x4000 is already twice what stores ship. Beyond it we refuse rather than
+# hand Pillow a buffer that would decode to hundreds of MB of RGBA.
+MAX_COVER_PIXELS = 16_000_000
+# The rail and grid draw a cover at ~100px, the details pane at ~200px; 640
+# stays sharp at 2x there and keeps a track's artwork around 80KB instead of
+# the 500KB the file shipped. Quality matches the poster thumbnails.
+COVER_MAX_EDGE = 640
+COVER_JPEG_QUALITY = 82
+# Transparent art is flattened onto the app's panel tone, matching the poster
+# thumbnails in `media.py` so a cover and a video poster read the same.
+_COVER_BG = (11, 10, 18)
+
+# ID3 / FLAC picture type 3 == "Cover (front)". Anything else (back cover,
+# artist photo, a scan of the booklet) is only used when there is no front.
+_PICTURE_TYPE_FRONT = 3
+
+
+def _picture_bytes(data: Any) -> Optional[bytes]:
+    """Accept a picture payload only if it is bytes of a plausible size."""
+    if not isinstance(data, (bytes, bytearray)):
+        return None
+    if not data or len(data) > MAX_EMBEDDED_COVER_BYTES:
+        return None
+    return bytes(data)
+
+
+def _pick_front(pictures: list[Any]) -> Optional[bytes]:
+    """The front cover's bytes, else the first picture that has usable ones.
+
+    A picture is only a candidate once ``_picture_bytes`` has accepted it, so
+    a file whose front cover is absurdly large does not lose the ordinary back
+    cover sitting next to it — picking the frame first and validating after
+    would return nothing at all. This is the same fall-through the Vorbis
+    reader does across its own list.
+    """
+    fallback: Optional[bytes] = None
+    for pic in pictures:
+        data = _picture_bytes(getattr(pic, "data", None))
+        if data is None:
+            continue
+        try:
+            is_front = int(getattr(pic, "type", -1)) == _PICTURE_TYPE_FRONT
+        except (TypeError, ValueError):
+            is_front = False
+        if is_front:
+            return data
+        if fallback is None:
+            fallback = data
+    return fallback
+
+
+def _cover_from_flac(audio: Any) -> Optional[bytes]:
+    """FLAC keeps pictures in their own metadata blocks, not the comments."""
+    return _pick_front(list(getattr(audio, "pictures", None) or []))
+
+
+def _cover_from_id3(audio: Any) -> Optional[bytes]:
+    """ID3v2 APIC frames (MP3, and AIFF/WAV files carrying an ID3 chunk)."""
+    tags = getattr(audio, "tags", None)
+    getall = getattr(tags, "getall", None)
+    if getall is None:
+        return None
+    return _pick_front(list(getall("APIC") or []))
+
+
+def _cover_from_vorbis(audio: Any) -> Optional[bytes]:
+    """Ogg/Opus/Vorbis: a base64 FLAC Picture block in a comment field.
+
+    Falls back to the legacy ``coverart`` field (bare base64 image bytes)
+    that older taggers wrote before ``metadata_block_picture`` existed.
+    """
+    tags = getattr(audio, "tags", None)
+    if tags is None or not hasattr(tags, "get"):
+        return None
+    # base64 inflates by 4/3 — reject the string before decoding it, so an
+    # oversized picture never gets materialised in memory at all.
+    max_b64 = MAX_EMBEDDED_COVER_BYTES * 4 // 3 + 8
+
+    from mutagen.flac import Picture
+
+    fallback: Optional[bytes] = None
+    for raw in tags.get("metadata_block_picture") or []:
+        if not isinstance(raw, str) or len(raw) > max_b64:
+            continue
+        try:
+            picture = Picture(base64.b64decode(raw))
+        except Exception as e:  # noqa: BLE001 — malformed block, try the next
+            log.debug("library.cover: bad metadata_block_picture: %s", e)
+            continue
+        data = _picture_bytes(picture.data)
+        if data is None:
+            continue
+        if int(getattr(picture, "type", -1) or -1) == _PICTURE_TYPE_FRONT:
+            return data
+        if fallback is None:
+            fallback = data
+    if fallback is not None:
+        return fallback
+    for raw in tags.get("coverart") or []:
+        if not isinstance(raw, str) or len(raw) > max_b64:
+            continue
+        try:
+            return _picture_bytes(base64.b64decode(raw))
+        except Exception as e:  # noqa: BLE001 — malformed base64, no art
+            log.debug("library.cover: bad coverart field: %s", e)
+    return None
+
+
+def _cover_from_mp4(audio: Any) -> Optional[bytes]:
+    """MP4/M4A ``covr`` atoms. MP4Cover subclasses bytes, so no unwrapping."""
+    tags = getattr(audio, "tags", None)
+    if tags is None or not hasattr(tags, "get"):
+        return None
+    for cover in tags.get("covr") or []:
+        data = _picture_bytes(cover)
+        if data is not None:
+            return data
+    return None
+
+
+# Ordered by how the containers actually store pictures. Each reader is a
+# no-op on a file that is not its format, so one pass covers every type.
+_COVER_READERS = (
+    _cover_from_flac,
+    _cover_from_id3,
+    _cover_from_vorbis,
+    _cover_from_mp4,
+)
+
+
+def extract_embedded_cover(path: Path) -> Optional[bytes]:
+    """Return the raw bytes of the file's front-cover picture, or ``None``.
+
+    Never raises. A file with no picture, an unreadable container, a missing
+    mutagen and a picture too large to be plausible all read the same to the
+    caller: this track has no artwork. The bytes are NOT validated as an
+    image here — ``write_cover_image`` does that before anything is written.
+    """
+    try:
+        import mutagen
+    except ImportError:
+        log.debug("library.cover: mutagen not installed, no cover art")
+        return None
+
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        audio = mutagen.File(str(p))  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001 — mutagen raises per-format errors
+        log.debug("library.cover: could not open %s: %s", p.name, e)
+        return None
+    if audio is None:
+        return None
+
+    for reader in _COVER_READERS:
+        try:
+            data = reader(audio)
+        except Exception as e:  # noqa: BLE001 — a broken frame is not an error
+            log.debug("library.cover: %s failed on %s: %s", reader.__name__, p.name, e)
+            continue
+        if data:
+            return data
+    return None
+
+
+def write_cover_image(data: bytes, out_path: Path) -> bool:
+    """Normalise raw picture bytes into a bounded JPEG at ``out_path``.
+
+    Returns True only when a file was actually written. Corrupt bytes, an
+    absurd pixel count and a missing Pillow all return False, leaving any
+    existing cover untouched — the write goes through a temp file so a
+    half-encoded JPEG is never visible under ``out_path``.
+    """
+    if not data or len(data) > MAX_EMBEDDED_COVER_BYTES:
+        log.info("library.cover: refusing a %d-byte picture", len(data or b""))
+        return False
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        log.debug("library.cover: Pillow missing, cannot normalise cover art")
+        return False
+
+    # A temp name unique to this call. Two requests can normalise art for the
+    # SAME entry concurrently (FastAPI runs sync handlers on a threadpool), and
+    # a shared "<name>.tmp" let one call's cleanup delete the other's half-
+    # written file — losing a cover, or failing the replace outright.
+    tmp = out_path.with_name(f"{out_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            width, height = im.size
+            if width < 1 or height < 1 or width * height > MAX_COVER_PIXELS:
+                log.info("library.cover: refusing a %dx%d picture", width, height)
+                return False
+            # JPEG-only hint: lets libjpeg decode at a reduced scale, so a big
+            # cover never fully materialises before we shrink it.
+            im.draft("RGB", (COVER_MAX_EDGE, COVER_MAX_EDGE))
+            # Rotate to the orientation the picture is meant to be seen at. We
+            # re-encode without EXIF, so a camera-tagged cover left untransposed
+            # would hang in the rail sideways with nothing downstream able to
+            # correct it.
+            upright = ImageOps.exif_transpose(im)
+            rgba = (upright if upright is not None else im).convert("RGBA")
+        rgba.thumbnail((COVER_MAX_EDGE, COVER_MAX_EDGE))
+        flat = Image.new("RGB", rgba.size, _COVER_BG)
+        flat.paste(rgba, mask=rgba.split()[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        flat.save(tmp, "JPEG", quality=COVER_JPEG_QUALITY)
+        tmp.replace(out_path)
+        return out_path.is_file()
+    except Exception as e:  # noqa: BLE001 — Pillow raises many decode errors
+        log.info("library.cover: could not normalise cover art: %s", e)
+        return False
+    finally:
+        # Only ever our own temp: the name carries this call's uuid, so a
+        # concurrent write's in-flight file is never touched.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            log.debug("library.cover: leftover temp file %s", tmp)
