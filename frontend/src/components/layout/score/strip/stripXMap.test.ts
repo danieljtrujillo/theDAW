@@ -11,8 +11,12 @@ import {
   STRIP_ZOOM_MAX,
   STRIP_ZOOM_MIN,
   stripContentWidthPx,
+  stripNowGeometry,
+  stripScrollLeft,
+  stripScrollOffsetX,
   stripStepIndexAtSeconds,
   stripSystemCount,
+  stripViewportX,
   xAtSeconds,
   type OsmdLike,
 } from './stripXMap.ts';
@@ -132,6 +136,66 @@ const map = makeMap(steps);
   assert.equal(stripStepIndexAtSeconds(steps, 1), 1, 'exactly on a step -> that step');
   assert.equal(stripStepIndexAtSeconds(steps, 2.5), 2);
   assert.equal(stripStepIndexAtSeconds(steps, 100), 3, 'past the end -> last');
+}
+
+// ---------------------------------------------------------------------------
+// The now-line invariant: at second 0 the music sounding now sits ON the
+// line, never past it. OSMD indents the first system, so the opening note is
+// NOT at content x 0 and the scroll position that would put it under the line
+// unpadded is negative — which the DOM clamps to 0, stranding the opening bar
+// to the LEFT of the line until the music catches up with it.
+{
+  /** The same two measures, shifted right by a first-system indent. */
+  const indented = (indentUnits: number): OsmdLike => ({
+    GraphicSheet: { MeasureList: [[gm(indentUnits, 100)], [gm(indentUnits + 100, 100)]] },
+    Sheet: makeOsmd().Sheet,
+  });
+  const geom = stripNowGeometry(1000, 0.38);
+  assert.equal(geom.offsetPx, 380, 'the line sits at 38% of the measured pane');
+  assert.equal(geom.padPx, 380, 'and the run-up pad is the same 380 px');
+
+  const xmap = buildStripXMap(indented(1.9), map, 1);
+  const x0 = xAtSeconds(map, xmap, 0);
+  assert.equal(x0, 19, 'the first note is 19 px into the strip: the system indent');
+  const want = stripScrollLeft(x0, geom);
+  assert.ok(want >= 0, `the scroll target ${want} is never the negative the DOM clamps`);
+  assert.equal(
+    stripViewportX(x0, Math.max(0, want), geom),
+    geom.offsetPx,
+    'at second 0 the first note lands exactly on the now-line',
+  );
+
+  // The defect this locks out: unpadded, the target was 19 - 380 = -361, the
+  // DOM gave 0, and the first note sat 361 px LEFT of the line before a note
+  // had sounded (with the strip frozen there until x(t) reached the line).
+  const unpadded = { offsetPx: geom.offsetPx, padPx: 0 };
+  const oldLeft = Math.max(0, stripScrollLeft(x0, unpadded));
+  assert.equal(oldLeft, 0, 'the old target was clamped to the left edge');
+  assert.equal(stripViewportX(x0, oldLeft, unpadded), 19, 'leaving the note 361 px left of the line');
+
+  // Every later second holds the same invariant.
+  const xMid = xAtSeconds(map, xmap, 2.5);
+  assert.equal(stripViewportX(xMid, stripScrollLeft(xMid, geom), geom), geom.offsetPx, 'and mid-song too');
+
+  // Both NOW prefs, at panes from a narrow split to a wide one.
+  for (const [pane, pos] of [[1000, 0.5], [320, 0.38], [1920, 0.5]] as const) {
+    const g = stripNowGeometry(pane, pos);
+    assert.equal(g.offsetPx, pane * pos);
+    assert.equal(
+      stripViewportX(x0, stripScrollLeft(x0, g), g),
+      g.offsetPx,
+      `on the line at ${pane} px / ${pos}`,
+    );
+  }
+
+  // alphaTab adds its offset to a canvas-local bar x, which the pad already
+  // shifted: there is nothing left for the offset to do.
+  assert.equal(stripScrollOffsetX(geom), 0, 'the tab strip needs no scroll offset of its own');
+
+  // A pane that has not been measured yet degrades to zero, never NaN.
+  assert.deepEqual(stripNowGeometry(0, 0.38), { offsetPx: 0, padPx: 0 });
+  assert.deepEqual(stripNowGeometry(Number.NaN, 0.38), { offsetPx: 0, padPx: 0 });
+  assert.equal(stripScrollLeft(Number.NaN, geom), 0, 'a NaN x scrolls to the start, not to NaN');
 }
 
 // ---------------------------------------------------------------------------

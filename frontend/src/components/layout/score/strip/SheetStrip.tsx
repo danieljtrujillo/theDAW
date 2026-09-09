@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import type { LibraryEntry } from '../../../../state/libraryEntry';
 import { fetchArtifactText, type NotationArtifact } from '../../../../lib/notationClient';
@@ -37,6 +37,8 @@ import {
   STRIP_SIZE_NOTICE,
   stripContentWidthPx,
   createScrollFollower,
+  stripNowGeometry,
+  stripScrollLeft,
   stripSystemCount,
   xAtSeconds,
   type ScrollFollower,
@@ -156,6 +158,10 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
   const followerRef = useRef<ScrollFollower>(createScrollFollower());
 
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  // The measured scroller width: it drives BOTH the run-up pad on the content
+  // and the painted now-line, so a vertical scrollbar (clientWidth < the
+  // wrapper's width) cannot put the line off the music it marks.
+  const [paneWidth, setPaneWidth] = useState(0);
   const [status, setStatus] = useState('Loading MusicXML renderer…');
   const [parts, setParts] = useState<PartDescriptor[]>([]);
   const [measureCount, setMeasureCount] = useState(0);
@@ -209,7 +215,12 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
     }
     const now = performance.now();
     if (!force && now < manualUntilRef.current) return;
-    const wantLeft = Math.max(0, xAtSeconds(map, xmap, sec) - scroller.clientWidth * readingPos());
+    // The content carries a run-up pad of exactly the now-line's offset, so
+    // the position wanted is the sounding x itself: at second 0 the opening
+    // bar lands ON the line with empty paper to its left, instead of asking
+    // for a negative scrollLeft the DOM would clamp to 0.
+    const geom = stripNowGeometry(scroller.clientWidth, readingPos());
+    const wantLeft = stripScrollLeft(xAtSeconds(map, xmap, sec), geom);
     const left = force
       ? followerRef.current.snap(wantLeft)
       : followerRef.current.step(wantLeft, now / 1000, scroller.clientWidth);
@@ -400,6 +411,9 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
         setParts(descriptors);
         setMeasureCount(osmd.Sheet?.SourceMeasures?.length ?? 0);
         // Ours, not the user's: the reset must not read as a manual scroll.
+        // scrollLeft 0 IS the start of the strip now: the run-up pad fills the
+        // space left of the now-line, and the first frame refines by the
+        // system indent.
         if (scrollRef.current) {
           autoScrollUntilRef.current = performance.now() + AUTO_SCROLL_CLAIM_MS;
           scrollRef.current.scrollLeft = 0;
@@ -451,11 +465,19 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
 
   // A scroll we did not just write is the user taking over: hold the
   // auto-scroll off so it does not yank the strip back while they read
-  // somewhere else. Re-seat the strip when the pane resizes (the now-line
-  // moved with the pane width).
-  useEffect(() => {
+  // somewhere else. Re-seat the strip when the pane resizes (the now-line and
+  // the pad both moved with the pane width). A layout effect so the first
+  // measurement lands before the first paint and the line is never drawn at
+  // the wrong x.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // A parked strip measures 0 (ScoreView keeps the other mode alive behind
+    // `hidden`, which is display:none): keep the last good width so the pad and
+    // the line are already right on the first frame back, instead of
+    // collapsing to the left edge until the observer's state update lands.
+    const measure = () => setPaneWidth((w) => (el.clientWidth > 0 ? el.clientWidth : w));
+    measure();
     const onScroll = () => {
       const now = performance.now();
       if (now <= autoScrollUntilRef.current && Math.abs(el.scrollLeft - expectedLeftRef.current) < 1) return;
@@ -464,6 +486,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
     el.addEventListener('scroll', onScroll, { passive: true });
     let raf = 0;
     const ro = new ResizeObserver(() => {
+      measure();
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => applyFrame(lastSecRef.current, true));
     });
@@ -475,11 +498,15 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
     };
   }, [applyFrame]);
 
-  // The now-line moved: re-seat the strip under it, even mid-hold.
+  // The now-line moved, or the pad under it changed with the pane width:
+  // re-seat the strip under the line, even mid-hold. Runs after React has
+  // committed the new pad, so the scroll is written against the same
+  // geometry the content is laid out with.
   useEffect(() => {
     if (ready) applyFrame(lastSecRef.current, true);
-  }, [nowLine, ready, applyFrame]);
+  }, [nowLine, paneWidth, ready, applyFrame]);
 
+  const nowGeom = stripNowGeometry(paneWidth, readingPos());
   const visibleCount = visible.filter(Boolean).length;
   const sizeNotice = measureCount * visibleCount > STRIP_SIZE_NOTICE;
   const showFilter = parts.length > 1;
@@ -507,14 +534,16 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
           {/* OSMD sizes the single-staffline SVG itself; the host only has to
               be as wide as its content so the scroller can travel it. A staff
               shorter than the pane sits vertically centred (safe: a taller one
-              still starts at the top and scrolls). */}
-          <div ref={hostRef} className="w-max shrink-0" />
+              still starts at the top and scrolls). The left pad is the run-up
+              the opening bar needs to sit under the now-line. */}
+          <div ref={hostRef} className="w-max shrink-0" style={{ paddingLeft: nowGeom.padPx }} />
         </div>
-        {/* The now-line: the music sounding now sits under it. */}
+        {/* The now-line: the music sounding now sits under it. Placed from the
+            measured scroller width, the same one the scroll maths uses. */}
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-y-0 w-0.5 opacity-60"
-          style={{ left: `${readingPos() * 100}%`, backgroundColor: HIGHLIGHT_INKS[ink].color }}
+          style={{ left: nowGeom.offsetPx, backgroundColor: HIGHLIGHT_INKS[ink].color }}
         />
       </div>
       <PlayAlongTransport

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AlphaTabApi } from '@coderline/alphatab';
 import type { LibraryEntry } from '../../../../state/libraryEntry';
 import { fetchArtifactText, type NotationArtifact } from '../../../../lib/notationClient';
@@ -14,6 +14,7 @@ import {
 import { usePlayAlong } from '../playAlong/usePlayAlongClock';
 import { PlayAlongTransport } from '../playAlong/PlayAlongTransport';
 import { HIGHLIGHT_INKS, usePlayAlongStore } from '../../../../state/playAlongStore';
+import { stripNowGeometry, stripScrollOffsetX } from './stripXMap';
 
 export interface TabStripProps {
   artifact: NotationArtifact;
@@ -21,10 +22,12 @@ export interface TabStripProps {
 }
 
 /** alphaTab aligns the played bar to the scroller's left edge plus this
- *  offset; a negative offset of READING_POS of the pane puts the bar under
- *  the same now-position the sheet strip uses. */
+ *  offset. The container carries a run-up pad of the now-position's offset —
+ *  bar 1 has to sit UNDER the line, and asking for a negative scrollLeft only
+ *  gets clamped to 0 and leaves it stranded to the left of it — and alphaTab's
+ *  bar bounds are canvas-local, so the pad already does the whole job. */
 const scrollOffsetFor = (scroller: HTMLElement | null): number =>
-  -Math.round((scroller?.clientWidth ?? 0) * readingPos());
+  stripScrollOffsetX(stripNowGeometry(scroller?.clientWidth ?? 0, readingPos()));
 
 /**
  * STRIP view for an alphaTex tab: alphaTab's horizontal layout (one endless
@@ -39,6 +42,10 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
   const apiRef = useRef<AlphaTabApi | null>(null);
   const zoomRef = useRef(ZOOM_DEFAULT);
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  // The measured scroller width: it drives BOTH the run-up pad on the tab and
+  // the painted now-line, so a vertical scrollbar (clientWidth < the wrapper's
+  // width) cannot put the line off the bar it marks.
+  const [paneWidth, setPaneWidth] = useState(0);
   const [status, setStatus] = useState('Loading tab renderer…');
   const [ready, setReady] = useState(false);
 
@@ -162,22 +169,32 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
     }
   }, [active, ready]);
 
-  // The now-position is a fraction of the pane: keep alphaTab's scroll
-  // offset in step when the pane resizes or the NOW preference changes.
+  // The now-position and the pad are fractions of the pane: keep the measured
+  // width, alphaTab's scroll offset and the painted line in step when the pane
+  // resizes or the NOW preference changes. A layout effect so the first
+  // measurement lands before the first paint.
   const nowLine = usePlayAlongStore((s) => s.nowLine);
   const ink = usePlayAlongStore((s) => s.ink);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const apply = () => {
+      // A parked strip measures 0 (ScoreView keeps the other mode alive behind
+      // `hidden`, which is display:none): keep the last good width so the pad
+      // and the line are already right on the first frame back.
+      setPaneWidth((w) => (el.clientWidth > 0 ? el.clientWidth : w));
       const api = apiRef.current;
       if (!api) return;
       try {
         const player = api.settings.player as { scrollOffsetX?: number };
         const next = scrollOffsetFor(el);
-        if (player.scrollOffsetX === next) return;
-        player.scrollOffsetX = next;
-        api.updateSettings();
+        if (player.scrollOffsetX !== next) {
+          player.scrollOffsetX = next;
+          api.updateSettings();
+        }
+        // The pad moved with the pane, and the tab moved with the pad: put the
+        // played bar back on the line instead of waiting for the next beat.
+        api.scrollToCursor?.();
       } catch {
         /* settings not ready */
       }
@@ -187,6 +204,8 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
     ro.observe(el);
     return () => ro.disconnect();
   }, [nowLine]);
+
+  const nowGeom = stripNowGeometry(paneWidth, readingPos());
 
   return (
     <div className="h-full flex flex-col bg-[#23222a]">
@@ -199,14 +218,17 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
         >
           {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
           {/* A tab shorter than the pane sits vertically centred; a taller one
-              starts at the top and scrolls (safe centring). */}
-          <div ref={containerRef} className="shrink-0" />
+              starts at the top and scrolls (safe centring). The left pad is
+              the run-up bar 1 needs to sit under the now-position. */}
+          <div ref={containerRef} className="shrink-0" style={{ paddingLeft: nowGeom.padPx }} />
         </div>
-        {/* The now-position: alphaTab scrolls the played bar to this line. */}
+        {/* The now-position: alphaTab scrolls the played bar to this line.
+            Placed from the measured scroller width, the same one the scroll
+            offset is computed from. */}
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-y-0 w-0.5 opacity-60"
-          style={{ left: `${readingPos() * 100}%`, backgroundColor: HIGHLIGHT_INKS[ink].color }}
+          style={{ left: nowGeom.offsetPx, backgroundColor: HIGHLIGHT_INKS[ink].color }}
         />
       </div>
       <PlayAlongTransport

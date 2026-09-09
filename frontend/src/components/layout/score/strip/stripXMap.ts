@@ -199,6 +199,57 @@ export function xAtSeconds(map: ScoreTimeMap, xmap: StripXMap, sec: number): num
   return x0 + (xmap.stepX[i + 1] - x0) * t;
 }
 
+/**
+ * Where the now-line sits for a measured pane, and how much empty run-up the
+ * scrolled content carries to its left. Both strips read these two numbers
+ * from ONE measured width (the scroller's clientWidth, which excludes a
+ * vertical scrollbar) so the painted line cannot drift off the music it marks.
+ */
+export interface StripNowGeometry {
+  /** Distance from the scroller's left edge to the now-line, px. */
+  offsetPx: number;
+  /** Left pad on the scrolled content, px. Exactly the offset: the music
+   *  sounding at second 0 has to sit UNDER the line, which means empty space
+   *  to its left. Without the pad the scroll position wanted there is
+   *  negative, the DOM clamps it to 0, and the opening bar is stranded to the
+   *  LEFT of the line until the music catches up with it. */
+  padPx: number;
+}
+
+export function stripNowGeometry(paneWidthPx: number, readingPos: number): StripNowGeometry {
+  const w = Number.isFinite(paneWidthPx) && paneWidthPx > 0 ? paneWidthPx : 0;
+  const pos = Number.isFinite(readingPos) ? clamp01(readingPos) : 0;
+  const offsetPx = w * pos;
+  return { offsetPx, padPx: offsetPx };
+}
+
+/** The scrollLeft that puts content x `contentX` (an x from buildStripXMap,
+ *  measured before the pad) under the now-line. The pad and the offset cancel
+ *  by construction, which is the point: the position asked for is the content
+ *  x itself and is never negative. */
+export function stripScrollLeft(contentX: number, geom: StripNowGeometry): number {
+  const x = Number.isFinite(contentX) ? contentX : 0;
+  return Math.max(0, geom.padPx + x - geom.offsetPx);
+}
+
+/** alphaTab scrolls to `masterBar.realBounds.x + player.scrollOffsetX`, and
+ *  realBounds.x is canvas-local: it knows nothing about the pad on the
+ *  container. The offset it still needs is whatever the pad does not supply. */
+export function stripScrollOffsetX(geom: StripNowGeometry): number {
+  return Math.round(geom.padPx - geom.offsetPx);
+}
+
+/** Viewport x of content x `contentX` at scroll position `scrollLeft` — the
+ *  model both strips implement in the DOM. The strip's invariant is that at
+ *  second 0 this equals `geom.offsetPx`: the first note ON the line. */
+export function stripViewportX(
+  contentX: number,
+  scrollLeft: number,
+  geom: StripNowGeometry,
+): number {
+  return geom.padPx + contentX - scrollLeft;
+}
+
 /** How many MusicSystems the last render produced, over every page. One is
  *  the strip's invariant; more means the score wrapped at the width cap. Zero
  *  when nothing has rendered (or the object does not expose pages). */
