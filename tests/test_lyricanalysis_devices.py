@@ -572,3 +572,189 @@ def test_a_line_with_no_multisyllabic_rhyme_reports_none():
     )
     assert stats.multisyllabic_rhymes == 0
     assert not [d for d in devs if d.kind == "multisyllabic-rhyme"]
+
+
+# --- rhyme: the shapes a lyric actually uses -------------------------------
+
+# 24 lines with a scheme a reader can hear, written around the failure shapes
+# the rules-only matcher used to drop: -tion against -sion against -ence, a
+# coda that grew or lost a consonant, one vowel step, sung g-dropping, a
+# multi-word ending and a trailing ad-lib.
+SCHEMED = """[Verse 1]
+I was counting every hour in the station
+Waiting on a word that never came, an occasion
+Somebody said the city keeps its patience
+Everything is fading in a conversation
+I had it in my hand and then I lost it
+Every single door I opened had a cost
+You told me hold on, I was staring at the cold dawn
+Everything I built was gone before the song
+[Chorus]
+So I'm runnin' and I'm hidin' from the man
+Doing what I said I never said I can
+Take me to the water, let me be the one
+Burning like a candle underneath the sun
+[Verse 2]
+There's a bitter little promise on my tongue
+And a premise that I traded when I was young
+I remember all the reasons in the pieces
+Half a million broken villains and their seasons
+Give me one more reason, tell me one more season
+Every kind of leaving has another meaning
+Now the shoulder of the soldier that was leaning
+Turned to nothing but the something I was dreaming
+[Outro]
+Nothing left behind me but the fire, yeah
+Only what I gave away, desire, yeah
+"""
+
+
+def _lettered(doc, lines):
+    """(lyric line count, how many of those endings landed in a rhyme class)."""
+    lyric = [
+        m for m, ln in zip(lines, doc.lines) if ln.kind == "lyric" and ln.text.strip()
+    ]
+    return len(lyric), sum(1 for m in lyric if m.letter)
+
+
+def test_most_line_endings_in_a_real_lyric_find_a_rhyme():
+    """The user's complaint in one assertion: "a ton of lines that it just
+    couldn't detect any rhyme or reason". Before the scored comparison this
+    lyric left 9 of its 22 endings with no rhyme class at all."""
+    doc = _doc(SCHEMED)
+    _devs, lines, _sections, stats = devices.analyse(doc)
+    total, lettered = _lettered(doc, lines)
+    assert total == 22
+    assert lettered >= 21, [
+        (m.line, m.end_key) for m in lines if m.section and not m.letter
+    ]
+    assert stats.rhyme_density >= 0.85
+
+
+def test_the_tion_sion_ence_family_lands_in_one_rhyme_class():
+    """ "station"/"occasion"/"patience" is the shape that returned ("", 0.0):
+    close on both the nucleus and the tail, identical on neither."""
+    doc = _doc(
+        "\n".join(
+            [
+                "I was counting every hour in the station",
+                "Waiting on a word that never came, an occasion",
+                "Somebody said the city keeps its patience",
+            ]
+        )
+    )
+    _devs, lines, sections, _stats = devices.analyse(doc)
+    assert sections[0].scheme == "AAA", [m.end_key for m in lines]
+
+
+def test_a_line_ending_rhymes_on_a_run_of_words_not_only_the_last_one():
+    """ "meant it"/"spent it" is the rhyme a reader hears; the last word alone
+    is the same word twice, which says "identical rhyme: it / it"."""
+    doc = _doc("Everything I said I meant it\nEvery hour of it I spent it")
+    devs, lines, _sections, _stats = devices.analyse(doc)
+    assert lines[0].letter == lines[1].letter == "A"
+    pair = next(d for d in devs if d.family == "rhyme" and len(d.spans) == 4)
+    assert [s.text for s in pair.spans] == ["meant", "it", "spent", "it"]
+    assert "meant it" in pair.label and "spent it" in pair.label
+
+
+def test_a_trailing_adlib_does_not_become_the_rhyme():
+    """Lyric sheets end line after line on "yeah" / "oh" / "now". Reading the
+    ad-lib as the rhyme makes every one of those lines rhyme with every other
+    and hides the rhyme the writer actually wrote."""
+    doc = _doc("I was walking on my own, yeah\nEverything I ever known, yeah")
+    devs, lines, _sections, _stats = devices.analyse(doc)
+    assert lines[0].letter == lines[1].letter == "A"
+    ends = [d for d in devs if d.family == "rhyme" and len(d.spans) >= 2]
+    assert ends, _kinds(devs)
+    painted = {s.text.strip(",") for d in ends for s in d.spans}
+    assert "own" in painted and "known" in painted
+    # ...and the throwaway is not what the two lines were matched on.
+    assert painted != {"yeah"}
+
+
+def test_a_perfect_last_word_rhyme_is_never_restated_as_a_phrase():
+    """The run comparison only wins by a margin, so the halves the UI paints
+    stay the words a reader would point at."""
+    doc = _doc(RICH)
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    ends = _of(devs, "end-rhyme")
+    night = next(d for d in ends if _anchors(d) == [(1, 6), (3, 6)])
+    assert [s.text for s in night.spans] == ["night", "light"]
+
+
+def test_sung_g_dropping_rhymes_with_the_spelled_out_word():
+    doc = _doc("I never stopped runnin'\nNothing ever felt like coming")
+    _devs, lines, _sections, _stats = devices.analyse(doc)
+    assert lines[0].letter == lines[1].letter == "A"
+
+
+def test_no_rhyme_class_is_invented_for_a_lyric_that_does_not_rhyme():
+    """The other half of "more robust": lifting recall must not turn every
+    line into an A."""
+    doc = _doc(
+        "\n".join(
+            [
+                "The orange machine was left in the garden",
+                "A whistle and a pocket full of velvet",
+                "Somebody put the piano in the forest",
+                "Nothing but a jacket and a torch",
+            ]
+        )
+    )
+    _devs, lines, sections, _stats = devices.analyse(doc)
+    assert sections[0].scheme == "XXXX", [m.end_key for m in lines]
+
+
+def test_the_scheme_is_stable_across_two_runs_of_the_same_lyric():
+    first = devices.analyse(_doc(SCHEMED))
+    second = devices.analyse(_doc(SCHEMED))
+    assert [m.letter for m in first[1]] == [m.letter for m in second[1]]
+    assert [d.id for d in first[0]] == [d.id for d in second[0]]
+
+
+def test_a_shared_ad_lib_does_not_make_a_rhyme_class():
+    """Four lines that do not rhyme, each ending on the same thrown-away
+    "yeah". The ad-lib is the only thing they share, and sharing it is not a
+    rhyme: this came back "AAAA" because the ending was classed on its last
+    word, and "garden yeah" against "velvet yeah" is a perfect 1.0 that means
+    only that both singers said "yeah"."""
+    doc = _doc(
+        "\n".join(
+            [
+                "The orange machine was left in the garden, yeah",
+                "A whistle and a pocket full of velvet, yeah",
+                "Somebody put the piano in the forest, yeah",
+                "Nothing but a jacket and a torch, yeah",
+            ]
+        )
+    )
+    _devs, lines, sections, _stats = devices.analyse(doc)
+    assert sections[0].scheme == "XXXX", [m.end_key for m in lines]
+
+
+def test_a_real_rhyme_is_still_found_under_a_shared_ad_lib():
+    """The other half: dropping the ad-lib must not drop the rhyme in front
+    of it. These two lines end on "rain"/"pain" and rhyme; the two after them
+    end on "garden"/"velvet" and do not."""
+    doc = _doc(
+        "\n".join(
+            [
+                "I feel it comin' down like rain, yeah",
+                "I never really felt the pain, yeah",
+                "The orange machine is in the garden, yeah",
+                "A whistle and a pocket full of velvet, yeah",
+            ]
+        )
+    )
+    _devs, lines, sections, _stats = devices.analyse(doc)
+    assert sections[0].scheme == "AAXX", [m.letter for m in lines]
+
+
+def test_an_unstressed_particle_ending_still_rhymes_as_a_phrase():
+    """The particle throwaway is NOT the ad-lib throwaway: "...meant it" does
+    end on "it", and the rhyme is the whole phrase. Dropping every shared
+    trailing word would have taken this with it."""
+    doc = _doc("Said I never meant it\nBut I know I spent it")
+    _devs, lines, sections, _stats = devices.analyse(doc)
+    assert sections[0].scheme == "AA", [m.letter for m in lines]

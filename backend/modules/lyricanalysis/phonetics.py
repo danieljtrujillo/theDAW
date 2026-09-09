@@ -28,12 +28,17 @@ __all__ = [
     "ARPABET_VOWELS",
     "PRONUNCIATION_SOURCE",
     "Pron",
+    "RhymeScore",
     "Syllable",
     "classify_rhyme",
     "consonant_distance",
+    "max_rhyme_score",
     "normalize_word",
     "pronounce",
+    "pronounce_phrase",
+    "pronunciation_source",
     "rhyme_key",
+    "rhyme_score",
     "stress_pattern",
     "syllabify",
     "syllable_count",
@@ -74,20 +79,77 @@ PRONUNCIATION_SOURCE = "cmudict" if _cmudict is not None else "rules"
 _CMU_TABLE: dict[str, list[list[str]]] | None = None
 
 
-def _cmu_phones(word: str) -> list[str] | None:
-    """First dictionary pronunciation for ``word``, still carrying stress digits."""
-    global _CMU_TABLE
-    if _cmudict is None:
-        return None
+def _cmu_table() -> dict[str, list[list[str]]]:
+    """The dictionary, built once. Empty when it could not be read.
+
+    A successful *import* is not a working dictionary: the data file can be
+    missing or unreadable, and the build then throws on the first lookup. When
+    that happens every word is in fact guessed, so ``PRONUNCIATION_SOURCE`` is
+    corrected here rather than left claiming a source that never answered.
+    """
+    global _CMU_TABLE, PRONUNCIATION_SOURCE
     if _CMU_TABLE is None:
         try:
-            _CMU_TABLE = dict(_cmudict.dict())
+            _CMU_TABLE = dict(_cmudict.dict()) if _cmudict is not None else {}
         except Exception:
             _CMU_TABLE = {}
-    entry = _CMU_TABLE.get(word)
+        if not _CMU_TABLE:
+            PRONUNCIATION_SOURCE = "rules"
+    return _CMU_TABLE
+
+
+def pronunciation_source() -> str:
+    """``"cmudict"`` or ``"rules"``, resolved for real (the table is built)."""
+    _cmu_table()
+    return PRONUNCIATION_SOURCE
+
+
+def _cmu_phones(word: str) -> list[str] | None:
+    """First dictionary pronunciation for ``word``, still carrying stress digits."""
+    if _cmudict is None:
+        return None
+    entry = _cmu_table().get(word)
     if not entry:
         return None
     return list(entry[0])
+
+
+# How many of the dictionary's alternate readings to carry. cmudict lists up
+# to four; the tail of that list is dialect trivia, and every extra reading
+# multiplies the pairwise rhyme comparison.
+_MAX_ALTERNATES = 2
+
+
+def _cmu_alternates(word: str) -> tuple[Pron, ...]:
+    """The dictionary's pronunciations of ``word`` after the first.
+
+    "was" is W AA1 Z *and* W AH0 Z, "live" is L AY1 V *and* L IH1 V, "route"
+    is R UW1 T *and* R AW1 T. Taking entry[0] and dropping the rest decided
+    which word the singer sang, and got it wrong often enough to return no
+    rhyme at all for "was"/"does" and "route"/"out".
+
+    Only readings of the SAME LENGTH as the first are taken. The dictionary's
+    other kind of alternate collapses a syllable — "fire" is F AY1 ER0 and
+    also F AY1 R, "hour" is AW1 ER0 and also AW1 R — and that reading is not
+    a different vowel, it is a different word shape: it makes a two-syllable
+    word monosyllabic and rhyme with anything ending -AR, which put
+    "fire"/"star" on screen as a slant rhyme at 0.505. The variants worth
+    having swap a vowel and keep the shape: was, live, again, route, been.
+    """
+    if _cmudict is None:
+        return ()
+    entry = _cmu_table().get(word)
+    if not entry or len(entry) < 2:
+        return ()
+    beats = sum(1 for p in entry[0] if p[:2] in ARPABET_VOWELS)
+    out: list[Pron] = []
+    for raw in entry[1:]:
+        alt = _from_cmu(raw)
+        if len(alt.stress) == beats and any(p in ARPABET_VOWELS for p in alt.phones):
+            out.append(alt)
+        if len(out) >= _MAX_ALTERNATES:
+            break
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -97,6 +159,15 @@ class Pron:
     phones: tuple[str, ...]
     stress: tuple[int, ...]
     guessed: bool
+    # The dictionary's OTHER pronunciations of the same word, if it has any.
+    # A singer picks one per performance and the rhyme is built on whichever
+    # one they picked: "again" is AH0 G EH1 N *or* AH0 G EY1 N, and only the
+    # second rhymes with "rain". Scoring the first entry alone threw the
+    # other readings away and reported no rhyme at all. Everything that is
+    # not rhyme scoring — syllables, stress, spans — still uses this Pron's
+    # own phones, so a variant never moves a painted span. Variants carry no
+    # variants of their own.
+    variants: tuple[Pron, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -389,6 +460,114 @@ _EXCEPTIONS: dict[str, tuple[str, ...]] = {
     "sugar": ("SH", "UH", "G", "ER"),
     "hour": ("AW", "ER"),
     "honest": ("AA", "N", "AH", "S", "T"),
+    # High-frequency lyric words the letter-to-sound rules mis-spell, and whose
+    # rhymes therefore went missing on a machine without cmudict.
+    "away": ("AH", "W", "EY"),
+    "honey": ("HH", "AH", "N", "IY"),
+    "soul": ("S", "OW", "L"),
+    "hurt": ("HH", "ER", "T"),
+    "awake": ("AH", "W", "EY", "K"),
+    "aware": ("AH", "W", "EH", "R"),
+    "sorrow": ("S", "AA", "R", "OW"),
+    "tomorrow": ("T", "AH", "M", "AA", "R", "OW"),
+    "borrow": ("B", "AA", "R", "OW"),
+    "narrow": ("N", "AE", "R", "OW"),
+    "forever": ("F", "ER", "EH", "V", "ER"),
+    "whatever": ("W", "AH", "T", "EH", "V", "ER"),
+    "another": ("AH", "N", "AH", "DH", "ER"),
+    "remember": ("R", "IH", "M", "EH", "M", "B", "ER"),
+    "forward": ("F", "AO", "R", "W", "ER", "D"),
+    "toward": ("T", "AO", "R", "D"),
+    "wonder": ("W", "AH", "N", "D", "ER"),
+    "wonderful": ("W", "AH", "N", "D", "ER", "F", "AH", "L"),
+    "worry": ("W", "ER", "IY"),
+    "hurry": ("HH", "ER", "IY"),
+    "carry": ("K", "AE", "R", "IY"),
+    "sorry": ("S", "AA", "R", "IY"),
+    "story": ("S", "T", "AO", "R", "IY"),
+    "pretty": ("P", "R", "IH", "T", "IY"),
+    "promise": ("P", "R", "AA", "M", "AH", "S"),
+    "premise": ("P", "R", "EH", "M", "AH", "S"),
+    "silence": ("S", "AY", "L", "AH", "N", "S"),
+    "violence": ("V", "AY", "AH", "L", "AH", "N", "S"),
+    "patience": ("P", "EY", "SH", "AH", "N", "S"),
+    "million": ("M", "IH", "L", "Y", "AH", "N"),
+    "villain": ("V", "IH", "L", "AH", "N"),
+    "prison": ("P", "R", "IH", "Z", "AH", "N"),
+    "rhythm": ("R", "IH", "DH", "AH", "M"),
+    "shoulder": ("SH", "OW", "L", "D", "ER"),
+    "soldier": ("S", "OW", "L", "JH", "ER"),
+    "trouble": ("T", "R", "AH", "B", "AH", "L"),
+    "double": ("D", "AH", "B", "AH", "L"),
+    "struggle": ("S", "T", "R", "AH", "G", "AH", "L"),
+    "kitchen": ("K", "IH", "CH", "AH", "N"),
+    "listen": ("L", "IH", "S", "AH", "N"),
+    "reason": ("R", "IY", "Z", "AH", "N"),
+    "season": ("S", "IY", "Z", "AH", "N"),
+    "danger": ("D", "EY", "N", "JH", "ER"),
+    "stranger": ("S", "T", "R", "EY", "N", "JH", "ER"),
+    "desire": ("D", "IH", "Z", "AY", "ER"),
+    "higher": ("HH", "AY", "ER"),
+    "quiet": ("K", "W", "AY", "AH", "T"),
+    "lonely": ("L", "OW", "N", "L", "IY"),
+    "occasion": ("AH", "K", "EY", "ZH", "AH", "N"),
+    "engine": ("EH", "N", "JH", "AH", "N"),
+    "machine": ("M", "AH", "SH", "IY", "N"),
+    "guitar": ("G", "IH", "T", "AA", "R"),
+    "piano": ("P", "IY", "AE", "N", "OW"),
+    "mountain": ("M", "AW", "N", "T", "AH", "N"),
+    "candle": ("K", "AE", "N", "D", "AH", "L"),
+    "cost": ("K", "AO", "S", "T"),
+    "lost": ("L", "AO", "S", "T"),
+    "laughed": ("L", "AE", "F", "T"),
+    "young": ("Y", "AH", "NG"),
+    "tongue": ("T", "AH", "NG"),
+    "song": ("S", "AO", "NG"),
+    "along": ("AH", "L", "AO", "NG"),
+    "belong": ("B", "IH", "L", "AO", "NG"),
+    "wrong": ("R", "AO", "NG"),
+    "strong": ("S", "T", "R", "AO", "NG"),
+}
+
+# Words whose stress the positional heuristic gets wrong, where getting it
+# wrong moves the rhyme key onto the wrong syllable and the rhyme disappears.
+_STRESS_EXCEPTIONS: dict[str, tuple[int, ...]] = {
+    "tomorrow": (0, 1, 0),
+    "enough": (0, 1),
+    "forget": (0, 1),
+    "forgive": (0, 1),
+    "because": (0, 1),
+    "again": (0, 1),
+    "against": (0, 1),
+    "become": (0, 1),
+    "begin": (0, 1),
+    "began": (0, 1),
+    "sorrow": (1, 0),
+    "borrow": (1, 0),
+    "narrow": (1, 0),
+    "forever": (0, 1, 0),
+    "whatever": (0, 1, 0),
+    "another": (0, 1, 0),
+    "remember": (0, 1, 0),
+    "together": (0, 1, 0),
+    "wonderful": (1, 0, 0),
+    "occasion": (0, 1, 0),
+    "machine": (0, 1),
+    "guitar": (0, 1),
+    "piano": (0, 1, 0),
+    "desire": (0, 1),
+    "violence": (1, 0, 0),
+    "villain": (1, 0),
+    "million": (1, 0),
+    "engine": (1, 0),
+    "mountain": (1, 0),
+    "quiet": (1, 0),
+    "premise": (1, 0),
+    "promise": (1, 0),
+    "prison": (1, 0),
+    "pretty": (1, 0),
+    "belong": (0, 1),
+    "along": (0, 1),
 }
 
 # Clitics carry their own phones; the stem in front keeps its own spelling.
@@ -488,6 +667,9 @@ _LTS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (r"ur(?![aeiouyr])", ("ER",)),
     # -- vowel teams ------------------------------------------------------
     (r"eau", ("OW",)),
+    # "away", "awake", "aware": the a and the w are in different syllables, so
+    # the aw team must not swallow them into one AO.
+    (r"(?<=#)a(?=w[aeiou])", ("AH",)),
     (r"ai", ("EY",)),
     (r"ay", ("EY",)),
     (r"au", ("AO",)),
@@ -525,6 +707,7 @@ _LTS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (r"o(?=[bcdfgkmnpstvz]e#)", ("OW",)),
     (r"u(?=[bcdfgkmnpstvz]e#)", ("UW",)),
     (r"y(?=e#)", ("AY",)),
+    (r"y(?=[bcdfgkmnpstvz]e#)", ("AY",)),
     (r"a(?=[bcdfgkpt]le#)", ("EY",)),
     (r"i(?=[bcdfgkpt]le#)", ("AY",)),
     (r"o(?=[bcdfgkpt]le#)", ("OW",)),
@@ -845,6 +1028,7 @@ _TENSE_VOWELS = frozenset({"IY", "EY", "AY", "OW", "UW", "AW", "OY", "AO"})
 _LAX_VOWELS = frozenset({"IH", "EH", "AH", "AE", "UH"})
 _WEAK_PREFIXES = (
     "a",
+    "to",
     "be",
     "de",
     "re",
@@ -861,13 +1045,39 @@ _WEAK_PREFIXES = (
 )
 
 
-def _rules_stress(word: str, nuclei: Sequence[str]) -> tuple[int, ...]:
+def _has_weak_prefix(
+    word: str, parts: Sequence[tuple[tuple[str, ...], str, tuple[str, ...]]]
+) -> bool:
+    """The word opens on an unstressable prefix syllable.
+
+    The prefix has to END the syllable — it is followed by a consonant letter —
+    which is what keeps "ready" and "reason" out of here. A bare "a-" needs
+    more than that: it is a prefix in "a-part" and "a-way", and is simply the
+    first letter in "al-ways" and "an-swer", and only the open syllable tells
+    them apart.
+    """
+    for prefix in _WEAK_PREFIXES:
+        if (
+            word.startswith(prefix)
+            and len(word) > len(prefix) + 1
+            and word[len(prefix)] not in _VOWEL_LETTERS
+        ):
+            return not (len(prefix) == 1 and parts and parts[0][2])
+    return False
+
+
+def _rules_stress(word: str, phones: Sequence[str]) -> tuple[int, ...]:
     """Positional stress heuristic. Imperfect by design, never silent."""
-    n = len(nuclei)
+    parts = _split_phones(phones)
+    n = len(parts)
     if n == 0:
         return ()
     if n == 1:
         return (1,)
+    fixed = _STRESS_EXCEPTIONS.get(word)
+    if fixed and len(fixed) == n:
+        return fixed
+    nuclei = [nucleus for _onset, nucleus, _coda in parts]
     primary = 0
     if word.endswith(
         ("tion", "tions", "sion", "sions", "cious", "tious", "cial", "tial")
@@ -881,18 +1091,19 @@ def _rules_stress(word: str, nuclei: Sequence[str]) -> tuple[int, ...]:
         primary = n - 2
     elif word.endswith(("ee", "eer", "ese", "ette", "esque")):
         primary = n - 1
-    elif nuclei[0] in _LAX_VOWELS and nuclei[1] in _TENSE_VOWELS:
-        # "believe", "astray", "about": a weak prefix in front of a long
-        # vowel takes no stress. The prefix has to end the syllable to be
-        # one, which is what keeps "ready" and "reason" out of here.
-        for prefix in _WEAK_PREFIXES:
-            if (
-                word.startswith(prefix)
-                and len(word) > len(prefix) + 1
-                and word[len(prefix)] not in _VOWEL_LETTERS
-            ):
-                primary = 1
-                break
+    elif _has_weak_prefix(word, parts) and (
+        nuclei[0] in _LAX_VOWELS and nuclei[1] in _TENSE_VOWELS
+    ):
+        # "believe", "insane", "about": a weak prefix in front of a long vowel
+        # takes no stress.
+        primary = 1
+    elif _has_weak_prefix(word, parts) and _shifts_off_the_prefix(word, parts):
+        # The same shift for the far more common shape the tense-vowel test
+        # missed — "apart", "tonight", "regret", "across" all put a plain short
+        # vowel in the stressed syllable, and reading them as PREFIX-stressed
+        # moved the rhyme key one syllable too far left, which is why
+        # "apart"/"heart" and "regret"/"forget" came back as non-rhymes.
+        primary = 1
     primary = max(0, min(primary, n - 1))
     stress = [0] * n
     stress[primary] = 1
@@ -901,11 +1112,39 @@ def _rules_stress(word: str, nuclei: Sequence[str]) -> tuple[int, ...]:
     return tuple(stress)
 
 
+def _shifts_off_the_prefix(
+    word: str, parts: Sequence[tuple[tuple[str, ...], str, tuple[str, ...]]]
+) -> bool:
+    """Can the second syllable carry the primary stress instead of the first?
+
+    Only when the prefix syllable is genuinely open ("a-part", not "al-ways")
+    and the syllable after it is heavy — it closes on a consonant or holds a
+    long vowel — and is not a schwa, which is never stressed ("ap-ple",
+    "ta-ble"). A two-syllable word ending in -y keeps its first-syllable
+    stress ("pret-ty", "ar-my").
+    """
+    if len(parts) < 2 or parts[0][2]:
+        return False
+    _onset, nucleus, coda = parts[1]
+    if nucleus == "AH":
+        return False
+    # A final -y spelling a weak /i/ keeps the stress in front of it
+    # ("pret-ty", "ar-my"); a final -y spelling a real vowel does not
+    # ("to-day", "re-ply").
+    if len(parts) == 2 and word.endswith(("y", "ie")) and nucleus in ("IY", "IH"):
+        return False
+    return bool(coda) or nucleus in _TENSE_VOWELS
+
+
 # ---------------------------------------------------------------------------
 # Public pronunciation API
 # ---------------------------------------------------------------------------
 
 _EMPTY = Pron(phones=(), stress=(), guessed=False)
+
+# "runnin'," "lovin'" — the g-dropping apostrophe, with the line's punctuation
+# allowed to follow it.
+_G_DROPPED = re.compile(r"in'[^A-Za-z0-9']*$", re.IGNORECASE)
 
 
 def _from_cmu(raw: Sequence[str]) -> Pron:
@@ -961,8 +1200,7 @@ def _rules_pron(word: str) -> Pron:
         return _EMPTY
     if not any(p in ARPABET_VOWELS for p in phones):
         phones = _give_it_a_beat(phones)
-    nuclei = [p for p in phones if p in ARPABET_VOWELS]
-    stress = _rules_stress(word.replace("-", "").replace("'", ""), nuclei)
+    stress = _rules_stress(word.replace("-", "").replace("'", ""), phones)
     # The exception table is hand-written and already reduced; only the
     # rule-built pronunciations get second-guessed.
     if word not in _EXCEPTIONS:
@@ -971,12 +1209,19 @@ def _rules_pron(word: str) -> Pron:
 
 
 @lru_cache(maxsize=8192)
-def pronounce(word: str) -> Pron:
-    """Best pronunciation for one word. Never raises; empty Pron when unpronounceable."""
+def _pronounce_token(token: str, g_dropped: bool = False) -> Pron:
+    """The lookup itself, on an already-normalised token."""
     try:
-        token = normalize_word(word)
-        if not token:
-            return _EMPTY
+        if g_dropped:
+            # The apostrophe in "lovin'" is the singer telling us this is
+            # "loving". Taken before the dictionary, because cmudict lists
+            # "lovin" and "chasin" as SURNAMES — L OW V IH N, CH AE S IH N —
+            # and rhyming the sung word off those is worse than guessing.
+            restored = _restore_dropped_g(token)
+            if restored is not None:
+                return Pron(
+                    phones=restored.phones, stress=restored.stress, guessed=True
+                )
         raw = _cmu_phones(token)
         if raw:
             pron = _from_cmu(raw)
@@ -988,10 +1233,78 @@ def pronounce(word: str) -> Pron:
                 phones = tuple(_give_it_a_beat(list(pron.phones)))
                 beats = sum(p in ARPABET_VOWELS for p in phones)
                 return Pron(phones=phones, stress=(1,) * beats, guessed=True)
-            return pron
+            return Pron(
+                phones=pron.phones,
+                stress=pron.stress,
+                guessed=False,
+                variants=_cmu_alternates(token),
+            )
+        restored = _restore_dropped_g(token)
+        if restored is not None:
+            # "runnin", "cappin", "wishin" with the apostrophe left off: still
+            # the -ing word, and rhyming it as a coinage instead threw away
+            # half a hook's rhymes. Ours, so still a guess.
+            return Pron(phones=restored.phones, stress=restored.stress, guessed=True)
         return _rules_pron(token)
     except Exception:
         return _EMPTY
+
+
+def _restore_dropped_g(token: str) -> Pron | None:
+    """The ``-ing`` word behind a sung ``-in'``, or ``None``.
+
+    Only reached for tokens the dictionary does not know as themselves, and
+    only trusted when it *does* know the restored spelling — "cabin" and
+    "satin" are real words, so the guess is never made blind.
+    """
+    if not token.endswith("in") or len(token) < 5:
+        return None
+    raw = _cmu_phones(token + "g")
+    return _from_cmu(raw) if raw else None
+
+
+def pronounce(word: str) -> Pron:
+    """Best pronunciation for one word.
+
+    Never raises — including on a value that is not a string at all, which the
+    cache would otherwise refuse to hash before this function ever ran.
+
+    Pass the word AS WRITTEN: the trailing apostrophe of "runnin'" is dropped
+    by normalisation and is the only thing that says the word is g-dropped.
+    """
+    try:
+        text = str(word)
+        token = normalize_word(text)
+        dropped = _G_DROPPED.search(text.translate(_FOLD)) is not None
+    except Exception:
+        return _EMPTY
+    return _pronounce_token(token, dropped) if token else _EMPTY
+
+
+# The cache lives on the private worker; callers (and tests) reset it here.
+pronounce.cache_clear = _pronounce_token.cache_clear  # type: ignore[attr-defined]
+pronounce.cache_info = _pronounce_token.cache_info  # type: ignore[attr-defined]
+
+
+def pronounce_phrase(words: Sequence[str]) -> Pron:
+    """One pronunciation for a run of words, read as a single phone stream.
+
+    Line endings rhyme as phrases — "hold on" / "cold dawn", "to me" / "for
+    me" — so the run has to be pronounceable as a unit, not only word by word.
+    """
+    phones: list[str] = []
+    stress: list[int] = []
+    guessed = False
+    for word in words:
+        pron = pronounce(word)
+        if not pron.phones:
+            continue
+        phones.extend(pron.phones)
+        stress.extend(pron.stress)
+        guessed = guessed or pron.guessed
+    if not phones:
+        return _EMPTY
+    return Pron(phones=tuple(phones), stress=tuple(stress), guessed=guessed)
 
 
 def syllable_count(word: str) -> int:
@@ -1051,25 +1364,55 @@ def tail_key(pron: Pron, syllables: int) -> str:
 # Phone distances
 # ---------------------------------------------------------------------------
 
-# (height, backness, rounding, rhoticity), each 0..1. Diphthongs sit between
-# their endpoints — enough to keep EY next to IY and AH away from UW.
-_VOWEL_FEATURES: dict[str, tuple[float, float, float, float]] = {
-    "IY": (1.00, 0.00, 0.0, 0.0),
-    "IH": (0.80, 0.15, 0.0, 0.0),
-    "EY": (0.75, 0.05, 0.0, 0.0),
-    "EH": (0.55, 0.10, 0.0, 0.0),
-    "AE": (0.25, 0.10, 0.0, 0.0),
-    "AA": (0.00, 0.85, 0.0, 0.0),
-    "AO": (0.35, 0.90, 1.0, 0.0),
-    "AH": (0.50, 0.50, 0.0, 0.0),
-    "ER": (0.50, 0.45, 0.0, 1.0),
-    "UH": (0.80, 0.85, 1.0, 0.0),
-    "UW": (1.00, 1.00, 1.0, 0.0),
-    "OW": (0.60, 0.95, 1.0, 0.0),
-    "AW": (0.30, 0.60, 0.5, 0.0),
-    "AY": (0.45, 0.40, 0.0, 0.0),
-    "OY": (0.55, 0.65, 0.7, 0.0),
+# A vowel is a TRAJECTORY, not a point: (start, end, tenseness, rhoticity),
+# where each endpoint is (height 0=low..1=high, backness 0=front..1=back,
+# rounding). A monophthong starts and ends in the same place; a diphthong
+# travels from its nucleus to its glide target, which is what "diphthongs sit
+# between their endpoints" has to mean if it is to mean anything — AY starts
+# where AA is and ends where IH is.
+#
+# Tenseness (length) is the fourth dimension and it is doing real work: it is
+# the ONLY thing that separates a lax IH from the front-and-high EY glide it
+# otherwise sits inside, and without it "hit"/"hate" scores like a rhyme.
+# The earlier table was a hand-picked point per vowel, and it made AH-AY and
+# EY-IH its two closest pairs — schwa nearer to a diphthong than that
+# diphthong's own endpoints, which is what put "cut"/"kite" on screen.
+_VowelRow = tuple[float, float, float, float, float, float, float, float]
+_VOWEL_FEATURES: dict[str, _VowelRow] = {
+    # start (h, b, r)      end (h, b, r)         tense  rhotic
+    "IY": (1.00, 0.00, 0.0, 1.00, 0.00, 0.0, 1.00, 0.0),
+    "IH": (0.75, 0.15, 0.0, 0.75, 0.15, 0.0, 0.15, 0.0),
+    "EH": (0.40, 0.15, 0.0, 0.40, 0.15, 0.0, 0.15, 0.0),
+    "AE": (0.10, 0.20, 0.0, 0.10, 0.20, 0.0, 0.15, 0.0),
+    "AA": (0.00, 0.90, 0.0, 0.00, 0.90, 0.0, 0.80, 0.0),
+    "AO": (0.15, 0.90, 0.4, 0.15, 0.90, 0.4, 0.85, 0.0),
+    "AH": (0.42, 0.52, 0.0, 0.42, 0.52, 0.0, 0.00, 0.0),
+    "ER": (0.45, 0.45, 0.0, 0.45, 0.45, 0.0, 0.70, 1.0),
+    "UH": (0.70, 0.80, 1.0, 0.70, 0.80, 1.0, 0.20, 0.0),
+    "UW": (1.00, 0.95, 1.0, 1.00, 0.95, 1.0, 1.00, 0.0),
+    "EY": (0.55, 0.10, 0.0, 0.85, 0.10, 0.0, 1.00, 0.0),
+    "OW": (0.50, 0.85, 1.0, 0.85, 0.90, 1.0, 1.00, 0.0),
+    "AY": (0.02, 0.75, 0.0, 0.80, 0.15, 0.0, 1.00, 0.0),
+    "AW": (0.02, 0.75, 0.0, 0.80, 0.85, 1.0, 1.00, 0.0),
+    "OY": (0.30, 0.90, 1.0, 0.80, 0.15, 0.0, 1.00, 0.0),
 }
+
+# How the vowel distance is built. The two endpoints share the geometric
+# term (which therefore reaches 1.0 on its own, so two maximally distant
+# vowels really do score 1.0); tenseness and rhoticity are added on top,
+# because a lax vowel and a tense one are far apart however close their
+# formants are — that, and nothing else, is what separates "hit" from "hate".
+_V_START = 0.62
+_V_END = 0.38
+_V_TENSE = 0.30
+_V_RHOTIC = 0.22
+
+
+def _point_distance(
+    a: tuple[float, float, float], b: tuple[float, float, float]
+) -> float:
+    return 0.55 * abs(a[0] - b[0]) + 0.30 * abs(a[1] - b[1]) + 0.15 * abs(a[2] - b[2])
+
 
 # (place 0..1 front-to-back, manner on a sonority scale, voiced).
 _CONSONANT_FEATURES: dict[str, tuple[float, float, int]] = {
@@ -1107,12 +1450,10 @@ def vowel_distance(a: str, b: str) -> float:
     fa, fb = _VOWEL_FEATURES.get(a), _VOWEL_FEATURES.get(b)
     if fa is None or fb is None:
         return 1.0
-    distance = (
-        0.35 * abs(fa[0] - fb[0])
-        + 0.30 * abs(fa[1] - fb[1])
-        + 0.20 * abs(fa[2] - fb[2])
-        + 0.15 * abs(fa[3] - fb[3])
+    shape = _V_START * _point_distance(fa[0:3], fb[0:3]) + _V_END * _point_distance(
+        fa[3:6], fb[3:6]
     )
+    distance = shape + _V_TENSE * abs(fa[6] - fb[6]) + _V_RHOTIC * abs(fa[7] - fb[7])
     return round(min(1.0, distance), 4)
 
 
@@ -1147,41 +1488,363 @@ def _phone_distance(a: str, b: str) -> float:
     return 1.0
 
 
-def _tail_distance(a: tuple[str, ...], b: tuple[str, ...]) -> float:
-    """How far apart two rhyme tails (everything after the nucleus) are."""
-    if a == b:
+def _gap_cost(phone: str) -> float:
+    """What it costs for a phone to be present on one side and absent on the other.
+
+    Sung English drops and simplifies final consonants constantly — "hold"
+    for "holds", "an' " for "and", the /t/ off "last" — and a rhyme survives
+    all of it, so those phones are cheap to lose. Everything else is dear.
+    """
+    return _CHEAP_GAP if phone in _DROPPABLE else _GAP
+
+
+def _cluster_distance(a: Sequence[str], b: Sequence[str]) -> float:
+    """0..1 distance between two consonant clusters, by best alignment.
+
+    Right-aligning the raw arrays (what this used to do) misaligns every phone
+    the moment the two are different lengths: "N" against "N S" compared the
+    N with the S and called two near-identical endings unrelated. An edit
+    alignment costs the *insertion* instead, which is what actually happened.
+    """
+    if tuple(a) == tuple(b):
         return 0.0
-    length_penalty = 0.35 * abs(len(a) - len(b))
-    if not a or not b:
-        return min(1.0, length_penalty + 0.15)
-    # Align from the right: tails share their end more often than their start.
-    pairs = list(zip(reversed(a), reversed(b)))
-    mean = sum(_phone_distance(x, y) for x, y in pairs) / len(pairs)
-    return round(min(1.0, mean + length_penalty), 4)
+    n, m = len(a), len(b)
+    if n == 0 and m == 0:
+        return 0.0
+    prev = [0.0] * (m + 1)
+    for j in range(1, m + 1):
+        prev[j] = prev[j - 1] + _gap_cost(b[j - 1])
+    for i in range(1, n + 1):
+        cur = [prev[0] + _gap_cost(a[i - 1])]
+        for j in range(1, m + 1):
+            cur.append(
+                min(
+                    prev[j - 1] + _phone_distance(a[i - 1], b[j - 1]),
+                    prev[j] + _gap_cost(a[i - 1]),
+                    cur[j - 1] + _gap_cost(b[j - 1]),
+                )
+            )
+        prev = cur
+    return min(1.0, prev[m] / max(n, m))
+
+
+def _coda_distance(a: Sequence[str], b: Sequence[str]) -> float:
+    """Coda distance with the step a listener actually hears.
+
+    Coda identity is close to categorical in rhyme: "cat"/"hat" is a rhyme
+    and "cat"/"cap" is audibly not, even though P and T are one feature
+    apart. So any mismatch at all pays a fixed step before the graded part.
+    """
+    if tuple(a) == tuple(b):
+        return 0.0
+    return min(1.0, _CODA_STEP + (1.0 - _CODA_STEP) * _cluster_distance(a, b))
 
 
 # ---------------------------------------------------------------------------
 # Rhyme classification
 # ---------------------------------------------------------------------------
+#
+# Rhyme is neither binary nor one-dimensional, and the old chain of
+# exact-match gates ("same nucleus OR same tail, else nothing") dropped every
+# pair that was close on both and identical on neither — "station"/"patience"
+# came back as no rhyme at all. What follows scores five dimensions instead:
+# the stressed nucleus, the coda under it, the unstressed syllables after it,
+# how many syllables each side brings, and whether the onsets differ (a rhyme
+# wants them to). The kind is then read off the score, so a weak rhyme
+# degrades to a low-confidence slant rhyme rather than to nothing.
 
-_NEAR_VOWEL = 0.45
-_NEAR_TAIL = 0.5
+# The nucleus is the rhyme. Squaring its agreement is what stops a pair that
+# merely shares a coda ("read"/"ride") from riding in on the coda alone.
+_NUCLEUS_EXPONENT = 1.6
+# The rest of the rime is a weaker but still real requirement.
+_RIME_EXPONENT = 1.0
+# Weights inside one unstressed tail syllable: its onset, nucleus and coda.
+_TAIL_ONSET = 0.35
+_TAIL_NUCLEUS = 0.40
+_TAIL_CODA = 0.25
+# A tail onset is a consonant in the middle of the rhyme, so like a coda it
+# pays a step for being different at all.
+_ONSET_STEP = 0.30
+_CODA_STEP = 0.15
+# An unstressed vowel that is not the same vowel is a real mismatch, not a
+# fraction of one: "-shun" against "-cher" is what makes "nation"/"nature"
+# assonance rather than a rhyme.
+_TAIL_VOWEL_STEP = 0.25
+# One side has a syllable the other does not: the rhymes are different shapes.
+_MISSING_SYLLABLE = 0.75
+# One side stresses a tail syllable the other leaves weak.
+_STRESS_MISMATCH = 0.15
+# Two rhyming words normally begin differently; when they do not, what is
+# being heard is closer to the same sound twice.
+_SAME_ONSET_FACTOR = 0.94
+_GAP = 0.60
+_CHEAP_GAP = 0.35
+_DROPPABLE = frozenset({"T", "D", "S", "Z"})
+
+# Nucleus, coda and tail all matched: the same rime read off a different
+# syllable than the stress digits pointed at.
+_PERFECT_SCORE = 0.995
+# A score at or above this is a rhyme a scheme can be built on; below it the
+# pair is still reported, but as a weak slant rhyme the UI's floor can hide.
+SLANT_STRONG = 0.5
+# Below this there is not enough left to call it a rhyme at all.
+SLANT_FLOOR = 0.34
 
 
-def _key_onset(pron: Pron) -> tuple[str, ...]:
-    """Onset of the syllable the rhyme key starts in."""
-    index = _stressed_vowel_index(pron)
+@dataclass(frozen=True)
+class RhymeScore:
+    """The scored comparison behind a rhyme kind, kept for the tooltip."""
+
+    score: float
+    nucleus: float
+    coda: float
+    tail: float
+    same_onset: bool
+    syllables_a: int
+    syllables_b: int
+
+
+@dataclass(frozen=True)
+class _Rime:
+    """A pronunciation seen from its last stressed vowel onwards."""
+
+    onset: tuple[str, ...]
+    nucleus: str
+    coda: tuple[str, ...]
+    tail: tuple[Syllable, ...]
+
+    @property
+    def syllables(self) -> int:
+        return 1 + len(self.tail)
+
+
+def _key_syllable(pron: Pron) -> int | None:
+    """Index of the syllable the rhyme key starts in."""
+    parts = _split_phones(pron.phones)
+    if not parts:
+        return None
+    for n in range(len(parts) - 1, -1, -1):
+        if n < len(pron.stress) and pron.stress[n] in (1, 2):
+            return n
+    # Nothing marked (function words are all-zero in the dictionary): the last
+    # syllable is still where the rhyme starts.
+    return len(parts) - 1
+
+
+def _rime_at(pron: Pron, index: int) -> _Rime:
+    syllables = syllabify(pron)
+    head = syllables[index]
+    return _Rime(
+        onset=head.onset,
+        nucleus=head.nucleus,
+        coda=head.coda,
+        tail=tuple(syllables[index + 1 :]),
+    )
+
+
+def _rime(pron: Pron) -> _Rime | None:
+    index = _key_syllable(pron)
+    return None if index is None else _rime_at(pron, index)
+
+
+# Anchors times dictionary readings is a product, and the pairwise score is
+# that product on both sides, so it is capped rather than left to grow.
+_MAX_RIME_CANDIDATES = 8
+
+
+def _anchors(pron: Pron) -> list[_Rime]:
+    """Every syllable of ONE reading that the rhyme could start on.
+
+    The dictionary marks a trailing SECONDARY stress on a whole class of
+    words — "tomorrow" is AH0 M AA1 R OW2, "shadow" is AE1 D OW2 — and
+    reading the key off the last stressed vowel then starts it on the final
+    "-ow", so "tomorrow"/"sorrow" and "shadow"/"window" came back as no rhyme
+    at all.
+
+    Offering only the last-stressed and last-PRIMARY-stressed syllables was
+    not enough: "nobody" is N OW1 B AA2 D IY2, whose primary is the first
+    syllable and whose last stress is the throwaway "-dy", so the "-body"
+    reading that rhymes it perfectly with "somebody" was offered by neither
+    and the pair came back an eye-rhyme. Every EARLIER stressed syllable is
+    offered instead, and only when the default anchor is the artifact — a
+    SECONDARY stress. That condition is the whole of it: a primary-stressed
+    anchor is where the word really is stressed and needs no second opinion.
+
+    Offering earlier readings unconditionally is wrong, and quietly so. A
+    line ending is scored as a phrase too, and "in the garden" carries a
+    primary on "gar-": let the rhyme start earlier and it starts on the
+    schwa of "the", which matches the schwa of "of" in "full of velvet" and
+    invents a rhyme between two lines that do not have one.
+    """
+    index = _key_syllable(pron)
     if index is None:
-        return ()
-    position = 0
-    for onset, _nucleus, coda in _split_phones(pron.phones):
-        if position + len(onset) == index:
-            return onset
-        position += len(onset) + 1 + len(coda)
-    return ()
+        return []
+    syllables = syllabify(pron)
+    picks = [index]
+    if index < len(pron.stress) and pron.stress[index] == 2:
+        for n in range(index - 1, -1, -1):
+            if n < len(pron.stress) and pron.stress[n] in (1, 2):
+                picks.append(n)
+    return [
+        _Rime(
+            onset=syllables[n].onset,
+            nucleus=syllables[n].nucleus,
+            coda=syllables[n].coda,
+            tail=tuple(syllables[n + 1 :]),
+        )
+        for n in picks
+    ]
+
+
+@lru_cache(maxsize=4096)
+def _rime_candidates(pron: Pron) -> tuple[_Rime, ...]:
+    """Every rime this word could plausibly be rhymed from.
+
+    Both axes of "which sound did the singer actually make": which syllable
+    the rhyme starts on (see ``_anchors``) and which of the dictionary's
+    readings of the word is being sung (see ``Pron.variants``). Duplicates
+    collapse — most alternates differ somewhere the rime never sees — so the
+    cap is rarely reached.
+    """
+    out: list[_Rime] = []
+    seen: set[_Rime] = set()
+    for reading in (pron, *pron.variants):
+        for rime in _anchors(reading):
+            if rime in seen:
+                continue
+            seen.add(rime)
+            out.append(rime)
+            if len(out) >= _MAX_RIME_CANDIDATES:
+                return tuple(out)
+    return tuple(out)
+
+
+def _syllable_distance(a: Syllable, b: Syllable) -> float:
+    onset = _cluster_distance(a.onset, b.onset)
+    if a.onset != b.onset:
+        onset = min(1.0, _ONSET_STEP + (1.0 - _ONSET_STEP) * onset)
+    nucleus = vowel_distance(a.nucleus, b.nucleus)
+    if a.nucleus != b.nucleus:
+        nucleus = min(1.0, _TAIL_VOWEL_STEP + (1.0 - _TAIL_VOWEL_STEP) * nucleus)
+    distance = (
+        _TAIL_ONSET * onset
+        + _TAIL_NUCLEUS * nucleus
+        + _TAIL_CODA * _coda_distance(a.coda, b.coda)
+    )
+    if (a.stress > 0) != (b.stress > 0):
+        distance += _STRESS_MISMATCH
+    return min(1.0, distance)
+
+
+def _tail_distance(a: tuple[Syllable, ...], b: tuple[Syllable, ...]) -> float:
+    """Whole SYLLABLES against whole syllables, never raw phones against phones.
+
+    Aligning the phone arrays from the right (what this used to do) shifts
+    every phone as soon as the two tails differ in length: "-SH AH N" against
+    "-SH AH N S" compared N with S and AH with N and called two near
+    identical endings unrelated. Syllable units keep each onset, nucleus and
+    coda together, and the extra S is then one cheap insertion inside one
+    syllable's coda.
+
+    Both anchors are tried — from the stressed nucleus forward, and from the
+    end of the word backwards — because an extra syllable can be inserted at
+    either end: "si-LENCE" against "vi-o-LENCE" only lines up from the end.
+    """
+    width = max(len(a), len(b))
+    if width == 0:
+        return 0.0
+    return min(_aligned(a, b, width), _aligned(a[::-1], b[::-1], width))
+
+
+def _aligned(a: tuple[Syllable, ...], b: tuple[Syllable, ...], width: int) -> float:
+    total = 0.0
+    for i in range(width):
+        if i < len(a) and i < len(b):
+            total += _syllable_distance(a[i], b[i])
+        else:
+            total += _MISSING_SYLLABLE
+    return total / width
+
+
+def rhyme_score(a: Pron, b: Pron) -> RhymeScore | None:
+    """Score how much of a rhyme two pronunciations make, 0..1.
+
+    Each side may offer more than one reading of where its rhyme starts; the
+    pair is scored on the best of them, which is what "degrade gracefully"
+    means here — no reading is silently the only one tried.
+    """
+    best: RhymeScore | None = None
+    for ra in _rime_candidates(a):
+        for rb in _rime_candidates(b):
+            scored = _score_rimes(ra, rb)
+            if best is None or scored.score > best.score:
+                best = scored
+    return best
+
+
+def _score_rimes(ra: _Rime, rb: _Rime) -> RhymeScore:
+    nucleus = vowel_distance(ra.nucleus, rb.nucleus)
+    coda = _coda_distance(ra.coda, rb.coda)
+    tail = _tail_distance(ra.tail, rb.tail)
+    # Coda and tail are one weighted mean, not two independent terms: a pair
+    # with no tail at all ("air"/"death") lives or dies on its coda, while a
+    # pair whose whole "-SH AH N" matches ("action"/"passion") is barely hurt
+    # by one extra consonant under the stress. Two open stressed syllables
+    # contribute no coda at all rather than a free perfect match, so
+    # "nation"/"nature" is judged on the syllable that actually differs.
+    width = max(len(ra.tail), len(rb.tail))
+    coda_weight = 1.0 if (ra.coda or rb.coda) else 0.0
+    span = coda_weight + width
+    rime = (coda * coda_weight + tail * width) / span if span else 0.0
+    score = (1.0 - nucleus) ** _NUCLEUS_EXPONENT * (1.0 - rime) ** _RIME_EXPONENT
+    same_onset = ra.onset == rb.onset and bool(ra.onset)
+    if same_onset:
+        score *= _SAME_ONSET_FACTOR
+    return RhymeScore(
+        score=round(score, 4),
+        nucleus=nucleus,
+        coda=coda,
+        tail=tail,
+        same_onset=same_onset,
+        syllables_a=ra.syllables,
+        syllables_b=rb.syllables,
+    )
+
+
+def rhyme_nuclei(pron: Pron) -> tuple[str, ...]:
+    """Every stressed vowel this word could be rhymed from."""
+    return tuple(dict.fromkeys(r.nucleus for r in _rime_candidates(pron)))
+
+
+def max_rhyme_score(a: Sequence[str], b: Sequence[str]) -> float:
+    """The best score two words could reach given only their stressed vowels.
+
+    Every other term in ``rhyme_score`` can only take the score down, so this
+    is a sound upper bound — which is what makes it usable as the cheap gate
+    in front of the pairwise passes without them ever dropping a pair the
+    real comparison would have accepted. Both sides pass every nucleus they
+    could rhyme from, because the real comparison tries all of them.
+    """
+    best = 0.0
+    for na in a:
+        for nb in b:
+            if not na or not nb:
+                continue
+            best = max(best, (1.0 - vowel_distance(na, nb)) ** _NUCLEUS_EXPONENT)
+    return best
 
 
 def _guess_penalty(a: Pron, b: Pron) -> float:
+    """Discount a rhyme whose phones were guessed rather than looked up.
+
+    Only where a dictionary is actually installed. Without one every word in
+    the song is a guess, and discounting all of them by the same factor
+    ranks nothing differently — it just slides the whole distribution under
+    the callers' confidence floors, which is what made a cmudict-less machine
+    report a fraction of the rhymes a cmudict machine did.
+    """
+    if PRONUNCIATION_SOURCE != "cmudict":
+        return 1.0
     if a.guessed and b.guessed:
         return 0.75
     return 0.85 if (a.guessed or b.guessed) else 1.0
@@ -1194,6 +1857,23 @@ def _shared_tail_letters(a: str, b: str) -> int:
             break
         count += 1
     return count
+
+
+def _is_pararhyme(a: _Rime, b: _Rime) -> bool:
+    """Owen's device: the same consonant FRAME with the vowel swapped out.
+
+    Both ends have to be identical — "read"/"ride", "leaves"/"lives". The old
+    test asked only for a shared onset and a shared tail, which every
+    one-syllable pair with a matching coda satisfies, so "man"/"men" and
+    "cat"/"cut" were labelled with a rare literary device instead of being
+    called the plain slant rhymes they are. Those now score above
+    ``SLANT_STRONG`` and never reach here.
+    """
+    if a.nucleus == b.nucleus:
+        return False
+    if not (a.onset or a.coda):
+        return False
+    return a.onset == b.onset and a.coda == b.coda and a.tail == b.tail
 
 
 def classify_rhyme(
@@ -1215,24 +1895,25 @@ def classify_rhyme(
     if ka == kb:
         # Same rime, different pronunciation in front of it: the perfect rhyme.
         return ("end-rhyme", round(penalty, 3))
-    onset_a, onset_b = _key_onset(a), _key_onset(b)
 
-    parts_a, parts_b = ka.split(" "), kb.split(" ")
-    nucleus_a, tail_a = parts_a[0], tuple(parts_a[1:])
-    nucleus_b, tail_b = parts_b[0], tuple(parts_b[1:])
-    vowel = vowel_distance(nucleus_a, nucleus_b)
-    tail = _tail_distance(tail_a, tail_b)
+    scored = rhyme_score(a, b)
+    if scored is None:
+        return ("", 0.0)
+    confidence = round(scored.score * penalty, 3)
+    if scored.score >= _PERFECT_SCORE:
+        # The keys differ only because the dictionary put the stress
+        # somewhere this reading did not: nucleus, coda and tail all match.
+        return ("end-rhyme", round(penalty, 3))
+    if scored.score >= SLANT_STRONG:
+        return ("slant-rhyme", confidence)
 
-    # Same consonant frame, swapped vowel — Owen's pararhyme.
-    if nucleus_a != nucleus_b and onset_a == onset_b and tail_a == tail_b and tail_a:
-        return ("pararhyme", round(max(0.35, 0.65 - 0.2 * vowel) * penalty, 3))
-
-    near = (nucleus_a == nucleus_b and tail < _NEAR_TAIL) or (
-        vowel < _NEAR_VOWEL and tail_a == tail_b
-    )
-    if near:
-        score = min(0.9, max(0.4, 0.9 - 0.5 * (vowel + tail)))
-        return ("slant-rhyme", round(score * penalty, 3))
+    # Below the scheme-making line a shared consonant frame is the more
+    # specific claim, so pararhyme is read here and not before slant.
+    ra, rb = _rime(a), _rime(b)
+    if ra is not None and rb is not None and _is_pararhyme(ra, rb):
+        return ("pararhyme", max(0.3, confidence))
+    if scored.score >= SLANT_FLOOR:
+        return ("slant-rhyme", confidence)
 
     # Nothing rhymes; the spelling might still promise it does.
     if wa and wb and _shared_tail_letters(wa, wb) >= 2:

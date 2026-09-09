@@ -31,13 +31,15 @@ from .phonetics import (
     Pron,
     Syllable,
     classify_rhyme,
+    max_rhyme_score,
     normalize_word,
     pronounce,
+    pronounce_phrase,
     rhyme_key,
+    rhyme_nuclei,
     stress_pattern,
     syllabify,
     tail_key,
-    vowel_distance,
 )
 from .schema import (
     FAMILY_OF,
@@ -89,11 +91,21 @@ ENDING_PAIR_WINDOW = 3
 # Polyptoton pairs must be within 4 lyric lines to read as deliberate.
 POLYPTOTON_LINE_WINDOW = 4
 
-# ``classify_rhyme`` only ever calls a pair a rhyme when the two rhyme keys
-# start on the same vowel, or on vowels closer together than this — its own
-# near-vowel bound. Mirrored here so ``_might_rhyme`` can gate on it without
-# reaching into the phonetics module's privates.
-NEAR_VOWEL = 0.45
+# A line ending is compared as a RUN of final words, not only as its last
+# word: sung lines rhyme on phrases ("hold on" / "cold dawn", "meant it" /
+# "spent it") and on the word before a trailing ad-lib ("...on my way, yeah").
+END_RUN_WORDS = 3
+END_RUN_SYLLABLES = 5
+# A longer run has to beat the plain last word by this much to be preferred,
+# so an ordinary end rhyme is never relabelled as a phrase.
+END_RUN_MARGIN = 0.08
+# Trailing words a line does not really end on. Everything here is either an
+# ad-lib or a particle that carries no stress of its own, and a lyric sheet is
+# full of them; the rhyme is on the word in front.
+_TRAILING_FILLER = frozenset(
+    """oh ooh ooo woah whoa yeah yea ah aah uh huh hey ay yo na nah la mm mmm
+    hmm now though again y'all babe baby man girl boy love ya""".split()
+)
 
 # Confidence floors, per kind, for the pairwise passes. A perfect match always
 # passes; the near misses have to earn it.
@@ -226,8 +238,9 @@ class _Tok:
     # part of a word can be painted without splitting the karaoke word.
     bounds: tuple[tuple[int, int], ...]
     # ``rhyme_key`` of this word, resolved once: every pairwise pass asks for
-    # it, and the vowel it starts on is what gates those passes.
+    # it, and the vowels it could start on are what gate those passes.
     rkey: str
+    nuclei: tuple[str, ...]
 
     @property
     def key_nucleus(self) -> str:
@@ -269,11 +282,30 @@ class _Sect:
     lyric_lines: list[int] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _Ending:
+    """How a line ends, and every run of final words it could rhyme on.
+
+    A lyric line rhymes on a phrase at least as often as on a word — "hold
+    on" / "cold dawn", "meant it" / "spent it" — and a lyric sheet ends line
+    after line on an ad-lib the singer throws away. Comparing only the last
+    token reported the throwaway as the rhyme, or reported nothing.
+    """
+
+    line: int
+    tok: _Tok
+    runs: tuple[tuple[tuple[_Tok, ...], Pron], ...]
+    # The line ends on a word it does not really end on. Such an ending may
+    # never be classed on its last word alone: four lines that all end
+    # "..., yeah" share that word without sharing a rhyme.
+    throwaway: bool = False
+
+
 @dataclass
 class _RhymeClass:
     section_idx: int
     letter: str
-    members: list[tuple[int, _Tok]] = field(default_factory=list)
+    members: list[_Ending] = field(default_factory=list)
 
 
 @dataclass
@@ -346,7 +378,9 @@ def syllable_char_bounds(raw: str, count: int) -> tuple[tuple[int, int], ...]:
 
 def _token(line: int, index: int, raw: str, pron: Pron | None = None) -> _Tok:
     norm = normalize_word(raw)
-    p = pronounce(norm) if pron is None else pron
+    # The word AS WRITTEN, not the normalised token: the apostrophe of
+    # "runnin'" is what tells the phonetics it is the -ing word.
+    p = pronounce(raw) if pron is None else pron
     syls = tuple(syllabify(p))
     return _Tok(
         line=line,
@@ -357,6 +391,7 @@ def _token(line: int, index: int, raw: str, pron: Pron | None = None) -> _Tok:
         syls=syls,
         bounds=syllable_char_bounds(raw, len(syls)),
         rkey=rhyme_key(p),
+        nuclei=rhyme_nuclei(p),
     )
 
 
@@ -429,21 +464,15 @@ def _rhymeable(tok: _Tok, *, internal: bool) -> bool:
 def _might_rhyme(a: _Tok, b: _Tok) -> bool:
     """Cheap gate in front of ``classify_rhyme`` for the pairwise passes.
 
-    Every kind those passes accept — perfect, identical, slant either way —
-    needs the two rhyme keys to start on the same vowel or on two vowels
-    within ``NEAR_VOWEL`` of each other, so a pair that fails that test cannot
-    be one. Skipping the real comparison there is most of what keeps a whole
-    song's internal-rhyme pass affordable.
-
-    The test is on the key's vowel, not the last syllable's: the key starts at
-    the last STRESSED vowel, which in "given"/"livin'" is not the last one —
-    testing the final syllable there drops a slant rhyme the end-of-line pass
-    would have reported.
+    ``max_rhyme_score`` is the best score two words could reach given only
+    their stressed vowels, and every other term in the real comparison can
+    only take that score down — so a pair below the floor here cannot clear
+    the floor there, and skipping it is free. That soundness is the whole
+    point: an ad-hoc gate on "the last syllable" drops slant rhymes like
+    "given"/"livin'" that the end-of-line pass then reports anyway, and the
+    two passes disagree with each other.
     """
-    ka, kb = a.key_nucleus, b.key_nucleus
-    if not ka or not kb:
-        return False
-    return ka == kb or vowel_distance(ka, kb) < NEAR_VOWEL
+    return max_rhyme_score(a.nuclei, b.nuclei) >= MIN_INTERNAL_CONF
 
 
 class _Out:
@@ -552,6 +581,139 @@ def _line_ending(line: _Line) -> _Tok | None:
     return None
 
 
+def _final_words(line: _Line) -> list[_Tok]:
+    """The line's trailing run of pronounceable words, in order."""
+    toks = line.toks
+    end = len(toks) - 1
+    while end >= 0 and not toks[end].phones:
+        end -= 1
+    if end < 0:
+        return []
+    start = end
+    while start > 0 and toks[start - 1].phones:
+        start -= 1
+    return toks[start : end + 1]
+
+
+def _is_throwaway(tok: _Tok) -> bool:
+    """A word a line does not really end on: an ad-lib or an unstressed particle.
+
+    One predicate, because two places have to agree about it. ``_ending``
+    uses it to offer the word in front as an ending of its own, and
+    ``_match_endings`` uses it to refuse to call two lines rhymed just
+    because they end on the same one.
+    """
+    return tok.norm in _TRAILING_FILLER or (tok.nsyl == 1 and tok.norm in _NOISE_WORDS)
+
+
+def _runs_ending_at(
+    words: list[_Tok], stop: int
+) -> list[tuple[tuple[_Tok, ...], Pron]]:
+    out: list[tuple[tuple[_Tok, ...], Pron]] = []
+    for k in range(1, min(END_RUN_WORDS, stop + 1) + 1):
+        toks = tuple(words[stop + 1 - k : stop + 1])
+        if sum(t.nsyl for t in toks) > END_RUN_SYLLABLES:
+            break
+        pron = toks[0].pron if k == 1 else pronounce_phrase([t.raw for t in toks])
+        if pron.phones:
+            out.append((toks, pron))
+    return out
+
+
+def _ending(line: _Line) -> _Ending | None:
+    words = _final_words(line)
+    if not words:
+        return None
+    runs = _runs_ending_at(words, len(words) - 1)
+    last = words[-1]
+    # "...on my way, yeah": the line does not really end on the ad-lib, so the
+    # word in front is offered as an ending of its own.
+    throwaway = len(words) > 1 and _is_throwaway(last)
+    if throwaway:
+        runs.extend(_runs_ending_at(words, len(words) - 2))
+    if not runs:
+        return None
+    return _Ending(line=line.index, tok=last, runs=tuple(runs), throwaway=throwaway)
+
+
+def _run_words(toks: tuple[_Tok, ...]) -> str:
+    return " ".join(t.norm for t in toks)
+
+
+def _match_endings(a: _Ending, b: _Ending) -> tuple[str, float, list[_Tok], list[_Tok]]:
+    """Best rhyme between two line endings, over their runs of final words.
+
+    The plain last word is the baseline and a longer or shifted run only wins
+    by ``END_RUN_MARGIN``, so a rhyme that is already there is never restated
+    as a phrase — the halves the UI paints stay the words a reader would
+    point at.
+    """
+    base_a, base_b = a.runs[0], b.runs[0]
+    kind, conf = classify_rhyme(
+        base_a[1], base_b[1], word_a=base_a[0][0].norm, word_b=base_b[0][0].norm
+    )
+    best = (kind, conf, list(base_a[0]), list(base_b[0]))
+    # Two lines ending on the same throwaway word ("...meant it" / "...spent
+    # it", "..., yeah" / "..., yeah") are not rhyming on it; they are saying
+    # it twice. A longer run then only has to be a real rhyme to win, instead
+    # of having to beat a 1.0 it can never beat. Testing only _NOISE_WORDS
+    # here let every ad-lib through: "yeah" and "now" are _TRAILING_FILLER,
+    # so four unrhymed lines that all ended ", yeah" came back as "AAAA".
+    weak = kind == "identical-rhyme" and _is_throwaway(base_a[0][-1])
+    # The two kinds of throwaway part company here. An unstressed particle is
+    # still part of the line ("...meant it" DOES end on "it", and the rhyme is
+    # the phrase). An ad-lib is not: the line ends on the word in front of it,
+    # so every run that still carries the ad-lib rhymes on the ad-lib and on
+    # nothing else — "garden yeah" against "velvet yeah" is a perfect 1.0 that
+    # means only that both singers said "yeah".
+    shared = base_a[0][-1].norm if weak else ""
+    drop_shared = bool(shared) and shared in _TRAILING_FILLER
+    if weak:
+        # The shared throwaway is not an answer, it is the absence of one.
+        # Leaving it as the fallback meant two lines that shared an ad-lib and
+        # nothing else still came back "identical-rhyme, 1.0" whenever no
+        # longer run rhymed — which is every pair of unrhymed lines that ends
+        # ", yeah". If no real run wins below, these endings do not rhyme.
+        best = ("", 0.0, list(base_a[0]), list(base_b[0]))
+    floor = MIN_SCHEME_CONF if weak else conf + END_RUN_MARGIN
+    if floor > 1.0:
+        # No run could clear the margin, so there is nothing to look for —
+        # and this is the common case, an ordinary end rhyme.
+        return best
+    ceiling = 0.0 if weak else conf
+    for toks_a, pron_a in a.runs:
+        for toks_b, pron_b in b.runs:
+            if toks_a is base_a[0] and toks_b is base_b[0]:
+                continue
+            if drop_shared and toks_a[-1].norm == shared and toks_b[-1].norm == shared:
+                continue
+            # A single-word run is NOT skipped under ``weak``: when the
+            # throwaway is an ad-lib the real ending is the single word in
+            # front of it ("...in the garden, yeah" ends on "garden"), and
+            # skipping it by length was what stopped those words from ever
+            # being compared. The baseline pair itself is already excluded
+            # above, and a run that loses simply fails the floor.
+            # Growing the run on ONE side only, when both still end on the
+            # same word, adds a consonant to one rime and matches nothing:
+            # "it" against "spent it" scores a perfect rhyme and means
+            # nothing at all.
+            if len(toks_a) != len(toks_b) and toks_a[-1].norm == toks_b[-1].norm:
+                continue
+            words_a, words_b = _run_words(toks_a), _run_words(toks_b)
+            # The same phrase again is a refrain, and the repetition passes
+            # own it.
+            if len(toks_a) > 1 and words_a == words_b:
+                continue
+            other, score = classify_rhyme(
+                pron_a, pron_b, word_a=words_a, word_b=words_b
+            )
+            if not other or score < floor or score <= ceiling:
+                continue
+            ceiling = score
+            best = (other, score, list(toks_a), list(toks_b))
+    return best
+
+
 # --- rhyme -----------------------------------------------------------------
 
 
@@ -571,26 +733,38 @@ def _rhyme_classes(lines: list[_Line], sects: list[_Sect]) -> list[_RhymeClass]:
             line = lines[idx]
             if not line.anchored:
                 continue
-            tok = _line_ending(line)
-            if tok is None:
+            ending = _ending(line)
+            if ending is None:
                 continue
-            key = tok.rkey
+            # The exact-key shortcut says "same last word, same class" without
+            # consulting _match_endings at all — which is right for a real
+            # repeated ending and wrong for a throwaway one, where the shared
+            # word is exactly what does NOT make the rhyme. Those endings take
+            # the slow path so the ad-lib logic in _match_endings can run.
+            key = "" if ending.throwaway else ending.tok.rkey
             cls = by_key.get(key) if key else None
             if cls is None:
                 for cand in section_classes:
-                    rep = cand.members[0][1]
-                    kind, conf = classify_rhyme(
-                        rep.pron, tok.pron, word_a=rep.norm, word_b=tok.norm
-                    )
-                    if kind in _SCHEME_KINDS and conf >= MIN_SCHEME_CONF:
-                        cls = cand
+                    # Against the class's first member AND its most recent one:
+                    # a rhyme chain drifts ("pieces" / "seasons" / "meaning" /
+                    # "dreaming"), and testing only the representative dropped
+                    # the far end of every chain out of its own scheme letter.
+                    against = [cand.members[0]]
+                    if cand.members[-1] is not cand.members[0]:
+                        against.append(cand.members[-1])
+                    for member in against:
+                        kind, conf, _ta, _tb = _match_endings(member, ending)
+                        if kind in _SCHEME_KINDS and conf >= MIN_SCHEME_CONF:
+                            cls = cand
+                            break
+                    if cls is not None:
                         break
             if cls is None:
                 cls = _RhymeClass(section_idx=si, letter="")
                 section_classes.append(cls)
             if key and key not in by_key:
                 by_key[key] = cls
-            cls.members.append((line.index, tok))
+            cls.members.append(ending)
         # Letters go to the classes that actually rhyme, in order of first
         # appearance; a line that rhymes with nothing keeps an empty letter.
         n = 0
@@ -807,34 +981,46 @@ def _tail_spans(covered: list[tuple[_Tok, int]]) -> list[Span]:
     return spans
 
 
+def _run_spans(toks: list[_Tok], key: str) -> list[Span]:
+    """Paint a matched ending: the rhyming tail of one word, or a whole run."""
+    if len(toks) == 1:
+        return [_rhyme_span(toks[0], key)]
+    return [_span(t) for t in toks]
+
+
 def _emit_end_rhymes(classes: list[_RhymeClass], out: _Out, used: set) -> None:
     for cls in classes:
         if len(cls.members) < 2:
             continue
         group = _class_group(cls)
-        rep = cls.members[0][1]
-        for (_la, a), (_lb, b) in zip(cls.members, cls.members[1:]):
-            kind, conf = classify_rhyme(a.pron, b.pron, word_a=a.norm, word_b=b.norm)
+        rep = cls.members[0]
+        for a, b in zip(cls.members, cls.members[1:]):
+            kind, conf, toks_a, toks_b = _match_endings(a, b)
             if kind not in _SCHEME_KINDS:
                 # This member joined the class through the representative
                 # rather than through its neighbour; pair it with what it
                 # actually matched, so the reported halves really do rhyme.
-                a = rep
-                kind, conf = classify_rhyme(
-                    rep.pron, b.pron, word_a=rep.norm, word_b=b.norm
-                )
+                kind, conf, toks_a, toks_b = _match_endings(rep, b)
                 if kind not in _SCHEME_KINDS:
                     continue
-            pair = _pair_key(a, b)
+            pair = _pair_key(toks_a[-1], toks_b[-1])
             if pair in used:
                 continue
-            used.add(pair)
-            key = b.rkey
+            for ta in toks_a:
+                for tb in toks_b:
+                    used.add(_pair_key(ta, tb))
+            key = toks_b[-1].rkey
             detail = f"{cls.letter}: {key}" if key else cls.letter
             out.add(
                 kind,
-                [_rhyme_span(a, a.rkey), _rhyme_span(b, key)],
-                label=_label(kind, [a.raw, b.raw]),
+                _run_spans(toks_a, toks_a[-1].rkey) + _run_spans(toks_b, key),
+                label=_label(
+                    kind,
+                    [
+                        " ".join(t.raw for t in toks_a),
+                        " ".join(t.raw for t in toks_b),
+                    ],
+                ),
                 detail=detail,
                 phones=key.split(),
                 confidence=conf,
@@ -1753,10 +1939,10 @@ def analyse(
     for cls in classes:
         if len(cls.members) < 2:
             continue
-        for line_idx, _tok in cls.members:
-            by_line[line_idx].letter = cls.letter
-            rhymed_lines.add(line_idx)
-            ending_group[line_idx] = _class_group(cls)
+        for member in cls.members:
+            by_line[member.line].letter = cls.letter
+            rhymed_lines.add(member.line)
+            ending_group[member.line] = _class_group(cls)
 
     ends: dict[int, int] = {}
     for line in lines:

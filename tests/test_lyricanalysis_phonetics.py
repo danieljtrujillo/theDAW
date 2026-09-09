@@ -18,6 +18,7 @@ from backend.modules.lyricanalysis.phonetics import (
     consonant_distance,
     normalize_word,
     pronounce,
+    pronounce_phrase,
     rhyme_key,
     stress_pattern,
     syllabify,
@@ -258,11 +259,31 @@ def test_classify_slant_rhyme(a, b):
     assert 0.3 <= confidence <= 0.9
 
 
-@pytest.mark.parametrize(("a", "b"), [("read", "ride"), ("cat", "cut"), ("bad", "bud")])
+@pytest.mark.parametrize(
+    ("a", "b"), [("read", "ride"), ("leaves", "lives"), ("feet", "fight")]
+)
 def test_classify_pararhyme(a, b):
+    """Owen's device: the SAME consonant frame with the vowel swapped out.
+
+    It needs both ends — onset and coda — and it is read after slant rhyme,
+    not before it, so it only claims a pair the ear does not already hear as
+    a near rhyme.
+    """
     kind, confidence = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
     assert kind == "pararhyme"
     assert confidence > 0.0
+
+
+@pytest.mark.parametrize(
+    ("a", "b"), [("man", "men"), ("cat", "cut"), ("bit", "bet"), ("bad", "bud")]
+)
+def test_one_vowel_step_is_a_slant_rhyme_not_a_pararhyme(a, b):
+    """These are the commonest near rhymes in pop, and they were all being
+    labelled with a rare literary device because pararhyme was tested first
+    and only asked for a shared onset and a shared tail."""
+    kind, confidence = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
+    assert kind == "slant-rhyme", (a, b, kind, confidence)
+    assert confidence >= 0.5
 
 
 @pytest.mark.parametrize(("a", "b"), [("love", "move"), ("though", "tough")])
@@ -331,13 +352,23 @@ def test_classify_needs_two_pronunciations():
 
 
 def test_confidence_drops_when_a_pronunciation_was_guessed():
+    """...but only where a dictionary exists to have been better than the guess.
+
+    Without cmudict every word in the song is guessed, and discounting all of
+    them by the same factor ranks nothing differently — it only slides the
+    whole distribution under the callers' confidence floors, which is what
+    made a cmudict-less machine report a fraction of the rhymes.
+    """
     known_cat = Pron(phones=("K", "AE", "T"), stress=(1,), guessed=False)
     known_hat = Pron(phones=("HH", "AE", "T"), stress=(1,), guessed=False)
     guessed_hat = Pron(phones=("HH", "AE", "T"), stress=(1,), guessed=True)
     assert classify_rhyme(known_cat, known_hat) == ("end-rhyme", 1.0)
     kind, confidence = classify_rhyme(known_cat, guessed_hat)
     assert kind == "end-rhyme"
-    assert confidence < 1.0
+    if PRONUNCIATION_SOURCE == "cmudict":
+        assert confidence < 1.0
+    else:
+        assert confidence == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +378,8 @@ def test_confidence_drops_when_a_pronunciation_was_guessed():
 
 def test_vowel_distance():
     assert vowel_distance("AE", "AE") == 0.0
-    assert vowel_distance("EY", "IY") < 0.2  # neighbours
+    assert vowel_distance("EY", "IY") < 0.3  # neighbours
+    assert vowel_distance("EY", "IY") < vowel_distance("EY", "AA")
     assert vowel_distance("AH", "UW") > 0.45  # not neighbours
     assert vowel_distance("EY", "IY") == vowel_distance("IY", "EY")
     assert vowel_distance("AE", "K") == 1.0  # not a vowel
@@ -355,6 +387,34 @@ def test_vowel_distance():
     for a in ARPABET_VOWELS:
         for b in ARPABET_VOWELS:
             assert 0.0 <= vowel_distance(a, b) <= 1.0
+
+
+def test_a_diphthong_sits_between_its_endpoints_not_next_to_schwa():
+    """AY travels from an AA-ish nucleus to an IH-ish glide, so those are what
+    it is near. The hand-picked point-per-vowel table it replaced made AH-AY
+    and EY-IH its two CLOSEST pairs — schwa nearer to a diphthong than that
+    diphthong's own endpoints — and that is what scored "cut"/"kite" and
+    "hit"/"hate" as 0.64 rhymes."""
+    assert vowel_distance("AY", "AA") < vowel_distance("AY", "AH")
+    assert vowel_distance("AY", "IY") < vowel_distance("AY", "AH")
+    assert vowel_distance("AY", "AW") < vowel_distance("AY", "AH")
+    # ...and the lax/tense pairs a monophthong can hide inside a glide.
+    assert vowel_distance("EY", "IH") > 0.3
+    assert vowel_distance("IH", "EY") > vowel_distance("IH", "EH")
+
+
+def test_near_vowels_are_a_small_minority_of_the_table():
+    """A distance table that calls two thirds of all vowel pairs "near" is not
+    measuring anything. The old one marked 70 of its 105 pairs under its own
+    0.45 near-vowel bound."""
+    vowels = sorted(ARPABET_VOWELS)
+    pairs = [
+        vowel_distance(a, b) for i, a in enumerate(vowels) for b in vowels[i + 1 :]
+    ]
+    assert len(pairs) == 105
+    near = [d for d in pairs if d < 0.30]
+    assert len(near) / len(pairs) < 0.20, len(near)
+    assert near, "no two vowels are near each other at all"
 
 
 def test_consonant_distance():
@@ -546,3 +606,343 @@ def test_dictionary_path_reads_stress_digits(monkeypatch):
         assert ph.pronounce("skrrt").guessed is True
     finally:
         ph.pronounce.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# The scored comparison: what "more robust" has to mean
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        # Close on BOTH sides and identical on neither: the shape the old
+        # exact-match gates dropped on the floor. "station"/"patience" came
+        # back as ("", 0.0) and "nation"/"occasion" as an eye rhyme.
+        ("nation", "occasion"),
+        ("station", "patience"),
+        ("action", "passion"),
+        ("honest", "promise"),
+        ("pieces", "reasons"),
+        ("silence", "violence"),
+        ("million", "villain"),
+        ("listen", "kitchen"),
+        ("pressure", "measure"),
+    ],
+)
+def test_a_pair_close_on_both_sides_is_a_rhyme(a, b):
+    kind, confidence = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
+    assert kind in ("end-rhyme", "slant-rhyme"), (kind, confidence)
+    assert confidence >= 0.4
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("kiss", "list"),  # a coda that grew a consonant
+        ("station", "patience"),  # ...one syllable deeper in
+        ("world", "word"),  # ...and one that lost one
+        ("mind", "time"),  # cluster simplification
+        ("last", "laughed"),
+    ],
+)
+def test_codas_of_different_lengths_are_aligned_not_shifted(a, b):
+    """Right-aligning two raw phone arrays misaligns every phone the moment
+    they are different lengths: "N" was compared with "S" and two near
+    identical endings scored as unrelated."""
+    kind, confidence = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
+    assert kind in ("end-rhyme", "slant-rhyme"), (kind, confidence)
+    assert confidence >= 0.45
+
+
+def test_a_weak_rhyme_degrades_to_a_low_confidence_slant_never_to_nothing():
+    for a, b in (("shape", "shake"), ("air", "death"), ("bridge", "grudge")):
+        kind, confidence = classify_rhyme(
+            pronounce(a), pronounce(b), word_a=a, word_b=b
+        )
+        assert kind == "slant-rhyme", (a, b, kind)
+        assert 0.0 < confidence < 1.0
+
+
+def test_a_trailing_secondary_stress_does_not_hijack_the_rhyme():
+    """The dictionary marks "tomorrow" AH0 M AA1 R OW2 and "shadow" AE1 D OW2,
+    so reading the key off the LAST stressed vowel starts it on the throwaway
+    "-ow" and "tomorrow"/"sorrow" comes back as no rhyme. Both readings are
+    offered and the better one wins - which still leaves "anyway"/"day"
+    rhyming on its own final foot."""
+    kind, confidence = classify_rhyme(
+        pronounce("tomorrow"), pronounce("sorrow"), word_a="tomorrow", word_b="sorrow"
+    )
+    assert kind in ("end-rhyme", "slant-rhyme")
+    assert confidence >= 0.7
+
+
+@needs_cmudict
+def test_a_trailing_stress_is_still_a_reading_the_rhyme_can_use():
+    """The other half of the same rule: offering the primary-stressed syllable
+    as a second reading must not cost the trailing one, or "anyway"/"day"
+    stops rhyming. Only cmudict marks the trailing stress at all."""
+    assert classify_rhyme(
+        pronounce("anyway"), pronounce("day"), word_a="anyway", word_b="day"
+    ) == ("end-rhyme", 1.0)
+
+
+def test_max_rhyme_score_never_drops_a_pair_the_classifier_accepts():
+    """The cheap gate the pairwise passes use has to be a real upper bound."""
+    from backend.modules.lyricanalysis.phonetics import max_rhyme_score, rhyme_nuclei
+
+    words = """station patience nation occasion given living heaven eleven
+        promise premise honest silence violence million villain listen kitchen
+        summer runner better never water daughter city pretty little riddle
+        cat cut man men bit bet read ride shape keep bridge grudge world word
+        music window orange silver machine morning""".split()
+    accepted = 0
+    for i, a in enumerate(words):
+        for b in words[i + 1 :]:
+            pa, pb = pronounce(a), pronounce(b)
+            kind, conf = classify_rhyme(pa, pb, word_a=a, word_b=b)
+            if kind not in ("end-rhyme", "slant-rhyme", "identical-rhyme"):
+                continue
+            bound = max_rhyme_score(rhyme_nuclei(pa), rhyme_nuclei(pb))
+            # The reported confidence is rounded to three places.
+            assert round(bound, 3) >= conf, (a, b, kind, conf, bound)
+            accepted += 1
+    assert accepted > 30
+
+
+# A benchmark in miniature: real perfect rhymes, real slant rhymes as songs
+# use them, and genuine non-rhymes as negative controls. The point is the
+# aggregate - a change that lifts recall must not wreck precision - so the
+# thresholds are on the counts, not on any one pair.
+_PERFECT = [
+    ("cat", "hat"),
+    ("night", "light"),
+    ("heart", "apart"),
+    ("fight", "tonight"),
+    ("forget", "regret"),
+    ("stay", "away"),
+    ("time", "rhyme"),
+    ("money", "honey"),
+    ("water", "daughter"),
+    ("believe", "relieve"),
+    ("station", "nation"),
+    ("alone", "known"),
+    ("morning", "warning"),
+    ("reason", "season"),
+    ("trouble", "double"),
+    ("lonely", "only"),
+]
+_SLANT = [
+    ("nation", "occasion"),
+    ("station", "patience"),
+    ("action", "passion"),
+    ("honest", "promise"),
+    ("man", "men"),
+    ("bit", "bet"),
+    ("cat", "cut"),
+    ("summer", "runner"),
+    ("better", "never"),
+    ("gone", "song"),
+    ("heart", "dark"),
+    ("world", "word"),
+    ("kiss", "list"),
+    ("mouth", "out"),
+    ("please", "piece"),
+    ("broken", "open"),
+]
+_NON_RHYMES = [
+    ("cat", "dog"),
+    ("orange", "silver"),
+    ("music", "window"),
+    ("table", "purple"),
+    ("river", "mountain"),
+    ("garden", "velvet"),
+    ("whistle", "panic"),
+    ("forest", "marble"),
+    ("green", "black"),
+    ("north", "blue"),
+    ("milk", "torch"),
+    ("desk", "piano"),
+    ("eye", "law"),
+    ("hello", "goodbye"),
+    ("air", "death"),
+    ("cut", "kite"),
+]
+_SCHEME_KINDS = ("end-rhyme", "slant-rhyme", "identical-rhyme")
+# devices.MIN_SCHEME_CONF: the floor a pair has to clear to earn a letter.
+_SCHEME_FLOOR = 0.5
+
+
+def _makes_a_scheme(a, b):
+    kind, conf = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
+    return kind in _SCHEME_KINDS and conf >= _SCHEME_FLOOR
+
+
+def test_benchmark_recall_and_precision():
+    perfect = [p for p in _PERFECT if _makes_a_scheme(*p)]
+    slant = [p for p in _SLANT if _makes_a_scheme(*p)]
+    false_positives = [p for p in _NON_RHYMES if _makes_a_scheme(*p)]
+    missed = [p for p in _PERFECT + _SLANT if not _makes_a_scheme(*p)]
+    assert len(perfect) == len(_PERFECT), missed
+    assert len(slant) >= 14, missed
+    assert len(false_positives) <= 1, false_positives
+
+
+# ---------------------------------------------------------------------------
+# Pronunciation robustness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [["x"], None, 42, {"a": 1}, object()])
+def test_pronounce_never_raises_on_a_value_that_is_not_a_word(value):
+    """It says "never raises", and the cache hashed the argument before the
+    function ever ran, so a list argument raised TypeError from inside it."""
+    assert isinstance(pronounce(value), Pron)
+
+
+def test_pronounce_phrase_reads_a_run_of_words_as_one_stream():
+    from backend.modules.lyricanalysis.phonetics import pronounce_phrase
+
+    phrase = pronounce_phrase(["hold", "on"])
+    assert phrase.phones == pronounce("hold").phones + pronounce("on").phones
+    assert len(phrase.stress) == sum(p in ARPABET_VOWELS for p in phrase.phones)
+    assert pronounce_phrase([]).phones == ()
+    assert pronounce_phrase(["!!!"]).phones == ()
+    # A phrase is guessed when any word in it was.
+    assert pronounce_phrase(["skrrt", "on"]).guessed is True
+
+
+@needs_cmudict
+def test_a_sung_g_dropping_is_the_ing_word_behind_it():
+    """A sung "runnin'" is "running" with its velar dropped. Rhyming it as a
+    coinage instead threw away half a hook's rhymes."""
+    assert pronounce("runnin'").phones == pronounce("running").phones
+    assert pronounce("runnin").phones == pronounce("running").phones
+    # cmudict lists "lovin" and "chasin" as SURNAMES (L OW V IH N, CH AE S IH
+    # N), so the apostrophe has to be read BEFORE the dictionary or the sung
+    # word rhymes off a name.
+    assert pronounce("lovin'").phones == pronounce("loving").phones
+    assert pronounce("chasin',").phones == pronounce("chasing").phones
+    # Ours, not the dictionary's, so it stays flagged as a guess.
+    assert pronounce("runnin'").guessed is True
+    # ...and a real word ending in -in is still itself.
+    assert pronounce("cabin").guessed is False
+    assert pronounce("cabin").phones[-1] == "N"
+
+
+def test_pronunciation_source_reports_what_actually_answered(monkeypatch):
+    """A successful import is not a working dictionary: the data file can be
+    unreadable, and the module then claimed "cmudict" while every word in the
+    song was in fact guessed."""
+    import backend.modules.lyricanalysis.phonetics as ph
+
+    class _Broken:
+        @staticmethod
+        def dict():
+            raise OSError("no data file")
+
+    monkeypatch.setattr(ph, "_cmudict", _Broken)
+    monkeypatch.setattr(ph, "_CMU_TABLE", None)
+    monkeypatch.setattr(ph, "PRONUNCIATION_SOURCE", "cmudict")
+    ph.pronounce.cache_clear()
+    try:
+        assert ph.pronounce("cat").guessed is True
+        assert ph.pronunciation_source() == "rules"
+        assert ph.PRONUNCIATION_SOURCE == "rules"
+    finally:
+        ph.pronounce.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Rules-path stress: a weak first syllable moves the rhyme key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("apart", "heart"),
+        ("tonight", "fight"),
+        ("regret", "forget"),
+        ("today", "way"),
+        ("away", "day"),
+        ("believe", "relieve"),
+        ("insane", "rain"),
+    ],
+)
+def test_rules_g2p_puts_the_stress_off_a_weak_first_syllable(a, b):
+    """Reading "a-PART" as "A-part" moves the rhyme key a syllable too far
+    left and the rhyme with "heart" disappears - which is most of why a
+    machine without cmudict found so many fewer rhymes than one with it."""
+    assert rhyme_key(_rules_pron(a)) == rhyme_key(_rules_pron(b)), (
+        " ".join(_rules_pron(a).phones),
+        " ".join(_rules_pron(b).phones),
+    )
+
+
+@pytest.mark.parametrize("word", ["always", "answer", "army", "pretty", "apple"])
+def test_rules_g2p_keeps_the_stress_on_a_real_first_syllable(word):
+    """The shift is for open prefix syllables only: "al-ways" and "an-swer"
+    close theirs, "ar-my" and "pret-ty" end on a weak -y, and "ap-ple" ends on
+    a schwa, which is never stressed."""
+    assert _rules_pron(word).stress[0] == 1, _rules_pron(word)
+
+
+# ---------------------------------------------------------------------------
+# Which reading of the word the rhyme is scored on
+# ---------------------------------------------------------------------------
+
+
+@needs_cmudict
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        # The vowel the singer picked is the SECOND dictionary entry.
+        ("was", "does"),  # W AH0 Z, not W AA1 Z
+        ("live", "give"),  # L IH1 V, not L AY1 V
+        ("route", "out"),  # R AW1 T, not R UW1 T
+        ("again", "rain"),  # AH0 G EY1 N, not AH0 G EH1 N
+    ],
+)
+def test_a_rhyme_is_found_on_the_dictionarys_other_pronunciation(a, b):
+    """cmudict lists several readings per word and the singer chose one of
+    them. Scoring only entry[0] decided that for them and got it wrong:
+    "was"/"does" and "route"/"out" came back as no rhyme AT ALL."""
+    kind, conf = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
+    assert kind == "end-rhyme", (kind, conf)
+
+
+@needs_cmudict
+@pytest.mark.parametrize(
+    ("a", "b"), [("fire", "star"), ("hour", "far"), ("our", "car")]
+)
+def test_a_syllable_collapsing_reading_does_not_invent_a_rhyme(a, b):
+    """The other kind of alternate entry drops a syllable - "fire" is F AY1
+    ER0 and also F AY1 R - and taking it makes a two-syllable word rhyme with
+    anything ending -AR. It is a different word shape, not a different vowel,
+    so it is not a reading this scores on."""
+    kind, conf = classify_rhyme(pronounce(a), pronounce(b), word_a=a, word_b=b)
+    assert kind not in ("end-rhyme", "slant-rhyme"), (kind, conf)
+
+
+@needs_cmudict
+def test_a_trailing_secondary_stress_does_not_hide_the_rhyming_syllable():
+    """ "nobody" is N OW1 B AA2 D IY2: its primary stress is the FIRST
+    syllable and its last stress is the throwaway "-dy", so neither the
+    last-stressed nor the last-primary-stressed reading is the "-body" that
+    rhymes it perfectly with "somebody"."""
+    kind, conf = classify_rhyme(
+        pronounce("somebody"), pronounce("nobody"), word_a="somebody", word_b="nobody"
+    )
+    assert kind == "slant-rhyme" and conf >= 0.9, (kind, conf)
+
+
+def test_an_earlier_reading_is_not_offered_off_a_primary_stress():
+    """A line ending is scored as a phrase too. Let the rhyme start earlier
+    than a PRIMARY stress and "in the garden" starts on the schwa of "the",
+    which matches the schwa of "full of velvet" and invents a rhyme between
+    two lines that do not have one."""
+    a = pronounce_phrase(["in", "the", "garden"])
+    b = pronounce_phrase(["full", "of", "velvet"])
+    kind, conf = classify_rhyme(a, b, word_a="in the garden", word_b="full of velvet")
+    assert kind not in ("end-rhyme", "slant-rhyme"), (kind, conf)

@@ -259,3 +259,76 @@ class RunRequest(BaseModel):
     provider: str = ""
     model: str = ""
     api_key: str = ""
+
+
+# --- standalone lyric documents ---------------------------------------------
+#
+# A lyric written in the LYRIC tab belongs to no library entry: it is a page in
+# a notebook, and only becomes a song's lyrics when the writer says so. These
+# live in their own directory (``documents.py``), not in an entry folder, and
+# carry their own analysis beside them.
+
+LYRIC_DOCUMENT_VERSION = 1
+
+
+class LyricDocument(BaseModel):
+    """One standalone lyric draft."""
+
+    version: int = LYRIC_DOCUMENT_VERSION
+    id: str
+    title: str = ""
+    text: str = ""
+    language: str = "en"
+    # The library entry this draft was last saved into. Empty while it belongs
+    # to no song — which is the whole point of the notebook.
+    entry_id: str = ""
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+class LyricDocumentSummary(BaseModel):
+    """A row of the document switcher: enough to pick one without loading it."""
+
+    id: str
+    title: str = ""
+    updated_at: float = 0.0
+    created_at: float = 0.0
+    # Lyric lines only — markers and blanks are not counted, so the number
+    # matches the one the analysis reports.
+    lines: int = 0
+    words: int = 0
+    # ``None`` when the draft is attached to nothing.
+    entry_id: Optional[str] = None
+    # An analysis has been stored for this document at least once.
+    analyzed: bool = False
+
+
+class CreateLyricDocumentRequest(BaseModel):
+    title: str = ""
+    text: str = ""
+    language: str = "en"
+    entry_id: str = ""
+
+
+class UpdateLyricDocumentRequest(BaseModel):
+    """Every field is optional: the editor PUTs only what it changed. Passing
+    ``entry_id`` as an empty string detaches the draft from its song."""
+
+    title: Optional[str] = None
+    text: Optional[str] = None
+    language: Optional[str] = None
+    entry_id: Optional[str] = None
+
+
+class AttachLyricDocumentRequest(BaseModel):
+    entry_id: str = ""
+    # Also write the draft into that entry's own lyrics document, through the
+    # lyrics service, so SING sees the words immediately.
+    write_lyrics: bool = False
+
+
+class ImportLyricDocumentRequest(BaseModel):
+    """Start a new document from an entry's existing lyrics."""
+
+    entry_id: str = ""
+    title: str = ""

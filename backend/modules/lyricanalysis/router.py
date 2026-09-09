@@ -1,6 +1,12 @@
 """``/api/lyricanalysis``: the per-entry literary-analysis document, the
-stateless pasted-text pass, and the analysis job. The prefix is added by the
-module loader."""
+standalone lyric documents the LYRIC tab writes, the stateless pasted-text
+pass, and the analysis job. The prefix is added by the module loader.
+
+An analysis subject is either a library entry or a standalone document, and the
+``/{entry_id}`` routes serve both — ``documents.is_document_id`` tells them
+apart, and a document id (``lyricdoc_`` + 32 hex) can never be an entry id. That
+is what lets one analysis pane read a song's lyrics or a notebook page without
+knowing the difference."""
 
 from __future__ import annotations
 
@@ -20,7 +26,11 @@ from .schema import (
     SOUND_KINDS,
     STRUCTURE_KINDS,
     AnalyzeTextRequest,
+    AttachLyricDocumentRequest,
+    CreateLyricDocumentRequest,
+    ImportLyricDocumentRequest,
     RunRequest,
+    UpdateLyricDocumentRequest,
 )
 
 log = logging.getLogger(__name__)
@@ -77,6 +87,108 @@ def analyze_text(req: AnalyzeTextRequest) -> dict[str, Any]:
     return service.analyze_text(req).model_dump()
 
 
+# ---- standalone lyric documents ---------------------------------------------
+#
+# Declared BEFORE ``/{entry_id}``: FastAPI matches routes in registration
+# order, so "/documents" placed after the parametrised route would be swallowed
+# by it and every list would answer "unknown entry documents".
+
+
+@router.get("/documents")
+def list_documents() -> dict[str, Any]:
+    from . import documents
+
+    return {"documents": [d.model_dump() for d in documents.list_documents()]}
+
+
+@router.post("/documents")
+def create_document(req: CreateLyricDocumentRequest) -> dict[str, Any]:
+    from . import documents
+
+    try:
+        return documents.create(req).model_dump()
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown entry {req.entry_id}"}
+        )
+
+
+@router.post("/documents/import")
+def import_document(req: ImportLyricDocumentRequest) -> dict[str, Any]:
+    """Start a new document from a library entry's existing lyrics."""
+    from . import documents
+
+    try:
+        return documents.import_from_entry(req).model_dump()
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown entry {req.entry_id}"}
+        )
+
+
+@router.get("/documents/{doc_id}")
+def get_document(doc_id: str) -> dict[str, Any]:
+    from . import documents
+
+    doc = documents.load(doc_id)
+    if doc is None:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown lyric document {doc_id}"}
+        )
+    return doc.model_dump()
+
+
+@router.put("/documents/{doc_id}")
+def put_document(doc_id: str, req: UpdateLyricDocumentRequest) -> dict[str, Any]:
+    from . import documents
+
+    try:
+        return documents.update(doc_id, req).model_dump()
+    except KeyError as e:
+        # The unknown subject is the document, or the song the body asked to
+        # attach it to — say which.
+        subject = e.args[0] if e.args else doc_id
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"unknown lyric document or entry {subject}"},
+        )
+
+
+@router.delete("/documents/{doc_id}")
+def delete_document(doc_id: str) -> dict[str, Any]:
+    from . import documents
+
+    return {"ok": documents.delete(doc_id)}
+
+
+@router.post("/documents/{doc_id}/duplicate")
+def duplicate_document(doc_id: str) -> dict[str, Any]:
+    from . import documents
+
+    try:
+        return documents.duplicate(doc_id).model_dump()
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown lyric document {doc_id}"}
+        )
+
+
+@router.post("/documents/{doc_id}/attach")
+def attach_document(doc_id: str, req: AttachLyricDocumentRequest) -> dict[str, Any]:
+    """Make the draft a song's: record the link, and optionally write the words
+    into that entry's own lyrics document."""
+    from . import documents
+
+    try:
+        return documents.attach(doc_id, req.entry_id, req.write_lyrics).model_dump()
+    except KeyError as e:
+        subject = e.args[0] if e.args else doc_id
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"unknown lyric document or entry {subject}"},
+        )
+
+
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str) -> dict[str, Any]:
     job = get_job(job_id)
@@ -89,8 +201,16 @@ def job_status(job_id: str) -> dict[str, Any]:
 
 @router.get("/{entry_id}")
 def get_analysis(entry_id: str) -> dict[str, Any]:
-    from . import service
+    from . import documents, service
 
+    if documents.is_document_id(entry_id):
+        try:
+            return documents.analysis_bundle(entry_id)
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": f"unknown lyric document {entry_id}"},
+            )
     try:
         return service.get_bundle(entry_id)
     except KeyError:
@@ -101,9 +221,11 @@ def get_analysis(entry_id: str) -> dict[str, Any]:
 
 @router.post("/{entry_id}/run")
 async def run_analysis(entry_id: str, req: RunRequest) -> dict[str, Any]:
-    from . import llm, service
+    from . import documents, llm, service
 
-    _entry_or_404(entry_id)
+    is_document = documents.is_document_id(entry_id)
+    if not is_document:
+        _entry_or_404(entry_id)
     # The interpretive pass spends an assistant key, so refuse up front rather
     # than starting a job that can only record its own failure.
     if req.llm and not llm.available_providers(req.api_key):
@@ -111,25 +233,49 @@ async def run_analysis(entry_id: str, req: RunRequest) -> dict[str, Any]:
             status_code=409,
             detail={"error": "llm unavailable", "providers": list(llm.PROVIDER_ORDER)},
         )
-    job, reused = service.begin_run(entry_id, req.model_dump())
+    try:
+        job, reused = (
+            documents.begin_run(entry_id, req.model_dump())
+            if is_document
+            else service.begin_run(entry_id, req.model_dump())
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown lyric document {entry_id}"}
+        )
     return {"ok": True, "job": _job_payload(job), "reused": reused}
 
 
 @router.get("/{entry_id}/job")
 def active_analysis_job(entry_id: str) -> dict[str, Any]:
-    """The analysis running for the entry, if any — a tab that opened mid-run
+    """The analysis running for the subject, if any — a tab that opened mid-run
     picks it up here."""
-    from . import service
+    from . import documents, service
 
-    _entry_or_404(entry_id)
+    if documents.is_document_id(entry_id):
+        if documents.load(entry_id) is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": f"unknown lyric document {entry_id}"},
+            )
+    else:
+        _entry_or_404(entry_id)
     job = service.active_job(entry_id)
     return {"job": _job_payload(job) if job else None}
 
 
 @router.delete("/{entry_id}")
 def delete_analysis(entry_id: str) -> dict[str, Any]:
-    from . import service
+    from . import documents, service
 
+    if documents.is_document_id(entry_id):
+        try:
+            return {"ok": documents.delete_analysis(entry_id)}
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": f"unknown lyric document {entry_id}"},
+            )
     try:
         return {"ok": service.delete_doc(entry_id)}
     except KeyError:
