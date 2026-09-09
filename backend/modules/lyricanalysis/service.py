@@ -16,7 +16,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from backend.core.jobs import Job
 from backend.modules.library.router import get_store
@@ -27,9 +27,12 @@ from .schema import (
     ANALYZER_VERSION,
     ARTIFACT_KIND,
     DOC_FILENAME,
+    FAMILY_OF,
     AnalyzeTextRequest,
+    Device,
     LlmPass,
     LyricAnalysisDoc,
+    LyricMark,
 )
 
 log = logging.getLogger(__name__)
@@ -276,6 +279,105 @@ def analyse_lyrics(entry_id: str, lyrics: LyricsDoc) -> LyricAnalysisDoc:
     )
     _recount(doc)
     return doc
+
+
+# ---- the writer's own marks --------------------------------------------------
+#
+# A mark is not a detection and must not pretend to be one, but it has to reach
+# the UI as a ``Device`` because that is the only shape the analysis pane
+# paints. The discriminator is the id and the group: both carry
+# ``MARK_DEVICE_PREFIX``, which no detector can produce (``devices._Out`` mints
+# ``<kind>-<hex>`` ids and content-derived groups, neither of which contains a
+# colon). ``Device.source`` keeps the meaning it has always had — "rules" = the
+# deterministic pass computed it here, "llm" = the interpretive pass proposed
+# it — and is NOT how you tell a mark apart; ``is_mark_device`` is.
+#
+# The mark itself, with its verdict, its note and its timestamps, stays at
+# ``GET /documents/{id}/marks``. The device is only a handle onto it: strip the
+# prefix off ``Device.id`` and you have the ``LyricMark.id`` to join on.
+
+MARK_DEVICE_PREFIX = "mark:"
+# A mark that names a device kind keeps that kind's family, so it filters and
+# colours with its peers. A kind the taxonomy has no word for — which the
+# writer is explicitly allowed to invent — lands in a family of its own rather
+# than being filed under an interpretation nobody made.
+MARK_FAMILY = "mark"
+
+
+def is_mark_device(device: Device) -> bool:
+    """True for a device that is a writer's mark rather than a detection."""
+    return device.id.startswith(MARK_DEVICE_PREFIX)
+
+
+def mark_device(mark: LyricMark) -> Device:
+    """The writer's mark in the shape the analysis pane paints."""
+    kind = mark.kind or "note"
+    words = " / ".join(s.text for s in mark.spans if s.text)
+    return Device(
+        id=f"{MARK_DEVICE_PREFIX}{mark.id}",
+        kind=kind,
+        family=FAMILY_OF.get(kind, MARK_FAMILY),
+        label=mark.label or (f"{kind}: {words}" if words else kind),
+        # Marks the writer grouped together are one thing, exactly as two halves
+        # of a detected rhyme are; a lone mark is its own group.
+        group=f"{MARK_DEVICE_PREFIX}{mark.group or mark.id}",
+        spans=list(mark.spans),
+        detail=mark.note
+        or (
+            "the writer confirmed this"
+            if mark.verdict == "confirm"
+            else "the writer marked this"
+        ),
+        confidence=1.0,
+        source="rules",
+    )
+
+
+def apply_marks(
+    doc: LyricAnalysisDoc,
+    marks: Iterable[LyricMark],
+    *,
+    skip: Iterable[str] = (),
+) -> LyricAnalysisDoc:
+    """The analysis as the writer's marks leave it, as a COPY.
+
+    A ``reject`` removes the detected devices in the group it names — matched on
+    ``Device.group``, because a group is derived from the content it describes
+    and survives the re-run that re-mints every device id. A device that carries
+    no group at all can only be named by its id, and that id is a hash of the
+    device's own kind, detail and spans, so it is stable for as long as the
+    words are: such a reject is honoured too, or rejecting a groupless finding
+    would silently do nothing. ``mark`` and ``confirm`` are appended as mark
+    devices.
+
+    ``skip`` names marks not to paint: the stale ones, whose anchors no longer
+    match the words. A reject still applies while its own spans are stale,
+    because it suppresses by group and never touches a span at all.
+
+    The document passed in is not modified — the file on disk holds detections
+    only, which is what makes a re-run unable to overwrite a mark.
+    """
+    marks = list(marks)
+    if not marks:
+        return doc
+    rejected = {
+        m.target_group for m in marks if m.verdict == "reject" and m.target_group
+    }
+    skipped = set(skip)
+    merged = doc.model_copy(deep=True)
+    devices = [
+        d
+        for d in merged.devices
+        if (d.group not in rejected if d.group else d.id not in rejected)
+    ]
+    devices.extend(
+        mark_device(m) for m in marks if m.verdict != "reject" and m.id not in skipped
+    )
+    merged.devices = devices
+    # The stats have to describe what is on the screen, not what the detectors
+    # found before the writer had their say.
+    _recount(merged)
+    return merged
 
 
 def analyze_text(req: AnalyzeTextRequest) -> LyricAnalysisDoc:

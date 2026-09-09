@@ -47,6 +47,11 @@ RHYME_KINDS = (
     "pararhyme",  # same consonant frame, different vowel (read / ride)
     "identical-rhyme",  # the same word, or a homophone, rhymed with itself
     "eye-rhyme",  # spelling rhymes, sound does not (love / move)
+    # --- shape of a scheme over distance, not a single pair ---
+    "rhyme-run",  # N consecutive lines on one rhyme class (a monorhyme run)
+    "rhyme-chain",  # one class threaded across a long stretch, gaps included
+    "callback",  # a class returning after a long gap, or in a later section
+    "bookend",  # a section's first and last line rhyming with each other
 )
 
 SOUND_KINDS = (
@@ -242,6 +247,48 @@ class LyricAnalysisDoc(BaseModel):
 
 
 # --- requests --------------------------------------------------------------
+
+
+# --- the writer's own marks --------------------------------------------------
+#
+# A detector is a reader with a dictionary, and it will always miss things a
+# writer hears: a rhyme that only works in delivery, a callback across a whole
+# song, a pun the phonetics cannot see. Marks are the writer's answer to that —
+# they sit beside the detected devices, they are never overwritten by a re-run,
+# and a `reject` mark suppresses a finding the engine got wrong.
+
+MARK_VERDICTS = ("mark", "confirm", "reject")
+
+
+class LyricMark(BaseModel):
+    """One annotation a writer made on their own lyric."""
+
+    id: str
+    # A device kind when the writer is naming one ("internal-rhyme"), or "" for
+    # a free note. Unknown kinds are allowed: the writer may hear something the
+    # taxonomy has no word for.
+    kind: str = ""
+    label: str = ""
+    # Marks sharing a group are one thing — the members of a rhyme the writer
+    # picked out by hand.
+    group: str = ""
+    spans: list[Span] = Field(default_factory=list)
+    note: str = ""
+    # "mark": the writer's own annotation, shown alongside the analysis.
+    # "confirm": the engine missed this and it IS real — kept as ground truth.
+    # "reject": the engine found this and it is wrong — suppressed on display.
+    verdict: Literal["mark", "confirm", "reject"] = "mark"
+    # For a reject, the `Device.id` being rejected, so a re-run can suppress it
+    # again even though device ids are regenerated.
+    target_group: str = ""
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+class PutLyricMarksRequest(BaseModel):
+    """Replace the whole mark set for a document — the editor owns the list."""
+
+    marks: list[LyricMark] = Field(default_factory=list)
 
 
 class AnalyzeTextRequest(BaseModel):

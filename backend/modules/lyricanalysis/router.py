@@ -29,6 +29,7 @@ from .schema import (
     AttachLyricDocumentRequest,
     CreateLyricDocumentRequest,
     ImportLyricDocumentRequest,
+    PutLyricMarksRequest,
     RunRequest,
     UpdateLyricDocumentRequest,
 )
@@ -187,6 +188,44 @@ def attach_document(doc_id: str, req: AttachLyricDocumentRequest) -> dict[str, A
             status_code=404,
             detail={"error": f"unknown lyric document or entry {subject}"},
         )
+
+
+# ---- the writer's own marks on a document ------------------------------------
+#
+# Three segments, so neither ``/documents/{doc_id}`` nor ``/{entry_id}`` can
+# swallow these — but they stay inside the ``/documents`` block anyway, because
+# the ordering rule above is about where a route is declared, not about how
+# many segments it happens to have today.
+
+
+@router.get("/documents/{doc_id}/marks")
+def get_document_marks(doc_id: str) -> dict[str, Any]:
+    """The writer's marks, anchored onto the words as they are now, with the
+    ids of the ones the lyric moved out from under."""
+    from . import documents
+
+    try:
+        return documents.marks_bundle(doc_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown lyric document {doc_id}"}
+        )
+
+
+@router.put("/documents/{doc_id}/marks")
+def put_document_marks(doc_id: str, req: PutLyricMarksRequest) -> dict[str, Any]:
+    """Replace the whole mark set. Ids are minted server-side; spans that name
+    no word in the document are dropped, and the response says how many."""
+    from . import documents
+
+    try:
+        return documents.put_marks(doc_id, req)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"error": f"unknown lyric document {doc_id}"}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail={"error": str(e)})
 
 
 @router.get("/jobs/{job_id}")

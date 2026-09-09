@@ -114,6 +114,58 @@ MIN_INTERNAL_CONF = 0.6
 MIN_CROSS_LINE_CONF = 0.8
 _MIN_CONF = {"slant-rhyme": 0.5, "pararhyme": 0.3, "eye-rhyme": 0.3}
 
+# --- shape of a scheme over distance ---------------------------------------
+#
+# A run, a chain, a callback and a bookend are claims about the SHAPE of a
+# scheme, and a shape is a far stronger statement than a scheme letter: a
+# letter says "these two endings are in the same class", a run says "eight
+# lines in a row are one rhyme". So the shapes are cut from their own,
+# stricter grouping, and the floor comes from measuring the two populations
+# rather than from taste. Adjacent endings of an ordinary ABAB stanza score
+# 0.57-0.68 against each other (burns/bird 0.571, bird/turns 0.608,
+# snow/blue 0.664, rain/same 0.678) while the drifting-but-real chains a
+# reader does hear start at 0.77 (pieces/seasons 0.773, occasion/patience
+# 0.784, meaning/dreaming 0.845). 0.75 is the gap between them.
+SHAPE_MIN_CONF = 0.75
+# Three consecutive lyric lines is where a couplet stops being a couplet and
+# starts being a monorhyme run.
+RUN_MIN_LINES = 3
+# A chain is one rhyme threaded through a stretch it does not own, so it has
+# to say something sustained ABAB does not already say. Alternation gives one
+# member every other line, so five members inside ten lines is exactly ABAB and
+# is not reported; it takes a sixth member, or the same five spread wider, to
+# read as a thread.
+CHAIN_MIN_MEMBERS = 5
+CHAIN_MIN_SPAN = 11
+# Lyric lines of other material between two occurrences before the return
+# reads as a callback rather than as the scheme still running. Inside one
+# section that takes a real dormancy — most sections are not even this long.
+# Across a section boundary the boundary is itself half the evidence, so four
+# lines of somewhere else is enough: that is a hook rhyme coming back in the
+# verse, which is what a songwriter means by the word.
+CALLBACK_MIN_GAP = 8
+CALLBACK_SECTION_GAP = 4
+# ...and you cannot come back to something you never set up. The rhyme has to
+# have been ESTABLISHED before it went quiet — at least two lines close
+# together — or a lyric that recycles a dozen rhyme sounds reports a callback
+# at every reappearance and drowns the two that mean something. On a 400-line
+# lyric of scattered rhymes that one condition takes the count from 231 to 87,
+# and the cap below takes it the rest of the way.
+CALLBACK_MIN_ESTABLISHED = 2
+# A rhyme that goes quiet and comes back a dozen times is not making callbacks,
+# it is the song's spine — and a long lyric recycling a handful of rhyme
+# families produces exactly that. Past this many returns the strand is left
+# uncut and the chain pass reports it once, as the thread it actually is; on a
+# 400-line lyric built from sixteen rhyme families that turns 152 findings
+# into 10.
+CALLBACK_MAX_RETURNS = 2
+# A bookend needs a section long enough for the return to be an envelope: two
+# lines is a couplet and three is the ordinary ABA turn.
+BOOKEND_MIN_LINES = 4
+# A shape lists at most this many of its members in its label; a twenty-line
+# run must not paste twenty words into a tooltip.
+SHAPE_LABEL_WORDS = 4
+
 # classify_rhyme kinds that put two line endings in the same scheme class.
 # Pararhyme and eye rhyme are real devices but they do not make an "A".
 _SCHEME_KINDS = frozenset({"end-rhyme", "slant-rhyme", "identical-rhyme"})
@@ -306,6 +358,37 @@ class _RhymeClass:
     section_idx: int
     letter: str
     members: list[_Ending] = field(default_factory=list)
+
+
+@dataclass
+class _Strand:
+    """One rhyme followed across the whole lyric, for shape detection only.
+
+    A scheme class is per section and joins on ``MIN_SCHEME_CONF``; a strand is
+    global and joins on ``SHAPE_MIN_CONF``. Both of those differences are the
+    point. Global, because the thing a listener notices is the hook's rhyme
+    coming back in verse three, and the letters restart at every marker.
+    Stricter, because "burns / bird / turns / word" is one class — every pair
+    of them is a slant rhyme of something — but two strands, which is what a
+    reader means when they say that stanza is ABAB.
+    """
+
+    members: list[_Ending] = field(default_factory=list)
+    # Lyric-line ordinal of each member. Dormancy is counted in lines that are
+    # actually sung: a "[Chorus]" marker and the blank line under it are not
+    # two lines of silence, they are none.
+    order: list[int] = field(default_factory=list)
+    # The words each member really rhymes ON, which is not always its last word
+    # ("...on my way, yeah").
+    rtoks: list[list[_Tok]] = field(default_factory=list)
+    # The scheme-class group each member came from, so a shape can be coloured
+    # as the class it describes. Empty for a class that never earned a letter:
+    # ``_class_group`` gives all of those in a section the same placeholder,
+    # and colouring a shape with it would tie it to an unrelated rhyme.
+    groups: list[str] = field(default_factory=list)
+    # How well each member matched the one before it; a shape reports the
+    # weakest link it contains.
+    confs: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -627,9 +710,17 @@ def _ending(line: _Line) -> _Ending | None:
     runs = _runs_ending_at(words, len(words) - 1)
     last = words[-1]
     # "...on my way, yeah": the line does not really end on the ad-lib, so the
-    # word in front is offered as an ending of its own.
+    # word in front is offered as an ending of its own — but only when that
+    # word is one a line CAN end on. Stepping back onto another particle
+    # ("...nothing like a you", "...waiting for you") offers the bare article
+    # or preposition as the ending, and cmudict keeps a stressed variant of
+    # exactly those words: "a" is AH but also EY, "for" is F ER but also
+    # F AO R. Against any line in that rhyme family they then score a perfect
+    # 1.0, so the pane paints an end rhyme on a preposition, and the shape
+    # pass — which trusts a 1.0 well past SHAPE_MIN_CONF — welds two unrelated
+    # rhymes into one chain.
     throwaway = len(words) > 1 and _is_throwaway(last)
-    if throwaway:
+    if throwaway and not _is_throwaway(words[-2]):
         runs.extend(_runs_ending_at(words, len(words) - 2))
     if not runs:
         return None
@@ -831,19 +922,11 @@ def _tail_covered(run: _Run, n: int) -> list[tuple[_Tok, int]]:
     return covered
 
 
-def _emit_multisyllabic(
-    lines: list[_Line],
-    out: _Out,
-    used: set,
-    ending_group: dict[int, str],
-    ends: dict[int, int],
-) -> None:
-    """Rhymes matched over a run of words, not word for word.
+def _multi_buckets(lines: list[_Line]) -> dict[tuple[int, str], list[tuple[_Run, str]]]:
+    """Every run of words in the lyric, bucketed by the tail it could rhyme on.
 
-    "hard to fathom" / "cardboard patterns" only rhymes if the run is treated
-    as one phone stream, so the unit here is a window of up to
-    ``MULTI_RUN_WORDS`` consecutive words and the match is made by keying that
-    stream's tail in a dict — never by comparing runs pairwise.
+    Built once and read twice: by ``_emit_multisyllabic`` for the pairs inside
+    its window, and by ``_emit_multi_callbacks`` for the ones outside it.
     """
     buckets: dict[tuple[int, str], list[tuple[_Run, str]]] = {}
     for line in lines:
@@ -892,6 +975,23 @@ def _emit_multisyllabic(
                         buckets.setdefault((n, key), []).append(
                             (record, tail_key(pron, n))
                         )
+    return buckets
+
+
+def _emit_multisyllabic(
+    buckets: dict[tuple[int, str], list[tuple[_Run, str]]],
+    out: _Out,
+    used: set,
+    ending_group: dict[int, str],
+    ends: dict[int, int],
+) -> None:
+    """Rhymes matched over a run of words, not word for word.
+
+    "hard to fathom" / "cardboard patterns" only rhymes if the run is treated
+    as one phone stream, so the unit here is a window of up to
+    ``MULTI_RUN_WORDS`` consecutive words and the match is made by keying that
+    stream's tail in a dict — never by comparing runs pairwise.
+    """
     # Longest tail first, so the most specific claim on a pair wins.
     for (n, key), runs in sorted(buckets.items(), key=lambda kv: -kv[0][0]):
         if len(runs) < 2:
@@ -988,13 +1088,27 @@ def _run_spans(toks: list[_Tok], key: str) -> list[Span]:
     return [_span(t) for t in toks]
 
 
-def _emit_end_rhymes(classes: list[_RhymeClass], out: _Out, used: set) -> None:
+def _emit_end_rhymes(
+    classes: list[_RhymeClass],
+    out: _Out,
+    used: set,
+    covered: set[tuple[int, int]],
+) -> None:
+    """The pairwise scheme rhymes, minus the ones a shape already reported.
+
+    ``covered`` holds the line pairs the run/chain/callback/bookend pass has
+    put inside a shape. A shape says everything the pair says and then some —
+    an eight-line run IS its seven pairs — so re-listing them underneath it
+    would only bury the finding that matters.
+    """
     for cls in classes:
         if len(cls.members) < 2:
             continue
         group = _class_group(cls)
         rep = cls.members[0]
         for a, b in zip(cls.members, cls.members[1:]):
+            if (a.line, b.line) in covered:
+                continue
             kind, conf, toks_a, toks_b = _match_endings(a, b)
             if kind not in _SCHEME_KINDS:
                 # This member joined the class through the representative
@@ -1026,6 +1140,527 @@ def _emit_end_rhymes(classes: list[_RhymeClass], out: _Out, used: set) -> None:
                 confidence=conf,
                 group=group,
             )
+
+
+# --- shape of a scheme over distance ---------------------------------------
+#
+# Everything above reports a PAIR. A scheme also has a shape, and the shape is
+# what a listener actually hears: eight lines in a row on one rhyme, a class
+# threaded through a whole verse, the hook's rhyme coming back two sections
+# later. None of that is visible pair by pair, and the windows the pairwise
+# passes are bounded by cannot see that far by design.
+
+
+def _lyric_order(lines: list[_Line]) -> dict[int, int]:
+    """Position of each lyric line among the lyric lines.
+
+    Every distance in this section is counted here rather than in document line
+    numbers, so a "[Chorus]" marker and the blank line under it never make a
+    rhyme look dormant — nobody sings them.
+    """
+    order: dict[int, int] = {}
+    for line in lines:
+        if line.is_lyric:
+            order[line.index] = len(order)
+    return order
+
+
+def _repeated_lines(lines: list[_Line]) -> set[int]:
+    """Lyric lines that are a word-for-word repeat of an earlier one.
+
+    A rhyme that comes back because its whole LINE came back is a refrain, and
+    the repetition passes own it. Reporting it as a callback as well puts one
+    finding on every reappearance of the chorus — four of them in an ordinary
+    verse/chorus song — and buries the return that happens on new words.
+    """
+    seen: set[tuple[str, ...]] = set()
+    out: set[int] = set()
+    for line in lines:
+        if not line.is_lyric or not line.seq:
+            continue
+        key = tuple(line.seq)
+        if key in seen:
+            out.add(line.index)
+        seen.add(key)
+    return out
+
+
+def _ending_nuclei(ending: _Ending) -> tuple[str, ...]:
+    """Every stressed vowel any of this ending's runs could rhyme from."""
+    seen: list[str] = []
+    for _toks, pron in ending.runs:
+        seen.extend(rhyme_nuclei(pron))
+    return tuple(dict.fromkeys(seen))
+
+
+def _strands(classes: list[_RhymeClass], order: dict[int, int]) -> list[_Strand]:
+    """Re-cut the scheme classes into globally threaded, tightly matched strands.
+
+    Cost: an ending is only ever compared against the LAST member of a strand,
+    never against another line, and ``max_rhyme_score`` over the ending's whole
+    run of final words is a sound upper bound on that comparison — so a strand
+    that could not clear the floor is skipped without pronouncing anything.
+    Class membership is already computed, so the pass is linear in class
+    members times strands, the same order as the class pass that produced them,
+    and nothing here is quadratic in lines.
+
+    The endings are walked in LINE order, not class order. ``classes`` is
+    grouped by section and then by first appearance, so taking it as it comes
+    hands a strand its members out of order the moment one crosses from a
+    section's second class back into its first — and every distance in this
+    section is then measured against a scrambled list: a run cannot be seen
+    across the scramble, ``_callback_gap`` goes negative, the covered pairs
+    come out reversed so ``_emit_end_rhymes`` stops suppressing them, and the
+    shape paints its spans backwards through the lyric. It also makes the
+    "newest first" rule below mean what it says — the last place a rhyme was
+    heard is only a strand's last member when the walk is chronological.
+    """
+    strands: list[_Strand] = []
+    by_key: dict[str, _Strand] = {}
+    nuclei: dict[int, tuple[str, ...]] = {}
+    flat = sorted(
+        (
+            (ending, _class_group(cls) if cls.letter else "")
+            for cls in classes
+            for ending in cls.members
+        ),
+        key=lambda pair: pair[0].line,
+    )
+    for ending, group in flat:
+        nuclei[ending.line] = mine = _ending_nuclei(ending)
+        # Same rime, same strand — but never for an ending that only looks
+        # the same because both lines threw away the same ad-lib.
+        key = "" if ending.throwaway else ending.tok.rkey
+        strand = by_key.get(key) if key else None
+        toks = list(ending.runs[0][0])
+        conf = 1.0
+        if strand is None:
+            # Newest first: a rhyme returns to the last place it was heard.
+            for cand in reversed(strands):
+                last = cand.members[-1]
+                if max_rhyme_score(nuclei[last.line], mine) < SHAPE_MIN_CONF:
+                    continue
+                kind, score, toks_a, toks_b = _match_endings(last, ending)
+                if kind not in _SCHEME_KINDS or score < SHAPE_MIN_CONF:
+                    continue
+                strand, toks, conf = cand, toks_b, score
+                if len(cand.members) == 1:
+                    # The strand's first member was painted on its own last
+                    # word for want of anything to compare it against; now
+                    # we know which words it really rhymes on.
+                    cand.rtoks[0] = toks_a
+                break
+        if strand is None:
+            strand = _Strand()
+            strands.append(strand)
+        if key and key not in by_key:
+            by_key[key] = strand
+        strand.members.append(ending)
+        strand.order.append(order[ending.line])
+        strand.rtoks.append(toks)
+        strand.groups.append(group)
+        strand.confs.append(conf)
+    return strands
+
+
+def _shape_spans(strand: _Strand, idx: list[int]) -> list[Span]:
+    spans: list[Span] = []
+    for i in idx:
+        toks = strand.rtoks[i]
+        spans.extend(_run_spans(toks, toks[-1].rkey))
+    return spans
+
+
+def _shape_label(kind: str, strand: _Strand, idx: list[int]) -> str:
+    words = [" ".join(t.raw for t in strand.rtoks[i]) for i in idx]
+    if len(words) > SHAPE_LABEL_WORDS:
+        words = words[: SHAPE_LABEL_WORDS - 1] + ["…", words[-1]]
+    return _label(kind, words)
+
+
+def _weakest(strand: _Strand, idx: list[int]) -> float:
+    """A shape is only as strong as the weakest join it contains."""
+    return min((strand.confs[i] for i in idx[1:]), default=1.0)
+
+
+def _fresh(strand: _Strand, idx: list[int], repeats: set[int]) -> int:
+    """Members that are not there because their whole line came back.
+
+    "Hold on, hold on" three times is a refrain and the repetition passes
+    already say so; counting those lines towards a monorhyme run announces the
+    most ordinary shape in pop music as the pane's strongest rhyme finding.
+    """
+    return sum(1 for i in idx if strand.members[i].line not in repeats)
+
+
+def _cover_repeats(
+    strand: _Strand, idx: list[int], covered: set[tuple[int, int]], repeats: set[int]
+) -> None:
+    """Claim the pairs a dropped shape held only because a line repeated.
+
+    The refrain owns them, so they must not fall back out as three rows of
+    "identical rhyme: tonight / tonight". A pair that ends on a line the singer
+    had not sung before is a real rhyme and is left alone.
+    """
+    for i, j in zip(idx, idx[1:]):
+        if strand.members[j].line in repeats:
+            covered.add((strand.members[i].line, strand.members[j].line))
+
+
+def _strand_group(strand: _Strand, idx: list[int]) -> str:
+    """The colour a shape shares with the rhyme class it describes.
+
+    A shape can be anchored on a class of one line — a hook rhyme that returns
+    once in a later verse is exactly that — and such a class has no letter and
+    so no group of its own. Then the strand is named after the rhyme itself,
+    which is stable across runs and unique to that sound.
+    """
+    for i in idx:
+        if strand.groups[i]:
+            return strand.groups[i]
+    key = strand.rtoks[idx[0]][-1].rkey or "?"
+    return f"rhyme-thread-{hashlib.blake2s(key.encode(), digest_size=4).hexdigest()}"
+
+
+def _callback_where(lines: list[_Line], a: int, b: int) -> str:
+    """The sections a callback links, for the tooltip.
+
+    Compared by section INDEX, never by name: a song has two "[Chorus]"
+    markers and they are two different sections, which is exactly the case a
+    callback is most worth reporting.
+    """
+    la, lb = lines[a], lines[b]
+    if la.section_idx == lb.section_idx:
+        return f" in {la.section}" if la.section else ""
+    if la.section == lb.section:
+        return f" back in {la.section}" if la.section else ""
+    return f": {la.section or 'the opening'} → {lb.section or 'the outro'}"
+
+
+def _callback_gap(strand: _Strand, i: int, lines: list[_Line]) -> int:
+    """Lyric lines of silence before member ``i``, when that silence is a return.
+
+    Zero when the rhyme never went away and the scheme simply carried on.
+    """
+    gap = strand.order[i] - strand.order[i - 1] - 1
+    if gap < CALLBACK_SECTION_GAP:
+        return 0
+    crossed = (
+        lines[strand.members[i - 1].line].section_idx
+        != lines[strand.members[i].line].section_idx
+    )
+    return gap if crossed or gap >= CALLBACK_MIN_GAP else 0
+
+
+def _bookend_pairs(
+    strands: list[_Strand],
+    at: dict[int, tuple[int, int]],
+    lines: list[_Line],
+    sects: list[_Sect],
+    repeats: set[int],
+) -> dict[tuple[int, int], tuple[int, int, int, float]]:
+    """Sections whose first and last lyric line rhyme, as (strand, i, j, score).
+
+    The two endings have to rhyme with EACH OTHER, not merely share a strand: a
+    strand can be held together through its middle, and "the section opens and
+    closes on the same sound" is a claim about those two lines alone.
+
+    And it has to close on a new line. A chorus that is one line sung four
+    times does open and close on one rhyme, on one WORD in fact, which is why
+    the repetition passes call it a refrain and this one says nothing.
+    """
+    found: dict[tuple[int, int], tuple[int, int, int, float]] = {}
+    for sect in sects:
+        anchored = [i for i in sect.lyric_lines if lines[i].anchored]
+        if len(sect.lyric_lines) < BOOKEND_MIN_LINES or len(anchored) < 2:
+            continue
+        first, last = anchored[0], anchored[-1]
+        if last in repeats:
+            continue
+        a, b = at.get(first), at.get(last)
+        if a is None or b is None or a[0] != b[0]:
+            continue
+        strand = strands[a[0]]
+        kind, conf, _ta, _tb = _match_endings(
+            strand.members[a[1]], strand.members[b[1]]
+        )
+        if kind in _SCHEME_KINDS and conf >= SHAPE_MIN_CONF:
+            found[(first, last)] = (a[0], a[1], b[1], conf)
+    return found
+
+
+def _emit_stretch(
+    strand: _Strand,
+    si: int,
+    lo: int,
+    hi: int,
+    out: _Out,
+    covered: set[tuple[int, int]],
+    extents: dict[int, list[tuple[int, int]]],
+    repeats: set[int],
+) -> None:
+    """Runs, and the chain, inside one uninterrupted stretch of a strand.
+
+    Each shape records the LINE RANGE it spans, per strand, so the bookend
+    pass can tell an envelope from a section this rhyme already saturates.
+    """
+    # Consecutive means consecutive LYRIC lines: a marker or a blank between
+    # two lines of a verse does not break the run, because nobody sings it.
+    runs: list[tuple[int, int]] = []
+    start = lo
+    for i in range(lo + 1, hi + 2):
+        if i <= hi and strand.order[i] - strand.order[i - 1] == 1:
+            continue
+        if i - start >= RUN_MIN_LINES:
+            runs.append((start, i - 1))
+        start = i
+    for a, b in runs:
+        idx = list(range(a, b + 1))
+        if _fresh(strand, idx, repeats) < RUN_MIN_LINES:
+            _cover_repeats(strand, idx, covered, repeats)
+            continue
+        key = strand.rtoks[b][-1].rkey
+        count = b - a + 1
+        out.add(
+            "rhyme-run",
+            _shape_spans(strand, idx),
+            label=_shape_label("rhyme-run", strand, idx),
+            detail=f"{count} consecutive lines{f': {key}' if key else ''}",
+            phones=key.split(),
+            confidence=_weakest(strand, idx),
+            group=_strand_group(strand, idx),
+        )
+        for i in range(a, b):
+            covered.add((strand.members[i].line, strand.members[i + 1].line))
+        extents.setdefault(si, []).append(
+            (strand.members[a].line, strand.members[b].line)
+        )
+    span = strand.order[hi] - strand.order[lo] + 1
+    # A stretch that is one solid run is already reported as that run; calling
+    # it a chain as well would be the same sentence twice.
+    if runs and runs[0] == (lo, hi):
+        return
+    if hi - lo + 1 < CHAIN_MIN_MEMBERS or span < CHAIN_MIN_SPAN:
+        return
+    idx = list(range(lo, hi + 1))
+    if _fresh(strand, idx, repeats) < CHAIN_MIN_MEMBERS:
+        _cover_repeats(strand, idx, covered, repeats)
+        return
+    key = strand.rtoks[hi][-1].rkey
+    out.add(
+        "rhyme-chain",
+        _shape_spans(strand, idx),
+        label=_shape_label("rhyme-chain", strand, idx),
+        detail=f"{len(idx)} lines across {span}{f': {key}' if key else ''}",
+        phones=key.split(),
+        confidence=_weakest(strand, idx),
+        group=_strand_group(strand, idx),
+    )
+    for i in range(lo, hi):
+        covered.add((strand.members[i].line, strand.members[i + 1].line))
+    extents.setdefault(si, []).append(
+        (strand.members[lo].line, strand.members[hi].line)
+    )
+
+
+def _emit_scheme_shapes(
+    strands: list[_Strand],
+    lines: list[_Line],
+    sects: list[_Sect],
+    repeats: set[int],
+    out: _Out,
+    used: set,
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """Runs, chains, callbacks and bookends, laid out so they cannot smother.
+
+    A callback CUTS its strand: a rhyme that goes dormant for a verse and comes
+    back is two stretches with a callback between them, never one long chain.
+    Runs and chains are then found inside a stretch, and a chain is not
+    reported when the stretch is already one solid run. A bookend is dropped
+    when a run or chain on the SAME strand already reaches either of its two
+    lines: "the section opens and closes on one rhyme" is worth saying about
+    an envelope and worth nothing about a section that is soaked in the sound
+    anyway. A seven-line monorhyme verse with one drifting line in it is
+    exactly that — the run stops at the drift, so an end-to-end test misses
+    it and the verse is announced as a bookend of itself.
+
+    A run or a chain built out of a line the singer simply sang again is a
+    refrain, and the repetition passes own it — so it is not reported, and it
+    still claims the repeated pairs so they do not fall back out underneath the
+    refrain as identical rhymes.
+
+    A callback and a bookend name exactly TWO endings, which is the same shape
+    a pairwise rhyme device has, so they take the pair out of ``used`` like any
+    other detector and nothing reports those two words twice. A run and a chain
+    name three or more, so they claim nothing there — the multisyllabic detail
+    inside a rap run is the best finding in the pane and must survive it — and
+    suppress only the pairwise END rhymes they contain, through ``covered``.
+
+    Returns those covered line pairs, and the pairs reported as callbacks so
+    the multisyllabic callback pass does not repeat them.
+    """
+    covered: set[tuple[int, int]] = set()
+    callback_pairs: set[tuple[int, int]] = set()
+    extents: dict[int, list[tuple[int, int]]] = {}
+    at: dict[int, tuple[int, int]] = {}
+    for si, strand in enumerate(strands):
+        for i, member in enumerate(strand.members):
+            at[member.line] = (si, i)
+    # Bookends are decided first so a section that opens and closes on one
+    # rhyme reads as an envelope rather than as a rhyme that went away and came
+    # back: it never went anywhere, the section did.
+    bookends = _bookend_pairs(strands, at, lines, sects, repeats)
+
+    for si, strand in enumerate(strands):
+        n = len(strand.members)
+        if n < 2:
+            continue
+        returns = [(i, _callback_gap(strand, i, lines)) for i in range(1, n)]
+        returns = [(i, gap) for i, gap in returns if gap]
+        if len(returns) > CALLBACK_MAX_RETURNS:
+            _emit_stretch(strand, si, 0, n - 1, out, covered, extents, repeats)
+            continue
+        cuts = [0]
+        for i, gap in returns:
+            # Members since the last cut: how well the rhyme was established
+            # before it went quiet.
+            established = i - cuts[-1]
+            cuts.append(i)
+            pair = (strand.members[i - 1].line, strand.members[i].line)
+            if established < CALLBACK_MIN_ESTABLISHED or pair in bookends:
+                continue
+            if pair[1] in repeats:
+                continue
+            idx = [i - 1, i]
+            key = strand.rtoks[i][-1].rkey
+            where = _callback_where(lines, pair[0], pair[1])
+            out.add(
+                "callback",
+                _shape_spans(strand, idx),
+                label=_shape_label("callback", strand, idx),
+                detail=f"returns after {gap} lines{where}",
+                phones=key.split(),
+                confidence=strand.confs[i],
+                group=_strand_group(strand, idx),
+            )
+            covered.add(pair)
+            callback_pairs.add(pair)
+            for ta in strand.rtoks[i - 1]:
+                for tb in strand.rtoks[i]:
+                    used.add(_pair_key(ta, tb))
+        cuts.append(n)
+        for lo, hi in zip(cuts, cuts[1:]):
+            _emit_stretch(strand, si, lo, hi - 1, out, covered, extents, repeats)
+
+    for (first, last), (si, ia, ib, conf) in bookends.items():
+        if any(lo <= first <= hi or lo <= last <= hi for lo, hi in extents.get(si, ())):
+            continue
+        strand = strands[si]
+        idx = [ia, ib]
+        key = strand.rtoks[ib][-1].rkey
+        name = lines[first].section
+        out.add(
+            "bookend",
+            _shape_spans(strand, idx),
+            label=_shape_label("bookend", strand, idx),
+            detail=f"{name or 'the section'} opens and closes on {key or 'one rhyme'}",
+            phones=key.split(),
+            confidence=conf,
+            group=_strand_group(strand, idx),
+        )
+        covered.add((first, last))
+        for ta in strand.rtoks[ia]:
+            for tb in strand.rtoks[ib]:
+                used.add(_pair_key(ta, tb))
+    return covered, callback_pairs
+
+
+def _emit_multi_callbacks(
+    buckets: dict[tuple[int, str], list[tuple[_Run, str]]],
+    lines: list[_Line],
+    order: dict[int, int],
+    out: _Out,
+    used: set,
+    callback_pairs: set[tuple[int, int]],
+    repeats: set[int],
+    ending_group: dict[int, str],
+    ends: dict[int, int],
+) -> None:
+    """A multisyllabic tail coming back from further off than the pairwise pass looks.
+
+    ``_emit_multisyllabic`` stops at ``MULTI_LINE_WINDOW`` lines, which is the
+    right bound when every run in a bucket is paired against every other one.
+    The callback is the one case worth looking past it, and looking is cheap:
+    the buckets are already built, one run is kept per line, and the walk over
+    what is left is linear. ``CALLBACK_MIN_GAP`` puts the two halves further
+    apart than that window ever reaches, so the two passes can never claim the
+    same pair.
+    """
+    for (n, key), runs in sorted(buckets.items(), key=lambda kv: -kv[0][0]):
+        if len(runs) < 2:
+            continue
+        # A bucket holds the same tail at every start offset, so one run per
+        # line — the longest, which is the one a reader would point at.
+        best: dict[int, tuple[_Run, str]] = {}
+        for entry in runs:
+            keep = best.get(entry[0].line)
+            if keep is None or entry[0].syllables > keep[0].syllables:
+                best[entry[0].line] = entry
+        picked = [best[ln] for ln in sorted(best)]
+        for (left, ltail), (right, rtail) in zip(picked, picked[1:]):
+            gap = order[right.line] - order[left.line] - 1
+            if gap < CALLBACK_MIN_GAP:
+                continue
+            if (left.line, right.line) in callback_pairs or right.line in repeats:
+                continue
+            left_cov = _tail_covered(left, n)
+            right_cov = _tail_covered(right, n)
+            if not left_cov or not right_cov:
+                continue
+            # The same words again are a refrain, and the repetition passes own
+            # it; a callback is the sound coming back on different words.
+            if [t.norm for t, _ in left_cov] == [t.norm for t, _ in right_cov]:
+                continue
+            pair = _pair_key(left_cov[-1][0], right_cov[-1][0])
+            if pair in used:
+                continue
+            for la, _ in left_cov:
+                for rb, _ in right_cov:
+                    used.add(_pair_key(la, rb))
+            ga = ending_group.get(left.line, "")
+            at_ends = (
+                ends.get(left.line) == left.end and ends.get(right.line) == right.end
+            )
+            if ga and at_ends and ending_group.get(right.line, "") == ga:
+                group = ga
+            else:
+                digest = hashlib.blake2s(str(pair).encode(), digest_size=4)
+                group = f"multi-{digest.hexdigest()}"
+            where = _callback_where(lines, left.line, right.line)
+            # Identical tails including the onset repeat a sound rather than
+            # rhyme against it, and a guessed pronunciation is softer than a
+            # looked-up one — both exactly as the pairwise pass weighs them.
+            conf = 0.85 if ltail == rtail else 1.0
+            if any(t.pron.guessed for t, _ in left_cov + right_cov):
+                conf -= 0.15
+            out.add(
+                "callback",
+                _tail_spans(left_cov) + _tail_spans(right_cov),
+                label=_label(
+                    "callback",
+                    [
+                        " ".join(t.raw for t, _ in left_cov),
+                        " ".join(t.raw for t, _ in right_cov),
+                    ],
+                ),
+                detail=f"{n} syllables returning after {gap} lines{where}: {key}",
+                phones=key.split(),
+                # Scored the same way the pairwise multisyllabic pass scores
+                # its own matches, so the two agree about the same sound.
+                confidence=conf,
+                group=group,
+            )
+            callback_pairs.add((left.line, right.line))
 
 
 def _emit_ending_pairs(
@@ -1954,9 +2589,25 @@ def analyse(
     # that can see it — multisyllabic, then the scheme pairs (end/identical),
     # then pararhyme and eye rhyme between endings, then the positional
     # internal kinds, then cross-line.
+    #
+    # The shape pass goes first, ahead of even the multisyllabic one, for the
+    # two-ending shapes: a callback IS a pair, and "liar / desire returns after
+    # six lines" says everything "2 syllables: AY ER" says and then the thing
+    # that matters. The three-or-more shapes claim nothing in that chain — the
+    # multisyllabic rhymes inside a rap run are the best findings in the pane —
+    # and suppress only the pairwise end rhymes they contain, via ``covered``.
     used: set = set()
-    _emit_multisyllabic(lines, out, used, ending_group, ends)
-    _emit_end_rhymes(classes, out, used)
+    order = _lyric_order(lines)
+    repeats = _repeated_lines(lines)
+    covered, callback_pairs = _emit_scheme_shapes(
+        _strands(classes, order), lines, sects, repeats, out, used
+    )
+    buckets = _multi_buckets(lines)
+    _emit_multisyllabic(buckets, out, used, ending_group, ends)
+    _emit_multi_callbacks(
+        buckets, lines, order, out, used, callback_pairs, repeats, ending_group, ends
+    )
+    _emit_end_rhymes(classes, out, used, covered)
     _emit_ending_pairs(lines, sects, out, used)
     _emit_internal_rhymes(lines, out, used, ends)
     _emit_cross_line_rhymes(lines, out, used, ends)

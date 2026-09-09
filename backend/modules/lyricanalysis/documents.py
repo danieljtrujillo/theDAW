@@ -34,11 +34,15 @@ from typing import Any, Optional
 from backend.core.jobs import Job
 
 from .schema import (
+    LYRIC_DOCUMENT_VERSION,
     CreateLyricDocumentRequest,
     ImportLyricDocumentRequest,
     LyricAnalysisDoc,
     LyricDocument,
     LyricDocumentSummary,
+    LyricMark,
+    PutLyricMarksRequest,
+    Span,
     UpdateLyricDocumentRequest,
 )
 
@@ -46,11 +50,37 @@ log = logging.getLogger(__name__)
 
 DIRNAME = "lyric-documents"
 ANALYSIS_DIRNAME = "analysis"
+MARKS_DIRNAME = "marks"
 ID_PREFIX = "lyricdoc_"
 _ID_RE = re.compile(r"^lyricdoc_[0-9a-f]{32}$")
+MARK_ID_PREFIX = "lyricmark_"
+_MARK_ID_RE = re.compile(r"^lyricmark_[0-9a-f]{32}$")
 DEFAULT_TITLE = "Untitled"
 # The title is metadata, never a filename, so it only needs a sane bound.
 MAX_TITLE = 120
+
+# A notebook page is one lyric, not a corpus. These are the bounds a hostile
+# PUT hits instead of the disk; a writer marking up a song never comes near
+# them. Label, kind and group are metadata (squeezed to one line); the note is
+# the writer's prose, so it keeps its line breaks and is only bounded.
+MAX_MARKS = 2000
+MAX_SPANS_PER_MARK = 32
+MAX_MARK_LABEL = 200
+MAX_MARK_NOTE = 4000
+MAX_MARK_KIND = 64
+MAX_MARK_GROUP = 120
+# ``target_group`` is not metadata: it is the ``Device.group`` a reject names,
+# matched character for character. Squeezing it to the display bound would let
+# a long group silently stop matching, and a reject that quietly stops working
+# is worse than one that was never made — so it gets a bound of its own, far
+# past anything ``devices.py`` mints.
+MAX_MARK_TARGET = 512
+
+# How far a mark may have slid before we stop looking for it. Inserting or
+# cutting a verse moves everything below it by a handful of lines; past this
+# the lyric was rewritten rather than shifted, and guessing would be worse than
+# saying "this mark no longer matches".
+MAX_REANCHOR_SHIFT = 16
 
 
 def documents_dir() -> Path:
@@ -64,6 +94,10 @@ def documents_dir() -> Path:
 
 def new_id() -> str:
     return f"{ID_PREFIX}{uuid.uuid4().hex}"
+
+
+def new_mark_id() -> str:
+    return f"{MARK_ID_PREFIX}{uuid.uuid4().hex}"
 
 
 # The switcher is ordered newest-first, and on Windows ``time.time()`` moves in
@@ -86,7 +120,7 @@ def _seed_stamp() -> None:
     try:
         for path in documents_dir().glob("*.json"):
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw = json.loads(_read_text(path))
             except Exception:  # noqa: BLE001 - a corrupt file just has no stamp
                 continue
             stamp = raw.get("updated_at")
@@ -117,6 +151,15 @@ def is_document_id(doc_id: Any) -> bool:
     return isinstance(doc_id, str) and _ID_RE.match(doc_id) is not None
 
 
+def is_mark_id(mark_id: Any) -> bool:
+    """True only for a mark id this module minted — the same gate
+    ``is_document_id`` is, for the same reason. A PUT may echo one back to keep
+    a mark's identity (and its ``created_at``) across a save; it can never
+    invent one, and an id that names no stored mark is replaced with a fresh
+    one rather than trusted."""
+    return isinstance(mark_id, str) and _MARK_ID_RE.match(mark_id) is not None
+
+
 def _doc_path(doc_id: str) -> Path:
     if not is_document_id(doc_id):
         raise KeyError(doc_id)
@@ -127,6 +170,12 @@ def _analysis_path(doc_id: str) -> Path:
     if not is_document_id(doc_id):
         raise KeyError(doc_id)
     return documents_dir() / ANALYSIS_DIRNAME / f"{doc_id}.json"
+
+
+def _marks_path(doc_id: str) -> Path:
+    if not is_document_id(doc_id):
+        raise KeyError(doc_id)
+    return documents_dir() / MARKS_DIRNAME / f"{doc_id}.json"
 
 
 # One lock per file, so the read-modify-write in ``update`` and the write in
@@ -180,6 +229,35 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
                 pass
 
 
+def _read_text(path: Path) -> Optional[str]:
+    """The file's text, or None when there is no such file.
+
+    This is the read half of ``_atomic_write`` and it needs the same retry, for
+    the same reason: Windows refuses to open a file while ``os.replace`` is
+    renaming over it, and raises ``PermissionError`` rather than anything that
+    reads as "busy". Every load here treats an unreadable file as an absent
+    one, so without the retry a save landing mid-read turns a document that
+    plainly exists into "unknown lyric document" — a 404 on a marks PUT and an
+    empty mark set on a GET, both while the writer is typing in the other pane.
+    A mixed read/write load test hit both in seconds.
+
+    Opening the file IS the existence check, deliberately: ``Path.is_file()``
+    swallows that same ``PermissionError`` and answers False, so using it as
+    the gate reports a locked file as a missing one — which is the identical
+    bug wearing a different hat.
+    """
+    for attempt in range(12):
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            if attempt == 11:
+                raise
+            time.sleep(0.02)
+    return None
+
+
 def _clean_title(title: str) -> str:
     return " ".join(str(title or "").split())[:MAX_TITLE]
 
@@ -193,12 +271,11 @@ def load(doc_id: str) -> Optional[LyricDocument]:
     if not is_document_id(doc_id):
         return None
     path = _doc_path(doc_id)
-    if not path.is_file():
-        return None
     try:
-        return LyricDocument.model_validate(
-            json.loads(path.read_text(encoding="utf-8"))
-        )
+        text = _read_text(path)
+        if text is None:
+            return None
+        return LyricDocument.model_validate(json.loads(text))
     except Exception as e:  # noqa: BLE001 - a corrupt file reads as absent
         log.warning("lyricanalysis: document %s unreadable: %s", path, e)
         return None
@@ -327,11 +404,12 @@ def update(doc_id: str, req: UpdateLyricDocumentRequest) -> LyricDocument:
 
 
 def delete(doc_id: str) -> bool:
-    """Remove the document and its stored analysis. False when there was none."""
+    """Remove the document, its stored analysis and the writer's marks. False
+    when there was none."""
     if not is_document_id(doc_id):
         return False
     removed = False
-    for path in (_doc_path(doc_id), _analysis_path(doc_id)):
+    for path in (_doc_path(doc_id), _analysis_path(doc_id), _marks_path(doc_id)):
         if path.is_file():
             path.unlink()
             removed = True
@@ -409,6 +487,386 @@ def import_from_entry(req: ImportLyricDocumentRequest) -> LyricDocument:
     )
 
 
+# ---- the writer's own marks --------------------------------------------------
+#
+# Marks live in their own file, never inside the analysis: a re-run rewrites the
+# analysis wholesale, and the writer's annotations have to survive that
+# untouched. They are merged in on the way out, by ``service.apply_marks``, so
+# the stored analysis only ever holds what the detectors found.
+
+
+def _bounded(value: Any, limit: int) -> str:
+    """One-line metadata, squeezed and capped — the same treatment the title
+    gets, for the same reason: it is displayed, never used as a path."""
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _word_grid(doc: LyricDocument) -> list[list[str]]:
+    """The document's words in ``Span`` coordinates: ``grid[line][word]``.
+
+    Built with the same ``split_text`` the detectors read, so a mark's anchors
+    mean exactly what a device's anchors mean. Marker lines have no words, so a
+    mark can never land on "[Chorus]"."""
+    from backend.modules.lyrics.schema import split_text
+
+    return [[w.text for w in ln.words] for ln in split_text(doc.text)]
+
+
+def _slice_at(
+    grid: list[list[str]],
+    line: int,
+    word: int,
+    char_start: int,
+    char_end: Optional[int],
+) -> Optional[str]:
+    """What the document actually says at that anchor, or None when the anchor
+    is not on the page — a negative index, a line past the end, a word past the
+    end of its line."""
+    if line < 0 or line >= len(grid):
+        return None
+    row = grid[line]
+    if word < 0 or word >= len(row):
+        return None
+    text = row[word]
+    start = max(0, min(int(char_start or 0), len(text)))
+    end = len(text) if char_end is None else max(start, min(int(char_end), len(text)))
+    return text[start:end]
+
+
+def _clean_span(span: Span, grid: list[list[str]]) -> Optional[Span]:
+    """The span with its character offsets clamped into the word it names and
+    its text taken from the DOCUMENT rather than from the request — or None when
+    it names a line or word that is not there.
+
+    An anchor the words cannot back is never stored: the UI would paint at a
+    phantom index. The denormalised text is not decoration either — it is the
+    only thing that lets a later edit be detected, so it always comes from the
+    lyric, never from whatever the client claimed was there.
+    """
+    line, word = int(span.line), int(span.word)
+    if _slice_at(grid, line, word, 0, None) is None:
+        return None
+    text = grid[line][word]
+    # Always at least one character. A span clamped down to nothing carries no
+    # text, and a span with no text is an anchor that verifies nothing: it holds
+    # against whatever word later lands at that index, so the mark can never be
+    # found stale, and it paints a zero-width highlight the writer cannot see.
+    # Words in the grid are never empty, so there is always a character to keep.
+    start = max(0, min(int(span.char_start or 0), len(text) - 1))
+    end = (
+        None
+        if span.char_end is None
+        else max(start + 1, min(int(span.char_end), len(text)))
+    )
+    return Span(
+        line=line,
+        word=word,
+        char_start=start,
+        char_end=end,
+        text=text[start : len(text) if end is None else end],
+    )
+
+
+def _anchor_key(span: Span) -> tuple[int, int, int, Optional[int]]:
+    """Where a span points, with no regard for what it says it found there."""
+    return (int(span.line), int(span.word), int(span.char_start or 0), span.char_end)
+
+
+def _clean_mark(
+    mark: LyricMark,
+    stored: dict[str, LyricMark],
+    grid: list[list[str]],
+    taken: set[str],
+    now: float,
+) -> Optional[LyricMark]:
+    """One mark as it will be stored, or None when it anchors to nothing real.
+
+    A mark that arrived with spans and kept none of them is dropped: every
+    anchor it had names a line or word the lyric does not have, so storing it
+    would only put a phantom highlight in front of the writer. A mark with no
+    spans at all is a note about the whole lyric, and is kept.
+    """
+    previous = stored.get(mark.id) if is_mark_id(mark.id) else None
+    if previous is None or mark.id in taken:
+        mark_id, previous = new_mark_id(), None
+    else:
+        mark_id = mark.id
+    incoming = mark.spans[:MAX_SPANS_PER_MARK]
+    if previous is not None and [_anchor_key(s) for s in incoming] == [
+        _anchor_key(s) for s in previous.spans
+    ]:
+        # The editor owns the list and PUTs the WHOLE set on every save, so most
+        # marks in a request are only being echoed back. Re-deriving their text
+        # from the document would quietly re-seat a mark the words had moved out
+        # from under: the anchor would pick up whatever now sits at that index,
+        # the mark would stop being reported stale, and the writer would be
+        # shown a highlight they never made — or, if the marked line was cut
+        # outright, the mark would be dropped and their annotation lost. A mark
+        # whose anchors did not move therefore keeps the spans it was stored
+        # with, verbatim. Only a mark the writer actually re-placed is re-read
+        # off the page.
+        spans = [s.model_copy(deep=True) for s in previous.spans]
+    else:
+        spans = [
+            cleaned
+            for cleaned in (_clean_span(s, grid) for s in incoming)
+            if cleaned is not None
+        ]
+        if incoming and not spans:
+            return None
+    cleaned = LyricMark(
+        id=mark_id,
+        kind=_bounded(mark.kind, MAX_MARK_KIND),
+        label=_bounded(mark.label, MAX_MARK_LABEL),
+        group=_bounded(mark.group, MAX_MARK_GROUP),
+        spans=spans,
+        note=str(mark.note or "").strip()[:MAX_MARK_NOTE],
+        verdict=mark.verdict,
+        target_group=_bounded(mark.target_group, MAX_MARK_TARGET),
+        created_at=previous.created_at if previous else now,
+        updated_at=now,
+    )
+    # The editor PUTs the whole set on every save, so an untouched mark must
+    # keep the timestamp it had — else "last edited" means "last saved
+    # anything" and the writer can never see which mark they just moved.
+    if previous is not None and previous.model_dump(
+        exclude={"updated_at"}
+    ) == cleaned.model_dump(exclude={"updated_at"}):
+        cleaned.updated_at = previous.updated_at
+    return cleaned
+
+
+def _load_marks_file(doc_id: str) -> tuple[list[LyricMark], Optional[int]]:
+    """``(marks, the document's line count when these anchors were last known
+    good)``. The count is None for a file written by hand, and for one written
+    before it was recorded. A corrupt file reads as no marks, the way every
+    other store in this module treats one."""
+    if not is_document_id(doc_id):
+        return [], None
+    path = _marks_path(doc_id)
+    try:
+        text = _read_text(path)
+        if text is None:
+            return [], None
+        raw = json.loads(text)
+        rows = raw.get("marks") if isinstance(raw, dict) else raw
+        marks = [LyricMark.model_validate(row) for row in (rows or [])]
+        lines = raw.get("lines") if isinstance(raw, dict) else None
+    except Exception as e:  # noqa: BLE001 - a corrupt file reads as absent
+        log.warning("lyricanalysis: marks %s unreadable: %s", path, e)
+        return [], None
+    # An id that is not one of ours cannot have got here through the routes,
+    # but a hand-edited file is still a file we have to read.
+    return (
+        [m for m in marks if is_mark_id(m.id)][:MAX_MARKS],
+        lines if isinstance(lines, int) and not isinstance(lines, bool) else None,
+    )
+
+
+def load_marks(doc_id: str) -> list[LyricMark]:
+    """The stored marks exactly as written, unanchored."""
+    return _load_marks_file(doc_id)[0]
+
+
+def save_marks(doc_id: str, marks: list[LyricMark], lines: int) -> list[LyricMark]:
+    """Write the set, stamped with the number of lines the document had while
+    these anchors were known good — which is what lets a later read tell a mark
+    pushed down the page by an insertion from one whose own line was rewritten.
+    See ``_shift_window``."""
+    _atomic_write(
+        _marks_path(doc_id),
+        {
+            "version": LYRIC_DOCUMENT_VERSION,
+            "doc_id": doc_id,
+            "lines": int(lines),
+            "marks": [m.model_dump() for m in marks],
+        },
+    )
+    return marks
+
+
+def _anchors_hold(grid: list[list[str]], spans: list[Span], shift: int) -> bool:
+    """True when every span of a mark still covers the words it was placed on,
+    with all of them moved down by ``shift`` lines."""
+    for span in spans:
+        found = _slice_at(
+            grid, span.line + shift, span.word, span.char_start, span.char_end
+        )
+        if found is None:
+            return False
+        if span.text and found != span.text:
+            return False
+    return True
+
+
+def _shift_window(delta: Optional[int]) -> list[int]:
+    """The line shifts worth trying, nearest first.
+
+    A mark slides only because lines were added or cut ABOVE it, so how far the
+    document itself grew or shrank both bounds the search and says which way it
+    can run. That bound is not a nicety. Without it the search is content
+    matching, and lyrics repeat themselves by design: mark the first chorus of
+    a song, rewrite that chorus, and an unbounded search finds the writer's
+    words still sitting in the second chorus six lines further down, moves the
+    mark there and reports it sound. A document that did not change length
+    cannot have pushed anything anywhere, so nothing is tried at all.
+
+    The bound is ``<=``, not ``==``: lines cut below the mark shrink the
+    document without moving it. The residue is a net-zero edit — as many lines
+    added above as cut below, with no read in between — where a mark that did
+    move is reported stale instead. That is the safe way to be wrong: the
+    anchors stay where the writer put them and the pane says so.
+
+    ``delta`` is None only for a marks file written by hand, which has no count
+    to measure against; then the whole window is tried, as before.
+    """
+    if delta is None:
+        return [s for step in range(1, MAX_REANCHOR_SHIFT + 1) for s in (step, -step)]
+    sign = 1 if delta > 0 else -1
+    return [sign * step for step in range(1, min(abs(delta), MAX_REANCHOR_SHIFT) + 1)]
+
+
+def _reanchor(
+    mark: LyricMark, grid: list[list[str]], delta: Optional[int]
+) -> tuple[LyricMark, bool, bool]:
+    """``(mark, moved, stale)`` for the lyric as it is now.
+
+    A mark is followed when the whole of it shifted by the same number of lines
+    — which is exactly what inserting or deleting a line above it does — when
+    the words it covers are still those words, and when the document changed
+    length by at least that much in that direction (``_shift_window``). That is
+    the honest limit: rewriting the marked line itself cannot be followed,
+    because there is nothing left to recognise, and such a mark is reported
+    stale rather than dragged onto whatever now sits at that index — or onto
+    the same words somewhere else in the song.
+    """
+    if not mark.spans:
+        return mark, False, False
+    if _anchors_hold(grid, mark.spans, 0):
+        return mark, False, False
+    for shift in _shift_window(delta):
+        if not _anchors_hold(grid, mark.spans, shift):
+            continue
+        moved = mark.model_copy(deep=True)
+        for span in moved.spans:
+            span.line += shift
+        return moved, True, False
+    return mark, False, True
+
+
+def resolve_marks(
+    doc_id: str, doc: Optional[LyricDocument] = None
+) -> tuple[list[LyricMark], set[str]]:
+    """The document's marks anchored onto the words as they are NOW, plus the
+    ids of the ones that could not be found any more.
+
+    Re-anchored marks are written back: the search is relative to what is
+    stored, so leaving a shifted mark alone would make every later edit stack
+    another shift on top of it until the total ran past ``MAX_REANCHOR_SHIFT``
+    and a mark that was only ever pushed down a page was declared lost.
+
+    That write-back is why a read holds the marks file's lock: without it a
+    repair computed before a concurrent PUT could land after it and put the
+    old set back.
+    """
+    if not is_document_id(doc_id):
+        return [], set()
+    if doc is None:
+        doc = load(doc_id)
+        if doc is None:
+            return [], set()
+    grid = _word_grid(doc)
+    resolved: list[LyricMark] = []
+    stale: set[str] = set()
+    moved_any = False
+    with _write_lock(_marks_path(doc_id)):
+        marks, was = _load_marks_file(doc_id)
+        delta = None if was is None else len(grid) - was
+        for mark in marks:
+            mark, moved, is_stale = _reanchor(mark, grid, delta)
+            moved_any = moved_any or moved
+            if is_stale:
+                stale.add(mark.id)
+            resolved.append(mark)
+        # The stamp is refreshed even when nothing moved — an edit BELOW every
+        # mark changes the count without shifting one, and leaving the old
+        # count behind would spend that difference on the next edit's budget.
+        if resolved and (moved_any or was != len(grid)):
+            try:
+                save_marks(doc_id, resolved, len(grid))
+            except OSError as e:
+                # Re-anchoring is a repair, not the answer: a read that cannot
+                # write still returns the marks in the right place.
+                log.warning(
+                    "lyricanalysis: could not re-anchor marks for %s: %s", doc_id, e
+                )
+    return resolved, stale
+
+
+def marks_bundle(doc_id: str) -> dict[str, Any]:
+    """``{marks, stale, updated_at}`` — the mark set with its anchors brought up
+    to date, and the ids the words moved out from under. Raises KeyError when
+    there is no such document."""
+    doc = load(doc_id)
+    if doc is None:
+        raise KeyError(doc_id)
+    marks, stale = resolve_marks(doc_id, doc)
+    return {
+        "marks": [m.model_dump() for m in marks],
+        "stale": sorted(stale),
+        "updated_at": max((m.updated_at for m in marks), default=0.0),
+    }
+
+
+def put_marks(doc_id: str, req: PutLyricMarksRequest) -> dict[str, Any]:
+    """Replace the document's whole mark set — the editor owns the list.
+
+    Raises KeyError for an unknown document and ValueError for a set larger
+    than one lyric could hold. Ids are minted here: an id that names a stored
+    mark is kept so the mark keeps its history, and anything else is replaced.
+    """
+    # The id gate before anything else, so a hostile path is a 404 whatever body
+    # came with it.
+    if not is_document_id(doc_id):
+        raise KeyError(doc_id)
+    # The whole read-modify-write under the marks file's own lock, so two
+    # windows saving the same annotation cannot interleave.
+    with _write_lock(_marks_path(doc_id)):
+        doc = load(doc_id)
+        # Existence before size: a PUT to a document that is not there is a 404
+        # even when the body is also too big, or the client is told to send
+        # fewer marks to a page that does not exist.
+        if doc is None:
+            raise KeyError(doc_id)
+        if len(req.marks) > MAX_MARKS:
+            raise ValueError(
+                f"{len(req.marks)} marks is more than the {MAX_MARKS} allowed"
+            )
+        grid = _word_grid(doc)
+        stored = {m.id: m for m in load_marks(doc_id)}
+        now = now_stamp()
+        kept: list[LyricMark] = []
+        taken: set[str] = set()
+        for mark in req.marks:
+            cleaned = _clean_mark(mark, stored, grid, taken, now)
+            if cleaned is None:
+                continue
+            taken.add(cleaned.id)
+            kept.append(cleaned)
+        save_marks(doc_id, kept, len(grid))
+    return {
+        "marks": [m.model_dump() for m in kept],
+        # Every span was just re-derived from the document, so nothing can be
+        # stale yet; the key is here so the shape does not change between GET
+        # and PUT.
+        "stale": [],
+        # Marks whose anchors named nothing in the lyric. The editor shows the
+        # difference rather than silently keeping a shorter list.
+        "dropped": len(req.marks) - len(kept),
+        "updated_at": max((m.updated_at for m in kept), default=0.0),
+    }
+
+
 # ---- the analysis of a document ----------------------------------------------
 
 
@@ -431,12 +889,11 @@ def load_analysis(doc_id: str) -> Optional[LyricAnalysisDoc]:
     if not is_document_id(doc_id):
         return None
     path = _analysis_path(doc_id)
-    if not path.is_file():
-        return None
     try:
-        return LyricAnalysisDoc.model_validate(
-            json.loads(path.read_text(encoding="utf-8"))
-        )
+        text = _read_text(path)
+        if text is None:
+            return None
+        return LyricAnalysisDoc.model_validate(json.loads(text))
     except Exception as e:  # noqa: BLE001 - a corrupt file reads as absent
         log.warning("lyricanalysis: document analysis %s unreadable: %s", path, e)
         return None
@@ -461,20 +918,41 @@ def delete_analysis(doc_id: str) -> bool:
 
 def analysis_bundle(doc_id: str) -> dict[str, Any]:
     """``{doc, persisted, stale}`` — the same envelope the entry route returns,
-    so the analysis pane does not care which kind of subject it is reading."""
+    so the analysis pane does not care which kind of subject it is reading.
+
+    A document with marks also gets a ``marks`` summary, and its ``doc`` is the
+    merged view: rejected findings removed, the writer's own marks alongside
+    the detected ones. The key is absent when there are no marks, so nothing
+    that never marked anything up sees a shape it did not have before.
+    """
     from . import service
 
     doc = load(doc_id)
     if doc is None:
         raise KeyError(doc_id)
+    marks, stale = resolve_marks(doc_id, doc)
     analysis = load_analysis(doc_id)
     if analysis is None:
-        return {"doc": None, "persisted": False, "stale": False}
-    return {
-        "doc": analysis.model_dump(),
-        "persisted": True,
-        "stale": service.is_stale(analysis, source_lyrics(doc)),
-    }
+        bundle: dict[str, Any] = {"doc": None, "persisted": False, "stale": False}
+        painted = 0
+        suppressed = 0
+    else:
+        merged = service.apply_marks(analysis, marks, skip=stale)
+        painted = sum(1 for d in merged.devices if service.is_mark_device(d))
+        suppressed = len(analysis.devices) - (len(merged.devices) - painted)
+        bundle = {
+            "doc": merged.model_dump(),
+            "persisted": True,
+            "stale": service.is_stale(analysis, source_lyrics(doc)),
+        }
+    if marks:
+        bundle["marks"] = {
+            "total": len(marks),
+            "stale": sorted(stale),
+            "painted": painted,
+            "suppressed": suppressed,
+        }
+    return bundle
 
 
 def start_run(job: Job, doc_id: str, req: dict[str, Any]) -> None:
@@ -519,6 +997,10 @@ async def run_analysis(job: Job, doc_id: str, req: dict[str, Any]) -> None:
         lyrics = source_lyrics(doc)
         if not any(ln.kind == "lyric" and ln.words for ln in lyrics.lines):
             raise RuntimeError("no lyrics to analyse: write some words first")
+        # The writer's marks are merged into what the job hands back, never into
+        # what it saves: the analysis file holds detections only, which is what
+        # makes a re-run unable to overwrite a mark.
+        marks, stale_marks = resolve_marks(doc_id, doc)
         stored = load_analysis(doc_id)
         if (
             not req.get("force")
@@ -526,7 +1008,9 @@ async def run_analysis(job: Job, doc_id: str, req: dict[str, Any]) -> None:
             and not service.is_stale(stored, lyrics)
             and not (req.get("llm") and (stored.llm is None or stored.llm.error))
         ):
-            job.result = stored.model_dump()
+            job.result = service.apply_marks(
+                stored, marks, skip=stale_marks
+            ).model_dump()
             job.update(
                 status="done", progress=1.0, message="analysis is already up to date"
             )
@@ -542,7 +1026,7 @@ async def run_analysis(job: Job, doc_id: str, req: dict[str, Any]) -> None:
         job.update(progress=0.9, message="saving")
         analysis.updated_at = time.time()
         save_analysis(doc_id, analysis)
-        job.result = analysis.model_dump()
+        job.result = service.apply_marks(analysis, marks, skip=stale_marks).model_dump()
         job.update(
             status="done",
             progress=1.0,

@@ -164,11 +164,9 @@ def test_the_rhyme_gate_never_drops_a_pair_the_classifier_accepts():
 
 def test_a_line_ending_in_a_dash_is_still_an_end_rhyme():
     """The word a line rhymes on is not always its last token."""
-    doc = _doc(
-        "\n".join(["I saw the light —", "You felt the night —", "We found the sight —"])
-    )
+    doc = _doc("\n".join(["I saw the light —", "You felt the night —"]))
     devs, lines, _sections, _stats = devices.analyse(doc)
-    assert [m.letter for m in lines] == ["A", "A", "A"]
+    assert [m.letter for m in lines] == ["A", "A"]
     # The cross-line pass is for MID-line words; it must not pick the ending up
     # and report it under its own name, colour and confidence floor.
     assert not _of(devs, "cross-line-rhyme")
@@ -177,6 +175,18 @@ def test_a_line_ending_in_a_dash_is_still_an_end_rhyme():
     for dev in ends:
         assert dev.label.startswith("end rhyme")
         assert dev.group.startswith("rhyme-s")
+    # A third line on the same rhyme makes it a run, and a run replaces the
+    # pairs inside it — the ending is still the word in front of the dash.
+    devs, _l, _s, _st = devices.analyse(
+        _doc(
+            "\n".join(
+                ["I saw the light —", "You felt the night —", "We found the sight —"]
+            )
+        )
+    )
+    runs = _of(devs, "rhyme-run")
+    assert len(runs) == 1 and not _of(devs, "end-rhyme"), _kinds(devs)
+    assert [s.text for s in runs[0].spans] == ["light", "night", "sight"]
 
 
 def test_a_pair_is_never_reported_under_two_kinds():
@@ -758,3 +768,492 @@ def test_an_unstressed_particle_ending_still_rhymes_as_a_phrase():
     doc = _doc("Said I never meant it\nBut I know I spent it")
     _devs, lines, sections, _stats = devices.analyse(doc)
     assert sections[0].scheme == "AA", [m.letter for m in lines]
+
+
+# --- shape of a scheme over distance ---------------------------------------
+#
+# Every fixture below was tuned by running it: the thresholds in devices.py are
+# the numbers that make these findings come out the way a reader would say them
+# out loud. Each rhyme is spelled in parallel, so the assertions hold with and
+# without cmudict and a machine with no dictionary sees the same shapes.
+
+MONORHYME = """[Verse 1]
+I been up in the booth every night
+Counting all the shadows in the light
+Nobody could tell me I was right
+Every little word another bite
+Holding up a candle pulling tight
+Watching how the city turn to white
+Everything I wanted in my sight
+Told 'em that I'd never lose a fight
+"""
+
+CALLBACK = """[Verse 1]
+I was driving through the city in the rain
+Every window looking back at me the same
+Nothing in the mirror but the ache again
+Somebody was calling out my name
+[Chorus]
+And I hold on to the fire
+Everything I ever wanted, taking me higher
+[Verse 2]
+Now the morning came around and took the day
+Left me with a pocket full of nothing left to say
+Every little promise was another thing to pay
+Sitting on the corner where the children used to play
+Counting up the hours that I gave away
+Nobody ever told me it would end this way
+And the only thing I kept was my desire
+Burning like the ashes of a wire
+"""
+
+BALLAD = """[Verse 1]
+The river runs beside the road
+It carries every stone away
+I left my heavy winter coat
+And walked into the empty day
+[Verse 2]
+A candle in the window burns
+It flickers like a passing bird
+The quiet of the evening turns
+And nobody has said a word
+[Verse 3]
+I found a letter in the snow
+The ink had faded into blue
+There was a name I used to know
+And every line of it was true
+"""
+
+BOOKENDED = """[Verse 1]
+I left the door wide open in the rain
+Nobody came to find me in the dark
+A single light was burning in the park
+And every night I hear the midnight train
+"""
+
+CHAINED = """[Verse 1]
+I keep the little letters hanging on the wall
+The morning came around and took the light
+Every single word you said before the fall
+Nothing in the water and the sky was green
+There was never any reason for the call
+I remember every summer that we lost
+You were standing in the middle of it all
+Somebody said the city never sleeps
+Everything I ever wanted was too tall
+There was a photograph I never kept
+And I was only counting up the days
+Every night I hear it in the hall
+"""
+
+LONG_ABAB = """[Verse 1]
+I walk beside the river in the rain
+It carries all the pieces to the sea
+And every step I take feels like a chain
+There's nothing in the water left for me
+The sky is opening above the lane
+As quiet as a bird inside a tree
+I never heard the whistle of the train
+And nobody was waiting there to see
+Somebody left a candle in the drain
+And now the only quiet is a plea
+"""
+
+MULTI_CALLBACK = """[Chorus]
+You know I really need it now
+Nothing in the quiet little room
+[Verse 2]
+I was walking past the river with my collar up
+Every single window on the avenue was bright
+Somebody was selling out the corner for a dime
+Nobody was listening to anything at all
+There was a radio repeating what the city said
+Only in the morning did the traffic ever move
+Counting all the numbers on the meter as I drive
+And I never really wanted anybody here
+[Chorus]
+Watch me plant a seed it grows
+Nothing in the quiet little room
+"""
+
+_SHAPE_KINDS = {"rhyme-run", "rhyme-chain", "callback", "bookend"}
+
+
+def test_a_monorhyme_verse_is_one_run_not_a_pile_of_pairs():
+    """Eight lines on one rhyme used to come back as seven unrelated pairs and
+    nothing at all that said "eight"."""
+    devs, _lines, sections, stats = devices.analyse(_doc(MONORHYME))
+    assert sections[0].scheme == "AAAAAAAA"
+    runs = _of(devs, "rhyme-run")
+    assert len(runs) == 1, _kinds(devs)
+    run = runs[0]
+    assert [s.text for s in run.spans] == [
+        "night",
+        "light",
+        "right",
+        "bite",
+        "tight",
+        "white",
+        "sight",
+        "fight",
+    ]
+    assert run.detail == "8 consecutive lines: AY T"
+    assert run.label == "rhyme run: night / light / right / … / fight"
+    assert run.group == "rhyme-s0-A" and run.family == "rhyme"
+    # ...and the pairs it is made of are not listed underneath it.
+    assert not _of(devs, "end-rhyme")
+    assert stats.devices_by_kind["rhyme-run"] == 1
+
+
+def test_a_run_counts_lyric_lines_so_a_marker_does_not_break_it():
+    """Consecutive means consecutive LYRIC lines. Nobody sings the marker or
+    the blank line under it, so neither one interrupts the run."""
+    doc = _doc(
+        "[Verse 1]\nI saw it in the light\nYou felt it in the night\n\n"
+        "[Chorus]\nWe found it in the sight\n"
+    )
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    runs = _of(devs, "rhyme-run")
+    assert len(runs) == 1, _kinds(devs)
+    assert [(s.line, s.text) for s in runs[0].spans] == [
+        (1, "light"),
+        (2, "night"),
+        (5, "sight"),
+    ]
+    assert runs[0].detail == "3 consecutive lines: AY T"
+
+
+def test_a_hook_rhyme_returning_in_a_later_verse_is_a_callback():
+    """The headline. The chorus rhymes on "-ire", the verse spends six lines
+    somewhere else, and then "-ire" comes back — which is what a listener
+    actually notices, and the one thing no windowed pass can see."""
+    devs, _lines, _sections, _stats = devices.analyse(_doc(CALLBACK))
+    calls = _of(devs, "callback")
+    assert len(calls) == 1, _kinds(devs)
+    hit = calls[0]
+    assert [(s.line, s.text) for s in hit.spans] == [(7, "higher"), (15, "sire")]
+    assert hit.detail == "returns after 6 lines: Chorus → Verse 2"
+    # Coloured as the class that established it, so the UI paints the return in
+    # the chorus's colour.
+    assert hit.group == "rhyme-s1-A" and hit.family == "rhyme"
+
+
+def test_the_verse_under_that_callback_is_reported_as_its_own_run():
+    devs, _lines, _sections, _stats = devices.analyse(_doc(CALLBACK))
+    runs = _of(devs, "rhyme-run")
+    assert len(runs) == 1, _kinds(devs)
+    assert runs[0].detail == "6 consecutive lines: EY"
+    assert [s.text for s in runs[0].spans] == [
+        "day",
+        "say",
+        "pay",
+        "play",
+        "way",
+        "way",
+    ]
+
+
+def test_a_multisyllabic_tail_returns_from_further_than_the_pairwise_pass_looks():
+    """ "need it" / "seed it", nine lines apart and mid-line at the far end.
+    The multisyllabic pass stops at MULTI_LINE_WINDOW, so nothing looked."""
+    devs, _lines, _sections, _stats = devices.analyse(_doc(MULTI_CALLBACK))
+    calls = _of(devs, "callback")
+    assert len(calls) == 1, _kinds(devs)
+    hit = calls[0]
+    assert [s.text for s in hit.spans] == ["need", "it", "seed", "it"]
+    assert hit.detail == "2 syllables returning after 9 lines back in Chorus: IY D IH T"
+    assert hit.spans[2].line - hit.spans[0].line > devices.MULTI_LINE_WINDOW
+
+
+def test_a_rhyme_threaded_through_a_verse_with_gaps_is_a_chain():
+    devs, _lines, _sections, _stats = devices.analyse(_doc(CHAINED))
+    chains = _of(devs, "rhyme-chain")
+    assert len(chains) == 1, _kinds(devs)
+    hit = chains[0]
+    assert [(s.line, s.text) for s in hit.spans] == [
+        (1, "wall"),
+        (3, "fall"),
+        (5, "call"),
+        (7, "all"),
+        (9, "tall"),
+        (12, "hall"),
+    ]
+    assert hit.detail == "6 lines across 12: AO L"
+    assert hit.group == "rhyme-s0-A"
+    # A chain is not a run: no two of those lines are next to each other.
+    assert not _of(devs, "rhyme-run")
+
+
+def test_a_section_that_opens_and_closes_on_one_rhyme_is_a_bookend():
+    devs, _lines, sections, _stats = devices.analyse(_doc(BOOKENDED))
+    assert sections[0].scheme == "ABBA"
+    ends = _of(devs, "bookend")
+    assert len(ends) == 1, _kinds(devs)
+    hit = ends[0]
+    assert [(s.line, s.text) for s in hit.spans] == [(1, "rain"), (4, "train")]
+    assert hit.detail == "Verse 1 opens and closes on EY N"
+    assert hit.group == "rhyme-s0-A"
+    # The couplet inside the envelope is still an ordinary pair.
+    pairs = _of(devs, "end-rhyme")
+    assert len(pairs) == 1
+    assert [s.text for s in pairs[0].spans] == ["dark", "park"]
+
+
+def test_an_ordinary_abab_ballad_lights_up_no_shape_at_all():
+    """The other half of the tuning, and the reason the shapes are cut on a
+    stricter floor than the scheme letters are: the classifier is happy to call
+    "bird" a slant rhyme of "burns", so every stanza here is one class, and a
+    shape read straight off those classes would report three four-line
+    monorhyme runs in a plain ABAB ballad."""
+    devs, _lines, sections, _stats = devices.analyse(_doc(BALLAD))
+    assert [s.scheme for s in sections] == ["ABAB", "AAAA", "AAAA"]
+    assert not _kinds(devs) & _SHAPE_KINDS
+
+
+def test_sustained_abab_over_ten_lines_is_still_not_a_chain():
+    """Five members every other line is exactly what alternation looks like, so
+    it takes a sixth, or the same five spread wider, to read as a thread."""
+    devs, _lines, sections, _stats = devices.analyse(_doc(LONG_ABAB))
+    assert sections[0].scheme == "ABABABABAB"
+    assert not _kinds(devs) & _SHAPE_KINDS
+    assert len(_of(devs, "end-rhyme")) == 8
+
+
+def test_a_run_replaces_its_pairs_but_never_the_multisyllabic_detail():
+    """The relationship, stated. A run says everything its end-rhyme pairs say,
+    so they go; it says nothing about the multisyllabic rhyme inside it, which
+    is the best finding in the pane, so that stays."""
+    devs, _lines, _sections, _stats = devices.analyse(_doc(SCHEMED))
+    run = next(
+        d
+        for d in _of(devs, "rhyme-run")
+        if [s.text for s in d.spans] == ["meaning", "leaning", "dreaming"]
+    )
+    inside = {s.line for s in run.spans}
+    assert not [
+        d
+        for d in devs
+        if d.kind in ("end-rhyme", "slant-rhyme")
+        and {s.line for s in d.spans} <= inside
+    ]
+    multi = next(
+        d
+        for d in _of(devs, "multisyllabic-rhyme")
+        if [s.text for s in d.spans] == ["meaning", "leaning"]
+    )
+    assert multi.group == run.group
+
+
+def test_no_shape_is_reported_twice_under_two_kinds():
+    """The module's precedence rule, over the shape fixtures. A callback and a
+    bookend name exactly two endings, which is the shape a pairwise rhyme
+    device has, so they claim the pair out of the same set every other detector
+    reads and nothing lists those two words twice."""
+    for name, text in (
+        ("monorhyme", MONORHYME),
+        ("callback", CALLBACK),
+        ("ballad", BALLAD),
+        ("bookended", BOOKENDED),
+        ("chained", CHAINED),
+        ("multi-callback", MULTI_CALLBACK),
+    ):
+        devs, _lines, _sections, _stats = devices.analyse(_doc(text))
+        seen: dict[tuple, str] = {}
+        for dev in devs:
+            if dev.family != "rhyme" or len(dev.spans) != 2:
+                continue
+            key = tuple(sorted(_anchors(dev)))
+            assert key not in seen, f"{name}: {key} is {seen[key]} and {dev.kind}"
+            seen[key] = dev.kind
+
+
+def test_shape_findings_are_stable_and_land_on_real_words():
+    for text in (MONORHYME, CALLBACK, CHAINED, BOOKENDED, MULTI_CALLBACK):
+        doc = _doc(text)
+        first, _lines, _sections, _stats = devices.analyse(doc)
+        second, _l2, _s2, _st2 = devices.analyse(_doc(text))
+        assert [d.id for d in first] == [d.id for d in second]
+        assert _kinds(first) & _SHAPE_KINDS
+        for dev in first:
+            for s in dev.spans:
+                line = doc.lines[s.line]
+                assert line.kind == "lyric"
+                assert 0 <= s.word < len(line.words)
+                raw = line.words[s.word].text
+                end = len(raw) if s.char_end is None else s.char_end
+                assert s.text == raw[s.char_start : end]
+
+
+# --- shapes: the three ways they came apart under review --------------------
+
+# A strand that crosses back from a section's second rhyme class into its
+# first. "crew"/"you" are one class (same rime), "say"/"key" are another, and
+# "say" is close enough to "you" for the strand pass to join them — so the
+# strand acquires its members out of order unless the walk is by line.
+CROSSED_CLASSES = """[Bridge]
+There is nothing like a crew
+Nobody was waiting for the line
+I never really thought about the say
+There is nothing like a part
+Nobody was waiting for the choir
+She told me it was only key
+There is nothing like a view
+You can keep the promise of the snow
+[Chorus]
+Everything I ever wanted to be grey
+Nothing that I said to you was ever true
+Somebody was calling out for you today
+I could hear it in the rain and in the dew
+"""
+
+# Seven lines on one rhyme with a single drifting line in the middle of it, so
+# the run stops short of the section's last line. The old end-to-end test then
+# let the verse be announced as a bookend of itself.
+DRIFTING_MONORHYME = """[Verse]
+I came up out the basement with a plan
+Told my mother I would be a better man
+Every dollar that I stacked was in a can
+Kept it quiet like a whisper in a fan
+Never folded when the pressure overran
+Wrote the whole of it in ink and not in sand
+Now they calling me the one that never ran
+"""
+
+# A line whose last word is a particle the singer throws away, with another
+# particle in front of it. Stepping back onto "for" offers the preposition as
+# the line's ending, and cmudict's stressed F AO R rhymes it perfectly with
+# "door".
+PARTICLE_ENDING = """[Verse]
+I have been standing outside of the door
+I told you that I would be waiting for you
+"""
+
+# The rule the guard above must not touch: two lines that throw away DIFFERENT
+# ad-libs still end on the words in front of them, and those words rhyme.
+AD_LIB_ENDING = """I never wanted it to end this way, yeah
+Nothing that I ever heard them say, now
+"""
+
+
+def _shapes(devs):
+    return [d for d in devs if d.kind in _SHAPE_KINDS]
+
+
+def test_a_shape_never_paints_its_spans_backwards_through_the_lyric():
+    """Strands are walked in line order, so every distance in the shape pass is
+    measured against a list that runs forwards. Read off the rhyme classes as
+    they come — grouped by section, then by first appearance — a strand that
+    crosses from a section's second class back into its first collects its
+    members out of order, and the chain it produces steps backwards through
+    the song."""
+    devs, _lines, _sections, _stats = devices.analyse(_doc(CROSSED_CLASSES))
+    for dev in _shapes(devs):
+        lines = list(dict.fromkeys(s.line for s in dev.spans))
+        assert lines == sorted(lines), f"{dev.kind}: {dev.label} {lines}"
+
+
+def test_every_shape_measures_a_span_at_least_as_wide_as_its_members():
+    """The arithmetic that goes wrong first when a strand is out of order: a
+    chain's "N lines across M" needs M >= N, a run's count has to be the number
+    of lines it actually paints, and a callback cannot return after fewer than
+    one line."""
+    import re
+
+    for text in (CROSSED_CLASSES, DRIFTING_MONORHYME, MONORHYME, CALLBACK, CHAINED):
+        devs, _lines, _sections, _stats = devices.analyse(_doc(text))
+        for dev in _shapes(devs):
+            lines = {s.line for s in dev.spans}
+            chain = re.match(r"(\d+) lines across (\d+)", dev.detail)
+            if chain:
+                assert int(chain.group(2)) >= int(chain.group(1)) == len(lines)
+            run = re.match(r"(\d+) consecutive lines", dev.detail)
+            if run:
+                assert int(run.group(1)) == len(lines)
+            back = re.search(r"returns after (-?\d+) lines", dev.detail)
+            if back:
+                assert int(back.group(1)) >= 1
+
+
+def test_a_monorhyme_verse_is_not_also_a_bookend_of_itself():
+    """A bookend is a claim about an envelope, and there is no envelope when
+    the rhyme is everywhere in between. The run stops at the drifting line, so
+    the section is not a run end to end — but a run on the same strand still
+    reaches the verse's first line, and that is what settles it."""
+    devs, _lines, sections, _stats = devices.analyse(_doc(DRIFTING_MONORHYME))
+    assert not _of(devs, "bookend"), [d.label for d in _shapes(devs)]
+    run = _of(devs, "rhyme-run")
+    assert len(run) == 1
+    # Exactly the shape the end-to-end test could not see: the run opens the
+    # section and stops before it closes, so the two ends are still a pair.
+    painted = {s.line for s in run[0].spans}
+    assert min(painted) == 1 and len(sections[0].scheme) == 7
+    assert 7 not in painted
+    # The genuine envelope is untouched: nothing on that strand runs or chains.
+    book = _of(devices.analyse(_doc(BOOKENDED))[0], "bookend")
+    assert len(book) == 1
+
+
+def test_a_line_never_ends_on_the_particle_in_front_of_its_ad_lib():
+    """A line that trails off "...waiting for you" does not end on "for".
+
+    cmudict keeps a stressed F AO R for it, so offering the preposition as the
+    ending scores a perfect rhyme against "door" — an end rhyme painted on a
+    function word, and a 1.0 the shape pass has no reason to distrust.
+    """
+    devs, _lines, _sections, _stats = devices.analyse(_doc(PARTICLE_ENDING))
+    assert not [d for d in devs if d.family == "rhyme"], [
+        (d.kind, d.label) for d in devs if d.family == "rhyme"
+    ]
+    # The ad-lib rule it guards is still in force: a real word in front of the
+    # throwaway is still offered, and still rhymes.
+    kept, _l, lines, _st = devices.analyse(_doc(AD_LIB_ENDING))
+    assert lines[0].scheme == "AA"
+    pair = _of(kept, "end-rhyme")
+    assert len(pair) == 1
+    assert [s.text for s in pair[0].spans] == ["way", "say"]
+
+
+# One line sung four times: the commonest shape in a pop chorus, and every
+# ending in it is the same word.
+REPEATED_HOOK = """[Chorus]
+I will not be going home tonight
+I will not be going home tonight
+I will not be going home tonight
+I will not be going home tonight
+"""
+
+
+def test_a_line_sung_again_is_a_refrain_and_never_a_run_or_a_bookend():
+    """The rule the callback pass already followed, applied to the other three
+    shapes: a rhyme that is only there because the whole LINE came back belongs
+    to the repetition passes.
+
+    Left alone it hands the pane its loudest rhyme finding — "4 consecutive
+    lines" — for a chorus with one line in it, and then, with the run gone, a
+    bookend that opens and closes on the same word.
+    """
+    devs, _lines, _sections, _stats = devices.analyse(_doc(REPEATED_HOOK))
+    assert not _kinds(devs) & _SHAPE_KINDS, [d.label for d in _shapes(devs)]
+    refrain = _of(devs, "refrain")
+    assert len(refrain) == 1 and refrain[0].detail == "x4"
+    # ...and the pairs the dropped run was holding do not fall back out
+    # underneath the refrain as three rows of "tonight / tonight".
+    assert not _of(devs, "identical-rhyme")
+
+
+def test_a_repeated_line_never_swallows_the_real_rhyme_beside_it():
+    """Only the pairs that END on a repeat are claimed. The line that closes
+    the hook is new, so the rhyme it makes is still reported."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("""[Hook]
+Say my name
+Say my name
+Say my name
+Nothing in the world could feel the same
+""")
+    )
+    assert not _of(devs, "rhyme-run"), [d.label for d in _shapes(devs)]
+    rhymed = [d for d in devs if d.family == "rhyme"]
+    assert rhymed, _kinds(devs)
+    for dev in rhymed:
+        assert {s.text for s in dev.spans} == {"name", "same"}, dev.label
