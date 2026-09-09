@@ -34,9 +34,20 @@ DOC_PATHS = [
     PROJECT_ROOT / "docs" / "guides" / "dj-and-genealogy.md",
     PROJECT_ROOT / "docs" / "guides" / "notation-and-score.md",
     # SING: lyrics sources, forced alignment (MMS) + the whisper review pass,
-    # tapping, LRC, the pitch lane, the lyrics settings and the pipeline
-    # coordinator that schedules stems / whisper / MIDI on one GPU lane.
+    # tapping, LRC, the pitch lane, the LYRICS / BOTH / SCORE / STUDY layouts,
+    # the lyrics settings and the pipeline coordinator that schedules stems /
+    # whisper / MIDI on one GPU lane.
     PROJECT_ROOT / "docs" / "guides" / "sing-along-and-lyrics.md",
+    # The lyric analysis engine (backend/modules/lyricanalysis) as the writer
+    # meets it: the device taxonomy, what the confidence numbers mean, the
+    # cmudict / letter-to-sound split the rhyme findings rest on, and the
+    # opt-in interpretive LLM pass. Its companion is the LYRIC tab's notebook.
+    PROJECT_ROOT / "docs" / "guides" / "lyric-analysis.md",
+    PROJECT_ROOT / "docs" / "guides" / "lyric-notebook.md",
+    # Onboarding: the pinned labels on the library rail, LOG and PANELS, why
+    # they retire themselves, and the menu entry that brings them back. Indexed
+    # because "where is the library?" is exactly what gets asked here.
+    PROJECT_ROOT / "docs" / "guides" / "feature-notes.md",
     PROJECT_ROOT / "docs" / "guides" / "foundry.md",
     PROJECT_ROOT / "docs" / "guides" / "underfit.md",
     PROJECT_ROOT / "docs" / "UI" / "hover-text-guide.md",

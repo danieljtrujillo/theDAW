@@ -3,7 +3,37 @@
 The SING tab shows a song's lyrics large and centred, and moves them with the
 track line by line and word by word. The words can be timed automatically
 against the vocal, stamped by hand while the song plays, or imported from an
-LRC file. A pitch lane scores what you sing against the song's melody.
+LRC file. A pitch lane scores what you sing against the song's melody, and the
+tab can put the song's score or its literary analysis beside the words.
+
+## The four layouts
+
+The buttons at the right of the tab row choose what SING shows:
+
+| Layout | What you get |
+|---|---|
+| **LYRICS** | The karaoke lyrics alone, filling the panel. |
+| **BOTH** | The lyrics on the left and the whole SCORE tab on the right. |
+| **SCORE** | The score alone — exactly the standalone SCORE tab. |
+| **STUDY** | The lyrics on the left and the rhyme and literary analysis on the right. |
+
+BOTH and STUDY share one draggable separator between the columns; drag it, or
+focus it and use the arrow keys. Neither column may be squeezed below a fifth
+of the width, and the position is remembered.
+
+BOTH mounts the whole SCORE tab, not just one of its views, so the artifact
+list, the play-along mode picker and every follow view including PAGE come with
+it. There is one transport, not two: the score's footers drop the play button
+SING already provides, and keep OFFSET and CALIBRATE, which set the shared
+visual latency and have no other home. The score's OFFSET is a different
+quantity from SING's own per-song lyric offset.
+
+STUDY is a split for the same reason a rhyme chart is useless on its own — the
+analysis only means anything with the words it describes next to it. What it
+shows is in [Reading a lyric](lyric-analysis.md).
+
+Panes are kept alive when you switch layout rather than torn down and rebuilt,
+so moving between LYRICS and BOTH does not re-engrave the score.
 
 ## Where lyrics come from
 
@@ -29,6 +59,8 @@ the tools below only add timing to it, or point at words worth checking.
   change keep their timings when you apply an edit.
 - **IMPORT** takes an LRC or TXT file (or pasted text). Enhanced LRC word tags
   and `[offset:]` are honoured.
+- **The LYRIC tab** writes lyrics that belong to no song yet, and saves a draft
+  into one when it is ready. See [The lyric notebook](lyric-notebook.md).
 - **TRANSCRIBE** asks whisper to write the lyrics from the vocal. Use it when
   there is no lyric sheet at all. The first run installs the whisper sidecar
   into its own environment (a few minutes); the button reads INSTALL
@@ -94,6 +126,9 @@ the queued job then finds it done.
   chip, and every timed line shows −/+ buttons that nudge it 50 ms.
 - **OFFSET ms** shifts every lyric: positive shows the words later.
 - Timings autosave a moment after each change and when playback pauses.
+- Once a song has been analysed in STUDY, its rhymes and devices are drawn on
+  the karaoke words as they are sung, one underline shape per family. Turn it
+  off with KARAOKE OVERLAY in the analysis pane.
 
 ## Export
 
@@ -142,6 +177,10 @@ falls back to the `small` model on the CPU.
 
 - "OTHER TRACK" in the footer: the player holds a different song. Press play
   in SING to load this one.
+- BOTH says "Large score" instead of drawing the music: the score is big enough
+  that engraving it would block the app for a while, so it asks first. Take the
+  strip, or engrave it anyway — see
+  [Notation and Score](notation-and-score.md#large-scores).
 - TRANSCRIBE / ALIGN say the sidecar is unavailable: run INSTALL TRANSCRIPTION,
   or check the vocal engine's transcription probe at
   `/api/vocal/transcription/probe`.

@@ -36,7 +36,7 @@
 2. **Make a track.** Open the MAKE tab, type a prompt, press CREATE. Models do not download by themselves. Allow downloads once in **Settings → Models** and the first CREATE fetches the model it needs. The `small` model runs on a CPU. The `medium` model needs an NVIDIA GPU.
 3. **Do more with it.** Right-click the new track in the library to open it in EDIT, MIX, SCORE or SING, or to load it on a DJ deck. The assistant orb in the bottom left corner answers questions about the app from the manual.
 
-> The in-app **TOUR** shows every tab. The [User Guide](docs/USER_GUIDE.md) is the full reference.
+> The in-app **TOUR** shows every tab, and **Feature Notes** stay pinned to the few controls that carry no label — the library's edge tab, the LOG strip, the PANELS strip — until you have used them. The menu brings them back. The [User Guide](docs/USER_GUIDE.md) is the full reference.
 
 ## What you can do
 
@@ -46,7 +46,8 @@
 | **EDIT** | A multitrack timeline. Cut, move and fade clips, record automation, add insert effects per track, and render the arrangement to a WAV file. |
 | **MIX** | Mastering and effects. A chain of 25 effects, each with its own control panel, Quick Master knobs, VST3 plugins, `.gan` web-plugins and LUFS metering. |
 | **SCORE** | Audio to MIDI to notation. Sheet music, tablature, arrangements, drum notation, and four play-along views that follow the track. Exports a Beat Saber level. |
-| **SING** | Lyrics that follow the song word by word. Paste lyrics and a forced aligner times every word against the vocal, or tap the timing yourself. Imports and exports LRC. Scores your pitch. |
+| **SING** | Lyrics that follow the song word by word. Paste lyrics and a forced aligner times every word against the vocal, or tap the timing yourself. Imports and exports LRC. Scores your pitch. Puts the score, or a reading of the lyric's rhyme scheme and literary devices, beside the words. |
+| **LYRIC** | A notebook for lyrics that belong to no song yet. Write with syllable counts and rhyme classes in the gutter, the analysis reading along beside you, and save a draft into a song when it is ready. |
 | **DJ** | Two decks with beat sync, key lock, hotcues, loops, live stems, an FX rack, a sampler, and Automix that plays prepared performance sets and takes instructions from the assistant mid-show. |
 | **VJ** | The [VJ-9000](https://github.com/gantasmo/VJ-9000) visual engine: audio-reactive terrain, cameras, GLSL shaders, cymatics, a GPU effect chain, and recording. |
 | **LOOM** | A living colony of loops cut from your own library. Cells divide, envelop and wither on the beat clock while it plays. |
@@ -58,7 +59,7 @@
 | **LEARN** | A graph of your library: every remix, stem split, blend and cover, drawn in 3D or 2D. |
 | **TOUR** | Plan live dates on a map: venues, promoters, festivals, booking contacts and a route. |
 
-**Included at no cost.** Stem separation up to 12 stems, a mastering suite, VST3 hosting, the HRTF spatializer The Owl, DJ decks with sync and Automix, audio-to-MIDI with engraving, LoRA training, forced-aligned lyrics with a whisper review, and export to WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML and LRC. Every model in that list runs on the GPU when there is one, one at a time, and never twice for the same song.
+**Included at no cost.** Stem separation up to 12 stems, a mastering suite, VST3 hosting, the HRTF spatializer The Owl, DJ decks with sync and Automix, audio-to-MIDI with engraving, LoRA training, forced-aligned lyrics with a whisper review, a rhyme and literary reading of any lyric, and export to WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML and LRC. Every model in that list runs on the GPU when there is one, one at a time, and never twice for the same song.
 
 **Only in theDAW.** [theDAW-XR](https://github.com/gantasmo/theDAW-XR) hand-tracked control on Meta Quest 3, Chimera clip fusion, DRAW (draw on a canvas to play generative music), native Audima Sway motion-controller support, The Foundry plugin designer, import of Ableton, Reaper, FL Studio, Audacity, Audition, Bitwig and Resolume projects, the first non-Mac port of Magenta RealTime 2, and sixteen themes plus a custom theme built from any image.
 
@@ -119,11 +120,13 @@ Scores export to PDF, SVG, ABC and MusicXML.
 Every score is also a **play-along**. Press play and the notation follows the track:
 
 - **PAGE** moves a cursor over the engraved pages.
-- **STRIP** scrolls one continuous staff under a now-line. The scroll is smooth and moves forward at a steady pace.
+- **STRIP** scrolls one continuous staff under a now-line. The scroll is smooth and moves forward at a steady pace, and the first note of the song starts under the line rather than a third of a pane past it.
 - **CHORDS** shows guitar, bass or ukulele chord diagrams from the chord track.
-- **HIGHWAY** shows the notes travelling toward a hit line, in a notation, block or drum skin.
+- **HIGHWAY** shows the notes travelling toward a hit line, in a notation, block or drum skin. The hit line is a standing ribbon two thirds down the pane, so a note is still on screen after it lands and you see it land.
 
-The **INSTRUMENT** menu picks the parts and the view for your instrument. **CALIBRATE** measures the delay of your audio device so the notation lines up with the sound. **NOW** puts the now-line at the left or the centre. **INK** picks the colour of the played notes. **TRAIL** decides what happens to a note after it sounds: **Hold** (the default) keeps every played note in the ink colour, so nothing flashes and the score fills in behind the now-line; **Flash** colours only the note that is sounding. Hold is the setting for anyone sensitive to flashing. The same chart exports as a **Beat Saber** level pack. Reference: [Notation and Score](docs/guides/notation-and-score.md).
+The **INSTRUMENT** menu picks the parts and the view for your instrument. **CALIBRATE** measures the delay of your audio device so the notation lines up with the sound. **NOW** puts the now-line at the left or the centre. **INK** picks the colour of the played notes. **TRAIL** decides what happens to a note after it sounds: **Hold** (the default) keeps every played note in the ink colour, so nothing flashes and the score fills in behind the now-line; **Flash** colours only the note that is sounding. Hold is the setting for anyone sensitive to flashing. The same chart exports as a **Beat Saber** level pack.
+
+A big score is expensive to engrave — a seven-part band score takes ten seconds or more, and the browser can do nothing else while it does — so PAGE asks before engraving anything over 1.5 MB, tells you how long it will take, and offers the strip instead. The strip follows the same music without engraving anything and stays smooth at any size. Reference: [Notation and Score](docs/guides/notation-and-score.md).
 
 ### Sing with timed lyrics: SING
 
@@ -138,6 +141,14 @@ To time the lyrics:
 - **OFFSET** shifts every line at once.
 
 **AUTO** (on by default) runs ALIGN by itself when a song opens with lyrics but no timings, and an import with lyrics (a Suno track, a tagged file) is aligned in the background right after its stems, so the song is ready to sing when you open it. **PITCH** shows the melody of the vocal and draws what you sing into the microphone over it. **EXPORT** writes LRC, LRC with word tags, or plain text.
+
+SING has four layouts. **LYRICS** is the karaoke alone; **BOTH** puts the whole SCORE tab beside it; **SCORE** is the score alone; **STUDY** puts the lyric's analysis beside the words. Reference: [Sing-along and lyrics](docs/guides/sing-along-and-lyrics.md).
+
+### Read what the lyric is doing: STUDY and LYRIC
+
+**STUDY** reads the words back to you: the rhyme scheme letter by letter and section by section, the near and multisyllabic rhymes drawn on the syllables that actually rhyme, internal and cross-line rhymes drawn as arcs, and the alliteration, assonance, anaphora, refrains, enjambment and meter marked on the words themselves. Every finding carries a confidence you can see and a floor you can raise, so a loose slant rhyme looks loose. It all runs on your machine from the words — the only part that asks a model is the optional pass for metaphor, irony and puns, and it is off until you turn it on.
+
+The **LYRIC** tab is the same analysis beside a blank page: write lyrics with no song attached, with syllable counts and rhyme classes in the gutter, and save the draft into a song when it is ready. Reference: [Reading a lyric](docs/guides/lyric-analysis.md) and [The lyric notebook](docs/guides/lyric-notebook.md).
 
 ### Mix two tracks: DJ
 
@@ -223,7 +234,8 @@ The library is on disk, with its metadata in `data/library.db`. Every generated 
 - **SEQUENCE** is a step sequencer with 16 steps per voice.
 - **DRAW** plays generative music from strokes on a canvas.
 - **SCORE**, **SING** and **DETAILS** show the selected song's notation, lyrics and metadata.
-- **MEDIA** holds dropped files and URL imports (YouTube and SoundCloud) before they go to a tab or the library.
+- **LYRIC** is a notebook for writing and analysing lyrics with no song attached.
+- **DETAILS** also holds the media bucket: dropped files and URL imports (YouTube and SoundCloud) waiting to go to a tab or the library.
 - **SLIDE** is a touch control surface. **SWAY** controls music from camera-tracked movement.
 
 Reference: [User Guide §14](docs/USER_GUIDE.md#14-step-sequencer) through [§16](docs/USER_GUIDE.md#16-bottom-panel-tabs).
@@ -337,7 +349,9 @@ audio = pipe.generate(
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | The complete manual: every feature, control and endpoint. Also shown in the app by the Docs button. |
 | [docs/guides/prompting.md](docs/guides/prompting.md) | How to write prompts, conditioning signals, and a style reference. |
 | [docs/guides/notation-and-score.md](docs/guides/notation-and-score.md) | Audio to MIDI, sheet music, tabs, arrangements, play-along and prompt inference. |
-| [docs/guides/sing-along-and-lyrics.md](docs/guides/sing-along-and-lyrics.md) | SING: where lyrics come from, ALIGN and the review pass, tapping, LRC, the pitch lane, and the lyrics settings. |
+| [docs/guides/sing-along-and-lyrics.md](docs/guides/sing-along-and-lyrics.md) | SING: the four layouts, where lyrics come from, ALIGN and the review pass, tapping, LRC, the pitch lane, and the lyrics settings. |
+| [docs/guides/lyric-analysis.md](docs/guides/lyric-analysis.md) | Rhyme scheme, sound, repetition and structure: what is found, what the confidence means, and where the pronunciations come from. |
+| [docs/guides/lyric-notebook.md](docs/guides/lyric-notebook.md) | The LYRIC tab: writing lyrics with no song attached, and attaching a draft to one. |
 | [docs/guides/nodefi.md](docs/guides/nodefi.md) | NodeF.I. node graphs: AI pipelines and live performance. |
 | [docs/guides/sway-perform-live.md](docs/guides/sway-perform-live.md) | PERFORM, the SwayCommand deck, scenes, punches and templates. |
 | [docs/guides/dj-and-genealogy.md](docs/guides/dj-and-genealogy.md) | The DJ console, the LEARN graph and the watch-link broadcast. |

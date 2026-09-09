@@ -11,7 +11,7 @@ theDAW. It runs as its own server and appears as a regular center tab. theDAW
 launches and manages it, so it does not have to be started separately.
 
 For the end-to-end walkthrough of training a LoRA, see the
-[Underfit LoRA training walkthrough](underfit-lora-training.md). For the model
+[Underfit LoRA training walkthrough](../workflows/underfit-lora-training.md). For the model
 internals behind the adapter types, see theDAW's
 [LoRA guide](../workflows/lora.md).
 
@@ -100,7 +100,7 @@ checkpoints) plus live telemetry for the selected run.
 - **New Finetune.** The form that configures and launches a run: name, model,
   dataset, LoRA type, rank, steps, batch size, latent length, learning rate,
   demo/checkpoint frequency, prompt sources, and demo setup. See the
-  [training walkthrough](underfit-lora-training.md) for each field.
+  [training walkthrough](../workflows/underfit-lora-training.md) for each field.
 - **Runs panel.** Every finetune, past and present, with its status (`loading`,
   `training`, stopped). Runs are detached subprocesses managed by the dashboard,
   so closing the tab or restarting the server does not stop training.

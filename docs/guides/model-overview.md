@@ -1,11 +1,12 @@
 # Stable Audio 3 Model
+
 > For a more in-depth breakdown of Stable Audio 3, please see our tech report.
 
 Stable Audio 3 is a family of text-conditioned audio generation models.
 
 ## Using the Model
 
-All configurations (Small-Music, Small-SFX, and Medium) share the same interface — see the [model table](#) for hardware requirements and generation speed.
+All configurations (Small-Music, Small-SFX, and Medium) share the same interface — see the [DiT variants table](#dit) for the sizes, durations and autoencoders.
 
 | Input | Description |
 |---|---|
@@ -17,23 +18,24 @@ All configurations (Small-Music, Small-SFX, and Medium) share the same interface
 | Format | 44.1 kHz stereo audio |
 | Bit depth | 32-bit float |
 
-**Limitations**
+### Limitations
+
 - Not designed for speech or voice generation
 - Trained on English descriptions; other languages will underperform
 
-
 ## System Overview
+
 There are two main pieces of the system: the SAME autoencoder and the diffusion-transformer (DiT).
 
-**SAME Autoencoder**
+### SAME Autoencoder
 
 SAME (Semantic-Acoustic Music Encoder) is a stereo autoencoder that compresses audio into 256-dimensional continuous latents (encoder) and reconstructs them back into audio (decoder). SAME is trained separately from the DiT.
 
-**DiT**
+### DiT (diffusion transformer)
 
 The diffusion-transformer learns to generate SAME latents conditioned on inputs like text prompt and duration. These inputs are turned into embeddings that guide the model toward latents matching those conditions, which are then decoded by the SAME decoder into audio.
 
-![alt text](image.png)
+![Architecture diagram: audio enters a frozen SAME Encoder and leaves it as 256xL latents into the DiT; T5Gemma text, duration and timestep conditions enter the DiT by cross-attention and adaLN, and a masked input plus mask is added locally; 256xL latents leave the DiT for a frozen SAME Decoder and come out as audio](image.png)
 
 ## SAME
 
@@ -50,13 +52,12 @@ It is trained using a combination of four losses:
 
 There are two variants:
 
-| Model | Params | Attention | Latency (no optimizations) †
+| Model | Params | Attention | Latency (no optimizations) † |
 |---|---|---|---|
-| SAME-S | 266M | Chunked w/ midpoint shift | 58ms
-| SAME-L | 1.7B | Sliding window | 214ms
+| SAME-S | 266M | Chunked w/ midpoint shift | 58ms |
+| SAME-L | 1.7B | Sliding window | 214ms |
 
 <sub>† Measured encoding/decoding of a 2min song with an Intel x86 + NVIDIA H100.</sub>
-
 
 - **SAME-L** is the higher quality model and requires a GPU with sliding window attention support.
 - **SAME-S** is a [distilled](https://labelbox.com/guides/model-distillation/) version of SAME-L designed for CPU and edge use. Besides being smaller, it uses something we call *modified chunked attention with midpoint shift* as a workaround for sliding window attention on CPU.
@@ -73,13 +74,13 @@ It accepts three conditions:
 
 Training happens in two phases:
 
-**1. Rectified flow (RF) training**
+### 1. Rectified flow (RF) training
 
 We use rectified flow aka flow-matching as our main training objective. The math can get a little complicated here, but put simply, we train a model to learn a trajectory from noise (randomness) to data (latents). One particularly cool feature is that we train with **variable-length diffusion**. Previously, if you just wanted to generate a short output, you will still have to generate a long sequence that would then be trimmed after generation, which sometimes could result in bad outputs. Now, if generating short sequences, it will understand that much better and also generate faster!
 
-**2. ARC post-training**
+### 2. ARC post-training
 
-After RF training, the model undergoes a final refinement stage to improve quality and reduce latency, producing the final checkpoint used for inference. 
+After RF training, the model undergoes a final refinement stage to improve quality and reduce latency, producing the final checkpoint used for inference.
 
 There are three DiT variants:
 
@@ -88,9 +89,10 @@ There are three DiT variants:
 | Small-Music | Good | ~2min | 433M | SAME-S | This repo |
 | Small-SFX | Good | ~2min | 433M | SAME-S | This repo |
 | Medium | High | ~4.75min | 1.4B | SAME-L | This repo |
-| Large | Highest | ~6.3min | 2.7B | SAME-L | [API only](#) |
+| Large | Highest | ~6.3min | 2.7B | SAME-L | API only |
 
 ## Provided Checkpoints
+
 Checkpoints aka weights are the saved model artifacts that you use for inference.
 
 Three families of checkpoints are provided, each with Small and Medium variants:
@@ -109,28 +111,28 @@ The in-app Model dropdown and the [User Guide](../USER_GUIDE.md#21-models) use a
 
 At inference time, Stable Audio 3 turns your inputs (text prompt and duration) into audio through a two-stage process: latent generation with the DiT, followed by waveform reconstruction with SAME.
 
-**1. Conditioning setup**
- 
+### 1. Conditioning setup
+
 Your prompt is encoded into a dense embedding using T5Gemma, while the duration is converted into a sinusoidal embedding that represents the desired output length. If inpainting is used, the provided audio is first encoded into SAME latents and combined with a temporal mask indicating where generation should occur.
 
-**2. Latent initialization**
+### 2. Latent initialization
 
 A sequence of Gaussian noise is initialized in the SAME latent space. The length of this sequence is determined directly from the requested duration, thanks to the model’s variable-length training.
 
-**3. Iterative denoising (DiT sampling)**
+### 3. Iterative denoising (DiT sampling)
 
-The DiT progressively transforms this noise into structured latents over a series of steps. At each step, the model predicts how to move the current latent state closer to a valid audio representation while staying consistent with the conditioning (text, duration, and optional inpainting signal). Because the model is trained with rectified flow and ARC, we can reduce the number of steps needed down to 8 while maintaining high quality. 
+The DiT progressively transforms this noise into structured latents over a series of steps. At each step, the model predicts how to move the current latent state closer to a valid audio representation while staying consistent with the conditioning (text, duration, and optional inpainting signal). Because the model is trained with rectified flow and ARC, we can reduce the number of steps needed down to 8 while maintaining high quality.
 
-**4. Latent → audio decoding (SAME)**
+### 4. Latent → audio decoding (SAME)
 
 Once the final latent sequence is produced, it is passed through the SAME decoder. This reconstructs a full-resolution 44.1 kHz stereo waveform, restoring both fine acoustic details and higher-level musical structure.
 
-
 ## LoRA
 
-Stable Audio supports LoRA fine-tuning as an easy way to adapt models toward specific styles. See the [LoRA guide](docs/workflows/lora.md).
+Stable Audio supports LoRA fine-tuning as an easy way to adapt models toward specific styles. See the [LoRA guide](../workflows/lora.md).
 
 Note: LoRAs are trained on the base checkpoint. Once trained, they can be applied to the post-trained model and will work as expected.
 
 ## Training Data
+
 All models were trained on a combination of licensed ([AudioSparx](https://www.audiosparx.com/)) and CC0 ([Freesound](https://freesound.org/) data)

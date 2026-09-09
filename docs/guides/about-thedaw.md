@@ -35,7 +35,12 @@ switches between them and surfaces local checkpoints when they are present.
   lineage, stems, and MIDI.
 - LEARN presents the genealogy of a track as a lineage graph, showing how one
   result descends from another.
-- SCORE renders notation and book-style sheet music for a track.
+- SCORE renders notation and book-style sheet music for a track, and follows it
+  as it plays.
+- SING shows a song's lyrics timed to the vocal, and can put the score or the
+  lyric's rhyme and literary analysis beside them.
+- LYRIC is a notebook for writing lyrics that belong to no song yet; a draft is
+  saved into a song when it is ready.
 - DJ provides decks, key and tempo control, live stems, cueing, and an effects
   rack for performance.
 - VJ drives live visuals that react to the audio.

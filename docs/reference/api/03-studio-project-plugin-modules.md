@@ -130,28 +130,32 @@ Hosts the Audima SwayCommand performance app as an embedded iframe, the same sid
 ### library — `/api/library` (disk-backed library)
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/library/entries?kind=` | List entries (audio/video/image/media/all) (`library/router.py:194`) |
-| GET | `/api/library/entries/{id}` | Single entry (`:215`) |
-| GET | `/api/library/audio/{id}` | Stream audio (CDN proxy fallback) (`:227`) |
-| GET | `/api/library/stems/{stem_id}/audio` | Stream one stem WAV (`:272`) |
-| PATCH | `/api/library/stems/{stem_id}` | Mutate stem (favorite) (`:295`) |
-| DELETE | `/api/library/stems/{stem_id}` | Delete one stem (`:312`) |
-| GET | `/api/library/media/{id}` | Stream media (Range) (`:332`) |
-| GET | `/api/library/media/{id}/thumb` | Poster thumbnail (`:348`) |
-| POST | `/api/library/import-media` | Import video/image upload (`:358`) |
-| POST | `/api/library/import-folder` | Add a folder as reference-in-place entries (`:407`) |
-| POST | `/api/library/reindex` | Re-sync SQLite mirror (`:444`) |
-| PATCH | `/api/library/entries/{id}` | Update entry fields (`:456`) |
-| POST | `/api/library/entries/{id}/play` | Increment play count (`:464`) |
-| POST | `/api/library/suggest-playlist` | Analysis-driven playlist (`:497`) |
-| DELETE | `/api/library/entries/{id}` | Delete entry (`:520`) |
-| GET | `/api/library/{id}/bundle` | Download zip bundle (`:530`) |
-| GET | `/api/library/{id}/lineage?depth=` | Lineage nodes+edges (`:584`) |
-| GET | `/api/library/_all/stems` | All stems (`:649`) |
-| GET | `/api/library/_all/midi` | All MIDI (`:660`) |
-| GET | `/api/library/_all/scores` | All score artifacts (`:671`) |
-| GET | `/api/library/_graph/all` | Full genealogy graph (`:687`) |
-| POST | `/api/library/import` | Import audio upload (`:767`) |
+| GET | `/api/library/entries?kind=` | List entries (audio/video/image/media/all) (`library/router.py:201`) |
+| GET | `/api/library/entries/{id}` | Single entry (`:222`) |
+| GET | `/api/library/audio/{id}` | Stream audio (CDN proxy fallback) (`:234`) |
+| GET | `/api/library/audio/{id}/cover` | Cover art for an audio entry; `?v=<mtime>` busts the cache (`:279`) |
+| POST | `/api/library/audio/{id}/cover` | Refresh a cover from the file's tags, or upload one (`:291`) |
+| POST | `/api/library/covers/backfill` | Extract covers for entries imported before cover support (`:347`) |
+| GET | `/api/library/stems/{stem_id}/audio` | Stream one stem WAV (`:361`) |
+| PATCH | `/api/library/stems/{stem_id}` | Mutate stem (favorite) (`:384`) |
+| DELETE | `/api/library/stems/{stem_id}` | Delete one stem (`:401`) |
+| GET | `/api/library/media/{id}` | Stream media (Range) (`:421`) |
+| GET | `/api/library/media/{id}/thumb` | Poster thumbnail (`:437`) |
+| POST | `/api/library/import-media` | Import video/image upload (`:447`) |
+| POST | `/api/library/import-folder` | Add a folder as reference-in-place entries (`:496`) |
+| GET | `/api/library/setlists` | Saved setlists (`:658`) |
+| POST | `/api/library/reindex` | Re-sync SQLite mirror (`:679`) |
+| PATCH | `/api/library/entries/{id}` | Update entry fields (`:691`) |
+| POST | `/api/library/entries/{id}/play` | Increment play count (`:699`) |
+| POST | `/api/library/suggest-playlist` | Analysis-driven playlist (`:732`) |
+| DELETE | `/api/library/entries/{id}` | Delete entry (`:755`) |
+| GET | `/api/library/{id}/bundle` | Download zip bundle (`:765`) |
+| GET | `/api/library/{id}/lineage?depth=` | Lineage nodes+edges (`:885`) |
+| GET | `/api/library/_all/stems` | All stems (`:950`) |
+| GET | `/api/library/_all/midi` | All MIDI (`:961`) |
+| GET | `/api/library/_all/scores` | All score artifacts (`:972`) |
+| GET | `/api/library/_graph/all` | Full genealogy graph (`:988`) |
+| POST | `/api/library/import` | Import audio upload (`:1068`) |
 
 ### storage — `/api/storage` (model/data locations)
 | Method | Path | Purpose |

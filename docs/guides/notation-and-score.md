@@ -9,6 +9,8 @@ track. The symbolic side lives in the **Score** tab of the bottom panel and the
 
 Open it from the bottom panel's **Score** tab, or right-click a library track and
 choose **Open Score / Notation** (which selects the track and switches to Score).
+The SING tab's **BOTH** layout mounts the same panel, whole, beside the karaoke
+lyrics — see [Sing-along and lyrics](sing-along-and-lyrics.md#the-four-layouts).
 
 Every symbolic file a track produces is a *notation artifact* with a kind: `midi`,
 `musicxml`, `abc`, `alphatex` (tabs), `pdf`, or `svg`. The left rail of the Score
@@ -75,14 +77,15 @@ the cursor is painted in the ink colour. Centering is zoom-aware, so following s
 accurate whatever the shell's zoom. Page-at-a-time movement is still available from
 the keyboard and the footer navigation.
 
-Three look settings sit in the play-along footer and apply to every follow view
-(PAGE, STRIP, TAB, CHORDS, HIGHWAY):
+Three look settings sit in the play-along footer:
 
 - **NOW** puts the music sounding now at the left third of the pane or at the
-  centre.
+  centre. It applies to the views that scroll music past a line — PAGE, STRIP,
+  TAB and CHORDS. The HIGHWAY does not have it: there the hit line is fixed by
+  the camera (see below).
 - **INK** picks the colour of the played notes and the now-line: magenta (the
   default), blue, orange or green. Every ink is a dark colour that stays legible
-  on white paper.
+  on white paper. It repaints the HIGHWAY's strike zone as well, immediately.
 - **TRAIL** decides what happens to a note after it sounds. **Hold** (the
   default) keeps every played note in the ink, so the score fills in behind the
   now-line and nothing turns on and off. **Flash** paints only the note that is
@@ -95,6 +98,59 @@ Three look settings sit in the play-along footer and apply to every follow view
 In **STRIP** the scroll position runs through a smoothing follower: a long note
 or a rest, which would otherwise hold the strip still and then jump it, becomes
 one steady forward glide, and the strip never moves backwards unless you seek.
+The strip also starts *on* the now-line: at the top of the song the first note
+sits under the painted line with empty run-up to its left, rather than a third
+of a pane past it waiting for playback to catch up. The same is true of the tab
+strip.
+
+### The HIGHWAY's strike zone
+
+The HIGHWAY is a 3D lane: notes travel toward you and land on the hit line at
+the moment they sound. The hit line is a standing ribbon facing you, over a
+bright line on the floor, bracketed by a post on each side. It is drawn in the
+INK, and nothing in the lane can bury it — including the note it is marking,
+which crosses its band for about 90 ms at the default approach speed and passes
+in front of it, not behind.
+
+It sits at roughly two thirds down the pane rather than at the very bottom,
+which is what makes a landing readable. A note on the bottom staff line stays
+on screen about 180 ms past its hit at approach speed 8, so the ink tint that
+marks the hit is really seen; a grand staff's second staff is on screen at all;
+and a ledger line below the staff is still in frame when its turn comes. A note
+past the line fades out rather than vanishing, at every speed.
+
+**SPEED** (3 to 20, 8 by default) changes how fast notes approach and so how
+far ahead of the hit you see them. **NOTATION**, **BLOCKS** and **DRUMS**
+switch the presentation.
+
+### Large scores
+
+Engraving a page of sheet music is one long piece of work that the browser has
+to do in one go, and it grows with the file: measured at roughly 2.2 seconds
+per megabyte of MusicXML. A 4.7 MB seven-part band score is about ten seconds a
+pass, and the first open costs two passes, because the auto-fit engraves once to
+measure before it engraves to show — twenty seconds with the whole app frozen.
+
+So PAGE asks first. Above 1.5 MB, instead of drawing the score it shows a
+**Large score** card that says how many measures and parts it has, how big it
+is and about how long engraving will take, and offers two ways forward:
+
+- **OPEN THE STRIP INSTEAD** — the recommended one. The strip follows exactly
+  the same music, note for note, and never engraves a page, so it opens
+  instantly and stays smooth at any size. Unless you specifically need to read
+  the printed page layout, this is the better view for a big score anyway.
+- **ENGRAVE IT ANYWAY** — draws it. A yes is remembered for that score for the
+  rest of the session, so you are asked once and not on every click. Reloading
+  the page asks again.
+
+Smaller scores are never gated, and none of this applies to STRIP, CHORDS or
+HIGHWAY, which do not engrave pages at all.
+
+Around that gate, the score panel avoids paying the cost twice: switching
+play-along views or SING layouts parks a score rather than tearing it down, the
+MusicXML text is not re-fetched on every re-open, and the zoom the auto-fit
+worked out is remembered per score and page width, so a browser reload does not
+re-fit. A first open is still slower than a later one.
 
 For **tabs**, alphaTab runs in external-media player mode: theDAW's transport is
 the clock, and the beat cursor and highlighted elements are driven from it every
