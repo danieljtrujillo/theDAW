@@ -18,6 +18,8 @@ data/quest.json
 data/quest/
 data/generations/
 data/performance-sets/
+# The LYRIC tab's notebook: drafts the writer has not published anywhere.
+data/lyric-documents/
 data/settings.json
 data/recent_projects.json
 # Per-machine media roots (absolute paths to the user's audio folders)
@@ -388,3 +390,6 @@ logs/magenta-download-*.log
 
 # Chimera v2 per-clip analysis cache (sha256-keyed JSON)
 data/cache/
+
+# UNCANNY demo album staging (converted audio + stems; distributed separately)
+data/uncanny/

@@ -15,7 +15,10 @@ import {
   RefreshCw,
   Save,
   Settings,
+  StickyNote,
 } from 'lucide-react';
+import { useFeatureNoteStore } from '../../onboarding/featureNoteStore';
+import { FEATURE_NOTES } from '../../onboarding/featureNoteList';
 import { BackupModal } from './BackupModal';
 import { UpdateModal } from './UpdateModal';
 import { QuestDeployModal } from './QuestDeployModal';
@@ -77,6 +80,11 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
   onOpenHome,
 }) => {
   const [open, setOpen] = useState(false);
+  // "Hide" only while a note is actually on screen; once they are all closed
+  // the entry reads "Show" and brings the whole set back.
+  const notesEnabled = useFeatureNoteStore((s) => s.enabled);
+  const notesDismissed = useFeatureNoteStore((s) => s.dismissed);
+  const notesShown = notesEnabled && notesDismissed.length < FEATURE_NOTES.length;
   const [backupOpen, setBackupOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateShowsReleases, setUpdateShowsReleases] = useState(false);
@@ -160,6 +168,18 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
       label: 'Help',
       items: [
         { id: 'feature-tour', label: 'Feature Tour', icon: Compass, iconCls: 'text-amber-300', onSelect: onStartTour },
+        {
+          id: 'feature-notes',
+          label: notesShown ? 'Hide Feature Notes' : 'Show Feature Notes',
+          icon: StickyNote,
+          iconCls: 'text-amber-300',
+          // Showing brings back every note, dismissed ones included: the point
+          // of the entry is to re-find a control you have since forgotten.
+          onSelect: () =>
+            notesShown
+              ? useFeatureNoteStore.getState().setEnabled(false)
+              : useFeatureNoteStore.getState().resetAll(),
+        },
         { id: 'home-screen', label: 'Home Screen', icon: Home, iconCls: 'text-amber-300', onSelect: onOpenHome },
       ],
     },

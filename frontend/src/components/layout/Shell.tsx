@@ -25,6 +25,7 @@ import { useEditorStore } from '../../state/editorStore';
 import { HamburgerMenu } from '../menu/HamburgerMenu';
 import { HomeScreen, useHomeScreenStore } from '../home/HomeScreen';
 import { OnboardingTour } from '../../onboarding/OnboardingTour';
+import { FeatureNotes } from '../../onboarding/FeatureNotes';
 import { useOnboardingStore } from '../../onboarding/onboardingStore';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
@@ -401,6 +402,7 @@ export const Shell: React.FC = () => {
           library; resize stays on the panel's inner edge. */}
       <button
         type="button"
+        data-feature-note="library"
         onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
         title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
         aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
@@ -601,6 +603,10 @@ export const Shell: React.FC = () => {
       {/* First-run feature tour (spotlight overlay). Reads its own store; the
           shell only supplies the tab-switch hook so steps can jump workspaces. */}
       <OnboardingTour onSwitchTab={setCenterTab} />
+      {/* Pinned labels on the affordances that carry no label of their own —
+          the library's edge tab, the LOG and PANELS strips. Each retires itself
+          the first time its feature is used. */}
+      <FeatureNotes />
     </div>
   );
 };
@@ -759,6 +765,7 @@ const ShellBottomDock: React.FC = () => {
             slab reads as a button instead of empty chrome. */}
         <button
           type="button"
+          data-feature-note="panels"
           onClick={() => setBottomOpen(!isBottomOpen)}
           className="min-w-0 flex-1 flex items-center gap-1.5 px-2 bg-[#0a080f]/95 backdrop-blur-xl hover:bg-purple-500/8 transition-colors border-t border-r border-white/5 shadow-[0_-1px_0_rgba(168,85,247,0.08)] group"
           title={isBottomOpen ? 'Collapse bottom panel' : 'Expand bottom panel'}
@@ -791,6 +798,7 @@ const ShellBottomDock: React.FC = () => {
           {/* LOG header — natural width so every readout shows in full. */}
           <button
             type="button"
+            data-feature-note="log"
             onClick={() => setLogOpen(!isLogOpen)}
             className="flex items-center gap-1.5 px-2 group hover:bg-purple-500/8 transition-colors border-r border-purple-500/15 shrink-0"
             title={isLogOpen ? 'Collapse log' : 'Expand log'}
