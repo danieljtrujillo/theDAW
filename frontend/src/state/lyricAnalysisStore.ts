@@ -20,13 +20,20 @@ import {
   fetchActiveLyricAnalysisJob,
   fetchLyricAnalysis,
   fetchLyricAnalysisCapability,
+  fetchLyricMarks,
+  isMarkableDocId,
+  isMarkDevice,
   pollLyricAnalysisJob,
+  putLyricMarks,
   startLyricAnalysis,
   type Device,
   type DeviceFamily,
   type LineMetrics,
   type LyricAnalysisDoc,
   type LyricAnalysisJobStatus,
+  type LyricMark,
+  type LyricMarksBundle,
+  type MarkVerdict,
   type RunOptions,
   type Span,
 } from '../lib/lyricAnalysisClient';
@@ -45,6 +52,36 @@ export const FAMILY_LABELS: Record<DeviceFamily, string> = {
  *  this order, so the rhyme scheme is never hidden under an alliteration. */
 const FAMILY_PRIORITY: DeviceFamily[] = ['rhyme', 'repetition', 'sound', 'structure', 'meaning'];
 
+/**
+ * The rhyme kinds that describe a SHAPE rather than a pair: N consecutive
+ * lines on one class, a class threaded through a whole verse, a class coming
+ * back after a long gap, a section tied at both ends. A flat findings list
+ * cannot express any of them — they are what the structure map draws.
+ */
+export const LONG_RANGE_KINDS: readonly string[] = [
+  'rhyme-run',
+  'rhyme-chain',
+  'callback',
+  'bookend',
+];
+
+/** A short code per long-range kind, so a band in the map is readable with no
+ *  colour vision and no tooltip. */
+export const LONG_RANGE_CODE: Record<string, string> = {
+  'rhyme-run': 'RUN',
+  'rhyme-chain': 'CHAIN',
+  callback: 'CALL',
+  bookend: 'ENDS',
+};
+
+/** What each one is, in a sentence, for the map's own legend. */
+export const LONG_RANGE_BLURB: Record<string, string> = {
+  'rhyme-run': 'consecutive lines all landing on one rhyme',
+  'rhyme-chain': 'one rhyme threaded across a long stretch, gaps included',
+  callback: 'a rhyme returning after a long gap, or in a later section',
+  bookend: 'a section tied at both ends: its first line rhymes with its last',
+};
+
 export type FamilyVisibility = Record<DeviceFamily, boolean>;
 
 export interface LyricAnalysisJobState {
@@ -61,6 +98,7 @@ const KEY_LINKS = 'lyricAnalysis.links';
 const KEY_STRESS = 'lyricAnalysis.stress';
 const KEY_PROVIDER = 'lyricAnalysis.provider';
 const KEY_MODEL = 'lyricAnalysis.model';
+const KEY_MARK_MODE = 'lyricAnalysis.markMode';
 
 const readBool = (key: string, fallback: boolean): boolean => {
   try {
@@ -118,20 +156,48 @@ const readFamilies = (): FamilyVisibility => {
 export const asFamily = (family: string): DeviceFamily | null =>
   (DEVICE_FAMILIES as string[]).includes(family) ? (family as DeviceFamily) : null;
 
-/** The findings the current filters let through, strongest first. */
+/** Groups the writer has struck out, from their marks. A `reject` names a
+ *  `Device.group` rather than an id, because ids are minted fresh on every run
+ *  and the group is derived from the words — so the rejection survives a
+ *  re-analysis. */
+export const rejectedGroups = (marks: readonly LyricMark[]): Set<string> => {
+  const out = new Set<string>();
+  for (const m of marks) if (m.verdict === 'reject' && m.target_group) out.add(m.target_group);
+  return out;
+};
+
+/** The findings the current filters let through, strongest first. `rejected`
+ *  is the writer's veto: a group they struck out is gone from every surface
+ *  that draws from here, not merely greyed. */
 export function visibleDevices(
   doc: LyricAnalysisDoc | null,
   families: FamilyVisibility,
   minConfidence: number,
+  rejected?: ReadonlySet<string>,
 ): Device[] {
   if (!doc) return [];
-  return doc.devices
+  return detectedDevices(doc)
     .filter((d) => {
       const fam = asFamily(d.family);
-      return fam !== null && families[fam] && d.confidence >= minConfidence;
+      if (fam === null || !families[fam] || d.confidence < minConfidence) return false;
+      return !rejected?.size || !rejected.has(d.group || d.id);
     })
     .sort((a, b) => b.confidence - a.confidence);
 }
+
+/**
+ * What the ENGINE found, with the writer's own marks taken back out.
+ *
+ * A document's analysis comes back merged: `documents.analysis_bundle` and the
+ * run job both hand the pane `service.apply_marks(...)`, which appends every
+ * mark and confirm as a `Device` of its own (`mark:` id, confidence 1.0, and
+ * the kind's real family when the writer named one). Left alone, a hand-marked
+ * internal rhyme is then drawn twice — once as the writer's box and once as a
+ * rose detection underneath it — counted as a finding, and offered its own
+ * tick-and-cross. The marks are drawn from `marks`, so they are dropped here.
+ */
+export const detectedDevices = (doc: LyricAnalysisDoc | null): Device[] =>
+  doc ? doc.devices.filter((d) => !isMarkDevice(d)) : [];
 
 export interface WordDeviceMark {
   family: DeviceFamily;
@@ -171,9 +237,10 @@ export function buildWordDeviceIndex(
   doc: LyricAnalysisDoc | null,
   families: FamilyVisibility,
   minConfidence: number,
+  rejected?: ReadonlySet<string>,
 ): Map<string, WordDeviceMark> {
   const marks = new Map<string, WordDeviceMark>();
-  for (const device of visibleDevices(doc, families, minConfidence)) {
+  for (const device of visibleDevices(doc, families, minConfidence, rejected)) {
     const family = asFamily(device.family);
     if (!family) continue;
     const group = device.group || device.id;
@@ -325,6 +392,10 @@ export interface SheetSegment {
   start: number;
   end: number;
   text: string;
+  /** Which word of the line this piece belongs to, -1 for the space between
+   *  two of them. Word boundaries are always cut points, so a segment never
+   *  straddles two words — which is what lets the writer click one and mark it. */
+  word: number;
   family: DeviceFamily | null;
   deviceId: string;
   group: string;
@@ -346,6 +417,9 @@ export interface SheetRow {
   blank: boolean;
   text: string;
   segments: SheetSegment[];
+  /** [start, end) of every word in `text`, so a hand-made mark can be turned
+   *  back into a `Span` (line, word) without re-tokenising the line. */
+  wordRanges: Array<[number, number]>;
   letter: string;
   /** What actually makes two lines one class: the sound they end on. The
    *  scheme letters are lettered PER SECTION, so the letter alone is not an
@@ -409,6 +483,11 @@ const LINK_KINDS = new Set([
   'epizeuxis',
   'polyptoton',
   'antimetabole',
+  // The long-range kinds are here for their ENDS: a callback is two places a
+  // verse apart, and the wire between them is the only way to see it on the
+  // sheet. Every one of them is far beyond the reach the sheet draws at rest,
+  // so they appear when their finding is selected and never bury the words.
+  ...LONG_RANGE_KINDS,
 ]);
 
 const MAX_LINKS = 140;
@@ -471,6 +550,7 @@ export function buildSheetModel(
   source: SheetSource | null,
   families: FamilyVisibility,
   minConfidence: number,
+  rejected?: ReadonlySet<string>,
 ): SheetModel {
   const empty: SheetModel = { rows: [], links: [], linkOverflow: 0, maxDevices: 0, maxSyllables: 0 };
   if (!doc) return empty;
@@ -478,7 +558,7 @@ export function buildSheetModel(
   const metrics = new Map<number, LineMetrics>();
   for (const m of doc.lines) metrics.set(m.line, m);
 
-  const shown = visibleDevices(doc, families, minConfidence);
+  const shown = visibleDevices(doc, families, minConfidence, rejected);
   const byLine = new Map<number, Device[]>();
   for (const d of shown) {
     for (const line of new Set(d.spans.map((s) => s.line))) {
@@ -528,10 +608,21 @@ export function buildSheetModel(
     const classKey = classKeyOf(m);
     const classIndex = classKey ? classIndexOf.get(classKey) ?? -1 : -1;
 
-    // Cut the line wherever a finding starts or stops, then hand each piece the
-    // findings that cover the whole of it.
+    // Cut the line wherever a finding starts or stops — and at every word
+    // boundary too, so no piece ever straddles two words. That is what lets
+    // the writer click one word of plain text and mark it: without the word
+    // cuts, "the quick brown" is a single unaddressable run of text.
     const covers: Array<{ device: Device; range: [number, number] }> = [];
     const cuts = new Set<number>([0, text.length]);
+    const wordRanges: Array<[number, number]> = [];
+    for (let w = 0; w < words.length; w += 1) {
+      const ws = flat.starts[w];
+      const we = flat.ends[w];
+      if (ws === undefined || we === undefined) continue;
+      wordRanges.push([ws, we]);
+      cuts.add(ws);
+      cuts.add(we);
+    }
     for (const d of devices) {
       for (const sp of d.spans) {
         if (sp.line !== i) continue;
@@ -559,16 +650,23 @@ export function buildSheetModel(
 
     const bounds = Array.from(cuts).sort((a, b) => a - b);
     const segments: SheetSegment[] = [];
+    // The bounds run left to right and so do the words, so one cursor finds
+    // every segment's word without rescanning the line for each piece.
+    let wi = 0;
     for (let k = 0; k < bounds.length - 1; k += 1) {
       const start = bounds[k];
       const end = bounds[k + 1];
       if (end <= start) continue;
+      while (wi < wordRanges.length && wordRanges[wi][1] <= start) wi += 1;
+      const word =
+        wi < wordRanges.length && start >= wordRanges[wi][0] && end <= wordRanges[wi][1] ? wi : -1;
       const here = covers.filter((c) => c.range[0] <= start && c.range[1] >= end).map((c) => c.device);
       if (!here.length) {
         segments.push({
           start,
           end,
           text: text.slice(start, end),
+          word,
           family: null,
           deviceId: '',
           group: '',
@@ -588,6 +686,7 @@ export function buildSheetModel(
         start,
         end,
         text: text.slice(start, end),
+        word,
         family,
         deviceId: top.id,
         group: top.group || top.id,
@@ -617,6 +716,7 @@ export function buildSheetModel(
       blank: !text.trim(),
       text,
       segments,
+      wordRanges,
       letter: m?.letter ?? '',
       classKey,
       classIndex,
@@ -774,6 +874,202 @@ export function rhymeLanes(rows: SheetRow[], maxLanes = 5): RhymeLanes {
   return { lanes, cells };
 }
 
+// --- the writer's own marks ------------------------------------------------
+//
+// Marks are drawn as a HAND, never as another detector: a finding is a rule
+// underlining a word, a mark is a box drawn round one with a nib in its corner.
+// Nobody should have to compare two shades of pink to know whose finding it is.
+
+export const MARK_RGB: Record<MarkVerdict, string> = {
+  mark: '251 191 36', // amber — the writer's own hand
+  confirm: '52 211 153', // emerald — agreed with, and kept as ground truth
+  reject: '148 163 184', // slate — struck out
+};
+
+export const MARK_GLYPH: Record<MarkVerdict, string> = {
+  mark: '✎',
+  confirm: '✓',
+  reject: '✕',
+};
+
+export const MARK_WORDS: Record<MarkVerdict, string> = {
+  mark: 'your mark',
+  confirm: 'confirmed — real, kept as ground truth',
+  reject: 'rejected — the engine got this wrong',
+};
+
+export interface MarkWordCell {
+  verdict: MarkVerdict;
+  /** Every mark on this word, so the sheet can open the right one. */
+  ids: string[];
+  groups: string[];
+  title: string;
+}
+
+const MARK_TITLE_LABELS = 3;
+
+/** Word -> the writer's mark on it, keyed `line:word` (the karaoke's own key).
+ *
+ *  Rejects are deliberately absent: a reject is a statement about a FINDING,
+ *  not about the word, and striking the word through would say the writer
+ *  thinks their own lyric is wrong. A reject shows as the finding disappearing
+ *  and as a struck row in the marks list. `stale` names the marks the lyric has
+ *  moved out from under, which are not painted at all. */
+export function buildMarkIndex(
+  marks: readonly LyricMark[],
+  stale?: ReadonlySet<string>,
+): Map<string, MarkWordCell> {
+  const out = new Map<string, MarkWordCell>();
+  for (const mark of marks) {
+    if (mark.verdict === 'reject') continue;
+    // A stale mark's anchors no longer name the words it was placed on, so
+    // painting it would put a box round whatever the writer has since written
+    // at that index — a highlight they never made. The server skips them for
+    // exactly this reason (`apply_marks(skip=stale)`); the list still shows
+    // them, with the words they were placed on, so they can be re-placed.
+    if (stale?.has(mark.id)) continue;
+    const label = clip(mark.label || mark.kind || 'mark', TITLE_MAX_LABEL_CHARS);
+    for (const span of mark.spans) {
+      if (span.line < 0 || span.word < 0) continue;
+      const key = wordMarkKey(span.line, span.word);
+      const prev = out.get(key);
+      if (!prev) {
+        out.set(key, {
+          verdict: mark.verdict,
+          ids: [mark.id],
+          groups: [mark.group || mark.id],
+          title: label,
+        });
+        continue;
+      }
+      if (!prev.ids.includes(mark.id)) {
+        prev.ids.push(mark.id);
+        if (prev.ids.length <= MARK_TITLE_LABELS) prev.title = `${prev.title} · ${label}`;
+        else if (prev.ids.length === MARK_TITLE_LABELS + 1) prev.title = `${prev.title} · …`;
+      }
+      const group = mark.group || mark.id;
+      if (!prev.groups.includes(group)) prev.groups.push(group);
+      // A confirmation is the stronger statement, so it wins the word's look.
+      if (mark.verdict === 'confirm') prev.verdict = 'confirm';
+    }
+  }
+  return out;
+}
+
+// --- the shape of the scheme over distance ---------------------------------
+//
+// `rhyme-run`, `rhyme-chain`, `callback` and `bookend` are about a whole song,
+// not a pair of words, and a flat list flattens exactly the thing that makes
+// them interesting: how far they reach. The map below lays them out over the
+// lyric's own line axis — the same axis the shape strip uses, so the two stack
+// and read as one picture — with each kind drawn as its own SHAPE.
+
+export interface StructureBand {
+  id: string;
+  deviceId: string;
+  kind: string;
+  /** RUN / CHAIN / CALL / ENDS: the band says what it is in words, not in hue. */
+  code: string;
+  label: string;
+  detail: string;
+  group: string;
+  rgb: string;
+  confidence: number;
+  /** Lines this finding actually lands on, in reading order. */
+  lines: number[];
+  /** The same, as column positions on the strip's axis. */
+  positions: number[];
+  start: number;
+  end: number;
+  sections: string[];
+}
+
+export interface StructureMapModel {
+  bands: StructureBand[];
+  /** Columns on the axis: one per non-blank row, matching the shape strip. */
+  columns: number;
+  /** Findings past the cap; named in the UI, never silently dropped. */
+  overflow: number;
+}
+
+const EMPTY_STRUCTURE: StructureMapModel = { bands: [], columns: 0, overflow: 0 };
+
+/**
+ * The long-range rhyme findings over the lyric's own line axis — the same axis
+ * the shape strip uses, so the map stacks under it and the two read as one
+ * picture of the song.
+ *
+ * One band per finding, in reading order, each with its reach drawn as a track
+ * and its kind said in words. Lanes were tried and dropped: packed bands are
+ * prettier and unreadable at 300px, where a band can be nine pixels wide with
+ * nowhere to put its name. Past `maxBands` the rest are counted into `overflow`
+ * rather than stacked into a pile nobody can read.
+ */
+export function buildStructureMap(
+  devices: readonly Device[],
+  rows: readonly SheetRow[],
+  maxBands = 14,
+): StructureMapModel {
+  if (!rows.length) return EMPTY_STRUCTURE;
+
+  // The axis is the shape strip's: one column per non-blank row. A blank line
+  // takes the column of the next real one, so a band never collapses to
+  // nothing just because it starts after a stanza break.
+  const colForLine = new Map<number, number>();
+  const sectionOf = new Map<number, string>();
+  let columns = 0;
+  for (const row of rows) {
+    colForLine.set(row.line, columns);
+    sectionOf.set(row.line, row.section);
+    if (!row.blank) columns += 1;
+  }
+  if (!columns) return EMPTY_STRUCTURE;
+  const posOf = (line: number): number => {
+    const col = colForLine.get(line);
+    if (col === undefined) return line < 0 ? 0 : columns - 1;
+    return Math.max(0, Math.min(columns - 1, col));
+  };
+
+  const wanted = devices.filter((d) => LONG_RANGE_KINDS.includes(d.kind));
+  const built = wanted
+    .map((d) => {
+      const lines = Array.from(new Set(d.spans.map((s) => s.line))).sort((a, b) => a - b);
+      if (!lines.length) return null;
+      const positions = Array.from(new Set(lines.map(posOf))).sort((a, b) => a - b);
+      const sections = Array.from(
+        new Set(lines.map((l) => sectionOf.get(l) ?? '').filter(Boolean)),
+      );
+      return {
+        id: d.id,
+        deviceId: d.id,
+        kind: d.kind,
+        code: LONG_RANGE_CODE[d.kind] ?? d.kind.toUpperCase(),
+        label: d.label,
+        detail: d.detail,
+        group: d.group || d.id,
+        rgb: groupInk(d.group || d.id).rgb,
+        confidence: d.confidence,
+        lines,
+        positions,
+        start: positions[0],
+        end: positions[positions.length - 1],
+        sections,
+      };
+    })
+    .filter((b): b is StructureBand => b !== null);
+
+  // Reach first, so when the cap bites it is the short local shape that goes
+  // and not the callback that crosses the whole song.
+  const ranked = [...built].sort(
+    (a, b) => b.end - b.start - (a.end - a.start) || b.confidence - a.confidence,
+  );
+  const keep = new Set(ranked.slice(0, maxBands).map((b) => b.id));
+  const bands = built
+    .filter((b) => keep.has(b.id))
+    .sort((a, b) => a.start - b.start || b.end - a.end || a.kind.localeCompare(b.kind));
+  return { bands, columns, overflow: built.length - bands.length };
+}
+
 export interface LyricAnalysisState {
   entryId: string | null;
   doc: LyricAnalysisDoc | null;
@@ -804,6 +1100,27 @@ export interface LyricAnalysisState {
   provider: string;
   model: string;
 
+  /** The document the marks below belong to: a library entry in SING, a
+   *  notebook page in LYRIC. Kept apart from `entryId` because the writing
+   *  surface hosts its own analysis and never sets that one. */
+  marksDocId: string | null;
+  marks: LyricMark[];
+  /** Ids the lyric has moved out from under: the server could not find the
+   *  words they were placed on any more. Never painted, always listed. */
+  marksStale: string[];
+  /** Marks the last save refused because every anchor named a line or word the
+   *  lyric does not have. Shown rather than silently swallowed. */
+  marksDropped: number;
+  /** False when the subject cannot hold marks at all — a library entry in SING,
+   *  which the marks routes answer 404 for. The pane offers no marking then. */
+  marksSupported: boolean;
+  marksLoading: boolean;
+  marksSaving: boolean;
+  marksError: string | null;
+  /** The sheet is in marking mode: a click on a word puts it in the selection
+   *  instead of opening the finding under it. */
+  markMode: boolean;
+
   load: (entryId: string) => Promise<void>;
   run: (opts?: RunOptions) => Promise<void>;
   remove: () => Promise<void>;
@@ -820,13 +1137,67 @@ export interface LyricAnalysisState {
   setProvider: (provider: string) => void;
   setModel: (model: string) => void;
   clearError: () => void;
+
+  loadMarks: (docId: string) => Promise<void>;
+  /** Send whatever the debounce is still holding. Called on unmount and before
+   *  the document changes, so nothing the writer marked is left in memory. */
+  flushMarks: () => Promise<void>;
+  /** The new mark's id, or '' when the subject cannot hold marks. */
+  addMark: (input: NewMark) => string;
+  updateMark: (id: string, patch: Partial<Omit<LyricMark, 'id' | 'created_at'>>) => void;
+  removeMark: (id: string) => void;
+  /** "That is not a rhyme": hides the finding's whole group everywhere. */
+  rejectDevice: (device: Device) => void;
+  /** "Yes, that is real": kept as ground truth beside the analysis. */
+  confirmDevice: (device: Device) => void;
+  /** Take back a confirm or a reject, by the `Device.group` it named. */
+  clearVerdict: (group: string) => void;
+  setMarkMode: (on: boolean) => void;
+  clearMarksError: () => void;
+  /** Take back the "N were not stored" notice once it has been read. */
+  clearMarksDropped: () => void;
+}
+
+/** A mark before the store gives it an id and its timestamps. */
+export interface NewMark {
+  kind?: string;
+  label?: string;
+  group?: string;
+  spans: Span[];
+  note?: string;
+  verdict?: MarkVerdict;
+  target_group?: string;
 }
 
 // One generation counter so a slow load for the previous entry cannot land on
 // top of the entry the user has since selected.
 let loadGeneration = 0;
 
+// Marking is a click-click-click action, and the writer's hand moves faster
+// than any request should. Every edit lands in memory at once and the PUT waits
+// for a pause — never one per selection, never one per keystroke in the label.
+const MARKS_DEBOUNCE_MS = 700;
+let marksTimer: ReturnType<typeof setTimeout> | null = null;
+let marksGeneration = 0;
+// Only a set the writer actually CHANGED may be sent. Without this, the pane
+// unmounting while the load was still in flight PUT the empty list it starts
+// from and wiped every mark on the document — which React's double-invoked
+// mount effects reproduce on every single open in development.
+let marksDirty = false;
+
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+const now = (): number => Date.now() / 1000;
+
+/** Client-minted, because the whole set is PUT at once and the server never
+ *  needs to hand an id back before the mark can be drawn. */
+const mintId = (prefix: string): string => {
+  try {
+    return `${prefix}_${crypto.randomUUID().replace(/-/g, '')}`;
+  } catch {
+    return `${prefix}_${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+  }
+};
 
 export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => {
   /**
@@ -869,6 +1240,23 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
     set({ doc, persisted: true, stale: false, error: null });
   };
 
+  /** Hold the new set, then PUT it once the writer stops. The list in memory is
+   *  the truth for the whole debounce window, so the sheet repaints instantly
+   *  however slow the request is. */
+  const armMarksTimer = (): void => {
+    if (marksTimer) clearTimeout(marksTimer);
+    marksTimer = setTimeout(() => {
+      marksTimer = null;
+      void get().flushMarks();
+    }, MARKS_DEBOUNCE_MS);
+  };
+
+  const writeMarks = (marks: LyricMark[]): void => {
+    marksDirty = true;
+    set({ marks });
+    armMarksTimer();
+  };
+
   return {
     entryId: null,
     doc: null,
@@ -893,6 +1281,16 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
     llm: false,
     provider: readString(KEY_PROVIDER, ''),
     model: readString(KEY_MODEL, ''),
+
+    marksDocId: null,
+    marks: [],
+    marksStale: [],
+    marksDropped: 0,
+    marksSupported: false,
+    marksLoading: false,
+    marksSaving: false,
+    marksError: null,
+    markMode: readBool(KEY_MARK_MODE, false),
 
     load: async (entryId) => {
       const generation = ++loadGeneration;
@@ -985,6 +1383,10 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
       // Bump the generation so a job still polling for the entry being dropped
       // cannot write its result back in after this.
       loadGeneration += 1;
+      // The marks go out before the id does — this runs when the writer leaves
+      // the song, and the debounce may still be holding their last one.
+      void get().flushMarks();
+      marksGeneration += 1;
       set({
         entryId: null,
         doc: null,
@@ -995,6 +1397,13 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
         job: null,
         selectedGroup: null,
         selectedDeviceId: null,
+        marksDocId: null,
+        marks: [],
+        marksStale: [],
+        marksDropped: 0,
+        marksSupported: false,
+        marksLoading: false,
+        marksError: null,
       });
     },
 
@@ -1039,5 +1448,196 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
       writeStorage(KEY_MODEL, model);
     },
     clearError: () => set({ error: null }),
+
+    loadMarks: async (docId) => {
+      if (get().marksDocId === docId && !get().marksError) return;
+      // Whatever is still on the debounce belongs to the document being left.
+      await get().flushMarks();
+      const generation = ++marksGeneration;
+      // The empty list below is a placeholder, not an edit: nothing may send it.
+      marksDirty = false;
+      // A subject with no home for marks is not an error and not a load: the
+      // routes only know lyric documents, so SING's library entry would answer
+      // 404 to the GET and to every save after it. Say so by turning the
+      // marking off rather than by fetching a failure.
+      if (!isMarkableDocId(docId)) {
+        set({
+          marksDocId: docId,
+          marks: [],
+          marksStale: [],
+          marksDropped: 0,
+          marksSupported: false,
+          marksLoading: false,
+          marksError: null,
+        });
+        return;
+      }
+      set({
+        marksDocId: docId,
+        marks: [],
+        marksStale: [],
+        marksDropped: 0,
+        marksSupported: true,
+        marksLoading: true,
+        marksError: null,
+      });
+      try {
+        const bundle = await fetchLyricMarks(docId);
+        if (generation !== marksGeneration) return;
+        marksDirty = false;
+        set({ marks: bundle.marks, marksStale: bundle.stale, marksLoading: false });
+      } catch (e) {
+        if (generation !== marksGeneration) return;
+        // The writer must know their marks are not being read, or they will
+        // mark a song twice: this shows in the pane rather than being eaten.
+        set({ marksLoading: false, marksError: errorMessage(e) });
+      }
+    },
+
+    flushMarks: async () => {
+      if (marksTimer) {
+        clearTimeout(marksTimer);
+        marksTimer = null;
+      }
+      const { marksDocId, marks, marksSaving, marksSupported } = get();
+      // Nothing was marked, or the set on screen is still the one being
+      // fetched: there is nothing of the writer's to send.
+      if (!marksDocId || !marksDirty) return;
+      // Nowhere to send it. `addMark` refuses in the first place, so reaching
+      // here means the subject changed under a pending edit; drop the timer
+      // rather than spend a request on a certain 404.
+      if (!marksSupported || !isMarkableDocId(marksDocId)) {
+        marksDirty = false;
+        return;
+      }
+      // A PUT is already in flight. It re-arms the debounce when it lands, so
+      // whatever was marked in the meantime still goes out — dropping it here
+      // would lose the writer's last few marks silently.
+      if (marksSaving) {
+        armMarksTimer();
+        return;
+      }
+      const generation = marksGeneration;
+      set({ marksSaving: true });
+      let stored: LyricMarksBundle | null = null;
+      let failed: string | null = null;
+      try {
+        stored = await putLyricMarks(marksDocId, marks);
+      } catch (e) {
+        failed = errorMessage(e);
+      }
+      // The flag belongs to THIS call and is cleared however it ended. Clearing
+      // it only on the paths that are still current would leave it stuck true
+      // when the writer changed document mid-flight, and every later save would
+      // then see a PUT "in flight" that had long since finished.
+      set({ marksSaving: false });
+      if (generation !== marksGeneration || get().marksDocId !== marksDocId) return;
+      if (failed !== null) {
+        set({ marksError: failed });
+        return;
+      }
+      if (!stored) return;
+      // Only take the server's list wholesale when nothing was marked while the
+      // PUT was in flight, or the newer marks would be thrown away by their own
+      // save. When something WAS marked, the ids still have to be taken: the
+      // server mints them and never accepts a client's, so a set re-sent under
+      // the client's own ids arrives as a set of strangers — re-minted again,
+      // with fresh timestamps, and (worse) with its spans re-read off the
+      // document instead of kept verbatim, which is what drops a mark whose
+      // line has since been rewritten. The answer is in request order and only
+      // shorter when something was dropped, so a 1:1 answer maps id to id.
+      const settled = get().marks === marks;
+      const patch: Partial<LyricAnalysisState> = { marksError: null, marksDropped: stored.dropped };
+      if (settled) {
+        patch.marks = stored.marks;
+        patch.marksStale = stored.stale;
+      } else if (stored.marks.length === marks.length) {
+        const byId = new Map(marks.map((m, i) => [m.id, stored.marks[i]]));
+        patch.marks = get().marks.map((m) => {
+          const mine = byId.get(m.id);
+          return mine ? { ...m, id: mine.id, created_at: mine.created_at } : m;
+        });
+      }
+      set(patch);
+      if (settled) marksDirty = false;
+      else armMarksTimer();
+    },
+
+    addMark: (input) => {
+      // Nowhere to save it: better no mark than one that looks saved and is
+      // gone on the next open. The pane hides the whole marking flow when this
+      // is false, so this is the backstop, not the message.
+      if (!get().marksSupported) return '';
+      const id = mintId('mark');
+      const stamp = now();
+      const mark: LyricMark = {
+        id,
+        kind: input.kind ?? '',
+        label: input.label ?? '',
+        // Marks sharing a group are one thing — and a mark made on its own is
+        // still a group of one, so it can be extended later.
+        group: input.group || mintId('mgrp'),
+        spans: input.spans,
+        note: input.note ?? '',
+        verdict: input.verdict ?? 'mark',
+        target_group: input.target_group ?? '',
+        created_at: stamp,
+        updated_at: stamp,
+      };
+      writeMarks([...get().marks, mark]);
+      return id;
+    },
+
+    updateMark: (id, patch) => {
+      writeMarks(
+        get().marks.map((m) => (m.id === id ? { ...m, ...patch, id, updated_at: now() } : m)),
+      );
+    },
+
+    removeMark: (id) => {
+      writeMarks(get().marks.filter((m) => m.id !== id));
+    },
+
+    rejectDevice: (device) => {
+      const group = device.group || device.id;
+      if (get().marks.some((m) => m.verdict === 'reject' && m.target_group === group)) return;
+      get().addMark({
+        kind: device.kind,
+        label: device.label,
+        spans: device.spans,
+        verdict: 'reject',
+        target_group: group,
+      });
+      // The finding is about to vanish from every list; nothing may stay
+      // selected that can no longer be seen.
+      if (get().selectedGroup === group) set({ selectedGroup: null, selectedDeviceId: null });
+    },
+
+    confirmDevice: (device) => {
+      const group = device.group || device.id;
+      if (get().marks.some((m) => m.verdict === 'confirm' && m.target_group === group)) return;
+      get().addMark({
+        kind: device.kind,
+        label: device.label,
+        spans: device.spans,
+        verdict: 'confirm',
+        target_group: group,
+      });
+    },
+
+    clearVerdict: (group) => {
+      writeMarks(
+        get().marks.filter((m) => !(m.verdict !== 'mark' && m.target_group === group)),
+      );
+    },
+
+    setMarkMode: (on) => {
+      set({ markMode: on });
+      writeStorage(KEY_MARK_MODE, on ? '1' : '0');
+    },
+
+    clearMarksError: () => set({ marksError: null }),
+
+    clearMarksDropped: () => set({ marksDropped: 0 }),
   };
 });

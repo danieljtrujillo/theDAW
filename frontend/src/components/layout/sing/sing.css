@@ -532,6 +532,236 @@ button.sing-text:hover {
   }
 }
 
+/* --- the writer's own marks -------------------------------------------- */
+/* A finding is a rule UNDER a word; a mark is a hand drawn ROUND one, with a
+   nib folded into its corner. The two are never told apart by hue — the box,
+   its dashed edge and the corner shape all say "a person put this here", and
+   they survive a greyscale print and a colour-blind reader alike. */
+
+.la-text [data-mark] {
+  --mark-rgb: 251 191 36;
+  position: relative;
+  padding-left: 1px;
+  padding-right: 1px;
+  border-radius: 3px;
+  background: rgb(var(--mark-rgb) / 0.14);
+  outline: 1px dashed rgb(var(--mark-rgb) / 0.8);
+  outline-offset: 1px;
+}
+
+/* The nib: a folded corner, so a mark is a mark at a glance even where the
+   dashes are too fine to read. */
+.la-text [data-mark]::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  right: -3px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-bottom: 4px solid rgb(var(--mark-rgb) / 0.95);
+  pointer-events: none;
+}
+
+/* Confirmed: agreed with the engine and kept as ground truth. A round nib and
+   a solid edge — a different SHAPE from the writer's own annotation, not just
+   a different green. */
+.la-text [data-mark='confirm'] {
+  --mark-rgb: 52 211 153;
+  outline-style: solid;
+}
+
+.la-text [data-mark='confirm']::after {
+  top: -3px;
+  right: -3px;
+  width: 4px;
+  height: 4px;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(var(--mark-rgb) / 0.95);
+}
+
+/* The same box at legend size, for the marks list and the composer. */
+.la-mark-chip {
+  --mark-rgb: 251 191 36;
+  display: inline-block;
+  width: 1.4em;
+  height: 0.8em;
+  border-radius: 2px;
+  background: rgb(var(--mark-rgb) / 0.16);
+  outline: 1px dashed rgb(var(--mark-rgb) / 0.85);
+  outline-offset: -1px;
+  vertical-align: middle;
+}
+
+.la-mark-chip[data-verdict='confirm'] {
+  --mark-rgb: 52 211 153;
+  outline-style: solid;
+}
+
+.la-mark-chip[data-verdict='reject'] {
+  --mark-rgb: 148 163 184;
+  outline-style: dotted;
+  background: none;
+}
+
+/* Marking mode: every word is a target. The live selection is sky — neither
+   the engine's rose nor the writer's amber — so "what I am about to name" is
+   never confused with "what is already named". */
+.la-sheet[data-marking] .la-text button {
+  cursor: crosshair;
+}
+
+.la-sheet[data-marking] .la-text button:hover {
+  background: rgb(255 255 255 / 0.1);
+  border-radius: 3px;
+}
+
+.la-text [data-sel] {
+  border-radius: 3px;
+  background: rgb(56 189 248 / 0.3);
+  outline: 1px solid rgb(56 189 248 / 0.95);
+  outline-offset: 1px;
+  color: #fff;
+}
+
+.la-text button:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.9);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* --- the shape of the scheme over distance ------------------------------ */
+/* A run, a chain, a callback and a bookend are all about REACH, and a findings
+   row cannot show reach. Each one gets a track spanning the whole lyric with
+   its own extent drawn on it, so "this returns four verses later" is a picture
+   rather than a sentence. The kind is in the band's SHAPE and in its code
+   letters; the hue only seconds them. */
+
+.la-track {
+  position: relative;
+  height: 10px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.04);
+}
+
+/* Section boundaries, so a callback landing in a later section reads as one. */
+.la-track i[data-sect] {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgb(251 113 133 / 0.28);
+}
+
+.la-track i[data-band] {
+  --band-rgb: 251 113 133;
+  position: absolute;
+  top: 50%;
+  height: 3px;
+  min-width: 2px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: rgb(var(--band-rgb) / 0.8);
+}
+
+/* A run is a block: N consecutive lines, solid. */
+.la-track i[data-band='rhyme-run'] {
+  height: 6px;
+  border-radius: 1px;
+}
+
+/* A chain threads through gaps, so the rule between its members is a hairline
+   and the members themselves are the ticks below. */
+.la-track i[data-band='rhyme-chain'] {
+  height: 2px;
+  background: rgb(var(--band-rgb) / 0.5);
+}
+
+/* A callback is a return: a dashed reach with the arrival marked. */
+.la-track i[data-band='callback'] {
+  height: 0;
+  border-top: 2px dashed rgb(var(--band-rgb) / 0.85);
+  background: none;
+  border-radius: 0;
+}
+
+/* A bookend ties a section at both ends and says nothing about the middle. */
+.la-track i[data-band='bookend'] {
+  height: 0;
+  border-top: 1px solid rgb(var(--band-rgb) / 0.45);
+  background: none;
+  border-radius: 0;
+}
+
+/* Every line the finding actually lands on. */
+.la-track i[data-tick] {
+  --band-rgb: 251 113 133;
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: rgb(var(--band-rgb) / 0.95);
+}
+
+/* The two ends of a callback or a bookend run the full height, so the reach
+   reads even where the middle is a hairline. */
+.la-track i[data-tick='cap'] {
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  margin-left: -1.5px;
+}
+
+.la-track button {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.la-track button:hover i[data-band],
+.la-track button[aria-pressed='true'] i[data-band] {
+  filter: brightness(1.3);
+}
+
+/* The band being read. Brightening the stroke alone was invisible on a
+   hairline, so the whole track lights instead. */
+.la-track button[aria-pressed='true'] {
+  border-radius: 3px;
+  background: rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.28);
+}
+
+.la-track button:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.9);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* The selected long-range finding, brought back onto the words: its member
+   lines wear a solid spine in the sheet's margin and the lines it reaches
+   across wear a faint one, so the shape in the map and the shape in the lyric
+   are visibly the same thing. */
+.la-row[data-struct]::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: rgb(var(--struct-rgb, 251 113 133) / 0.28);
+}
+
+.la-row[data-struct='member']::before {
+  background: rgb(var(--struct-rgb, 251 113 133) / 0.95);
+}
+
 /* Line time chips: hidden while singing, shown in TAP mode and on hover. */
 .sing-chip {
   position: absolute;

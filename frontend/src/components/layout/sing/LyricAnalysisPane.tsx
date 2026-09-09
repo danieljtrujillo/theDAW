@@ -1,24 +1,58 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BookOpen, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useLibraryStore } from '../../../state/libraryStore';
 import { useLyricsStore } from '../../../state/lyricsStore';
 import {
   DEVICE_FAMILIES,
   FAMILY_LABELS,
   FAMILY_RGB,
+  LONG_RANGE_BLURB,
+  LONG_RANGE_CODE,
+  LONG_RANGE_KINDS,
+  MARK_GLYPH,
+  MARK_RGB,
+  MARK_WORDS,
   asFamily,
+  buildMarkIndex,
   buildSheetModel,
+  buildStructureMap,
+  detectedDevices,
+  groupInk,
   inkAt,
+  rejectedGroups,
   rhymeLanes,
   useLyricAnalysisStore,
   visibleDevices,
+  wordMarkKey,
+  type MarkWordCell,
   type SheetLink,
   type SheetLinkEnd,
   type SheetModel,
   type SheetRow,
   type SheetSource,
+  type StructureBand,
+  type StructureMapModel,
 } from '../../../state/lyricAnalysisStore';
-import type { Device, DeviceFamily, LyricAnalysisDoc, SectionSummary } from '../../../lib/lyricAnalysisClient';
+import type {
+  Device,
+  DeviceFamily,
+  LyricAnalysisDoc,
+  LyricMark,
+  MarkVerdict,
+  SectionSummary,
+  Span,
+} from '../../../lib/lyricAnalysisClient';
 import { splitText } from './singSync';
 import './sing.css';
 
@@ -87,6 +121,88 @@ const prefersReducedMotion = (): boolean => {
   } catch {
     return false;
   }
+};
+
+// --- marking by hand -------------------------------------------------------
+
+/** What the writer can call a thing they marked. The taxonomy's own names
+ *  first, because a mark that shares a kind with the detectors can be compared
+ *  with them; `''` is the free note, for what has no name yet. */
+const MARK_KINDS: Array<[string, string]> = [
+  ['end-rhyme', 'end rhyme'],
+  ['internal-rhyme', 'internal rhyme'],
+  ['multisyllabic-rhyme', 'multisyllabic rhyme'],
+  ['slant-rhyme', 'slant rhyme'],
+  ['identical-rhyme', 'identical rhyme'],
+  ['rhyme-run', 'rhyme run'],
+  ['rhyme-chain', 'rhyme chain'],
+  ['callback', 'callback'],
+  ['bookend', 'bookend'],
+  ['alliteration', 'alliteration'],
+  ['assonance', 'assonance'],
+  ['refrain', 'refrain'],
+  ['metaphor', 'metaphor'],
+  ['pun', 'pun'],
+  ['', 'a note'],
+];
+
+/** Every word between two picks, in reading order — what a shift-click means.
+ *  It runs across lines on purpose: marking a whole couplet is one drag. */
+const rangeKeys = (
+  rows: SheetRow[],
+  from: { line: number; word: number },
+  to: { line: number; word: number },
+): string[] => {
+  const forward = to.line > from.line || (to.line === from.line && to.word >= from.word);
+  const a = forward ? from : to;
+  const b = forward ? to : from;
+  const out: string[] = [];
+  for (const row of rows) {
+    if (row.line < a.line || row.line > b.line) continue;
+    const first = row.line === a.line ? a.word : 0;
+    const last = row.line === b.line ? b.word : row.wordRanges.length - 1;
+    for (let w = first; w <= last && w < row.wordRanges.length; w += 1) {
+      if (w >= 0) out.push(wordMarkKey(row.line, w));
+    }
+  }
+  return out;
+};
+
+/** The picked words as `Span`s the backend understands. Whole words only — the
+ *  writer picks words, so `char_end` is always "to the end of it". */
+const spansFromSelection = (rows: SheetRow[], selection: ReadonlySet<string>): Span[] => {
+  const out: Span[] = [];
+  for (const row of rows) {
+    for (let w = 0; w < row.wordRanges.length; w += 1) {
+      if (!selection.has(wordMarkKey(row.line, w))) continue;
+      const [start, end] = row.wordRanges[w];
+      out.push({
+        line: row.line,
+        word: w,
+        char_start: 0,
+        char_end: null,
+        text: row.text.slice(start, end),
+      });
+    }
+  }
+  return out;
+};
+
+/** A mark is never nameless: with no label typed, it is called after the words
+ *  it covers, the way the detectors name theirs. */
+const autoMarkLabel = (kind: string, spans: Span[]): string => {
+  const words = spans.map((s) => s.text).filter(Boolean);
+  const head = words.slice(0, 4).join(' / ');
+  const tail = words.length > 4 ? ` +${words.length - 4}` : '';
+  const name = kind ? kind.replace(/-/g, ' ') : 'note';
+  return clip(`${name}: ${head}${tail}`, MAX_LABEL_CHARS);
+};
+
+/** "L4 · L7" for a mark, the same shorthand the findings list uses. */
+const markLines = (mark: LyricMark): string => {
+  const seen = Array.from(new Set(mark.spans.map((s) => s.line))).sort((a, b) => a - b);
+  const head = seen.slice(0, MAX_LINE_REFS).map((l) => `L${l + 1}`).join(' · ');
+  return seen.length > MAX_LINE_REFS ? `${head} +${seen.length - MAX_LINE_REFS}` : head;
 };
 
 const SectionHead: React.FC<{ title: string; hint?: string }> = ({ title, hint }) => (
@@ -223,6 +339,23 @@ export interface LyricSheetProps {
    *  ending each line rhymed on. */
   hasWords: boolean;
   sheetRef?: React.RefObject<HTMLDivElement | null>;
+  /** Marking mode: a click on a word puts it in the selection instead of
+   *  opening the finding under it. */
+  markMode?: boolean;
+  /** Words picked for the mark being composed, keyed `line:word`. */
+  selection?: ReadonlySet<string>;
+  onWord?: (line: number, word: number, mode: 'toggle' | 'range' | 'drag') => void;
+  /** Enter on the sheet names what has been picked; Escape drops it. Without
+   *  these the whole marking flow needs the mouse to finish. */
+  onCommitPick?: () => void;
+  onCancelPick?: () => void;
+  /** Word -> the writer's mark on it. */
+  markIndex?: Map<string, MarkWordCell>;
+  /** Opening a marked word out of marking mode reads the mark. */
+  onOpenMark?: (markId: string) => void;
+  /** The long-range finding being read, brought back onto the words as a
+   *  spine down the margin from its first line to its last. */
+  structSpan?: { rgb: string; from: number; to: number; lines: ReadonlySet<number> } | null;
 }
 
 /**
@@ -248,11 +381,139 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
   showStress,
   hasWords,
   sheetRef,
+  markMode = false,
+  selection,
+  onWord,
+  onCommitPick,
+  onCancelPick,
+  markIndex,
+  onOpenMark,
+  structSpan,
 }) => {
   const ownRef = useRef<HTMLDivElement | null>(null);
   const hostRef = sheetRef ?? ownRef;
   const [paths, setPaths] = useState<LinkPath[]>([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  /** Roving tabindex: one word carries the tab stop and the arrows move it,
+   *  because a lyric has hundreds of words and every one of them being a tab
+   *  stop would make the sheet unusable from a keyboard. */
+  const [focusKey, setFocusKey] = useState('');
+  const draggingRef = useRef(false);
+
+  // A drag that ends outside the sheet (or outside the window) still ends.
+  useEffect(() => {
+    if (!markMode) {
+      draggingRef.current = false;
+      return;
+    }
+    const stop = (): void => {
+      draggingRef.current = false;
+    };
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    return () => {
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+    };
+  }, [markMode]);
+
+  const firstWordKey = useMemo(() => {
+    for (const row of model.rows) {
+      if (row.wordRanges.length) return wordMarkKey(row.line, 0);
+    }
+    return '';
+  }, [model.rows]);
+
+  /** Where the tab stop actually sits. A remembered word that the lyric no
+   *  longer has would leave the sheet with no tab stop at all, so it falls
+   *  back to the first word rather than to nothing. */
+  const tabKey = useMemo(() => {
+    if (!focusKey) return firstWordKey;
+    const [line, word] = focusKey.split(':').map(Number);
+    const row = model.rows.find((r) => r.line === line);
+    return row && word >= 0 && word < row.wordRanges.length ? focusKey : firstWordKey;
+  }, [focusKey, firstWordKey, model.rows]);
+
+  /** Arrow-key navigation over the words, in the sheet's own reading order —
+   *  the DOM order of the word buttons, which is the order of the lyric. */
+  const onSheetKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!markMode || !onWord) return;
+      // Space picks the word (the button's own behaviour), Enter names what is
+      // picked, Escape drops it — so the whole flow finishes without a mouse.
+      // Enter has to be stopped here or the button turns it into a click and
+      // un-picks the word instead.
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        onCommitPick?.();
+        return;
+      }
+      if (e.key === 'Escape') {
+        onCancelPick?.();
+        return;
+      }
+      const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+      if (!keys.includes(e.key)) return;
+      const host = hostRef.current;
+      const active = document.activeElement;
+      if (!host || !(active instanceof HTMLElement) || !active.dataset.word) return;
+      // A word is drawn in as many pieces as the devices on it cut it into,
+      // and every piece is its own button. Navigation is by WORD: stepping
+      // piece by piece lands the focus back inside the word it started in and
+      // reads, correctly, as the arrow key having done nothing. The first
+      // piece of each word is the one that carries the tab stop, so it is the
+      // one moved between here too.
+      const pieces = Array.from(host.querySelectorAll<HTMLElement>('button[data-word]'));
+      const buttons: HTMLElement[] = [];
+      let seen = '';
+      for (const piece of pieces) {
+        const key = piece.dataset.word ?? '';
+        if (key !== seen) buttons.push(piece);
+        seen = key;
+      }
+      const activeKey = active.dataset.word ?? '';
+      const at = buttons.findIndex((el) => el.dataset.word === activeKey);
+      if (at < 0) return;
+      const lineOf = (el: HTMLElement): number => Number((el.dataset.word ?? '').split(':')[0]);
+      const here = lineOf(active);
+      let next = at;
+      if (e.key === 'ArrowRight') next = Math.min(buttons.length - 1, at + 1);
+      else if (e.key === 'ArrowLeft') next = Math.max(0, at - 1);
+      else if (e.key === 'Home') {
+        next = at;
+        while (next > 0 && lineOf(buttons[next - 1]) === here) next -= 1;
+      } else if (e.key === 'End') {
+        next = at;
+        while (next < buttons.length - 1 && lineOf(buttons[next + 1]) === here) next += 1;
+      } else {
+        // Up / down: the same position along the previous or next line that
+        // has words, so a column of rhyming endings walks straight down.
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        let ordinal = 0;
+        for (let i = at - 1; i >= 0 && lineOf(buttons[i]) === here; i -= 1) ordinal += 1;
+        let i = at;
+        while (i >= 0 && i < buttons.length && lineOf(buttons[i]) === here) i += step;
+        if (i < 0 || i >= buttons.length) return;
+        const target = lineOf(buttons[i]);
+        // Walk to the start of that line, then along it.
+        while (i > 0 && lineOf(buttons[i - 1]) === target) i -= 1;
+        let j = i;
+        while (j + 1 < buttons.length && lineOf(buttons[j + 1]) === target && j - i < ordinal) j += 1;
+        next = j;
+      }
+      if (next === at) return;
+      e.preventDefault();
+      const el = buttons[next];
+      const key = el.dataset.word ?? '';
+      setFocusKey(key);
+      el.focus();
+      if (e.shiftKey) {
+        const [line, word] = key.split(':').map(Number);
+        onWord(line, word, 'drag');
+      }
+    },
+    [markMode, onWord, onCommitPick, onCancelPick, hostRef],
+  );
 
   const sections = useMemo(() => mapSections(doc, model.rows), [doc, model.rows]);
 
@@ -356,7 +617,12 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
   }, [model.rows]);
 
   return (
-    <div className="la-sheet px-2 pb-2" ref={hostRef}>
+    <div
+      className="la-sheet px-2 pb-2"
+      ref={hostRef}
+      onKeyDown={onSheetKeyDown}
+      {...(markMode ? { 'data-marking': '' } : {})}
+    >
       {paths.length > 0 && (
         <svg
           className="la-links"
@@ -451,6 +717,22 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
               }
               const ink = inkAt(row.classIndex);
               const dim = activeClass !== '' && row.classKey !== activeClass;
+              // The selected long-range finding, drawn back onto the lyric:
+              // solid where it lands, faint across everything it reaches over.
+              const struct = structSpan
+                ? structSpan.lines.has(row.line)
+                  ? 'member'
+                  : row.line > structSpan.from && row.line < structSpan.to
+                    ? 'through'
+                    : ''
+                : '';
+              // A word may be cut into several pieces by the findings on it;
+              // only the first piece carries the tab stop, so one word is one
+              // stop and "ele|VATION" is not two.
+              const firstPieceOf = new Map<number, number>();
+              row.segments.forEach((s, i) => {
+                if (s.word >= 0 && !firstPieceOf.has(s.word)) firstPieceOf.set(s.word, i);
+              });
               return (
                 <div
                   key={row.line}
@@ -459,6 +741,12 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
                   data-kind={row.kind}
                   {...(dim ? { 'data-dim': '' } : {})}
                   {...(!dim && activeClass !== '' && row.classKey === activeClass ? { 'data-hit': '' } : {})}
+                  {...(struct ? { 'data-struct': struct } : {})}
+                  style={
+                    struct && structSpan
+                      ? ({ '--struct-rgb': structSpan.rgb } as React.CSSProperties)
+                      : undefined
+                  }
                 >
                   <div className="la-gutter" style={{ width: `${gutter}px` }} aria-hidden="true">
                     {cellsFor()}
@@ -492,31 +780,103 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
 
                   <div className="la-text">
                     {row.segments.length ? (
-                      row.segments.map((seg) => {
+                      row.segments.map((seg, si) => {
+                        const key = seg.word >= 0 ? wordMarkKey(row.line, seg.word) : '';
+                        const cell = key ? markIndex?.get(key) : undefined;
+                        const picked = !!key && !!selection?.has(key);
+                        const segInk = seg.classIndex >= 0 ? inkAt(seg.classIndex) : null;
+                        const on = !!selectedGroup && seg.groups.includes(selectedGroup);
+                        // Everything the piece is wearing, whichever element it
+                        // turns out to be: the engine's underline, the writer's
+                        // box, and the pick being composed right now.
+                        const paint = {
+                          'data-seg': `${row.line}:${seg.start}:${seg.end}`,
+                          ...(seg.family
+                            ? {
+                                'data-device': seg.family,
+                                'data-sure': sureTier(seg.confidence),
+                                ...(seg.stack > 1 ? { 'data-stack': Math.min(3, seg.stack) } : {}),
+                                ...(on ? { 'data-device-on': '' } : {}),
+                              }
+                            : {}),
+                          ...(cell ? { 'data-mark': cell.verdict } : {}),
+                          ...(picked ? { 'data-sel': '' } : {}),
+                          style: {
+                            ...(seg.family ? { '--dev-a': alphaFor(seg.confidence) } : {}),
+                            ...(seg.family && segInk ? { '--dev-rgb': segInk.rgb } : {}),
+                            ...(cell ? { '--mark-rgb': MARK_RGB[cell.verdict] } : {}),
+                          } as React.CSSProperties,
+                        };
+                        const deviceSays = seg.family
+                          ? `${seg.title} · ${pct(seg.confidence)} ${SURE_WORDS[sureTier(seg.confidence)]}`
+                          : '';
+                        const markSays = cell ? `${MARK_WORDS[cell.verdict]}: ${cell.title}` : '';
+
+                        // Marking: every word is a target, and the tab stop
+                        // rides on one of them (the arrows move it).
+                        if (markMode && key && onWord) {
+                          return (
+                            <button
+                              key={seg.start}
+                              type="button"
+                              {...paint}
+                              data-word={key}
+                              tabIndex={key === tabKey && firstPieceOf.get(seg.word) === si ? 0 : -1}
+                              onPointerDown={(e) => {
+                                draggingRef.current = true;
+                                setFocusKey(key);
+                                onWord(row.line, seg.word, e.shiftKey ? 'range' : 'toggle');
+                              }}
+                              onPointerEnter={() => {
+                                if (draggingRef.current) onWord(row.line, seg.word, 'drag');
+                              }}
+                              onFocus={() => setFocusKey(key)}
+                              // A keyboard activation only: the pointer path is
+                              // handled above, and `detail` is 0 for space/enter.
+                              onClick={(e) => {
+                                if (e.detail === 0) onWord(row.line, seg.word, e.shiftKey ? 'range' : 'toggle');
+                              }}
+                              aria-pressed={picked}
+                              aria-label={`${seg.text || 'space'}, line ${row.line + 1} word ${seg.word + 1}${
+                                markSays ? ` — ${markSays}` : ''
+                              }${deviceSays ? ` — ${deviceSays}` : ''}`}
+                              title={`${picked ? 'picked' : 'pick this word'} — shift to take everything back to the last pick\narrows move · space picks · enter names them · escape drops them${
+                                markSays ? `\n${markSays}` : ''
+                              }${deviceSays ? `\n${deviceSays}` : ''}`}
+                            >
+                              {seg.text}
+                            </button>
+                          );
+                        }
+
+                        // Reading: a marked word opens ITS mark, a found one
+                        // opens the finding, and plain text is plain text.
+                        if (cell && onOpenMark) {
+                          return (
+                            <button
+                              key={seg.start}
+                              type="button"
+                              {...paint}
+                              onClick={() => onOpenMark(cell.ids[0])}
+                              aria-label={`${seg.text}: ${markSays}${deviceSays ? ` — ${deviceSays}` : ''}`}
+                              title={`${markSays}${deviceSays ? `\n${deviceSays}` : ''}`}
+                            >
+                              {seg.text}
+                            </button>
+                          );
+                        }
                         if (!seg.family) {
                           return (
-                            <span key={seg.start} data-seg={`${row.line}:${seg.start}:${seg.end}`}>
+                            <span key={seg.start} {...paint}>
                               {seg.text}
                             </span>
                           );
                         }
-                        const segInk = seg.classIndex >= 0 ? inkAt(seg.classIndex) : null;
-                        const on = !!selectedGroup && seg.groups.includes(selectedGroup);
                         return (
                           <button
                             key={seg.start}
                             type="button"
-                            data-seg={`${row.line}:${seg.start}:${seg.end}`}
-                            data-device={seg.family}
-                            data-sure={sureTier(seg.confidence)}
-                            {...(seg.stack > 1 ? { 'data-stack': Math.min(3, seg.stack) } : {})}
-                            {...(on ? { 'data-device-on': '' } : {})}
-                            style={
-                              {
-                                '--dev-a': alphaFor(seg.confidence),
-                                ...(segInk ? { '--dev-rgb': segInk.rgb } : {}),
-                              } as React.CSSProperties
-                            }
+                            {...paint}
                             onClick={() => onPickDevice(seg.deviceId)}
                             aria-pressed={seg.deviceId === selectedDeviceId}
                             aria-label={`${seg.text}: ${seg.title}, ${pct(seg.confidence)} ${SURE_WORDS[sureTier(seg.confidence)]}`}
@@ -591,6 +951,450 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
   );
 };
 
+// --- the shape over distance -----------------------------------------------
+
+/**
+ * The long-range rhyme findings, each on its own track spanning the whole
+ * lyric: a run is a block, a chain is a thread with its members ticked, a
+ * callback is a dashed reach with both ends capped, a bookend is a section
+ * tied at its two edges. The kind is in the shape AND in the code letters at
+ * the left, so nothing here needs a colour to be read; picking one lights its
+ * lines on the sheet below and draws its ends as a wire.
+ */
+const StructureMap: React.FC<{
+  map: StructureMapModel;
+  rows: SheetRow[];
+  selectedDeviceId: string | null;
+  onPick: (deviceId: string) => void;
+}> = ({ map, rows, selectedDeviceId, onPick }) => {
+  const { bands, columns } = map;
+  // Where the sections change, on the same axis the bands are drawn on: a
+  // callback landing in a later section reads as one, not as a long arrow.
+  const sectionCuts = useMemo(() => {
+    const cuts: number[] = [];
+    let col = 0;
+    let last = '';
+    for (const row of rows) {
+      if (row.blank) continue;
+      if (col > 0 && row.section !== last) cuts.push(col);
+      last = row.section;
+      col += 1;
+    }
+    return cuts;
+  }, [rows]);
+
+  const kindsHere = useMemo(
+    () => Array.from(new Set(bands.map((b) => b.kind))),
+    [bands],
+  );
+
+  if (!bands.length || !columns) return null;
+
+  const capped = (band: StructureBand): boolean => band.kind === 'callback' || band.kind === 'bookend';
+
+  return (
+    <div className="px-2 pb-2 pt-1">
+      <div className="flex flex-col gap-1">
+        {bands.map((band) => {
+          const on = band.deviceId === selectedDeviceId;
+          const left = (band.start / columns) * 100;
+          const width = ((band.end - band.start + 1) / columns) * 100;
+          const first = band.lines[0] + 1;
+          const last = band.lines[band.lines.length - 1] + 1;
+          const where = band.sections.length ? ` across ${band.sections.join(', ')}` : '';
+          const says = `${kindWords(band.kind)}: ${clip(band.label, MAX_LABEL_CHARS)} — lines ${first} to ${last}, ${band.lines.length} of them${where}`;
+          return (
+            <div key={band.id} className="flex items-center gap-1.5">
+              <span
+                className="w-10 shrink-0 text-[8px] font-mono uppercase tracking-widest"
+                style={{ color: `rgb(${band.rgb})` }}
+                aria-hidden="true"
+              >
+                {band.code}
+              </span>
+              <div className="la-track min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => onPick(band.deviceId)}
+                  aria-pressed={on}
+                  aria-label={`${says}. Show it on the lyric.`}
+                  title={`${says}${band.detail ? `\n${band.detail}` : ''}\n${LONG_RANGE_BLURB[band.kind] ?? ''}`}
+                >
+                  {sectionCuts.map((cut) => (
+                    <i key={cut} data-sect="" style={{ left: `${(cut / columns) * 100}%` }} />
+                  ))}
+                  <i
+                    data-band={band.kind}
+                    style={
+                      {
+                        left: `${left}%`,
+                        width: `${width}%`,
+                        '--band-rgb': band.rgb,
+                      } as React.CSSProperties
+                    }
+                  />
+                  {band.positions.map((p, i) => (
+                    <i
+                      key={p}
+                      data-tick={
+                        capped(band) && (i === 0 || i === band.positions.length - 1) ? 'cap' : ''
+                      }
+                      style={
+                        {
+                          left: `${((p + 0.5) / columns) * 100}%`,
+                          '--band-rgb': band.rgb,
+                        } as React.CSSProperties
+                      }
+                    />
+                  ))}
+                </button>
+              </div>
+              <span
+                className="w-14 shrink-0 text-right text-[9px] font-mono tabular-nums text-zinc-500"
+                aria-hidden="true"
+              >
+                L{first}–L{last}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-1.5 text-[8px] font-mono text-zinc-600">
+        {kindsHere.map((kind) => (
+          <span key={kind}>
+            <span className="text-zinc-400">{LONG_RANGE_CODE[kind] ?? kind}</span>{' '}
+            {LONG_RANGE_BLURB[kind] ?? kindWords(kind)}
+          </span>
+        ))}
+      </div>
+      {map.overflow > 0 && (
+        <div className="pt-1 text-[9px] font-mono text-zinc-600">
+          +{map.overflow} shorter {map.overflow === 1 ? 'shape' : 'shapes'} not drawn — the map keeps
+          the long ones, and all of them are in the findings list
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- marking by hand -------------------------------------------------------
+
+interface Composer {
+  /** The mark being edited, or null while a new one is being named. */
+  id: string | null;
+  kind: string;
+  /** Until the writer picks a kind themselves, it follows the shape of what
+   *  they picked: words on one line are an internal rhyme, words down a page
+   *  are an end rhyme. */
+  kindTouched: boolean;
+  label: string;
+  note: string;
+  verdict: MarkVerdict;
+}
+
+/**
+ * Naming what has just been picked. It lives outside the scrolling body on
+ * purpose: a writer picks a word at the top of a verse and another at the
+ * bottom, and the bar they name them in must not have scrolled away by then.
+ */
+const MarkComposer: React.FC<{
+  uid: string;
+  composer: Composer;
+  onChange: (patch: Partial<Composer>) => void;
+  spans: Span[];
+  onSave: () => void;
+  onCancel: () => void;
+  onDelete: (() => void) | null;
+}> = ({ uid, composer, onChange, spans, onSave, onCancel, onDelete }) => {
+  const words = spans.map((s) => s.text).filter(Boolean);
+  const lines = new Set(spans.map((s) => s.line)).size;
+  const empty = spans.length === 0;
+  return (
+    <div
+      className="shrink-0 border-b border-white/5 bg-black/40 px-2 py-1.5 text-[9px] font-mono"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          onCancel();
+        }
+        if (e.key === 'Enter' && !empty) {
+          e.preventDefault();
+          onSave();
+        }
+      }}
+    >
+      {/* What is picked gets its own line. Sharing one with the controls put
+          it in a flex track that collapsed to "n." at split-pane width. */}
+      <div className="flex items-baseline gap-2">
+        <span
+          className="la-mark-chip shrink-0"
+          data-verdict={composer.verdict}
+          style={{ '--mark-rgb': MARK_RGB[composer.verdict] } as React.CSSProperties}
+          aria-hidden="true"
+        />
+        <span className="shrink-0 uppercase tracking-widest text-amber-200">
+          {composer.id ? 'edit mark' : 'new mark'}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-200" title={words.join(' / ')}>
+          {empty ? (
+            <span className="text-zinc-500">
+              pick the words on the lyric — click one, then the next; shift takes everything between.
+              From the keyboard: arrows move, space picks, enter names them.
+            </span>
+          ) : (
+            `${clip(words.join(' / '), 60)} · ${spans.length} ${spans.length === 1 ? 'word' : 'words'} on ${lines} ${lines === 1 ? 'line' : 'lines'}`
+          )}
+        </span>
+      </div>
+
+      {/* Each label stays glued to its own control: they wrap as pairs, never
+          leaving a label stranded at the end of a row. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1">
+        <span className="flex shrink-0 items-center gap-1">
+          <label htmlFor={`la-mark-kind-${uid}`} className="text-zinc-500">
+            IT IS A
+          </label>
+          <select
+            id={`la-mark-kind-${uid}`}
+            name={`la-mark-kind-${uid}`}
+            className="form-select min-w-28 px-1 py-0.5 text-[9px]"
+            value={composer.kind}
+            onChange={(e) => onChange({ kind: e.target.value })}
+          >
+            {MARK_KINDS.map(([value, label]) => (
+              <option key={value || 'note'} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </span>
+
+        <span className="flex min-w-40 grow items-center gap-1">
+          <label htmlFor={`la-mark-label-${uid}`} className="shrink-0 text-zinc-500">
+            CALL IT
+          </label>
+          <input
+            id={`la-mark-label-${uid}`}
+            name={`la-mark-label-${uid}`}
+            type="text"
+            className="form-select min-w-0 grow px-1 py-0.5 text-[9px]"
+            value={composer.label}
+            placeholder={empty ? 'named after the words by default' : autoMarkLabel(composer.kind, spans)}
+            onChange={(e) => onChange({ label: e.target.value })}
+            spellCheck={false}
+          />
+        </span>
+
+        <span className="flex shrink-0 items-center gap-1">
+          <input
+            id={`la-mark-ground-${uid}`}
+            name={`la-mark-ground-${uid}`}
+            type="checkbox"
+            className="accent-emerald-400"
+            checked={composer.verdict === 'confirm'}
+            onChange={(e) => onChange({ verdict: e.target.checked ? 'confirm' : 'mark' })}
+          />
+          <label
+            htmlFor={`la-mark-ground-${uid}`}
+            className="cursor-pointer select-none text-zinc-300"
+            title="The engine missed this and it IS real. Kept as ground truth beside the analysis rather than as one of your notes."
+          >
+            THE ENGINE MISSED THIS
+          </label>
+        </span>
+
+        <span className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            className="btn-ghost border border-amber-400/40 px-1.5 py-0.5 text-amber-100 disabled:opacity-40"
+            onClick={onSave}
+            disabled={empty}
+            title="Save these words as one mark (Enter)"
+          >
+            {composer.id ? 'SAVE' : 'MARK IT'}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost px-1.5 py-0.5 text-zinc-400"
+            onClick={onCancel}
+            title="Drop the picked words (Escape)"
+          >
+            {composer.id ? 'CANCEL' : 'CLEAR'}
+          </button>
+          {onDelete && (
+            <button
+              type="button"
+              className="btn-ghost px-1 py-0.5 text-rose-300"
+              onClick={onDelete}
+              aria-label="Delete this mark"
+              title="Delete this mark"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          )}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 pt-1">
+        <label htmlFor={`la-mark-note-${uid}`} className="shrink-0 text-zinc-500">
+          NOTE
+        </label>
+        <input
+          id={`la-mark-note-${uid}`}
+          name={`la-mark-note-${uid}`}
+          type="text"
+          className="form-select min-w-0 flex-1 px-1 py-0.5 text-[9px]"
+          value={composer.note}
+          placeholder="why it matters, how it should land — anything the analysis cannot hear"
+          onChange={(e) => onChange({ note: e.target.value })}
+        />
+      </div>
+    </div>
+  );
+};
+
+/** The writer's marks, listed: what they are, where they are, and the two
+ *  buttons that matter — open it up again, or throw it away. */
+const MarksList: React.FC<{
+  marks: LyricMark[];
+  editingId: string | null;
+  /** Marks the lyric moved out from under: listed, never painted. */
+  stale: ReadonlySet<string>;
+  onEdit: (mark: LyricMark) => void;
+  onDelete: (id: string) => void;
+  onJump: (line: number) => void;
+}> = ({ marks, editingId, stale, onEdit, onDelete, onJump }) => {
+  if (!marks.length) {
+    return (
+      <div className="px-2 py-2 text-[9px] font-mono text-zinc-600">
+        Nothing marked yet. Switch MARK on, click the words that rhyme — two, three, as many as you
+        hear — and name them.
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col px-2 pb-2 pt-1">
+      {marks.map((mark) => {
+        const on = mark.id === editingId;
+        const line = mark.spans[0]?.line ?? 0;
+        const moved = stale.has(mark.id);
+        return (
+          <div
+            key={mark.id}
+            className={`flex items-baseline gap-2 rounded px-1 py-0.5 ${on ? 'bg-white/10' : ''}`}
+          >
+            <span
+              className="la-mark-chip shrink-0"
+              data-verdict={mark.verdict}
+              style={{ '--mark-rgb': MARK_RGB[mark.verdict] } as React.CSSProperties}
+              aria-hidden="true"
+            />
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left text-[10px] text-zinc-200 hover:text-white"
+              onClick={() => onJump(line)}
+              title={`${MARK_WORDS[mark.verdict]}${mark.note ? ` — ${mark.note}` : ''} — jump to line ${line + 1}`}
+            >
+              <span className="text-zinc-500">{MARK_GLYPH[mark.verdict]} </span>
+              {clip(mark.label || autoMarkLabel(mark.kind, mark.spans), MAX_LABEL_CHARS)}
+              {mark.note && <span className="pl-2 text-[9px] font-mono text-zinc-500">{clip(mark.note, 60)}</span>}
+            </button>
+            {moved && (
+              <span
+                className="shrink-0 rounded border border-amber-400/40 px-1 text-[8px] font-mono uppercase tracking-widest text-amber-300"
+                title="The words this was placed on have been rewritten, so it is no longer drawn on the lyric. Open it and pick the words again."
+              >
+                moved
+              </span>
+            )}
+            <span className="shrink-0 text-[9px] font-mono text-zinc-600">{markLines(mark)}</span>
+            {/* A rejection has nothing to edit: it is a yes/no about a finding
+                the engine made, and the only move left is to take it back. */}
+            {mark.verdict !== 'reject' && (
+              <button
+                type="button"
+                className="btn-ghost shrink-0 px-1 py-0.5 text-zinc-400"
+                onClick={() => onEdit(mark)}
+                aria-label={`Edit the mark ${mark.label || mark.kind || 'note'}`}
+                title="Edit this mark — its words, its name, its note"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn-ghost shrink-0 px-1 py-0.5 text-rose-300"
+              onClick={() => onDelete(mark.id)}
+              aria-label={`Delete the mark ${mark.label || mark.kind || 'note'}`}
+              title={mark.verdict === 'reject' ? 'Undo this rejection — the finding comes back' : 'Delete this mark'}
+            >
+              {mark.verdict === 'reject' ? <RotateCcw className="h-3 w-3" /> : <Trash2 className="h-3 w-3" />}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+/** Yes / no on one finding, from the finding itself. Two clicks are the whole
+ *  interaction: the engine got it wrong, or the engine got it right. */
+const Verdicts: React.FC<{
+  device: Device;
+  verdict: MarkVerdict | null;
+  /** How many findings share this one's group, and so go with it. A reject
+   *  names a `Device.group` — the only handle that survives a re-run — and a
+   *  group can hold a whole rhyme class: on a monorhyme verse one cross on a
+   *  slant rhyme also takes both of the rhyme runs with it. The writer is told
+   *  before they click, not after the long-shape map empties. */
+  siblings: number;
+  onConfirm: () => void;
+  onReject: () => void;
+  onUndo: () => void;
+}> = ({ device, verdict, siblings, onConfirm, onReject, onUndo }) => {
+  const name = clip(device.label, 40);
+  const also =
+    siblings > 1
+      ? ` — and the ${siblings - 1} other ${siblings === 2 ? 'finding' : 'findings'} on this rhyme class`
+      : '';
+  if (verdict) {
+    return (
+      <button
+        type="button"
+        className="btn-ghost shrink-0 px-1 py-0.5"
+        style={{ color: `rgb(${MARK_RGB[verdict]})` }}
+        onClick={onUndo}
+        aria-label={`${MARK_WORDS[verdict]} — undo that for ${name}`}
+        title={`${MARK_WORDS[verdict]} — click to undo`}
+      >
+        {MARK_GLYPH[verdict]}
+      </button>
+    );
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className="btn-ghost shrink-0 px-1 py-0.5 text-zinc-500 hover:text-emerald-300"
+        onClick={onConfirm}
+        aria-label={`Confirm ${name}: it is real`}
+        title="It is real — keep it as ground truth"
+      >
+        <Check className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        className="btn-ghost shrink-0 px-1 py-0.5 text-zinc-500 hover:text-rose-300"
+        onClick={onReject}
+        aria-label={`Reject ${name}: that is not one${also}`}
+        title={`That is not one — hide it everywhere${also}`}
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </>
+  );
+};
+
 // --- the inspector ---------------------------------------------------------
 
 /** One finding, opened up: what it covers, what it sounds like, and why the
@@ -599,7 +1403,27 @@ const Inspector: React.FC<{
   device: Device;
   onClose: () => void;
   onJump: (line: number) => void;
-}> = ({ device, onClose, onJump }) => {
+  /** What the writer has already said about this finding, if anything. */
+  verdict: MarkVerdict | null;
+  /** Findings sharing this one's group — see `Verdicts`. */
+  siblings: number;
+  /** False where a verdict has nowhere to be saved: the tick and the cross are
+   *  marks like any other, so in SING they would be buttons that do nothing. */
+  canJudge: boolean;
+  onConfirm: () => void;
+  onReject: () => void;
+  onUndoVerdict: () => void;
+}> = ({
+  device,
+  onClose,
+  onJump,
+  verdict,
+  siblings,
+  canJudge,
+  onConfirm,
+  onReject,
+  onUndoVerdict,
+}) => {
   const family = asFamily(device.family);
   const tier = sureTier(device.confidence);
   return (
@@ -638,6 +1462,16 @@ const Inspector: React.FC<{
             {pct(device.confidence)} {SURE_WORDS[tier]}
           </span>
         </span>
+        {canJudge && (
+          <Verdicts
+            device={device}
+            verdict={verdict}
+            siblings={siblings}
+            onConfirm={onConfirm}
+            onReject={onReject}
+            onUndo={onUndoVerdict}
+          />
+        )}
         <button
           type="button"
           className="btn-ghost shrink-0 px-1 py-0.5"
@@ -765,12 +1599,33 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
   const providers = useLyricAnalysisStore((s) => s.providers);
   const provider = useLyricAnalysisStore((s) => s.provider);
   const model = useLyricAnalysisStore((s) => s.model);
+  const markMode = useLyricAnalysisStore((s) => s.markMode);
+  const storedMarks = useLyricAnalysisStore((s) => s.marks);
+  const storedStale = useLyricAnalysisStore((s) => s.marksStale);
+  const marksDocId = useLyricAnalysisStore((s) => s.marksDocId);
+  const marksSaving = useLyricAnalysisStore((s) => s.marksSaving);
+  const marksError = useLyricAnalysisStore((s) => s.marksError);
+  const marksDropped = useLyricAnalysisStore((s) => s.marksDropped);
+  const marksSupported = useLyricAnalysisStore((s) => s.marksSupported);
 
   /** The rhyme class the sheet is isolating, as a `SheetRow.classKey`; the
    *  letter badges and the class chips toggle it. */
   const [activeClass, setActiveClass] = useState('');
   /** The line the shape strip last jumped to, so it can mark where you are. */
   const [activeLine, setActiveLine] = useState(-1);
+  /** The words picked for the mark being composed, keyed `line:word`. */
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set<string>());
+  /** Where the last pick landed, so a shift-click knows what "back to there"
+   *  means. */
+  const anchorRef = useRef<{ line: number; word: number } | null>(null);
+  const [composer, setComposer] = useState<Composer>({
+    id: null,
+    kind: 'end-rhyme',
+    kindTouched: false,
+    label: '',
+    note: '',
+    verdict: 'mark',
+  });
 
   const store = useLyricAnalysisStore.getState;
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -787,12 +1642,87 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
     else useLyricAnalysisStore.getState().clear();
   }, [entryId, hosted]);
 
-  const shown = useMemo(() => visibleDevices(doc, families, minConfidence), [doc, families, minConfidence]);
+  // The marks are the WRITER's, not the analysis's, so they are loaded in
+  // hosted mode too — the notebook page has them as much as the song does.
+  useEffect(() => {
+    setSelection(new Set<string>());
+    anchorRef.current = null;
+    setComposer((c) => ({ ...c, id: null, label: '', note: '', verdict: 'mark' }));
+    if (entryId) void useLyricAnalysisStore.getState().loadMarks(entryId);
+  }, [entryId]);
+
+  // Leaving the pane is a save point: the debounce may still be counting down
+  // on a mark the writer just made.
+  useEffect(
+    () => () => {
+      void useLyricAnalysisStore.getState().flushMarks();
+    },
+    [],
+  );
+
+  /** The marks only ever belong to the document on screen: a set still in the
+   *  store from the last song must never be painted onto this one. */
+  const marks = useMemo(
+    () => (entryId && marksDocId === entryId ? storedMarks : []),
+    [entryId, marksDocId, storedMarks],
+  );
+
+  /** The ids the lyric has moved out from under: still listed, never drawn. */
+  const staleMarks = useMemo(
+    () => new Set(entryId && marksDocId === entryId ? storedStale : []) as ReadonlySet<string>,
+    [entryId, marksDocId, storedStale],
+  );
+
+  /** The writer's veto, applied everywhere the findings are read from. */
+  const rejected = useMemo(() => rejectedGroups(marks), [marks]);
+
+  /** group -> what the writer said about it, for the tick/cross on a finding. */
+  const verdictOf = useMemo(() => {
+    const out = new Map<string, MarkVerdict>();
+    for (const m of marks) {
+      if (m.target_group && m.verdict !== 'mark') out.set(m.target_group, m.verdict);
+    }
+    return out;
+  }, [marks]);
+
+  const markIndex = useMemo(() => buildMarkIndex(marks, staleMarks), [marks, staleMarks]);
+
+  const shown = useMemo(
+    () => visibleDevices(doc, families, minConfidence, rejected),
+    [doc, families, minConfidence, rejected],
+  );
 
   const sheet = useMemo(
-    () => buildSheetModel(doc, lyrics, families, minConfidence),
-    [doc, lyrics, families, minConfidence],
+    () => buildSheetModel(doc, lyrics, families, minConfidence, rejected),
+    [doc, lyrics, families, minConfidence, rejected],
   );
+
+  const structure = useMemo(() => buildStructureMap(shown, sheet.rows), [shown, sheet.rows]);
+
+  /** Every finding the engine actually made, with the writer's own marks taken
+   *  back out — a document's run answers with them merged in. This is the
+   *  denominator "N of M findings" means. */
+  const detected = useMemo(() => detectedDevices(doc), [doc]);
+
+  /** group -> how many findings are in it, so a cross can say what it takes. */
+  const groupSize = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const d of detected) {
+      const g = d.group || d.id;
+      out.set(g, (out.get(g) ?? 0) + 1);
+    }
+    return out;
+  }, [detected]);
+
+  /** What the veto actually removed HERE. A reject names a whole group, so one
+   *  cross can take four findings; and when the document arrived already merged
+   *  the struck ones are gone from `doc.devices` altogether, and the number of
+   *  vetoes is the only count left to show. */
+  const struck = useMemo(() => {
+    if (!rejected.size) return 0;
+    const here = detected.filter((d) => rejected.has(d.group || d.id)).length;
+    return here || rejected.size;
+  }, [detected, rejected]);
 
   const devicesById = useMemo(() => {
     const map = new Map<string, Device>();
@@ -863,6 +1793,124 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
       if (!already && device.spans.length) setActiveLine(device.spans[0].line);
     },
     [devicesById],
+  );
+
+  /** The long-range finding being read, put back onto the lyric as a spine. */
+  const structSpan = useMemo(() => {
+    if (!selectedDevice || !LONG_RANGE_KINDS.includes(selectedDevice.kind)) return null;
+    const lines = selectedDevice.spans.map((s) => s.line).filter((l) => l >= 0);
+    if (!lines.length) return null;
+    return {
+      rgb: groupInk(selectedDevice.group || selectedDevice.id).rgb,
+      from: Math.min(...lines),
+      to: Math.max(...lines),
+      lines: new Set(lines) as ReadonlySet<number>,
+    };
+  }, [selectedDevice]);
+
+  // --- marking ------------------------------------------------------------
+
+  const selectedSpans = useMemo(
+    () => spansFromSelection(sheet.rows, selection),
+    [sheet.rows, selection],
+  );
+
+  const onWordPick = useCallback(
+    (line: number, word: number, mode: 'toggle' | 'range' | 'drag') => {
+      const key = wordMarkKey(line, word);
+      setSelection((prev) => {
+        const next = new Set(prev);
+        if (mode === 'range' && anchorRef.current) {
+          for (const k of rangeKeys(sheet.rows, anchorRef.current, { line, word })) next.add(k);
+        } else if (mode === 'drag') {
+          next.add(key);
+        } else if (next.has(key)) {
+          next.delete(key);
+        } else {
+          next.add(key);
+        }
+        return next;
+      });
+      // A shift-click reaches BACK to the anchor, so the anchor stays put; a
+      // plain pick is the new one.
+      if (mode === 'toggle') anchorRef.current = { line, word };
+    },
+    [sheet.rows],
+  );
+
+  // While the writer has not chosen a kind, it follows what they picked.
+  useEffect(() => {
+    if (composer.id || composer.kindTouched || !selectedSpans.length) return;
+    const oneLine = new Set(selectedSpans.map((s) => s.line)).size === 1;
+    const kind = oneLine ? 'internal-rhyme' : 'end-rhyme';
+    setComposer((c) => (c.kind === kind ? c : { ...c, kind }));
+  }, [selectedSpans, composer.id, composer.kindTouched]);
+
+  const cancelMark = useCallback(() => {
+    setSelection(new Set<string>());
+    anchorRef.current = null;
+    setComposer((c) => ({ ...c, id: null, label: '', note: '', verdict: 'mark' }));
+  }, []);
+
+  const saveMark = useCallback(() => {
+    if (!selectedSpans.length) return;
+    const st = useLyricAnalysisStore.getState();
+    const label = composer.label.trim() || autoMarkLabel(composer.kind, selectedSpans);
+    const body = {
+      kind: composer.kind,
+      label,
+      note: composer.note.trim(),
+      verdict: composer.verdict,
+      spans: selectedSpans,
+    };
+    if (composer.id) st.updateMark(composer.id, body);
+    else st.addMark(body);
+    cancelMark();
+  }, [composer, selectedSpans, cancelMark]);
+
+  const editMark = useCallback(
+    (mark: LyricMark) => {
+      useLyricAnalysisStore.getState().setMarkMode(true);
+      const picked = mark.spans.filter((s) => s.line >= 0 && s.word >= 0);
+      setSelection(new Set(picked.map((s) => wordMarkKey(s.line, s.word))));
+      anchorRef.current = picked.length ? { line: picked[0].line, word: picked[0].word } : null;
+      setComposer({
+        id: mark.id,
+        kind: mark.kind,
+        kindTouched: true,
+        label: mark.label,
+        note: mark.note,
+        verdict: mark.verdict === 'reject' ? 'mark' : mark.verdict,
+      });
+      if (picked.length) jumpToLine(picked[0].line);
+    },
+    [jumpToLine],
+  );
+
+  const deleteMark = useCallback(
+    (id: string) => {
+      useLyricAnalysisStore.getState().removeMark(id);
+      if (composer.id === id) cancelMark();
+    },
+    [composer.id, cancelMark],
+  );
+
+  const openMark = useCallback(
+    (id: string) => {
+      const mark = marks.find((m) => m.id === id);
+      if (mark) editMark(mark);
+    },
+    [marks, editMark],
+  );
+
+  const setMarkMode = useCallback(
+    (on: boolean) => {
+      useLyricAnalysisStore.getState().setMarkMode(on);
+      // Leaving marking mode with words still picked would hide the bar they
+      // are named in and leave them lit on the sheet with no way to use them.
+      if (!on) cancelMark();
+    },
+    [cancelMark],
   );
 
   const busy = !!job || !!analyzing;
@@ -1142,9 +2190,104 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
             </label>
           </span>
 
-          <span className="text-zinc-600">
-            {shown.length} of {doc.devices.length} findings shown
+          {/* Marking is offered only where a mark has somewhere to live. The
+              routes store them against a lyric DOCUMENT, so a song opened from
+              the library has no home for one, and a checkbox here would hand
+              the writer a flow whose every save is a 404. */}
+          {marksSupported ? (
+            <span className="flex items-center gap-1">
+              <input
+                id={`la-mark-${uid}`}
+                name={`la-mark-${uid}`}
+                type="checkbox"
+                className="accent-amber-400"
+                checked={markMode}
+                onChange={(e) => setMarkMode(e.target.checked)}
+              />
+              <label
+                htmlFor={`la-mark-${uid}`}
+                className="cursor-pointer select-none text-amber-200"
+                title="Mark the lyric yourself: click the words that rhyme — two, three, as many as you hear — and name them as one. Your marks are drawn as boxes, never as another underline."
+              >
+                MARK
+              </label>
+              <span className="la-mark-chip" aria-hidden="true" />
+              <span className="tabular-nums text-zinc-600">{marks.length}</span>
+            </span>
+          ) : (
+            <span
+              className="text-zinc-600"
+              title="Marks are saved on a lyric in the LYRIC notebook, which is where a draft can be written and re-read. A song opened from the library has nowhere to keep them."
+            >
+              MARK IN THE LYRIC TAB
+            </span>
+          )}
+
+          <span
+            className="text-zinc-600"
+            title={
+              struck > 0
+                ? 'A rejection strikes out the whole rhyme class the finding belongs to, so one cross can take several findings with it.'
+                : undefined
+            }
+          >
+            {shown.length} of {detected.length} findings shown
+            {struck > 0 && ` · ${struck} struck out by you`}
           </span>
+        </div>
+      )}
+
+      {/* The bar the picked words are named in. Outside the scrolling body, so
+          picking a word at the top of a verse and one at the bottom still ends
+          in the same place. */}
+      {doc && markMode && marksSupported && (
+        <MarkComposer
+          uid={uid}
+          composer={composer}
+          onChange={(patch) =>
+            setComposer((c) => ({
+              ...c,
+              ...patch,
+              ...(patch.kind !== undefined ? { kindTouched: true } : {}),
+            }))
+          }
+          spans={selectedSpans}
+          onSave={saveMark}
+          onCancel={cancelMark}
+          onDelete={composer.id ? () => deleteMark(composer.id as string) : null}
+        />
+      )}
+
+      {marksError && (
+        <div className="shrink-0 flex items-center gap-2 border-b border-white/5 bg-black/20 px-2 py-1 text-[9px] font-mono">
+          <span className="text-amber-300">your marks: {marksError}</span>
+          <button
+            type="button"
+            className="btn-ghost px-1 py-0.5"
+            onClick={() => store().clearMarksError()}
+            aria-label="Dismiss the marks error"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* A mark whose anchors name no word in the lyric is not stored. Saying
+          so is the difference between a shorter list and a lost annotation. */}
+      {marksDropped > 0 && (
+        <div className="shrink-0 flex items-center gap-2 border-b border-white/5 bg-black/20 px-2 py-1 text-[9px] font-mono">
+          <span className="text-amber-300">
+            {marksDropped} {marksDropped === 1 ? 'mark was' : 'marks were'} not saved — the words
+            they were on are no longer in the lyric
+          </span>
+          <button
+            type="button"
+            className="btn-ghost px-1 py-0.5"
+            onClick={() => store().clearMarksDropped()}
+            aria-label="Dismiss the unsaved marks notice"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -1176,6 +2319,24 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
           {/* SHAPE */}
           <SectionHead title="Shape" hint="syllables · findings · rhyme class, line by line" />
           <ShapeStrip model={sheet} activeLine={activeLine} onJump={jumpToLine} />
+
+          {/* THE LONG SHAPE: runs, chains, callbacks and bookends, drawn over
+              the same line axis as the strip above so the two read as one
+              picture of the song rather than as a list of pairs. */}
+          {structure.bands.length > 0 && (
+            <>
+              <SectionHead
+                title="The long shape"
+                hint="runs, chains, callbacks and bookends across the whole lyric"
+              />
+              <StructureMap
+                map={structure}
+                rows={sheet.rows}
+                selectedDeviceId={selectedDeviceId}
+                onPick={pickDevice}
+              />
+            </>
+          )}
 
           {/* THE SHEET */}
           <SectionHead title="The lyric" hint={doc.scheme ? clip(doc.scheme, 48) : undefined} />
@@ -1242,6 +2403,14 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
             showStress={stress}
             hasWords={hasWords}
             sheetRef={sheetRef}
+            markMode={markMode && marksSupported}
+            selection={selection}
+            onWord={onWordPick}
+            onCommitPick={saveMark}
+            onCancelPick={cancelMark}
+            markIndex={markIndex}
+            onOpenMark={openMark}
+            structSpan={structSpan}
           />
 
           {/* FINDINGS */}
@@ -1269,30 +2438,50 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
                           const group = d.group || d.id;
                           const lit = !on && !!selectedGroup && selectedGroup === group;
                           return (
-                            <button
+                            // Not one button: the row opens the finding and the
+                            // two verdicts answer it, and a button inside a
+                            // button is not a thing.
+                            <div
                               key={d.id}
-                              type="button"
-                              className={`flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left hover:bg-white/5 ${on ? 'bg-white/10' : lit ? 'bg-white/5' : ''}`}
-                              onClick={() => pickDevice(d.id)}
-                              aria-pressed={on}
-                              title={[d.label, d.detail, d.phones.length ? `phones: ${d.phones.join(' ')}` : '']
-                                .filter(Boolean)
-                                .join(' — ')}
+                              className={`flex w-full items-start gap-2 rounded px-1 py-0.5 hover:bg-white/5 ${on ? 'bg-white/10' : lit ? 'bg-white/5' : ''}`}
                             >
-                              <span className="min-w-0 text-[10px] text-zinc-200">{clip(d.label, MAX_LABEL_CHARS)}</span>
-                              {d.detail && (
-                                <span className="text-[9px] font-mono text-zinc-500">{clip(d.detail, MAX_LABEL_CHARS)}</span>
-                              )}
-                              {d.source === 'llm' && (
-                                <span className="shrink-0 rounded border border-fuchsia-500/30 px-1 text-[8px] font-mono text-fuchsia-300">
-                                  llm
+                              {/* Two lines, both clipped. Laid out in one row the
+                                  label of a four-way rhyme broke into a column of
+                                  single words as soon as the pane went narrow. */}
+                              <button
+                                type="button"
+                                className="flex min-w-0 flex-1 flex-col items-stretch text-left"
+                                onClick={() => pickDevice(d.id)}
+                                aria-pressed={on}
+                                title={[d.label, d.detail, d.phones.length ? `phones: ${d.phones.join(' ')}` : '']
+                                  .filter(Boolean)
+                                  .join(' — ')}
+                              >
+                                <span className="flex min-w-0 items-baseline gap-2">
+                                  <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-200">
+                                    {clip(d.label, MAX_LABEL_CHARS)}
+                                  </span>
+                                  {d.source === 'llm' && (
+                                    <span className="shrink-0 rounded border border-fuchsia-500/30 px-1 text-[8px] font-mono text-fuchsia-300">
+                                      llm
+                                    </span>
+                                  )}
                                 </span>
-                              )}
-                              <span className="ml-auto shrink-0 text-[9px] font-mono text-zinc-600">{deviceLines(d)}</span>
+                                {/* The reason and the lines share the second
+                                    line, so the name gets the whole first one —
+                                    at split-pane width that is the difference
+                                    between "street / feet / beat" and "str…". */}
+                                <span className="flex min-w-0 items-baseline gap-2 text-[9px] font-mono">
+                                  <span className="min-w-0 flex-1 truncate text-zinc-500">
+                                    {clip(d.detail, MAX_LABEL_CHARS)}
+                                  </span>
+                                  <span className="shrink-0 text-zinc-600">{deviceLines(d)}</span>
+                                </span>
+                              </button>
                               {/* Confidence as a bar as well as a number: a slant
                                   rhyme should read as softer at a glance. */}
                               <span
-                                className="h-1 w-6 shrink-0 overflow-hidden rounded-xs bg-white/10"
+                                className="mt-1.5 h-1 w-6 shrink-0 overflow-hidden rounded-xs bg-white/10"
                                 aria-hidden="true"
                               >
                                 <i
@@ -1303,7 +2492,17 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
                               <span className="w-8 shrink-0 text-right text-[9px] font-mono tabular-nums text-zinc-500">
                                 {pct(d.confidence)}
                               </span>
-                            </button>
+                              {marksSupported && (
+                                <Verdicts
+                                  device={d}
+                                  verdict={verdictOf.get(group) ?? null}
+                                  siblings={groupSize.get(group) ?? 1}
+                                  onConfirm={() => store().confirmDevice(d)}
+                                  onReject={() => store().rejectDevice(d)}
+                                  onUndo={() => store().clearVerdict(group)}
+                                />
+                              )}
+                            </div>
                           );
                         })}
                         {devices.length > MAX_ROWS_PER_KIND && (
@@ -1318,6 +2517,36 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
               ))
             )}
           </div>
+
+          {/* YOUR MARKS */}
+          <SectionHead
+            title="Your marks"
+            hint={
+              !marksSupported
+                ? 'kept on a lyric in the LYRIC tab'
+                : marksSaving
+                  ? 'saving…'
+                  : marks.length
+                    ? `${marks.length} of yours, kept beside the analysis`
+                    : 'what you heard that the engine did not'
+            }
+          />
+          {!marksSupported && (
+            <div className="px-2 py-2 text-[9px] font-mono text-zinc-600">
+              Marks are saved on a lyric in the LYRIC tab, where a draft is written and re-read.
+              Import this song's words there to mark them up.
+            </div>
+          )}
+          {marksSupported && (
+          <MarksList
+            marks={marks}
+            editingId={composer.id}
+            stale={staleMarks}
+            onEdit={editMark}
+            onDelete={deleteMark}
+            onJump={jumpToLine}
+          />
+          )}
 
           {/* METRICS */}
           <SectionHead title="Metrics" />
@@ -1346,6 +2575,12 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
           device={selectedDevice}
           onClose={() => store().setSelectedDevice(null)}
           onJump={jumpToLine}
+          verdict={verdictOf.get(selectedDevice.group || selectedDevice.id) ?? null}
+          siblings={groupSize.get(selectedDevice.group || selectedDevice.id) ?? 1}
+          canJudge={marksSupported}
+          onConfirm={() => store().confirmDevice(selectedDevice)}
+          onReject={() => store().rejectDevice(selectedDevice)}
+          onUndoVerdict={() => store().clearVerdict(selectedDevice.group || selectedDevice.id)}
         />
       )}
     </div>
