@@ -30,6 +30,7 @@ import {
   BLOCK_PITCH,
   buildSchedule,
   codepointsOf,
+  DEFAULT_LAYOUT,
   DRUM_LANE_COUNT,
   DRUM_PAD_SPACING,
   laneForVoice,
@@ -440,6 +441,14 @@ const near = (a: number, b: number, eps = 1e-9): void => assert.ok(Math.abs(a - 
   assert.equal(hasBeatSaberFields(makeChart(true, [])), false);
 }
 
+// The staff sizes are what keep a notehead ~4% of the pane and a dropped
+// second staff on screen at the highway camera; HighwayScene.test.ts asserts
+// the projection that these feed.
+assert.equal(DEFAULT_LAYOUT.stepHeight, 0.075);
+assert.equal(DEFAULT_LAYOUT.staffDrop, 0.75);
+assert.equal(DEFAULT_LAYOUT.laneSpacing, 1.2);
+assert.equal(DEFAULT_LAYOUT.restStep, 4);
+
 // ---------------------------------------------------------------------------
 // notation skin
 // ---------------------------------------------------------------------------
@@ -456,7 +465,7 @@ const near = (a: number, b: number, eps = 1e-9): void => assert.ok(Math.abs(a - 
   assert.equal(rest.color, 1, 'rest is dimmed');
   assert.equal(rest.codepoint, 0xe4e5, 'rest draws its own glyph');
   assert.equal(rest.judgeable, false);
-  near(rest.y, 4 * 0.06, 1e-9);
+  near(rest.y, 4 * DEFAULT_LAYOUT.stepHeight, 1e-9);
   const tieStop = s.items.find((i) => i.eventRef[0] === 0 && i.eventRef[1] === 3);
   assert.ok(tieStop);
   assert.equal(tieStop.judgeable, false, 'tie stop not judgeable');
@@ -470,7 +479,7 @@ const near = (a: number, b: number, eps = 1e-9): void => assert.ok(Math.abs(a - 
   const leadC = s.items.find((i) => i.eventRef[0] === 0 && i.eventRef[1] === 0);
   assert.ok(leadC);
   assert.equal(leadC.hitTime, 0);
-  near(leadC.y, -2 * 0.06);
+  near(leadC.y, -2 * DEFAULT_LAYOUT.stepHeight);
   assert.equal(leadC.codepoint, 0xe1d5, 'glyphCodepoint wins over noteheadCodepoint');
   assert.deepEqual(s.bars, [0, 2]);
   assert.deepEqual([...codepointsOf(s)].sort(), [0xe1d5, 0xe4e5]);

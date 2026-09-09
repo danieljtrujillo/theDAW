@@ -37,10 +37,13 @@ export interface HighwayLayout {
   restStep: number;
 }
 
+/** The staff sizes compensate for the camera distance: the scene's glyph em is
+ *  `8 * stepHeight`, so a notehead holds ~4% of the pane height at the hit
+ *  line, and a dropped second staff still lands well inside the frame. */
 export const DEFAULT_LAYOUT: HighwayLayout = {
   laneSpacing: 1.2,
-  stepHeight: 0.06,
-  staffDrop: 0.6,
+  stepHeight: 0.075,
+  staffDrop: 0.75,
   restStep: 4,
 };
 

@@ -13,6 +13,7 @@ import {
 import type { NotationArtifact } from '../../../../lib/notationClient';
 import { ensureNoteChart, loadNoteChart, type NoteChart } from '../../../../lib/notechart';
 import { measureCanvasBox } from '../../../../lib/canvasScale';
+import { highlightColor } from '../scoreShared';
 import { buildSchedule, codepointsOf, type Schedule } from './schedule';
 import { buildGlyphAtlas, loadBravura, type GlyphAtlas } from './glyphAtlas';
 import { HighwayScene } from './HighwayScene';
@@ -94,6 +95,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
   const leadInSec = usePlayAlongStore((s) => s.leadInSec);
   const skin = usePlayAlongStore((s) => s.skin);
   const difficulty = usePlayAlongStore((s) => s.difficulty);
+  const ink = usePlayAlongStore((s) => s.ink);
   const setApproachSpeed = usePlayAlongStore((s) => s.setApproachSpeed);
   const setLeadInSec = usePlayAlongStore((s) => s.setLeadInSec);
   const setSkin = usePlayAlongStore((s) => s.setSkin);
@@ -280,7 +282,15 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
     scene.setSettings({ approachSpeed, leadInSec });
   }, [ready, approachSpeed, leadInSec]);
 
-  // 5. Size the WebGL surface to its box (device pixels, shell zoom included).
+  // 5. INK: the strike zone at the hit line and the tint a played note takes
+  //    are both painted in it, and the scene reads the ink only when it builds.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!ready || !scene) return;
+    scene.setInk(highlightColor());
+  }, [ready, ink]);
+
+  // 6. Size the WebGL surface to its box (device pixels, shell zoom included).
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!ready || !wrap) return;
@@ -301,7 +311,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
     };
   }, [ready]);
 
-  // 6. One frame per clock tick (rAF while playing, store subscription while
+  // 7. One frame per clock tick (rAF while playing, store subscription while
   //    paused, so a seek redraws at the scrub head).
   const handle = usePlayAlong(entry, (sec) => {
     lastTimeRef.current = sec;
@@ -434,7 +444,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
           <div className="h-full grid place-items-center p-4">
             <div className="max-w-sm rounded-lg border border-white/10 bg-black/40 p-4 text-[10px] font-mono text-zinc-300 space-y-2">
               <div className="text-[9px] font-black uppercase tracking-widest text-amber-300">{webglFallback.title}</div>
-              <p className="leading-relaxed text-zinc-400 break-words">{webglFallback.detail}</p>
+              <p className="leading-relaxed text-zinc-400 wrap-break-word">{webglFallback.detail}</p>
               <div className="flex flex-wrap gap-1.5">
                 {canStrip && (
                   <button
@@ -456,7 +466,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
           <div className="h-full grid place-items-center p-4">
             <div className="max-w-sm rounded-lg border border-white/10 bg-black/40 p-4 text-[10px] font-mono text-zinc-300 space-y-2">
               <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">Note chart unavailable</div>
-              <p className="leading-relaxed text-zinc-400 break-words">{chartError}</p>
+              <p className="leading-relaxed text-zinc-400 wrap-break-word">{chartError}</p>
               <p className="text-zinc-500">
                 The highway reads the same gantasmo.notechart the Unity scene does; it is exported through the NOTECHART route from the selected sheet.
               </p>

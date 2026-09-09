@@ -59,10 +59,37 @@ export interface HighwaySettings {
   layout?: Partial<HighwayLayout>;
 }
 
-/** Seconds an item stays visible after crossing the hit line. */
-export const PAST_SEC = 0.5;
 /** Seconds after the hit time an item glows in the highlight colour. */
 export const HIT_WINDOW_SEC = 0.12;
+/**
+ * Camera. The pitch is what decides where the hit line lands on screen: at
+ * these values z = 0 projects to ~69% of the pane, the second staff of a grand
+ * staff to ~86%, and a note on the bottom staff line is still on screen ~180 ms
+ * after its hit at speed 8 (72 ms at speed 20) — so the ink tint is seen.
+ */
+export const CAMERA_FOV = 60;
+export const CAMERA_POS: readonly [number, number, number] = [0, 1.5, 3.0];
+export const CAMERA_TARGET: readonly [number, number, number] = [0, 0.24, -2.0];
+/**
+ * World units past the hit line an item stays alive. World-space, not seconds:
+ * the camera sits at z = CAMERA_POS[2], so a seconds-based limit put fast notes
+ * behind the player and slow ones barely past the line.
+ */
+export const PAST_Z_LIMIT = 1.6;
+/**
+ * Minimum seconds of fade after the hit window. Without it the world-space
+ * limit collapses onto the hit window above speed 13.3 (1.6 / 0.12), the fade
+ * span becomes zero and an item is deleted the instant it stops glowing —
+ * which above that speed still happens in front of the camera, so a note (or a
+ * top-row block, huge by then) blinks out on screen instead of fading.
+ */
+export const PAST_FADE_SEC = 0.1;
+/** The standing ribbon that marks the hit line: size and centre height. */
+export const HIT_RIBBON_HEIGHT = 0.3;
+export const HIT_RIBBON_Y = 0.13;
+/** Draw order: the strike zone sits over the lane, the notes over both. */
+export const STRIKE_RENDER_ORDER = 10;
+export const ITEM_RENDER_ORDER = 20;
 /** Pool bounds for the item sprites/meshes. */
 export const POOL_MIN = 64;
 export const POOL_MAX = 1024;
@@ -131,12 +158,23 @@ export function itemPhase(hitTime: number, t: number): ItemPhase {
   return 'past';
 }
 
+/**
+ * Seconds an item stays visible after crossing the hit line at `speed` world
+ * units per second — never shorter than the hit window plus its fade, or a
+ * fast chart would retire a note while it is still meant to be glowing on the
+ * line, or delete it mid-frame with no fade at all.
+ */
+export function pastSecFor(speed: number): number {
+  const s = Number.isFinite(speed) && speed > 0 ? speed : 1;
+  return Math.max(HIT_WINDOW_SEC + PAST_FADE_SEC, PAST_Z_LIMIT / s);
+}
+
 /** Opacity multiplier for an item: 1 until the hit window ends, then a
- *  linear fade to 0 at `hitTime + PAST_SEC`. */
-export function pastAlpha(hitTime: number, t: number): number {
+ *  linear fade to 0 at `hitTime + pastSec`. */
+export function pastAlpha(hitTime: number, t: number, pastSec: number): number {
   const age = t - hitTime - HIT_WINDOW_SEC;
   if (age <= 1e-9) return 1; // epsilon: t = hitTime + HIT_WINDOW_SEC is still fully lit
-  const fadeSpan = Math.max(1e-6, PAST_SEC - HIT_WINDOW_SEC);
+  const fadeSpan = Math.max(1e-6, pastSec - HIT_WINDOW_SEC);
   return Math.max(0, Math.min(1, 1 - age / fadeSpan));
 }
 
@@ -202,6 +240,8 @@ interface MaterialLike {
   opacity: number;
   transparent: boolean;
   needsUpdate: boolean;
+  depthTest: boolean;
+  depthWrite: boolean;
   map?: TextureLike | null;
   dispose(): void;
 }
@@ -213,6 +253,7 @@ interface Object3DLike {
   scale: Vec3Like;
   rotation: Vec3Like;
   visible: boolean;
+  renderOrder: number;
   children: Object3DLike[];
   geometry?: GeometryLike;
   material?: MaterialLike | MaterialLike[];
@@ -307,6 +348,8 @@ export class HighwayScene {
   private freeSlots: Int32Array = new Int32Array(0);
   private freeCount = 0;
   private bars: Object3DLike[] = [];
+  /** Every material of the strike zone, so `setInk` can repaint all of it. */
+  private strikeMaterials: MaterialLike[] = [];
 
   private readonly sharedGeometries: GeometryLike[] = [];
   private boxGeometry: GeometryLike | null = null;
@@ -355,9 +398,9 @@ export class HighwayScene {
 
     this.scene = new three.Scene() as unknown as SceneLike;
     this.scene.background = new three.Color(HIGHWAY_BG);
-    this.camera = new three.PerspectiveCamera(60, 16 / 9, 0.1, 80) as unknown as CameraLike;
-    this.camera.position.set(0, 1.4, 2.2);
-    this.camera.lookAt(0, 0.6, -8);
+    this.camera = new three.PerspectiveCamera(CAMERA_FOV, 16 / 9, 0.1, 80) as unknown as CameraLike;
+    this.camera.position.set(...CAMERA_POS);
+    this.camera.lookAt(...CAMERA_TARGET);
 
     this.colors = {
       hit: new three.Color(highlightColor()),
@@ -378,6 +421,12 @@ export class HighwayScene {
     this.staticGroup = new three.Group();
     this.itemGroup = new three.Group();
     this.barGroup = new three.Group();
+    // The strike zone draws with depth testing off so the lane clutter cannot
+    // bury it (see buildStrikeZone), which would also put it in front of the
+    // very note it is marking: a note crosses its screen band for ~90 ms at
+    // approach speed 8, i.e. the whole hit window. A group renderOrder sorts
+    // items after it, so the notes land ON the line instead of behind it.
+    this.itemGroup.renderOrder = ITEM_RENDER_ORDER;
     this.scene.add(this.staticGroup);
     this.scene.add(this.barGroup);
     this.scene.add(this.itemGroup);
@@ -492,6 +541,18 @@ export class HighwayScene {
     this.frame(this.lastTime);
   }
 
+  /**
+   * Repaint everything drawn in the INK: the strike zone and the tint the next
+   * frame puts on a note inside its hit window. `buildStatic` reads the ink
+   * once, so without this an INK change only showed after a skin/speed change.
+   */
+  setInk(color: string): void {
+    if (this.disposed) return;
+    this.colors.hit.set(color);
+    for (const m of this.strikeMaterials) m.color.set(color);
+    this.frame(this.lastTime);
+  }
+
   /** Position every pooled object for song time `t` and render. */
   frame(songTime: number): void {
     if (this.disposed) return;
@@ -501,7 +562,8 @@ export class HighwayScene {
 
     const { items } = this.schedule;
     const speed = this.settings.approachSpeed;
-    const [from, to] = windowFor(this.schedule, t, this.settings.leadInSec, PAST_SEC);
+    const pastSec = pastSecFor(speed);
+    const [from, to] = windowFor(this.schedule, t, this.settings.leadInSec, pastSec);
 
     // Release slots whose item left the window.
     for (let s = 0; s < this.slots.length; s += 1) {
@@ -535,7 +597,7 @@ export class HighwayScene {
         if (slot.decalMaterial) slot.decalMaterial.opacity = 1;
       } else {
         slot.material.color.copy(hold && phase === 'past' ? this.colors.hit : slot.base);
-        const alpha = phase === 'past' ? pastAlpha(item.hitTime, t) : 1;
+        const alpha = phase === 'past' ? pastAlpha(item.hitTime, t, pastSec) : 1;
         slot.material.opacity = slot.baseOpacity * alpha;
         if (slot.decalMaterial) slot.decalMaterial.opacity = alpha;
       }
@@ -543,7 +605,7 @@ export class HighwayScene {
 
     // Bar lines.
     const bars = this.schedule.bars;
-    const [bFrom, bTo] = barWindow(bars, t, this.settings.leadInSec, PAST_SEC);
+    const [bFrom, bTo] = barWindow(bars, t, this.settings.leadInSec, pastSec);
     const barCount = Math.min(bTo - bFrom, this.bars.length);
     for (let i = 0; i < this.bars.length; i += 1) {
       const bar = this.bars[i];
@@ -615,6 +677,7 @@ export class HighwayScene {
   // -- static geometry ------------------------------------------------------
 
   private clearStatic(): void {
+    this.strikeMaterials = [];
     const children = [...this.staticGroup.children];
     for (const child of children) {
       this.staticGroup.remove(child);
@@ -633,12 +696,15 @@ export class HighwayScene {
     const three = this.three;
     const { skin, laneCount, layout, approachSpeed, leadInSec } = this.settings;
     const length = Math.max(2, leadInSec * approachSpeed + 1);
-    const pastZ = PAST_SEC * approachSpeed + 0.5;
+    const pastZ = pastSecFor(approachSpeed) * approachSpeed + 0.5;
     const zMid = (pastZ - length) / 2;
     const zLen = pastZ + length;
     const width = highwayWidth(skin, laneCount, layout.laneSpacing);
 
-    this.scene.fog = new three.Fog(HIGHWAY_BG, Math.max(1, length * 0.55), length + 3);
+    // Fog distance is measured from the camera, so the band follows it: the
+    // lane starts to fade at its midpoint and is gone just past the spawn edge.
+    const camZ = CAMERA_POS[2];
+    this.scene.fog = new three.Fog(HIGHWAY_BG, Math.max(1, camZ + length * 0.55), camZ + length + 1);
 
     const floorMat = (color: string, opacity: number) =>
       new three.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: three.DoubleSide });
@@ -704,7 +770,7 @@ export class HighwayScene {
           floorMat(color, 0.75),
         );
         ring.rotation.x = -Math.PI / 2;
-        ring.position.set(x, 0.005, 0);
+        ring.position.set(x, 0.002, 0);
         this.staticGroup.add(ring);
       }
       addLines(rails, '#94a3b8', 0.2);
@@ -712,20 +778,71 @@ export class HighwayScene {
         new three.BoxGeometry(width + DRUM_PAD_SPACING * 0.9, 0.02, 0.1),
         floorMat(DRUM_LANES[0].color, 0.55),
       );
+      // On the hit line: the strike zone draws over it regardless of depth,
+      // so the two no longer fight and the target still marks the right beat.
       kickTarget.position.set(0, 0.0, 0);
       this.staticGroup.add(kickTarget);
     }
 
-    // Hit bar shared by every skin.
-    const hitBar = new three.Mesh(
-      new three.BoxGeometry(width + 0.4, 0.02, 0.06),
-      new three.MeshBasicMaterial({ color: highlightColor(), transparent: true, opacity: 0.9 }),
-    );
-    hitBar.position.set(0, -0.005, 0);
-    this.staticGroup.add(hitBar);
+    this.buildStrikeZone(width);
 
     // Bar-line pool geometry follows the width; rebuild the pooled planes.
     this.buildBarPool(width);
+  }
+
+  /**
+   * The NOW line, shared by every skin. A floor slab lies nearly edge-on to
+   * this camera (under 1.5% of the pane), so the hit line is a *standing*
+   * ribbon facing the player instead — about 7% of the pane tall — over a
+   * bright floor line for ground contact and two posts bracketing the lane.
+   * Nothing may bury it: depth testing off and a renderOrder above everything.
+   */
+  private buildStrikeZone(width: number): void {
+    const three = this.three;
+    const ink = highlightColor();
+    const group = new three.Group() as unknown as Object3DLike;
+    const inkMat = (opacity: number, additive = false) =>
+      new three.MeshBasicMaterial({
+        color: ink,
+        transparent: true,
+        opacity,
+        side: three.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+        blending: additive ? three.AdditiveBlending : three.NormalBlending,
+      });
+    const add = (mesh: Object3DLike, material: MaterialLike) => {
+      mesh.renderOrder = STRIKE_RENDER_ORDER;
+      this.strikeMaterials.push(material);
+      group.add(mesh);
+    };
+
+    // Glow first: equal renderOrder falls back to far-to-near among
+    // transparent objects, so the plane behind the ribbon draws underneath it.
+    const glow = new three.Mesh(new three.PlaneGeometry(width + 0.9, HIT_RIBBON_HEIGHT + 0.26), inkMat(0.22, true));
+    glow.position.set(0, HIT_RIBBON_Y, -0.012);
+    add(glow, glow.material);
+
+    // Floor line: the ribbon has to read as standing ON the lane.
+    const floorLine = new three.Mesh(new three.PlaneGeometry(width + 0.4, 0.05), inkMat(0.95));
+    floorLine.rotation.x = -Math.PI / 2;
+    floorLine.position.set(0, 0.001, 0);
+    add(floorLine, floorLine.material);
+
+    // Posts at the lane edges, taller than the ribbon, so the zone stays
+    // bracketed and readable against a busy chart.
+    for (const side of [-1, 1]) {
+      const post = new three.Mesh(new three.PlaneGeometry(0.05, HIT_RIBBON_HEIGHT + 0.14), inkMat(0.95));
+      post.position.set(side * (width / 2 + 0.2), HIT_RIBBON_Y + 0.05, 0);
+      add(post, post.material);
+    }
+
+    // The ribbon itself, standing at z = 0 and facing the camera.
+    const ribbon = new three.Mesh(new three.PlaneGeometry(width + 0.4, HIT_RIBBON_HEIGHT), inkMat(0.42));
+    ribbon.position.set(0, HIT_RIBBON_Y, 0);
+    add(ribbon, ribbon.material);
+
+    this.staticGroup.add(group);
   }
 
   private buildBarPool(width: number): void {

@@ -29,18 +29,25 @@ import {
   barWindow,
   BLOCK_BLUE,
   BLOCK_RED,
+  CAMERA_FOV,
+  CAMERA_POS,
+  CAMERA_TARGET,
   cutRotation,
+  HIT_RIBBON_HEIGHT,
+  HIT_RIBBON_Y,
   HIT_WINDOW_SEC,
   HighwayScene,
   highwayWidth,
   itemPhase,
-  PAST_SEC,
+  PAST_FADE_SEC,
+  PAST_Z_LIMIT,
   pastAlpha,
+  pastSecFor,
   POOL_MAX,
   POOL_MIN,
   poolSizeFor,
 } from './HighwayScene.ts';
-import { buildSchedule, DRUM_LANES, DRUM_PAD_SPACING, laneX, zForTime } from './schedule.ts';
+import { BLOCK_PITCH, buildSchedule, DEFAULT_LAYOUT, DRUM_LANES, DRUM_PAD_SPACING, laneX, zForTime } from './schedule.ts';
 
 // ---------------------------------------------------------------------------
 // pure helpers
@@ -80,11 +87,25 @@ assert.equal(itemPhase(2, 1.9), 'ahead');
 assert.equal(itemPhase(2, 2), 'hit');
 assert.equal(itemPhase(2, 2 + HIT_WINDOW_SEC), 'hit');
 assert.equal(itemPhase(2, 2.2), 'past');
-assert.equal(pastAlpha(2, 1), 1);
-assert.equal(pastAlpha(2, 2 + HIT_WINDOW_SEC), 1);
-assert.ok(pastAlpha(2, 2.3) > 0 && pastAlpha(2, 2.3) < 1);
-assert.equal(pastAlpha(2, 2 + PAST_SEC), 0);
-assert.equal(pastAlpha(2, 9), 0);
+// The past window is world-space: PAST_Z_LIMIT units behind the hit line, but
+// never shorter than the hit window plus its fade (or a fast chart would retire
+// a note that is still meant to be glowing, or delete one with no fade at all).
+assert.equal(PAST_Z_LIMIT, 1.6);
+assert.equal(pastSecFor(4), 0.4); // the z limit binds below speed 13.3
+assert.ok(Math.abs(pastSecFor(8) - 0.22) < 1e-9); // the floor binds: 1.6/8 = 0.2
+assert.ok(Math.abs(pastSecFor(20) - (HIT_WINDOW_SEC + PAST_FADE_SEC)) < 1e-9);
+assert.equal(pastSecFor(0), PAST_Z_LIMIT); // guard: a bad speed reads as 1
+// The fade span is never zero: an item always fades out, it is never deleted
+// while still lit — the slider reaches 20 and the store accepts up to 40.
+for (const speed of [1, 3, 8, 13.3, 14, 20, 40]) {
+  assert.ok(pastSecFor(speed) - HIT_WINDOW_SEC >= PAST_FADE_SEC - 1e-9, `fade span at speed ${speed}`);
+}
+const PAST_8 = pastSecFor(8);
+assert.equal(pastAlpha(2, 1, PAST_8), 1);
+assert.equal(pastAlpha(2, 2 + HIT_WINDOW_SEC, PAST_8), 1);
+assert.ok(pastAlpha(2, 2.16, PAST_8) > 0 && pastAlpha(2, 2.16, PAST_8) < 1);
+assert.equal(pastAlpha(2, 2 + PAST_8, PAST_8), 0);
+assert.equal(pastAlpha(2, 9, PAST_8), 0);
 
 const BARS = [0, 2, 4, 6, 8];
 assert.deepEqual(barWindow(BARS, 4, 3, 0.5), [2, 4]); // 4 and 6
@@ -96,6 +117,42 @@ assert.equal(highwayWidth('blocks', 9, 1.2), 2.4);
 assert.ok(Math.abs(highwayWidth('drums', 9, 1.2) - 2.8) < 1e-9);
 assert.ok(Math.abs(highwayWidth('notation', 3, 1.2) - 3.6) < 1e-9);
 assert.ok(Math.abs(highwayWidth('notation', 0, 1.2) - 1.2) < 1e-9);
+
+// ---------------------------------------------------------------------------
+// camera framing
+// ---------------------------------------------------------------------------
+
+// The camera constants exist for one reason: the screen row the hit line lands
+// on. A pitch too shallow puts z = 0 in the bottom sliver, so notes reach their
+// hit time below the canvas edge. Assert the framing with the real projection.
+const framingCam = new THREE.PerspectiveCamera(CAMERA_FOV, 16 / 9, 0.1, 80);
+framingCam.position.set(...CAMERA_POS);
+framingCam.lookAt(...CAMERA_TARGET);
+framingCam.updateMatrixWorld(true);
+/** Screen row of a world point on the centre line, in % of pane height. */
+const screenRow = (y: number, z: number): number => ((1 - new THREE.Vector3(0, y, z).project(framingCam).y) / 2) * 100;
+
+const hitRow = screenRow(0, 0);
+assert.ok(hitRow > 55 && hitRow < 80, `hit line at ${hitRow.toFixed(1)}% of the pane height`);
+// The first ledger below the staff and the second staff of a grand staff have
+// to be on screen at their own hit time.
+assert.ok(screenRow(-2 * DEFAULT_LAYOUT.stepHeight, 0) < 100, 'first ledger below the staff is on screen');
+assert.ok(screenRow(-DEFAULT_LAYOUT.staffDrop, 0) < 100, 'grand-staff second staff is on screen');
+// The standing ribbon is what makes the NOW line unmistakable: an edge-on floor
+// slab 0.02 tall is under half a percent of the pane at this camera.
+const ribbonSpan = screenRow(HIT_RIBBON_Y - HIT_RIBBON_HEIGHT / 2, 0) - screenRow(HIT_RIBBON_Y + HIT_RIBBON_HEIGHT / 2, 0);
+assert.ok(ribbonSpan >= 5, `hit ribbon spans ${ribbonSpan.toFixed(1)}% of the pane height`);
+assert.ok(screenRow(-0.015, 0) - screenRow(0.005, 0) < 1, 'a floor slab is the thing the ribbon replaces');
+// A note on the bottom staff line has to outlive its hit window on screen, or
+// the ink tint is painted below the canvas.
+let exitZ = 0;
+while (exitZ < 2.5 && screenRow(0, exitZ + 0.002) <= 100) exitZ += 0.002;
+assert.ok(exitZ / 8 >= 0.12, `${((exitZ / 8) * 1000).toFixed(0)} ms on screen past the hit at speed 8`);
+assert.ok(exitZ / 8 > HIT_WINDOW_SEC, 'the whole hit window happens on screen');
+assert.ok(PAST_Z_LIMIT > exitZ, 'items are retired only after they leave the pane');
+// The BLOCKS frame and the DRUMS pads still fit the band the camera sees.
+assert.ok(screenRow(3 * BLOCK_PITCH, 0) > 0, 'blocks frame top edge is on screen');
+assert.ok(screenRow(0.03, 0) < 100, 'drum kick bar is on screen');
 
 // ---------------------------------------------------------------------------
 // fixture: chart + schedule
@@ -321,12 +378,12 @@ assert.deepEqual(renderer.size, [800 / 1.1, 400 / 1.1, false]);
 assert.equal(renderer.pixelRatio, 2); // min(2, 1.1 * 2)
 assert.ok(renderer.renders >= 1);
 
-// t = 2: window is [1.5, 5] -> melody 2,3,4,5 + rest 2.5 + drums at 2..5.
+// t = 2: window is [1.8, 5] -> melody 2,3,4,5 + rest 2.5 + drums at 2..5.
 const rendersBefore = renderer.renders;
 scene.frame(2);
 assert.equal(renderer.renders, rendersBefore + 1);
 const items = notationSchedule.items;
-const inWindow = items.map((it, i) => [it, i] as const).filter(([it]) => it.hitTime >= 1.5 && it.hitTime <= 5);
+const inWindow = items.map((it, i) => [it, i] as const).filter(([it]) => it.hitTime >= 2 - PAST_8 && it.hitTime <= 5);
 assert.equal(scene.activeItems, inWindow.length);
 for (const [it, i] of inWindow) {
   const view = scene.inspect(i);
@@ -357,20 +414,22 @@ assert.equal(scene.inspect(percIndex)!.colorHex, new THREE.Color('#fbbf24').getH
 // A codepoint the atlas lacks (the x notehead) falls back to the notehead and
 // is sized from the fallback rect (17 x 14 px at 58 px/em), not left at 1.
 assert.equal(scene.inspect(percIndex)!.codepoint, -1);
-assert.ok(Math.abs(scene.inspect(percIndex)!.scaleY - (14 / 58) * 0.48) < 1e-9);
-assert.ok(Math.abs(scene.inspect(percIndex)!.scaleX - (17 / 58) * 0.48) < 1e-9);
+const EM = 8 * DEFAULT_LAYOUT.stepHeight; // 1 em = 4 staff spaces
+assert.equal(EM, 0.6);
+assert.ok(Math.abs(scene.inspect(percIndex)!.scaleY - (14 / 58) * EM) < 1e-9);
+assert.ok(Math.abs(scene.inspect(percIndex)!.scaleX - (17 / 58) * EM) < 1e-9);
 // Sprite scale: 1 em = 8 * stepHeight world units; the quarter note is 50 px
 // tall at 58 px/em.
 const noteView = scene.inspect(onLine)!;
-assert.ok(Math.abs(noteView.scaleY - (50 / 58) * 0.48) < 1e-9);
-assert.ok(Math.abs(noteView.scaleX - (24 / 58) * 0.48) < 1e-9);
+assert.ok(Math.abs(noteView.scaleY - (50 / 58) * EM) < 1e-9);
+assert.ok(Math.abs(noteView.scaleX - (24 / 58) * EM) < 1e-9);
 // Items outside the window are not bound.
 const far = items.findIndex((it) => it.hitTime === 8);
 assert.equal(scene.inspect(far), null);
 
 // Stable slots: advancing time keeps a still-visible item in its slot.
 const keepSlot = scene.inspect(ahead)!.slot;
-scene.frame(2.4);
+scene.frame(2.16);
 assert.equal(scene.inspect(ahead)!.slot, keepSlot);
 // The item at 2 s is now fading (past the hit window). With the default
 // 'hold' trail it keeps the ink while it fades (one colour change per note,
@@ -379,12 +438,12 @@ const fading = scene.inspect(onLine)!;
 assert.ok(fading.opacity < 1 && fading.opacity > 0);
 assert.equal(fading.colorHex, hitHex, 'hold: a played note keeps the ink while fading');
 usePlayAlongStore.getState().setInkTrail('flash');
-scene.frame(2.4);
+scene.frame(2.16);
 assert.notEqual(scene.inspect(onLine)!.colorHex, hitHex, 'flash: a played note returns to its base colour');
 usePlayAlongStore.getState().setInkTrail('hold');
-scene.frame(2.4);
-// Past PAST_SEC it is released.
-scene.frame(2.6);
+scene.frame(2.16);
+// Past pastSecFor(speed) it is released.
+scene.frame(2 + PAST_8 + 1e-6);
 assert.equal(scene.inspect(onLine), null);
 // Seeking backwards is just another frame.
 scene.frame(0);
@@ -402,6 +461,21 @@ scene.setSettings({ approachSpeed: 4 });
 assert.equal(scene.inspect(ahead)!.slot, beforeSlot);
 assert.ok(Math.abs(scene.inspect(ahead)!.z - zForTime(4, 2, 4)) < 1e-9);
 scene.setSettings({ approachSpeed: 8 });
+
+// INK: the strike zone and the hit tint both follow it, live. The materials
+// are private, so reach them the way only a test may.
+const strike = (scene as unknown as {
+  strikeMaterials: Array<{ color: { getHexString(): string }; depthTest: boolean; depthWrite: boolean }>;
+}).strikeMaterials;
+assert.equal(strike.length, 5, 'glow, floor line, two posts, ribbon');
+assert.ok(strike.every((m) => !m.depthTest && !m.depthWrite), 'nothing can bury the strike zone');
+assert.ok(strike.every((m) => m.color.getHexString() === hitHex));
+assert.equal(scene.inspect(onLine)!.colorHex, hitHex);
+scene.setInk('#00ff00');
+assert.ok(strike.every((m) => m.color.getHexString() === '00ff00'), 'setInk repaints the strike zone');
+assert.equal(scene.inspect(onLine)!.colorHex, '00ff00', 'setInk repaints the hit tint');
+scene.setInk(NOTE_HIGHLIGHT_COLOR);
+assert.equal(scene.inspect(onLine)!.colorHex, hitHex);
 
 // Context loss: preventDefault, report, stop rendering; restore resumes.
 let reported = -1;
@@ -430,7 +504,7 @@ const bItems = blocksSchedule.items;
 for (let i = 0; i < bItems.length; i += 1) {
   const it = bItems[i];
   const view = scene.inspect(i);
-  if (it.hitTime < 1.5 || it.hitTime > 5) {
+  if (it.hitTime < 2 - PAST_8 || it.hitTime > 5) {
     assert.equal(view, null);
     continue;
   }
@@ -493,7 +567,7 @@ scene.setSettings({ skin: 'notation', laneCount: 2 });
 scene.setAtlas(fakeAtlas([0xe1d5, 0xe4e5, 0xe0a9, 0xe0b3]));
 scene.frame(3);
 assert.equal(scene.inspect(percIndex)!.codepoint, 0xe0a9);
-assert.ok(Math.abs(scene.inspect(percIndex)!.scaleY - (50 / 58) * 0.48) < 1e-9);
+assert.ok(Math.abs(scene.inspect(percIndex)!.scaleY - (50 / 58) * EM) < 1e-9);
 // Every bound sprite was re-configured against the new atlas (no slot kept a
 // scale from the disposed textures).
 for (let i = 0; i < items.length; i += 1) {
