@@ -22,8 +22,10 @@ import { LevelsPanel } from '../audio/levels/LevelsPanel';
 // (AI compose + gemini vocal services). Keep it out of first paint; the chunk
 // loads only when the user first opens the MIDI tab.
 const MidiPanel = lazy(() => import('./MidiPanel').then((m) => ({ default: m.MidiPanel })));
-// Lazy too: the SING tab pulls in the pitch lane + mic capture only when opened.
-const SingView = lazy(() => import('./sing/SingView').then((m) => ({ default: m.SingView })));
+// The SING tab body: the karaoke lyrics, the SCORE tab, or both side by side.
+// It lazy-loads both panes itself, so the pitch lane and mic capture still only
+// arrive when the tab is opened.
+import { SingScoreView } from './sing/SingScoreView';
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
 import { XrBusPanel } from '../dev/XrBusTester';
@@ -113,6 +115,7 @@ export const BottomMultiTabPanel: React.FC = () => {
             handle (14px wide, right edge, vertically centred). */}
         <div className="flex items-center gap-1 pr-5 shrink-0">
           {activeTab === 'details' && <DetailsPaneToggle />}
+          {activeTab === 'sing' && <SingPaneToggle />}
           {activeTab === 'slide' && (
             <>
               <SlideContentToggle />
@@ -186,9 +189,7 @@ export const BottomMultiTabPanel: React.FC = () => {
         )}
         {activeTab === 'sing' && (
           <div className="absolute inset-0">
-            <Suspense fallback={null}>
-              <SingView />
-            </Suspense>
+            <SingScoreView />
           </div>
         )}
         {activeTab === 'sway' && (
@@ -259,6 +260,38 @@ const DetailsPaneToggle: React.FC = () => {
         </button>
         <button onClick={() => setPane('media')} className={`${btn} ${pane === 'media' ? on : off}`} title="Only the media bucket" aria-pressed={pane === 'media'}>
           <span className="inline-flex items-center gap-1"><FolderOpen className="w-3 h-3" /> Media</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * LYRICS / BOTH / SCORE / STUDY layout toggle for the SING tab, beside the
+ * DETAILS one. Drives bottomPanelStore.singPane; SingScoreView reads it.
+ * STUDY is also a split — the literary analysis only means anything with the
+ * words it describes next to it.
+ */
+const SingPaneToggle: React.FC = () => {
+  const pane = useBottomPanelStore((s) => s.singPane);
+  const setPane = useBottomPanelStore((s) => s.setSingPane);
+  const btn = 'px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-colors';
+  const on = 'bg-rose-500/15 text-rose-200 shadow-[inset_0_0_0_1px_rgba(244,63,94,0.5)]';
+  const off = 'text-zinc-500 hover:text-zinc-200';
+  return (
+    <div className="flex items-center pr-2 shrink-0" role="group" aria-label="Sing tab layout">
+      <div className="flex rounded-md border border-white/10 overflow-hidden">
+        <button onClick={() => setPane('sing')} className={`${btn} ${pane === 'sing' ? on : off}`} title="Only the karaoke lyrics" aria-pressed={pane === 'sing'}>
+          <span className="inline-flex items-center gap-1"><MicVocal className="w-3 h-3" /> Lyrics</span>
+        </button>
+        <button onClick={() => setPane('split')} className={`${btn} ${pane === 'split' ? on : off}`} title="Lyrics and the score side by side" aria-pressed={pane === 'split'}>
+          Both
+        </button>
+        <button onClick={() => setPane('score')} className={`${btn} ${pane === 'score' ? on : off}`} title="Only the score" aria-pressed={pane === 'score'}>
+          <span className="inline-flex items-center gap-1"><FileMusic className="w-3 h-3" /> Score</span>
+        </button>
+        <button onClick={() => setPane('analysis')} className={`${btn} ${pane === 'analysis' ? on : off}`} title="Lyrics and the rhyme / literary analysis side by side" aria-pressed={pane === 'analysis'}>
+          Study
         </button>
       </div>
     </div>

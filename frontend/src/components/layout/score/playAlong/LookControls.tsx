@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import {
   HIGHLIGHT_INKS,
   INK_TRAILS,
@@ -18,8 +18,17 @@ const NOW_LABELS: Record<NowLinePos, string> = {
  *  across the pane (left third, or dead centre), the ink the sounding note
  *  and the hairline are painted in, and whether played notes hold that ink or
  *  flash. All stored in playAlongStore, so the PAGE, STRIP, TAB, CHORDS and
- *  HIGHWAY views follow the same choice. */
+ *  HIGHWAY views follow the same choice.
+ *
+ *  The ids are per instance: ScoreView keeps PAGE alive behind the STRIP/TAB/
+ *  CHORDS/HIGHWAY views and both footers render this, so fixed ids would sit
+ *  in the document twice and every `htmlFor` would bind to whichever mounted
+ *  first — the strip's labels driving the page's selects. */
 export const LookControls: React.FC = () => {
+  const uid = useId();
+  const nowId = `score-now-line-${uid}`;
+  const inkId = `score-ink-${uid}`;
+  const trailId = `score-ink-trail-${uid}`;
   const nowLine = usePlayAlongStore((s) => s.nowLine);
   const ink = usePlayAlongStore((s) => s.ink);
   const inkTrail = usePlayAlongStore((s) => s.inkTrail);
@@ -28,12 +37,12 @@ export const LookControls: React.FC = () => {
   const setInkTrail = usePlayAlongStore((s) => s.setInkTrail);
   return (
     <span className="flex items-center gap-1">
-      <label htmlFor="score-now-line" className="text-zinc-500 select-none" title="Where the music sounding now sits across the pane">
+      <label htmlFor={nowId} className="text-zinc-500 select-none" title="Where the music sounding now sits across the pane">
         NOW
       </label>
       <select
-        id="score-now-line"
-        name="score-now-line"
+        id={nowId}
+        name={nowId}
         className="form-select text-[10px] px-1 py-0.5"
         value={nowLine}
         onChange={(e) => setNowLine(e.target.value as NowLinePos)}
@@ -42,12 +51,12 @@ export const LookControls: React.FC = () => {
           <option key={pos} value={pos}>{NOW_LABELS[pos]}</option>
         ))}
       </select>
-      <label htmlFor="score-ink" className="text-zinc-500 select-none" title="Colour of the sounding note and the now-line">
+      <label htmlFor={inkId} className="text-zinc-500 select-none" title="Colour of the sounding note and the now-line">
         INK
       </label>
       <select
-        id="score-ink"
-        name="score-ink"
+        id={inkId}
+        name={inkId}
         className="form-select text-[10px] px-1 py-0.5"
         value={ink}
         onChange={(e) => setInk(e.target.value as HighlightInk)}
@@ -58,15 +67,15 @@ export const LookControls: React.FC = () => {
         ))}
       </select>
       <label
-        htmlFor="score-ink-trail"
+        htmlFor={trailId}
         className="text-zinc-500 select-none"
         title="Hold keeps every played note inked (nothing flashes); Flash inks only the sounding note"
       >
         TRAIL
       </label>
       <select
-        id="score-ink-trail"
-        name="score-ink-trail"
+        id={trailId}
+        name={trailId}
         className="form-select text-[10px] px-1 py-0.5"
         value={inkTrail}
         onChange={(e) => setInkTrail(e.target.value as InkTrail)}

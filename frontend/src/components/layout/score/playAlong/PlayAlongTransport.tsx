@@ -1,4 +1,4 @@
-import React, { useState, type ReactNode } from 'react';
+import React, { useContext, useState, type ReactNode } from 'react';
 import { Pause, Play } from 'lucide-react';
 import type { LibraryEntry } from '../../../../state/libraryEntry';
 import {
@@ -8,6 +8,13 @@ import {
 } from '../../../../state/playAlongStore';
 import { CALIBRATOR_ID, LatencyCalibrator } from './LatencyCalibrator';
 import { LookControls } from './LookControls';
+
+/** Ambient "a host footer already owns the transport" flag. The SING split
+ *  view mounts the whole SCORE tab beside its own footer, so it turns this on
+ *  for that subtree rather than threading a prop through four call sites it
+ *  doesn't own — and only while that host footer is actually on screen. An
+ *  explicit `compact` prop still wins. */
+export const PlayAlongTransportCompact = React.createContext(false);
 
 export interface PlayAlongTransportProps {
   entry: LibraryEntry | null;
@@ -25,6 +32,15 @@ export interface PlayAlongTransportProps {
   onCalibrate?: () => void;
   /** Whether an externally managed calibrator dialog is open. */
   calibratorOpen?: boolean;
+  /** Drop the controls a surrounding footer already provides — play/pause and
+   *  the OTHER TRACK badge — leaving the view's own controls, the look
+   *  preferences and the latency cluster. The OFFSET/CALIBRATE pair is NOT
+   *  dropped: it is this app's only UI for playAlongStore.userOffsetMs (the
+   *  per-device visual latency every play-along clock subtracts, the lyrics'
+   *  included), and it is a different quantity from SING's per-song lyric
+   *  OFFSET, so no host footer replaces it. Defaults to the ambient
+   *  PlayAlongTransportCompact value, which is false outside a split view. */
+  compact?: boolean;
 }
 
 /** The footer every play-along view shares: play/pause for THIS entry, the
@@ -41,10 +57,13 @@ export const PlayAlongTransport: React.FC<PlayAlongTransportProps> = ({
   showLatency = true,
   onCalibrate,
   calibratorOpen = false,
+  compact,
 }) => {
   const userOffsetMs = usePlayAlongStore((s) => s.userOffsetMs);
   const setUserOffsetMs = usePlayAlongStore((s) => s.setUserOffsetMs);
   const [ownCalibratorOpen, setOwnCalibratorOpen] = useState(false);
+  const ambientCompact = useContext(PlayAlongTransportCompact);
+  const isCompact = compact ?? ambientCompact;
 
   const externallyManaged = typeof onCalibrate === 'function';
   const calibratorIsOpen = externallyManaged ? calibratorOpen : ownCalibratorOpen;
@@ -61,22 +80,33 @@ export const PlayAlongTransport: React.FC<PlayAlongTransportProps> = ({
 
   return (
     <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center gap-2 px-2 text-[10px] font-mono text-zinc-300">
-      <button
-        type="button"
-        onClick={() => void onTransport()}
-        disabled={!entry}
-        className="p-1 rounded hover:bg-white/10 disabled:opacity-30"
-        title={transportLabel}
-        aria-label={transportLabel}
-      >
-        {isSameTrack && isPlaying
-          ? <Pause className="w-3.5 h-3.5" />
-          : <Play className="w-3.5 h-3.5 text-emerald-300" />}
-      </button>
-      {otherTrackLoaded && (
+      {!isCompact && (
+        <button
+          type="button"
+          onClick={() => void onTransport()}
+          disabled={!entry}
+          className="p-1 rounded hover:bg-white/10 disabled:opacity-30"
+          title={transportLabel}
+          aria-label={transportLabel}
+        >
+          {isSameTrack && isPlaying
+            ? <Pause className="w-3.5 h-3.5" />
+            : <Play className="w-3.5 h-3.5 text-emerald-300" />}
+        </button>
+      )}
+      {/* The badge keeps its slot whether or not it is showing: the row is a
+          fixed set of controls, and letting an 11-character word appear and
+          disappear between the play button and the view's own controls shoved
+          them sideways every time the engine changed track. `invisible` is
+          visibility:hidden, so the span is out of the accessibility tree and
+          untabbable (it is not focusable anyway); aria-hidden says so too. */}
+      {!isCompact && (
         <span
-          className="text-amber-300/90"
-          title="The player is holding a different track, so this view is parked. Press play here to load this track."
+          className={`text-amber-300/90 whitespace-nowrap ${otherTrackLoaded ? '' : 'invisible'}`}
+          aria-hidden={otherTrackLoaded ? undefined : true}
+          title={otherTrackLoaded
+            ? 'The player is holding a different track, so this view is parked. Press play here to load this track.'
+            : undefined}
         >
           OTHER TRACK
         </span>

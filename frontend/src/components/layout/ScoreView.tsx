@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, FileMusic, Gamepad2, Guitar, LayoutGrid, Loader2, Minus, Music2, Music4, Pause, Play, Plus, RefreshCw } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
@@ -52,13 +52,55 @@ import { fitZoomToPage, type FitReport } from './score/scoreFit';
 
 // The zoom a score fitted to per (artifact, page width): a re-open renders
 // once at that zoom instead of measuring-and-fitting again. Bounded.
-const fitZoomCache = new Map<string, number>();
+//
+// Persisted, because the thing it saves is expensive and does not change: each
+// auto-fit pass is a whole synchronous OSMD engrave (measured at ~10 s for a
+// 7-part band score), so an in-memory-only cache made every browser reload pay
+// the fit again. The fitted zoom is a pure function of (artifact, page width),
+// so a stored value stays correct until the artifact is re-engraved — and
+// `invalidateArtifactText` already drops those keys when it is.
+// Engraving a score is one synchronous OSMD pass on the main thread, and it
+// scales with the file: measured on this machine at roughly 2.2 s per MB of
+// MusicXML (a 4.7 MB 7-part band score costs ~10 s a pass, ~22 s the first
+// time when the auto-fit adds a second one). Past this size the PAGE view asks
+// before it engraves, so a click is never a surprise half-minute freeze; the
+// STRIP view stays instant either way. A yes lasts the session.
+const HEAVY_SCORE_CHARS = 1_500_000;
+const HEAVY_SECONDS_PER_MB = 2.2;
+const confirmedHeavy = new Set<string>();
+
+const FIT_CACHE_KEY = 'score.fitZoom.v1';
+const FIT_CACHE_MAX = 64;
+
+const readFitCache = (): Map<string, number> => {
+  try {
+    const raw = localStorage.getItem(FIT_CACHE_KEY);
+    if (!raw) return new Map();
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return new Map();
+    return new Map(
+      Object.entries(parsed as Record<string, unknown>).filter(
+        (pair): pair is [string, number] => typeof pair[1] === 'number' && Number.isFinite(pair[1]),
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+};
+
+const fitZoomCache = readFitCache();
+
 const rememberFit = (key: string, zoom: number): void => {
   fitZoomCache.set(key, zoom);
-  while (fitZoomCache.size > 32) {
+  while (fitZoomCache.size > FIT_CACHE_MAX) {
     const oldest = fitZoomCache.keys().next().value;
     if (oldest === undefined) break;
     fitZoomCache.delete(oldest);
+  }
+  try {
+    localStorage.setItem(FIT_CACHE_KEY, JSON.stringify(Object.fromEntries(fitZoomCache)));
+  } catch {
+    /* private mode / quota: the in-memory map still serves this session */
   }
 };
 import { LookControls } from './score/playAlong/LookControls';
@@ -71,6 +113,7 @@ import {
   type PlayAlongMode,
 } from '../../state/playAlongStore';
 import { ModeSwitch } from './score/playAlong/ModeSwitch';
+import { PlayAlongTransportCompact } from './score/playAlong/PlayAlongTransport';
 import { applyInstrumentPreset, discoverParts, knownParts, useKnownParts } from './score/playAlong/partRegistry';
 
 // The play-along views load on demand: OSMD and alphaTab are already dynamic
@@ -187,8 +230,13 @@ export const ScoreView: React.FC = () => {
   const analysisBpmRaw = entry?.analysis?.bpm;
   const analysisBpm = typeof analysisBpmRaw === 'number' && Number.isFinite(analysisBpmRaw) ? analysisBpmRaw : null;
 
-  const loadArtifacts = async () => {
-    invalidateArtifactText();
+  // Dropping the artifact TEXT cache is for the callers that can change what an
+  // artifact id resolves to: a conversion, or the explicit refresh button. They
+  // keep the default. The mount/entry-change effect passes keepText, because
+  // that effect also runs on every MOUNT of this component and the cache is the
+  // only thing that keeps a multi-MB MusicXML off the wire on a re-open.
+  const loadArtifacts = async (opts: { keepText?: boolean } = {}) => {
+    if (!opts.keepText) invalidateArtifactText();
     if (!selectedEntryId) return;
     setLoading(true);
     try {
@@ -209,7 +257,13 @@ export const ScoreView: React.FC = () => {
   };
 
   useEffect(() => {
-    void loadArtifacts();
+    // keepText: this runs on mount as well as on an entry change, and the SING
+    // tab's LYRICS / BOTH / SCORE / STUDY toggle unmounts and remounts the whole
+    // SCORE tab on every click. Clearing the cache here threw the score's text
+    // away and re-fetched it (4.7 MB on a band score) once per click, on top of
+    // the engraving pass. Artifact ids in the list we just fetched are the same
+    // ids the cached text is keyed by, so keeping it cannot go stale.
+    void loadArtifacts({ keepText: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEntryId]);
 
@@ -788,6 +842,9 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   // says which arrangement it is rather than looking like every other sheet.
   const footerLabelRef = useRef('');
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  // Set when the score is big enough to be worth asking about and the user has
+  // not yet said yes for this artifact; the engrave is held until they do.
+  const [heavy, setHeavy] = useState<{ chars: number; parts: number; measures: number } | null>(null);
   const renderedZoomRef = useRef(0);
   // Last auto-fit measurement, for the zoom readout's tooltip ("fitted to the
   // page"); null while the user drives the zoom or nothing was measured.
@@ -862,15 +919,29 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
 
   const engineEntryId = usePlayerStore((s) => s.currentEntryId);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
+  // PAGE stays mounted behind the other modes (keepAlive), so its window-level
+  // key handler has to know whether it is the one on screen.
+  const pageMode = usePlayAlongStore((s) => s.mode);
   const entryId = entry?.id ?? null;
   // The EDIT timeline loads under the sentinel id 'editor-timeline', which can
   // never equal a library entry id, so its live transport is excluded here for
   // free and the score never chases audio it has nothing to do with.
   const isSameTrack = !!entryId && engineEntryId === entryId;
 
+  // A page is as wide as the pane is tall (A4 portrait), so one sheet fills the
+  // height. A pane with NO BOX must not be measured: `keepAlive` parks the
+  // unshown mode behind `hidden` (display:none) and SingScoreView unmounts a
+  // pane outright, and a parked scroller reports clientHeight 0, which the
+  // floor below turns into a perfectly plausible 360 px. That is a different
+  // width from the visible one, so the resize observer took it for a real
+  // resize and re-engraved the whole score — measured at 7-9 s PER PASS on a
+  // 91-page band score, up to three passes, twice per mode switch. Keeping the
+  // last good width makes a park-and-return cost nothing. SheetStrip's
+  // observer already guards the same case the same way.
   const computePageW = (): number => {
-    const availH = (scrollRef.current?.clientHeight ?? 600) - 32;
-    return Math.round(Math.min(1000, Math.max(360, availH / A4_RATIO)));
+    const h = scrollRef.current?.clientHeight ?? 0;
+    if (h <= 0) return pageWRef.current;
+    return Math.round(Math.min(1000, Math.max(360, (h - 32) / A4_RATIO)));
   };
 
   // Add a book-style running footer to each rendered page: "Song - Artist" and
@@ -1190,7 +1261,18 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         // A new score starts at the default zoom and may auto-fit; a manual
         // zoom on the previous score does not carry over.
         userZoomedRef.current = false;
-        doRender();
+        // Big scores ask first (see HEAVY_SCORE_CHARS). Everything above this
+        // point is cheap and already done, so saying yes is just doRender().
+        if (xml.length > HEAVY_SCORE_CHARS && !confirmedHeavy.has(artifact.id)) {
+          setHeavy({
+            chars: xml.length,
+            parts: (xml.match(/<score-part/g) ?? []).length,
+            measures: (xml.match(/<measure/g) ?? []).length,
+          });
+        } else {
+          setHeavy(null);
+          doRender();
+        }
         setStatus('');
         setPage(1);
         // Ours, not the user's: do not let it read as a manual scroll and
@@ -1243,7 +1325,14 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     let raf = 0;
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
+      // Chromium delivers a 0x0 observation when the observed element loses its
+      // box (verified), which is exactly what `hidden` on the keepAlive wrapper
+      // does. Parking a pane is not a resize: drop it before it can schedule
+      // anything. computePageW() guards the measurement too; this only saves
+      // the frame.
+      const box = entries[entries.length - 1]?.contentRect;
+      if (box && box.width === 0 && box.height === 0) return;
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const w = computePageW();
@@ -1261,11 +1350,18 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     };
   }, [doRender]);
 
-  // Keyboard paging (ignored while typing in a field).
+  // Keyboard paging (ignored while typing in a field). The listener is on the
+  // window, but PAGE is kept alive behind the other play-along modes and now
+  // also mounts inside the SING split, so it is bound only while PAGE is the
+  // visible mode and only honours keys aimed at the page itself or at nothing
+  // in particular — otherwise an arrow key in the lyrics pane flips the score.
   useEffect(() => {
+    if (pageMode !== 'page') return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      const root = scrollRef.current?.parentElement ?? null;
+      if (t && t !== document.body && t !== document.documentElement && root && !root.contains(t)) return;
       if (e.key === 'ArrowRight' || e.key === 'PageDown') {
         e.preventDefault();
         goToPage(page + 1);
@@ -1276,7 +1372,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [page, goToPage]);
+  }, [page, goToPage, pageMode]);
 
   // The cursor is shown only while it means something: following, and following
   // THIS score's track. A stale highlight against unrelated audio would claim a
@@ -1371,6 +1467,10 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
       'Click to reset zoom.'
     : 'Reset zoom';
   const otherTrackLoaded = !!entryId && !!engineEntryId && !isSameTrack;
+  // PAGE rolls its own footer rather than using PlayAlongTransport, so it has
+  // to honour the same context: inside the SING split, SING's footer already
+  // carries play/pause and the OTHER TRACK badge for this very entry.
+  const compact = useContext(PlayAlongTransportCompact);
   const transportLabel = !entry
     ? 'No track selected'
     : isSameTrack
@@ -1381,6 +1481,44 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
     <div className="relative h-full flex flex-col bg-[#23222a]">
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto p-4">
         {status && <div className="p-4 text-xs font-mono text-zinc-300">{status}</div>}
+        {heavy && (
+          <div className="p-4 grid place-items-center">
+            <div className="max-w-md rounded border border-amber-400/30 bg-amber-400/5 p-4 text-[11px] font-mono text-zinc-300">
+              <p className="mb-2 font-black uppercase tracking-[0.18em] text-amber-300">Large score</p>
+              <p className="mb-3 leading-relaxed">
+                {`${heavy.measures} measures across ${heavy.parts} ${heavy.parts === 1 ? 'part' : 'parts'} `}
+                {`(${(heavy.chars / 1e6).toFixed(1)} MB). `}
+                Engraving it blocks the whole app for about{' '}
+                {Math.round((heavy.chars / 1e6) * HEAVY_SECONDS_PER_MB)} seconds, and again after
+                a resize.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded border border-amber-400/40 text-amber-200 hover:bg-amber-400/10"
+                  onClick={() => {
+                    confirmedHeavy.add(artifact.id);
+                    setHeavy(null);
+                    doRender();
+                  }}
+                >
+                  ENGRAVE IT ANYWAY
+                </button>
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded border border-white/15 text-zinc-300 hover:bg-white/10"
+                  onClick={() => usePlayAlongStore.getState().setMode('strip')}
+                >
+                  OPEN THE STRIP INSTEAD
+                </button>
+              </div>
+              <p className="mt-2 text-zinc-500">
+                The strip follows the music without engraving pages, and stays smooth on scores
+                this size.
+              </p>
+            </div>
+          </div>
+        )}
         {/* display/width are driven imperatively in doRender (block+fixed during
             OSMD's offsetWidth read, then flex+max-content for the page strip). */}
         <div
@@ -1388,20 +1526,29 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
           className="gap-6 items-start [&>div]:shrink-0 [&>div]:bg-white [&>div]:shadow-2xl [&>div]:rounded-sm [&>svg]:shrink-0 [&>svg]:bg-white [&>svg]:shadow-2xl [&>svg]:rounded-sm"
         />
       </div>
-      {/* Footer: follow-along transport + page navigation + zoom. */}
-      <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center justify-center gap-1.5 px-2 text-[10px] font-mono text-zinc-300">
-        <button
-          type="button"
-          onClick={() => void onTransport()}
-          disabled={!entry}
-          className="p-1 rounded hover:bg-white/10 disabled:opacity-30"
-          title={transportLabel}
-          aria-label={transportLabel}
-        >
-          {isSameTrack && isPlaying
-            ? <Pause className="w-3.5 h-3.5" />
-            : <Play className="w-3.5 h-3.5 text-emerald-300" />}
-        </button>
+      {/* Footer: follow-along transport + page navigation + zoom.
+          `justify-center-safe` (justify-content: safe center), not plain
+          `justify-center`: this row's content is ~790px wide and the score
+          pane is narrower than that whenever the panel is split — plain
+          centring then overflows BOTH edges and pushes play and FOLLOW off
+          the left, out of reach. Safe centring falls back to flex-start the
+          moment the content stops fitting, so the row only ever overflows to
+          the right. Identical to justify-center while it fits. */}
+      <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center justify-center-safe gap-1.5 px-2 text-[10px] font-mono text-zinc-300">
+        {!compact && (
+          <button
+            type="button"
+            onClick={() => void onTransport()}
+            disabled={!entry}
+            className="p-1 rounded hover:bg-white/10 disabled:opacity-30"
+            title={transportLabel}
+            aria-label={transportLabel}
+          >
+            {isSameTrack && isPlaying
+              ? <Pause className="w-3.5 h-3.5" />
+              : <Play className="w-3.5 h-3.5 text-emerald-300" />}
+          </button>
+        )}
         <input
           id="score-follow"
           name="score-follow"
@@ -1412,8 +1559,21 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         />
         <label htmlFor="score-follow" className="cursor-pointer select-none">FOLLOW</label>
         <LookControls />
-        {otherTrackLoaded && (
-          <span className="text-amber-300/90" title="The player is holding a different track, so the cursor is parked. Press play here to load this score's track.">
+        {/* This row is justify-center, so ANY child that comes and goes
+            re-centres the whole footer: the badge flips exactly when the
+            engine picks up a different entry, which used to slide play,
+            FOLLOW, the look selects, the pager and the zoom sideways on every
+            track change. It keeps its slot instead. `invisible` is
+            visibility:hidden — out of the accessibility tree and untabbable
+            (a span is not focusable anyway); aria-hidden states it. */}
+        {!compact && (
+          <span
+            className={`text-amber-300/90 whitespace-nowrap ${otherTrackLoaded ? '' : 'invisible'}`}
+            aria-hidden={otherTrackLoaded ? undefined : true}
+            title={otherTrackLoaded
+              ? "The player is holding a different track, so the cursor is parked. Press play here to load this score's track."
+              : undefined}
+          >
             OTHER TRACK
           </span>
         )}
@@ -1449,7 +1609,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         </button>
         <button
           onClick={() => applyZoom(ZOOM_DEFAULT)}
-          className="min-w-10 text-center hover:text-white"
+          className="min-w-10 text-center tabular-nums hover:text-white"
           title={fitTitle}
           aria-label={fitTitle}
         >
