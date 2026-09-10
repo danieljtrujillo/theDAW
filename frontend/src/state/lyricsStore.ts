@@ -111,6 +111,10 @@ export interface LyricsState {
   transcription: TranscriptionState;
   /** Doc line index of the last tapped line; the next tap goes after it. */
   lastTapped: number;
+  /** The line the song is on, or -1. Written by the karaoke ONCE PER LINE —
+   *  never per frame — so any other pane can follow the song without owning a
+   *  clock of its own. The analysis sheet's FOLLOW reads it. */
+  activeLine: number;
 
   load: (entryId: string) => Promise<void>;
   setDoc: (next: LyricsDoc) => void;
@@ -123,6 +127,7 @@ export interface LyricsState {
   nudge: (lineIdx: number, deltaMs: number) => void;
   setOffset: (ms: number) => void;
   setFollow: (on: boolean) => void;
+  setActiveLine: (line: number) => void;
   setTapMode: (on: boolean) => void;
   setShowPitch: (on: boolean) => void;
   setMicOn: (on: boolean) => void;
@@ -196,6 +201,7 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
     tapMode: false,
     showPitch: readBool(KEY_PITCH, false),
     micOn: false,
+    activeLine: -1,
     micOffsetMs: readNumber(KEY_MIC_OFFSET, 20),
     language: readString(KEY_LANGUAGE, 'auto'),
     autoAlign: readBool(KEY_AUTO_ALIGN, true),
@@ -206,7 +212,16 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
       const generation = ++loadGeneration;
       if (get().dirty && get().entryId && get().entryId !== entryId) await get().flush();
       snapshots = [];
-      set({ entryId, loading: true, error: null, tapMode: false, lastTapped: -1, job: null });
+      set({
+        entryId,
+        loading: true,
+        error: null,
+        tapMode: false,
+        lastTapped: -1,
+        // The line the LAST song was on is not a line of this one.
+        activeLine: -1,
+        job: null,
+      });
       try {
         const bundle = await fetchLyrics(entryId);
         if (generation !== loadGeneration) return;
@@ -334,6 +349,9 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
     setFollow: (on) => {
       set({ follow: on });
       writeStorage(KEY_FOLLOW, on ? '1' : '0');
+    },
+    setActiveLine: (line) => {
+      if (get().activeLine !== line) set({ activeLine: line });
     },
     setTapMode: (on) => set({ tapMode: on }),
     setShowPitch: (on) => {

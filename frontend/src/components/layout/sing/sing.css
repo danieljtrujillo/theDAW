@@ -62,6 +62,10 @@
   color: rgb(212 212 216);
 }
 
+/* The line being sung swells. It is a transform and not a size change on
+   purpose — nothing below it reflows — which also means the wire layer, which
+   anchors to laid-out boxes, keeps drawing this line where it sits rather than
+   where it is painted. */
 .sing-lines li[data-state='active'] {
   opacity: 1;
   color: #fff;
@@ -234,16 +238,37 @@ button.sing-text:hover {
 .la-sheet {
   container-type: inline-size;
   position: relative;
+  /* Room under the last line for the slurs the wire layer draws there. The
+     layer is `overflow: visible`, so without it a link on the final line is
+     drawn across the FINDINGS heading below. What a slur needs is a couple of
+     line boxes, so this follows the reading size rather than sitting at the
+     28px that was only ever right for the default one. */
+  padding-bottom: calc(var(--la-text-size, 12px) * 2.4);
 }
 
 /* The text track is capped at a reading measure, so a wide pane gives a
    readable column with the numbers beside it rather than a metre of dead
-   space between the words and the margin. */
+   space between the words and the margin.
+
+   The measure is stated in the READING font's own characters. `ch` resolves
+   against the font-size of the element the track is declared on, and the
+   reading size lives one level down on .la-text — so the column used to be
+   pinned to the app's 16px default while the glyphs stepped 11px to 20px
+   inside it. Every long line rewrapped on the way, which moved every anchor
+   the wire layer is drawn from: the wires got worse the further the reader
+   moved the size from the default. Carrying the size here as well makes the
+   column and the glyphs step together, so a line that fits keeps fitting.
+
+   96ch and not 72ch because 96 characters of 12px type is exactly the 72 of
+   16px type this column has always been — 621px either way, measured in
+   Chromium — so the default sheet is the sheet it was, and now it follows the
+   type: 569px at the smallest reading size and 1035px at the largest. */
 .la-row {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 72ch) auto;
+  font-size: var(--la-text-size, 12px);
+  grid-template-columns: auto auto minmax(0, 96ch) auto;
   /* Without this the auto tracks share out the leftover width of a wide pane
      and the gutter drifts a hand's width away from the words it brackets. */
   justify-content: start;
@@ -255,11 +280,18 @@ button.sing-text:hover {
 /* Isolating a rhyme class pushes everything else back rather than hiding it:
    the shape of the lyric has to stay readable while one class is read. */
 .la-row[data-dim] {
-  opacity: 0.24;
+  opacity: 0.26;
 }
 
 .la-row[data-hit] {
-  background: rgb(255 255 255 / 0.05);
+  background: rgb(255 255 255 / 0.07);
+  box-shadow: inset 2px 0 0 rgb(251 113 133 / 0.5);
+}
+
+/* A row under the pointer lifts slightly, so a long lyric can be tracked
+   across the page without losing the line. */
+.la-row:hover {
+  background: rgb(255 255 255 / 0.03);
 }
 
 /* The rhyme spines. One lane per overlapping class; every cell is the full
@@ -355,20 +387,36 @@ button.sing-text:hover {
   height: 2px;
 }
 
+/* The reading size and weight are the writer's, set once in the control bar
+   and shared with the writing surface. Everything that has to line up with
+   the words — the row height, the gutter, the syllable column — is derived
+   from them here rather than duplicated as a number somewhere else. */
 .la-text {
   padding: 3px 0;
-  font-size: 12px;
+  font-size: var(--la-text-size, 12px);
+  font-weight: var(--la-text-weight, 400);
   line-height: 1.6;
-  color: rgb(228 228 231);
+  /* Near-white rather than zinc-200: this is the thing being read, and every
+     other element on the sheet is deliberately quieter than it. */
+  color: rgb(244 244 245);
   overflow-wrap: break-word;
 }
 
 .la-row[data-kind='marker'] .la-text {
-  font-size: 9px;
+  font-size: calc(var(--la-text-size, 12px) * 0.78);
   font-weight: 700;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgb(251 113 133 / 0.85);
+  color: rgb(251 113 133 / 0.95);
+}
+
+/* The other pane's selection, brought over. A dotted underline and a wash,
+   which is a THIRD shape: it must not be mistaken for a finding (a solid
+   rule), for a mark (a dashed box) or for a live pick (a solid sky box). */
+.la-text [data-echo] {
+  border-radius: 3px;
+  background: rgb(148 163 184 / 0.22);
+  box-shadow: inset 0 -1px 0 rgb(226 232 240 / 0.9);
 }
 
 /* A marked stretch is a real button — it is how the finding is opened, from a
@@ -452,6 +500,19 @@ button.sing-text:hover {
   pointer-events: stroke;
   cursor: pointer;
   transition: stroke-opacity 160ms ease, stroke-width 160ms ease;
+}
+
+/* A wire is one or two pixels wide and impossible to hit; the invisible twin
+   under it is eight, so the pointer finds it. Both carry the same title, so
+   the tooltip is the same wherever the hover lands. */
+.la-links path[data-hit] {
+  stroke-width: 9;
+  stroke-opacity: 0;
+  transition: none;
+}
+
+.la-links path:hover {
+  stroke-opacity: 1;
 }
 
 /* The whole-lyric shape: one column per line — syllables, device density, and
@@ -846,4 +907,20 @@ button.sing-text:hover {
   .la-links path {
     transition: none;
   }
+}
+
+/* The analysis wiring over the karaoke words. Behind the text and deaf to the
+   pointer: on stage the words are the thing, and a wire must never take a
+   click meant for a line. */
+.sing-wires {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.sing-lines {
+  position: relative;
+  z-index: 1;
 }

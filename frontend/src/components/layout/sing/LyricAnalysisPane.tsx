@@ -1,4 +1,14 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   AlertTriangle,
   BookOpen,
@@ -7,6 +17,7 @@ import {
   Pencil,
   RefreshCw,
   RotateCcw,
+  Share2,
   Sparkles,
   Trash2,
   X,
@@ -17,12 +28,16 @@ import {
   DEVICE_FAMILIES,
   FAMILY_LABELS,
   FAMILY_RGB,
+  LINK_MODE_WORDS,
+  LINK_NEAR_LINES,
   LONG_RANGE_BLURB,
   LONG_RANGE_CODE,
   LONG_RANGE_KINDS,
   MARK_GLYPH,
   MARK_RGB,
+  DEFAULT_TEXT_SIZE,
   MARK_WORDS,
+  TEXT_SIZES,
   asFamily,
   buildMarkIndex,
   buildSheetModel,
@@ -35,6 +50,7 @@ import {
   useLyricAnalysisStore,
   visibleDevices,
   wordMarkKey,
+  type LinkMode,
   type MarkWordCell,
   type SheetLink,
   type SheetLinkEnd,
@@ -54,7 +70,21 @@ import type {
   Span,
 } from '../../../lib/lyricAnalysisClient';
 import { splitText } from './singSync';
+import {
+  anchorFrom,
+  hostFrameOf,
+  lineBoxOf,
+  rowPitchOf,
+  routeWire,
+  textInsetOf,
+  type Fragment,
+  type RowBox,
+} from './wires';
 import './sing.css';
+
+// The web is a whole second picture of the lyric and nobody opens it by
+// accident, so it is not in the pane's own chunk.
+const RhymeWeb = lazy(() => import('./RhymeWeb').then((m) => ({ default: m.RhymeWeb })));
 
 /** Matches the underline shapes sing.css paints, so the legend, the sheet and
  *  the karaoke words all say the same thing without relying on hue. */
@@ -205,6 +235,102 @@ const markLines = (mark: LyricMark): string => {
   return seen.length > MAX_LINE_REFS ? `${head} +${seen.length - MAX_LINE_REFS}` : head;
 };
 
+/**
+ * One switch in the control bar.
+ *
+ * A real checkbox with a real label, because the bar is a form and every
+ * control in it has to be reachable and named; the styling is the label's,
+ * so the pressed state reads without depending on the checkbox's own tick
+ * being visible at 10px.
+ */
+const Toggle: React.FC<{
+  id: string;
+  label: string;
+  title: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  accent?: 'rose' | 'amber';
+  disabled?: boolean;
+  children?: React.ReactNode;
+}> = ({ id, label, title, checked, onChange, accent = 'rose', disabled, children }) => (
+  <span className="flex items-center gap-1">
+    <input
+      id={id}
+      name={id}
+      type="checkbox"
+      className={accent === 'amber' ? 'accent-amber-400' : 'accent-rose-400'}
+      checked={checked}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.checked)}
+    />
+    <label
+      htmlFor={id}
+      className={`cursor-pointer select-none tracking-wide ${
+        disabled
+          ? 'text-zinc-600'
+          : checked
+            ? accent === 'amber'
+              ? 'text-amber-200'
+              : 'text-zinc-100'
+            : 'text-zinc-400'
+      }`}
+      title={title}
+    >
+      {label}
+    </label>
+    {children}
+  </span>
+);
+
+/** A group of controls in the bar, with its name beside it. The names are what
+ *  turn one long row of switches into three readable clusters. */
+const Cluster: React.FC<{ name: string; children: React.ReactNode }> = ({ name, children }) => (
+  <span className="flex items-center gap-2 rounded border border-white/10 bg-white/4 px-1.5 py-1">
+    <span className="text-[8px] uppercase tracking-[0.2em] text-zinc-500">{name}</span>
+    {children}
+  </span>
+);
+
+/** One of N, as a row of buttons. Used for the wiring mode, where a checkbox
+ *  cannot say "some" and a select hides the choice behind a click. */
+const Segmented: React.FC<{
+  label: string;
+  value: string;
+  options: Array<[string, string, string]>;
+  onChange: (value: string) => void;
+}> = ({ label, value, options, onChange }) => (
+  <span className="flex items-center gap-0.5" role="group" aria-label={label}>
+    {options.map(([key, text, title]) => {
+      const on = key === value;
+      return (
+        <button
+          key={key}
+          type="button"
+          className={`rounded px-1.5 py-0.5 tracking-wide transition-colors ${
+            on
+              ? 'bg-rose-500/25 text-rose-100 ring-1 ring-rose-400/50'
+              : 'text-zinc-400 hover:bg-white/10 hover:text-zinc-100'
+          }`}
+          onClick={() => onChange(key)}
+          aria-pressed={on}
+          title={title}
+        >
+          {text}
+        </button>
+      );
+    })}
+  </span>
+);
+
+/** One step up or down the reading-size ladder. Written as a step rather than
+ *  as arithmetic on the px value, because the ladder is not linear at the top
+ *  (11 12 13 15 17 20) and +1px stops being a visible change past 15. */
+const stepSize = (size: number, direction: 1 | -1): number => {
+  const at = TEXT_SIZES.indexOf(size as never);
+  const from = at < 0 ? TEXT_SIZES.indexOf(DEFAULT_TEXT_SIZE as never) : at;
+  return TEXT_SIZES[Math.min(TEXT_SIZES.length - 1, Math.max(0, from + direction))];
+};
+
 const SectionHead: React.FC<{ title: string; hint?: string }> = ({ title, hint }) => (
   <div className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-white/5 bg-[#07050a] px-2 py-1 text-[9px] font-mono uppercase tracking-widest text-zinc-500">
     <span className="text-zinc-300">{title}</span>
@@ -280,9 +406,6 @@ const ShapeStrip: React.FC<{
 
 // --- the link layer --------------------------------------------------------
 
-/** How far apart two ends can be before their arc is only drawn on demand. */
-const LINK_REACH = 2;
-
 interface LinkPath extends SheetLink {
   d: string;
   ax: number;
@@ -290,37 +413,6 @@ interface LinkPath extends SheetLink {
   bx: number;
   by: number;
 }
-
-interface Anchor {
-  x: number;
-  top: number;
-  bottom: number;
-}
-
-/** Where a span ended up on screen, as the union of the segments covering it.
- *  Measured from the DOM because the sheet's text wraps — there is no layout
- *  model here to compute it from. */
-const anchorFor = (
-  end: SheetLinkEnd,
-  byLine: Map<number, Array<{ s: number; e: number; rect: DOMRect }>>,
-  host: DOMRect,
-): Anchor | null => {
-  const list = byLine.get(end.line);
-  if (!list) return null;
-  let left = Infinity;
-  let right = -Infinity;
-  let top = Infinity;
-  let bottom = -Infinity;
-  for (const seg of list) {
-    if (seg.e <= end.start || seg.s >= end.end) continue;
-    left = Math.min(left, seg.rect.left);
-    right = Math.max(right, seg.rect.right);
-    top = Math.min(top, seg.rect.top);
-    bottom = Math.max(bottom, seg.rect.bottom);
-  }
-  if (right < left) return null;
-  return { x: (left + right) / 2 - host.left, top: top - host.top, bottom: bottom - host.top };
-};
 
 // --- the sheet -------------------------------------------------------------
 
@@ -333,8 +425,18 @@ export interface LyricSheetProps {
   onPickDevice: (deviceId: string) => void;
   selectedGroup: string | null;
   selectedDeviceId: string | null;
-  showLinks: boolean;
+  /** How much of the wiring is drawn. The finding that is OPEN is always
+   *  drawn in full, whatever this says — including in `off`. */
+  linkMode: LinkMode;
   showStress: boolean;
+  /** Reading size and weight of the lyric, in px and in font-weight. */
+  textSize: number;
+  textWeight: number;
+  /** Words lit by the other pane's selection, keyed `line:word`. */
+  echo?: ReadonlySet<string>;
+  /** Called with the word a reader clicked while the panes are tied together,
+   *  so the writing surface can put its caret on the same word. */
+  onEchoWord?: (line: number, word: number) => void;
   /** False when the words have not been loaded: the rows fall back to the
    *  ending each line rhymed on. */
   hasWords: boolean;
@@ -377,8 +479,12 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
   onPickDevice,
   selectedGroup,
   selectedDeviceId,
-  showLinks,
+  linkMode,
   showStress,
+  textSize,
+  textWeight,
+  echo,
+  onEchoWord,
   hasWords,
   sheetRef,
   markMode = false,
@@ -518,70 +624,117 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
   const sections = useMemo(() => mapSections(doc, model.rows), [doc, model.rows]);
 
   // A rap lyric answers itself constantly, and every one of those answers as a
-  // wire would bury the words. At rest only the near ones are drawn — the ones
-  // a reader would otherwise miss entirely — and the long echoes appear when
-  // their finding is the one being read.
-  const drawn = useMemo(
-    () =>
-      model.links.filter(
-        (l) =>
-          Math.abs(l.b.line - l.a.line) <= LINK_REACH ||
-          (!!selectedGroup && l.group === selectedGroup),
-      ),
-    [model.links, selectedGroup],
-  );
+  // wire would bury the words.
+  //
+  // NEAR draws only the wires a reader would otherwise miss entirely, and
+  // brings a long echo back when its finding is the one being read. ALL draws
+  // the whole web, which is a deliberate request and not a default. Either
+  // way, the finding that is OPEN is drawn in full — every hop of it — which
+  // is what makes a five-word assonance run visible as the run it is rather
+  // than as five underlines that happen to share a colour.
+  const drawn = useMemo(() => {
+    if (linkMode === 'off' && !selectedGroup) return [];
+    const base =
+      linkMode === 'off'
+        ? []
+        : linkMode === 'all'
+          ? model.links
+          : model.links.filter((l) => l.reach === 'near');
+    if (!selectedGroup) return base;
+    const chain = model.linksByGroup.get(selectedGroup) ?? [];
+    if (!chain.length) return base;
+    const seen = new Set(base.map((l) => l.id));
+    return [...base, ...chain.filter((l) => !seen.has(l.id))];
+  }, [model.links, model.linksByGroup, selectedGroup, linkMode]);
 
   // The arcs are measured, not computed: the anchors move with every rewrap,
   // so this re-runs on a resize and whenever the model changes, and NEVER on
   // a scroll (the layer is inside the same scrolled box as the words).
+  //
+  // `markIndex` is in the list because drawing a mark round a word puts a pixel
+  // of padding on each side of it, which rewraps the line under the wires
+  // without changing the sheet's own box — so the ResizeObserver never hears
+  // about it. Marking MODE is not: `.la-text button` is styled to sit in the
+  // text exactly as the span it replaces did, so the swap moves nothing.
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    if (!showLinks || !drawn.length) {
+    if (!drawn.length) {
       setPaths([]);
       return;
     }
     let raf = 0;
     const measure = () => {
       raf = 0;
-      const hostRect = host.getBoundingClientRect();
-      const byLine = new Map<number, Array<{ s: number; e: number; rect: DOMRect }>>();
+      // Rects speak viewport px and the wire layer's user units are the
+      // sheet's own local px, so every measurement goes through the frame.
+      // Without it each wire is drawn at `zoom` times its true offset from the
+      // sheet's corner — a miss that grows the further down the page you read.
+      const frame = hostFrameOf(host);
+      const lineBox = lineBoxOf(host.querySelector<HTMLElement>('.la-text'));
+      const byLine = new Map<number, Fragment[]>();
       host.querySelectorAll<HTMLElement>('[data-seg]').forEach((el) => {
         const parts = (el.dataset.seg ?? '').split(':');
         const line = Number(parts[0]);
         if (!Number.isFinite(line)) return;
+        const s = Number(parts[1]);
+        const e = Number(parts[2]);
         const list = byLine.get(line) ?? [];
-        list.push({ s: Number(parts[1]), e: Number(parts[2]), rect: el.getBoundingClientRect() });
+        // What this piece is WEARING, so the anchor can mean the word rather
+        // than its box. Every piece is asked, not just the marked ones: what a
+        // word carries is data, the answer for plain text is zero, and a rule
+        // that reads "only these spans have padding" is a rule that rots.
+        const inset = textInsetOf(el);
+        // Per client rect, not per element: a stretch that wraps has two
+        // boxes, and one bounding box around both is a rectangle over the
+        // whole column.
+        for (const rect of Array.from(el.getClientRects())) {
+          if (rect.width <= 0 && rect.height <= 0) continue;
+          list.push({ s, e, rect, inset });
+        }
         byLine.set(line, list);
       });
+      // How far apart two drawn rows are, taken from the rows themselves: the
+      // sheet's own 3px above and below the text and a marker line set at
+      // 0.78em are both already in here, and neither follows from the reading
+      // size alone. `lines` is what stops a wrapped row — two rows to a reader,
+      // one element to the DOM — from being counted as one very tall one.
+      const rows: RowBox[] = [];
+      host.querySelectorAll<HTMLElement>('.la-row').forEach((el) => {
+        const text = el.querySelector<HTMLElement>('.la-text');
+        rows.push({
+          top: (el.getBoundingClientRect().top - frame.top) / frame.zoom,
+          lines: text ? Math.max(1, Math.round(text.clientHeight / lineBox)) : 1,
+        });
+      });
+      const pitch = rowPitchOf(rows, lineBox);
+      // No margin channel to route a long wire down: the lane gutter and the
+      // rhyme-letter button take the ~43px to the left of the text, and the
+      // sheet's own padding is 8px, so the bow reaches the sheet's edge and
+      // stops there. routeWire's own floor is what holds it on the sheet.
       const out: LinkPath[] = [];
       for (const link of drawn) {
         // Always draw downward, whichever order the spans came in.
         const forward = link.b.line > link.a.line || (link.b.line === link.a.line && link.b.start >= link.a.start);
         const first = forward ? link.a : link.b;
         const second = forward ? link.b : link.a;
-        const a = anchorFor(first, byLine, hostRect);
-        const b = anchorFor(second, byLine, hostRect);
+        const a = anchorFrom(byLine.get(first.line), first.start, first.end, frame, lineBox);
+        const b = anchorFrom(byLine.get(second.line), second.start, second.end, frame, lineBox);
         if (!a || !b) continue;
-        let d: string;
-        if (first.line === second.line) {
-          // Inside one line: a slur under the words, the way a phrase mark sits.
-          const y = Math.max(a.bottom, b.bottom);
-          const dip = Math.min(16, 5 + Math.abs(b.x - a.x) * 0.12);
-          d = `M ${a.x} ${a.bottom} C ${a.x} ${y + dip}, ${b.x} ${y + dip}, ${b.x} ${b.bottom}`;
-        } else {
-          const bend = Math.max(12, Math.min(52, Math.abs(b.x - a.x) * 0.3 + (b.top - a.bottom) * 0.3));
-          d = `M ${a.x} ${a.bottom} C ${a.x - bend} ${a.bottom + bend * 0.7}, ${b.x - bend} ${b.top - bend * 0.7}, ${b.x} ${b.top}`;
-        }
+        // The route reports where its own stroke leaves and lands. Working it
+        // out a second time here is what put an endpoint dot at a word's left
+        // edge while its wire left from the centre — half a word away, and
+        // wider the longer the word and the bigger the type.
+        const wire = routeWire(a, b, { lane: link.lane, line: lineBox, pitch });
         out.push({
           ...link,
           a: first,
           b: second,
-          d,
-          ax: a.x,
-          ay: a.bottom,
-          bx: b.x,
-          by: first.line === second.line ? b.bottom : b.top,
+          d: wire.d,
+          ax: wire.ax,
+          ay: wire.ay,
+          bx: wire.bx,
+          by: wire.by,
         });
       }
       setPaths(out);
@@ -601,7 +754,7 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [hostRef, drawn, model.rows, showLinks, showStress, hasWords]);
+  }, [hostRef, drawn, model.rows, showStress, hasWords, textSize, textWeight, markIndex]);
 
   // Isolating a class has to take the wiring with it, or the arcs keep
   // shouting over the lines that were just pushed back.
@@ -616,12 +769,45 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
     return map;
   }, [model.rows]);
 
+  /** Hand whatever is selected here back to the pane that owns the words.
+   *
+   *  Read from the native selection rather than from a click handler, so
+   *  ordinary text selection still works: the sheet is prose, and turning
+   *  every word into a button to catch a click would cost the reader the
+   *  ability to drag across a line and copy it. */
+  const reportSelection = useCallback(() => {
+    if (!onEchoWord) return;
+    const host = hostRef.current;
+    const sel = typeof window === 'undefined' ? null : window.getSelection();
+    if (!host || !sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    const keys: string[] = [];
+    host.querySelectorAll<HTMLElement>('[data-w]').forEach((el) => {
+      const key = el.dataset.w;
+      if (!key || keys[keys.length - 1] === key) return;
+      if (sel.isCollapsed ? el.contains(range.startContainer) : range.intersectsNode(el)) {
+        keys.push(key);
+      }
+    });
+    if (!keys.length) return;
+    const [line, word] = keys[0].split(':').map(Number);
+    onEchoWord(line, word);
+  }, [onEchoWord, hostRef]);
+
   return (
     <div
-      className="la-sheet px-2 pb-2"
+      className="la-sheet px-2"
       ref={hostRef}
       onKeyDown={onSheetKeyDown}
+      onMouseUp={reportSelection}
+      onKeyUp={reportSelection}
       {...(markMode ? { 'data-marking': '' } : {})}
+      style={
+        {
+          '--la-text-size': `${textSize}px`,
+          '--la-text-weight': textWeight,
+        } as React.CSSProperties
+      }
     >
       {paths.length > 0 && (
         <svg
@@ -629,13 +815,24 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
           width={size.w}
           height={size.h}
           role="img"
-          aria-label={`${paths.length} internal and cross-line ${paths.length === 1 ? 'rhyme' : 'rhymes'} drawn as arcs; each one is also in the findings list below`}
+          aria-label={`${paths.length} ${
+            paths.length === 1 ? 'connection' : 'connections'
+          } between words drawn as wires; every one of them is also in the findings list below`}
         >
           {paths.map((p) => {
             const on = !!selectedGroup && p.group === selectedGroup;
             const off = !!litLines && !litLines.has(p.a.line) && !litLines.has(p.b.line);
+            // A run says how far along it this hop is, so five wires between
+            // five words read as one chain rather than as five pairs.
+            const says = `${kindWords(p.kind)}${p.hops > 1 ? ` (${p.hop} of ${p.hops})` : ''}: ${
+              p.a.text
+            } → ${p.b.text} · ${pct(p.confidence)}`;
             return (
               <g key={p.id}>
+                {/* The invisible twin: a 1px stroke cannot be hit with a mouse. */}
+                <path d={p.d} data-hit="" stroke={`rgb(${p.rgb})`} onClick={() => onPickDevice(p.deviceId)}>
+                  <title>{says}</title>
+                </path>
                 <path
                   d={p.d}
                   stroke={`rgb(${p.rgb})`}
@@ -647,7 +844,7 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
                   strokeLinecap="round"
                   onClick={() => onPickDevice(p.deviceId)}
                 >
-                  <title>{`${kindWords(p.kind)}: ${p.a.text} → ${p.b.text} · ${pct(p.confidence)}`}</title>
+                  <title>{says}</title>
                 </path>
                 <circle cx={p.ax} cy={p.ay} r={on ? 2.4 : 1.6} fill={`rgb(${p.rgb})`} fillOpacity={off ? 0.08 : on ? 1 : 0.55} />
                 <circle cx={p.bx} cy={p.by} r={on ? 2.4 : 1.6} fill={`rgb(${p.rgb})`} fillOpacity={off ? 0.08 : on ? 1 : 0.55} />
@@ -791,6 +988,13 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
                         // box, and the pick being composed right now.
                         const paint = {
                           'data-seg': `${row.line}:${seg.start}:${seg.end}`,
+                          // Every piece names its word, so the tie between the
+                          // two panes can be read off the DOM in either
+                          // direction — the sheet lights what the writing
+                          // surface has selected, and a selection made here
+                          // can be handed back to it.
+                          ...(key ? { 'data-w': key } : {}),
+                          ...(key && echo?.has(key) ? { 'data-echo': '' } : {}),
                           ...(seg.family
                             ? {
                                 'data-device': seg.family,
@@ -936,7 +1140,7 @@ export const LyricSheet: React.FC<LyricSheetProps> = ({
           </div>
         );
       })}
-      {model.linkOverflow > 0 && showLinks && (
+      {model.linkOverflow > 0 && linkMode !== 'off' && (
         <div className="pt-1 text-[9px] font-mono text-zinc-600">
           +{model.linkOverflow} more links not drawn — the layer is capped so the words stay readable
         </div>
@@ -1543,6 +1747,10 @@ export interface LyricAnalysisPaneProps {
   analyzing?: boolean;
   /** Off when the host draws its own title bar and run button. */
   showHeader?: boolean;
+  /** Where the reader put the caret on the sheet, so a host with its own
+   *  writing surface can put ITS caret on the same word. Only called while
+   *  the two panes are tied together. */
+  onSelectWord?: (line: number, word: number) => void;
 }
 
 /**
@@ -1562,6 +1770,7 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
   onAnalyze,
   analyzing,
   showHeader = true,
+  onSelectWord,
 }) => {
   // A host that passes its own analysis owns the whole lifecycle: this pane
   // must not load, run, or clear the store's document underneath it.
@@ -1590,8 +1799,13 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
   const families = useLyricAnalysisStore((s) => s.families);
   const minConfidence = useLyricAnalysisStore((s) => s.minConfidence);
   const overlay = useLyricAnalysisStore((s) => s.overlay);
-  const links = useLyricAnalysisStore((s) => s.links);
+  const linkMode = useLyricAnalysisStore((s) => s.linkMode);
   const stress = useLyricAnalysisStore((s) => s.stress);
+  const textSize = useLyricAnalysisStore((s) => s.textSize);
+  const textWeight = useLyricAnalysisStore((s) => s.textWeight);
+  const mirrorSelection = useLyricAnalysisStore((s) => s.mirrorSelection);
+  const followPlayback = useLyricAnalysisStore((s) => s.followPlayback);
+  const echoWords = useLyricAnalysisStore((s) => s.echo);
   const selectedGroup = useLyricAnalysisStore((s) => s.selectedGroup);
   const selectedDeviceId = useLyricAnalysisStore((s) => s.selectedDeviceId);
   const llm = useLyricAnalysisStore((s) => s.llm);
@@ -1613,6 +1827,8 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
   const [activeClass, setActiveClass] = useState('');
   /** The line the shape strip last jumped to, so it can mark where you are. */
   const [activeLine, setActiveLine] = useState(-1);
+  /** The whole-lyric web, opened over the pane. */
+  const [webOpen, setWebOpen] = useState(false);
   /** The words picked for the mark being composed, keyed `line:word`. */
   const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set<string>());
   /** Where the last pick landed, so a shift-click knows what "back to there"
@@ -1692,9 +1908,14 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
     [doc, families, minConfidence, rejected],
   );
 
+  /** ALL mode wires every finding; every other mode wires the near ones and
+   *  brings back whichever chain is open. Kept out of the memo's own body so
+   *  switching modes rebuilds the wiring and nothing else. */
+  const scope: 'near' | 'all' = linkMode === 'all' ? 'all' : 'near';
+
   const sheet = useMemo(
-    () => buildSheetModel(doc, lyrics, families, minConfidence, rejected),
-    [doc, lyrics, families, minConfidence, rejected],
+    () => buildSheetModel(doc, lyrics, families, minConfidence, rejected, scope),
+    [doc, lyrics, families, minConfidence, rejected, scope],
   );
 
   const structure = useMemo(() => buildStructureMap(shown, sheet.rows), [shown, sheet.rows]);
@@ -1783,6 +2004,28 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
     const target = sheetRef.current?.querySelector<HTMLElement>(`[data-row="${line}"]`);
     target?.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
   }, []);
+
+  /** A word picked on the sheet, handed to the writing surface. The sheet's
+   *  own highlight is left to the surface to send back, so the two panes
+   *  always agree about what is lit rather than each lighting its own idea. */
+  const onSheetWord = useCallback(
+    (line: number, word: number) => {
+      onSelectWord?.(line, word);
+    },
+    [onSelectWord],
+  );
+
+  // FOLLOW: the sheet rides the song, the way the karaoke does. The active
+  // line is the karaoke's — one store write per line, never per frame — so
+  // this costs a scroll every few seconds and nothing in between.
+  const singActiveLine = useLyricsStore((s) => s.activeLine);
+  useEffect(() => {
+    if (!followPlayback || singActiveLine < 0) return;
+    const target = sheetRef.current?.querySelector<HTMLElement>(`[data-row="${singActiveLine}"]`);
+    if (!target) return;
+    setActiveLine(singActiveLine);
+    target.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+  }, [followPlayback, singActiveLine]);
 
   const pickDevice = useCallback(
     (deviceId: string) => {
@@ -2068,172 +2311,232 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
         </div>
       )}
 
-      {/* THE LEGEND, which is also the filter: the encoding is always on screen
-          beside what it controls, and it drives the karaoke overlay too. */}
+      {/* THE CONTROL BAR, which is also the legend: the encoding is always on
+          screen beside what it controls, and it drives the karaoke overlay
+          too. Four clusters - what is FOUND, what is DRAWN, how it READS,
+          what is YOURS - because one flat row of eleven switches is a row
+          nobody scans. */}
       {doc && (
-        <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-white/5 bg-black/20 px-2 py-1.5 text-[9px] font-mono">
-          {DEVICE_FAMILIES.map((f) => (
-            <span key={f} className="flex items-center gap-1">
-              <input
-                id={`la-family-${f}-${uid}`}
-                name={`la-family-${f}-${uid}`}
-                type="checkbox"
-                className="accent-rose-400"
-                checked={families[f]}
-                onChange={(e) => store().setFamily(f, e.target.checked)}
-              />
-              <label
-                htmlFor={`la-family-${f}-${uid}`}
-                className="cursor-pointer select-none text-zinc-300"
-                title={`${FAMILY_LABELS[f]}: ${FAMILY_SHAPES[f]}`}
-              >
-                {FAMILY_LABELS[f]}
-              </label>
-              {/* The same shape the sheet and the karaoke paint, so the filter
-                  row really is the legend for both. */}
-              <span className="la-legend" aria-hidden="true">
-                <span data-device={f} />
+        <div className="shrink-0 border-b border-white/10 bg-white/3 px-2 py-1.5 text-[10px] font-mono">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <Cluster name="found">
+              {DEVICE_FAMILIES.map((f) => (
+                <span key={f} className="flex items-center gap-1">
+                  <input
+                    id={`la-family-${f}-${uid}`}
+                    name={`la-family-${f}-${uid}`}
+                    type="checkbox"
+                    className="accent-rose-400"
+                    checked={families[f]}
+                    onChange={(e) => store().setFamily(f, e.target.checked)}
+                  />
+                  <label
+                    htmlFor={`la-family-${f}-${uid}`}
+                    className={`cursor-pointer select-none tracking-wide ${
+                      families[f] ? 'text-zinc-100' : 'text-zinc-500'
+                    }`}
+                    title={`${FAMILY_LABELS[f]}: ${FAMILY_SHAPES[f]}`}
+                  >
+                    {FAMILY_LABELS[f]}
+                  </label>
+                  {/* The same shape the sheet and the karaoke paint, so the
+                      filter row really is the legend for both. */}
+                  <span className="la-legend" aria-hidden="true">
+                    <span data-device={f} />
+                  </span>
+                  <span className="tabular-nums text-zinc-500">{familyCounts[f]}</span>
+                </span>
+              ))}
+              <span className="flex items-center gap-1">
+                <label htmlFor={`la-confidence-${uid}`} className="select-none text-zinc-400">
+                  FLOOR
+                </label>
+                <input
+                  id={`la-confidence-${uid}`}
+                  name={`la-confidence-${uid}`}
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={minConfidence}
+                  onChange={(e) => store().setMinConfidence(Number(e.target.value))}
+                  className="w-20 accent-rose-400"
+                  title="Hide findings the detector is less sure of than this. The softest ones - a word that merely has a homophone, a loose vowel run - sit just under the default on purpose."
+                />
+                <span className="w-8 tabular-nums text-zinc-200">{pct(minConfidence)}</span>
               </span>
-              <span className="tabular-nums text-zinc-600">{familyCounts[f]}</span>
-            </span>
-          ))}
+            </Cluster>
 
-          <span className="flex items-center gap-1">
-            <label htmlFor={`la-confidence-${uid}`} className="text-zinc-500 select-none">FLOOR</label>
-            <input
-              id={`la-confidence-${uid}`}
-              name={`la-confidence-${uid}`}
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={minConfidence}
-              onChange={(e) => store().setMinConfidence(Number(e.target.value))}
-              className="w-20 accent-rose-400"
-              title="Hide findings the detector is less sure of than this"
-            />
-            <span className="w-8 tabular-nums text-zinc-400">{pct(minConfidence)}</span>
-          </span>
-
-          {/* What confidence LOOKS like, so a faint mark is read as a guess
-              rather than as a different device. */}
-          <span className="flex items-center gap-1 text-zinc-600" title="A finding is drawn at the weight the detector is sure of">
-            <span className="la-legend" aria-hidden="true">
+            <Cluster name="wires">
+              <Segmented
+                label="How much of the wiring is drawn"
+                value={linkMode}
+                options={[
+                  ['off', 'OFF', LINK_MODE_WORDS.off],
+                  ['near', 'NEAR', LINK_MODE_WORDS.near],
+                  ['all', 'ALL', LINK_MODE_WORDS.all],
+                ]}
+                onChange={(v) => store().setLinkMode(v as LinkMode)}
+              />
               <span
-                data-device="rhyme"
-                data-sure={sureTier(1)}
-                style={{ '--dev-a': alphaFor(1) } as React.CSSProperties}
-              />
-            </span>
-            certain
-            <span className="la-legend" aria-hidden="true">
-              <span
-                data-device="rhyme"
-                data-sure={sureTier(0.6)}
-                style={{ '--dev-a': alphaFor(0.6) } as React.CSSProperties}
-              />
-            </span>
-            loose
-          </span>
-
-          <span className="flex items-center gap-1">
-            <input
-              id={`la-links-${uid}`}
-              name={`la-links-${uid}`}
-              type="checkbox"
-              className="accent-rose-400"
-              checked={links}
-              onChange={(e) => store().setLinks(e.target.checked)}
-            />
-            <label
-              htmlFor={`la-links-${uid}`}
-              className="cursor-pointer select-none text-zinc-300"
-              title="Draw internal, leonine and cross-line rhymes as arcs over the sheet"
-            >
-              LINKS
-            </label>
-          </span>
-
-          <span className="flex items-center gap-1">
-            <input
-              id={`la-stress-${uid}`}
-              name={`la-stress-${uid}`}
-              type="checkbox"
-              className="accent-rose-400"
-              checked={stress}
-              onChange={(e) => store().setStress(e.target.checked)}
-            />
-            <label
-              htmlFor={`la-stress-${uid}`}
-              className="cursor-pointer select-none text-zinc-300"
-              title="One dot per syllable beside each line, filled where the stress falls (hidden when the pane is narrow)"
-            >
-              STRESS
-            </label>
-          </span>
-
-          <span className="flex items-center gap-1">
-            <input
-              id={`la-overlay-${uid}`}
-              name={`la-overlay-${uid}`}
-              type="checkbox"
-              className="accent-rose-400"
-              checked={overlay}
-              onChange={(e) => store().setOverlay(e.target.checked)}
-            />
-            <label
-              htmlFor={`la-overlay-${uid}`}
-              className="cursor-pointer select-none text-zinc-300"
-              title="Underline the devices on the karaoke words while the song plays"
-            >
-              KARAOKE OVERLAY
-            </label>
-          </span>
-
-          {/* Marking is offered only where a mark has somewhere to live. The
-              routes store them against a lyric DOCUMENT, so a song opened from
-              the library has no home for one, and a checkbox here would hand
-              the writer a flow whose every save is a 404. */}
-          {marksSupported ? (
-            <span className="flex items-center gap-1">
-              <input
-                id={`la-mark-${uid}`}
-                name={`la-mark-${uid}`}
-                type="checkbox"
-                className="accent-amber-400"
-                checked={markMode}
-                onChange={(e) => setMarkMode(e.target.checked)}
-              />
-              <label
-                htmlFor={`la-mark-${uid}`}
-                className="cursor-pointer select-none text-amber-200"
-                title="Mark the lyric yourself: click the words that rhyme — two, three, as many as you hear — and name them as one. Your marks are drawn as boxes, never as another underline."
+                className="text-zinc-500"
+                title="Whatever the mode, the finding you have OPEN is always wired in full - every word of the run it describes."
               >
-                MARK
-              </label>
-              <span className="la-mark-chip" aria-hidden="true" />
-              <span className="tabular-nums text-zinc-600">{marks.length}</span>
-            </span>
-          ) : (
-            <span
-              className="text-zinc-600"
-              title="Marks are saved on a lyric in the LYRIC notebook, which is where a draft can be written and re-read. A song opened from the library has nowhere to keep them."
-            >
-              MARK IN THE LYRIC TAB
-            </span>
-          )}
+                {linkMode === 'all'
+                  ? `${sheet.links.length} wires`
+                  : linkMode === 'near'
+                    ? `within ${LINK_NEAR_LINES} lines`
+                    : 'open finding only'}
+              </span>
+              <button
+                type="button"
+                data-tour="rhyme-web"
+                className="rounded px-1.5 py-0.5 text-zinc-300 hover:bg-white/10 hover:text-zinc-100"
+                onClick={() => setWebOpen(true)}
+                title="Open the whole web: every rhyme in the lyric as one chart, with the lines down one side and every connection drawn between them. Exports as SVG or PNG."
+              >
+                <span className="flex items-center gap-1">
+                  <Share2 className="h-3 w-3" /> WEB
+                </span>
+              </button>
+            </Cluster>
 
-          <span
-            className="text-zinc-600"
-            title={
-              struck > 0
-                ? 'A rejection strikes out the whole rhyme class the finding belongs to, so one cross can take several findings with it.'
-                : undefined
-            }
-          >
-            {shown.length} of {detected.length} findings shown
-            {struck > 0 && ` · ${struck} struck out by you`}
-          </span>
+            <Cluster name="type">
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-zinc-300 hover:bg-white/10 hover:text-zinc-100 disabled:opacity-30"
+                onClick={() => store().setTextSize(stepSize(textSize, -1))}
+                disabled={textSize <= TEXT_SIZES[0]}
+                aria-label="Smaller lyric text"
+                title="Smaller"
+              >
+                A-
+              </button>
+              <span className="w-6 text-center tabular-nums text-zinc-200" aria-live="polite">
+                {textSize}
+              </span>
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-zinc-300 hover:bg-white/10 hover:text-zinc-100 disabled:opacity-30"
+                onClick={() => store().setTextSize(stepSize(textSize, 1))}
+                disabled={textSize >= TEXT_SIZES[TEXT_SIZES.length - 1]}
+                aria-label="Larger lyric text"
+                title="Larger"
+              >
+                A+
+              </button>
+              <button
+                type="button"
+                className={`rounded px-1.5 py-0.5 font-bold transition-colors ${
+                  textWeight >= 600
+                    ? 'bg-rose-500/25 text-rose-100 ring-1 ring-rose-400/50'
+                    : 'text-zinc-400 hover:bg-white/10 hover:text-zinc-100'
+                }`}
+                onClick={() => store().setTextWeight(textWeight >= 600 ? 400 : 600)}
+                aria-pressed={textWeight >= 600}
+                aria-label="Bold lyric text"
+                title="Set the lyric heavy. The size and the weight are shared with the writing surface, so both panes read the same."
+              >
+                B
+              </button>
+            </Cluster>
+
+            <Cluster name="reads">
+              <Toggle
+                id={`la-stress-${uid}`}
+                label="STRESS"
+                title="One dot per syllable beside each line, filled where the stress falls (hidden when the pane is narrow)"
+                checked={stress}
+                onChange={(on) => store().setStress(on)}
+              />
+              <Toggle
+                id={`la-mirror-${uid}`}
+                label="TIE"
+                title="Tie the two panes together: select a word while writing and it lights here, and a word picked here puts the caret on it over there."
+                checked={mirrorSelection}
+                onChange={(on) => store().setMirrorSelection(on)}
+              />
+              <Toggle
+                id={`la-follow-${uid}`}
+                label="FOLLOW"
+                title="Scroll this sheet with the song, the way the karaoke does. Needs a song playing in the SING tab."
+                checked={followPlayback}
+                onChange={(on) => store().setFollowPlayback(on)}
+              />
+              <Toggle
+                id={`la-overlay-${uid}`}
+                label="ON KARAOKE"
+                title="Underline the devices on the karaoke words while the song plays"
+                checked={overlay}
+                onChange={(on) => store().setOverlay(on)}
+              />
+            </Cluster>
+
+            {/* Marking is offered only where a mark has somewhere to live. The
+                routes store them against a lyric DOCUMENT, so a song opened
+                from the library has no home for one, and a checkbox here would
+                hand the writer a flow whose every save is a 404. */}
+            {marksSupported ? (
+              <Cluster name="yours">
+                <Toggle
+                  id={`la-mark-${uid}`}
+                  label="MARK"
+                  accent="amber"
+                  title="Mark the lyric yourself: click the words that rhyme - two, three, as many as you hear - and name them as one. Your marks are drawn as boxes, never as another underline."
+                  checked={markMode}
+                  onChange={setMarkMode}
+                >
+                  <span className="la-mark-chip" aria-hidden="true" />
+                  <span className="tabular-nums text-zinc-500">{marks.length}</span>
+                </Toggle>
+              </Cluster>
+            ) : (
+              <span
+                className="text-zinc-500"
+                title="Marks are saved on a lyric in the LYRIC notebook, which is where a draft can be written and re-read. A song opened from the library has nowhere to keep them."
+              >
+                MARK IN THE LYRIC TAB
+              </span>
+            )}
+
+            <span className="ml-auto flex items-center gap-2 text-zinc-400">
+              {/* What confidence LOOKS like, so a faint mark is read as a guess
+                  rather than as a different device. */}
+              <span
+                className="flex items-center gap-1"
+                title="A finding is drawn at the weight the detector is sure of"
+              >
+                <span className="la-legend" aria-hidden="true">
+                  <span
+                    data-device="rhyme"
+                    data-sure={sureTier(1)}
+                    style={{ '--dev-a': alphaFor(1) } as React.CSSProperties}
+                  />
+                </span>
+                certain
+                <span className="la-legend" aria-hidden="true">
+                  <span
+                    data-device="rhyme"
+                    data-sure={sureTier(0.6)}
+                    style={{ '--dev-a': alphaFor(0.6) } as React.CSSProperties}
+                  />
+                </span>
+                loose
+              </span>
+              <span
+                className="text-zinc-300"
+                title={
+                  struck > 0
+                    ? 'A rejection strikes out the whole rhyme class the finding belongs to, so one cross can take several findings with it.'
+                    : undefined
+                }
+              >
+                <span className="tabular-nums text-zinc-100">{shown.length}</span> of{' '}
+                <span className="tabular-nums">{detected.length}</span> shown
+                {struck > 0 && ` · ${struck} struck out by you`}
+              </span>
+            </span>
+          </div>
         </div>
       )}
 
@@ -2399,8 +2702,12 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
             onPickDevice={pickDevice}
             selectedGroup={selectedGroup}
             selectedDeviceId={selectedDeviceId}
-            showLinks={links}
+            linkMode={linkMode}
             showStress={stress}
+            textSize={textSize}
+            textWeight={textWeight}
+            echo={mirrorSelection ? echoWords : undefined}
+            onEchoWord={mirrorSelection ? onSheetWord : undefined}
             hasWords={hasWords}
             sheetRef={sheetRef}
             markMode={markMode && marksSupported}
@@ -2568,6 +2875,19 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
             )}
           </div>
         </div>
+      )}
+
+      {webOpen && (
+        <Suspense fallback={null}>
+          <RhymeWeb
+            title={title || 'lyric'}
+            model={sheet}
+            devices={shown}
+            selectedGroup={selectedGroup}
+            onPickDevice={pickDevice}
+            onClose={() => setWebOpen(false)}
+          />
+        </Suspense>
       )}
 
       {selectedDevice && (

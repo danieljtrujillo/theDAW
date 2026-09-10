@@ -5,9 +5,11 @@
  * the stored document (and joins an analysis already running for it), `run()`
  * starts a fresh pass and polls its job into `job`, `clear()` drops everything.
  * The view preferences — which device families are painted, the confidence
- * floor, whether the karaoke overlay is on, whether the sheet draws its rhyme
- * links and stress rows, and the LLM provider/model — live in localStorage
- * under `lyricAnalysis.*`; everything else is session state.
+ * floor, whether the karaoke overlay and its wiring are on, how much of the
+ * sheet's own wiring is drawn, the reading size and weight of the lyric,
+ * whether the two panes are tied together, whether the sheet follows the
+ * song, and the LLM provider/model — live in localStorage under
+ * `lyricAnalysis.*`; everything else is session state.
  *
  * The second half of this module is the pure view-model the pane draws: the
  * word-level index the karaoke paints from, and the character-level sheet
@@ -94,11 +96,44 @@ export interface LyricAnalysisJobState {
 const KEY_FAMILIES = 'lyricAnalysis.families';
 const KEY_MIN_CONFIDENCE = 'lyricAnalysis.minConfidence';
 const KEY_OVERLAY = 'lyricAnalysis.overlay';
-const KEY_LINKS = 'lyricAnalysis.links';
+/** The boolean this setting used to be. Read once, to migrate; never written. */
+const KEY_LINKS_LEGACY = 'lyricAnalysis.links';
+const KEY_LINK_MODE = 'lyricAnalysis.linkMode';
 const KEY_STRESS = 'lyricAnalysis.stress';
 const KEY_PROVIDER = 'lyricAnalysis.provider';
 const KEY_MODEL = 'lyricAnalysis.model';
 const KEY_MARK_MODE = 'lyricAnalysis.markMode';
+const KEY_TEXT_SIZE = 'lyricAnalysis.textSize';
+const KEY_TEXT_WEIGHT = 'lyricAnalysis.textWeight';
+const KEY_MIRROR = 'lyricAnalysis.mirror';
+const KEY_FOLLOW = 'lyricAnalysis.follow';
+const KEY_KARAOKE_LINKS = 'lyricAnalysis.karaokeLinks';
+
+/** How much of the wiring is drawn.
+ *
+ *  `near` is the resting state: only the links a reader would otherwise miss —
+ *  an internal rhyme, an echo one line down — plus whatever finding is open.
+ *  `all` is the whole web: every group with more than one place in it, rhyme
+ *  classes included, wired end to end. It is deliberately a mode rather than
+ *  the default, because on a dense lyric it draws several hundred strokes. */
+export type LinkMode = 'off' | 'near' | 'all';
+
+const LINK_MODES: readonly LinkMode[] = ['off', 'near', 'all'];
+
+export const LINK_MODE_WORDS: Record<LinkMode, string> = {
+  off: 'no wires',
+  near: 'the wires a reader would otherwise miss, plus the finding you have open',
+  all: 'every connection in the lyric, rhyme classes included',
+};
+
+/** The reading size of the sheet and of the writing surface, in px. Both
+ *  surfaces read from the same number so the two panes never disagree. */
+export const TEXT_SIZES = [11, 12, 13, 15, 17, 20] as const;
+export const DEFAULT_TEXT_SIZE = 12;
+/** Two weights, not a slider: a lyric is either set light or set heavy, and
+ *  a 500 nobody can tell from a 400 is not worth a control. */
+export const TEXT_WEIGHTS = [400, 600] as const;
+export const DEFAULT_TEXT_WEIGHT = 400;
 
 const readBool = (key: string, fallback: boolean): boolean => {
   try {
@@ -132,12 +167,36 @@ const writeStorage = (key: string, value: string): void => {
   }
 };
 
-/** `sound` starts OFF: alliteration, assonance and consonance fire on most of
- *  a lyric by their nature (measured: 78% of words carry a mark with every
- *  family on, 48% without sound), which reads as a highlighter accident rather
- *  than a finding. The family toggle turns it back on for a sound pass. */
+/** `sound` starts OFF: alliteration, assonance, consonance and the two density
+ *  passes fire on most of a lyric by their nature, which reads as a highlighter
+ *  accident rather than as a finding. Measured over the 14 lyric fixtures in
+ *  `tests/test_lyricanalysis_devices.py` (985 words): 66% of words carry a mark
+ *  with every family on, 35% with sound off. The family toggle turns it back on
+ *  for a sound pass. */
 const DEFAULT_FAMILIES = (): FamilyVisibility =>
   Object.fromEntries(DEVICE_FAMILIES.map((f) => [f, f !== 'sound'])) as FamilyVisibility;
+
+const readLinkMode = (): LinkMode => {
+  const raw = readString(KEY_LINK_MODE, '');
+  if ((LINK_MODES as readonly string[]).includes(raw)) return raw as LinkMode;
+  // No mode stored yet: honour whatever the older boolean was left at, so an
+  // upgrade does not silently switch a writer's wiring back on.
+  return readBool(KEY_LINKS_LEGACY, true) ? 'near' : 'off';
+};
+
+/** The nearest step on the size ladder, so a stored value from an older build
+ *  (or a hand-edited one) still lands on a size the buttons can step from. */
+export const nearestSize = (px: number): number => {
+  if (!Number.isFinite(px)) return DEFAULT_TEXT_SIZE;
+  let best = TEXT_SIZES[0] as number;
+  for (const size of TEXT_SIZES) if (Math.abs(size - px) < Math.abs(best - px)) best = size;
+  return best;
+};
+
+const readSize = (): number => nearestSize(readNumber(KEY_TEXT_SIZE, DEFAULT_TEXT_SIZE));
+
+const readWeight = (): number =>
+  readNumber(KEY_TEXT_WEIGHT, DEFAULT_TEXT_WEIGHT) >= 500 ? TEXT_WEIGHTS[1] : TEXT_WEIGHTS[0];
 
 const readFamilies = (): FamilyVisibility => {
   let raw: string | null = null;
@@ -441,6 +500,10 @@ export interface SheetRow {
 
 export interface SheetLinkEnd {
   line: number;
+  /** Index into the line's words. The sheet anchors by character offsets
+   *  because a device may claim part of a word; the karaoke has one element
+   *  per word and anchors by this instead. */
+  word: number;
   start: number;
   end: number;
   text: string;
@@ -458,11 +521,26 @@ export interface SheetLink {
   confidence: number;
   a: SheetLinkEnd;
   b: SheetLinkEnd;
+  /** Which hop of its finding this is, and how many there are: a run of five
+   *  rhyming words is four wires, and the renderer draws the whole chain when
+   *  one of them is picked. */
+  hop: number;
+  hops: number;
+  /** `near` is drawn at rest; `wide` only in ALL mode or when its finding is
+   *  open. Set here rather than measured in the renderer, because the reach
+   *  that matters is in LINES and the renderer only has pixels. */
+  reach: 'near' | 'wide';
+  /** Lane the wire is routed in, so two links between the same two lines do
+   *  not land on the same curve. Assigned per line-pair, in reading order. */
+  lane: number;
 }
 
 export interface SheetModel {
   rows: SheetRow[];
   links: SheetLink[];
+  /** Every finding's whole chain, keyed by group — including the kinds the
+   *  sheet never wires at rest. Opening one draws the run it describes. */
+  linksByGroup: Map<string, SheetLink[]>;
   /** Links found but not drawn: the layer is capped so a refrain repeated
    *  forty times cannot bury the words under its own wiring. */
   linkOverflow: number;
@@ -490,7 +568,14 @@ const LINK_KINDS = new Set([
   ...LONG_RANGE_KINDS,
 ]);
 
+/** At rest the layer is capped hard: a refrain repeated forty times must not
+ *  bury the words under its own wiring. ALL mode is an explicit request for
+ *  the whole web and gets a much higher ceiling — past it the count is
+ *  reported rather than the links silently dropped. */
 const MAX_LINKS = 140;
+const MAX_LINKS_ALL = 900;
+/** How far apart two ends can be, in lines, before a wire counts as wide. */
+export const LINK_NEAR_LINES = 2;
 const SEGMENT_TITLE_LABELS = 3;
 
 interface FlatLine {
@@ -551,8 +636,16 @@ export function buildSheetModel(
   families: FamilyVisibility,
   minConfidence: number,
   rejected?: ReadonlySet<string>,
+  scope: 'near' | 'all' = 'near',
 ): SheetModel {
-  const empty: SheetModel = { rows: [], links: [], linkOverflow: 0, maxDevices: 0, maxSyllables: 0 };
+  const empty: SheetModel = {
+    rows: [],
+    links: [],
+    linksByGroup: new Map(),
+    linkOverflow: 0,
+    maxDevices: 0,
+    maxSyllables: 0,
+  };
   if (!doc) return empty;
 
   const metrics = new Map<number, LineMetrics>();
@@ -731,10 +824,19 @@ export function buildSheetModel(
   }
 
   // Links come last: both ends need their line flattened first.
-  const links: SheetLink[] = [];
+  //
+  // Two scopes. At rest only the kinds a list genuinely hides are wired — an
+  // internal rhyme, an echo a line down — because a rap lyric answers itself
+  // constantly and every answer as a wire buries the words. In ALL scope
+  // every finding with more than one place in it is wired end to end, which
+  // is the whole web: rhyme classes, assonance runs, refrains, puns.
+  const built: SheetLink[] = [];
   let linkOverflow = 0;
+  // Lanes are per PAIR OF LINES, so two wires between the same two lines are
+  // routed at different depths instead of drawn on top of each other.
+  const lanes = new Map<string, number>();
   for (const d of shown) {
-    if (!LINK_KINDS.has(d.kind)) continue;
+    if (d.spans.length < 2) continue;
     const family = asFamily(d.family);
     if (!family) continue;
     const ends: SheetLinkEnd[] = [];
@@ -743,15 +845,27 @@ export function buildSheetModel(
       if (!flat) continue;
       const range = spanRange(flat, sp);
       if (!range) continue;
-      ends.push({ line: sp.line, start: range[0], end: range[1], text: flat.text.slice(range[0], range[1]) });
+      ends.push({
+        line: sp.line,
+        word: sp.word,
+        start: range[0],
+        end: range[1],
+        text: flat.text.slice(range[0], range[1]),
+      });
     }
     const ink = groupInk(d.group || d.id);
+    const hops = Math.max(0, ends.length - 1);
     for (let k = 1; k < ends.length; k += 1) {
-      if (links.length >= MAX_LINKS) {
+      if (built.length >= MAX_LINKS_ALL) {
         linkOverflow += 1;
         continue;
       }
-      links.push({
+      const a = ends[k - 1];
+      const b = ends[k];
+      const pair = a.line <= b.line ? `${a.line}:${b.line}` : `${b.line}:${a.line}`;
+      const lane = lanes.get(pair) ?? 0;
+      lanes.set(pair, lane + 1);
+      built.push({
         id: `${d.id}:${k}`,
         deviceId: d.id,
         group: d.group || d.id,
@@ -761,13 +875,36 @@ export function buildSheetModel(
         rgb: ink.rgb,
         dash: ink.dash,
         confidence: d.confidence,
-        a: ends[k - 1],
-        b: ends[k],
+        a,
+        b,
+        hop: k,
+        hops,
+        reach: Math.abs(b.line - a.line) <= LINK_NEAR_LINES ? 'near' : 'wide',
+        lane,
       });
     }
   }
 
-  return { rows, links, linkOverflow, maxDevices, maxSyllables };
+  // Every group's whole chain, whatever the scope. This is what lets opening
+  // an assonance run — a kind the sheet never wires at rest — draw the run it
+  // is: the wires that tie the words of THAT finding together.
+  const linksByGroup = new Map<string, SheetLink[]>();
+  for (const link of built) {
+    const list = linksByGroup.get(link.group);
+    if (list) list.push(link);
+    else linksByGroup.set(link.group, [link]);
+  }
+
+  let links = built;
+  if (scope !== 'all') {
+    links = built.filter((l) => LINK_KINDS.has(l.kind));
+    if (links.length > MAX_LINKS) {
+      linkOverflow += links.length - MAX_LINKS;
+      links = links.slice(0, MAX_LINKS);
+    }
+  }
+
+  return { rows, links, linksByGroup, linkOverflow, maxDevices, maxSyllables };
 }
 
 export type LaneState = 'through' | 'start' | 'mid' | 'end';
@@ -1087,10 +1224,23 @@ export interface LyricAnalysisState {
   families: FamilyVisibility;
   minConfidence: number;
   overlay: boolean;
-  /** Draw internal / cross-line rhymes as arcs over the sheet. */
-  links: boolean;
+  /** How much of the wiring the sheet draws. */
+  linkMode: LinkMode;
   /** Show the per-line stress pattern beside the sheet. */
   stress: boolean;
+  /** Reading size and weight of the lyric, shared by the sheet and the
+   *  writing surface so the two panes are never set differently. */
+  textSize: number;
+  textWeight: number;
+  /** Selecting words in one pane lights them in the other. */
+  mirrorSelection: boolean;
+  /** The sheet follows the playhead, the way the karaoke does. */
+  followPlayback: boolean;
+  /** Draw the rhyme wiring over the karaoke words as well as over the sheet. */
+  karaokeLinks: boolean;
+  /** Words lit by the other pane's selection, keyed `line:word`. Session
+   *  state, never persisted: it is where the cursor is, not a preference. */
+  echo: ReadonlySet<string>;
   /** The device group the findings list has selected; the karaoke lights it up. */
   selectedGroup: string | null;
   /** The one finding being inspected: its spans, phones and reason. Always in
@@ -1129,8 +1279,14 @@ export interface LyricAnalysisState {
   setFamily: (family: DeviceFamily, on: boolean) => void;
   setMinConfidence: (v: number) => void;
   setOverlay: (on: boolean) => void;
-  setLinks: (on: boolean) => void;
+  setLinkMode: (mode: LinkMode) => void;
   setStress: (on: boolean) => void;
+  setTextSize: (px: number) => void;
+  setTextWeight: (weight: number) => void;
+  setMirrorSelection: (on: boolean) => void;
+  setFollowPlayback: (on: boolean) => void;
+  setKaraokeLinks: (on: boolean) => void;
+  setEcho: (keys: ReadonlySet<string>) => void;
   setSelectedGroup: (group: string | null) => void;
   setSelectedDevice: (device: Device | null) => void;
   setLlm: (on: boolean) => void;
@@ -1272,8 +1428,14 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
     families: readFamilies(),
     minConfidence: readNumber(KEY_MIN_CONFIDENCE, 0.5),
     overlay: readBool(KEY_OVERLAY, true),
-    links: readBool(KEY_LINKS, true),
+    linkMode: readLinkMode(),
     stress: readBool(KEY_STRESS, false),
+    textSize: readSize(),
+    textWeight: readWeight(),
+    mirrorSelection: readBool(KEY_MIRROR, true),
+    followPlayback: readBool(KEY_FOLLOW, false),
+    karaokeLinks: readBool(KEY_KARAOKE_LINKS, false),
+    echo: new Set<string>() as ReadonlySet<string>,
     selectedGroup: null,
     selectedDeviceId: null,
     // The interpretive pass costs a call to a provider, so it never turns
@@ -1421,13 +1583,54 @@ export const useLyricAnalysisStore = create<LyricAnalysisState>()((set, get) => 
       set({ overlay: on });
       writeStorage(KEY_OVERLAY, on ? '1' : '0');
     },
-    setLinks: (on) => {
-      set({ links: on });
-      writeStorage(KEY_LINKS, on ? '1' : '0');
+    setLinkMode: (mode) => {
+      set({ linkMode: LINK_MODES.includes(mode) ? mode : 'near' });
+      writeStorage(KEY_LINK_MODE, get().linkMode);
     },
     setStress: (on) => {
       set({ stress: on });
       writeStorage(KEY_STRESS, on ? '1' : '0');
+    },
+    setTextSize: (px) => {
+      const next = nearestSize(px);
+      set({ textSize: next });
+      writeStorage(KEY_TEXT_SIZE, String(next));
+    },
+    setTextWeight: (weight) => {
+      const next = weight >= 500 ? TEXT_WEIGHTS[1] : TEXT_WEIGHTS[0];
+      set({ textWeight: next });
+      writeStorage(KEY_TEXT_WEIGHT, String(next));
+    },
+    setMirrorSelection: (on) => {
+      // Switching it off has to take the highlight with it, or the last
+      // selection stays lit on the sheet with nothing able to clear it.
+      set({ mirrorSelection: on, ...(on ? {} : { echo: new Set<string>() as ReadonlySet<string> }) });
+      writeStorage(KEY_MIRROR, on ? '1' : '0');
+    },
+    setFollowPlayback: (on) => {
+      set({ followPlayback: on });
+      writeStorage(KEY_FOLLOW, on ? '1' : '0');
+    },
+    setKaraokeLinks: (on) => {
+      set({ karaokeLinks: on });
+      writeStorage(KEY_KARAOKE_LINKS, on ? '1' : '0');
+    },
+    // Set from whichever pane owns the caret. Compared before it is stored so
+    // a textarea firing selectionchange on every keystroke cannot re-render
+    // the sheet for a selection that has not moved.
+    setEcho: (keys) => {
+      const prev = get().echo;
+      if (prev.size === keys.size) {
+        let same = true;
+        for (const k of keys) {
+          if (!prev.has(k)) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+      set({ echo: keys });
     },
     // Selecting a group without naming a finding closes the inspector: the
     // group is the paint, the device is the thing being read.

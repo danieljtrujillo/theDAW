@@ -1,9 +1,20 @@
-import React, { useEffect, useId, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useLyricStudioStore } from '../../../state/lyricStudioStore';
-import { rhymeInk } from '../../../state/lyricAnalysisStore';
+import {
+  TEXT_SIZES,
+  rhymeInk,
+  useLyricAnalysisStore,
+} from '../../../state/lyricAnalysisStore';
 import type { LyricAnalysisDoc } from '../../../lib/lyricAnalysisClient';
-import { estimateLineSyllables, splitLyricLines, type LyricLineRow } from './lyricLines';
+import {
+  draftWordRanges,
+  estimateLineSyllables,
+  rangeForWord,
+  splitLyricLines,
+  wordKeysInRange,
+  type LyricLineRow,
+} from './lyricLines';
 
 /**
  * The hue for a rhyme class, from `rhymeInk` — the SAME function the analysis
@@ -20,10 +31,14 @@ const letterChannels = (letter: string): string => rhymeInk(letter)?.rgb ?? '';
 /** The rose the analysis pane heads a section in, for the gutter's `§`. */
 const MARKER_RGB = '251 113 133';
 
-/** Row height in px. The gutter is a parallel column of rows, so it and the
- *  textarea must agree exactly — hence a fixed leading rather than a relative
- *  one, and `wrap="off"` so one typed line is always one visual row. */
-const ROW_PX = 20;
+/** Row height in px, from the reading size the writer set.
+ *
+ *  The gutter is a parallel column of rows, so it and the textarea must agree
+ *  EXACTLY — hence a computed leading in whole pixels rather than a relative
+ *  one, and `wrap="off"` so one typed line is always one visual row. A
+ *  fractional line-height rounds differently in the two columns and the gutter
+ *  drifts a row out over a long lyric. */
+const rowPx = (size: number): number => Math.round(size * 1.7);
 
 interface GutterRow {
   row: number;
@@ -59,6 +74,12 @@ const buildRows = (draft: string, analysis: LyricAnalysisDoc | null, current: bo
   return rows;
 };
 
+export interface LyricEditorHandle {
+  /** Put the caret on one word of the analysed document and show it. Called
+   *  when the reader picks a word on the sheet and the panes are tied. */
+  revealWord: (line: number, word: number) => void;
+}
+
 /**
  * The writing surface: a plain textarea with a gutter that says what the
  * analysis makes of each line — its rhyme class, its syllable count — and a
@@ -68,8 +89,13 @@ const buildRows = (draft: string, analysis: LyricAnalysisDoc | null, current: bo
  * scrollTop rather than an overlay inside it, because a textarea cannot carry
  * per-line decoration and a contenteditable would cost the writer their
  * browser's own undo stack, spellcheck and IME behaviour.
+ *
+ * That same limitation is why the tie to the analysis pane is asymmetric: what
+ * is selected HERE can be lit over there word by word, and what is picked over
+ * there comes back as a real textarea selection plus a lit row in the gutter,
+ * because a textarea cannot paint one of its own words.
  */
-export const LyricEditor: React.FC = () => {
+export const LyricEditor = React.forwardRef<LyricEditorHandle>((_props, ref) => {
   const uid = useId();
   const textId = `lyric-studio-text-${uid}`;
   const draft = useLyricStudioStore((s) => s.draft);
@@ -83,9 +109,70 @@ export const LyricEditor: React.FC = () => {
   const loading = useLyricStudioStore((s) => s.loading);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const textSize = useLyricAnalysisStore((s) => s.textSize);
+  const textWeight = useLyricAnalysisStore((s) => s.textWeight);
+  const mirror = useLyricAnalysisStore((s) => s.mirrorSelection);
+  const echo = useLyricAnalysisStore((s) => s.echo);
+  const ROW_PX = rowPx(textSize);
 
   const current = analyzedText === draft;
   const rows = useMemo(() => buildRows(draft, analysis, current), [draft, analysis, current]);
+
+  /** Where every word of the draft sits, for the tie between the two panes.
+   *  Rebuilt when the draft changes, which is once per keystroke — it is a
+   *  single linear scan and never runs inside a scroll or a frame loop. */
+  const wordRanges = useMemo(() => draftWordRanges(draft), [draft]);
+
+  /** Publish what is selected here, so the sheet can light the same words. */
+  const publishSelection = useCallback(() => {
+    const area = areaRef.current;
+    if (!area) return;
+    if (!useLyricAnalysisStore.getState().mirrorSelection) return;
+    useLyricAnalysisStore
+      .getState()
+      .setEcho(wordKeysInRange(wordRanges, area.selectionStart, area.selectionEnd));
+  }, [wordRanges]);
+
+  // The tie is dropped when it is switched off, and when this surface goes
+  // away: a highlight nothing can clear is worse than no highlight.
+  useEffect(() => {
+    if (!mirror) return;
+    publishSelection();
+    return () => useLyricAnalysisStore.getState().setEcho(new Set<string>());
+  }, [mirror, publishSelection]);
+
+  /** The other direction: a word picked on the sheet, selected here. */
+  useImperativeHandle(
+    ref,
+    () => ({
+      revealWord: (line, word) => {
+        const area = areaRef.current;
+        const range = rangeForWord(wordRanges, line, word);
+        if (!area || !range) return;
+        area.focus({ preventScroll: true });
+        area.setSelectionRange(range[0], range[1]);
+        // Put the row in the middle rather than merely in view: the caret
+        // landing on the last visible row reads as nothing having happened.
+        const rowsAbove = draft.slice(0, range[0]).split('\n').length - 1;
+        area.scrollTop = Math.max(0, rowsAbove * ROW_PX - area.clientHeight / 2);
+        if (gutterRef.current) gutterRef.current.scrollTop = area.scrollTop;
+        publishSelection();
+      },
+    }),
+    [wordRanges, draft, ROW_PX, publishSelection],
+  );
+
+  /** Which rows the sheet's own selection is on, so the gutter can mark them.
+   *  The words themselves cannot be highlighted inside a textarea, and the
+   *  gutter row is the honest thing to light instead. */
+  const echoRows = useMemo(() => {
+    if (!mirror || !echo.size) return null;
+    const lines = new Set<number>();
+    for (const key of echo) lines.add(Number(key.split(':')[0]));
+    const out = new Set<number>();
+    for (const line of splitLyricLines(draft)) if (lines.has(line.index)) out.add(line.row);
+    return out;
+  }, [mirror, echo, draft]);
 
   // The gutter follows the textarea's scroll; keeping it in a ref write rather
   // than in state avoids a React render per scrolled pixel.
@@ -120,10 +207,13 @@ export const LyricEditor: React.FC = () => {
             // be filled: it gets the rose the analysis pane heads its sections
             // in, not the ~2:1 grey that means "no rhyme class yet".
             const rgb = marker ? MARKER_RGB : r.letter ? letterChannels(r.letter) : '';
+            const lit = echoRows?.has(r.row) ?? false;
             return (
               <div
                 key={r.row}
-                className="flex items-center gap-1 px-1.5 font-mono text-[10px] tabular-nums"
+                className={`flex items-center gap-1 px-1.5 font-mono text-[10px] tabular-nums ${
+                  lit ? 'bg-slate-300/15' : ''
+                }`}
                 style={{ height: `${ROW_PX}px` }}
               >
                 <span className="w-5 text-right text-zinc-700">{r.row + 1}</span>
@@ -150,8 +240,14 @@ export const LyricEditor: React.FC = () => {
           id={textId}
           name={textId}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            publishSelection();
+          }}
           onScroll={syncScroll}
+          onSelect={publishSelection}
+          onKeyUp={publishSelection}
+          onMouseUp={publishSelection}
           wrap="off"
           // While a draft is being fetched the textarea still shows the one
           // being LEFT. A keystroke here would be mirrored under the incoming
@@ -159,8 +255,12 @@ export const LyricEditor: React.FC = () => {
           // never opened.
           readOnly={loading}
           spellCheck
-          className="flex-1 min-w-0 resize-none bg-transparent px-3 py-2 font-mono text-[12px] text-zinc-100 outline-none placeholder:text-zinc-700"
-          style={{ lineHeight: `${ROW_PX}px` }}
+          className="flex-1 min-w-0 resize-none bg-transparent px-3 py-2 font-mono text-zinc-100 outline-none placeholder:text-zinc-700"
+          style={{
+            lineHeight: `${ROW_PX}px`,
+            fontSize: `${textSize}px`,
+            fontWeight: textWeight,
+          }}
           placeholder={'Write. One line per line.\n\n[Chorus] or (bridge) on their own line start a section.'}
         />
       </div>
@@ -172,6 +272,55 @@ export const LyricEditor: React.FC = () => {
         </span>
         <span className="text-zinc-700" title="Rhyme class letters come from the analysis; the syllable count is a local estimate until it lands">
           {current ? 'gutter: analysed' : 'gutter: estimated'}
+        </span>
+        <span className="flex items-center gap-1" role="group" aria-label="Text size">
+          <button
+            type="button"
+            className="rounded px-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-100 disabled:opacity-30"
+            onClick={() =>
+              useLyricAnalysisStore
+                .getState()
+                .setTextSize(TEXT_SIZES[Math.max(0, TEXT_SIZES.indexOf(textSize as never) - 1)])
+            }
+            disabled={textSize <= TEXT_SIZES[0]}
+            aria-label="Smaller text"
+            title="Smaller — the analysis pane follows"
+          >
+            A-
+          </button>
+          <span className="w-4 text-center tabular-nums text-zinc-300">{textSize}</span>
+          <button
+            type="button"
+            className="rounded px-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-100 disabled:opacity-30"
+            onClick={() =>
+              useLyricAnalysisStore
+                .getState()
+                .setTextSize(
+                  TEXT_SIZES[
+                    Math.min(TEXT_SIZES.length - 1, TEXT_SIZES.indexOf(textSize as never) + 1)
+                  ],
+                )
+            }
+            disabled={textSize >= TEXT_SIZES[TEXT_SIZES.length - 1]}
+            aria-label="Larger text"
+            title="Larger — the analysis pane follows"
+          >
+            A+
+          </button>
+          <button
+            type="button"
+            className={`rounded px-1 font-bold ${
+              textWeight >= 600 ? 'bg-rose-500/25 text-rose-100' : 'text-zinc-400 hover:bg-white/10'
+            }`}
+            onClick={() =>
+              useLyricAnalysisStore.getState().setTextWeight(textWeight >= 600 ? 400 : 600)
+            }
+            aria-pressed={textWeight >= 600}
+            aria-label="Bold text"
+            title="Set the draft heavy — the analysis pane follows"
+          >
+            B
+          </button>
         </span>
         <span className="ml-auto flex items-center gap-2">
           {analysisError && <span className="text-amber-300">analysis: {analysisError}</span>}
@@ -193,6 +342,8 @@ export const LyricEditor: React.FC = () => {
       </div>
     </div>
   );
-};
+});
+
+LyricEditor.displayName = 'LyricEditor';
 
 export default LyricEditor;

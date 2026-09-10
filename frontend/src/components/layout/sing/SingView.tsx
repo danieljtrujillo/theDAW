@@ -13,6 +13,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { useLibraryStore } from '../../../state/libraryStore';
+import { useLyricAnalysisStore } from '../../../state/lyricAnalysisStore';
 import { SING_LANGUAGES, useLyricsStore } from '../../../state/lyricsStore';
 import { lyricsExportUrl } from '../../../lib/lyricsClient';
 import { usePlayAlong } from '../score/playAlong/usePlayAlongClock';
@@ -63,6 +64,13 @@ export const SingView: React.FC = () => {
   const persisted = useLyricsStore((s) => s.persisted);
   const language = useLyricsStore((s) => s.language);
   const autoAlign = useLyricsStore((s) => s.autoAlign);
+
+  // The analysis indicators, switchable from the tab they show on rather than
+  // only from the pane that computed them: reading a lyric and singing it want
+  // different amounts of ink on the words.
+  const deviceOverlay = useLyricAnalysisStore((s) => s.overlay);
+  const analysisWires = useLyricAnalysisStore((s) => s.karaokeLinks);
+  const analysisDoc = useLyricAnalysisStore((s) => s.doc);
 
   const [editing, setEditing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -265,6 +273,46 @@ export const SingView: React.FC = () => {
         </span>
         <input id="sing-pitch" name="sing-pitch" type="checkbox" className="accent-rose-400" checked={showPitch} onChange={(e) => store().setShowPitch(e.target.checked)} />
         <label htmlFor="sing-pitch" className="cursor-pointer select-none" title="Show the pitch lane: the vocal's melody with your sung pitch over it">PITCH</label>
+        <input
+          id="sing-devices"
+          name="sing-devices"
+          type="checkbox"
+          className="accent-rose-400"
+          checked={deviceOverlay}
+          disabled={!analysisDoc}
+          onChange={(e) => useLyricAnalysisStore.getState().setOverlay(e.target.checked)}
+        />
+        <label
+          htmlFor="sing-devices"
+          className={`cursor-pointer select-none ${analysisDoc ? '' : 'text-zinc-600'}`}
+          title={
+            analysisDoc
+              ? 'Underline the literary devices on the words as they are sung. The colours and shapes are the analysis pane\u2019s own.'
+              : 'Nothing to draw yet \u2014 read the lyric in the analysis pane first (SING \u2192 STUDY, or the LYRIC tab).'
+          }
+        >
+          DEVICES
+        </label>
+        <input
+          id="sing-wires"
+          name="sing-wires"
+          type="checkbox"
+          className="accent-rose-400"
+          checked={analysisWires}
+          disabled={!analysisDoc || !deviceOverlay}
+          onChange={(e) => useLyricAnalysisStore.getState().setKaraokeLinks(e.target.checked)}
+        />
+        <label
+          htmlFor="sing-wires"
+          className={`cursor-pointer select-none ${analysisDoc && deviceOverlay ? '' : 'text-zinc-600'}`}
+          title={
+            deviceOverlay
+              ? 'Draw the rhymes as wires between the words themselves, the way the analysis sheet does. Only the near ones \u2014 at this type size a wire across a verse leaves the screen.'
+              : 'Turn DEVICES on first: the wires join what the underlines mark.'
+          }
+        >
+          WIRES
+        </label>
         <button type="button" className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40" onClick={() => void store().removeTimings()} disabled={!persisted || busy} title="Delete the timed document (lyrics.json); the plain text stays on the entry">
           <Trash2 className="w-3 h-3" /> TIMINGS
         </button>
@@ -362,6 +410,9 @@ export const SingView: React.FC = () => {
               onNudge={(i, d) => store().nudge(i, d)}
               onActiveLine={(i) => {
                 activeLineRef.current = i;
+                // Published once per line, so the analysis sheet can FOLLOW
+                // the song without a clock or a frame loop of its own.
+                store().setActiveLine(i);
               }}
             />
           )}

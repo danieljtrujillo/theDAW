@@ -1,10 +1,21 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
+import React, {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { LyricsDoc } from '../../../lib/lyricsClient';
 import {
+  buildSheetModel,
   buildWordDeviceIndex,
   useLyricAnalysisStore,
   wordMarkKey,
+  type SheetLink,
 } from '../../../state/lyricAnalysisStore';
+import { anchorOffset, lineBoxOf, rowPitchOf, routeWire, type RowBox } from './wires';
 import {
   buildIndex,
   findActiveLine,
@@ -110,13 +121,93 @@ export const LyricsScroller = forwardRef<LyricsScrollerHandle, LyricsScrollerPro
     //     have shifted underneath it. Marking the wrong words is worse than
     //     marking none, so the overlay goes away until it is re-analysed —
     //     which is exactly what the backend sets `stale` for.
+    const usable = !!analysis && !analysisStale && analysis.entry_id === doc.entry_id;
     const marks = useMemo(
       () =>
-        overlayOn && analysis && !analysisStale && analysis.entry_id === doc.entry_id
+        overlayOn && usable && analysis
           ? buildWordDeviceIndex(analysis, families, minConfidence)
           : null,
-      [overlayOn, analysis, analysisStale, families, minConfidence, doc.entry_id],
+      [overlayOn, usable, analysis, families, minConfidence],
     );
+
+    // --- the wiring over the karaoke ------------------------------------
+    //
+    // The same connections the analysis sheet draws, over the sung words. It
+    // is off by default and behind its own switch, because on stage the words
+    // come first: this is for reading a lyric back, not for singing it.
+    //
+    // The model is the sheet's own — the karaoke document IS the source the
+    // findings were anchored to — so what is drawn here and what is drawn
+    // there can never disagree. Only the near wires: at karaoke type a line is
+    // half the screen tall, and a wire between two lines a verse apart is a
+    // stroke leaving the top of the window.
+    const linksOn = useLyricAnalysisStore((s) => s.karaokeLinks);
+    const selectedDeviceId = useLyricAnalysisStore((s) => s.selectedDeviceId);
+    const wireModel = useMemo(
+      () =>
+        // The wires join what the underlines mark, so they follow the overlay:
+        // wiring together words that are not marked says nothing.
+        linksOn && overlayOn && usable && analysis
+          ? buildSheetModel(analysis, doc, families, minConfidence)
+          : null,
+      [linksOn, overlayOn, usable, analysis, doc, families, minConfidence],
+    );
+    const stageRef = useRef<HTMLDivElement | null>(null);
+    const [wires, setWires] = useState<Array<SheetLink & { d: string }>>([]);
+    const [wireBox, setWireBox] = useState({ w: 0, h: 0 });
+
+    useLayoutEffect(() => {
+      const host = stageRef.current;
+      if (!host || !wireModel) {
+        setWires([]);
+        return;
+      }
+      let raf = 0;
+      const measure = (): void => {
+        raf = 0;
+        // Nothing here may be a number of pixels. This type is sized by the
+        // pane — 20px to 46px on its width alone — and the gap between lines
+        // with it, so the surface hands over the line box and the row pitch it
+        // measured and every curve follows from those.
+        const lineBox = lineBoxOf(host.querySelector<HTMLElement>('.sing-lines'));
+        const rows: RowBox[] = [];
+        host.querySelectorAll<HTMLElement>('li[data-line]').forEach((li) => {
+          if (li.offsetHeight <= 0) return;
+          rows.push({ top: li.offsetTop, lines: Math.max(1, Math.round(li.offsetHeight / lineBox)) });
+        });
+        const pitch = rowPitchOf(rows, lineBox);
+        const out: Array<SheetLink & { d: string }> = [];
+        for (const link of wireModel.links) {
+          if (link.reach !== 'near') continue;
+          const av = host.querySelector<HTMLElement>(`li[data-line="${link.a.line}"] span[data-word="${link.a.word}"]`);
+          const bv = host.querySelector<HTMLElement>(`li[data-line="${link.b.line}"] span[data-word="${link.b.word}"]`);
+          if (!av || !bv) continue;
+          const a = anchorOffset(av, host);
+          const b = anchorOffset(bv, host);
+          const first = a.top <= b.top ? a : b;
+          const second = a.top <= b.top ? b : a;
+          out.push({
+            ...link,
+            d: routeWire(first, second, { lane: link.lane, leftEdge: 8, line: lineBox, pitch }).d,
+          });
+        }
+        setWires(out);
+        const w = host.clientWidth;
+        const h = host.scrollHeight || host.clientHeight;
+        setWireBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+      };
+      const schedule = (): void => {
+        if (!raf) raf = requestAnimationFrame(measure);
+      };
+      schedule();
+      const ro = new ResizeObserver(schedule);
+      ro.observe(host);
+      void document.fonts?.ready?.then(schedule).catch(() => {});
+      return () => {
+        ro.disconnect();
+        if (raf) cancelAnimationFrame(raf);
+      };
+    }, [wireModel, doc]);
 
     // Re-collect the element tables after every doc render.
     useLayoutEffect(() => {
@@ -283,6 +374,32 @@ export const LyricsScroller = forwardRef<LyricsScrollerHandle, LyricsScrollerPro
 
     return (
       <div ref={scrollRef} className="sing-scroller h-full overflow-y-auto" role="region" aria-label="Lyrics">
+        <div ref={stageRef} className="relative">
+        {wires.length > 0 && (
+          <svg
+            className="sing-wires"
+            width={wireBox.w}
+            height={wireBox.h}
+            role="img"
+            aria-label={`${wires.length} rhyme ${wires.length === 1 ? 'connection' : 'connections'} drawn between the words`}
+          >
+            {wires.map((wire) => {
+              const on = wire.deviceId === selectedDeviceId;
+              return (
+                <path
+                  key={wire.id}
+                  d={wire.d}
+                  stroke={`rgb(${wire.rgb})`}
+                  strokeWidth={on ? 3 : 1.4 + wire.confidence}
+                  strokeOpacity={on ? 0.9 : 0.2 + wire.confidence * 0.3}
+                  strokeDasharray={wire.dash || undefined}
+                  strokeLinecap="round"
+                  fill="none"
+                />
+              );
+            })}
+          </svg>
+        )}
         <ol ref={listRef} className="sing-lines" {...(tapMode ? { 'data-tap': '' } : {})}>
           {doc.lines.map((line, i) => {
             const timed = line.start_ms !== null;
@@ -368,6 +485,7 @@ export const LyricsScroller = forwardRef<LyricsScrollerHandle, LyricsScrollerPro
             );
           })}
         </ol>
+        </div>
       </div>
     );
   },

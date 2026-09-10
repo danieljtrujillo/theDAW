@@ -9,7 +9,14 @@
  * Run: `npx tsx src/components/layout/lyricstudio/lyricLines.test.ts`
  */
 import assert from 'node:assert/strict';
-import { estimateLineSyllables, splitLyricLines } from './lyricLines';
+import {
+  draftWordRanges,
+  estimateLineSyllables,
+  rangeForWord,
+  splitLyricLines,
+  wordKeysInRange,
+} from './lyricLines';
+import { splitText } from '../sing/singSync';
 
 /** The backend has one kind for a blank line ('lyric' with empty text); the
  *  editor calls it 'blank' so the gutter can skip it. Fold it back to compare. */
@@ -65,5 +72,54 @@ assert.deepEqual(
 assert.equal(estimateLineSyllables('the city breathes a silver light'), 9);
 assert.equal(estimateLineSyllables(''), 0);
 assert.equal(estimateLineSyllables('rhythm'), 1); // the y carries the run
+
+// --- the tie between the caret and the sheet -----------------------------
+//
+// A word ordinal here has to be the SAME ordinal `splitText` gives it, or
+// selecting a word while writing lights a different word on the sheet.
+
+const DRAFT = '[Chorus]\n  hold the line\n\n\nand let it   go now\n';
+const ranges = draftWordRanges(DRAFT);
+
+// Only lyric lines carry words; the marker line is not one of them.
+assert.deepEqual(
+  ranges.map((r) => [r.index, r.word, DRAFT.slice(r.start, r.end)]),
+  [
+    [1, 0, 'hold'],
+    [1, 1, 'the'],
+    [1, 2, 'line'],
+    [3, 0, 'and'],
+    [3, 1, 'let'],
+    [3, 2, 'it'],
+    [3, 3, 'go'],
+    [3, 4, 'now'],
+  ],
+);
+
+// Every ordinal agrees with the tokenisation the analysis was anchored to.
+const analysed = splitText(DRAFT);
+for (const range of ranges) {
+  assert.equal(
+    analysed[range.index].words[range.word].text,
+    DRAFT.slice(range.start, range.end),
+    `word ${range.index}:${range.word}`,
+  );
+}
+
+// A selection covers every word it touches, even partly.
+const at = (needle: string): number => DRAFT.indexOf(needle);
+assert.deepEqual(
+  [...wordKeysInRange(ranges, at('the'), at('line') + 2)].sort(),
+  ['1:1', '1:2'],
+);
+
+// A collapsed caret inside a word still names that word, so a click lights
+// something rather than nothing.
+assert.deepEqual([...wordKeysInRange(ranges, at('hold') + 2, at('hold') + 2)], ['1:0']);
+
+// And back the other way, for a word picked on the sheet.
+assert.deepEqual(rangeForWord(ranges, 3, 4), [at('now'), at('now') + 3]);
+assert.equal(rangeForWord(ranges, 3, 9), null);
+assert.equal(rangeForWord(ranges, 0, 0), null); // the marker has no words
 
 console.log('lyricLines: ok');

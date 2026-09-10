@@ -18,7 +18,7 @@ import { SING_SPLIT_MAX, SING_SPLIT_MIN, useBottomPanelStore } from '../../../st
 import { useLyricStudioStore } from '../../../state/lyricStudioStore';
 import { PaneSplitter } from '../PaneSplitter';
 import { DocumentRail } from './DocumentRail';
-import { LyricEditor } from './LyricEditor';
+import { LyricEditor, type LyricEditorHandle } from './LyricEditor';
 
 // The analysis pane drags in the whole findings UI; it is the SING tab's own
 // lazy chunk, so importing it here costs nothing extra.
@@ -39,6 +39,7 @@ export const LyricStudioView: React.FC = () => {
   const analyzedText = useLyricStudioStore((s) => s.analyzedText);
   const analyzing = useLyricStudioStore((s) => s.analyzing);
   const rowRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<LyricEditorHandle>(null);
   const [dragSplit, setDragSplit] = useState<number | null>(null);
 
   useEffect(() => {
@@ -65,7 +66,7 @@ export const LyricStudioView: React.FC = () => {
           style={{ flexGrow: frac, flexBasis: 0 }}
         >
           <div className="absolute inset-0">
-            <LyricEditor />
+            <LyricEditor ref={editorRef} />
           </div>
         </div>
         <PaneSplitter
@@ -92,6 +93,7 @@ export const LyricStudioView: React.FC = () => {
                   analysis={analysis}
                   analyzing={analyzing}
                   onAnalyze={() => void useLyricStudioStore.getState().runAnalysis()}
+                  onSelectWord={(line, word) => editorRef.current?.revealWord(line, word)}
                 />
               </Suspense>
             ) : (
