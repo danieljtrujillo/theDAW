@@ -56,7 +56,9 @@ def startup_modules() -> set[str]:
         text=True,
         timeout=600,
     )
-    assert proc.returncode == 0, f"importing backend.server failed:\n{proc.stderr[-2000:]}"
+    assert proc.returncode == 0, (
+        f"importing backend.server failed:\n{proc.stderr[-2000:]}"
+    )
     line = next(
         (ln for ln in proc.stdout.splitlines() if ln.startswith("@@")),
         None,
