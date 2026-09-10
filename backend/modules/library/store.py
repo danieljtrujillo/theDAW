@@ -1135,13 +1135,21 @@ class LibraryStore:
     def _dir_for(self, entry_id: str) -> Optional[Path]:
         # Direct (import or single-level generate) layout.
         direct = self.root / entry_id
-        if direct.is_dir() and _metadata_path(direct).is_file():
+        try:
+            direct_match = direct.is_dir() and _metadata_path(direct).is_file()
+        except OSError:
+            direct_match = False
+        if direct_match:
             return direct
         # Nested generate layout: "<job_id>_<index>" maps to "<job_id>/<index>".
         if "_" in entry_id:
             job_id, _, index = entry_id.rpartition("_")
             nested = self.root / job_id / index
-            if nested.is_dir() and _metadata_path(nested).is_file():
+            try:
+                nested_match = nested.is_dir() and _metadata_path(nested).is_file()
+            except OSError:
+                nested_match = False
+            if nested_match:
                 return nested
         return None
 
