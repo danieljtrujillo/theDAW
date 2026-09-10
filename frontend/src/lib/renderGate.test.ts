@@ -85,6 +85,20 @@ doc.hidden = false;
 emitVisibilityChange();
 assert.equal(gate.resumed(), true);
 
+// A real minimise never calls visible() while hidden: the browser pauses rAF
+// exactly then, so the loop stops asking until the window is back. The resume
+// has to survive that gap — the cases above all reach `hidden` through a
+// visible() call, which is the one thing a minimised window cannot do.
+fire(true);
+gate.visible(); // on screen and drawing
+gate.resumed(); // clear whatever the transition above latched
+doc.hidden = true;
+emitVisibilityChange(); // minimised — rAF stops here, no visible() calls follow
+doc.hidden = false;
+emitVisibilityChange(); // restored
+assert.equal(gate.visible(), true, 'drawing again after the window comes back');
+assert.equal(gate.resumed(), true, 'a minimise that paused rAF still re-baselines');
+
 // Disposal detaches both subscriptions — a leaked observer on a torn-down
 // scene keeps the element alive.
 gate.dispose();

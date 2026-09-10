@@ -72,8 +72,14 @@ export function createRenderGate(el: Element | null | undefined): RenderGate {
   observer.observe(el);
 
   const onVisibilityChange = (): void => {
-    // Coming back from a minimised window is a resume too.
-    if (!document.hidden && !wasVisible) justResumed = true;
+    // Coming back from a minimised window is a resume too — but the browser
+    // pauses rAF for the whole time it is hidden, so the loop stops calling
+    // visible() and `wasVisible` is never recorded as false. Guarding the
+    // resume on `!wasVisible` therefore missed the one case this listener
+    // exists for. Take the transition off the event itself instead: hiding
+    // marks the gap, and coming back is unconditionally a resume.
+    if (document.hidden) wasVisible = false;
+    else justResumed = true;
   };
   document.addEventListener('visibilitychange', onVisibilityChange);
 
