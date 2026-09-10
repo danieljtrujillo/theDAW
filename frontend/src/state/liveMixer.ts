@@ -44,6 +44,7 @@ import {
   getEngineCtx,
   getMasterGain,
   setLiveTransport,
+  registerChainProbe,
 } from './playerStore';
 import { logError } from './logStore';
 import {
@@ -145,6 +146,31 @@ function automatedNativeKeys(): Set<string> {
   }
   return keys;
 }
+
+/* What the EDIT timeline's own nodes are doing, for playerStore.dumpAudioChain.
+   `param` is the value the AudioParam is REALLY holding — which is not the
+   fader when an automation lane owns it (scheduleAutomation writes the param,
+   applyMixLive skips it), and that gap is exactly what makes a track quiet with
+   its fader up. */
+registerChainProbe('editTimeline', () => {
+  const automated = automatedNativeKeys();
+  const tracks = useEditorStore.getState().tracks;
+  return {
+    playing,
+    masterBus: masterBus ? masterBus.gain.value : null,
+    tracks: tracks.map((t) => {
+      const n = trackNodes.get(t.id);
+      return {
+        name: t.name,
+        fader: t.volume,
+        param: n ? n.gain.gain.value : null,
+        volumeAutomated: automated.has(automationTargetKey({ kind: 'trackVolume', trackId: t.id })),
+        muteGate: n ? n.muteGain.gain.value : null,
+        pan: n ? n.panner.pan.value : t.pan,
+      };
+    }),
+  };
+});
 
 /** A short signature of just the mixer-relevant fields, so the editorStore
  *  subscription (which also fires on every playhead tick) only pushes live

@@ -415,6 +415,65 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 }));
 
+/* --- diagnostic: what is actually attenuating the output -------------------
+   "It got WAY too quiet" is a report about a number nobody can see. The chain
+   is assembled by several modules that each own one segment (this file's
+   master/insert/monitor nodes, mixLiveRack's psychoacoustic insert, liveMixer's
+   per-track nodes), so no single place can answer the question. Each segment
+   registers a probe; dumpAudioChain() prints all of them at once, and DEV also
+   hangs it on window so it can be run from the console the moment the symptom
+   shows up. Opt-in only: nothing calls it on its own. */
+
+export type ChainProbe = () => Record<string, unknown>;
+const chainProbes = new Map<string, ChainProbe>();
+
+/** Contribute one named section to dumpAudioChain(). Later calls replace the
+ *  section, so a module can re-register after it rebuilds its nodes. */
+export const registerChainProbe = (name: string, probe: ChainProbe): void => {
+  chainProbes.set(name, probe);
+};
+
+const gainOf = (n: GainNode | null): number | null => (n ? n.gain.value : null);
+
+/** Print every gain between a source and the speakers, plus whatever the other
+ *  segments report. Returns the same object so a console caller can inspect it. */
+export const dumpAudioChain = (): Record<string, unknown> => {
+  const engine: Record<string, unknown> = _ctx
+    ? {
+        ctxState: _ctx.state,
+        sampleRate: _ctx.sampleRate,
+        destinationChannels: _ctx.destination.channelCount,
+        master: gainOf(_master),
+        rackInsertIn: gainOf(_insertIn),
+        rackInsertOut: gainOf(_insertOut),
+        liveFxIn: gainOf(_fxIn),
+        liveFxOut: gainOf(_fxOut),
+        monitor: gainOf(_monitor),
+        audioElVolume: _audioEl ? _audioEl.volume : null,
+        audioElMuted: _audioEl ? _audioEl.muted : null,
+        currentLabel: usePlayerStore.getState().currentLabel,
+      }
+    : { ctxState: 'not built' };
+  const out: Record<string, unknown> = { engine };
+  for (const [name, probe] of chainProbes) {
+    try {
+      out[name] = probe();
+    } catch (e) {
+      out[name] = `probe failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  // Both surfaces: the console for a dev, the LOG strip for the user who is
+  // sitting in front of the problem and can read it back without devtools.
+  console.info('[theDAW] audio chain', out);
+  logInfo('player', `Audio chain: ${JSON.stringify(out)}`);
+  return out;
+};
+
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
+  (window as unknown as { dumpAudioChain?: () => Record<string, unknown> }).dumpAudioChain =
+    dumpAudioChain;
+}
+
 /** One-shot analyser sample helpers, used by the visualizer + HUD. */
 export const samplePeakAndRMS = (): { peakDb: number; rmsDb: number; peak: number; rms: number } => {
   const analyser = getAnalyser();

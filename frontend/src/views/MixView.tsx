@@ -29,7 +29,10 @@ import { VstEmbedHost } from '../components/audio/VstEmbedHost';
 import { TheOwl } from '../components/audio/TheOwl';
 import { ModuleThumb } from '../components/audio/ModuleThumb';
 import { ControlSurface } from '../components/surface/ControlSurface';
-import { attachMixLiveRack } from '../state/mixLiveRack';
+import {
+  attachMixLiveRack, bypassLiveRack, liveRackEntries, rackEntryLabel,
+  useMixLiveRackStore, LEVEL_TAKING_RACK_IDS,
+} from '../state/mixLiveRack';
 import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../lib/aresBridge';
 import { RACK_EFFECTS, getRackEffect } from '../lib/rackEffects';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
@@ -1104,12 +1107,78 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
 
 /* ═══════════════════════════════ MixView ═══════════════════════════════════ */
 
+/* ── The master-insert strip — the live rack, said out loud ──────────────────
+   The psychoacoustic half of THE chain is spliced onto the GLOBAL master insert
+   on the first MIX mount and stays there for the session, so a chain left
+   enabled in an earlier session colours — and, with a spatializer or a gate in
+   it, quietly attenuates — everything the transport plays, in every tab. Nothing
+   on screen used to say so, which is how an attenuator becomes invisible. This
+   strip names what is on the insert right now, marks the entries that take level
+   rather than only colour, focuses one in the chain when clicked, and switches
+   the lot off in one press. It renders nothing at all while the insert is clean,
+   which is the normal case. */
+const MasterInsertStrip: React.FC<{ entries: ChainEntry[]; onPick: (id: string) => void }> = ({ entries, onPick }) => {
+  if (entries.length === 0) return null;
+  const takers = entries.filter((e) => LEVEL_TAKING_RACK_IDS.has(e.effect)).length;
+  return (
+    <div className="shrink-0 flex items-center gap-3 px-3 py-1.5 bg-[#0a080f] border-y border-purple-500/25 shadow-[0_0_20px_rgba(168,85,247,0.12)]">
+      <span className="flex items-center gap-1.5 shrink-0">
+        <Activity className="w-3 h-3 text-purple-300" />
+        <span className={sectionTitle}>Live on master</span>
+      </span>
+      <span className="hidden md:block shrink-0 text-[9px] font-mono text-zinc-500">
+        on everything the transport plays, in every tab
+      </span>
+      <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-x-auto">
+        {entries.map((e) => {
+          const label = rackEntryLabel(e);
+          const takesLevel = LEVEL_TAKING_RACK_IDS.has(e.effect);
+          return (
+            <button
+              key={e.id}
+              type="button"
+              onClick={() => onPick(e.id)}
+              title={takesLevel
+                ? `${label} — on the master insert, and it takes level, not just colour`
+                : `${label} — on the master insert`}
+              className={`shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-mono uppercase tracking-widest transition-colors ${
+                takesLevel
+                  ? 'border-amber-500/40 bg-amber-500/5 text-amber-300 hover:border-amber-400/70'
+                  : 'border-purple-500/30 bg-purple-500/5 text-purple-200 hover:border-purple-400/70'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {takers > 0 && (
+        <span className="shrink-0 text-[9px] font-mono text-amber-300">
+          {takers === 1 ? '1 of these takes level' : `${takers} of these take level`}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={bypassLiveRack}
+        title="Switch every live-rack effect off — the master goes back to a clean passthrough. The chain is kept."
+        className="shrink-0 px-2 py-0.5 rounded border border-purple-500/40 bg-purple-500/10 text-[9px] font-black uppercase tracking-widest text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
+      >
+        Bypass all
+      </button>
+    </div>
+  );
+};
+
 export const MixView: React.FC = () => {
   const sourceFile = useAdvancedEditorSourceStore((s) => s.sourceFile);
   const outputUrl = useAdvancedEditorSourceStore((s) => s.outputUrl);
   const setSource = useAdvancedEditorSourceStore((s) => s.setSource);
 
   const chain = useEffectChainStore((s) => s.chain) as ChainEntry[];
+  // What the live rack is actually doing to the global master right now — the
+  // strip below the viz rack is the only place that says so (see mixLiveRack).
+  const rackAttached = useMixLiveRackStore((s) => s.attached);
+  const liveRack = useMemo(() => liveRackEntries(chain, rackAttached), [chain, rackAttached]);
   const addEffect = useEffectChainStore((s) => s.addEffect);
   // Psychoacoustic effects are first-class members of THE chain (added via
   // addRackEffect so they seed rack defaults, not the backend EFFECT_DEFAULTS).
@@ -1528,7 +1597,8 @@ export const MixView: React.FC = () => {
         isChainProcessing={isChainProcessing}
         onDownload={handleDownload} onSendToDAW={() => void handleSendToDAW()} onSendToInpaint={() => void handleSendToInpaint()}
       />
-      <div className="flex-1 min-h-0 relative">
+      <MasterInsertStrip entries={liveRack} onPick={selectChain} />
+      <div data-tour="mix-rack" className="flex-1 min-h-0 relative">
         <ControlSurface surfaceId="mix" registry={registry} defaultLayout={defaultMixLayout} className="p-1.5" />
       </div>
       <input ref={fileInputRef} id="mix-audio-file" name="mix-audio-file" type="file" accept="audio/*" className="hidden" onChange={handleFileSelect} aria-label="Upload audio file" title="Upload audio file" />

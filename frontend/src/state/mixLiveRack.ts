@@ -13,13 +13,22 @@
  * add/remove/reorder/toggle rebuilds, and unchanged instances are kept across the
  * rebuild so even that stays click-free.
  *
- * Attached once (idempotent) on the first MIX mount and kept for the session — an
- * empty rack is a clean passthrough, so leaving it attached colours nothing and
- * costs nothing.
+ * Attached once (idempotent) on the first MIX mount and kept for the session. An
+ * EMPTY rack is a clean passthrough, so that costs nothing — but the chain is
+ * persisted, so a rack effect left enabled in an earlier session goes live on the
+ * GLOBAL insert the moment MIX is first opened and then shapes everything the app
+ * plays, from every tab, for the rest of the session. Several of these effects
+ * take real level (the HRTF spatializer's distance rolloff above all), which is
+ * exactly why that state must never be invisible: `useMixLiveRackStore` and
+ * `liveRackEntries` are what MIX's master-insert strip and the footer's MASTER FX
+ * indicator read to name what is on the insert right now, `bypassLiveRack` is the
+ * one-click way back to a clean master, and playerStore.dumpAudioChain's
+ * 'mixLiveRack' probe still answers the same question from the console.
  */
+import { create } from 'zustand';
 import { useEffectChainStore, MIX_RACK_IDS } from './effectChainStore';
-import { getEngineCtx, getMasterInsert } from './playerStore';
-import { buildEffectChain, ensureChopModule, ensureGranularModule, type ChainHandle } from '../lib/rackEffects';
+import { getEngineCtx, getMasterInsert, registerChainProbe } from './playerStore';
+import { buildEffectChain, ensureChopModule, ensureGranularModule, getRackEffect, type ChainHandle } from '../lib/rackEffects';
 import type { ChainEntry } from './effectChainStore';
 
 /** The psychoacoustic subset of the unified chain — the only entries built onto
@@ -27,6 +36,44 @@ import type { ChainEntry } from './effectChainStore';
  *  they are applied offline by processChain). */
 const rackSubset = (chain: ChainEntry[]): ChainEntry[] =>
   chain.filter((e) => MIX_RACK_IDS.has(e.effect));
+
+/** Whether the rack is spliced onto the master insert. A module-scope flag can't
+ *  drive a render, and the UI whose whole job is to say "your master is not
+ *  clean" has to know the moment that becomes true. */
+export const useMixLiveRackStore = create<{ attached: boolean }>(() => ({ attached: false }));
+
+/** What is colouring the GLOBAL master right now: on the insert AND enabled. An
+ *  empty list means the insert is the clean passthrough it ships as. `attached`
+ *  is passed in rather than read from the store here so that a component showing
+ *  this list is forced to subscribe to the flag that decides it. */
+export const liveRackEntries = (chain: ChainEntry[], attached: boolean): ChainEntry[] =>
+  attached ? rackSubset(chain).filter((e) => e.enabled) : [];
+
+/** Display name for a live-rack entry, so MIX and the footer never disagree. */
+export const rackEntryLabel = (e: ChainEntry): string =>
+  getRackEffect(e.effect)?.label ?? e.label ?? e.effect;
+
+/** Rack effects that change how LOUD the master is, not just how it sounds — the
+ *  ones that can answer "why is everything suddenly so quiet". The spatializer is
+ *  the worst of them: an HRTF panner on an inverse distance model, roughly a dB
+ *  down at its default 1.5 m and about 5 dB down at the 3 m its motion presets
+ *  reach. The gates (gater, chop, and Ares' gate stage) duty-cycle the level
+ *  away, ring mod multiplies it off-carrier, OWL-Pad's filter programs swallow
+ *  whole bands, and the compressor ships with 0 dB of makeup. */
+export const LEVEL_TAKING_RACK_IDS: Set<string> = new Set([
+  'spatializer', 'gater', 'chop', 'ringmod', 'owlpad', 'compressor', 'ares',
+]);
+
+/** Switch every live-rack effect off, leaving the insert a clean passthrough
+ *  without throwing away the chain the user built. Written as ONE store update
+ *  rather than a toggleEnabled per entry so the rack rebuilds once instead of N
+ *  times; the chain is persisted, so the master stays clean next session too. */
+export function bypassLiveRack(): void {
+  const { chain } = useEffectChainStore.getState();
+  const live = (e: ChainEntry): boolean => MIX_RACK_IDS.has(e.effect) && e.enabled;
+  if (!chain.some(live)) return;
+  useEffectChainStore.setState({ chain: chain.map((e) => (live(e) ? { ...e, enabled: false } : e)) });
+}
 
 let handle: ChainHandle | null = null;
 let unsub: (() => void) | null = null;
@@ -82,6 +129,16 @@ const reconcile = (chain: ChainEntry[]): void => {
   }
 };
 
+/* What is spliced onto the GLOBAL master insert right now (see the header). */
+registerChainProbe('mixLiveRack', () => ({
+  attached: handle !== null,
+  entries: rackSubset(useEffectChainStore.getState().chain).map((e) => ({
+    effect: e.effect,
+    enabled: e.enabled,
+    params: e.params,
+  })),
+}));
+
 /** Wire the MIX rack onto the master insert + subscribe to the store. Idempotent,
  *  so it is safe to call on every MIX mount. Never detaches on its own (the rack is
  *  a global master insert that should persist across tab switches). */
@@ -95,6 +152,7 @@ export function attachMixLiveRack(): void {
   const need = workletNeeds(chain);
   if (need.chop || need.granular) rebuild(chain);
   unsub = useEffectChainStore.subscribe((s) => reconcile(rackSubset(s.chain)));
+  useMixLiveRackStore.setState({ attached: true });
 }
 
 /** Tear the live rack down and restore the clean insert passthrough. Rarely needed
@@ -109,4 +167,5 @@ export function detachMixLiveRack(): void {
   }
   lastTopo = '';
   lastFull = '';
+  useMixLiveRackStore.setState({ attached: false });
 }

@@ -1,10 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Download, Share2, Heart, Repeat, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Activity, ChevronUp } from 'lucide-react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useAppUiStore } from '../../state/appUiStore';
+import { useEffectChainStore } from '../../state/effectChainStore';
+import {
+  bypassLiveRack, liveRackEntries, rackEntryLabel,
+  useMixLiveRackStore, LEVEL_TAKING_RACK_IDS,
+} from '../../state/mixLiveRack';
 import { callEditorPlay, isEditorPlaybackRegistered } from '../../state/editorPlaybackBridge';
 import { SlideTrack } from './SlideTrack';
 import { OrbTipBubble } from './OrbTipBubble';
@@ -93,6 +98,116 @@ const TransportProgressRow: React.FC = () => {
         </div>
       </div>
       <span className="text-[10px] font-mono text-zinc-500 w-8">{formatDuration(displayDuration)}</span>
+    </div>
+  );
+};
+
+/**
+ * MASTER FX — the one thing outside MIX that admits the master is not clean.
+ *
+ * MIX's psychoacoustic rack lives on the GLOBAL master insert (master → rack
+ * insert → live-FX insert → analyser → monitor) and stays there for the session
+ * once MIX has been opened, so a chain left enabled in an earlier session shapes
+ * — and, with the HRTF spatializer or a gate in it, quietly attenuates —
+ * everything the transport plays, in every tab, with nothing on screen to
+ * account for the missing level. That is what this pill accounts for. It renders
+ * NOTHING while the insert is clean, so it never becomes permanent chrome: the
+ * badge opens MIX, the caret lists what is actually on the insert, and Bypass
+ * all returns the master to a clean passthrough from wherever the user is
+ * standing. It sits next to the volume control because that is the symptom.
+ */
+const MasterFxIndicator: React.FC = () => {
+  const attached = useMixLiveRackStore((s) => s.attached);
+  const chain = useEffectChainStore((s) => s.chain);
+  const setCenterTab = useAppUiStore((s) => s.setCenterTab);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const entries = React.useMemo(() => liveRackEntries(chain, attached), [chain, attached]);
+  const count = entries.length;
+
+  // Emptying the rack unmounts the whole pill, but the chain can also be emptied
+  // from MIX while this is open — either way the panel must not outlive it.
+  useEffect(() => { if (count === 0) setOpen(false); }, [count]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  if (count === 0) return null;
+  const takers = entries.filter((e) => LEVEL_TAKING_RACK_IDS.has(e.effect)).length;
+  const plural = count === 1 ? '' : 's';
+  const openMix = () => { setOpen(false); setCenterTab('mix'); };
+
+  return (
+    <div ref={wrapRef} className="relative flex items-center shrink-0">
+      <button
+        type="button"
+        onClick={openMix}
+        aria-label={`${count} master effect${plural} live on the output — open MIX`}
+        title={`${count} effect${plural} on the master insert${takers > 0 ? ', some of which take level' : ''}. Open MIX.`}
+        className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-l border border-r-0 border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors shadow-[0_0_12px_rgba(168,85,247,0.18)]"
+      >
+        <Activity className="w-3 h-3" />
+        <span className="text-[9px] font-black uppercase tracking-widest">Master FX</span>
+        <span className="text-[9px] font-mono text-purple-300">{count}</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={open ? 'Hide what is on the master insert' : 'Show what is on the master insert'}
+        aria-expanded={open}
+        aria-controls="master-fx-detail"
+        className="px-1 py-1 rounded-r border border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
+      >
+        <ChevronUp className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          id="master-fx-detail"
+          className="absolute bottom-full right-0 mb-2 w-64 flex flex-col gap-2 p-2.5 rounded-lg border border-purple-500/30 bg-[#0a080f] shadow-[0_0_24px_rgba(168,85,247,0.2)]"
+        >
+          <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">On the master insert</span>
+          <p className="text-[10px] leading-snug text-zinc-400">
+            These sit between the mix bus and the meter, so they shape everything the
+            transport plays — in every tab, until they are switched off.
+          </p>
+          <ul className="flex flex-col gap-1">
+            {entries.map((e) => (
+              <li key={e.id} className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-200 truncate">{rackEntryLabel(e)}</span>
+                {LEVEL_TAKING_RACK_IDS.has(e.effect) && (
+                  <span className="shrink-0 text-[8px] font-mono uppercase tracking-widest text-amber-300">takes level</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={openMix}
+              className="flex-1 px-2 py-1 rounded border border-white/10 text-[9px] font-black uppercase tracking-widest text-zinc-300 hover:border-purple-400/60 hover:text-purple-200 transition-colors"
+            >
+              Show in MIX
+            </button>
+            <button
+              type="button"
+              onClick={bypassLiveRack}
+              className="flex-1 px-2 py-1 rounded border border-purple-500/40 bg-purple-500/10 text-[9px] font-black uppercase tracking-widest text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
+            >
+              Bypass all
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -314,7 +429,7 @@ export const PlayerFooter: React.FC = () => {
 
       {/* 2. Main Transport Control — fixed-width + centred between the two
           flex-1 side sections so the PLAY button stays on the viewport centre. */}
-      <div className="shrink min-w-72 w-136 max-w-2xl flex flex-col items-center gap-1">
+      <div data-tour="transport" className="shrink min-w-72 w-136 max-w-2xl flex flex-col items-center gap-1">
         <div className="flex items-center gap-5">
           <button
             onClick={toggleLoop}
@@ -395,6 +510,7 @@ export const PlayerFooter: React.FC = () => {
           </div>
         </button>
         <div className="flex items-center gap-5 shrink-0">
+          <MasterFxIndicator />
           <div className="flex items-center gap-3">
             <button onClick={toggleMute} className="text-zinc-500 hover:text-white transition-colors" title={isMuted ? 'Unmute' : 'Mute'}>
               {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
@@ -424,7 +540,7 @@ export const PlayerFooter: React.FC = () => {
           {/* The workspace action button (CREATE / PROCESS / TRAIN / …) — lives
               at the footer's bottom-right on EVERY tab. Rounded 2×1, sized to
               sit inside the 56px footer. */}
-          <div className="shrink-0 w-20 h-10">
+          <div data-tour="action-button" className="shrink-0 w-20 h-10">
             <LogActionButton />
           </div>
         </div>
