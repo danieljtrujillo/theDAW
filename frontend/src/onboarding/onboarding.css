@@ -1,0 +1,41 @@
+/* Shared motion for the two onboarding surfaces — the tour's spotlight and the
+   pinned feature notes. Both point at a control, so both breathe on the same
+   1.8s heartbeat; two unrelated tempos on screen at once read as two features
+   rather than one system.
+
+   Lived in an inline <style> re-injected on every OnboardingTour render until
+   the feature notes needed the same vocabulary. */
+
+@keyframes tour-ring-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(168,85,247,0.55); }
+  70%  { box-shadow: 0 0 0 10px rgba(168,85,247,0); }
+  100% { box-shadow: 0 0 0 0 rgba(168,85,247,0); }
+}
+.tour-ring { animation: tour-ring-pulse 1.8s ease-out infinite; }
+
+/* Signal travelling down the leader toward the thing it names — the patch-cable
+   read the LOOM tendrils and the node graph already use. */
+@keyframes spotlight-flow {
+  to { stroke-dashoffset: -8; }
+}
+.spotlight-stem {
+  stroke-dasharray: 4 4;
+  animation: spotlight-flow 1.1s linear infinite;
+}
+
+/* The head breathes on the ring's beat, so a note and a tour step pulse
+   together rather than at two unrelated tempos. */
+@keyframes spotlight-tip-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+.spotlight-tip { animation: spotlight-tip-pulse 1.8s ease-out infinite; }
+
+/* The arrow is the affordance; the motion is only emphasis. Stop the motion,
+   keep the leader fully drawn. */
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring,
+  .spotlight-stem,
+  .spotlight-tip { animation: none !important; }
+  .spotlight-stem { stroke-dasharray: none; }
+}
