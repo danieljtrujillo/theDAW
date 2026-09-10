@@ -22,7 +22,10 @@ def sine_wave(
 
 
 def assert_audio_valid(
-    audio: torch.Tensor, expected_duration: float, sample_rate: int
+    audio: torch.Tensor,
+    expected_duration: float,
+    sample_rate: int,
+    min_abs_max: float = 0.001,
 ) -> None:
     """Assert that an audio tensor looks like valid, non-trivial audio output.
 
@@ -30,6 +33,13 @@ def assert_audio_valid(
         audio: Output tensor of shape [B, C, T].
         expected_duration: Expected length in seconds.
         sample_rate: Sample rate in Hz.
+        min_abs_max: Peak below which the output counts as silence. The default
+            0.001 (-60 dBFS) suits a full-length musical prompt. A caller
+            generating something legitimately quiet — a two-second SFX clip —
+            should lower it rather than hunt for a seed that happens to clear
+            it: what this guard exists to catch is a model that produced
+            NOTHING (all zeros, a dead autoencoder), and that is nowhere near
+            -60 dBFS.
     """
     assert audio is not None, "Audio output is None"
     assert audio.ndim == 3, f"Expected 3D tensor [B, C, T], got shape {audio.shape}"
@@ -46,5 +56,7 @@ def assert_audio_valid(
     assert not torch.isnan(audio).any(), "Audio output contains NaN values"
 
     abs_max = audio.abs().max().item()
-    assert abs_max > 0.001, f"Audio output appears silent (abs_max={abs_max:.5f})"
+    assert abs_max > min_abs_max, (
+        f"Audio output appears silent (abs_max={abs_max:.6f}, floor={min_abs_max})"
+    )
     assert abs_max <= 1.0, f"Audio output is clipping (abs_max={abs_max:.5f})"

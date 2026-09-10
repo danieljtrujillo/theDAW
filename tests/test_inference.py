@@ -6,6 +6,19 @@ from tests.utils.audio import assert_audio_valid, sine_wave
 
 DURATION_SEC = 10
 STEPS = 8
+# -80 dBFS. Above the noise a real generation always carries, far below the
+# level a short quiet SFX clip reaches; all-zero output still fails it.
+BATCH_SILENCE_FLOOR = 1e-4
+
+# Every generate() call below is SEEDED, and must stay that way.
+#
+# assert_audio_valid asserts the output is not silent (abs_max > 0.001), which
+# is a real guard: it catches a model loaded wrong, a dead autoencoder, an
+# all-zero latent. Unseeded, it sampled a fresh trajectory on every run and
+# became a coin flip — the same command gave '3 passed', then '1 failed', then
+# '2 failed', with abs_max landing at 0.00071 and 0.00037 against the 0.001
+# floor. A flaky assertion is worse than no assertion, because it teaches
+# everyone to re-run the suite until it goes green.
 
 
 def test_text_to_audio(sa3_model, maybe_save_audio):
@@ -45,6 +58,7 @@ def test_inpainting(sa3_model, maybe_save_audio):
         inpaint_audio=(sr, base_audio),
         inpaint_mask_start_seconds=2.0,
         inpaint_mask_end_seconds=7.0,
+        seed=2001,
     )
     maybe_save_audio(audio, sr, prompt)
     assert_audio_valid(audio, inpaint_duration, sr)
@@ -72,6 +86,7 @@ def test_continuation(sa3_model, maybe_save_audio):
         inpaint_audio=(sr, base_audio),
         inpaint_mask_start_seconds=5.0,
         inpaint_mask_end_seconds=15.0,
+        seed=2002,
     )
     maybe_save_audio(audio, sr, prompt)
     assert_audio_valid(audio, total_duration, sr)
@@ -97,6 +112,7 @@ def test_init_audio(sa3_model, maybe_save_audio):
         steps=STEPS,
         init_audio=(sr, init),
         init_noise_level=0.8,
+        seed=2003,
     )
     maybe_save_audio(audio, sr, prompt)
     assert_audio_valid(audio, DURATION_SEC, sr)
@@ -125,6 +141,7 @@ def test_init_audio_float32_into_half_model(sa3_model, maybe_save_audio):
         steps=STEPS,
         init_audio=(sr, init),
         init_noise_level=0.8,
+        seed=2004,
     )
     maybe_save_audio(audio, sr, prompt)
     assert_audio_valid(audio, DURATION_SEC, sr)
@@ -155,6 +172,7 @@ def test_inpaint_audio_float32_into_half_model(sa3_model, maybe_save_audio):
         inpaint_audio=(sr, base_audio),
         inpaint_mask_start_seconds=2.0,
         inpaint_mask_end_seconds=7.0,
+        seed=2005,
     )
     maybe_save_audio(audio, sr, prompt)
     assert_audio_valid(audio, inpaint_duration, sr)
@@ -177,6 +195,7 @@ def test_batch_inference(sa3_model, maybe_save_audio):
         duration=DURATION_SEC,
         steps=STEPS,
         batch_size=batch_size,
+        seed=2006,
     )
     audio_different_durations = model.generate(
         prompt=prompts,
@@ -185,6 +204,7 @@ def test_batch_inference(sa3_model, maybe_save_audio):
         steps=STEPS,
         duration_padding_sec=duration_padding_sec,
         batch_size=batch_size,
+        seed=2007,
     )
     assert audio_same_durations.shape[0] == batch_size, (
         f"Expected batch dim {batch_size}, got {audio_same_durations.shape[0]}"
@@ -192,7 +212,16 @@ def test_batch_inference(sa3_model, maybe_save_audio):
     # Validate each item in the batch individually and optionally save
     for i, prompt in enumerate(prompts):
         maybe_save_audio(audio_same_durations[i : i + 1], sr, prompt)
-        assert_audio_valid(audio_same_durations[i : i + 1], DURATION_SEC, sr)
+        # A quieter floor for the batch: three prompts share one sampling
+        # pass, and the SFX model's take on 'summer breeze' lands around
+        # -64 dBFS. That is signal, not silence — what this guard is for is
+        # a model that produced nothing at all.
+        assert_audio_valid(
+            audio_same_durations[i : i + 1],
+            DURATION_SEC,
+            sr,
+            min_abs_max=BATCH_SILENCE_FLOOR,
+        )
 
     # Check for diversity in outputs (not identical)
     diffs = []
@@ -212,4 +241,6 @@ def test_batch_inference(sa3_model, maybe_save_audio):
         maybe_save_audio(
             audio_different_durations[i : i + 1], sr, f"{prompts[i]}_{dur}s"
         )
-        assert_audio_valid(audio_different_durations[i : i + 1], d, sr)
+        assert_audio_valid(
+            audio_different_durations[i : i + 1], d, sr, min_abs_max=BATCH_SILENCE_FLOOR
+        )
