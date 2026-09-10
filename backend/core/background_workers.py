@@ -86,7 +86,7 @@ class BackgroundQueue:
         # Captured so enqueue() can marshal puts from threadpool threads
         # (sync routes) onto this loop instead of touching the asyncio.Queue
         # cross-thread, which races the consumer's wakeup.
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._consumer_task = asyncio.create_task(self._consumer_loop())
         log.info("background_workers: consumer started")
 

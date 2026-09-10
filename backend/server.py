@@ -1024,6 +1024,13 @@ async def _on_startup():
     except Exception as e:
         logger.debug("startup: notation backfill enqueue skipped: %s", e)
 
+    # Module startup hooks (core/startup.py): what routers used to hang off the
+    # deprecated @router.on_event("startup"). Last, so a module finds the
+    # background queue and the library store already up.
+    from backend.core.startup import run_startup_hooks
+
+    run_startup_hooks()
+
 
 async def _on_shutdown() -> None:
     try:
@@ -1364,7 +1371,7 @@ async def offload_model():
             "once it finishes.",
         )
     before = _vram_used_gb()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     n = await loop.run_in_executor(None, _move_pipelines, "cpu")
     _sa3_offloaded = True
     after = _vram_used_gb()
@@ -1396,7 +1403,7 @@ async def onload_model():
         )
     target = "cuda" if torch.cuda.is_available() else "cpu"
     before = _vram_used_gb()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     n = await loop.run_in_executor(None, _move_pipelines, target)
     _sa3_offloaded = False
     after = _vram_used_gb()
@@ -1449,7 +1456,7 @@ async def preload_model(model: str = Form(...)):
     # must not leave the gate shut, or every background worker stays parked for
     # the rest of the session.
     with idle_hold("model-load"):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         since = resolution_seq()
         t0 = time.perf_counter()
         try:
@@ -1649,13 +1656,13 @@ async def generate(
     async with _generation_job_lock:
         # lazy: load (or wake) the active model on first use; clear any resident
         # MRT2 engine first so SA3 never stacks on top of it (commit-limit crash)
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, _ensure_gpu_clear_of_magenta
         )
         # Off the event loop (see /api/generate-jobs): a synchronous model load here
         # would block the single worker and stall /health + media streaming.
         try:
-            generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+            generation_pipeline = await asyncio.get_running_loop().run_in_executor(
                 None, _get_or_load_generation_pipeline, _active_model_name
             )
         except HTTPException:
@@ -1763,7 +1770,7 @@ async def generate(
                     _require_inpaint_region(mask_start, mask_end)
                 generate_args["inpaint_mask"] = inpaint_mask
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _do_generate():
             gen_audio = generation_pipeline.generate(**generate_args)
@@ -1899,7 +1906,7 @@ async def _run_generate_job(
     lora_temp_dir: Path | None,
 ):
     JOBS[job_id]["status"] = "running"
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     mime_map = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
     try:
         # Inside the try: if this import fails the job must reach the except/
@@ -2156,7 +2163,7 @@ async def generate_jobs(
         # Clear any resident MRT2 engine before the SA3 load/wake — the reverse
         # swap must hold no matter who drives the model field (UI, assistant,
         # API callers, capture harnesses).
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, _ensure_gpu_clear_of_magenta
         )
         # Load/wake the model in a worker thread, never on the event loop: a
@@ -2164,7 +2171,7 @@ async def generate_jobs(
         # whole load, which is exactly when /health 502s and in-flight FileResponse
         # streams (MIDI/audio) get truncated ("Invalid MIDI track chunk").
         try:
-            generation_pipeline = await asyncio.get_event_loop().run_in_executor(
+            generation_pipeline = await asyncio.get_running_loop().run_in_executor(
                 None, _get_or_load_generation_pipeline, normalized_model_name
             )
         except HTTPException:

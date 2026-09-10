@@ -232,6 +232,20 @@ def _metadata_path(entry_dir: Path) -> Path:
     return entry_dir / "metadata.json"
 
 
+def _is_entry_dir(path: Path) -> bool:
+    """Whether ``path`` is an entry directory: exists, is a directory, holds a
+    metadata.json. Answers False rather than raising for a name the filesystem
+    will not take. ``Path.is_dir`` swallows ENOENT and friends but not
+    ENAMETOOLONG, so a 4 KB id straight off the wire used to stat() its way to
+    a 500 on Linux — Windows refuses the name quietly, which is why it only
+    ever showed on CI. An id the disk cannot hold is not an entry.
+    """
+    try:
+        return path.is_dir() and _metadata_path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def _read_metadata(entry_dir: Path) -> Optional[dict[str, Any]]:
     p = _metadata_path(entry_dir)
     if not p.is_file():
@@ -1149,13 +1163,13 @@ class LibraryStore:
     def _dir_for(self, entry_id: str) -> Optional[Path]:
         # Direct (import or single-level generate) layout.
         direct = self.root / entry_id
-        if direct.is_dir() and _metadata_path(direct).is_file():
+        if _is_entry_dir(direct):
             return direct
         # Nested generate layout: "<job_id>_<index>" maps to "<job_id>/<index>".
         if "_" in entry_id:
             job_id, _, index = entry_id.rpartition("_")
             nested = self.root / job_id / index
-            if nested.is_dir() and _metadata_path(nested).is_file():
+            if _is_entry_dir(nested):
                 return nested
         return None
 

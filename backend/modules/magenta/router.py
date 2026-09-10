@@ -164,7 +164,7 @@ async def _bring_up_sidecar(
     """
     if (await sidecar.health()).get("available"):
         return
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     async with _bringup_lock:
         h = await sidecar.health()
         if h.get("available"):
@@ -236,7 +236,7 @@ async def probe():
     h = await sidecar.health()
     setup = None
     if not (h.get("reachable") and h.get("protocol_ok")):
-        setup = await asyncio.get_event_loop().run_in_executor(
+        setup = await asyncio.get_running_loop().run_in_executor(
             None, sidecar.setup_state
         )
     return {**h, "state": sidecar.engine_state(h, setup)}
@@ -263,7 +263,7 @@ async def _start_engine(refresh: bool) -> dict:
 
     # Refuse with a precise diagnosis when the WSL side was never set up —
     # spawning would just die on a missing venv and read as a vague ERROR.
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     setup = await loop.run_in_executor(None, lambda: sidecar.setup_state(refresh))
     gate = _setup_gate(setup)
     if gate:
@@ -299,7 +299,7 @@ async def _start_engine_on_gpu_lane() -> None:
     global _start_note
     from backend.core import pipeline
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     _start_note = "waiting for the GPU (a separation, whisper or MIDI run is using it)"
     try:
         async with pipeline.gpu("magenta"):
@@ -362,7 +362,7 @@ async def engine_start(refresh: bool = False):
 async def engine_restart():
     """Stop whatever engine is up and start again with the currently picked
     model — the click that applies a model change while the engine runs."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     stopped = await loop.run_in_executor(None, sidecar.stop_engine)
     # Give the port a moment to close so the start path does not see the old
     # engine as "already running".
@@ -383,7 +383,7 @@ async def engine_install():
     asks the user for consent there. Poll /engine/status (or re-read the model
     status in Settings) to see when the install lands.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     setup = await loop.run_in_executor(None, lambda: sidecar.setup_state(True))
     if setup.get("ready"):
         return {"launched": False, "already_installed": True, **setup}
@@ -400,7 +400,7 @@ async def engine_install():
 
 @router.post("/engine/stop")
 async def engine_stop():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     stopped = await loop.run_in_executor(None, sidecar.stop_engine)
 
     from backend import server as srv
@@ -427,7 +427,7 @@ async def engine_status(refresh: bool = False):
     }
     setup = None
     if refresh or not (h.get("reachable") and h.get("protocol_ok")):
-        setup = await asyncio.get_event_loop().run_in_executor(
+        setup = await asyncio.get_running_loop().run_in_executor(
             None, lambda: sidecar.setup_state(refresh)
         )
         out["setup_required"] = bool(
@@ -465,7 +465,7 @@ class EngineModelBody(BaseModel):
 async def engine_models(refresh: bool = False):
     """The real model list (what the vendored sidecar can load), each stamped
     installed / active / runnable on this GPU, plus any download in flight."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     setup = await loop.run_in_executor(None, lambda: sidecar.setup_state(refresh))
     catalog = await loop.run_in_executor(None, lambda: sidecar.model_catalog(setup))
     h = await sidecar.health()
@@ -482,7 +482,7 @@ async def engine_set_model(body: EngineModelBody):
     """Pick the checkpoint the engine loads. Persisted (data/magenta_engine.json)
     and used by the next start; ``restart_required`` says whether a running
     engine still serves the previous pick."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     setup = await loop.run_in_executor(None, sidecar.setup_state)
     spec = sidecar.ENGINE_MODELS.get(body.model)
     if spec is None:
@@ -521,7 +521,7 @@ async def engine_set_model(body: EngineModelBody):
 
 @router.get("/engine/checkpoints")
 async def engine_checkpoints():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     setup = await loop.run_in_executor(None, sidecar.setup_state)
     jobs = await loop.run_in_executor(None, sidecar.checkpoint_jobs)
     return {"jobs": jobs, "installed": setup.get("checkpoints") or []}
@@ -538,7 +538,7 @@ async def engine_download_checkpoint(model_id: str):
             f"Unknown Magenta model {model_id!r}. The sidecar supports: "
             + ", ".join(sidecar.ENGINE_MODELS),
         )
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     setup = await loop.run_in_executor(None, sidecar.setup_state)
     if setup.get("probe_failed"):
         gate = _setup_gate(setup)
@@ -604,7 +604,7 @@ async def generate(
     h = await sidecar.health()
     engine_state = "running"
     if not h.get("available"):
-        setup = await asyncio.get_event_loop().run_in_executor(
+        setup = await asyncio.get_running_loop().run_in_executor(
             None, sidecar.setup_state
         )
         gate = _setup_gate(setup)
@@ -619,7 +619,7 @@ async def generate(
     if audio_file is not None and audio_file.filename:
         raw = await audio_file.read()
         try:
-            audio_bytes = await asyncio.get_event_loop().run_in_executor(
+            audio_bytes = await asyncio.get_running_loop().run_in_executor(
                 None, _normalize_style_audio, raw
             )
         except Exception as e:
@@ -793,7 +793,7 @@ async def _run_generate(
         # Persist as a library entry ({job_id}_00) before reporting completion, so
         # the frontend's post-generation refresh finds it (mirrors the SA3 flow).
         try:
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: _save_magenta_to_library(
                     job_id,

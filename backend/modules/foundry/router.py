@@ -39,8 +39,3 @@ def post_stop() -> dict:
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     return {"ok": True, "stopped": stopped}
-
-
-@router.on_event("shutdown")
-def shutdown_foundry() -> None:
-    sidecar.stop()

@@ -74,8 +74,8 @@ class GPUSidecar:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            deadline = asyncio.get_event_loop().time() + self.boot_timeout
-            while asyncio.get_event_loop().time() < deadline:
+            deadline = asyncio.get_running_loop().time() + self.boot_timeout
+            while asyncio.get_running_loop().time() < deadline:
                 if await self._healthy():
                     return
                 if self._proc.returncode is not None:

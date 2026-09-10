@@ -51,10 +51,9 @@ dependencies = [
     # These were installed manually but undeclared, so `uv sync` pruned them and
     # broke the MIDI module; declared here so the working set is stable.
     "basic-pitch>=0.4.0",
-    # basic-pitch (and some other deps) import the legacy `pkg_resources`, which
-    # setuptools >= 81 REMOVED. Pin below 81 so `pkg_resources` keeps shipping;
-    # without it basic-pitch conversion fails with "No module named 'pkg_resources'".
-    "setuptools<81",
+    # No setuptools pin. One used to sit here (<81) to keep `pkg_resources`
+    # shipping for resampy 0.4.2; resampy 0.4.3 dropped that import, and the
+    # override-dependencies entry under [tool.uv] is what lets it resolve.
     # Piano-roll transcription engine (the midi module's second engine beside
     # basic-pitch). Downloads its checkpoint (~165 MB) to ~/piano_transcription
     # on first use.
@@ -153,6 +152,11 @@ torchaudio = [
   { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
 ]
 [tool.uv]
+# basic-pitch 0.4.0 caps resampy at <0.4.3, but 0.4.3 is exactly the release
+# that dropped the deprecated `pkg_resources` import (its only change of note),
+# and setuptools >= 81 no longer ships pkg_resources at all. Overriding the cap
+# is what lets setuptools float instead of being pinned to a 2025 release.
+override-dependencies = ["resampy>=0.4.3"]
 # Needed because the PyTorch CUDA index pins some packages (e.g. certifi) at
 # older versions than PyPI. Without this flag uv refuses to install them.
 index-strategy = "unsafe-best-match"

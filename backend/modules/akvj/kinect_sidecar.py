@@ -287,7 +287,7 @@ async def run() -> None:
     table_msgs = list(pack_table_chunks(table, width, height))
     emit(status="table_packed", chunks=len(table_msgs))
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     frames = 0
     fps_t0 = time.monotonic()
     fps_count = 0

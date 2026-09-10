@@ -29,6 +29,7 @@ import threading
 from fastapi import APIRouter, HTTPException
 
 from . import sidecar, updater
+from backend.core.startup import register_startup_hook
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +86,6 @@ def post_update() -> dict:
     return result
 
 
-@router.on_event("startup")
 def startup_underfit() -> None:
     """Spawn the dashboard + check for upstream updates, both in background
     threads so a slow/broken checkout or the network never delays startup."""
@@ -116,6 +116,7 @@ def startup_underfit() -> None:
     threading.Thread(target=_spawn, daemon=True, name="underfit-auto-spawn").start()
 
 
-@router.on_event("shutdown")
-def shutdown_underfit() -> None:
-    sidecar.stop()
+# Runs from the app lifespan (core/startup.py) rather than off the deprecated
+# @router.on_event("startup"). There is no shutdown hook to go with it:
+# core/teardown.py already stops this sidecar alongside every other one.
+register_startup_hook("underfit", startup_underfit)

@@ -75,6 +75,18 @@ def test_get_entry_returns_correct_record(tmp_path: Path):
     assert record.prompt == "pinpoint test"
 
 
+def test_get_entry_refuses_a_name_the_disk_cannot_hold(tmp_path: Path):
+    # An id off the wire can be anything. A 4 KB one used to reach
+    # Path.is_dir(), which swallows ENOENT but not ENAMETOOLONG, so on Linux
+    # the probe raised straight through to a 500 — Windows refuses the name
+    # quietly, which is why it only ever showed on CI. Both must simply be
+    # "not an entry", in the direct and the nested layout alike.
+    store = LibraryStore(tmp_path)
+    assert store.get_entry("a" * 4096) is None
+    assert store.get_entry("job_" + "a" * 4096) is None
+    assert store.get_entry("lyricdoc_\x00" + "a" * 31) is None
+
+
 def test_get_entry_missing_returns_none(tmp_path: Path):
     store = LibraryStore(tmp_path)
     assert store.get_entry("nope") is None
