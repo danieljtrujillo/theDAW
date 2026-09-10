@@ -28,8 +28,10 @@ import atexit
 import logging
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from huggingface_hub.utils import tqdm
@@ -79,16 +81,39 @@ class _JobTqdm(tqdm):
     Reading ``self._job_id`` works no matter which thread fires the update.
     Every write is wrapped in try/except so a bookkeeping error can never abort
     an in-flight download.
+
+    **The byte count is ours, not tqdm's.** ``hf_hub_download`` builds the bar
+    with ``disable=is_tqdm_disabled(...)``, which is ``None``, so tqdm applies
+    its own rule and turns itself off whenever stderr is not a TTY. Under the
+    Electron shell (and theDAW.bat, and Pinokio) stderr is always a pipe, so
+    the bar was always disabled — and a disabled tqdm's ``update()`` returns
+    immediately WITHOUT advancing ``self.n``. ``total`` is still set at
+    construction, which is exactly the reported symptom: "0 B / 8.6 GB",
+    forever, while the download ran to completion. Measured before the fix: a
+    34 MB file finished in 11.7s and published ``(0, 34362429)`` throughout.
+    So ``update()`` accumulates into ``_bytes_done`` first and only then hands
+    ``n`` to tqdm for whatever drawing it feels like doing.
     """
 
     _job_id: str | None = None
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # A resumed transfer starts at `initial`; tqdm records that in `n` even
+        # when it is disabled, so this picks up a part-downloaded file's offset.
+        self._bytes_done: float = float(self.n or 0)
+        self._t0 = time.monotonic()
+        self._publish()
 
     def _publish(self) -> None:
         job_id = self._job_id
         if not job_id:
             return
         try:
-            rate = self.format_dict.get("rate")
+            elapsed = max(1e-6, time.monotonic() - self._t0)
+            # Rate computed here too: tqdm's format_dict rate is derived from
+            # its own `n`, which a disabled bar never moves.
+            speed = float(self._bytes_done) / elapsed
             with _LOCK:
                 job = _REGISTRY.get(job_id)
                 if job is None:
@@ -97,13 +122,18 @@ class _JobTqdm(tqdm):
                 if idx < 0 or idx >= len(job["files"]):
                     return
                 entry = job["files"][idx]
-                entry["bytes_done"] = self.n
-                entry["bytes_total"] = self.total or 0
-                entry["speed"] = float(rate) if rate else 0.0
+                entry["bytes_done"] = int(self._bytes_done)
+                entry["bytes_total"] = int(self.total or 0)
+                entry["speed"] = speed
         except Exception:  # pragma: no cover - defensive, must never raise
             log.debug("modeldl: progress publish failed", exc_info=True)
 
     def update(self, n: int | float = 1) -> bool | None:
+        # Ours first: super() is a no-op on a disabled bar.
+        try:
+            self._bytes_done += float(n or 0)
+        except (TypeError, ValueError):
+            pass
         displayed = super().update(n)
         self._publish()
         return displayed
@@ -118,6 +148,110 @@ def _bound_tqdm(job_id: str) -> type[_JobTqdm]:
     """A ``_JobTqdm`` subclass pinned to ``job_id`` — used as ``tqdm_class`` so
     the progress callback finds its job from any thread (incl. Xet's native one)."""
     return type(f"_JobTqdm_{job_id[:8]}", (_JobTqdm,), {"_job_id": job_id})
+
+
+def _blob_dirs(repo_id: str) -> list[Path]:
+    """Where the cache keeps ``repo_id``'s blobs, plus its public mirror's.
+
+    Both are watched because ``hf_download_with_mirror`` may fall back to the
+    mirror mid-job, and the job only learns which repo it used when the call
+    returns.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        from huggingface_hub.file_download import repo_folder_name
+
+        from stable_audio_3.model_configs import _model_mirrors
+    except Exception:  # pragma: no cover - hub layout changed
+        return []
+    repos = [repo_id]
+    mirror = _model_mirrors().get(repo_id)
+    if mirror:
+        repos.append(mirror)
+    out = []
+    for repo in repos:
+        try:
+            out.append(
+                Path(HF_HUB_CACHE)
+                / repo_folder_name(repo_id=repo, repo_type="model")
+                / "blobs"
+            )
+        except Exception:  # pragma: no cover - defensive
+            continue
+    return out
+
+
+def _incomplete_bytes(dirs: list[Path]) -> int:
+    """Bytes written so far to the in-flight blob, or 0.
+
+    The largest ``*.incomplete`` wins: a job downloads a small config and then
+    a multi-gigabyte checkpoint, and only one of them is ever in flight, but a
+    previous run's abandoned part-file can sit beside it.
+    """
+    best = 0
+    for d in dirs:
+        try:
+            for f in d.glob("*.incomplete"):
+                try:
+                    best = max(best, f.stat().st_size)
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return best
+
+
+class _CacheProgress(threading.Thread):
+    """Publish the in-flight blob's size into the job while a file downloads.
+
+    Deliberately cooperative with ``_JobTqdm``: it only ever raises
+    ``bytes_done``, so whichever source is further along wins and the number a
+    reader sees never goes backwards.
+    """
+
+    #: Often enough to look alive, rare enough to cost nothing on a slow disk.
+    INTERVAL_S = 0.5
+
+    def __init__(self, job_id: str, repo_id: str) -> None:
+        super().__init__(name=f"modeldl-progress-{job_id[:8]}", daemon=True)
+        self._job_id = job_id
+        self._dirs = _blob_dirs(repo_id)
+        # NOT `_stop`: threading.Thread has a private _stop() that join()
+        # calls, and shadowing it with an Event makes every join() raise
+        # TypeError: 'Event' object is not callable.
+        self._stopping = threading.Event()
+
+    def stop(self) -> None:
+        self._stopping.set()
+
+    def run(self) -> None:
+        if not self._dirs:
+            return
+        while not self._stopping.wait(self.INTERVAL_S):
+            try:
+                seen = _incomplete_bytes(self._dirs)
+                if seen <= 0:
+                    continue
+                with _LOCK:
+                    job = _REGISTRY.get(self._job_id)
+                    if job is None:
+                        return
+                    idx = job["current_file"]
+                    if idx < 0 or idx >= len(job["files"]):
+                        continue
+                    entry = job["files"][idx]
+                    if seen <= entry["bytes_done"]:
+                        continue
+                    now = time.monotonic()
+                    prev_bytes = entry["bytes_done"]
+                    prev_at = entry.get("_seen_at") or now
+                    dt = max(1e-6, now - prev_at)
+                    entry["bytes_done"] = seen
+                    entry["_seen_at"] = now
+                    if prev_bytes:
+                        entry["speed"] = (seen - prev_bytes) / dt
+            except Exception:  # pragma: no cover - must never kill the thread
+                log.debug("modeldl: cache progress poll failed", exc_info=True)
 
 
 def _config_files(cfg: ModelConfig | AutoencoderModelConfig) -> list[str]:
@@ -186,9 +320,17 @@ def _run_job(job_id: str) -> None:
             # Falls back to a public mirror when the gated official repo is
             # inaccessible, so a tokenless user's Setup-screen download still
             # succeeds instead of 401-ing (see model_configs._DEFAULT_MIRRORS).
-            path = hf_download_with_mirror(
-                repo_id=repo_id, filename=filename, tqdm_class=bound_tqdm
-            )
+            #
+            # The cache watcher runs alongside because the Xet backend reports
+            # nothing until the transfer finishes; see _CacheProgress.
+            watcher = _CacheProgress(job_id, repo_id)
+            watcher.start()
+            try:
+                path = hf_download_with_mirror(
+                    repo_id=repo_id, filename=filename, tqdm_class=bound_tqdm
+                )
+            finally:
+                watcher.stop()
 
             with _LOCK:
                 job = _REGISTRY.get(job_id)
@@ -217,8 +359,17 @@ def _run_job(job_id: str) -> None:
 
 
 def _public_job(job: dict) -> dict:
-    """A job dict stripped of private keys, safe to serialize. Caller holds _LOCK."""
-    return {k: v for k, v in job.items() if not k.startswith("_")}
+    """A job dict stripped of private keys, safe to serialize. Caller holds _LOCK.
+
+    Strips per-file private keys too — the cache watcher stamps ``_seen_at`` on
+    a file entry to derive a transfer rate, and that is bookkeeping, not API.
+    """
+    public = {k: v for k, v in job.items() if not k.startswith("_")}
+    public["files"] = [
+        {k: v for k, v in entry.items() if not k.startswith("_")}
+        for entry in job.get("files", [])
+    ]
+    return public
 
 
 @router.post("/{name}/download")

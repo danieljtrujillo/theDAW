@@ -224,3 +224,159 @@ def test_job_tqdm_accepts_huggingface_hub_name_kwarg():
         assert bar.n == 2
     finally:
         bar.close()
+
+
+def _fake_job(job_id: str, filename: str = "f") -> dict:
+    return {
+        "id": job_id,
+        "name": "x",
+        "repo_id": "x/x",
+        "label": "X",
+        "status": "downloading",
+        "files": [
+            {
+                "filename": filename,
+                "bytes_done": 0,
+                "bytes_total": 0,
+                "speed": 0.0,
+                "done": False,
+            }
+        ],
+        "current_file": 0,
+        "dest_dir": "",
+        "error_detail": None,
+        "error_repo_id": None,
+    }
+
+
+def test_progress_survives_a_tqdm_that_disabled_itself():
+    """The bar theDAW actually gets is a DISABLED one, and a disabled tqdm does
+    not count.
+
+    ``hf_hub_download`` builds it with ``disable=is_tqdm_disabled(...)``, which
+    returns ``None``, so tqdm applies its own rule: off whenever the stream is
+    not a terminal. Under the Electron shell stderr is always a pipe, so the
+    bar was always disabled — and ``tqdm.update()`` returns immediately without
+    moving ``n`` when it is. ``total`` is still set at construction, which is
+    why the download dock read "0 B / 8.6 GB" for a transfer that was running
+    perfectly (GH: "downloads remain stuck at 0 B").
+    """
+    job_id = "disabled-bar-job"
+    with modeldl._LOCK:
+        modeldl._REGISTRY[job_id] = _fake_job(job_id)
+    try:
+        # disable=None + a non-tty stream is exactly what the app sees.
+        bar = modeldl._bound_tqdm(job_id)(
+            total=1000, disable=None, file=io.StringIO(), name="huggingface_hub.xet_get"
+        )
+        assert bar.disable is True, "the premise: this bar draws nothing"
+        bar.update(250)
+        bar.update(250)
+        with modeldl._LOCK:
+            entry = modeldl._REGISTRY[job_id]["files"][0]
+        assert entry["bytes_done"] == 500, "bytes are ours to count, not tqdm's"
+        assert entry["bytes_total"] == 1000
+        assert entry["speed"] > 0
+        bar.close()
+    finally:
+        with modeldl._LOCK:
+            modeldl._REGISTRY.pop(job_id, None)
+
+
+def test_a_resumed_transfer_starts_from_its_offset():
+    """``initial=`` is how hub reports a part-downloaded file. Counting from
+    zero there would show a 4 GB resume restarting."""
+    job_id = "resume-job"
+    with modeldl._LOCK:
+        modeldl._REGISTRY[job_id] = _fake_job(job_id)
+    try:
+        bar = modeldl._bound_tqdm(job_id)(
+            total=1000, initial=400, disable=None, file=io.StringIO()
+        )
+        bar.update(100)
+        with modeldl._LOCK:
+            entry = modeldl._REGISTRY[job_id]["files"][0]
+        assert entry["bytes_done"] == 500
+        bar.close()
+    finally:
+        with modeldl._LOCK:
+            modeldl._REGISTRY.pop(job_id, None)
+
+
+def test_cache_watcher_reports_the_part_file_and_never_goes_backwards(tmp_path):
+    """Xet says nothing until it finishes, so the bytes come off the disk.
+
+    ``hf_xet`` drives the tqdm shim with ``update(0)`` on a ~200 ms tick and
+    then hands over the whole byte count in one final call — measured, on a
+    34 MB file: nine zero-updates and one 34,362,429. Both backends write the
+    same ``*.incomplete`` blob, so that is what the watcher reads.
+
+    It may only ever RAISE the count: the tqdm path and this one run at the
+    same time, and a reader must never watch the number fall.
+    """
+    job_id = "watcher-job"
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    with modeldl._LOCK:
+        modeldl._REGISTRY[job_id] = _fake_job(job_id)
+    try:
+        assert modeldl._incomplete_bytes([blobs]) == 0, "nothing in flight yet"
+        (blobs / "abc123.incomplete").write_bytes(b"x" * 4096)
+        # A finished blob beside it is not progress on anything.
+        (blobs / "done-blob").write_bytes(b"y" * 999999)
+        assert modeldl._incomplete_bytes([blobs]) == 4096
+        # The largest part-file wins: an abandoned one from a previous run must
+        # not mask the real transfer.
+        (blobs / "def456.incomplete").write_bytes(b"z" * 8192)
+        assert modeldl._incomplete_bytes([blobs]) == 8192
+        # A directory that does not exist is simply no reading, never a crash.
+        assert modeldl._incomplete_bytes([tmp_path / "nope"]) == 0
+
+        watcher = modeldl._CacheProgress(job_id, "x/x")
+        watcher._dirs = [blobs]
+        watcher.INTERVAL_S = 0.01
+        watcher.start()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            with modeldl._LOCK:
+                if modeldl._REGISTRY[job_id]["files"][0]["bytes_done"] == 8192:
+                    break
+            time.sleep(0.01)
+        # Something further along already published: the watcher must not undo it.
+        with modeldl._LOCK:
+            modeldl._REGISTRY[job_id]["files"][0]["bytes_done"] = 50000
+        time.sleep(0.05)
+        watcher.stop()
+        watcher.join(timeout=2.0)
+        with modeldl._LOCK:
+            assert modeldl._REGISTRY[job_id]["files"][0]["bytes_done"] == 50000
+    finally:
+        with modeldl._LOCK:
+            modeldl._REGISTRY.pop(job_id, None)
+
+
+def test_blob_dirs_covers_the_mirror_as_well_as_the_repo():
+    """A job may fall back to the public mirror mid-flight and only says so when
+    it returns, so both cache folders are watched."""
+    from stable_audio_3.model_configs import _DEFAULT_MIRRORS
+
+    official = next(iter(_DEFAULT_MIRRORS))
+    mirror = _DEFAULT_MIRRORS[official]
+    dirs = [str(d) for d in modeldl._blob_dirs(official)]
+    assert len(dirs) == 2
+    assert any(official.split("/", 1)[0] in d for d in dirs)
+    assert any(mirror.split("/", 1)[0] in d for d in dirs)
+    # An unmirrored repo watches only itself, and never raises.
+    assert len(modeldl._blob_dirs("some-org/not-mirrored")) == 1
+
+
+def test_public_job_hides_private_per_file_bookkeeping():
+    """The watcher stamps ``_seen_at`` on a file entry to derive a rate. That is
+    bookkeeping; the API must not grow a field because of it."""
+    job = _fake_job("public-job")
+    job["_filenames"] = ["a", "b"]
+    job["files"][0]["_seen_at"] = 123.0
+    public = modeldl._public_job(job)
+    assert "_filenames" not in public
+    assert "_seen_at" not in public["files"][0]
+    assert public["files"][0]["filename"] == "f"
