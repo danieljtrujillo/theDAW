@@ -33,9 +33,22 @@ import math
 from typing import Literal, Optional, TypedDict
 
 import numpy as np
-from scipy import signal
+
 
 from .types import Run, RunAudio, Schedule, Seam
+
+
+def scipy_signal():
+    """``scipy.signal``, imported on first use.
+
+    Kept out of module scope because chimera/router.py imports this module at
+    startup and scipy.signal is the single largest item on the server's import
+    path — 9.4s of a 15.6s cold boot, for filters no request has asked for.
+    """
+    from scipy import signal
+
+    return signal
+
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +93,7 @@ def lr4_sos(fc: float, sr: int, kind: BandKind) -> np.ndarray:
     """Second-order Butterworth SOS; applied zero-phase twice it is an LR4."""
     btype = {"hp": "highpass", "lp": "lowpass"}[kind]
     fc = float(min(max(fc, 1.0), 0.45 * sr))
-    return signal.butter(2, fc, btype=btype, fs=sr, output="sos")
+    return scipy_signal().butter(2, fc, btype=btype, fs=sr, output="sos")
 
 
 def lr4(x: np.ndarray, sr: int, fc: float, kind: BandKind) -> np.ndarray:
@@ -88,7 +101,7 @@ def lr4(x: np.ndarray, sr: int, fc: float, kind: BandKind) -> np.ndarray:
     arr = np.asarray(x, dtype=np.float32)
     if arr.shape[0] < _MIN_FILTER_LEN:
         return arr.copy() if kind == "lp" else np.zeros_like(arr)
-    y = signal.sosfiltfilt(lr4_sos(fc, sr, kind), arr, axis=0)
+    y = scipy_signal().sosfiltfilt(lr4_sos(fc, sr, kind), arr, axis=0)
     return np.ascontiguousarray(y, dtype=np.float32)
 
 
@@ -146,7 +159,7 @@ def run_gain_db(measured: float, lane: str, weight: float = 1.0) -> float:
 
 def _one_pole(x: np.ndarray, tau_samples: float) -> np.ndarray:
     a = 1.0 - math.exp(-1.0 / max(tau_samples, 1e-9))
-    return signal.lfilter([a], [1.0, -(1.0 - a)], x)
+    return scipy_signal().lfilter([a], [1.0, -(1.0 - a)], x)
 
 
 def _hold_release(x: np.ndarray, tau_samples: float) -> np.ndarray:

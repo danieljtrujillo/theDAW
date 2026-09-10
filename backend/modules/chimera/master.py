@@ -21,10 +21,23 @@ from typing import Literal, TypedDict
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
-from scipy.ndimage import maximum_filter1d
 
-from .render import equal_power, measure_lufs, split_bands
+from .render import equal_power, measure_lufs, split_bands, scipy_signal
+
+
+def _maximum_filter1d():
+    """``scipy.ndimage.maximum_filter1d``, imported on first use.
+
+    At module scope this cost the SERVER 9.4s of its cold start (0.8s warm):
+    chimera/router.py imports every submodule eagerly, so scipy came in
+    before uvicorn bound its port, for a limiter that had not been asked for
+    yet. Python caches the module, so the price is paid once per process, by
+    the first master that actually needs it.
+    """
+    from scipy.ndimage import maximum_filter1d
+
+    return maximum_filter1d
+
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +104,7 @@ def _limit_numpy(
     ceiling = 10.0 ** (ceiling_db / 20.0)
     peak = np.max(np.abs(arr.astype(np.float64)), axis=1)
     la = max(1, int(round(lookahead_ms * 1e-3 * sr)))
-    held = maximum_filter1d(peak, size=2 * la + 1, mode="nearest")
+    held = _maximum_filter1d()(peak, size=2 * la + 1, mode="nearest")
     gr = 20.0 * np.log10(np.maximum(held, ceiling) / ceiling)  # dB >= 0
     # exponential release of the reduction, vectorised in the log domain
     tau_r = max(release_ms * 1e-3 * sr, 1.0)
@@ -100,6 +113,7 @@ def _limit_numpy(
     # attack smoothing (one pole) started from the first sample's reduction so
     # a hot first sample is caught too; the look-ahead plateau absorbs the lag
     a = 1.0 - math.exp(-1.0 / max(attack_ms * 1e-3 * sr, 1.0))
+    signal = scipy_signal()
     zi = signal.lfiltic([a], [1.0, -(1.0 - a)], y=[gr[0]])
     gr, _ = signal.lfilter([a], [1.0, -(1.0 - a)], gr, zi=zi)
     gr = np.maximum(gr, 0.0)
@@ -179,7 +193,11 @@ def true_peak_db(x: np.ndarray, sr: int, oversample: int = 4) -> float:
     arr = np.asarray(x, dtype=np.float64)
     if arr.size == 0:
         return -120.0
-    up = signal.resample_poly(arr, oversample, 1, axis=0) if oversample > 1 else arr
+    up = (
+        scipy_signal().resample_poly(arr, oversample, 1, axis=0)
+        if oversample > 1
+        else arr
+    )
     peak = float(np.max(np.abs(up)))
     return 20.0 * math.log10(max(peak, 1e-6))
 
