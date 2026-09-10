@@ -98,6 +98,14 @@ class _JobTqdm(tqdm):
     _job_id: str | None = None
 
     def __init__(self, *args, **kwargs) -> None:
+        # huggingface_hub >= 1.23 builds TWO of these per Xet-backed file: the
+        # reconstruction bar (name="huggingface_hub.xet_get"), which counts file
+        # bytes, and a transfer bar (".transfer"), which counts compressed
+        # network bytes and so ends BELOW the file size. Both are driven at once
+        # from the Xet worker thread. Publishing both into one readout made the
+        # Settings dock drop 209 MB mid-download. The transfer bar is a mirror:
+        # counted, never shown. Set before super().__init__, which publishes.
+        self._mirror = str(kwargs.get("name") or "").endswith(".transfer")
         super().__init__(*args, **kwargs)
         # A resumed transfer starts at `initial`; tqdm records that in `n` even
         # when it is disabled, so this picks up a part-downloaded file's offset.
@@ -122,7 +130,13 @@ class _JobTqdm(tqdm):
                 if idx < 0 or idx >= len(job["files"]):
                     return
                 entry = job["files"][idx]
-                entry["bytes_done"] = int(self._bytes_done)
+                if self._mirror:
+                    return
+                # Monotonic by contract (see _CacheProgress): whichever source
+                # is further along wins, and a reader never watches it fall.
+                entry["bytes_done"] = max(
+                    int(entry.get("bytes_done") or 0), int(self._bytes_done)
+                )
                 entry["bytes_total"] = int(self.total or 0)
                 entry["speed"] = speed
         except Exception:  # pragma: no cover - defensive, must never raise

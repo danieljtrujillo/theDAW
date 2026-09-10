@@ -283,6 +283,65 @@ def test_progress_survives_a_tqdm_that_disabled_itself():
             modeldl._REGISTRY.pop(job_id, None)
 
 
+def test_two_xet_bars_never_move_the_readout_backwards():
+    """huggingface_hub >= 1.23 constructs the tqdm_class TWICE per Xet file: a
+    reconstruction bar counting file bytes and a ".transfer" bar counting
+    compressed network bytes, driven concurrently and ending below the file
+    size. Under 1.7.1 there was one bar. This replays the interleaving that
+    dropped the Settings readout by 209 MB mid-download: the transfer bar runs
+    ahead, the reconstruction bar catches up in bursts, the transfer bar closes
+    short of the total."""
+    job_id = "dual-bar-job"
+    with modeldl._LOCK:
+        modeldl._REGISTRY[job_id] = _fake_job(job_id)
+    try:
+        make = modeldl._bound_tqdm(job_id)
+        recon = make(
+            total=1000,
+            disable=None,
+            file=io.StringIO(),
+            name="huggingface_hub.xet_get",
+            position=1,
+        )
+        xfer = make(
+            total=900,
+            disable=None,
+            file=io.StringIO(),
+            name="huggingface_hub.xet_get.transfer",
+            position=0,
+        )
+        seen: list[tuple[int, int]] = []
+
+        def read() -> None:
+            with modeldl._LOCK:
+                entry = modeldl._REGISTRY[job_id]["files"][0]
+                seen.append((entry["bytes_done"], entry["bytes_total"]))
+
+        for bar, n in [
+            (xfer, 300),
+            (recon, 100),
+            (xfer, 300),
+            (recon, 500),
+            (xfer, 300),
+            (recon, 400),
+        ]:
+            bar.update(n)
+            read()
+        xfer.close()
+        read()
+        recon.close()
+        read()
+        dones = [d for d, _ in seen]
+        assert dones == sorted(dones), f"readout went backwards: {dones}"
+        assert dones[-1] == 1000
+        assert all(t == 1000 for _, t in seen), (
+            "the transfer bar's compressed total must never show"
+        )
+    finally:
+        with modeldl._LOCK:
+            modeldl._REGISTRY.pop(job_id, None)
+
+
 def test_a_resumed_transfer_starts_from_its_offset():
     """``initial=`` is how hub reports a part-downloaded file. Counting from
     zero there would show a 4 GB resume restarting."""
