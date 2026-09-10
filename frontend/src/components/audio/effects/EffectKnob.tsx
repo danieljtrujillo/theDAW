@@ -5,10 +5,11 @@
  * unit-aware readout, and double-click reset to the schema default.
  *
  * SlideKnob stays the MAKE/MIX quick-control; this is the schema-driven twin
- * for effect panels. Shared behaviours: vertical drag (Shift = fine), wheel,
- * arrow/Home/End keys, aria-slider semantics.
+ * for effect panels. Shared behaviours: vertical drag (Shift = fine), a wheel
+ * that only turns the dial holding focus, arrow/Home/End keys, aria-slider
+ * semantics.
  */
-import React, { memo, useId, useRef, useState } from 'react';
+import React, { memo, useEffect, useId, useRef, useState } from 'react';
 import { accentVars, colorAt, rgb, rgba } from '../../../lib/trackColor';
 import { formatParamValue, fromNorm, snapParam, toNorm, type ParamSchema } from './paramFormat';
 
@@ -29,6 +30,7 @@ interface EffectKnobProps {
 }
 
 const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, label, size = 40, tint, resetValue, disabled }) => {
+  const dialRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const lastY = useRef(0);
   const [active, setActive] = useState(false);
@@ -56,7 +58,14 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
     if (disabled) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     dragging.current = true; setActive(true); lastY.current = e.clientY;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture?.(e.pointerId);
+    // Focus BEFORE preventDefault: preventing the default on pointerdown
+    // suppresses the compatibility mousedown and with it the focus a click
+    // would otherwise give a tabbable element — so without this the dial could
+    // never be document.activeElement and the wheel gate below would be shut
+    // forever. preventScroll because effect racks are scrolling panels.
+    el.focus({ preventScroll: true });
     e.preventDefault();
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -69,7 +78,27 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
     dragging.current = false; setActive(false);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
-  const onWheel = (e: React.WheelEvent) => stepBy((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1));
+  // The wheel moves ONLY the focused dial. Every parameter of every effect in
+  // the rack is one of these, including each effect's wet/dry MIX — and the MIX
+  // rack splices onto the global master insert, so a dial you are merely
+  // scrolling PAST must not move: an unmodified wheel over one used to walk the
+  // level of everything the app plays, with no undo entry and no cue. Native +
+  // non-passive because React registers onWheel passively at the root, where
+  // preventDefault() is a silent no-op — and the pass-through path returns
+  // BEFORE preventDefault, so scrolling over an unfocused dial still scrolls.
+  const wheelStep = useRef<(e: WheelEvent) => void>(() => undefined);
+  wheelStep.current = (e) => stepBy((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1));
+  useEffect(() => {
+    const el = dialRef.current;
+    if (!el || disabled) return;
+    const onWheel = (e: WheelEvent) => {
+      if (document.activeElement !== el) return;
+      e.preventDefault();
+      wheelStep.current(e);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [disabled]);
   const onDoubleClick = () => set(resetValue ?? param.default);
   const onKeyDown = (e: React.KeyboardEvent) => {
     const mult = e.shiftKey ? 10 : 1;
@@ -84,7 +113,10 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
       case 'Backspace': case 'Delete': set(resetValue ?? param.default); break;
       default: handled = false;
     }
-    if (handled) e.preventDefault();
+    // stopPropagation as well as preventDefault: a dial now takes focus on
+    // click, so its arrows/Home/End must not ALSO run the window-level editor
+    // shortcuts (nudge clip, jump playhead) that share those keys.
+    if (handled) { e.preventDefault(); e.stopPropagation(); }
   };
 
   const text = formatParamValue(param, value);
@@ -100,6 +132,7 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
         {shownLabel}
       </span>
       <div
+        ref={dialRef}
         className={`tk-dial${active ? ' is-active' : ''}`}
         role="slider"
         aria-labelledby={labelId}
@@ -115,7 +148,6 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
-        onWheel={onWheel}
         onKeyDown={onKeyDown}
         onMouseEnter={() => setActive(true)}
         onMouseLeave={() => { if (!dragging.current) setActive(false); }}

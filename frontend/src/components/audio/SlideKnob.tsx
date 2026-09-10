@@ -14,7 +14,7 @@
  * hovered or dragged — the MAKE analogue of the SLIDE fader's magnified
  * ruler digit.
  */
-import React, { memo, useRef, useState } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import { accentVars, colorAt, rgb, rgba } from '../../lib/trackColor';
 import { HoverTip } from '../ui/Tooltip';
 import { HOVER_TOOLTIPS } from '../ui/tooltips';
@@ -51,6 +51,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
   label, value, onChange, min, max, step = 0.01, tipKey, size = 42, centerReadout = false, center = false, tint,
   defaultValue, onLabelClick, onLabelDoubleClick, labelTitle,
 }) => {
+  const dialRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const lastY = useRef(0);
   const [active, setActive] = useState(false);
@@ -84,7 +85,14 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     dragging.current = true; setActive(true); lastY.current = e.clientY;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture?.(e.pointerId);
+    // Focus BEFORE preventDefault: preventing the default on pointerdown
+    // suppresses the compatibility mousedown and with it the focus a click
+    // would otherwise give a tabbable element — so without this the dial could
+    // never be document.activeElement and the wheel gate below would be shut
+    // forever. preventScroll because these dials sit in scrolling panels.
+    el.focus({ preventScroll: true });
     e.preventDefault();
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -97,9 +105,28 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
     dragging.current = false; setActive(false);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
-  const onWheel = (e: React.WheelEvent) => {
+  // The wheel moves ONLY the focused dial. These dials carry live level — the
+  // MIX quick-master band gains and ceiling, the DJ FX sends — so a dial you are
+  // merely scrolling PAST must not move: an unmodified wheel over one used to
+  // walk its value with no undo entry and no cue. Native + non-passive because
+  // React registers onWheel passively at the root, where preventDefault() is a
+  // silent no-op — and the pass-through path returns BEFORE preventDefault, so
+  // scrolling over an unfocused dial still scrolls the panel behind it.
+  const wheelStep = useRef<(e: WheelEvent) => void>(() => undefined);
+  wheelStep.current = (e) => {
     onChange(snap(value + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1)));
   };
+  useEffect(() => {
+    const el = dialRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (document.activeElement !== el) return;
+      e.preventDefault();
+      wheelStep.current(e);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
   // Double-click resets to the control's default (bipolar dials → center).
   const resetValue = defaultValue ?? (center ? (min + max) / 2 : clamp(0, min, max));
   const onDoubleClick = () => onChange(snap(resetValue));
@@ -113,7 +140,10 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
       case 'End': onChange(min); break;
       default: h = false;
     }
-    if (h) e.preventDefault();
+    // stopPropagation as well as preventDefault: a dial now takes focus on
+    // click, so its arrows/Home/End must not ALSO run the window-level editor
+    // shortcuts (nudge clip, jump playhead) that share those keys.
+    if (h) { e.preventDefault(); e.stopPropagation(); }
   };
 
   const labelEl = (
@@ -142,6 +172,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
     <div className="flex flex-col items-center gap-1 select-none min-w-0" style={accentVars(colorT)}>
       {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
       <div
+        ref={dialRef}
         className={`tk-dial${active ? ' is-active' : ''}`}
         role="slider"
         aria-label={label}
@@ -155,7 +186,6 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
-        onWheel={onWheel}
         onKeyDown={onKeyDown}
         onMouseEnter={() => setActive(true)}
         onMouseLeave={() => { if (!dragging.current) setActive(false); }}

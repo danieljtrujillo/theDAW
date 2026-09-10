@@ -13,7 +13,7 @@
  * 4-row rhythm (.tw-name / .tw-body / .tw-value / .tw-map) keeps faders,
  * knobs, and pads aligned row-for-row in a column.
  */
-import React, { memo, useRef } from 'react';
+import React, { memo, useEffect, useRef } from 'react';
 import { accentVars, colorAt, rgb, rgba, shade, smoothstep, seededValue, type RGB } from '../../lib/trackColor';
 import { useSlideStore, valueKey, type SlideContent } from '../../state/slideStore';
 
@@ -25,6 +25,41 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const fmt2 = (v: number) => (Number.isFinite(v) ? v.toFixed(2) : '0.00');
 
 const FOCUS_UNITS = 22; // magnifier reach for the ruler, in value units
+
+/**
+ * Wheel support for a widget, gated on that widget being focused.
+ *
+ * A SLIDE lane writes straight through audioMixerBus onto a real track's volume
+ * (or the monitor gain, for MASTER), so a lane you merely scroll PAST must not
+ * move — an unmodified wheel over one used to walk the mix with no undo entry
+ * and no cue. `host` is the element the wheel is read on, `focusEl` the
+ * role="slider" element that has to hold focus for the wheel to count (they
+ * differ on the fader, whose knob is the tabbable part inside the wheel host).
+ *
+ * Native and non-passive: React registers onWheel passively at the root, where
+ * preventDefault() is a silent no-op. The pass-through path returns BEFORE
+ * preventDefault, so scrolling over an unfocused lane still scrolls the panel.
+ */
+function useFocusedWheel(
+  host: React.RefObject<HTMLElement | null>,
+  focusEl: React.RefObject<HTMLElement | null>,
+  enabled: boolean,
+  step: (e: WheelEvent) => void,
+): void {
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  useEffect(() => {
+    const el = host.current;
+    if (!el || !enabled) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!focusEl.current || document.activeElement !== focusEl.current) return;
+      e.preventDefault();
+      stepRef.current(e);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [host, focusEl, enabled]);
+}
 
 interface WidgetProps {
   item: string;
@@ -46,6 +81,8 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
   const stored = useSlideStore((s) => s.values[key]);
   const setValue = useSlideStore((s) => s.setValue);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const knobRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
 
   const value = muted ? 0 : (stored ?? seededValue(item));
@@ -64,6 +101,11 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     dragging.current = true;
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    // Focus the knob BEFORE preventDefault, which suppresses the compatibility
+    // mousedown and with it the focus a click would give a tabbable element.
+    // Without this the lane could never be document.activeElement and the wheel
+    // gate below would be shut forever; it is also what role="slider" promises.
+    knobRef.current?.focus({ preventScroll: true });
     setValue(item, fromClientY(e.clientY));
     e.preventDefault();
   };
@@ -74,9 +116,9 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
     dragging.current = false;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
-  const onWheel = (e: React.WheelEvent) => {
+  useFocusedWheel(bodyRef, knobRef, !muted, (e) => {
     setValue(item, value + (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1));
-  };
+  });
   const onKeyDown = (e: React.KeyboardEvent) => {
     const step = e.shiftKey ? 10 : 1;
     let h = true;
@@ -90,7 +132,10 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
       case 'End': setValue(item, 0); break;
       default: h = false;
     }
-    if (h) e.preventDefault();
+    // stopPropagation as well as preventDefault: a lane now takes focus on
+    // click, so its arrows/Home/End must not ALSO run the window-level editor
+    // shortcuts (nudge clip, jump playhead) that share those keys.
+    if (h) { e.preventDefault(); e.stopPropagation(); }
   };
 
   // ruler marks every 5 units (numbers every 10). Step 5 (not 2) roughly
@@ -133,16 +178,17 @@ const TrackFaderImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted, 
         <div className="ts-stage">
           <div className="ts-scale">{marks}</div>
           <div
+            ref={bodyRef}
             className="ts-body"
             onPointerDown={muted ? undefined : onPointerDown}
             onPointerMove={muted ? undefined : onPointerMove}
             onPointerUp={muted ? undefined : onPointerUp}
             onPointerCancel={muted ? undefined : onPointerUp}
-            onWheel={muted ? undefined : onWheel}
           >
             <div className="ts-track" ref={trackRef}>
               <div className="ts-fill" style={{ height: `${Math.max(t * 100, 3.5)}%` }} />
               <div
+                ref={knobRef}
                 className="ts-knob"
                 tabIndex={muted ? -1 : 0}
                 role="slider"
@@ -171,6 +217,7 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
   const key = valueKey(content, item);
   const stored = useSlideStore((s) => s.values[key]);
   const setValue = useSlideStore((s) => s.setValue);
+  const dialRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const lastY = useRef(0);
   const PX_FULL = 200;
@@ -188,7 +235,10 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     dragging.current = true;
     lastY.current = e.clientY;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture?.(e.pointerId);
+    // Focus before preventDefault — see the fader above.
+    el.focus({ preventScroll: true });
     e.preventDefault();
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -201,9 +251,9 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
     dragging.current = false;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
-  const onWheel = (e: React.WheelEvent) => {
+  useFocusedWheel(dialRef, dialRef, !muted, (e) => {
     setValue(item, value + (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1));
-  };
+  });
   const onKeyDown = (e: React.KeyboardEvent) => {
     const step = e.shiftKey ? 10 : 1;
     let h = true;
@@ -215,7 +265,10 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
       case 'End': setValue(item, 0); break;
       default: h = false;
     }
-    if (h) e.preventDefault();
+    // stopPropagation as well as preventDefault: a lane now takes focus on
+    // click, so its arrows/Home/End must not ALSO run the window-level editor
+    // shortcuts (nudge clip, jump playhead) that share those keys.
+    if (h) { e.preventDefault(); e.stopPropagation(); }
   };
 
   return (
@@ -223,6 +276,7 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
       <div className="tw-name" title={muted ? '' : item}>{muted ? '—' : item}</div>
       <div className="tw-body">
         <div
+          ref={dialRef}
           className="tk-dial"
           tabIndex={muted ? -1 : 0}
           role="slider"
@@ -236,7 +290,6 @@ const TrackKnobImpl: React.FC<WidgetProps> = ({ item, content, mapping, muted })
           onPointerMove={muted ? undefined : onPointerMove}
           onPointerUp={muted ? undefined : onPointerUp}
           onPointerCancel={muted ? undefined : onPointerUp}
-          onWheel={muted ? undefined : onWheel}
           onKeyDown={muted ? undefined : onKeyDown}
         >
           <div className="tk-arc" style={{ background: arcBg }} />

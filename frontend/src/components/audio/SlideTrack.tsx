@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { accentVars, colorAt, rgb, rgba } from '../../lib/trackColor';
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -43,7 +43,14 @@ export function SlideTrack({
   const onDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     dragging.current = true; setDrag(true);
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture?.(e.pointerId);
+    // Focus BEFORE preventDefault: preventing the default on pointerdown
+    // suppresses the compatibility mousedown and with it the focus a click
+    // would otherwise give a tabbable element — so without this the widget
+    // could never become document.activeElement, and the wheel gate below
+    // would be shut forever. It is also what role="slider" + tabIndex promise.
+    el.focus({ preventScroll: true });
     onChange(fromX(e.clientX)); e.preventDefault();
   };
   const onMove = (e: React.PointerEvent) => { if (dragging.current) onChange(fromX(e.clientX)); };
@@ -51,9 +58,28 @@ export function SlideTrack({
     dragging.current = false; setDrag(false);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
-  const onWheel = (e: React.WheelEvent) => {
+  // The wheel moves ONLY the focused slider. This one widget is the footer's
+  // master volume, every EDIT track fader and every effect parameter in the app,
+  // and a fader you are merely scrolling PAST must not move: an unmodified wheel
+  // over one used to walk its value with no undo entry and no cue beyond a 10 px
+  // fill. Native + non-passive because React registers onWheel passively at the
+  // root, where preventDefault() is a silent no-op — and the pass-through path
+  // returns BEFORE preventDefault so scrolling over a slider still scrolls.
+  const wheelStep = useRef<(e: WheelEvent) => void>(() => undefined);
+  wheelStep.current = (e) => {
     onChange(clamp(+(value + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1)).toFixed(6), min, max));
   };
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (document.activeElement !== el) return;
+      e.preventDefault();
+      wheelStep.current(e);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
   const onKeyDown = (e: React.KeyboardEvent) => {
     const s = step * (e.shiftKey ? 10 : 1);
     let h = true;
@@ -64,7 +90,10 @@ export function SlideTrack({
       case 'End': onChange(max); break;
       default: h = false;
     }
-    if (h) e.preventDefault();
+    // stopPropagation as well as preventDefault: clicking a slider now focuses
+    // it, so arrows/Home/End reaching this handler must not ALSO run the
+    // window-level editor shortcuts (nudge clip, jump playhead) that share them.
+    if (h) { e.preventDefault(); e.stopPropagation(); }
   };
 
   return (
@@ -81,7 +110,7 @@ export function SlideTrack({
       className={`relative h-2.5 rounded-full bg-black/50 border border-white/10 cursor-pointer select-none ${className ?? ''}`}
       style={{ touchAction: 'none', ...accentVars(tint ?? t) }}
       onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
-      onWheel={onWheel} onKeyDown={onKeyDown}
+      onKeyDown={onKeyDown}
       onDoubleClick={() => onChange(clamp(defaultValue ?? 0, min, max))}
     >
       <div className="absolute inset-y-0.5 left-0.5 rounded-full"
