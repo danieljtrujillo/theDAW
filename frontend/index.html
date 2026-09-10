@@ -8,29 +8,90 @@
          across sessions) so the version query is the cleanest
          "please refetch" signal. Bump when /favicon.svg changes. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4" />
-    <!-- The boot screen's credit logo and wordmark model start downloading
-         before the JS bundle, so "by GANTASMO" is ready the moment the
-         cinematic asks for it. -->
+    <!-- The credit logo starts downloading before the JS bundle, so it is already
+         decoded when the inline cover below paints it.
+         The 1.2 MB /theDAW.glb preload is deliberately GONE: only the boot
+         cinematic reads that model, and the cinematic is now lazy (see
+         BOOT_CINEMATIC in App.tsx). Preloading it here spent 1.2 MB of the
+         startup's highest-priority bandwidth on an asset nothing was waiting
+         for. Restore this line if the cinematic is switched back on. -->
     <link rel="preload" as="image" href="/GANTASMO_LOGO.webp" />
-    <link rel="preload" as="fetch" href="/theDAW.glb" crossorigin />
     <title>theDAW · by GANTASMO</title>
     <!-- Instant boot cover. Pure inline HTML/CSS so it paints on the FIRST byte,
          before the JS bundle, React, or any /api request — the user never sees a
-         blank page (or the launcher console) during startup. The React loading
-         screen renders on top of it, then main.tsx removes this node. -->
+         blank page (or the launcher console) during startup. React's BootScreen
+         renders the SAME layout on top of it, then main.tsx removes this node,
+         so the handoff is invisible.
+
+         This used to be an empty black rectangle. That is not a boot cover — a
+         full-screen black div IS a blank page, and it sat there for the whole
+         launcher chain (Vite spawn, browser start, module graph, backend boot)
+         before anything branded appeared. The markup below mirrors
+         BootScreen.tsx exactly: same 50vh wordmark block, same credit stack. -->
     <style>
-      /* Instant cover: solid black, the same single background the cinematic
-         uses, so the browser paints it immediately with no blank gap and no text. */
       #boot-splash {
         position: fixed;
         inset: 0;
         z-index: 2147483647;
         background: #000000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding-top: 40px;
+        overflow: hidden;
+        user-select: none;
+      }
+      /* Spacer reserving the area BootScreen puts the wordmark in, so the mark
+         does not shift by a pixel when React takes over. */
+      #boot-splash .bs-mark {
+        position: relative;
+        width: 100%;
+        flex-shrink: 0;
+        height: 50vh;
+        pointer-events: none;
+      }
+      #boot-splash .bs-mark span {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 8px;
+        font-size: 36px;
+        line-height: 40px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.36em;
+        padding-left: 0.36em;
+        color: #f4f4f5;
+        font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      #boot-splash .bs-by {
+        font-family: 'Orbitron', system-ui, sans-serif;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        font-size: clamp(11px, 2.2vh, 24px);
+        background-image: linear-gradient(180deg, #ffffff 0%, #cbb9e8 46%, #7a6aa0 56%, #efe9fb 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 1px 0 rgba(255, 255, 255, 0.18), 0 3px 6px rgba(0, 0, 0, 0.6);
+      }
+      #boot-splash .bs-logo {
+        flex-shrink: 0;
+        height: clamp(34px, 8vh, 110px);
+        max-width: 70vw;
+        object-fit: contain;
       }
     </style>
   </head>
   <body style="margin: 0; background: #000000">
-    <div id="boot-splash"></div>
+    <div id="boot-splash">
+      <div class="bs-mark"><span>theDAW</span></div>
+      <span class="bs-by">by</span>
+      <img class="bs-logo" src="/GANTASMO_LOGO.webp" alt="GANTASMO" draggable="false" />
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

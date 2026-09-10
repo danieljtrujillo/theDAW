@@ -9,7 +9,17 @@ import { Shell } from './components/layout/Shell';
 import { useOnboardingStore, shouldAutoStart } from './onboarding/onboardingStore';
 import { useHomeScreenStore } from './components/home/HomeScreen';
 import { PlayerFooter } from './components/audio/PlayerFooter';
-import { LoadingScreen } from './components/layout/LoadingScreen';
+import { BootScreen } from './components/layout/BootScreen';
+// The boot cinematic (liquid-chrome goo + 3D "theDAW by GANTASMO") is intact and
+// one flag away. It is LAZY on purpose: as a static import it dragged three.js,
+// a 1.2 MB GLB, a WebGL PMREM bake and a bloom composer into the boot path, in
+// FRONT of the boot screen they were meant to cover — so the first thing the
+// user saw was a black rectangle for as long as all that took. Flip this to
+// true to run the cinematic again; it then loads only when the screen mounts.
+const BOOT_CINEMATIC: boolean = false;
+const LoadingScreen = lazy(() =>
+  import('./components/layout/LoadingScreen').then((m) => ({ default: m.LoadingScreen })),
+);
 import { GantasmoOrb } from './orb-kit/react/GantasmoOrb';
 // The assistant panel pulls in react-markdown + @google/genai; keep it out of
 // the first-paint bundle by lazy-loading it and only mounting it once the user
@@ -100,19 +110,23 @@ export default function App() {
     void rehydrateDownloads();
   }, [isBackendReady, rehydrateDownloads]);
 
-  // Health polling lives here so it runs during the loading screen.
-  // Exponential backoff: 1s → 2s → 4s → 8s → 16s until ready, then 30s steady.
+  // Health polling lives here so it runs during the boot screen.
+  // Brisk 400ms polling until the backend answers, then a 30s heartbeat.
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    let retryDelay = 1000;
+    let retryDelay = 400;
 
     const poll = async () => {
       if (cancelled) return;
       await refreshHealth();
       if (cancelled) return;
       const ready = useStatusBarStore.getState().isBackendReady;
-      retryDelay = ready ? 30000 : Math.min(retryDelay * 2, 16000);
+      // Until the backend answers, poll briskly: this is a loopback port that
+      // is simply bound or not, and the old 1→2→4→8→16s backoff could leave the
+      // boot screen up for another 16s after the backend was already serving.
+      // Once ready, drop to a cheap steady heartbeat.
+      retryDelay = ready ? 30000 : 400;
       timer = setTimeout(() => void poll(), retryDelay);
     };
 
@@ -398,6 +412,20 @@ export default function App() {
     });
   }, []);
 
+  // See the note on <Shell /> below: hold the heavy app body back two frames so
+  // the boot screen gets a paint before Shell's mount blocks the main thread.
+  const [bodyMounted, setBodyMounted] = useState(false);
+  useEffect(() => {
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setBodyMounted(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, []);
+
   const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {
     const result = handletheDAWAction(action);
     logInfo('assistant', `Action: ${action.type} → ${result}`);
@@ -439,8 +467,15 @@ export default function App() {
 
   return (
     <>
-      {/* Main app always mounts so state initializes, but polls are gated on isBackendReady */}
-      <Shell />
+      {/* Main app always mounts so state initializes, but polls are gated on
+          isBackendReady. Its FIRST mount is held back two frames: Shell pulls in
+          DAWCenterPanel and with it every tab, and mounting that subtree blocks
+          the main thread for seconds. Mounting it in the same commit as the boot
+          screen meant the boot screen could not paint until the block was over —
+          the app booted into a blank window instead of into the boot screen.
+          Two frames is enough for the browser to present the boot screen first;
+          nothing else about Shell's lifetime changes. */}
+      {bodyMounted && <Shell />}
       <PlayerFooter />
       {/* The orb stays out of the boot cinematic entirely — mounting it only
           once the splash has lifted means it never flashes over the intro AND
@@ -497,7 +532,19 @@ export default function App() {
             transition={{ duration: 0.4 }}
             className="fixed inset-0 z-200"
           >
-            <LoadingScreen onSkip={() => setSkipped(true)} onComplete={() => setCinematicDone(true)} />
+            {BOOT_CINEMATIC ? (
+              <Suspense fallback={<BootScreen onSkip={() => setSkipped(true)} />}>
+                <LoadingScreen
+                  onSkip={() => setSkipped(true)}
+                  onComplete={() => setCinematicDone(true)}
+                />
+              </Suspense>
+            ) : (
+              <BootScreen
+                onSkip={() => setSkipped(true)}
+                onComplete={() => setCinematicDone(true)}
+              />
+            )}
           </motion.div>
         )}
       </AnimatePresence>

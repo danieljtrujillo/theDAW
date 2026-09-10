@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -104,12 +105,116 @@ def _pump(tag: str, proc: subprocess.Popen) -> None:
         _emit(tag, line)
 
 
+# The holding page the browser is sent to BEFORE Vite is listening. See
+# _open_browser() for why it exists; it redirects itself to FRONTEND_URL the
+# instant the dev server answers.
+_HOLDING_PAGE = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>theDAW · by GANTASMO</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      body {
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+        padding-top: 40px; box-sizing: border-box; user-select: none;
+      }
+      .mark { position: relative; width: 100%; flex-shrink: 0; height: 50vh; }
+      .mark span {
+        position: absolute; inset: 0; display: flex; align-items: flex-end;
+        justify-content: center; padding-bottom: 8px;
+        font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+        font-size: 36px; line-height: 40px; font-weight: 900;
+        text-transform: uppercase; letter-spacing: 0.36em; padding-left: 0.36em;
+        color: #f4f4f5;
+      }
+      .by {
+        font-family: system-ui, sans-serif; font-weight: 700;
+        letter-spacing: 0.18em; font-size: clamp(11px, 2.2vh, 24px);
+        color: #cbb9e8;
+      }
+      img { flex-shrink: 0; height: clamp(34px, 8vh, 110px); max-width: 70vw; object-fit: contain; }
+      a { position: absolute; bottom: 8px; right: 12px; font: 9px monospace; color: #3f3f46; }
+    </style>
+  </head>
+  <body>
+    <div class="mark"><span>theDAW</span></div>
+    <span class="by">by</span>
+    <img src="__LOGO__" alt="GANTASMO" draggable="false" onerror="this.remove()" />
+    <a href="__URL__">open manually</a>
+    <script>
+      var URL_ = "__URL__";
+      // An <img> probe, not fetch(): this page is served from file://, whose
+      // origin is "null", so fetch() to http://localhost is blocked by CORS.
+      // Image loads are not subject to that check.
+      function probe() {
+        var i = new Image();
+        i.onload = function () { location.replace(URL_); };
+        i.onerror = function () { setTimeout(probe, 150); };
+        i.src = URL_ + "/favicon.svg?probe=" + Date.now();
+      }
+      probe();
+      // Hard backstop: go there anyway rather than hold this page forever.
+      setTimeout(function () { location.replace(URL_); }, 60000);
+    </script>
+  </body>
+</html>
+"""
+
+
+def _holding_page_url() -> str | None:
+    """Write the holding page to a temp file and return its file:// URL.
+
+    Returns None if it cannot be written, so the caller falls back to the plain
+    behaviour of opening FRONTEND_URL directly.
+    """
+    try:
+        tmp = Path(tempfile.gettempdir())
+        # The logo has to be copied NEXT TO the page: Chromium refuses to load a
+        # file:// subresource that lives in a different directory from the
+        # file:// document requesting it, so referencing it in the repo renders
+        # a broken-image icon. A sibling copy loads fine.
+        logo_ref = ""
+        src = (
+            Path(__file__).resolve().parent.parent
+            / "frontend"
+            / "public"
+            / "GANTASMO_LOGO.webp"
+        )
+        if src.exists():
+            dst = tmp / "thedaw-starting-logo.webp"
+            try:
+                shutil.copyfile(src, dst)
+                logo_ref = dst.name
+            except OSError:
+                logo_ref = ""
+        html = _HOLDING_PAGE.replace("__URL__", FRONTEND_URL).replace(
+            "__LOGO__", logo_ref
+        )
+        target = tmp / "thedaw-starting.html"
+        target.write_text(html, encoding="utf-8")
+        return target.as_uri()
+    except Exception:
+        return None
+
+
 def _open_browser() -> None:
+    """Open the browser IMMEDIATELY, on a holding page that waits for Vite.
+
+    Previously this was called only once :5173 was accepting connections, which
+    put the browser's own cold start (seconds, if it was not already running)
+    AFTER Vite's ~1.4s boot instead of alongside it — and the user watched a
+    blank window for the sum of the two. The holding page lets the two overlap:
+    the browser starts up showing theDAW's own boot screen, and replaces itself
+    with the real app the moment the dev server answers.
+
+    If the temp file cannot be written we just open FRONTEND_URL as before.
+    """
     if _browser_opened.is_set():
         return
     _browser_opened.set()
     try:
-        webbrowser.open(FRONTEND_URL)
+        webbrowser.open(_holding_page_url() or FRONTEND_URL)
     except Exception:
         pass
 
@@ -192,18 +297,20 @@ def _port_open(host: str, port: int) -> bool:
 
 
 def _wait_then_open_browser() -> None:
-    """Open the browser the instant Vite is actually accepting connections on
-    5173, instead of parsing its (buffered, colored) stdout for a "Local:" line
-    that rarely matches and left the launch waiting on a 10s timer. Falls back to
-    opening anyway after a long wait so the launch never hangs."""
+    """Send the browser to the holding page right away, then report readiness.
+
+    The browser no longer waits on :5173 — _open_browser()'s holding page does
+    that from inside the browser, so the browser's cold start and Vite's boot
+    happen at the same time instead of one after the other. This thread stays
+    only to log when the dev server actually came up.
+    """
+    _open_browser()
     deadline = time.time() + 60.0
     while not _shutdown.is_set() and time.time() < deadline:
         if _port_open("127.0.0.1", 5173):
-            _open_browser()
+            _emit("stack", f"frontend ready at {FRONTEND_URL}")
             return
-        time.sleep(0.2)
-    if not _shutdown.is_set():
-        _open_browser()
+        time.sleep(0.05)
 
 
 def _warm_sidecars() -> None:
