@@ -9,8 +9,8 @@
 # live in process memory, so this image must never run with multiple workers
 # or replicas.
 #
-# The linux x86_64 resolution in uv.lock pins torch 2.7.1+cu126 from the
-# PyTorch cu126 index. Those wheels bundle the CUDA userspace libraries, so
+# The linux x86_64 resolution in uv.lock pins torch 2.14.0+cu130 from the
+# PyTorch cu130 index (GPU hosts need an NVIDIA driver >= 580). Those wheels bundle the CUDA userspace libraries, so
 # the base image needs no CUDA toolkit; GPU access only requires the NVIDIA
 # driver plus nvidia-container-toolkit on the host (see docs/DOCKER.md).
 
@@ -73,7 +73,7 @@ RUN npm run build && npm prune --omit=dev
 ########################################################################
 # Stage 2: Python runtime.
 ########################################################################
-FROM python:3.10-slim-bookworm@sha256:89cef4d55961e885def21b86e34e102e65b7eab8cd281e806a66ff1709c9a455 AS runtime
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS runtime
 
 # Node.js runtime for the VST Foundry sidecar (it runs `node dist/server.cjs`).
 # The single binary is copied from the official node image; libstdc++6 is the

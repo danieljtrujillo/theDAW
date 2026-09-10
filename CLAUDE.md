@@ -240,13 +240,18 @@ using `compile()` from the `tailwindcss` package, and diff the declarations.
 
 ## Windows-Specific Setup
 
-`pyproject.toml` maps the CUDA wheels per-platform under `[tool.uv.sources]`
-(Linux x86_64 → cu126, Windows → cu128), so `uv sync` on Windows installs the
-right stack automatically:
+`pyproject.toml` maps the CUDA wheels under `[tool.uv.sources]` — one index,
+cu130, for Linux x86_64 and Windows alike — so `uv sync` installs the right
+stack automatically:
 
-- torch + torchaudio come from the cu128 index (no manual `--index-url` step)
+- The venv is Python 3.12 (`.python-version`; `requires-python >= 3.12`)
+- torch 2.14 + torchaudio 2.11 come from the cu130 index (no manual `--index-url` step). torchaudio is transforms-only: from 2.9 its `load`/`save` need torchcodec and FFmpeg's *shared* libraries, so all audio I/O goes through `backend/lib/audio_io.py` (libsndfile, ffmpeg CLI fallback) — never call `torchaudio.load`/`save`
+- CUDA 13 needs an NVIDIA driver >= 580 (the R580+ branches); Turing (sm_75) through Blackwell are supported
 - `soundfile` is a base dependency (torchaudio's Windows backend), installed by `uv sync`
-- Flash Attention installs from the pinned `kingbri1` cu128/cp310 wheel, gated to `sys_platform == 'win32' and python_version < '3.11'` (so the venv must be Python 3.10; `.python-version` pins it)
+- Flash Attention installs from a prebuilt `mjun0812/flash-attention-prebuild-wheels` wheel (torch 2.14 / cu130), one URL per Python minor 3.12–3.14, gated to `sys_platform == 'win32'`. On Windows this package is the only FlashAttention-2 there is — torch's built-in flash SDPA kernel is not compiled under MSVC — and `transformer.py` gates it off below sm_80 regardless
+- `onnxruntime-gpu` is the CUDA-13 PyPI build (>= 1.29; those wheels are cp311+ only, which is why it moved with Python)
+- `aubio` installs from the vendored cp312 wheels under `wheels/`, built by `.github/workflows/build-aubio-wheels.yml` — dispatch it again whenever `.python-version` moves
+- basic-pitch's TensorFlow chain is overridden out of resolution (`[tool.uv] override-dependencies`); basic-pitch runs on ONNX everywhere
 - `theDAW.bat` preflights prerequisites and invokes `install/setup.ps1` for consent-based tool installation when something is missing; `docs/windows/setup-guide.md` has the full walkthrough and fallbacks
 
 ## RAG Index Maintenance

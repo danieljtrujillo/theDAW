@@ -25,7 +25,7 @@ services:
       # matches the runtime HF_HOME baked into the image.
       - hf-cache:/data/hf-cache
     # GPU variant: install nvidia-container-toolkit on the host, then
-    # uncomment the block below. The torch cu126 wheels in the image bundle
+    # uncomment the block below. The torch cu130 wheels in the image bundle
     # the CUDA userspace, so only the host driver is needed.
     # deploy:
     #   resources:

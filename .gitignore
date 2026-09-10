@@ -191,6 +191,9 @@ celerybeat.pid
 # Environments
 .env
 .venv
+# A second project env (e.g. .venv-py312) built alongside the live one so a
+# running backend is never rebuilt underneath itself; swap by renaming.
+.venv-*
 env/
 venv/
 ENV/

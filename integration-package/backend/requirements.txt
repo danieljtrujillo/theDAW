@@ -18,7 +18,7 @@ torchcrepe>=0.0.21  # F0 pitch tracking for vocal separation
 torch==2.7.1+cu128
 torchaudio==2.7.1+cu128
 torchcodec  # torchaudio 2.9+ decodes through torchcodec; needs FFmpeg shared libs on PATH/DLL search path
-numpy==1.24.3
+numpy>=1.26.4  # 1.24.3 has no cp312 wheel; a fresh sidecar venv under a 3.12 main failed here
 scipy==1.11.4
 soundfile==0.12.1
 librosa==0.10.2

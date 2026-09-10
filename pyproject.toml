@@ -3,7 +3,7 @@ name = "stable-audio-3"
 version = "0.1.6"
 description = "Stable Audio 3: A state-of-the-art open platform for fast, high-quality generated audio and music"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "einops>=0.8.2",
     "einops-exts>=0.0.4",
@@ -16,8 +16,15 @@ dependencies = [
     "pillow>=12.2.0",
     "soundfile>=0.12.0",
     "safetensors>=0.7.0",
-    "torch==2.7.1",
-    "torchaudio==2.7.1",
+    # torch from the cu130 index (see [tool.uv.sources]). torchaudio stopped
+    # tracking torch at 2.11.0 (2026-03-23): it is the newest release anywhere,
+    # declares no torch pin, and its notes say it works with future torch. The
+    # app uses it for transforms only: from 2.9 its load()/save() go through
+    # torchcodec, which needs FFmpeg's SHARED libraries at import (no ordinary
+    # Windows ffmpeg has them), so audio I/O is backend/lib/audio_io.py on
+    # libsndfile + the ffmpeg CLI instead.
+    "torch==2.14.0",
+    "torchaudio==2.11.0",
     "tqdm>=4.67.3",
     "huggingface-hub>=1.7.1",
     "transformers>=5.8.0",
@@ -39,17 +46,18 @@ dependencies = [
     # execution provider (cuBLAS / cuDNN come from torch's wheel), so
     # audio-to-MIDI runs on the card next to Demucs and whisper instead of
     # on the CPU; macOS has no CUDA build.
-    # A ceiling with two reasons, not a stale pin. onnxruntime-gpu 1.24+ ships
-    # no cp310 wheels, and this venv is Python 3.10 for the flash-attn wheel
-    # (.python-version): uv will still LOCK 1.24, then fail to sync it. And from
-    # 1.27 the PyPI wheels are built against CUDA 13 (onnxruntime.ai, CUDA EP
-    # docs) while torch 2.7.1+cu128 bundles 12.8. Lift with the Python bump.
-    "onnxruntime<1.24 ; sys_platform == 'darwin'",
-    "onnxruntime-gpu<1.24 ; sys_platform != 'darwin'",
-    # Windows-only: pre-built CUDA 12.8 wheel for Python 3.10. Pinned here so
-    # `uv sync` never removes it. The wheel URL lives in [tool.uv.sources].
-    # Update both when upgrading torch/CUDA.
-    "flash-attn ; sys_platform == 'win32' and python_version < '3.11'",
+    # on the CPU; macOS has no CUDA build. PyPI onnxruntime-gpu builds are
+    # CUDA 13 from 1.27 on, which is what torch 2.14.0+cu130 bundles, and
+    # 1.24+ ships cp311+ wheels only — both reasons this moved with Python.
+    "onnxruntime>=1.29 ; sys_platform == 'darwin'",
+    "onnxruntime-gpu>=1.29 ; sys_platform != 'darwin'",
+    # Windows-only: a prebuilt FlashAttention-2 wheel per Python minor (the
+    # URLs live in [tool.uv.sources]). Pinned here so `uv sync` never removes
+    # it. On Windows this package is the ONLY FlashAttention-2 there is —
+    # torch's built-in flash SDPA kernel is not compiled under MSVC — so
+    # Ampere+ users would lose it without this line; transformer.py gates it
+    # off on pre-Ampere cards (sm < 8) either way.
+    "flash-attn ; sys_platform == 'win32' and python_version < '3.15'",
     "aubio>=0.4.9",
     "mutagen>=1.47",
     # midi module (backend/modules/midi) — audio→MIDI transcription + export.
@@ -122,46 +130,71 @@ server = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+# torch 2.14.0 is published for cu126, cu130 and cu132 only. cu130 is the one
+# strictly-upward path from the previous cu128 (CUDA 12.8 -> 13.0, cuDNN 9.7 ->
+# 9.24); it needs an NVIDIA driver >= 580 (R580+) and keeps Turing (sm_75)
+# through Blackwell. One index for every platform, so the CUDA-13 build of
+# onnxruntime-gpu stays coherent on Linux GPU hosts too.
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
 flash-attn = [
-  { url = "https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32'" },
+  { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.2/flash_attn-2.8.3%2Bcu130torch2.14-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
+  { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.2/flash_attn-2.8.3%2Bcu130torch2.14-cp313-cp313-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.13'" },
+  { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.2/flash_attn-2.8.3%2Bcu130torch2.14-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.14'" },
 ]
 # aubio ships NO wheels on PyPI (source-only since 0.4.9 in 2019) and its 2019 C
 # source does not compile on a stock machine (no MSVC on Windows; the aubio#402
 # const-pointer mismatch is a hard error on modern clang/gcc). Pin a prebuilt
-# cp310 wheel per shipped platform so aubio stays a first-class dependency and
+# cp312 wheel per shipped platform so aubio stays a first-class dependency and
 # installs with no compiler anywhere. The mac arm64 and linux x86_64 wheels are
 # built by .github/workflows/build-aubio-wheels.yml (cibuildwheel against NumPy
 # 2.x); the Windows wheel is built the same way. Platforms without a wheel here
 # (e.g. linux aarch64) fall back to the PyPI sdist.
 aubio = [
-  { path = "wheels/aubio-0.4.9-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32'" },
-  { path = "wheels/aubio-0.4.9-cp310-cp310-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
-  { path = "wheels/aubio-0.4.9-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 torch = [
-  { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
-  { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'win32'" },
 ]
 torchaudio = [
-  { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
-  { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'win32'" },
 ]
 [tool.uv]
 # basic-pitch 0.4.0 caps resampy at <0.4.3, but 0.4.3 is exactly the release
 # that dropped the deprecated `pkg_resources` import (its only change of note),
 # and setuptools >= 81 no longer ships pkg_resources at all. Overriding the cap
 # is what lets setuptools float instead of being pinned to a 2025 release.
-override-dependencies = ["resampy>=0.4.3"]
+override-dependencies = [
+  "resampy>=0.4.3",
+  # basic-pitch 0.4.0 also requires tensorflow<2.15.1 on Python >= 3.11
+  # (non-mac), tensorflow-macos on mac and tflite-runtime on Linux < 3.11.
+  # No TensorFlow below 2.16 has cp312 wheels, and all of them cap
+  # protobuf < 5 — and the app never used that path: the midi engine drives
+  # basic-pitch's bundled ONNX model through onnxruntime(-gpu), a direct
+  # dependency on every platform, and basic-pitch itself falls through to
+  # ONNX when TF/CoreML/TFLite do not import. A never-true marker removes each
+  # from resolution (the idiom uv's maintainers endorse for dropping a
+  # transitive dependency; `exclude-dependencies` needs uv >= 0.11).
+  "tensorflow ; python_version < '0'",
+  "tensorflow-macos ; python_version < '0'",
+  "tensorflow-estimator ; python_version < '0'",
+  "keras ; python_version < '0'",
+  "tensorboard ; python_version < '0'",
+  "tensorboard-data-server ; python_version < '0'",
+  "tflite-runtime ; python_version < '0'",
+  # chromadb requires plain onnxruntime everywhere. It and onnxruntime-gpu
+  # unpack into the same onnxruntime/ directory and whichever installs last
+  # wins — the CPU build was overwriting the CUDA one. The GPU build provides
+  # the import chromadb needs, so the CPU package is confined to macOS.
+  "onnxruntime>=1.29 ; sys_platform == 'darwin'",
+]
 # Needed because the PyTorch CUDA index pins some packages (e.g. certifi) at
 # older versions than PyPI. Without this flag uv refuses to install them.
 index-strategy = "unsafe-best-match"

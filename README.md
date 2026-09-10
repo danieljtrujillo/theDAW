@@ -3,7 +3,7 @@
 <p align="center"><strong>by <a href="https://gantasmo.com">GANTASMO</a></strong></p>
 
 <p align="center">
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white" alt="Python 3.10"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-CUDA%2012.8-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch CUDA 12.8"></a>
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/React%2019%20%2F%20Vite%207-Tailwind%204-61DAFB?logo=react&logoColor=black" alt="React 19, Vite 7, Tailwind 4"></a>
   <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white" alt="FastAPI backend"></a>
