@@ -41,6 +41,8 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from backend.lib.atomic import atomic_replace
+
 router = APIRouter()
 
 # CHANGED: lock around the poll→register flow to prevent duplicate library imports
@@ -406,7 +408,7 @@ async def set_key(key: str = Body(..., embed=True)) -> dict[str, Any]:
         # so a later failure can't double-close or probe a closed descriptor.
         with os.fdopen(fd, "wb") as f:
             f.write(json.dumps({"key": k}).encode("utf-8"))
-        Path(tmp).replace(target)
+        atomic_replace(tmp, target)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

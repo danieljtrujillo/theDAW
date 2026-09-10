@@ -13,11 +13,11 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from backend.lib.atomic import atomic_write
 from backend.core.jobs import Job
 from backend.modules.library.router import get_store
 from backend.modules.lyrics import service as lyrics_service
@@ -96,10 +96,11 @@ def load_doc(entry_id: str) -> Optional[LyricAnalysisDoc]:
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    # Two saves of one analysis used to share a single ".json.tmp", so one
+    # call's write could land inside the other's and one call's cleanup could
+    # delete the other's file. documents.py already writes through a per-call
+    # scratch name; this is the same guarantee from the shared helper.
+    atomic_write(path, json.dumps(payload, indent=2))
 
 
 def save_doc(doc: LyricAnalysisDoc) -> LyricAnalysisDoc:

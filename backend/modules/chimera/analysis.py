@@ -29,6 +29,7 @@ from typing import Any, Mapping, Optional
 import numpy as np
 import soundfile as sf
 
+from backend.lib.atomic import atomic_replace
 from backend.modules.chimera import structure, tempo
 from backend.modules.chimera.detect import detect_tempo_and_beats
 from backend.modules.chimera.types import BarFeature, BeatGrid, ClipAnalysis, Phrase
@@ -247,7 +248,7 @@ def cache_put(sha: Optional[str], payload: Mapping[str, Any]) -> None:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, separators=(",", ":"))
-            os.replace(tmp_name, _cache_path(sha))
+            atomic_replace(tmp_name, _cache_path(sha))
         except BaseException:
             try:
                 os.unlink(tmp_name)

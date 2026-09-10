@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import tempfile
 import time
 from difflib import SequenceMatcher
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from backend.core.jobs import Job
+from backend.lib.atomic import atomic_write
 from backend.modules.library.router import get_store
 from backend.modules.vocal import transcription
 from backend.modules.vocal.preprocess import isolation
@@ -322,10 +322,11 @@ def normalize_doc(
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    # Two saves of the same doc used to share one ".json.tmp": one call's write
+    # landed in the middle of the other's, and one call's cleanup deleted the
+    # other's file. atomic_write gives each call its own scratch name and
+    # retries the rename through a destination Windows has briefly locked.
+    atomic_write(path, json.dumps(payload, indent=2))
 
 
 def save_doc(doc: LyricsDoc) -> LyricsDoc:

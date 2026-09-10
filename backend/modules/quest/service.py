@@ -23,6 +23,8 @@ from typing import Optional
 
 import httpx
 
+from backend.lib.atomic import atomic_replace
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -308,7 +310,7 @@ def download_latest_apk() -> dict:
         size = part.stat().st_size
         part.unlink(missing_ok=True)
         raise ValueError(f"download incomplete: got {size} of {expected} bytes")
-    part.replace(dest)
+    atomic_replace(part, dest)
     return {**info, "path": str(dest), "cached": False}
 
 

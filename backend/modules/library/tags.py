@@ -31,6 +31,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.lib.atomic import atomic_replace
+
 log = logging.getLogger(__name__)
 
 
@@ -568,7 +570,7 @@ def write_cover_image(data: bytes, out_path: Path) -> bool:
         flat.paste(rgba, mask=rgba.split()[-1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         flat.save(tmp, "JPEG", quality=COVER_JPEG_QUALITY)
-        tmp.replace(out_path)
+        atomic_replace(tmp, out_path)
         return out_path.is_file()
     except Exception as e:  # noqa: BLE001 — Pillow raises many decode errors
         log.info("library.cover: could not normalise cover art: %s", e)
