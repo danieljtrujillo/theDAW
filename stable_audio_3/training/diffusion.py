@@ -7,6 +7,10 @@ import gc
 import typing as tp
 import torchaudio
 
+
+# torchaudio.save decodes through torchcodec from 2.9 (FFmpeg shared libs needed);
+# the demo WAVs go through libsndfile instead.
+from backend.lib.audio_io import save_audio
 from einops import rearrange
 from safetensors.torch import save_file
 from functools import partial
@@ -933,7 +937,7 @@ class DiffusionCondInpaintDemoCallback(pl.Callback):
 
                     filename = f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
                     combined_audio = combined_audio.to(torch.float32).div(torch.max(torch.abs(combined_audio))).mul(32767).to(torch.int16).cpu()
-                    torchaudio.save(filename, combined_audio, self.sample_rate)
+                    save_audio(filename, combined_audio, self.sample_rate)
 
                     log_audio(trainer.logger, f'demo_cfg_{cfg_scale}', filename, self.sample_rate)
                     log_image(trainer.logger, f'demo_melspec_left_cfg_{cfg_scale}', audio_spectrogram_image(combined_audio, context_mask=combined_mask))
@@ -1121,7 +1125,7 @@ class DiffusionCondInpaintDemoCallback(pl.Callback):
                             combined_mask = torch.cat(mask_parts, dim=-1) if mask_parts else None
                             filename = f'demo_teacher_target_{trainer.global_step:08}.wav'
                             combined_audio = combined_audio.to(torch.float32).div(torch.max(torch.abs(combined_audio))).mul(32767).to(torch.int16).cpu()
-                            torchaudio.save(filename, combined_audio, self.sample_rate)
+                            save_audio(filename, combined_audio, self.sample_rate)
                             log_audio(trainer.logger, f'demo_teacher_target', filename, self.sample_rate)
                             log_image(trainer.logger, f'demo_teacher_target_melspec', audio_spectrogram_image(combined_audio, context_mask=combined_mask))
                             os.remove(filename)

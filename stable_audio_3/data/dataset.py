@@ -232,7 +232,11 @@ class SampleDataset(torch.utils.data.Dataset):
     def load_file(self, filename):
         ext = filename.split(".")[-1]
 
-        audio, in_sr = torchaudio.load(filename, format=ext)
+        # backend.lib.audio_io, not torchaudio.load: torchaudio >= 2.9 decodes
+        # through torchcodec, which needs FFmpeg's shared libraries at import.
+        from backend.lib.audio_io import load_audio
+
+        audio, in_sr = load_audio(filename, format=ext)
 
         if in_sr != self.sr:
             resample_tf = T.Resample(in_sr, self.sr)

@@ -690,9 +690,9 @@ def _save_magenta_to_library(
 
     spectrograms: dict[str, str] = {}
     try:
-        import torchaudio
+        from backend.lib.audio_io import load_audio
 
-        waveform, sr = torchaudio.load(io.BytesIO(wav_bytes))
+        waveform, sr = load_audio(wav_bytes)
         spectrograms = _generate_spectrograms(waveform, sr)
     except Exception as e:  # spectrograms are a nicety, not required for the entry
         log.debug("magenta: spectrogram generation skipped: %s", e)

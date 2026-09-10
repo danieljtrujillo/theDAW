@@ -257,8 +257,9 @@ def test_decode_audio_bytes_pcm16_is_already_flat():
     assert float(np.max(np.abs(waveform))) <= 1.0
 
 
-def test_decode_audio_bytes_torchaudio_fallback_preserves_float_overs(monkeypatch):
-    """Force the second branch: soundfile is tried first, torchaudio catches."""
+def test_decode_audio_bytes_ffmpeg_fallback_preserves_float_overs(monkeypatch):
+    """Force the second branch: libsndfile is tried first, the ffmpeg CLI
+    catches — decoding to pcm_f32le, which keeps a true peak above 0 dBFS."""
 
     def _boom(*_a, **_k):
         raise RuntimeError("soundfile is out of the picture for this test")
@@ -274,32 +275,25 @@ def test_decode_audio_bytes_torchaudio_fallback_preserves_float_overs(monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_audio_save_kwargs_defaults_to_pcm16():
-    from backend.server import _audio_save_kwargs
+def test_audio_save_subtype_defaults_to_pcm16():
+    from backend.server import _audio_save_subtype
 
-    expected = {"encoding": "PCM_S", "bits_per_sample": 16}
-    assert _audio_save_kwargs("wav", "16") == expected
+    assert _audio_save_subtype("wav", "16") == "PCM_16"
     # Anything unrecognised means 16 — the documented default never moves.
-    assert _audio_save_kwargs("wav", "") == expected
-    assert _audio_save_kwargs("wav", "float") == expected
+    assert _audio_save_subtype("wav", "") == "PCM_16"
+    assert _audio_save_subtype("wav", "float") == "PCM_16"
 
 
-def test_audio_save_kwargs_maps_the_wider_depths():
-    from backend.server import _audio_save_kwargs
+def test_audio_save_subtype_maps_the_wider_depths():
+    from backend.server import _audio_save_subtype
 
-    assert _audio_save_kwargs("wav", "32f") == {
-        "encoding": "PCM_F",
-        "bits_per_sample": 32,
-    }
-    assert _audio_save_kwargs("wav", "24") == {
-        "encoding": "PCM_S",
-        "bits_per_sample": 24,
-    }
+    assert _audio_save_subtype("wav", "32f") == "FLOAT"
+    assert _audio_save_subtype("wav", "24") == "PCM_24"
     # FLAC is lossless but never float, so a wide request lands at 24 there.
-    assert _audio_save_kwargs("flac", "32f") == {"bits_per_sample": 24}
-    assert _audio_save_kwargs("flac", "16") == {}
-    # OGG has no PCM word length at all.
-    assert _audio_save_kwargs("ogg", "32f") == {}
+    assert _audio_save_subtype("flac", "32f") == "PCM_24"
+    assert _audio_save_subtype("flac", "16") == "PCM_16"
+    # OGG is Vorbis: no PCM word length at all.
+    assert _audio_save_subtype("ogg", "32f") == "VORBIS"
 
 
 def test_clamp_for_output_only_spares_a_float_wav():
@@ -315,29 +309,48 @@ def test_clamp_for_output_only_spares_a_float_wav():
     assert float(_clamp_for_output(audio, "flac", "32f").abs().max()) == 1.0
 
 
-def test_float_export_survives_the_torchaudio_roundtrip():
+def test_float_export_survives_the_save_roundtrip():
+    """torchaudio.save used to write these; from torchaudio 2.9 it goes through
+    torchcodec, which ignores encoding/bits_per_sample and needs FFmpeg's shared
+    libraries that no ordinary Windows install has. save_audio writes through
+    libsndfile: the float request comes back FLOAT with its overs intact, the
+    default comes back PCM_16 clipped."""
     import torch
-    import torchaudio
 
-    from backend.server import _audio_save_kwargs
+    from backend.lib.audio_io import save_audio
+    from backend.server import _audio_save_subtype
 
     audio = torch.from_numpy(_ramp(channels=1).astype(np.float32)).unsqueeze(0)
 
     wide = io.BytesIO()
-    torchaudio.save(wide, audio, SR, format="wav", **_audio_save_kwargs("wav", "32f"))
+    save_audio(wide, audio, SR, format="wav", subtype=_audio_save_subtype("wav", "32f"))
     wide.seek(0)
     assert sf.info(wide).subtype == "FLOAT"
     wide.seek(0)
     assert float(np.max(np.abs(sf.read(wide)[0]))) == pytest.approx(PEAK, abs=1e-6)
 
     flat = io.BytesIO()
-    torchaudio.save(
-        flat, audio.clamp(-1, 1), SR, format="wav", **_audio_save_kwargs("wav", "16")
-    )
+    save_audio(flat, audio, SR, format="wav", subtype=_audio_save_subtype("wav", "16"))
     flat.seek(0)
     assert sf.info(flat).subtype == "PCM_16"
     flat.seek(0)
     assert float(np.max(np.abs(sf.read(flat)[0]))) <= 1.0
+
+
+def test_save_audio_writes_flac_and_ogg_from_a_tensor():
+    import torch
+
+    from backend.lib.audio_io import save_audio
+    from backend.server import _audio_save_subtype
+
+    audio = torch.from_numpy(_ramp(channels=2).astype(np.float32).T)
+    for fmt in ("flac", "ogg"):
+        buf = io.BytesIO()
+        save_audio(buf, audio, SR, format=fmt, subtype=_audio_save_subtype(fmt, "32f"))
+        buf.seek(0)
+        info = sf.info(buf)
+        assert info.channels == 2 and info.samplerate == SR
+    assert sf.info(io.BytesIO(buf.getvalue())).format == "OGG"
 
 
 # ---------------------------------------------------------------------------

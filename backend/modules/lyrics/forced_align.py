@@ -149,7 +149,9 @@ def _emissions(model, wav, sr: int, device: str):
 def _load_audio(path: Path, sample_rate: int):
     import torchaudio
 
-    wav, sr = torchaudio.load(str(path))
+    from backend.lib.audio_io import load_audio
+
+    wav, sr = load_audio(str(path))
     wav = wav.mean(0, keepdim=True)
     if sr != sample_rate:
         wav = torchaudio.functional.resample(wav, sr, sample_rate)

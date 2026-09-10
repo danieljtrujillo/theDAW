@@ -24,7 +24,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 from fastapi import Body, FastAPI, Form, File, HTTPException, Request, UploadFile
@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.admin_routes import router as admin_router
+from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
 
@@ -765,41 +766,11 @@ def _build_inpaint_mask(
 async def _decode_audio_bytes(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     """Decode raw audio bytes to numpy array. Returns (waveform, sample_rate).
 
-    Tries soundfile first (wav, flac, ogg), then falls back to torchaudio via temp file.
-    Waveform shape: (channels, samples) as float32.
+    libsndfile first (wav at every depth, flac, ogg, mp3, aiff, w64, caf), the
+    ffmpeg CLI for anything else — see backend.lib.audio_io. Waveform shape:
+    (channels, samples) as float32, never clamped.
     """
-    buf = io.BytesIO(audio_bytes)
-
-    # Try soundfile first (handles wav, flac, ogg)
-    try:
-        import soundfile as sf
-
-        waveform, sr = sf.read(buf)
-        # Convert to float32, shape (channels, samples) or (samples,)
-        waveform = waveform.astype(np.float32)
-        if waveform.ndim == 1:
-            waveform = waveform[None, :]  # (1, samples)
-        else:
-            waveform = waveform.T  # (channels, samples)
-        return waveform, sr
-    except Exception as e:
-        logger.debug(f"soundfile decode failed, trying torchaudio: {e}")
-        buf.seek(0)
-
-    # Fallback: torchaudio via temp file
-    import torchaudio
-
-    fd, fname = tempfile.mkstemp(suffix=".wav")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(audio_bytes)
-        t, sr = torchaudio.load(fname)
-        return t.numpy(), sr
-    finally:
-        try:
-            os.unlink(fname)
-        except Exception as e:
-            logger.warning(f"Failed to delete temp audio file {fname}: {e}")
+    return load_audio_array(audio_bytes)
 
 
 def _generate_mel(waveform: np.ndarray, sr: int) -> str:
@@ -1579,11 +1550,8 @@ async def get_cached_spectrogram_item(job_id: str, index: int):
 
 async def _load_audio_upload(upload: UploadFile):
     """Read an uploaded audio file and return (sample_rate, tensor) tuple."""
-    import torchaudio
-
     data = await upload.read()
-    buf = io.BytesIO(data)
-    waveform, sr = torchaudio.load(buf)
+    waveform, sr = load_audio(data)
     return (sr, waveform)
 
 
@@ -1644,7 +1612,6 @@ async def generate(
     _ = (inversion_steps, inversion_gamma, inversion_unconditional)
 
     import torch
-    import torchaudio
     from stable_audio_3.inference.distribution_shift import (
         DistributionShift,
         FluxDistributionShift,
@@ -1782,11 +1749,12 @@ async def generate(
             )
 
             buf = io.BytesIO()
-            save_kwargs = _audio_save_kwargs(fmt, wav_bit_depth)
-            # torchaudio.save accepts file-like objects at runtime; its stub
-            # only declares str | PathLike, hence the cast.
-            torchaudio.save(
-                cast(Any, buf), gen_audio, sample_rate, format=fmt, **save_kwargs
+            save_audio(
+                buf,
+                gen_audio,
+                sample_rate,
+                format=fmt,
+                subtype=_audio_save_subtype(fmt, wav_bit_depth),
             )
             buf.seek(0)
             return buf, fmt
@@ -1825,28 +1793,10 @@ def _prune_jobs() -> None:
             break
 
 
-def _audio_save_kwargs(fmt: str, wav_bit_depth: str) -> dict:
-    """torchaudio.save kwargs for a generated file at the requested depth.
-
-    PCM_16 stays the default: it halves the on-disk footprint at no perceptible
-    cost on generative audio, and every finished job also carries its audio
-    base64-encoded in the JOBS dict until it is pruned, so the depth is paid
-    for twice. ``32f`` is the escape hatch for output going straight back into
-    a float session — the Edit timeline, a VST chain, the Chimera stack — where
-    every requantization along the way compounds.
-
-    FLAC is lossless but it is not float, and torchaudio writes it at 16 bits
-    unless told otherwise, so a wider request lands there at 24. OGG is Vorbis
-    and has no PCM word length to set at all.
-    """
-    if fmt == "wav":
-        return {
-            "32f": dict(encoding="PCM_F", bits_per_sample=32),
-            "24": dict(encoding="PCM_S", bits_per_sample=24),
-        }.get(wav_bit_depth, dict(encoding="PCM_S", bits_per_sample=16))
-    if fmt == "flac" and wav_bit_depth in ("24", "32f"):
-        return {"bits_per_sample": 24}
-    return {}
+def _audio_save_subtype(fmt: str, wav_bit_depth: str) -> str | None:
+    """The libsndfile subtype for a generated file at the requested depth —
+    see backend.lib.audio_io.save_subtype for the reasoning behind each."""
+    return save_subtype(fmt, wav_bit_depth)
 
 
 def _clamp_for_output(audio, fmt: str, wav_bit_depth: str):
@@ -1870,7 +1820,6 @@ def _generate_to_bytes(
     wav_bit_depth: str = "16",
 ) -> tuple[bytes, str]:
     import torch
-    import torchaudio
 
     if callback:
         generate_args["callback"] = callback
@@ -1883,11 +1832,12 @@ def _generate_to_bytes(
         generation_pipeline.model_config.get("sample_rate", sample_rate)
     )
     buf = io.BytesIO()
-    save_kwargs = _audio_save_kwargs(fmt, wav_bit_depth)
-    # torchaudio.save accepts file-like objects at runtime; its stub only
-    # declares str | PathLike, hence the cast.
-    torchaudio.save(
-        cast(Any, buf), audio, output_sample_rate, format=fmt, **save_kwargs
+    save_audio(
+        buf,
+        audio,
+        output_sample_rate,
+        format=fmt,
+        subtype=_audio_save_subtype(fmt, wav_bit_depth),
     )
     return buf.getvalue(), fmt
 
@@ -1912,7 +1862,6 @@ async def _run_generate_job(
         # Inside the try: if this import fails the job must reach the except/
         # finally below (status=failed + idle-gate release), not die unobserved
         # leaving the job "queued" and the background queue jammed forever.
-        import torchaudio
 
         items = []
         async with _generation_job_lock:
@@ -1956,7 +1905,7 @@ async def _run_generate_job(
                     )
 
                     def _do_specs_and_save():
-                        waveform, sr = torchaudio.load(io.BytesIO(audio_bytes))
+                        waveform, sr = load_audio(audio_bytes)
                         spectrograms = _generate_spectrograms(waveform, sr)
                         artifact_info = _save_generation_artifacts_sync(
                             job_id=job_id,

@@ -176,8 +176,7 @@ def test_output_depth_never_leaks_into_the_filename():
 def test_generated_output_still_defaults_to_pcm16():
     """The documented default. Anything unrecognised means 16, so a caller
     that sends nothing gets exactly what it got before the field existed."""
-    from backend.server import _audio_save_kwargs
+    from backend.server import _audio_save_subtype
 
-    default = {"encoding": "PCM_S", "bits_per_sample": 16}
-    assert _audio_save_kwargs("wav", "16") == default
-    assert _audio_save_kwargs("wav", "") == default
+    assert _audio_save_subtype("wav", "16") == "PCM_16"
+    assert _audio_save_subtype("wav", "") == "PCM_16"
