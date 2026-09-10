@@ -2,11 +2,17 @@
 //
 // A `.gan` written by this app (ganExport.ts) embeds the full editable project
 // at source/foundry-project.json — reading it back gives a lossless round-trip
-// (every element, texture, custom module preserved). A `.gan` made elsewhere
-// (theDAW's backend owl_import, a hand-made one, a third party) has no embedded
-// source, so we RECONSTRUCT a best-effort editable starting point from the
-// manifest's canvas + controls. It won't recover the original layout (that data
-// isn't in the manifest) but it is never empty and is clearly flagged.
+// (every element, texture, custom module preserved). theDAW's backend importer
+// embeds the same file now, so plugins that went project.json -> .gan round-trip
+// too. A `.gan` without it (an older bundle, a hand-made one, a third party) is
+// RECONSTRUCTED: the manifest's controls give the what, and the runtime's own
+// index.html gives the where — every element is an absolutely positioned
+// <iframe class="gan-frame" data-src="el_<id>.html" style="left:%;top:%;..."> over
+// a stage whose background is `url(<artwork>)`. That is the layout the author
+// built, in percentages of the canvas, and it puts every control back at its
+// real position and size on its real artwork, with the decorative frames
+// (panels, labels) returning as editable CustomCode elements. Only a .gan with
+// no readable index.html falls to the last resort: controls on a grid.
 
 import JSZip from "jszip";
 import { UIElement, CanvasState } from "../types";
@@ -56,8 +62,126 @@ function normalizeProject(
   };
 }
 
-// Best-effort editable project from a source-less .gan: one native control per
-// manifest control, laid out on a grid (original coordinates are unrecoverable).
+// ---- What index.html knows that the manifest does not ------------------------
+
+export interface FrameRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const FRAME_TAG = /<iframe\b[^>]*\bclass="[^"]*\bgan-frame\b[^"]*"[^>]*>/g;
+const attr = (tag: string, name: string): string | null =>
+  new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1] ?? null;
+
+// One CSS length out of a style declaration, in canvas pixels. The runtime
+// writes percentages so the layout survives resizing; px is accepted too.
+function lengthPx(decl: string, prop: string, span: number): number | null {
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*(-?[\\d.]+)(%|px)`).exec(decl);
+  if (!m) return null;
+  const v = parseFloat(m[1]);
+  if (!Number.isFinite(v)) return null;
+  return m[2] === "%" ? (v / 100) * span : v;
+}
+
+/** Element id -> pixel rect for every gan-frame the runtime index.html places,
+ *  in stage order (which is z-order). Frames without a full box are skipped. */
+export function placementsFromIndexHtml(
+  html: string,
+  canvasW: number,
+  canvasH: number,
+): Map<string, FrameRect> {
+  const out = new Map<string, FrameRect>();
+  for (const tag of html.match(FRAME_TAG) ?? []) {
+    const id = /^el_(.+)\.html$/.exec(attr(tag, "data-src") ?? "")?.[1];
+    const style = attr(tag, "style") ?? "";
+    if (!id) continue;
+    const x = lengthPx(style, "left", canvasW);
+    const y = lengthPx(style, "top", canvasH);
+    const width = lengthPx(style, "width", canvasW);
+    const height = lengthPx(style, "height", canvasH);
+    if (x === null || y === null || width === null || height === null) continue;
+    out.set(id, {
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.max(1, Math.round(width)),
+      height: Math.max(1, Math.round(height)),
+    });
+  }
+  return out;
+}
+
+/** The stage artwork's file name, from the first `background: url(...)`. */
+export function backgroundNameFromIndexHtml(html: string): string | null {
+  const m = /background(?:-image)?\s*:\s*url\(\s*["']?([^"')]+?)["']?\s*\)/.exec(html);
+  return m ? m[1].trim() : null;
+}
+
+/** An element's own markup, without the runtime wrapper document around it. */
+export function innerMarkup(doc: string): string {
+  const m = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(doc);
+  return (m ? m[1] : doc).trim();
+}
+
+const MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+};
+
+// The full reconstruction: controls at their authored boxes, decor as
+// CustomCode, artwork on the canvas. Falls back to the grid when index.html is
+// missing, so the result is never empty.
+async function reconstructFromArchive(
+  zip: JSZip,
+  manifest: GanManifest,
+): Promise<GanProjectSource> {
+  const base = reconstructFromManifest(manifest);
+  const entry = String((manifest as { entry_html?: string })?.entry_html || "index.html");
+  const indexFile = zip.file(entry);
+  if (!indexFile) return base;
+  const html = await indexFile.async("string");
+  const { width: w, height: h } = base.canvasState;
+  const placed = placementsFromIndexHtml(html, w, h);
+  if (placed.size === 0) return base;
+
+  const controlIds = new Set(base.elements.map((e) => e.id));
+  const elements: UIElement[] = base.elements.map((el) => {
+    const r = placed.get(el.id);
+    return r ? { ...el, ...r } : el;
+  });
+  for (const [id, r] of placed) {
+    if (controlIds.has(id)) continue;
+    const file = zip.file(`el_${id}.html`);
+    const doc = file ? await file.async("string") : "";
+    elements.push({
+      id,
+      name: id,
+      type: "CustomCode",
+      ...r,
+      customCode: innerMarkup(doc),
+      customCodeFit: "stretch",
+    });
+  }
+  // Stage order is z-order; keep it for controls and decor alike.
+  const order = new Map([...placed.keys()].map((id, i) => [id, i] as const));
+  elements.sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity));
+
+  const bgName = backgroundNameFromIndexHtml(html) ?? "background.png";
+  const bgFile = zip.file(bgName);
+  const ext = bgName.split(".").pop()?.toLowerCase() ?? "png";
+  const backgroundImage = bgFile
+    ? `data:${MIME[ext] ?? "image/png"};base64,${await bgFile.async("base64")}`
+    : null;
+  return { ...base, elements, canvasState: { ...base.canvasState, backgroundImage } };
+}
+
+// Last resort for a .gan with no readable index.html: one native control per
+// manifest control, on a grid.
 function reconstructFromManifest(manifest: GanManifest): GanProjectSource {
   const w = Number(manifest?.canvas?.width) || 800;
   const h = Number(manifest?.canvas?.height) || 600;
@@ -142,7 +266,7 @@ export async function parseGan(
 
   return {
     manifest,
-    project: reconstructFromManifest(manifest),
+    project: await reconstructFromArchive(zip, manifest),
     sourceKind: "reconstructed",
     hadGanComment,
   };

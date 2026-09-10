@@ -40,8 +40,9 @@ _DEFAULT_H = 941.0
 # scripts) changes shape: it is folded into the source fingerprint so an
 # already-installed bundle gets recomposed once, even though its project.json
 # and artwork are unchanged.
-RUNTIME_TEMPLATE_VERSION = 5
-
+# 6: the package embeds source/foundry-project.json, so an installed
+# bundle built by the previous version is rebuilt once and gains it.
+RUNTIME_TEMPLATE_VERSION = 6
 # The composed runtime never waits longer than this for its element frames and
 # artwork before revealing whatever has arrived (a stuck asset must not leave
 # the stage blank forever).
@@ -179,6 +180,12 @@ def import_vst_foundry(
         raise ValueError("Invalid VST Foundry export: 'elements' is not a list")
 
     assets: dict[str, bytes] = {}
+    # The editable project rides along at source/foundry-project.json, the
+    # path VST Foundry writes for its own .gan exports and reads back for a
+    # lossless round-trip. Without it, Foundry could only rebuild a layout from
+    # manifest.controls, which carry no positions and no background — so a
+    # re-opened plugin showed its knobs gridded into a corner on a bare canvas.
+    assets["source/foundry-project.json"] = raw
 
     # Canvas dimensions: prefer the background image's real pixel size (keeps the
     # percentage layout aligned to the artwork), then explicit canvas fields,
