@@ -70,9 +70,10 @@ jobs:
         with:
           python-version: ${{ env.RUNNER_PYTHON_VERSION }}
       - name: Fetch the aubio sdist
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip download --no-deps --no-binary :all: "aubio==${AUBIO_VERSION}" -d sdist
+        # Straight from PyPI, sha256-checked. `pip download` would build the
+        # sdist metadata first, and under --no-binary that pulls Cython from
+        # source, which does not compile under the MSVC on windows-latest.
+        run: python -c "import json,os,hashlib,urllib.request as u; v=os.environ['AUBIO_VERSION']; d=json.load(u.urlopen('https://pypi.org/pypi/aubio/'+v+'/json')); f=next(x for x in d['urls'] if x['packagetype']=='sdist'); os.makedirs('sdist',exist_ok=True); p='sdist/aubio-'+v+'.tar.gz'; u.urlretrieve(f['url'],p); h=hashlib.sha256(open(p,'rb').read()).hexdigest(); assert h==f['digests']['sha256'],h; print('fetched',p,h[:12])"
       - name: Install cibuildwheel (via pip, not the Action)
         run: python -m pip install "cibuildwheel==${CIBW_VERSION}"
       - name: Build the macOS arm64 wheel
@@ -101,9 +102,10 @@ jobs:
         with:
           python-version: ${{ env.RUNNER_PYTHON_VERSION }}
       - name: Fetch the aubio sdist
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip download --no-deps --no-binary :all: "aubio==${AUBIO_VERSION}" -d sdist
+        # Straight from PyPI, sha256-checked. `pip download` would build the
+        # sdist metadata first, and under --no-binary that pulls Cython from
+        # source, which does not compile under the MSVC on windows-latest.
+        run: python -c "import json,os,hashlib,urllib.request as u; v=os.environ['AUBIO_VERSION']; d=json.load(u.urlopen('https://pypi.org/pypi/aubio/'+v+'/json')); f=next(x for x in d['urls'] if x['packagetype']=='sdist'); os.makedirs('sdist',exist_ok=True); p='sdist/aubio-'+v+'.tar.gz'; u.urlretrieve(f['url'],p); h=hashlib.sha256(open(p,'rb').read()).hexdigest(); assert h==f['digests']['sha256'],h; print('fetched',p,h[:12])"
       - name: Install cibuildwheel (via pip, not the Action)
         run: python -m pip install "cibuildwheel==${CIBW_VERSION}"
       - name: Build the manylinux x86_64 wheel
@@ -132,9 +134,10 @@ jobs:
         with:
           python-version: ${{ env.RUNNER_PYTHON_VERSION }}
       - name: Fetch the aubio sdist
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip download --no-deps --no-binary :all: "aubio==${{ env.AUBIO_VERSION }}" -d sdist
+        # Straight from PyPI, sha256-checked. `pip download` would build the
+        # sdist metadata first, and under --no-binary that pulls Cython from
+        # source, which does not compile under the MSVC on windows-latest.
+        run: python -c "import json,os,hashlib,urllib.request as u; v=os.environ['AUBIO_VERSION']; d=json.load(u.urlopen('https://pypi.org/pypi/aubio/'+v+'/json')); f=next(x for x in d['urls'] if x['packagetype']=='sdist'); os.makedirs('sdist',exist_ok=True); p='sdist/aubio-'+v+'.tar.gz'; u.urlretrieve(f['url'],p); h=hashlib.sha256(open(p,'rb').read()).hexdigest(); assert h==f['digests']['sha256'],h; print('fetched',p,h[:12])"
       - name: Install cibuildwheel (via pip, not the Action)
         run: python -m pip install "cibuildwheel==${{ env.CIBW_VERSION }}"
       - name: Build the win_amd64 wheel
