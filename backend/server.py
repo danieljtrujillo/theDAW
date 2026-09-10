@@ -1051,6 +1051,7 @@ async def get_modules():
 async def get_all_modules():
     modules_dir = Path(__file__).parent / "modules"
     loaded_names = {m.get("name") for m in getattr(app.state, "loaded_modules", [])}
+    load_errors: dict[str, str] = getattr(app.state, "module_load_errors", {}) or {}
     result = []
     if modules_dir.is_dir():
         for module_dir in sorted(modules_dir.iterdir()):
@@ -1058,9 +1059,17 @@ async def get_all_modules():
                 continue
             config_path = module_dir / "module.json"
             if config_path.exists():
-                config = json.loads(config_path.read_text())
+                # utf-8 explicitly: read_text() defaults to the locale
+                # codepage on Windows, and module descriptions carry em dashes.
+                config = json.loads(config_path.read_text(encoding="utf-8"))
                 config["_dir"] = module_dir.name
                 config["_loaded"] = config.get("name") in loaded_names
+                # Why it is not loaded, when the loader knows. Enabled but
+                # not loaded and no reason is the state that hid a broken
+                # module behind a wall of 404s.
+                error = load_errors.get(module_dir.name)
+                if error:
+                    config["_load_error"] = error
                 result.append(config)
     return result
 
