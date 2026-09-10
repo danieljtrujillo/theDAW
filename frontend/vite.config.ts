@@ -89,7 +89,7 @@ export default defineConfig(({mode}) => {
       strictPort: true,
       proxy: {
         '/api': {
-          target: 'http://localhost:8600',
+          target: 'http://127.0.0.1:8600',
           changeOrigin: true,
           ws: true, // proxy WebSocket upgrades too (e.g. /api/questmidi/ws)
           timeout: 0,
@@ -114,14 +114,14 @@ export default defineConfig(({mode}) => {
         // '/vj-app/'). Proxy it to the backend so the iframe loads it
         // same-origin in dev, exactly as it already is in packaged/Docker.
         '/vj-app': {
-          target: 'http://localhost:8600',
+          target: 'http://127.0.0.1:8600',
           changeOrigin: true,
         },
         // SwayCommand cockpit embed build. Same-origin in dev is REQUIRED, not
         // cosmetic: Chromium gives a cross-origin hidden iframe zero rAF
         // callbacks and SwayCommand's transport clock runs on rAF.
         '/sway-app': {
-          target: 'http://localhost:8600',
+          target: 'http://127.0.0.1:8600',
           changeOrigin: true,
         },
       },

@@ -81,7 +81,13 @@ let isQuitting = false
 // sync keeps downloading and holds the venv lock against the next launch).
 let uvSyncProcess: ChildProcess | null = null
 
-const BACKEND_BASE = 'http://localhost:8600'
+// 127.0.0.1, never 'localhost': the backend binds 0.0.0.0 (IPv4 only) and
+// Chromium's resolver prefers ::1 for 'localhost' on Windows. When it does,
+// every proxied /api/* call below fails to connect and the catch returns a
+// synthetic 502 — which the renderer reported as "couldn't reach
+// huggingface.co", sending users to debug their internet over a loopback
+// mismatch. An address cannot resolve to the wrong family.
+const BACKEND_BASE = 'http://127.0.0.1:8600'
 const HEALTH_URL = `${BACKEND_BASE}/api/health`
 const SHUTDOWN_URL = `${BACKEND_BASE}/api/admin/shutdown`
 
@@ -585,7 +591,17 @@ function registerAppProtocol(): void {
           body: request.body,
           duplex: 'half',
         } as RequestInit)
-        .catch(() => new Response('backend unavailable', { status: 502 }))
+        .catch((err) => {
+          // The reason travels with the status. A bare 502 here was read as
+          // "huggingface.co is down" for two days; the header says which hop
+          // actually failed, and the body says why.
+          const why = err instanceof Error ? err.message : String(err)
+          log(`API proxy failed: ${request.method} ${url.pathname} -> ${why}`)
+          return new Response(`theDAW backend unreachable at ${BACKEND_BASE}: ${why}`, {
+            status: 502,
+            headers: { 'x-thedaw-proxy-error': 'backend-unreachable' },
+          })
+        })
     }
 
     // Proxy the backend-served static VJ build too, so any relative /vj-app/

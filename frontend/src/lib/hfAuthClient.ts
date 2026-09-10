@@ -33,7 +33,7 @@ export class HfAuthError extends Error {
   constructor(
     message: string,
     /** 'rejected' = the Hub said no. 'unreachable' = we never got an answer. */
-    readonly kind: 'rejected' | 'unreachable' | 'disabled' | 'unknown',
+    readonly kind: 'rejected' | 'unreachable' | 'backend-down' | 'disabled' | 'unknown',
   ) {
     super(message);
     this.name = 'HfAuthError';
@@ -106,8 +106,26 @@ export async function hfLogin(token: string): Promise<string> {
   if (res.status === 404) {
     throw new HfAuthError('The Hugging Face Auth module is turned off in Settings → Modules.', 'disabled');
   }
-  if (res.status === 503 || res.status === 502) {
-    throw new HfAuthError("Couldn't reach huggingface.co to check the token.", 'unreachable');
+  // 502 and 503 are NOT the same failure and must not read the same.
+  //
+  // 503 is the backend's own verdict — it tried whoami and could not reach the
+  // Hub (hfauth/router.py). 502 is theDAW's Electron proxy saying it could not
+  // reach the BACKEND; huggingface.co was never contacted. Reporting both as
+  // "couldn't reach huggingface.co" sent a user to test their internet, prove
+  // it worked, and file a bug against the wrong half of the app.
+  if (res.status === 502) {
+    const detail = await readDetail(res);
+    throw new HfAuthError(
+      detail ?? "theDAW's own backend did not answer — huggingface.co was never contacted.",
+      'backend-down',
+    );
+  }
+  if (res.status === 503) {
+    const detail = await readDetail(res);
+    throw new HfAuthError(
+      detail ?? "Couldn't reach huggingface.co to check the token.",
+      'unreachable',
+    );
   }
   const detail = await readDetail(res);
   throw new HfAuthError(detail ?? `Sign-in failed (HTTP ${res.status}).`, 'unknown');
