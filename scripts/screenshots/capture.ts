@@ -1071,15 +1071,19 @@ const SCENES: Scene[] = [
   {
     name: '31-feature-tour',
     description: 'Onboarding Feature Tour step (the Chimera step)',
-    // Chrome — start the tour and jump to the Chimera step (index 2).
+    // Chrome — start the tour and jump to the Chimera step. Resolved by id,
+    // never by a raw index: the tour is chaptered and a step inserted anywhere
+    // ahead of Chimera would silently reshoot a different step under this
+    // scene's caption.
     run: async (page) => {
       await boot(page);
       await page.evaluate(async () => {
         const imp = (p: string) => import(p);
         try {
           const s = (await imp('/src/onboarding/onboardingStore.ts')).useOnboardingStore.getState();
+          const { stepIndexById } = await imp('/src/onboarding/tourSteps.tsx');
           s.start();
-          s.goTo(2);
+          s.goTo(stepIndexById('chimera'));
         } catch (e) { /* store path drift — the menu path below is the fallback */ }
       });
       // Fallback: if the store path drifted, start the tour from the menu.

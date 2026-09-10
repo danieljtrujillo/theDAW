@@ -27,6 +27,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   close_docs:        'T0_silent',
   open_left_panel:   'T0_silent',
   close_left_panel:  'T0_silent',
+  locate_feature:    'T0_silent',
   editor_get_state:  'T0_silent',
   editor_select_clip:'T0_silent',
   editor_set_playhead:'T0_silent',
@@ -98,6 +99,8 @@ export function describeToolCall(toolName: string, args: Record<string, unknown>
       // Real navigate payloads carry {tab}; {path} was a route-string design
       // that never shipped.
       return `Navigate to ${formatPath((args.tab as string) ?? (args.view as string) ?? (args.path as string))}`
+    case 'locate_feature':
+      return `Show where ${args.feature_id ?? args.feature ?? 'a feature'} is`
 
     // -- T1_inform ------------------------------------------------------------
     case 'set_prompt':

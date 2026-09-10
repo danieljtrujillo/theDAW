@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library } from 'lucide-react';
+import { Smartphone, X, Copy, ExternalLink, ChevronUp, ChevronDown, GripHorizontal, ChevronRight, ChevronLeft, Library } from 'lucide-react';
 import { LibraryView } from '../../views/LibraryView';
 import { DAWCenterPanel } from './DAWCenterPanel';
 
@@ -26,7 +26,9 @@ import { HamburgerMenu } from '../menu/HamburgerMenu';
 import { HomeScreen, useHomeScreenStore } from '../home/HomeScreen';
 import { OnboardingTour } from '../../onboarding/OnboardingTour';
 import { FeatureNotes } from '../../onboarding/FeatureNotes';
+import { HelpSearchPopover } from '../../onboarding/HelpSearchPopover';
 import { useOnboardingStore } from '../../onboarding/onboardingStore';
+import { TopBarButton } from './TopBarButton';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
@@ -60,6 +62,8 @@ export const Shell: React.FC = () => {
   const homeShowAtStartup = useHomeScreenStore((state) => state.showAtStartup);
   const setHomeShowAtStartup = useHomeScreenStore((state) => state.setShowAtStartup);
   const startTour = useOnboardingStore((state) => state.start);
+  /** The tour overlay is on screen — as a tour, or as a one-off spotlight. */
+  const onboardingShowing = useOnboardingStore((state) => state.active || state.soloFeatureId !== null);
 
   // "New Project" clears the current arrangement back to a single empty track
   // (editorStore.loadProject falls back to a clean track for empty input and
@@ -284,8 +288,14 @@ export const Shell: React.FC = () => {
       }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
-          Mobile / Docs / app-menu (right). G-Search moved to the footer. */}
-      <header className="h-11 border-b border-white/5 flex items-center gap-3 px-3 bg-[#0a080f]/80 backdrop-blur-md z-10 shrink-0 relative">
+          Mobile / Help / app-menu (right). G-Search moved to the footer.
+
+          z-40 is about what DROPS OUT of this row, not about the row: the app
+          menu and the help search hang below it, over the library rail (z-20)
+          and the bottom dock (z-30). At z-10 they were painted behind an open
+          rail — the header never overlaps either strip itself, so raising it
+          changes nothing else. It stays under the modal layer (z-50 and up). */}
+      <header className="h-11 border-b border-white/5 flex items-center gap-3 px-3 bg-[#0a080f]/80 backdrop-blur-md z-40 shrink-0 relative">
         <a
           href="https://github.com/gantasmo/theDAW"
           target="_blank"
@@ -309,19 +319,17 @@ export const Shell: React.FC = () => {
         />
 
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Order: Mobile, Docs, then the app menu (hamburger) on the far right. */}
+          {/* Order: Mobile, Help, then the app menu (hamburger) on the far right. */}
           <TopBarButton
             onClick={() => setShareOpen(true)}
             icon={<Smartphone className="w-3.5 h-3.5" />}
             title="Open mobile access QR/link"
             accent="emerald"
           />
-          <TopBarButton
-            onClick={() => setDocsOpen(true)}
-            icon={<BookOpen className="w-3.5 h-3.5" />}
-            title="Open documentation"
-            accent="purple"
-          />
+          {/* The Docs button used to sit here on its own. It now lives one step
+              in, beside the search field, because "open the manual" is the
+              answer to a question the search can usually answer better. */}
+          <HelpSearchPopover onOpenDocs={() => setDocsOpen(true)} />
           {/* App menu — project ops, backup/migrate, updates, Settings, Edit
               Layout, DAW import, and .tasmo save/open all live here. It is the
               sole entry point for Settings (the header gear was retired). */}
@@ -396,23 +404,39 @@ export const Shell: React.FC = () => {
           affect the other. */}
       <ShellBottomDock />
 
-      {/* Library pull handle — root-level so it floats ABOVE every panel (bottom
+      {/* Library edge tab — root-level so it floats ABOVE every panel (bottom
           dock, log, maximized panels) and is never clipped by the work area's
           overflow. Vertically centered on the right edge. Click toggles the
-          library; resize stays on the panel's inner edge. */}
+          library; resize stays on the panel's inner edge.
+
+          It says its own name. This was a 14px sliver whose only library-shaped
+          hint appeared on hover, so at rest it read as a scrollbar artefact —
+          and at the 0.6 floor of --layout-zoom it was eight PHYSICAL pixels
+          wide. The rail labels itself the moment it opens, which is exactly
+          when the label is no longer needed; the wordmark puts the name where
+          someone hunting for it is actually looking. Widening it means the
+          dock's right-hand cluster has to move too: BottomMultiTabPanel carries
+          the matching clearance.
+
+          The visible wordmark IS the accessible name — no aria-label, which
+          would override what the button plainly says. `title` carries the
+          direction and the shortcut instead. */}
       <button
         type="button"
-        data-feature-note="library"
         onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-        title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
-        aria-label={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library`}
-        className="absolute right-0 top-1/2 -translate-y-1/2 z-50 group flex flex-col items-center justify-center gap-1.5 h-24 w-3.5 rounded-l-lg border border-r-0 border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/35 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all"
+        title={`${isRightPanelOpen ? 'Collapse' : 'Expand'} library (Ctrl+K opens it)`}
+        aria-expanded={isRightPanelOpen}
+        className="absolute right-0 top-1/2 -translate-y-1/2 z-50 flex flex-col items-center justify-center gap-1.5 h-32 w-6 rounded-l-lg border border-r-0 border-purple-400/70 bg-purple-500/25 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.45)] hover:w-8 hover:text-white hover:border-purple-300/80 hover:bg-purple-500/40 hover:shadow-[0_0_22px_rgba(168,85,247,0.65)] transition-all outline-none focus-visible:ring-1 focus-visible:ring-purple-300"
       >
-        {/* Slim at rest so it never covers right-edge controls (the dock's
-            Maximize toggle sat under it); the library icon joins the chevron
-            once hovered. */}
-        <Library className="hidden group-hover:block w-4 h-4" />
-        {isRightPanelOpen ? <ChevronRight className="w-3 h-3 group-hover:w-4 group-hover:h-4" /> : <ChevronLeft className="w-3 h-3 group-hover:w-4 group-hover:h-4" />}
+        <Library className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        {/* leading-none, not inherited: in vertical writing the line box is the
+            span's WIDTH, and an inherited line-height clips it inside w-6. */}
+        <span className="text-[10px] font-mono font-black uppercase tracking-widest leading-none select-none [writing-mode:vertical-rl]">
+          Library
+        </span>
+        {isRightPanelOpen
+          ? <ChevronRight className="w-3 h-3 shrink-0" aria-hidden="true" />
+          : <ChevronLeft className="w-3 h-3 shrink-0" aria-hidden="true" />}
       </button>
       {docsOpen && (
         <Suspense fallback={null}>
@@ -604,9 +628,15 @@ export const Shell: React.FC = () => {
           shell only supplies the tab-switch hook so steps can jump workspaces. */}
       <OnboardingTour onSwitchTab={setCenterTab} />
       {/* Pinned labels on the affordances that carry no label of their own —
-          the library's edge tab, the LOG and PANELS strips. Each retires itself
-          the first time its feature is used. */}
-      <FeatureNotes />
+          the LOG and PANELS strips. Each retires itself the first time its
+          feature is used.
+
+          Hidden while the tour or a spotlight is up. Two reasons, both real: a
+          note sits at z-1000 and would float over the spotlight mask, including
+          during the steps that explain those very strips; and the tour opens
+          panels in order to point at them, which a note must not mistake for
+          the user having found one. */}
+      {!onboardingShowing && <FeatureNotes />}
     </div>
   );
 };
@@ -892,93 +922,3 @@ const BrandLogo: React.FC = () => (
     draggable={false}
   />
 );
-
-/**
- * Shared top-bar button used by the header strip. Unifies the
- * typography + hover/active treatment across Docs / Mobile / Library /
- * Settings. Accent is one of the canonical hues; `active` flips on
- * the filled treatment for toggle-style buttons (Library). Icon-only
- * buttons (no label) get tighter padding.
- */
-type TopBarAccent = 'purple' | 'emerald' | 'sky' | 'rose' | 'neutral';
-
-interface TopBarButtonProps {
-  onClick: () => void;
-  icon: React.ReactNode;
-  title: string;
-  label?: string;
-  /** Hide the label on viewports narrower than md (matches the
-   *  existing Mobile / Library button behaviour). */
-  hideLabelBelowMd?: boolean;
-  accent?: TopBarAccent;
-  active?: boolean;
-  /** Trailing element (e.g. ChevronRight on Library). */
-  trailing?: React.ReactNode;
-}
-
-const ACCENT_CLS: Record<TopBarAccent, { idle: string; idleText: string; active: string }> = {
-  purple: {
-    idle: 'border-purple-500/30 hover:bg-purple-500/15 shadow-[0_0_10px_rgba(168,85,247,0.3)]',
-    idleText: 'text-purple-300 group-hover:text-purple-200',
-    active: 'border-purple-500/50 bg-purple-500/15 text-purple-200 shadow-[0_0_12px_rgba(168,85,247,0.45)]',
-  },
-  emerald: {
-    idle: 'border-emerald-500/30 hover:bg-emerald-500/15 shadow-[0_0_10px_rgba(16,185,129,0.3)]',
-    idleText: 'text-emerald-300 group-hover:text-emerald-200',
-    active: 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200 shadow-[0_0_12px_rgba(16,185,129,0.45)]',
-  },
-  sky: {
-    idle: 'border-sky-500/30 hover:bg-sky-500/15 shadow-[0_0_10px_rgba(14,165,233,0.3)]',
-    idleText: 'text-sky-300 group-hover:text-sky-200',
-    active: 'border-sky-500/50 bg-sky-500/15 text-sky-200 shadow-[0_0_12px_rgba(14,165,233,0.45)]',
-  },
-  rose: {
-    idle: 'border-rose-500/30 hover:bg-rose-500/15 shadow-[0_0_10px_rgba(244,63,94,0.3)]',
-    idleText: 'text-rose-300 group-hover:text-rose-200',
-    active: 'border-rose-500/50 bg-rose-500/15 text-rose-200 shadow-[0_0_12px_rgba(244,63,94,0.45)]',
-  },
-  neutral: {
-    idle: 'border-white/5 hover:bg-white/5',
-    idleText: 'text-zinc-500 group-hover:text-zinc-200',
-    active: 'border-white/20 bg-white/10 text-zinc-100',
-  },
-};
-
-const TopBarButton: React.FC<TopBarButtonProps> = ({
-  onClick,
-  icon,
-  title,
-  label,
-  hideLabelBelowMd = false,
-  accent = 'neutral',
-  active = false,
-  trailing,
-}) => {
-  const cls = ACCENT_CLS[accent];
-  const stateCls = active ? cls.active : `${cls.idle} ${cls.idleText}`;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className={`p-1.5 rounded border transition-colors group flex items-center gap-1.5 ${stateCls}`}
-    >
-      {icon}
-      {label && (
-        <span
-          className={`text-[9px] font-black uppercase tracking-widest pr-1 ${
-            hideLabelBelowMd ? 'hidden md:inline' : ''
-          }`}
-        >
-          {label}
-        </span>
-      )}
-      {trailing}
-    </button>
-  );
-};
-
-
-
-

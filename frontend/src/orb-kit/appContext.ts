@@ -2,6 +2,7 @@ import { useAppUiStore } from '../state/appUiStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
 import { useEditorStore } from '../state/editorStore';
+import { FEATURES } from '../onboarding/featureRegistry';
 
 type EditorSummary = {
     trackCount: number;
@@ -24,6 +25,8 @@ type RuntimeContext = {
         docsOpen: boolean;
     };
     editor: EditorSummary;
+    /** Registry ids locate_feature can ring, so the model does not have to guess one. */
+    locatableFeatures: string[];
     chat: {
         selectedProvider: string;
         selectedModel: string;
@@ -45,12 +48,14 @@ export function formattheDAWAppContext(context: RuntimeContext): string {
         important_behavior: [
             'The user is already talking to you from inside theDAW (by GANTASMO) frontend. Do not tell them to click UI manually when an action exists.',
             'If the user asks to navigate, emit a navigate action immediately.',
+            'If the user asks where something is, emit locate_feature with an id from locatableFeatures below — it switches workspace, opens the panel the control lives in and rings the control itself. Do not describe a location you can point at.',
             'If the user asks for settings help, use currentGenerationParams below and explain what each relevant setting does.',
             'If the user asks to improve the prompt, propose a better prompt and emit set_prompt or improve_prompt if they ask you to apply it.',
             'If the user asks to change settings, emit concrete app actions; do not merely describe the settings.',
             'If a requested UI operation has no available action, explain the limitation and give the closest available action.',
         ],
         currentUI: context.ui,
+        locatableFeatures: context.locatableFeatures,
         editorState: context.editor,
         chatProvider: context.chat,
         generationState: context.generation,
@@ -112,6 +117,9 @@ export function buildtheDAWAppContext(options: {
             docsOpen: ui.docsOpen,
         },
         editor: editorSummary,
+        // Only the ids with a `locate`; the rest have no single control to ring
+        // and locate_feature declines them.
+        locatableFeatures: FEATURES.filter((f) => f.locate && !f.devOnly).map((f) => f.id),
         chat: {
             selectedProvider: options.selectedProvider,
             selectedModel: options.selectedModel,
@@ -166,6 +174,7 @@ export function buildtheDAWAppContext(options: {
             inversionGamma: params.inversionGamma,
             inversionUnconditional: params.inversionUnconditional,
             fileFormat: params.fileFormat,
+            wavBitDepth: params.wavBitDepth,
             fileNaming: params.fileNaming,
             cutToDuration: params.cutToDuration,
             autoplay: params.autoplay,

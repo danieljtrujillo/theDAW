@@ -20,6 +20,7 @@ const context = formattheDAWAppContext({
     clips: [{ id: 'c1', label: 'Clip', trackId: 't1', startSec: 0, durationSec: 4, muted: false }],
     clipsTruncated: false,
   },
+  locatableFeatures: ['make', 'panel-levels'],
   chat: {
     selectedProvider: 'gemini',
     selectedModel: 'gemini-flash-recent',
@@ -57,6 +58,7 @@ const context = formattheDAWAppContext({
     maskStart: 0,
     maskEnd: 0,
     fileFormat: 'wav',
+    wavBitDepth: '16',
     fileNaming: 'verbose',
     cutToDuration: true,
     loraSlotCount: 0,
@@ -71,6 +73,9 @@ assert.match(context, /"trackCount": 1/);
 assert.match(context, /"prompt": "dark cinematic drums"/);
 assert.match(context, /If the user asks to navigate/);
 assert.match(context, /If the user asks for settings help/);
+assert.match(context, /locate_feature/);
+assert.match(context, /"locatableFeatures"/);
+assert.match(context, /"wavBitDepth": "16"/);
 
 console.log('appContext runtime context regression passed');
 

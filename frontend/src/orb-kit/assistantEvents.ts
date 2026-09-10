@@ -10,6 +10,7 @@ const theDAW_ACTION_TYPES = new Set([
     'close_docs',
     'open_left_panel',
     'close_left_panel',
+    'locate_feature',
     'set_prompt',
     'append_prompt',
     'improve_prompt',

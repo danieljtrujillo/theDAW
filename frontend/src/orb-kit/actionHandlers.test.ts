@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { handletheDAWAction } from './actionHandlers.ts';
 import { useGenerateParamsStore } from '../state/generateParamsStore.ts';
 import { useGenerateStore, type GenerateParams } from '../state/generateStore.ts';
+import { useOnboardingStore } from '../onboarding/onboardingStore.ts';
 
 let captured: GenerateParams | null = null;
 useGenerateStore.setState({
@@ -53,6 +54,7 @@ useGenerateParamsStore.setState({
   maskStart: 1.5,
   maskEnd: 3.25,
   fileFormat: 'ogg',
+  wavBitDepth: '32f',
   fileNaming: 'seed',
   cutToDuration: false,
   autoplay: true,
@@ -78,9 +80,43 @@ assert.equal(captured?.inversionSteps, 77);
 assert.equal(captured?.inversionGamma, 0.35);
 assert.equal(captured?.inversionUnconditional, true);
 assert.equal(captured?.fileFormat, 'ogg');
+assert.equal(captured?.wavBitDepth, '32f');
 assert.equal(captured?.fileNaming, 'seed');
 assert.equal(captured?.cutToDuration, false);
 assert.deepEqual(captured?.loras, []);
+
+// The model writes a depth freehand; only the three tokens the backend knows
+// may reach the store, and a 32 of any spelling means float.
+const depthAfter = (value: unknown): string => {
+  handletheDAWAction({ type: 'set_params', payload: { wav_bit_depth: value } });
+  return useGenerateParamsStore.getState().wavBitDepth;
+};
+assert.equal(depthAfter('32f'), '32f');
+assert.equal(depthAfter('24'), '24');
+assert.equal(depthAfter('32-bit float'), '32f');
+assert.equal(depthAfter(32), '32f');
+assert.equal(depthAfter('lossless'), '16');
+
+// locate_feature rings a real control, and declines the ids that have none
+// rather than dimming the app around a ring that would never appear.
+assert.equal(
+  handletheDAWAction({ type: 'locate_feature', payload: { feature_id: 'make' } }),
+  'Spotlighting MAKE (MAKE tab)',
+);
+assert.equal(useOnboardingStore.getState().soloFeatureId, 'make');
+
+useOnboardingStore.getState().endSpotlight();
+assert.match(
+  handletheDAWAction({ type: 'locate_feature', payload: { feature_id: 'nope' } }),
+  /^No feature "nope"\. Known ids: make, /,
+);
+assert.equal(useOnboardingStore.getState().soloFeatureId, null);
+
+assert.match(
+  handletheDAWAction({ type: 'locate_feature', payload: { feature_id: 'feature-tour' } }),
+  /no one control to point at/,
+);
+assert.equal(useOnboardingStore.getState().soloFeatureId, null);
 
 console.log('actionHandlers generation dispatch regression passed');
 

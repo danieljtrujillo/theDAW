@@ -1,6 +1,8 @@
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { buildGenerateParamsFromState, useGenerateStore } from '../state/generateStore';
-import type { GenerateParamsState } from '../state/generateParamsStore';
+import type { GenerateParamsState, WavBitDepth } from '../state/generateParamsStore';
+import { FEATURES, featureById } from '../onboarding/featureRegistry';
+import { useOnboardingStore } from '../onboarding/onboardingStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useEditorStore } from '../state/editorStore';
 import { useSetlistStore } from '../state/setlistStore';
@@ -36,6 +38,18 @@ function booleanValue(payload: Record<string, unknown> | undefined, keys: string
         if (typeof value === 'number') return value !== 0;
     }
     return fallback;
+}
+
+/** Narrow a depth the model wrote freehand onto the three the backend knows.
+ *  It is as likely to say 32, "32f" or "32-bit float" as the literal token, and
+ *  the backend silently treats anything off-vocabulary as 16 — which would look
+ *  like the request was honoured. There is no 32-bit integer option, so any 32
+ *  means float. */
+function bitDepthValue(payload: Record<string, unknown> | undefined, keys: string[]): WavBitDepth {
+    const raw = stringValue(payload, keys, '16').trim().toLowerCase();
+    if (raw.startsWith('32')) return '32f';
+    if (raw.startsWith('24')) return '24';
+    return '16';
 }
 
 function buildParamUpdates(payload: Record<string, unknown> | undefined): Partial<GenerateParamsState> {
@@ -76,12 +90,20 @@ function buildParamUpdates(payload: Record<string, unknown> | undefined): Partia
     if ('inversionGamma' in payload || 'inversion_gamma' in payload) updates.inversionGamma = numberValue(payload, ['inversionGamma', 'inversion_gamma'], 0.0);
     if ('inversionUnconditional' in payload || 'inversion_unconditional' in payload) updates.inversionUnconditional = booleanValue(payload, ['inversionUnconditional', 'inversion_unconditional'], false);
     if ('fileFormat' in payload || 'file_format' in payload) updates.fileFormat = stringValue(payload, ['fileFormat', 'file_format'], 'wav');
+    if ('wavBitDepth' in payload || 'wav_bit_depth' in payload || 'bit_depth' in payload) updates.wavBitDepth = bitDepthValue(payload, ['wavBitDepth', 'wav_bit_depth', 'bit_depth']);
     if ('fileNaming' in payload || 'file_naming' in payload) updates.fileNaming = stringValue(payload, ['fileNaming', 'file_naming'], 'verbose');
     if ('cutToDuration' in payload || 'cut_to_duration' in payload) updates.cutToDuration = booleanValue(payload, ['cutToDuration', 'cut_to_duration'], true);
     if ('autoplay' in payload) updates.autoplay = booleanValue(payload, ['autoplay'], true);
     if ('autoDownload' in payload || 'auto_download' in payload) updates.autoDownload = booleanValue(payload, ['autoDownload', 'auto_download'], false);
 
     return updates;
+}
+
+/** The ids a spotlight can actually land on, so a miss tells the model what to
+ *  ask for instead of just saying no. Entries without a `locate` are left out:
+ *  they have no single on-screen home to ring. */
+function locatableFeatureIds(): string {
+    return FEATURES.filter((f) => f.locate && !f.devOnly).map((f) => f.id).join(', ');
 }
 
 /** Resolve a track by id (exact) or name (case-insensitive) from the payload. */
@@ -160,6 +182,20 @@ export function handletheDAWAction(action: AssistantActionPayload): string {
         case 'close_left_panel':
             window.dispatchEvent(new CustomEvent('thedaw:set-left-panel', { detail: { open: false } }));
             return 'Closed left panel';
+
+        case 'locate_feature': {
+            // "Where is X?" answered by showing rather than describing: the
+            // spotlight switches workspace, opens whatever the control lives
+            // in, and rings the control itself.
+            const id = stringValue(payload, ['feature_id', 'featureId', 'feature', 'id']).trim();
+            const entry = featureById(id);
+            if (!entry) return `No feature "${id}". Known ids: ${locatableFeatureIds()}`;
+            // Spotlighting one of these would dim the app around a ring that
+            // never appears, with no way for the user to dismiss it.
+            if (!entry.locate) return `${entry.name} has no one control to point at — it is ${entry.where}. ${entry.what}.`;
+            useOnboardingStore.getState().spotlightOne(entry.id);
+            return `Spotlighting ${entry.name} (${entry.where})`;
+        }
 
         // --- Generation Parameters ---
         case 'set_prompt':

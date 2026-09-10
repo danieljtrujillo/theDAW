@@ -514,7 +514,7 @@ export const SCREENSHOT_SPECS: ScreenshotSpec[] = [
     featureRefs: ['shell-center-tabs-right-library', 'create-advanced-generation-templates-prompts-spectrograms', 'docs-modal-download-print-rag', 'assistant-orb-providers-keys-attachments'],
     docsSections: ['§5 UI Shell', '§6 MAKE Tab', '§22 Screenshot Manifest'],
     cropRegions: [
-      { id: 'header-actions', x: 0, y: 0, width: 1920, height: 150, purpose: 'Header controls, Docs, Settings, share link, assistant orb', featureRefs: ['docs-modal-download-print-rag', 'settings-feature-toggles-modules-admin', 'assistant-orb-providers-keys-attachments', 'vj-sidecar-tab-mobile-share'] },
+      { id: 'header-actions', x: 0, y: 0, width: 1920, height: 150, purpose: 'Header controls, help search, Settings, share link, assistant orb', featureRefs: ['docs-modal-download-print-rag', 'settings-feature-toggles-modules-admin', 'assistant-orb-providers-keys-attachments', 'vj-sidecar-tab-mobile-share'] },
       { id: 'make-controls', x: 0, y: 80, width: 560, height: 1000, purpose: 'MAKE generation controls with the prompt and spectrogram source loaded', featureRefs: ['create-advanced-generation-templates-prompts-spectrograms', 'create-chimera-fusion-stack', 'create-mic-recorder-send-targets'] },
     ],
   },

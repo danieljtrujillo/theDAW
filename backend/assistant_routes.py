@@ -124,6 +124,7 @@ Available actions:
 - `navigate` — Switch workspaces. Payload: `{"tab": "make"|"edit"|"mix"|"perform"|"dj"|"vj"|"sway"|"foundry"|"underfit"|"nodefi"|"loom"|"learn"|"tour"|"library"}`. "library" opens the library rail. LOOM is the shard sequencer (a Jacquard for the user's own songs). Legacy names create/advanced (MAKE), train (UNDERFIT) and audimate (NODEFI) still work.
 - `open_docs` / `close_docs` — Open or close the docs modal. Payload: `{}`
 - `open_left_panel` / `close_left_panel` — Open or collapse the left panel. Payload: `{}`
+- `locate_feature` — Show the user where something IS, rather than describing it. Switches workspace, opens the panel the control lives in, and rings the control itself on their screen. Payload: `{"feature": "<id>"}` — ids are the center tabs (`make`, `edit`, `mix`, `perform`, `dj`, `vj`, `sway`, `foundry`, `underfit`, `nodefi`, `loom`, `learn`, `tour`), the dock panels as `panel-<tab>` (e.g. `panel-sing`, `panel-score`, `panel-draw`), and `library`, `log`, `panels`, `app-menu`, `prompt`, `chimera`, `docs`, `feature-tour`. Prefer this over prose whenever the user asks where a thing is.
 - `set_prompt` — Set generation prompt. Payload: `{"prompt": "..."}`
 - `append_prompt` — Add text to the current prompt. Payload: `{"text": "..."}`
 - `improve_prompt` — Replace the prompt with an improved version. Payload: `{"prompt": "...", "negative_prompt": "optional"}`
