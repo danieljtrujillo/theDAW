@@ -1186,9 +1186,18 @@ def _maybe_enqueue_analysis(
     metadata_path = (entry_dir / "metadata.json") if entry_dir else None
 
     async def _run() -> None:
+        import asyncio
+
         from backend.modules.analysis.engine import analyze_and_persist
 
-        analyze_and_persist(
+        # Off the loop, like every other job here. The queue's consumer awaits
+        # job.fn directly, so a coroutine that does its CPU work inline stalls
+        # the whole event loop — not just analysis, every request behind it.
+        # analyze_and_persist runs librosa.pyin, whose numba Viterbi pass holds
+        # the GIL for its entire run: 6-18 s per track, and every row re-runs
+        # when ANALYSIS_VERSION changes.
+        await asyncio.to_thread(
+            analyze_and_persist,
             store.db,  # type: ignore[arg-type]  # checked above
             entry_id,
             audio_path,
