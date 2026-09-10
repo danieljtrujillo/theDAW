@@ -3,18 +3,23 @@
  *   npx tsx src/onboarding/featureNotes.test.ts
  *
  * placeNote is pure geometry, so the interesting cases -- a target hard against
- * a viewport edge, which is exactly where the library tab and the LOG strip
- * live -- are testable without a DOM.
+ * a viewport edge, which is where every note-worthy affordance in this shell
+ * lives -- are testable without a DOM. It lives in spotlightGeometry.ts, not in
+ * the renderer, so this runner never has to resolve a .css import.
+ *
+ * The leader that reaches from a placed card to its target is pinned next door,
+ * in spotlightGeometry.test.ts.
  */
 import assert from 'node:assert/strict';
-import { placeNote } from './FeatureNotes.tsx';
+import { placeNote } from './spotlightGeometry';
 
 const VP = { width: 1280, height: 800 };
 const CARD = { width: 208, height: 64 };
 
-// The library tab: pinned to the right edge, vertically centred.
-const libraryTab = { top: 352, left: 1266, width: 14, height: 96 };
-const left = placeNote(libraryTab, 'left', CARD, VP);
+// A slim tab hard against the right edge, vertically centred: the shape a
+// 'left' note has to cope with, and the one that has nowhere to grow into.
+const edgeTab = { top: 352, left: 1266, width: 14, height: 96 };
+const left = placeNote(edgeTab, 'left', CARD, VP);
 assert.equal(left.left, 1266 - 208 - 14, 'sits to the left of the tab');
 assert.equal(left.top, 352 + 48 - 32, 'centred on the tab');
 assert.ok(left.left + CARD.width <= VP.width - 8, 'stays on screen');

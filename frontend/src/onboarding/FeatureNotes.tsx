@@ -1,105 +1,90 @@
 /**
  * Renders the feature notes: a small card pinned beside a hard-to-find control,
- * with a pointer aimed at it and a close button.
+ * with a leader line aimed at it and a close button.
  *
- * Positioning is measured, not guessed. The targets are things like the
- * library's slim edge tab, which moves with the viewport, the dock height and
- * the right rail's width, so every note re-measures on resize, on scroll, and
- * whenever the DOM around it changes. A note whose target is not on screen
+ * Positioning is measured, not guessed. The targets are things like the bottom
+ * strip's LOG and PANELS labels, which move with the viewport, the dock height
+ * and the right rail's width, so every note re-measures on resize, on scroll,
+ * and whenever the DOM around it changes. A note whose target is not on screen
  * simply does not render.
+ *
+ * Target coordinates come from getBoundingClientRect() and the layer is
+ * portaled to <body> and fixed-positioned, so it shares the target's viewport
+ * coordinate space — the shell's CSS zoom (Shell.tsx's `.dense-layout`) does not
+ * apply to it. This is not a tidiness point. Rendered inside that zoom, a
+ * fixed card's `top`/`left` were multiplied by a factor that is essentially
+ * never 1 (lib/layoutScale.ts clamps it to 0.6–1.1), so every note landed a
+ * long way from the thing it named. The card's CONTENT is zoomed back to the
+ * shell's scale, so it still reads at the same size as the strip it sits on.
  *
  * The card never covers its own target and never eats a click meant for it:
  * the layer is `pointer-events-none` and only the card and its close button
  * take pointer events back.
  */
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import { useLayoutZoom } from '../lib/layoutScale';
 import { FEATURE_NOTES } from './featureNoteList';
-import { useFeatureNoteStore, type FeatureNoteDef, type NotePlacement } from './featureNoteStore';
+import { useFeatureNoteStore, type FeatureNoteDef } from './featureNoteStore';
+import { SpotlightPointer } from './SpotlightPointer';
+import { CARD_W, placeNote, type Box } from './spotlightGeometry';
 
-/** Gap between the target's edge and the card, leaving room for the pointer. */
-const OFFSET = 14;
-/** Keep the card this far inside the viewport when a target sits near an edge. */
-const MARGIN = 8;
-const CARD_W = 208;
+/** Fallback card height before the first measurement. */
+const CARD_H = 64;
 
-interface Box { top: number; left: number; width: number; height: number }
+interface NoteGeometry {
+  card: Box;
+  target: Box;
+}
 
 const readBox = (el: Element): Box => {
   const r = el.getBoundingClientRect();
   return { top: r.top, left: r.left, width: r.width, height: r.height };
 };
 
-/** Card position for a target box, clamped into the viewport. */
-export function placeNote(
-  target: Box,
-  placement: NotePlacement,
-  card: { width: number; height: number },
-  viewport: { width: number; height: number },
-): { top: number; left: number } {
-  let top: number;
-  let left: number;
-  switch (placement) {
-    case 'left':
-      left = target.left - card.width - OFFSET;
-      top = target.top + target.height / 2 - card.height / 2;
-      break;
-    case 'right':
-      left = target.left + target.width + OFFSET;
-      top = target.top + target.height / 2 - card.height / 2;
-      break;
-    case 'top':
-      left = target.left + target.width / 2 - card.width / 2;
-      top = target.top - card.height - OFFSET;
-      break;
-    default:
-      left = target.left + target.width / 2 - card.width / 2;
-      top = target.top + target.height + OFFSET;
-      break;
-  }
-  return {
-    left: Math.min(Math.max(MARGIN, left), Math.max(MARGIN, viewport.width - card.width - MARGIN)),
-    top: Math.min(Math.max(MARGIN, top), Math.max(MARGIN, viewport.height - card.height - MARGIN)),
-  };
-}
+const sameBox = (a: Box, b: Box): boolean =>
+  Math.abs(a.top - b.top) < 0.5 &&
+  Math.abs(a.left - b.left) < 0.5 &&
+  Math.abs(a.width - b.width) < 0.5 &&
+  Math.abs(a.height - b.height) < 0.5;
 
-// The little triangle, on the card edge nearest the target. A 8px square
-// rotated 45 degrees, pulled out by exactly half its width so it reads as a
-// point growing out of the edge rather than a diamond stuck to it.
-const POINTER: Record<NotePlacement, string> = {
-  left: '-right-1 top-1/2 -translate-y-1/2',
-  right: '-left-1 top-1/2 -translate-y-1/2',
-  top: '-bottom-1 left-1/2 -translate-x-1/2',
-  bottom: '-top-1 left-1/2 -translate-x-1/2',
-};
+const sameGeometry = (a: NoteGeometry | null, b: NoteGeometry): boolean =>
+  !!a && sameBox(a.card, b.card) && sameBox(a.target, b.target);
 
-const Note: React.FC<{ def: FeatureNoteDef; onDismiss: (id: string) => void }> = ({ def, onDismiss }) => {
+const Note: React.FC<{ def: FeatureNoteDef; zoom: number; onDismiss: (id: string) => void }> = ({
+  def,
+  zoom,
+  onDismiss,
+}) => {
   const cardRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [geo, setGeo] = useState<NoteGeometry | null>(null);
   const titleId = useId();
   const bodyId = useId();
 
+  // Both boxes are kept, not just the card's position: the leader is drawn from
+  // the FINAL, clamped card rect to the target rect, and there is no way to aim
+  // it from either one alone.
   const measure = useCallback(() => {
     const el = document.querySelector(def.target);
     const card = cardRef.current;
     if (!el || !card) {
-      setPos(null);
+      setGeo(null);
       return;
     }
-    const box = readBox(el);
+    const target = readBox(el);
     // A target with no box is hidden (display:none, a closed panel): say nothing.
-    if (box.width <= 0 || box.height <= 0) {
-      setPos(null);
+    if (target.width <= 0 || target.height <= 0) {
+      setGeo(null);
       return;
     }
-    setPos(
-      placeNote(
-        box,
-        def.placement,
-        { width: card.offsetWidth || CARD_W, height: card.offsetHeight || 64 },
-        { width: window.innerWidth, height: window.innerHeight },
-      ),
-    );
+    const measured = card.getBoundingClientRect();
+    const size = { width: measured.width || CARD_W, height: measured.height || CARD_H };
+    const next: NoteGeometry = {
+      card: { ...placeNote(target, def.placement, size, { width: window.innerWidth, height: window.innerHeight }), ...size },
+      target,
+    };
+    setGeo((prev) => (sameGeometry(prev, next) ? prev : next));
   }, [def.target, def.placement]);
 
   useEffect(() => {
@@ -142,35 +127,46 @@ const Note: React.FC<{ def: FeatureNoteDef; onDismiss: (id: string) => void }> =
   }, [def.target, titleId, bodyId]);
 
   return (
-    <div
-      ref={cardRef}
-      role="note"
-      // Measured off-screen on the first paint, then pinned.
-      style={pos ? { top: pos.top, left: pos.left } : { top: -9999, left: -9999 }}
-      className={`fixed z-1000 w-52 pointer-events-auto rounded-lg border border-amber-300/50 bg-amber-100 text-zinc-900 shadow-[0_6px_24px_rgba(0,0,0,0.55)] ${pos ? '' : 'invisible'}`}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') onDismiss(def.id);
-      }}
-    >
-      <div className={`absolute w-2 h-2 rotate-45 border border-amber-300/50 bg-amber-100 ${POINTER[def.placement]}`} aria-hidden="true" />
-      <div className="relative flex items-start gap-1.5 px-2.5 py-2">
-        <div className="min-w-0 flex-1">
-          <p id={titleId} className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-900">
-            {def.label}
-          </p>
-          <p id={bodyId} className="mt-0.5 text-[11px] leading-snug text-zinc-800">{def.body}</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => onDismiss(def.id)}
-          title={`Hide the ${def.label} note`}
-          aria-label={`Hide the ${def.label} feature note`}
-          className="shrink-0 -mr-0.5 -mt-0.5 rounded p-0.5 text-amber-900/70 hover:bg-amber-900/10 hover:text-amber-900 focus-visible:outline-2 focus-visible:outline-amber-900"
+    <>
+      {/* Before the card, so the card paints over the seam where the stem meets its border. */}
+      {geo && <SpotlightPointer card={geo.card} target={geo.target} />}
+      <div
+        ref={cardRef}
+        role="note"
+        // Measured off-screen on the first paint, then pinned.
+        style={geo ? { top: geo.card.top, left: geo.card.left } : { top: -9999, left: -9999 }}
+        className={`fixed pointer-events-auto ${geo ? '' : 'invisible'}`}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onDismiss(def.id);
+        }}
+      >
+        {/* The shell's scale, applied to the content only: the wrapper above
+            stays in unzoomed viewport px so the placement maths holds, while
+            the card still reads at the size of the strip it is pinned to. */}
+        <div
+          style={{ zoom }}
+          className="w-52 rounded-lg border border-purple-500/40 bg-[#0c0a14]/97 backdrop-blur-xl text-zinc-200 shadow-[0_0_24px_rgba(168,85,247,0.28),0_8px_28px_rgba(0,0,0,0.6)]"
         >
-          <X className="w-3.5 h-3.5" />
-        </button>
+          <div className="flex items-start gap-1.5 px-2.5 py-2">
+            <div className="min-w-0 flex-1">
+              <p id={titleId} className="text-[10px] font-black uppercase tracking-[0.18em] text-purple-200">
+                {def.label}
+              </p>
+              <p id={bodyId} className="mt-0.5 text-[11px] leading-snug text-zinc-400">{def.body}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onDismiss(def.id)}
+              title={`Hide the ${def.label} note`}
+              aria-label={`Hide the ${def.label} feature note`}
+              className="shrink-0 p-1 rounded border border-transparent text-zinc-500 hover:text-white hover:bg-white/5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-purple-400/60"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 
@@ -178,6 +174,7 @@ export const FeatureNotes: React.FC = () => {
   const enabled = useFeatureNoteStore((s) => s.enabled);
   const dismissed = useFeatureNoteStore((s) => s.dismissed);
   const dismiss = useFeatureNoteStore((s) => s.dismiss);
+  const zoom = useLayoutZoom();
 
   const visible = useMemo(
     () => (enabled ? FEATURE_NOTES.filter((d) => !dismissed.includes(d.id)) : []),
@@ -197,20 +194,32 @@ export const FeatureNotes: React.FC = () => {
     return () => window.clearInterval(id);
   }, [watching]);
 
+  // A note retires on the TRANSITION into `learned`, not on finding it already
+  // true. Finding a panel open is not the same as watching someone open it, and
+  // the two come apart in a case that used to burn a note before its feature
+  // was ever found: the tour opens panels in order to point at them, this layer
+  // is unmounted while it does, and the panel is handed back a beat after the
+  // layer comes back. Seeing "open" on the first look proves nothing.
+  const wasLearned = useRef<Record<string, boolean>>({});
   useEffect(() => {
     for (const def of visible) {
-      if (def.learned?.()) dismiss(def.id);
+      if (!def.learned) continue;
+      const now = def.learned();
+      const before = wasLearned.current[def.id];
+      wasLearned.current[def.id] = now;
+      if (now && before === false) dismiss(def.id);
     }
   });
 
   if (!visible.length) return null;
 
-  return (
+  return createPortal(
     <div className="pointer-events-none fixed inset-0 z-1000" aria-live="off">
       {visible.map((def) => (
-        <Note key={def.id} def={def} onDismiss={dismiss} />
+        <Note key={def.id} def={def} zoom={zoom} onDismiss={dismiss} />
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 };
 

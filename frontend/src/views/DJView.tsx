@@ -1067,7 +1067,7 @@ export const DJView: React.FC = () => {
           work area every cell shrinks below its content and clips. Below the
           design minimum the surface scrolls instead: the wrapper is
           overflow-auto and the surface keeps a minimum logical size. */}
-      <div className="flex-1 min-h-0 min-w-0 overflow-auto">
+      <div data-tour="dj-console" className="flex-1 min-h-0 min-w-0 overflow-auto">
         <div className="h-full w-full min-h-210 min-w-300">
           <ControlSurface
             surfaceId="dj"

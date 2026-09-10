@@ -962,6 +962,7 @@ export function NodefiView(): React.ReactElement {
         {/* Floating command dock — replaces the old toolbar row. */}
         <div
           onMouseDown={(e) => e.stopPropagation()}
+          data-tour="nodefi-dock"
           className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 pl-1.5 pr-2 py-1 rounded-full border border-white/10 bg-black/60 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(45,212,191,0.08)]"
         >
           {hasLiveNodes ? (

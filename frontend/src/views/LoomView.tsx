@@ -72,7 +72,7 @@ export function LoomView(): React.ReactElement {
 
   return (
     <div className="absolute inset-0 flex flex-col bg-[#07050a] et-ink loom-surface">
-      <header className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-1.5 border-b border-white/15 bg-black/30 shrink-0">
+      <header data-tour="loom-clock" className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-1.5 border-b border-white/15 bg-black/30 shrink-0">
         <button
           type="button"
           onClick={toggle}

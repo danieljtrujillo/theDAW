@@ -690,7 +690,7 @@ export const VJView: React.FC = () => {
   return (
     <div className="absolute inset-0 flex flex-col bg-black">
       {/* Toolbar */}
-      <div className="shrink-0 h-9 flex items-center justify-between px-3 border-b border-fuchsia-500/20 bg-[#0a080f]">
+      <div data-tour="vj-toolbar" className="shrink-0 h-9 flex items-center justify-between px-3 border-b border-fuchsia-500/20 bg-[#0a080f]">
         <div className="flex items-center gap-2">
           <Tv2 className="w-3.5 h-3.5 text-fuchsia-300" />
           <span className="text-[10px] font-black uppercase tracking-widest text-fuchsia-200">

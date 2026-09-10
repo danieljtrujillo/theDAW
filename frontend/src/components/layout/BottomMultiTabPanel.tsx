@@ -1,10 +1,11 @@
 /**
- * Bottom multi-tab panel body — Visualize / Piano / Sequence / Details
- * / Media / SLIDE. Mounted above the dock strip when isOpen=true. The strip
- * itself (Shell.tsx ShellBottomDock) handles the open/close toggle,
- * so this component only renders the body shape: a tabs row + the
- * active tab's content. Height is the column's own `multiHeight`
- * from bottomPanelStore — independent of the LOG's `logHeight`.
+ * Bottom multi-tab panel body — Levels / Visualize / MIDI / Sequence / DRAW /
+ * Score / Sing / Lyric / Details / SLIDE / SWAY, plus XR Bus in dev builds.
+ * Mounted above the dock strip when isOpen=true. The strip itself (Shell.tsx
+ * ShellBottomDock) handles the open/close toggle, so this component only
+ * renders the body shape: a tabs row + the active tab's content. Height is the
+ * column's own `multiHeight` from bottomPanelStore — independent of the LOG's
+ * `logHeight`.
  */
 import React, { useState, lazy, Suspense } from 'react';
 import {
@@ -37,24 +38,32 @@ import { DetachableWindow } from './DetachableWindow';
 import { XrBusPanel } from '../dev/XrBusTester';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 import { useSlideStore } from '../../state/slideStore';
+import { featureById } from '../../onboarding/featureRegistry';
 
-const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; desc: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
-  { id: 'levels',     label: 'Levels',     desc: 'Master loudness, peak, dynamics and stereo metering (LUFS / true-peak)',  icon: Gauge,      colorActive: 'border-teal-500 text-teal-300' },
-  { id: 'spectral',   label: 'Visualize',  desc: 'Live spectrum + waveform visualizer of the playing audio',                 icon: Activity,   colorActive: 'border-purple-500 text-purple-300' },
-  { id: 'midi',       label: 'MIDI',       desc: 'Piano roll: sing in, record or analyze notes, edit them, export MIDI',     icon: Piano,      colorActive: 'border-cyan-500 text-cyan-300' },
-  { id: 'step-seq',   label: 'Sequence',   desc: 'Program drum and note patterns step by step on a grid',                    icon: Layers,     colorActive: 'border-cyan-500 text-cyan-300' },
-  { id: 'draw',       label: 'DRAW',       desc: 'Draw to play generative music; record it to the library or EDIT',          icon: Brush,      colorActive: 'border-purple-500 text-purple-300' },
-  { id: 'score',      label: 'Score',      desc: 'Sheet music + tabs for the selection; convert and arrange notation',       icon: FileMusic,  colorActive: 'border-emerald-500 text-emerald-300' },
-  { id: 'sing',       label: 'Sing',       desc: 'Karaoke: lyrics follow the track word by word; paste, extract, align, tap-time and export LRC', icon: MicVocal, colorActive: 'border-rose-500 text-rose-300' },
-  { id: 'lyric',      label: 'Lyric',      desc: 'Write, edit and analyse lyrics with no song attached; save a draft into a song when it is ready', icon: NotebookPen, colorActive: 'border-rose-500 text-rose-300' },
-  { id: 'details',    label: 'Details',    desc: 'The selected library item (metadata, prompt, analysis) and the media bucket for staging clips and files', icon: Info, colorActive: 'border-emerald-500 text-emerald-300' },
-  { id: 'slide',      label: 'SLIDE',      desc: 'Control surface: map sliders and pads to parameters',                      icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
-  { id: 'sway',       label: 'SWAY',       desc: 'Pose control: drive music and effects from body movement',                 icon: Waves,      colorActive: 'border-fuchsia-500 text-fuchsia-300' },
+/**
+ * The tab row. What each tab IS lives in the feature registry under
+ * `panel-<id>`, not here: the hover tooltip reads that entry's `what`, so the
+ * sentence the help search returns and the sentence on the tab cannot drift
+ * apart. This table keeps only what is the row's own business — order, label,
+ * icon and accent colour.
+ */
+const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }>; colorActive: string }> = [
+  { id: 'levels',   label: 'Levels',    icon: Gauge,           colorActive: 'border-teal-500 text-teal-300' },
+  { id: 'spectral', label: 'Visualize', icon: Activity,        colorActive: 'border-purple-500 text-purple-300' },
+  { id: 'midi',     label: 'MIDI',      icon: Piano,           colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'step-seq', label: 'Sequence',  icon: Layers,          colorActive: 'border-cyan-500 text-cyan-300' },
+  { id: 'draw',     label: 'DRAW',      icon: Brush,           colorActive: 'border-purple-500 text-purple-300' },
+  { id: 'score',    label: 'Score',     icon: FileMusic,       colorActive: 'border-emerald-500 text-emerald-300' },
+  { id: 'sing',     label: 'Sing',      icon: MicVocal,        colorActive: 'border-rose-500 text-rose-300' },
+  { id: 'lyric',    label: 'Lyric',     icon: NotebookPen,     colorActive: 'border-rose-500 text-rose-300' },
+  { id: 'details',  label: 'Details',   icon: Info,            colorActive: 'border-emerald-500 text-emerald-300' },
+  { id: 'slide',    label: 'SLIDE',     icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
+  { id: 'sway',     label: 'SWAY',      icon: Waves,           colorActive: 'border-fuchsia-500 text-fuchsia-300' },
   // Dev-only: the simulated XR/phone controller that drives the control bus.
   // Registered here (not floating over the footer) so it reads as the
   // diagnostics tab it is; stripped from production builds with the DEV flag.
   ...(import.meta.env.DEV
-    ? [{ id: 'xrbus' as BottomPanelTab, label: 'XR Bus', desc: 'Dev: simulated XR/phone controller driving the control bus', icon: Radio, colorActive: 'border-cyan-500 text-cyan-300' }]
+    ? [{ id: 'xrbus' as BottomPanelTab, label: 'XR Bus', icon: Radio, colorActive: 'border-cyan-500 text-cyan-300' }]
     : []),
 ];
 
@@ -109,7 +118,7 @@ export const BottomMultiTabPanel: React.FC = () => {
                 data-tour={`bottom-tab-${t.id}`}
                 onClick={() => setActiveTab(t.id)}
                 className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[9px] uppercase tracking-widest font-black transition-colors whitespace-nowrap ${active ? t.colorActive : 'border-transparent et-ink-2 hover:et-ink'}`}
-                title={t.desc}
+                title={featureById(`panel-${t.id}`)?.what}
               >
                 <Icon className="w-3 h-3" /> {t.label}
               </button>
@@ -118,9 +127,10 @@ export const BottomMultiTabPanel: React.FC = () => {
         </div>
         {/* Right cluster — SLIDE-only controls (when active) + the always-on
             maximize toggle so any tab can fill the window. */}
-        {/* pr-5 keeps the Maximize toggle clear of the shell's library pull
-            handle (14px wide, right edge, vertically centred). */}
-        <div className="flex items-center gap-1 pr-5 shrink-0">
+        {/* pr-8 keeps the Maximize toggle clear of the shell's library edge tab
+            (24px wide at rest, 32px hovered, right edge, vertically centred).
+            The two are one measurement: widening that tab means widening this. */}
+        <div className="flex items-center gap-1 pr-8 shrink-0">
           {activeTab === 'details' && <DetailsPaneToggle />}
           {activeTab === 'sing' && <SingPaneToggle />}
           {activeTab === 'slide' && (

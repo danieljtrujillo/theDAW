@@ -197,7 +197,7 @@ export const UnderfitView: React.FC = () => {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#050507] border border-white/5 rounded-lg overflow-hidden">
-      <div className="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-white/5 bg-[#0a080f]">
+      <div data-tour="underfit-header" className="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-white/5 bg-[#0a080f]">
         <div className="flex items-center gap-2 min-w-0">
           <FlaskConical className="w-4 h-4 text-sky-300" />
           <div className="min-w-0">

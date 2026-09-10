@@ -10,8 +10,10 @@ export function normalizetheDAWView(value: unknown): theDAWView | null {
     : null;
 }
 
-/** The center-bar tabs in user-locked order MAKE / EDIT / PERFORM / MIX / DJ /
- *  VJ / FOUNDRY / UNDERFIT / LEARN / TOUR. All workspaces live here; the legacy
+/** Every center-bar tab: MAKE / EDIT / PERFORM / MIX / DJ / VJ / SWAY /
+ *  FOUNDRY / UNDERFIT / NODEFI / LOOM / LEARN / TOUR. This is the canonical id
+ *  list — what a tab id is allowed to be — and not the on-screen order, which
+ *  CenterTabBar's own TABS table sets. All workspaces live here; the legacy
  *  left-side tabs (CREATE/PROCESS) are subsumed by these. LoRA training is the
  *  UNDERFIT tab (the standalone TRAIN workspace was retired in its favor). */
 export const CENTER_TABS = ['make', 'edit', 'session', 'mix', 'dj', 'vj', 'sway', 'foundry', 'underfit', 'nodefi', 'loom', 'learn', 'tour'] as const;
@@ -27,9 +29,11 @@ const CENTER_TAB_ALIASES: Record<string, CenterTab> = {
   audimate: 'nodefi',
 };
 
-/** Translate legacy navigation targets (used by orb-kit, library row
- *  clicks, assistant 'navigate' actions, etc.) into the new center-bar
- *  tabs so existing call sites keep working. */
+/** Translate a legacy 5-view name into the center-bar tab it became. Only
+ *  setActiveView consults this — orb-kit, library row clicks and the
+ *  assistant's navigate action all reach the bar through navigateTo or
+ *  setCenterTab now — so a caller still holding a view name lands on the
+ *  right workspace instead of nowhere. */
 const LEGACY_VIEW_TO_CENTER_TAB: Record<string, CenterTab> = {
   create: 'make',
   advanced: 'make',
@@ -68,8 +72,10 @@ const NAVIGATE_ALIASES: Record<string, CenterTab> = {
   jacquard: 'loom',
 };
 
-/** The legacy 5-view enum still hangs off a few readers; keep it loosely in
- *  step with the real tab so none of them ever sees a stale value again. */
+/** The legacy 5-view enum. Nothing renders off it any more — PlayerFooter and
+ *  ProcessingLog both moved to centerTab after it went stale on them — but it
+ *  is still written on every navigation, so a reader that comes back to it
+ *  never finds the value frozen at whatever the last navigate() left. */
 function legacyViewForTab(tab: CenterTab): theDAWView {
   if (tab === 'edit') return 'edit';
   if (tab === 'underfit') return 'train';
@@ -128,9 +134,10 @@ export const useAppUiStore = create<AppUiState>()(
       activeView: 'create',
       centerTab: 'make',
       uiMode: 'senpai',
-      // Left panel defaults closed now that the center bar hosts all
-      // tab content. It still exists (toggleable from the new
-      // CenterTabBar) for future use as a context palette.
+      // There is no left panel any more — the center bar hosts all tab content
+      // (CenterTabBar states the invariant). The flag survives because the
+      // assistant's app context still reports it; nothing toggles it and
+      // nothing renders behind it.
       isLeftPanelOpen: false,
       isRightPanelOpen: false,
       isLibraryExpanded: false,
@@ -139,16 +146,16 @@ export const useAppUiStore = create<AppUiState>()(
       setActiveView: (view) => {
         const normalized = normalizetheDAWView(view);
         if (!normalized) return;
-        // The library used to be a left-tab; it now lives in a permanent
-        // right-side dock. Any caller that asks to navigate to 'library'
-        // gets the right panel opened instead of changing the left view.
+        // The library used to be a left-tab; it now lives in the right-edge
+        // rail, which stays collapsed until its labelled edge tab (or Ctrl+K)
+        // opens it. Any caller that asks to navigate to 'library' gets that
+        // rail opened rather than a view change.
         if (normalized === 'library') {
           set({ isRightPanelOpen: true });
           return;
         }
-        // Mirror legacy view → center tab so existing 'navigate' callers
-        // (orb-kit assistant, library row clicks, WaveformEditor's
-        // "back to Create" buttons, etc.) route to the new center bar.
+        // Mirror legacy view → center tab, so a caller that still hands over a
+        // view name moves the workspace too and not just the dead enum.
         const mapped = LEGACY_VIEW_TO_CENTER_TAB[normalized];
         if (mapped) {
           set({ activeView: normalized, centerTab: mapped });
@@ -207,9 +214,9 @@ export const useAppUiStore = create<AppUiState>()(
         };
       },
       // Panel open/expand state is intentionally NOT persisted: every app open
-      // starts with the shell chrome collapsed (left panel, right library rail).
-      // Only the active center tab, the interface mode, and the rail width are
-      // remembered.
+      // starts with the shell chrome collapsed — the right library rail shut,
+      // the docs modal closed. Only the active center tab, the interface mode
+      // and the rail width are remembered.
       partialize: (s) => ({
         centerTab: s.centerTab,
         uiMode: s.uiMode,

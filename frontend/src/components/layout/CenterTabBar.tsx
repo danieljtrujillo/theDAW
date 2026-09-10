@@ -15,12 +15,19 @@ import {
   Grid3x3,
 } from 'lucide-react';
 import { type CenterTab } from '../../state/appUiStore';
+import { featureById } from '../../onboarding/featureRegistry';
 
-/** The five workspace tabs introduced in the top-bar restructure
- *  (plan step 3a). Centered, horizontally filling the bar with
- *  padding. The library-panel toggle now lives in the header icon
- *  cluster (Shell), so this bar is tabs-only. No left panel — removed
- *  per layout invariant. */
+/** The workspace tabs, centered and horizontally filling the bar.
+ *
+ *  The library is deliberately not one of them, and never becomes one: it is a
+ *  rail that sits BESIDE the canvas, not a workspace that replaces it, and its
+ *  single toggle is the labelled edge tab on the right (Shell). No left panel —
+ *  removed per layout invariant.
+ *
+ *  What a tab IS lives in the feature registry, not here: the hover tooltip
+ *  reads `featureById(<tab id>).what`, so the sentence the help search returns
+ *  and the sentence the tooltip shows cannot drift apart. This table keeps only
+ *  what is the bar's own business — order, label and accent colour. */
 
 interface CenterTabBarProps {
   activeTab: CenterTab;
@@ -33,7 +40,6 @@ interface CenterTabBarProps {
 const TABS: Array<{
   id: CenterTab;
   label: string;
-  desc: string;
   icon: React.ComponentType<{ className?: string }>;
   /** Per-tab accent color — used for active border + soft bg tint
    *  so each workspace gets a recognizable color at a glance. The -500
@@ -41,11 +47,12 @@ const TABS: Array<{
    *  text is flipped to the hue's -800 on light themes by index.css. */
   accent: { border: string; bg: string; text: string; iconText: string; hoverBorder: string };
 }> = [
-  // Order locked by user: MAKE, EDIT, MIX, PERFORM, DJ, VJ, FOUNDRY, UNDERFIT, LEARN.
+  // Order locked by user: MAKE, EDIT, MIX, PERFORM, DJ, VJ, SWAY, FOUNDRY,
+  // UNDERFIT, NODEFI, LOOM, LEARN, TOUR. This is the on-screen order; the
+  // canonical id list (CENTER_TABS) is ordered differently and is not a bar.
   {
     id: 'make',
     label: 'Make',
-    desc: 'Generate audio from a text prompt with the AI models',
     icon: Sparkles,
     accent: {
       border: 'border-purple-500',
@@ -58,7 +65,6 @@ const TABS: Array<{
   {
     id: 'edit',
     label: 'Edit',
-    desc: 'Arrange clips on a timeline, add effects and automation, export',
     icon: Scissors,
     accent: {
       border: 'border-emerald-500',
@@ -71,7 +77,6 @@ const TABS: Array<{
   {
     id: 'mix',
     label: 'Mix',
-    desc: 'Process and master audio with the effect and module rack',
     icon: Zap,
     accent: {
       border: 'border-orange-500',
@@ -84,7 +89,6 @@ const TABS: Array<{
   {
     id: 'session',
     label: 'Perform',
-    desc: 'Import a project and perform its scene/clip grid live',
     icon: Rows3,
     accent: {
       border: 'border-sky-500',
@@ -97,7 +101,6 @@ const TABS: Array<{
   {
     id: 'dj',
     label: 'DJ',
-    desc: 'Two-deck DJ console: mix, cue, scratch, stems and automix',
     icon: Disc,
     accent: {
       border: 'border-pink-500',
@@ -110,7 +113,6 @@ const TABS: Array<{
   {
     id: 'vj',
     label: 'VJ',
-    desc: 'Live visuals engine: sources, effects and output for performance',
     icon: Tv2,
     accent: {
       border: 'border-fuchsia-500',
@@ -123,7 +125,6 @@ const TABS: Array<{
   {
     id: 'sway',
     label: 'Sway',
-    desc: 'SwayCommand: gesture VJ cockpit for the Audima Sway, plus theDAW’s Sway routing',
     icon: Waves,
     accent: {
       border: 'border-fuchsia-500',
@@ -136,7 +137,6 @@ const TABS: Array<{
   {
     id: 'foundry',
     label: 'Foundry',
-    desc: 'Design and export custom VST / plugin interfaces on an infinite canvas',
     icon: Hammer,
     accent: {
       border: 'border-amber-500',
@@ -149,7 +149,6 @@ const TABS: Array<{
   {
     id: 'underfit',
     label: 'Underfit',
-    desc: 'Train LoRA finetunes with the Underfit dashboard',
     icon: FlaskConical,
     accent: {
       border: 'border-sky-500',
@@ -162,7 +161,6 @@ const TABS: Array<{
   {
     id: 'nodefi',
     label: 'NodeFI',
-    desc: 'NodeF.I. — wire node graphs: AI pipelines offline, stems + rack FX live',
     icon: Waypoints,
     accent: {
       border: 'border-teal-500',
@@ -175,7 +173,6 @@ const TABS: Array<{
   {
     id: 'loom',
     label: 'Loom',
-    desc: 'LOOM — a Jacquard for your own catalogue: sequence shards of your songs on one beat clock',
     icon: Grid3x3,
     accent: {
       border: 'border-amber-500',
@@ -188,7 +185,6 @@ const TABS: Array<{
   {
     id: 'learn',
     label: 'Learn',
-    desc: 'Guides, docs and the in-app assistant',
     icon: Workflow,
     accent: {
       border: 'border-rose-500',
@@ -201,7 +197,6 @@ const TABS: Array<{
   {
     id: 'tour',
     label: 'Tour',
-    desc: 'Find venues and promoters by region, plan multi-stop tour routes',
     icon: Route,
     accent: {
       border: 'border-lime-500',
@@ -252,7 +247,7 @@ export const CenterTabBar: React.FC<CenterTabBarProps> = ({
                   // border; hover lifts the fill and shows the tab's hue.
                   : `et-border et-ink hover:et-bg-tint ${t.accent.hoverBorder}`,
               ].join(' ')}
-              title={t.desc}
+              title={featureById(t.id)?.what}
               aria-pressed={active}
             >
               <span>{t.label}</span>

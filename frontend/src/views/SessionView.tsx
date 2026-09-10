@@ -152,7 +152,7 @@ export const SessionView: React.FC = () => {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#0b0b10]">
-      <div className="shrink-0 border-b border-white/10 bg-[#111118] px-3 py-2 flex items-center gap-3">
+      <div data-tour="perform-header" className="shrink-0 border-b border-white/10 bg-[#111118] px-3 py-2 flex items-center gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <Layers className="w-4 h-4 text-emerald-300 shrink-0" />
           <div className="min-w-0">

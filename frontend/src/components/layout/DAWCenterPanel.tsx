@@ -107,6 +107,7 @@ export const DAWCenterPanel: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               actually changed. */}
           {warmedTabs.has('learn') && (
             <div
+              data-tour="view-learn"
               className="absolute inset-0"
               style={{ display: centerTab === 'learn' ? undefined : 'none' }}
             >

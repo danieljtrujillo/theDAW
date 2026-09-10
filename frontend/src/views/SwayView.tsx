@@ -321,7 +321,7 @@ export const SwayView: React.FC = () => {
           already does properly. Its plumbing is unchanged and still feeds
           PERFORM — only the redundant UI is gone. */}
       <div className="relative min-w-0 grow">
-        <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-white/10 bg-black/70 px-2 py-1 backdrop-blur">
+        <div data-tour="sway-bar" className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-white/10 bg-black/70 px-2 py-1 backdrop-blur">
           <Waves className="h-3 w-3 shrink-0 text-fuchsia-300" />
           <span className="text-[9px] font-black uppercase tracking-[0.2em] text-fuchsia-200">SwayCommand</span>
 

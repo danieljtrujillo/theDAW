@@ -9,6 +9,10 @@
  * teaches nothing about the affordance you meet three sessions later. A note
  * stays pinned to the thing until you have actually used it.
  *
+ * The Library itself has since been fixed the better way: that tab now carries
+ * the LIBRARY wordmark, so by rule 1 below it no longer has a note. The rule
+ * outlived the case that produced it, which is the point.
+ *
  * Two rules keep them from becoming clutter:
  *   1. A note is only for something with NO visible label of its own. If the
  *      control says what it is, it does not get a note.
@@ -27,6 +31,17 @@ export interface FeatureNoteDef {
   label: string;
   /** One short line: what it is and how to open it. Not documentation. */
   body: string;
+  /**
+   * The featureRegistry entry this note names, so the note, the tour and the
+   * help search all agree about what the thing IS.
+   *
+   * Its `target` below stays the note's own, and is allowed to differ from the
+   * registry's `locate` selector: a note points at the AFFORDANCE — the strip
+   * you click — while the registry points at the THING that opens. Flattening
+   * the two would put a note's card on top of the panel it is trying to tell
+   * you about.
+   */
+  feature: string;
   /** The element the note points at. */
   target: string;
   /** Which side of the target the note sits on. */
@@ -38,7 +53,7 @@ export interface FeatureNoteDef {
   learned?: () => boolean;
 }
 
-/** Marks an element as a feature-note target: `data-feature-note="library"`. */
+/** Marks an element as a feature-note target: `data-feature-note="log"`. */
 export const noteTarget = (id: string): Record<string, string> => ({ 'data-feature-note': id });
 
 export const NOTE_TARGET_SELECTOR = (id: string): string => `[data-feature-note="${id}"]`;
