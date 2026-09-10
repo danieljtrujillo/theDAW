@@ -16,6 +16,7 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+import { createRenderGate } from '../../lib/renderGate';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -172,10 +173,16 @@ const FerroOrbCore: React.FC = () => {
     const quaternion = new THREE.Quaternion();
     const camVec = new THREE.Vector3();
 
+    // The orb is usually on screen, so this mostly costs nothing — but it is
+    // draggable and the assistant panel can cover it, and a minimised window
+    // should not be rendering a ferrofluid.
+    const gate = createRenderGate(container);
+
     const animate = () => {
       rafId = requestAnimationFrame(animate);
-      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!gate.visible()) return;
       if (renderer.getContext().isContextLost()) return;
+      if (gate.resumed()) prevTime = performance.now();
 
       source.update();
       const data = source.data;
@@ -226,6 +233,7 @@ const FerroOrbCore: React.FC = () => {
     return () => {
       disposed = true;
       cancelAnimationFrame(rafId);
+      gate.dispose();
       window.clearTimeout(audioRetry);
       source.dispose?.();
       ro.disconnect();

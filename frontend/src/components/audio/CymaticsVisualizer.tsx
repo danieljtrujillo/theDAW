@@ -21,6 +21,7 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+import { createRenderGate } from '../../lib/renderGate';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -350,14 +351,21 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     // spikes rise/fall slowly and don't jitter.
     let envB = 0, envM = 0, envH = 0;
     let rafId = 0;
+    // MAKE keeps this panel mounted and hides it with display:none when another
+    // workspace is open, and there are TWO of these scenes in it. Without the
+    // gate both kept drawing at 60fps behind EDIT, MIX, PERFORM, DJ and VJ, on
+    // the same GPU that loads and runs the model.
+    const gate = createRenderGate(container);
 
     const animate = () => {
       rafId = requestAnimationFrame(animate);
 
-      // Skip work when the tab/window is hidden (two GL contexts run at once)
-      // or if the context has been lost.
-      if (typeof document !== 'undefined' && document.hidden) return;
+      // Nothing to draw for: off screen, window hidden, or the context is gone.
+      if (!gate.visible()) return;
       if (renderer.getContext().isContextLost()) return;
+      // Coming back after minutes off screen, the frame clock is stale; one
+      // enormous dt would snap every smoothed envelope to its target at once.
+      if (gate.resumed()) prevTime = performance.now();
 
       const { input, output } = sourceRef.current;
       input.update();
@@ -517,6 +525,7 @@ const CymaticsVisualizerImpl: React.FC<CymaticsVisualizerProps> = ({ mode, audio
     return () => {
       disposed = true;
       cancelAnimationFrame(rafId);
+      gate.dispose();
       ro.disconnect();
       if (!pmremDisposed) pmremGenerator.dispose();
       scene.traverse((obj) => {
