@@ -337,8 +337,19 @@ def test_llm_pass_appends_only_validated_meaning_devices(client, tmp_path, monke
         (0, 2, "breathes"),
     ]
     assert doc.llm is not None and doc.llm.provider == "openai" and not doc.llm.error
-    assert doc.stats.devices_by_family["meaning"] == 1
+    # The family total is NOT the model's contribution any more: the rules pass
+    # finds the checkable meaning devices too (a heteronym, a word with a second
+    # sense). What must hold is that exactly one finding came from the model,
+    # and that it is the one it was allowed to keep.
     assert doc.stats.devices_by_kind["personification"] == 1
+    assert doc.stats.devices_by_family["meaning"] == len(
+        [d for d in doc.devices if d.family == "meaning"]
+    )
+    assert all(
+        d.source == "rules"
+        for d in doc.devices
+        if d.family == "meaning" and d is not found
+    )
     _assert_anchored(doc, [ln.split() for ln in LYRIC.split("\n")])
     assert client.get(f"/api/lyricanalysis/{eid}").json()["doc"]["llm"]["model"] == "m"
 

@@ -32,6 +32,8 @@ __all__ = [
     "Syllable",
     "classify_rhyme",
     "consonant_distance",
+    "consonant_family",
+    "homophone_key",
     "max_rhyme_score",
     "normalize_word",
     "pronounce",
@@ -43,6 +45,8 @@ __all__ = [
     "syllabify",
     "syllable_count",
     "tail_key",
+    "pronunciations",
+    "vowel_colour_distance",
     "vowel_distance",
 ]
 
@@ -1470,6 +1474,97 @@ def consonant_distance(a: str, b: str) -> float:
         + 0.15 * abs(fa[2] - fb[2])
     )
     return round(min(1.0, distance), 4)
+
+
+# Assonance is about the COLOUR of a vowel, not about its length.
+#
+# ``vowel_distance`` above weights tenseness heavily and it is right to: it is
+# the only thing separating "hit" from "hate", and without it the rhyme
+# classifier calls those a rhyme. But a lyric that runs "sleep / lift / green
+# / hill" is assonating on one front-high colour, and a rhyme-grade distance
+# scores IY/IH at 0.44 — further apart than AA/AY — so a whole family of the
+# vowel play a writer actually hears comes back as nothing at all.
+#
+# So the colour distance is the same geometry with the length penalty turned
+# most of the way down. Rhyme keeps the strict one; assonance uses this.
+_V_COLOUR_TENSE = 0.08
+
+
+def vowel_colour_distance(a: str, b: str) -> float:
+    """0.0 for the same vowel, 1.0 for unrelated — length nearly ignored.
+
+    The assonance twin of :func:`vowel_distance`. Use it wherever the question
+    is "do these two words ring on the same vowel", and the strict one
+    wherever the question is "do these two words rhyme".
+    """
+    if a == b and a in _VOWEL_FEATURES:
+        return 0.0
+    fa, fb = _VOWEL_FEATURES.get(a), _VOWEL_FEATURES.get(b)
+    if fa is None or fb is None:
+        return 1.0
+    shape = _V_START * _point_distance(fa[0:3], fb[0:3]) + _V_END * _point_distance(
+        fa[3:6], fb[3:6]
+    )
+    distance = (
+        shape + _V_COLOUR_TENSE * abs(fa[6] - fb[6]) + _V_RHOTIC * abs(fa[7] - fb[7])
+    )
+    return round(min(1.0, distance), 4)
+
+
+# Consonance the way a writer hears it: /s/ and /z/ are one sound wearing two
+# hats ("dogs" ends in Z), and so are T/D, P/B, K/G, F/V, CH/JH, SH/ZH, TH/DH.
+# Grouping the nasals together is the same move one step further out — "time"
+# / "line" / "sing" ring together and no exact-phone pass can see it.
+_CONSONANT_FAMILIES: tuple[tuple[str, ...], ...] = (
+    ("P", "B"),
+    ("T", "D"),
+    ("K", "G"),
+    ("F", "V"),
+    ("S", "Z"),
+    ("SH", "ZH"),
+    ("CH", "JH"),
+    ("TH", "DH"),
+    ("M", "N", "NG"),
+    ("L", "R"),
+)
+
+_CONSONANT_FAMILY_OF: dict[str, str] = {
+    phone: family[0] for family in _CONSONANT_FAMILIES for phone in family
+}
+
+
+def consonant_family(phone: str) -> str:
+    """The consonant's family head, or the phone itself when it has none.
+
+    Two consonants in one family are near enough for consonance; the phone is
+    still reported, so a finding says S where the word has an S.
+    """
+    return _CONSONANT_FAMILY_OF.get(phone, phone)
+
+
+def homophone_key(pron: "Pron") -> str:
+    """A pronunciation reduced to what a listener hears, stress dropped.
+
+    Two spellings with the same key are homophones — "their"/"there",
+    "right"/"write", "sole"/"soul" — which is the one kind of double meaning
+    a dictionary can prove rather than guess at.
+    """
+    return " ".join(pron.phones)
+
+
+def pronunciations(word: str) -> tuple["Pron", ...]:
+    """Every dictionary reading of ``word``, best first.
+
+    A word with two readings that differ in their vowels or their stress is a
+    heteronym — "record", "live", "bow", "desert" — and a heteronym is a word
+    carrying two meanings, which is exactly what the meaning pass looks for.
+    Falls back to the single sounded-out reading when the dictionary has none.
+    """
+    first = pronounce(word)
+    if not first.phones:
+        return ()
+    key = normalize_word(word)
+    return (first, *_cmu_alternates(key)) if key else (first,)
 
 
 def _phone_distance(a: str, b: str) -> float:

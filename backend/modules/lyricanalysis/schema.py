@@ -25,8 +25,11 @@ ARTIFACT_KIND = "lyricanalysis"
 DOC_FILENAME = "lyric_analysis.json"
 
 # Bumped whenever the detectors change what they emit, so a stored document
-# from an older build is reported stale and can be recomputed.
-ANALYZER_VERSION = 1
+# from an older build is reported stale and can be recomputed. 2: the sound
+# passes read the lyric as one axis, so a run of alliteration, assonance,
+# consonance or density reaches as far as the ear does instead of stopping at
+# the end of a line or at the edge of a six-word window.
+ANALYZER_VERSION = 2
 
 # --- device taxonomy -------------------------------------------------------
 #

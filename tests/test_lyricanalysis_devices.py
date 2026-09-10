@@ -283,6 +283,319 @@ def test_assonance_over_a_run_of_the_same_stressed_vowel():
     assert len(hit.phones) == 1
 
 
+def test_assonance_hears_the_colour_not_the_symbol():
+    """ "sleep / lift / green / mist" is one vowel colour and four symbols.
+
+    The exact-vowel pass reports the IY pair and the IH pair and nothing that
+    joins them, because IY and IH are 0.44 apart on the RHYME scale — which is
+    the right distance for a rhyme and the wrong one for assonance.
+    """
+    doc = _doc("Sleep lifts the green city drifting in the mist")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    near = [d for d in _of(devs, "assonance") if "~" in d.detail]
+    assert near, [d.detail for d in _of(devs, "assonance")]
+    hit = max(near, key=lambda d: len(d.spans))
+    assert {"IY", "IH"} <= set(hit.phones)
+    # A near run is a softer claim than an exact one and has to look like it.
+    assert hit.confidence < 1.0
+    assert all(
+        d.confidence == 1.0 for d in _of(devs, "assonance") if "~" not in d.detail
+    )
+
+
+def test_a_colour_run_may_not_drift_across_the_vowel_space():
+    """Every member is measured against every other, never against its neighbour.
+
+    Chained neighbour to neighbour, "green / grin / grand / grunt" walks from
+    IY to AH one comfortable step at a time and comes out as one run.
+    """
+    doc = _doc("The green grin was grand and grunt")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    for dev in _of(devs, "assonance"):
+        vowels = set(dev.phones)
+        assert not ({"IY", "AH"} <= vowels), dev.detail
+
+
+def test_assonance_carries_over_a_line_break():
+    doc = _doc("I keep the green machine\nSleep was all it needed")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    across = [d for d in _of(devs, "assonance") if "across the line break" in d.detail]
+    assert across, [d.detail for d in _of(devs, "assonance")]
+    assert len({s.line for s in across[0].spans}) == 2
+
+
+def test_consonance_joins_a_family_not_only_a_phone():
+    """S and Z are one sound wearing two hats: "dogs" ends in Z."""
+    doc = _doc("Rivers of glass and razors in the dust")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    family = [d for d in _of(devs, "consonance") if "~" in d.detail]
+    assert family, [d.detail for d in _of(devs, "consonance")]
+    assert set(family[0].phones) == {"S", "Z"}
+    assert family[0].confidence < 0.8
+
+
+def test_alliteration_runs_past_the_light_words_in_between():
+    """The gap is counted in words that could have CARRIED the sound.
+
+    "went over there and" is four words no consonant run can be built from, so
+    charging them against the run's budget cut one hiss into two halves with
+    nothing reported in the middle.
+    """
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("Silly Sally went over there and sang softly")
+    )
+    allit = [d for d in _of(devs, "alliteration") if d.detail == "S"]
+    assert len(allit) == 1, [d.label for d in allit]
+    assert _anchors(allit[0]) == [(0, 0), (0, 1), (0, 6), (0, 7)]
+
+
+def test_alliteration_runs_on_through_the_line_break():
+    """A hiss does not stop at the end of a line, so the pass cannot either."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("The silver city slept in silence\nSoftly the sea sang its psalm")
+    )
+    allit = [d for d in _of(devs, "alliteration") if d.detail == "S"]
+    assert len(allit) == 1, [d.label for d in allit]
+    assert len(allit[0].spans) == 8
+    assert {s.line for s in allit[0].spans} == {0, 1}
+
+
+def test_alliteration_joins_a_family_not_only_a_phone():
+    """T and D open one sound wearing two hats, the way S and Z close one."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("Tender days and dusty towns and dimming light")
+    )
+    family = [d for d in _of(devs, "alliteration") if "~" in d.detail]
+    assert family, [d.detail for d in _of(devs, "alliteration")]
+    assert set(family[0].phones) == {"T", "D"}
+    # A family run is the softer claim and has to look like it.
+    assert family[0].confidence < 1.0
+
+
+def test_consonance_runs_on_through_the_line_break():
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("The silver city slept in silence\nSoftly the sea sang its psalm")
+    )
+    across = [d for d in _of(devs, "consonance") if len({s.line for s in d.spans}) > 1]
+    assert across, [d.label for d in _of(devs, "consonance")]
+
+
+def test_a_sound_run_is_not_the_whole_song():
+    """The reach, stated. Four lines is a quatrain and a thing a writer holds
+    on purpose; six is every /s/ in the song wearing one label."""
+    doc = _doc(
+        "Sing the song sweet\nSell the same soul\nSee the silver sea\n"
+        "Say the softest sound\nSit the silent star\nSeek the sunken ship"
+    )
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    # LYRIC lines, not document lines: a marker or a blank between two lines of
+    # a verse costs a run nothing.
+    prepared, _sects = devices._prepare(doc)
+    lyric = [ln.index for ln in prepared if ln.is_lyric]
+    runs = [d for d in devs if d.kind == "alliteration" and "openings" not in d.detail]
+    assert runs
+    for dev in runs:
+        first, last = min(s.line for s in dev.spans), max(s.line for s in dev.spans)
+        reach = sum(1 for i in lyric if first <= i <= last)
+        assert reach <= devices.SOUND_LINE_REACH + 1, f"{dev.label}: {reach} lines"
+    # ...and one of them does reach the four the ceiling allows.
+    assert max(len({s.line for s in d.spans}) for d in runs) == 4
+
+
+def test_a_sound_run_is_not_broken_by_a_section_marker():
+    """A marker is never sung, so it cannot interrupt a sound either — the
+    same rule the repetition passes have always followed."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("[Verse 1]\nI keep the green machine\n[Chorus]\nSleep was all it needed")
+    )
+    across = [d for d in _of(devs, "assonance") if "across the line break" in d.detail]
+    assert across, [d.detail for d in _of(devs, "assonance")]
+    assert {s.line for s in across[0].spans} == {1, 3}
+
+
+def test_sibilance_covers_the_whole_hiss_not_the_best_window():
+    """The window is how the density is measured, not how far it may reach.
+
+    Thirteen sibilant words reported as the best six of them threw away seven
+    words of what the writer actually did.
+    """
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("She sells sea shells, so she surely sings sweet silly songs since Sunday")
+    )
+    sib = _of(devs, "sibilance")
+    assert len(sib) == 1, [d.label for d in sib]
+    assert [s.word for s in sib[0].spans] == list(range(13))
+    assert "of the run" in sib[0].detail
+
+
+def test_sibilance_can_fire_twice_on_one_line():
+    """Two hisses a whole window apart are two things the ear heard, not one
+    thing with a hole in it."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc(
+            "Sister sings so soft, then a big bad dog barked at me, and Cass sees six sad seas"
+        )
+    )
+    sib = _of(devs, "sibilance")
+    assert len(sib) == 2, [d.label for d in sib]
+    assert [s.word for s in sib[0].spans] == [0, 1, 2, 3]
+    assert [s.word for s in sib[1].spans] == [13, 14, 15, 16, 17]
+
+
+def test_plosive_reaches_past_the_window_too():
+    """Both density detectors share one pass, so both have to grow."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("Tender days and dusty towns and dimming light")
+    )
+    plos = _of(devs, "plosive")
+    assert plos, _kinds(devs)
+    assert len(plos[0].spans) > devices.DENSITY_WINDOW
+
+
+def test_a_long_run_is_named_by_its_ends_not_by_all_of_it():
+    """A label has to say where a long run ENDS. The pane clips one past 90
+    characters, and a clipped label hides exactly that."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("She sells sea shells, so she surely sings sweet silly songs since Sunday")
+    )
+    sib = _of(devs, "sibilance")[0]
+    assert len(sib.spans) == 13
+    assert sib.label == "sibilance: She / sells / sea / shells, / … / Sunday"
+    assert len(sib.label) <= 90
+
+
+def test_a_hiss_carries_on_through_the_line_break():
+    """The density passes read the same one axis the other sound passes read.
+
+    A hiss that ends one line and opens the next is one thing the ear followed;
+    reading the lyric line by line reported it as two halves of itself.
+    """
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc("She sells sea shells\nSo she surely sings")
+    )
+    sib = _of(devs, "sibilance")
+    assert len(sib) == 1, [d.label for d in sib]
+    assert _anchors(sib[0]) == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (1, 3),
+    ]
+    assert "across the line break" in sib[0].detail
+
+
+def test_two_hisses_a_line_of_something_else_apart_are_still_two():
+    """The reach is a budget, not an invitation: a line of other material
+    between two hisses is exactly the gap that makes them two findings."""
+    devs, _lines, _sections, _stats = devices.analyse(
+        _doc(
+            "Silver sunlight settles slow\n"
+            "Wandering over the lonely mountain\n"
+            "So the summer sings"
+        )
+    )
+    sib = _of(devs, "sibilance")
+    assert len(sib) == 2, [d.label for d in sib]
+    assert {s.line for s in sib[0].spans} == {0}
+    assert {s.line for s in sib[1].spans} == {2}
+
+
+def test_a_density_finding_never_reports_a_ratio_under_its_own_floor():
+    """``min_ratio`` is what makes the finding a claim that the sound is DENSE
+    rather than that it is present, so it has to hold over the span the finding
+    covers — not only over the six-word window that found it."""
+    floors = {
+        "sibilance": devices.SIBILANCE_MIN_RATIO,
+        "plosive": devices.PLOSIVE_MIN_RATIO,
+    }
+    for text in (RICH, SCHEMED, BALLAD, CALLBACK, LONG_ABAB):
+        devs, _lines, _sections, _stats = devices.analyse(_doc(text))
+        for dev in devs:
+            floor = floors.get(dev.kind)
+            if floor is None:
+                continue
+            reported = int(dev.detail.split("phones, ")[1].split("%")[0])
+            assert reported >= round(floor * 100), (dev.detail, dev.label)
+
+
+def test_a_hiss_that_would_dilute_itself_stops_instead_of_thinning_out():
+    """Asked for a floor the whole run cannot hold, the pass has to come back
+    with the dense stretch inside it rather than with the long thin one — that
+    is the guarantee that lets a finding reach across a line at all."""
+    lines, _sects = devices._prepare(
+        _doc("She sells sea shells, so she surely sings sweet silly songs since Sunday")
+    )
+    whole = devices._Out()
+    devices._emit_density(
+        lines,
+        whole,
+        "sibilance",
+        devices._SIBILANTS,
+        devices.SIBILANCE_MIN_COUNT,
+        devices.SIBILANCE_MIN_RATIO,
+    )
+    assert [len(d.spans) for d in whole.devices] == [13]
+    assert whole.devices[0].detail == "18 phones, 39% of the run"
+    # ...and 39% is under a floor of 45%, so at that floor the same lyric comes
+    # back as the half of it that is really that dense.
+    strict = devices._Out()
+    devices._emit_density(
+        lines,
+        strict,
+        "sibilance",
+        devices._SIBILANTS,
+        devices.SIBILANCE_MIN_COUNT,
+        0.45,
+    )
+    assert [[s.text for s in d.spans] for d in strict.devices] == [
+        ["She", "sells", "sea", "shells", "so", "she"]
+    ]
+    assert strict.devices[0].detail == "8 phones, 50% of the run"
+
+
+# --- double meanings -------------------------------------------------------
+
+
+def test_homophone_play_is_found_when_both_spellings_are_written():
+    doc = _doc("I sold my sole for a soul I could keep")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    puns = _of(devs, "pun")
+    assert puns, _kinds(devs)
+    assert [s.text for s in puns[0].spans] == ["sole", "soul"]
+    assert puns[0].family == "meaning" and puns[0].source == "rules"
+
+
+def test_a_heteronym_is_reported_with_both_of_its_senses():
+    doc = _doc("The record shows I record every night")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    hits = [d for d in devs if d.label.startswith("heteronym: record")]
+    assert hits, [d.label for d in devs if d.family == "meaning"]
+    assert "the disc" in hits[0].detail and "to capture" in hits[0].detail
+    assert [s.word for s in hits[0].spans] == [1, 4]
+
+
+def test_a_second_sense_used_twice_outranks_one_used_once():
+    doc = _doc("They said the bars would hold me\nSo I put the bars on wax")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    twice = [d for d in devs if d.group == "sense-bars"]
+    once = [d for d in devs if d.group == "sense-hold"]
+    assert twice and once
+    assert twice[0].kind == "double-entendre" and once[0].kind == "dual-meaning"
+    assert twice[0].confidence > once[0].confidence
+
+
+def test_function_words_never_carry_a_meaning_finding():
+    """ "to" sounds like "two" in every English sentence ever written."""
+    doc = _doc("I went to the show for the night")
+    devs, _lines, _sections, _stats = devices.analyse(doc)
+    words = {s.text.lower() for d in devs if d.family == "meaning" for s in d.spans}
+    assert not (words & {"to", "for", "the"}), words
+
+
 def test_onomatopoeia_matches_held_letters_too():
     doc = _doc("The engine went vroooom and the bell went ding")
     devs, _lines, _sections, _stats = devices.analyse(doc)
@@ -453,12 +766,29 @@ def test_device_ids_are_stable_and_unique():
 
 
 def test_only_deterministic_families_are_emitted():
+    """The rules pass emits what it can PROVE, in every family.
+
+    ``meaning`` is no longer LLM-only: a homophone play, a heteronym and a
+    word with a second sense are facts about the language, not readings of the
+    lyric, so the deterministic pass finds them. What it must never emit is
+    the interpretive half of the family — metaphor, irony, imagery and the
+    rest are the model's to propose, and a rule claiming one would be a guess
+    wearing a rule's confidence.
+    """
     doc = _doc(RICH)
     devs, _l, _s, _st = devices.analyse(doc)
+    checkable = {"pun", "double-entendre", "dual-meaning"}
     allowed = set(RHYME_KINDS + SOUND_KINDS + REPETITION_KINDS + STRUCTURE_KINDS)
-    assert _kinds(devs) <= allowed
-    assert not (_kinds(devs) & set(MEANING_KINDS))
-    assert {d.family for d in devs} <= {"rhyme", "sound", "repetition", "structure"}
+    assert _kinds(devs) <= allowed | checkable
+    assert not (_kinds(devs) & (set(MEANING_KINDS) - checkable))
+    assert {d.family for d in devs} <= {
+        "rhyme",
+        "sound",
+        "repetition",
+        "structure",
+        "meaning",
+    }
+    assert all(d.source == "rules" for d in devs)
 
 
 def test_stats_and_metrics_line_up_with_the_document():

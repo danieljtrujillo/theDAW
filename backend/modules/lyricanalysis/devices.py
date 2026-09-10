@@ -15,9 +15,11 @@ Two rules run through the whole module:
   digest of its kind, its detail and its span coordinates, so the same lyric
   always produces the same ids and the frontend can use them as React keys.
 * **Cost.** A song is thousands of words, and everything phonetic is pairwise.
-  Every pairwise pass is bounded by a line or by a small line window, and the
-  matches that can be found by grouping (rhyme classes, multisyllabic tails,
-  alliteration, refrains) are found with a dict, not a loop over pairs.
+  Every pairwise rhyme pass is bounded by a line or by a small line window; the
+  sound passes read the lyric as one axis and are bounded by a gap in carrier
+  positions and a ceiling on how many lines one run may cross. The matches that
+  can be found by grouping (rhyme classes, multisyllabic tails, alliteration,
+  refrains) are found with a dict, not a loop over pairs.
 """
 
 from __future__ import annotations
@@ -26,11 +28,13 @@ import hashlib
 from dataclasses import dataclass, field
 
 from ..lyrics.schema import LyricsDoc
+from . import meaning
 from .phonetics import (
     ARPABET_VOWELS,
     Pron,
     Syllable,
     classify_rhyme,
+    consonant_family,
     max_rhyme_score,
     normalize_word,
     pronounce,
@@ -40,6 +44,7 @@ from .phonetics import (
     stress_pattern,
     syllabify,
     tail_key,
+    vowel_colour_distance,
 )
 from .schema import (
     FAMILY_OF,
@@ -65,14 +70,42 @@ CROSS_LINE_WINDOW = 2
 # ending, always, for leonine rhyme). That keeps a pathologically long line
 # linear instead of quadratic.
 INTERNAL_WORD_WINDOW = 12
-# Two alliterating words may sit at most 3 apart (2 words between them).
+# Two alliterating words may sit at most 3 apart. The distance is counted in
+# words that could have CARRIED the sound, not in words on the page: function
+# words are never members of a run, so they must not spend its budget either.
+# "Silly Sally went over there and sang softly" is one hiss with three light
+# words inside it, and counting those made it two.
 ALLITERATION_GAP = 3
-# Assonance and consonance tolerate one more word of distance: the vowel colour
-# of a line survives a longer gap than a hard initial consonant does.
+# Assonance and consonance tolerate one more carrier of distance: the vowel
+# colour of a line survives a longer gap than a hard initial consonant does.
 ASSONANCE_GAP = 4
 CONSONANCE_GAP = 4
 # Consonance is everywhere in English, so it needs three carriers to count.
 CONSONANCE_MIN = 3
+# Assonance on the COLOUR of a vowel rather than on the symbol. Two tiers,
+# because "sleep / green" and "sleep / lift" are both assonance and only one
+# of them is exact: a near run has to say which it is. Distances are
+# ``vowel_colour_distance``, which is the rhyme distance with the length
+# penalty turned down — see phonetics for why that is the right measure here.
+ASSONANCE_CLOSE = 0.26
+ASSONANCE_LOOSE = 0.36
+# A near run may not DRIFT: every member is within the tier of the run's
+# anchor, so "green / grin / grand / grunt" cannot walk from IY to AH one
+# comfortable step at a time and be reported as one vowel.
+ASSONANCE_MIN_NEAR = 3
+# Sound carries over a line break as readily as it carries across a comma, so
+# the sound passes read the lyric as one axis rather than line by line. A run
+# may cross this many breaks: four lines is the quatrain, which is as far as a
+# writer holds one vowel or one hiss on purpose, and past it the run stops
+# being something the ear followed and starts being every /s/ in the song.
+SOUND_LINE_REACH = 3
+# A break puts the next line's first carrier this many positions from the last
+# one before it — exactly ALLITERATION_GAP, the tightest of the three. So a
+# sound that ends one line and opens the next is one sound, and one that has to
+# reach into the middle of the next line to find its partner is not.
+SOUND_LINE_COST = 3
+# Consonance grouped by family (S/Z, T/D, M/N/NG …) rather than by phone.
+CONSONANCE_NEAR_MIN = 3
 # A multisyllabic run is at most 4 words long and its tail at most 4 syllables;
 # beyond that the key is so specific it only ever matches itself.
 MULTI_RUN_WORDS = 4
@@ -165,6 +198,10 @@ BOOKEND_MIN_LINES = 4
 # A shape lists at most this many of its members in its label; a twenty-line
 # run must not paste twenty words into a tooltip.
 SHAPE_LABEL_WORDS = 4
+# The same for a sound run, which now reaches as far as the ear does: the pane
+# clips a label past 90 characters, and a clipped label hides the very thing a
+# long run is reported for — where it ends.
+SOUND_LABEL_WORDS = 5
 
 # classify_rhyme kinds that put two line endings in the same scheme class.
 # Pararhyme and eye rhyme are real devices but they do not make an "A".
@@ -518,6 +555,15 @@ def _rhyme_span(tok: _Tok, key: str) -> Span:
 def _label(kind: str, parts: list[str]) -> str:
     name = kind.replace("-", " ")
     return f"{name}: {' / '.join(parts)}" if parts else name
+
+
+def _elide(parts: list[str], keep: int) -> list[str]:
+    """The first few, an ellipsis, and the last. A label has to say where a
+    long finding ENDS — that is most of what makes it long — so the middle is
+    what goes, never the tail."""
+    if len(parts) <= keep:
+        return parts
+    return parts[: keep - 1] + ["…", parts[-1]]
 
 
 def _letter(i: int) -> str:
@@ -1273,9 +1319,7 @@ def _shape_spans(strand: _Strand, idx: list[int]) -> list[Span]:
 
 def _shape_label(kind: str, strand: _Strand, idx: list[int]) -> str:
     words = [" ".join(t.raw for t in strand.rtoks[i]) for i in idx]
-    if len(words) > SHAPE_LABEL_WORDS:
-        words = words[: SHAPE_LABEL_WORDS - 1] + ["…", words[-1]]
-    return _label(kind, words)
+    return _label(kind, _elide(words, SHAPE_LABEL_WORDS))
 
 
 def _weakest(strand: _Strand, idx: list[int]) -> float:
@@ -1839,16 +1883,77 @@ def _stressed_vowel(tok: _Tok) -> str:
     return tok.syls[_stressed_syllable(tok)].nucleus if tok.syls else ""
 
 
-def _chain(positions: list[int], gap: int) -> list[list[int]]:
-    """Split sorted positions into runs where neighbours are within ``gap``."""
-    runs: list[list[int]] = []
-    cur: list[int] = []
-    for p in positions:
-        if cur and p - cur[-1] > gap:
+def _sound_axis(
+    lines: list[_Line], *, every_word: bool = False
+) -> list[tuple[_Tok, int]]:
+    """Every word a sound run could be built from, on one reading axis.
+
+    A hiss does not stop at the end of a line, so a pass looking for one cannot
+    either: the lyric lines are laid end to end, with a break standing
+    SOUND_LINE_COST positions wide. That is what keeps a run that ends one line
+    and opens the next joined while one that would have to reach a whole line's
+    width apart stays two findings.
+
+    Positions count only the words that can CARRY a sound. Function words are
+    already excluded from every phonetic pass — "the / that / there" opens on
+    DH in every other English line — so counting them here would let them spend
+    a gap budget they can never be members of.
+
+    ``every_word`` is the density passes' axis. Sibilance and plosives are a
+    claim about a PROPORTION of the phones a listener hears, and a listener
+    hears the /s/ of "is" and the /t/ of "it" — leaving those words out would
+    make them members of neither the run nor the total it is measured against,
+    which quietly changes what SIBILANCE_MIN_RATIO is a ratio of. A break costs
+    the same either way.
+    """
+    axis: list[tuple[_Tok, int]] = []
+    pos = 0
+    started = False
+    for line in lines:
+        if not line.is_lyric or not line.anchored:
+            continue
+        if started:
+            # The ordinary step to the next word is already one of them.
+            pos += SOUND_LINE_COST - 1
+        started = True
+        for tok in line.toks:
+            if not every_word and tok.norm in _NOISE_WORDS:
+                continue
+            axis.append((tok, pos))
+            pos += 1
+    return axis
+
+
+@dataclass(frozen=True)
+class _Hit:
+    """One word considered as a consonant, and where it sits on the axis."""
+
+    tok: _Tok
+    pos: int
+
+
+def _sound_runs(hits: list[_Hit], gap: int) -> list[list[_Hit]]:
+    """Split hits on the reading axis into the runs a listener would hear.
+
+    A run closes when the next hit sits further than ``gap`` carriers from the
+    last one, or when taking it would spread the run past SOUND_LINE_REACH
+    breaks. The word that closes a run opens the next one, so a hit is never
+    dropped at a boundary — that was how one sound came back as two halves with
+    the middle missing.
+    """
+    runs: list[list[_Hit]] = []
+    cur: list[_Hit] = []
+    on_lines: set[int] = set()
+    for hit in hits:
+        far = bool(cur) and hit.pos - cur[-1].pos > gap
+        deep = hit.tok.line not in on_lines and len(on_lines) > SOUND_LINE_REACH
+        if cur and (far or deep):
             if len(cur) >= 2:
                 runs.append(cur)
             cur = []
-        cur.append(p)
+            on_lines = set()
+        cur.append(hit)
+        on_lines.add(hit.tok.line)
     if len(cur) >= 2:
         runs.append(cur)
     return runs
@@ -1889,30 +1994,72 @@ def _alliterating_phone(tok: _Tok) -> str:
 
 
 def _emit_alliteration(lines: list[_Line], out: _Out) -> None:
-    for line in lines:
-        if not line.is_lyric or not line.anchored:
+    """Repeated word-initial consonants, along the line and on through the break.
+
+    Grouped by phone and then by FAMILY, the way consonance already is: "time /
+    dime" and "pale / bale" open on one sound a listener hears as one, and an
+    exact-phone pass reads them as nothing. The family run is the softer claim
+    and names the two phones it joined. S and SH stay apart — they are separate
+    families, and that particular hiss belongs to the sibilance pass.
+    """
+    by_phone: dict[str, list[_Hit]] = {}
+    by_family: dict[str, list[_Hit]] = {}
+    phone_at: dict[tuple[int, int], str] = {}
+    for tok, pos in _sound_axis(lines):
+        phone = _alliterating_phone(tok)
+        if not phone:
             continue
-        by_phone: dict[str, list[int]] = {}
-        for j, tok in enumerate(line.toks):
-            phone = _alliterating_phone(tok)
-            if phone:
-                by_phone.setdefault(phone, []).append(j)
-        for phone, positions in sorted(by_phone.items()):
-            for run in _chain(positions, ALLITERATION_GAP):
-                toks = [line.toks[j] for j in run]
-                # The same word again is repetition, not alliteration.
-                if len({t.norm for t in toks}) < 2:
-                    continue
-                out.add(
-                    "alliteration",
-                    [_onset_span(t) for t in toks],
-                    label=_label("alliteration", [t.raw for t in toks]),
-                    detail=phone,
-                    phones=[phone],
-                    group=f"allit-{line.index}-{phone}-{run[0]}",
-                )
-    # The same consonant opening consecutive lines is alliteration across the
-    # break, which the per-line pass above cannot see.
+        hit = _Hit(tok=tok, pos=pos)
+        by_phone.setdefault(phone, []).append(hit)
+        by_family.setdefault(consonant_family(phone), []).append(hit)
+        phone_at[(tok.line, tok.index)] = phone
+
+    seen: set[tuple[tuple[int, int], ...]] = set()
+    for phone, hits in sorted(by_phone.items()):
+        for run in _sound_runs(hits, ALLITERATION_GAP):
+            toks = [h.tok for h in run]
+            # The same word again is repetition, not alliteration.
+            if len({t.norm for t in toks}) < 2:
+                continue
+            seen.add(tuple((t.line, t.index) for t in toks))
+            out.add(
+                "alliteration",
+                [_onset_span(t) for t in toks],
+                label=_label(
+                    "alliteration", _elide([t.raw for t in toks], SOUND_LABEL_WORDS)
+                ),
+                detail=phone,
+                phones=[phone],
+                group=f"allit-{toks[0].line}-{phone}-{toks[0].index}",
+            )
+    for family, hits in sorted(by_family.items()):
+        for run in _sound_runs(hits, ALLITERATION_GAP):
+            toks = [h.tok for h in run]
+            key = tuple((t.line, t.index) for t in toks)
+            if key in seen or len({t.norm for t in toks}) < 2:
+                continue
+            members = list(dict.fromkeys(phone_at[k] for k in key))
+            # One phone across the whole run is the exact pass's finding,
+            # reached by a different road; two or more is the family one.
+            if len(members) < 2:
+                continue
+            seen.add(key)
+            out.add(
+                "alliteration",
+                [_onset_span(t) for t in toks],
+                label=_label(
+                    "alliteration", _elide([t.raw for t in toks], SOUND_LABEL_WORDS)
+                ),
+                detail=" ~ ".join(members),
+                phones=members,
+                confidence=0.7,
+                group=f"allit-{toks[0].line}-{family}-fam-{toks[0].index}",
+            )
+
+    # A whole line opening on the sound the line before it opened on is its own
+    # claim — a pattern of first words rather than a run through them — and the
+    # pass above cannot make it: a line's width usually puts two openers out of
+    # each other's reach.
     lyric = [ln for ln in lines if ln.is_lyric and ln.anchored and ln.toks]
     i = 0
     while i < len(lyric) - 1:
@@ -1929,7 +2076,9 @@ def _emit_alliteration(lines: list[_Line], out: _Out) -> None:
             out.add(
                 "alliteration",
                 spans,
-                label=_label("alliteration", [t.raw for t in openers]),
+                label=_label(
+                    "alliteration", _elide([t.raw for t in openers], SOUND_LABEL_WORDS)
+                ),
                 detail=f"{phone} (line openings)",
                 phones=[phone],
                 confidence=0.8,
@@ -1940,33 +2089,157 @@ def _emit_alliteration(lines: list[_Line], out: _Out) -> None:
             i += 1
 
 
-def _emit_assonance(lines: list[_Line], out: _Out, used: set) -> None:
-    for line in lines:
-        if not line.is_lyric or not line.anchored:
+@dataclass
+class _Carrier:
+    """One word considered as a vowel: which word, which vowel, where on the
+    reading axis it sits. The whole lyric lies on one axis, so a position is
+    not simply a word index."""
+
+    tok: _Tok
+    vowel: str
+    pos: int
+
+
+def _carriers(axis: list[tuple[_Tok, int]]) -> list[_Carrier]:
+    """The words of the lyric that can carry a vowel run, in reading order."""
+    out: list[_Carrier] = []
+    for tok, pos in axis:
+        vowel = _stressed_vowel(tok)
+        if vowel:
+            out.append(_Carrier(tok=tok, vowel=vowel, pos=pos))
+    return out
+
+
+def _colour_runs(
+    carriers: list[_Carrier], tolerance: float, gap: int
+) -> list[list[_Carrier]]:
+    """Runs of words ringing on one vowel COLOUR, within ``tolerance``.
+
+    Every member is measured against the run's ANCHOR, never against the one
+    before it. Chaining neighbour to neighbour lets a run drift the length of
+    the vowel space one comfortable step at a time — "green / grin / grand /
+    grunt" comes out as a single IY run — and a run that drifts is not a
+    finding, it is an artefact of the walk.
+
+    The carriers arrive on one axis for the whole lyric, so a run reaches
+    through a line break; SOUND_LINE_REACH is what stops it reaching through
+    the whole song.
+    """
+    runs: list[list[_Carrier]] = []
+    for i, anchor in enumerate(carriers):
+        run = [anchor]
+        on_lines = {anchor.tok.line}
+        for j in range(i + 1, len(carriers)):
+            other = carriers[j]
+            if other.pos - run[-1].pos > gap:
+                break
+            # Carriers arrive in reading order, so once a candidate is a break
+            # too far every candidate after it is too.
+            if other.tok.line not in on_lines and len(on_lines) > SOUND_LINE_REACH:
+                break
+            # Within tolerance of EVERY member, not merely of the anchor: two
+            # vowels a tolerance either side of it are twice that far from
+            # each other, and a run has to be one colour throughout.
+            if all(
+                vowel_colour_distance(m.vowel, other.vowel) <= tolerance for m in run
+            ):
+                run.append(other)
+                on_lines.add(other.tok.line)
+        if len(run) >= 2:
+            runs.append(run)
+    # Keep only the runs nothing longer already contains: the walk above starts
+    # one at every word, so a four-word run also produced the three-word run
+    # inside it.
+    runs.sort(key=lambda r: (-len(r), r[0].pos))
+    kept: list[list[_Carrier]] = []
+    for run in runs:
+        members = {(c.tok.line, c.tok.index) for c in run}
+        if any(members <= {(c.tok.line, c.tok.index) for c in k} for k in kept):
             continue
-        by_vowel: dict[str, list[int]] = {}
-        for j, tok in enumerate(line.toks):
-            if tok.norm in _NOISE_WORDS:
+        kept.append(run)
+    return sorted(kept, key=lambda r: r[0].pos)
+
+
+def _assonance_detail(run: list[_Carrier]) -> tuple[str, list[str], float]:
+    """What the run rings on, the phones behind it, and how exact it is."""
+    vowels = list(dict.fromkeys(c.vowel for c in run))
+    if len(vowels) == 1:
+        return vowels[0], vowels, 0.0
+    spread = max(vowel_colour_distance(a, b) for a in vowels for b in vowels if a != b)
+    return " ~ ".join(vowels), vowels, spread
+
+
+def _emit_assonance_run(
+    run: list[_Carrier],
+    out: _Out,
+    used: set,
+    *,
+    group: str,
+) -> None:
+    toks = [c.tok for c in run]
+    # A bare pair that the rhyme pass already reported is that rhyme, not a
+    # separate finding. Longer runs stand on their own.
+    if len(toks) == 2 and _pair_key(toks[0], toks[1]) in used:
+        return
+    if len({(t.line, t.index) for t in toks}) < 2:
+        return
+    detail, vowels, spread = _assonance_detail(run)
+    # Exactness is the confidence: one vowel is 1.0, and a run held together
+    # at the edge of the loose tier reads as the guess it is.
+    confidence = round(max(0.45, 1.0 - spread * 1.5), 3)
+    if len({t.line for t in toks}) > 1:
+        detail = f"{detail} (across the line break)"
+        confidence = round(confidence * 0.9, 3)
+    out.add(
+        "assonance",
+        [_vowel_span(t) for t in toks],
+        label=_label("assonance", _elide([t.raw for t in toks], SOUND_LABEL_WORDS)),
+        detail=detail,
+        phones=vowels,
+        confidence=confidence,
+        group=group,
+    )
+
+
+def _emit_assonance(lines: list[_Line], out: _Out, used: set) -> None:
+    """Vowel runs along the lyric, exact tier first.
+
+    Assonance is a claim about the colour of a vowel, and English writes one
+    colour with several symbols — "sleep" and "lift" ring together and IY/IH
+    are 0.44 apart on the rhyme scale — so the exact pass runs first and the
+    near tiers pick up only what it could not see. Any near run already covered
+    word-for-word by an exact one is dropped, so the same play is not reported
+    twice.
+
+    All three tiers read the lyric as one axis. A vowel a writer holds through
+    a quatrain was one thing they did, and reporting it as the first two lines
+    of itself says less than the lyric does.
+    """
+    carriers = _carriers(_sound_axis(lines))
+    seen: set[tuple[tuple[int, int], ...]] = set()
+
+    def members(run: list[_Carrier]) -> tuple[tuple[int, int], ...]:
+        return tuple(sorted((c.tok.line, c.tok.index) for c in run))
+
+    for tier, tolerance in (
+        ("exact", 0.0),
+        ("close", ASSONANCE_CLOSE),
+        ("loose", ASSONANCE_LOOSE),
+    ):
+        for run in _colour_runs(carriers, tolerance, ASSONANCE_GAP):
+            if tier != "exact" and len(run) < ASSONANCE_MIN_NEAR:
                 continue
-            vowel = _stressed_vowel(tok)
-            if vowel:
-                by_vowel.setdefault(vowel, []).append(j)
-        for vowel, positions in sorted(by_vowel.items()):
-            for run in _chain(positions, ASSONANCE_GAP):
-                toks = [line.toks[j] for j in run]
-                # A bare pair that the rhyme pass already reported is that
-                # rhyme, not a separate finding. Longer runs stand on their own.
-                if len(toks) == 2 and _pair_key(toks[0], toks[1]) in used:
-                    continue
-                spans = [_vowel_span(t) for t in toks]
-                out.add(
-                    "assonance",
-                    spans,
-                    label=_label("assonance", [t.raw for t in toks]),
-                    detail=vowel,
-                    phones=[vowel],
-                    group=f"asso-{line.index}-{vowel}-{run[0]}",
-                )
+            key = members(run)
+            if key in seen:
+                continue
+            seen.add(key)
+            anchor = run[0].tok
+            _emit_assonance_run(
+                run,
+                out,
+                used,
+                group=f"asso-{anchor.line}-{run[0].vowel}-{anchor.index}-{tier}",
+            )
 
 
 def _vowel_span(tok: _Tok) -> Span:
@@ -1982,31 +2255,219 @@ def _vowel_span(tok: _Tok) -> Span:
 
 
 def _emit_consonance(lines: list[_Line], out: _Out) -> None:
+    """Repeated consonants away from the word's start.
+
+    Grouped by FAMILY, not by phone: /s/ and /z/ are one sound wearing two
+    hats ("dogs" ends in Z), and so are T/D, P/B, F/V and the nasals. An
+    exact-phone pass reads "rivers of glass" as nothing and a writer hears it
+    as one hiss. The exact runs still come out at full confidence; a family
+    run is softer, and names the two phones it actually joined.
+
+    Both passes read the lyric as one axis: a consonant carried on through a
+    line break is one finding, and reading line by line reported it as two.
+    """
+    by_phone: dict[str, list[_Hit]] = {}
+    by_family: dict[str, list[_Hit]] = {}
+    phones_at: dict[tuple[str, int, int], list[str]] = {}
+    for tok, pos in _sound_axis(lines):
+        hit = _Hit(tok=tok, pos=pos)
+        # Away from the word's start: an initial consonant is alliteration.
+        for phone in dict.fromkeys(tok.phones[1:]):
+            if phone in ARPABET_VOWELS:
+                continue
+            by_phone.setdefault(phone, []).append(hit)
+            family = consonant_family(phone)
+            fam = by_family.setdefault(family, [])
+            if not fam or fam[-1].pos != pos:
+                fam.append(hit)
+            phones_at.setdefault((family, tok.line, tok.index), []).append(phone)
+
+    seen: set[tuple[tuple[int, int], ...]] = set()
+    for phone, hits in sorted(by_phone.items()):
+        for run in _sound_runs(hits, CONSONANCE_GAP):
+            if len(run) < CONSONANCE_MIN:
+                continue
+            toks = [h.tok for h in run]
+            seen.add(tuple((t.line, t.index) for t in toks))
+            out.add(
+                "consonance",
+                [_span(t) for t in toks],
+                label=_label(
+                    "consonance", _elide([t.raw for t in toks], SOUND_LABEL_WORDS)
+                ),
+                detail=phone,
+                phones=[phone],
+                confidence=0.8,
+                group=f"cons-{toks[0].line}-{phone}-{toks[0].index}",
+            )
+    for family, hits in sorted(by_family.items()):
+        for run in _sound_runs(hits, CONSONANCE_GAP):
+            toks = [h.tok for h in run]
+            key = tuple((t.line, t.index) for t in toks)
+            if len(run) < CONSONANCE_NEAR_MIN or key in seen:
+                continue
+            members = list(
+                dict.fromkeys(p for k in key for p in phones_at.get((family, *k), []))
+            )
+            # One phone across the whole run is the exact pass's finding,
+            # reached by a different road; two or more is the family one.
+            if len(members) < 2:
+                continue
+            seen.add(key)
+            out.add(
+                "consonance",
+                [_span(t) for t in toks],
+                label=_label(
+                    "consonance", _elide([t.raw for t in toks], SOUND_LABEL_WORDS)
+                ),
+                detail=" ~ ".join(members),
+                phones=members,
+                confidence=0.62,
+                group=f"cons-{toks[0].line}-{family}-fam-{toks[0].index}",
+            )
+
+
+# --- double meanings -------------------------------------------------------
+
+
+def _meaning_occurrences(lines: list[_Line]) -> dict[str, list[_Tok]]:
+    """Every content word of the lyric, keyed by its normalised spelling."""
+    out: dict[str, list[_Tok]] = {}
     for line in lines:
         if not line.is_lyric or not line.anchored:
             continue
-        by_phone: dict[str, list[int]] = {}
-        for j, tok in enumerate(line.toks):
-            if tok.norm in _NOISE_WORDS:
+        for tok in line.toks:
+            if tok.norm and len(tok.norm) > 1 and tok.phones:
+                out.setdefault(tok.norm, []).append(tok)
+    return out
+
+
+def _emit_homophone_play(occurrences: dict[str, list[_Tok]], out: _Out) -> None:
+    """Two spellings in the lyric that sound the same.
+
+    The strongest double meaning there is, and the only one a dictionary can
+    prove: "sole"/"soul", "their"/"there", "wait"/"weight". Every occurrence
+    of both words goes in one finding, so the wire joins all of them.
+    """
+    words = sorted(occurrences)
+    for i, first in enumerate(words):
+        for second in words[i + 1 :]:
+            # A word and its own plural are not a pun, and neither is a pair
+            # the ear cannot separate from ordinary repetition.
+            if first in second or second in first:
                 continue
-            # Away from the word's start: an initial consonant is alliteration.
-            for phone in dict.fromkeys(tok.phones[1:]):
-                if phone not in ARPABET_VOWELS:
-                    by_phone.setdefault(phone, []).append(j)
-        for phone, positions in sorted(by_phone.items()):
-            for run in _chain(positions, CONSONANCE_GAP):
-                if len(run) < CONSONANCE_MIN:
-                    continue
-                toks = [line.toks[j] for j in run]
-                out.add(
-                    "consonance",
-                    [_span(t) for t in toks],
-                    label=_label("consonance", [t.raw for t in toks]),
-                    detail=phone,
-                    phones=[phone],
-                    confidence=0.8,
-                    group=f"cons-{line.index}-{phone}-{run[0]}",
-                )
+            if not meaning.same_sound(first, second):
+                continue
+            toks = sorted(
+                occurrences[first] + occurrences[second],
+                key=lambda t: (t.line, t.index),
+            )
+            phones = " ".join(toks[0].phones)
+            out.add(
+                "pun",
+                [_span(t) for t in toks],
+                label=_label("homophone", [first, second]),
+                detail=f"same sound, two words — /{phones}/",
+                phones=list(toks[0].phones),
+                confidence=meaning.HOMOPHONE_PLAY_CONF,
+                group=f"homophone-{first}-{second}",
+            )
+
+
+def _emit_heteronyms(occurrences: dict[str, list[_Tok]], out: _Out) -> None:
+    """One spelling the reader can say two ways, meaning two things.
+
+    "The record shows" / "record it": which one is sung is a choice, and the
+    rhyme moves with it, so the fork is worth putting on the page.
+    """
+    for word, toks in sorted(occurrences.items()):
+        glosses = meaning.heteronym_glosses(word)
+        if not glosses:
+            continue
+        readings = meaning.heteronym_readings(word)
+        detail = f"{glosses[0]} / {glosses[1]}"
+        if readings:
+            detail = f"{detail} — /{'/ /'.join(readings[:2])}/"
+        out.add(
+            "dual-meaning",
+            [_span(t) for t in toks],
+            label=f"heteronym: {word}",
+            detail=detail,
+            phones=list(toks[0].phones),
+            confidence=meaning.HETERONYM_CONF,
+            group=f"heteronym-{word}",
+        )
+
+
+def _emit_double_senses(occurrences: dict[str, list[_Tok]], out: _Out) -> None:
+    """Words carrying a second sense, and the same word used twice.
+
+    The repeat is the real finding — one word meaning two things in two places
+    is the oldest pun there is — so it is the one that clears the pane's floor.
+    A single use is a nudge, pitched under the floor on purpose.
+    """
+    for word, toks in sorted(occurrences.items()):
+        glosses = meaning.double_sense_glosses(word)
+        if not glosses or word in _NOISE_WORDS:
+            continue
+        spread = toks[-1].line - toks[0].line
+        repeated = len(toks) > 1 and spread <= meaning.REPEAT_LINE_WINDOW
+        out.add(
+            "double-entendre" if repeated else "dual-meaning",
+            [_span(t) for t in toks],
+            label=(
+                f"{word}, twice — two senses"
+                if repeated
+                else f"{word} carries two senses"
+            ),
+            detail=f"{glosses[0]} / {glosses[1]}",
+            confidence=(
+                meaning.DOUBLE_SENSE_REPEAT_CONF
+                if repeated
+                else meaning.DOUBLE_SENSE_CONF
+            ),
+            group=f"sense-{word}",
+        )
+
+
+def _emit_homophone_echoes(occurrences: dict[str, list[_Tok]], out: _Out) -> None:
+    """One half of a homophone pair, with the other half absent.
+
+    Not a play the lyric makes — a play it is standing next to. Pitched below
+    the floor: it belongs to the writer hunting for one, not to the reader.
+    """
+    for word, toks in sorted(occurrences.items()):
+        # Function words are excluded here and nowhere else in this pass: "to"
+        # sounds like "two" in every English sentence ever written, and saying
+        # so on every line buries the play the lyric is actually making.
+        if word in _NOISE_WORDS:
+            continue
+        partners = [p for p in meaning.homophone_partners(word) if p not in occurrences]
+        if not partners:
+            continue
+        out.add(
+            "dual-meaning",
+            [_span(t) for t in toks],
+            label=f"{word} sounds like {' / '.join(partners)}",
+            detail="the other spelling is not in the lyric — the ear cannot tell them apart",
+            confidence=meaning.HOMOPHONE_ECHO_CONF,
+            group=f"echo-{word}",
+        )
+
+
+def _emit_double_meanings(lines: list[_Line], out: _Out) -> None:
+    """The meaning findings that are facts about the language, not readings.
+
+    The interpretive ones — metaphor, irony, imagery — still need the optional
+    LLM pass. These four do not, so they run on every analysis.
+    """
+    occurrences = _meaning_occurrences(lines)
+    if not occurrences:
+        return
+    _emit_homophone_play(occurrences, out)
+    _emit_heteronyms(occurrences, out)
+    _emit_double_senses(occurrences, out)
+    _emit_homophone_echoes(occurrences, out)
 
 
 def _emit_density(
@@ -2022,37 +2483,96 @@ def _emit_density(
     Both consonant groups are common enough that any two occurrences mean
     nothing, so what fires is a window of DENSITY_WINDOW words in which the
     group is both frequent (``min_count`` phones) and dense (``min_ratio`` of
-    every phone in the window). One device per line, at the best window.
+    every phone in the window).
+
+    The window is how the density is MEASURED, not how far the finding may
+    reach: a thirteen-word hiss is thirteen words, and reporting the best six
+    of them threw away the rest of what the writer did. Every window that
+    clears both thresholds keeps its carriers, and windows that reach one
+    another are one finding.
+
+    Those windows are cut from the same axis the other sound passes read, so a
+    hiss that ends one line and opens the next is one finding instead of two
+    halves of one. Distance between carriers is measured in positions on that
+    axis, where a line break costs SOUND_LINE_COST rather than a whole line's
+    width, and SOUND_LINE_REACH bounds how many breaks one finding may cross —
+    two hisses a whole window apart are still two things the ear heard.
+
+    A finding may only grow while it stays DENSE, which is what the reach would
+    otherwise cost: join two hisses across a stretch of quiet words and the
+    percentage the finding reports drops under the floor that admitted either
+    half of it. So the ratio is re-measured over the span the joined finding
+    actually covers, and a join that would dilute it starts a new finding
+    instead. Nothing is lost that way, because every finding is at least one
+    whole window that cleared both floors on its own.
     """
-    for line in lines:
-        if not line.is_lyric or not line.anchored:
+    axis = _sound_axis(lines, every_word=True)
+    if not axis:
+        return
+    # Prefix sums: every question this pass asks is "how much of this stretch
+    # is the sound", and re-walking a slice to answer it makes the pass
+    # quadratic in the length of the lyric.
+    totals = [0]
+    counts = [0]
+    for tok, _pos in axis:
+        totals.append(totals[-1] + len(tok.phones))
+        counts.append(counts[-1] + sum(1 for p in tok.phones if p in wanted))
+
+    def measure(lo: int, hi: int) -> tuple[int, int]:
+        """Carrier phones and total phones over ``axis[lo:hi]``."""
+        return counts[hi] - counts[lo], totals[hi] - totals[lo]
+
+    groups: list[list[int]] = []
+    on_lines: set[int] = set()
+    hi = 0
+    for lo in range(len(axis)):
+        # A window is DENSITY_WINDOW positions wide, not that many entries.
+        # Inside a line those are the same thing; at a break they are not, and
+        # that difference is the whole of how a window comes to straddle one.
+        while hi < len(axis) and axis[hi][1] - axis[lo][1] < DENSITY_WINDOW:
+            hi += 1
+        count, total = measure(lo, hi)
+        if total < 6 or count < min_count or count < min_ratio * total:
             continue
-        toks = line.toks
-        best: tuple[float, int, list[_Tok]] | None = None
-        limit = max(1, len(toks) - DENSITY_WINDOW + 1)
-        for start in range(limit):
-            chunk = toks[start : start + DENSITY_WINDOW]
-            total = sum(len(t.phones) for t in chunk)
-            if total < 6:
+        picked = [
+            k for k in range(lo, hi) if any(p in wanted for p in axis[k][0].phones)
+        ]
+        cur = groups[-1] if groups else []
+        if cur:
+            last = cur[-1]
+            gap = max(0, axis[picked[0]][1] - axis[last][1])
+            reach = on_lines | {axis[k][0].line for k in picked}
+            joined, spanned = measure(cur[0], max(last, picked[-1]) + 1)
+            if (
+                gap <= DENSITY_WINDOW
+                and len(reach) <= SOUND_LINE_REACH + 1
+                and joined >= min_ratio * spanned
+            ):
+                cur.extend(k for k in picked if k > last)
+                on_lines = reach
                 continue
-            count = sum(1 for t in chunk for p in t.phones if p in wanted)
-            ratio = count / total
-            if count < min_count or ratio < min_ratio:
-                continue
-            carriers = [t for t in chunk if any(p in wanted for p in t.phones)]
-            if best is None or ratio > best[0]:
-                best = (ratio, count, carriers)
-        if best is None:
-            continue
-        ratio, count, carriers = best
+        groups.append(picked)
+        on_lines = {axis[k][0].line for k in picked}
+
+    for carriers in groups:
+        toks = [axis[k][0] for k in carriers]
+        # Over the span the finding covers, edge to edge — not over the window
+        # that found it. Both floors hold here by construction: the group is
+        # built out of whole windows that cleared them, and a join that would
+        # not have is a group of its own.
+        count, total = measure(carriers[0], carriers[-1] + 1)
+        ratio = count / total
+        detail = f"{count} phones, {round(ratio * 100)}% of the run"
+        if len({t.line for t in toks}) > 1:
+            detail = f"{detail} (across the line break)"
         out.add(
             kind,
-            [_span(t) for t in carriers],
-            label=_label(kind, [t.raw for t in carriers]),
-            detail=f"{count} phones, {round(ratio * 100)}% of the window",
-            phones=sorted({p for t in carriers for p in t.phones if p in wanted}),
+            [_span(t) for t in toks],
+            label=_label(kind, _elide([t.raw for t in toks], SOUND_LABEL_WORDS)),
+            detail=detail,
+            phones=sorted({p for t in toks for p in t.phones if p in wanted}),
             confidence=min(1.0, 0.6 + ratio),
-            group=f"{kind}-{line.index}",
+            group=f"{kind}-{toks[0].line}-{toks[0].index}",
         )
 
 
@@ -2622,6 +3142,7 @@ def analyse(
         lines, out, "plosive", _PLOSIVES, PLOSIVE_MIN_COUNT, PLOSIVE_MIN_RATIO
     )
     _emit_onomatopoeia(lines, out)
+    _emit_double_meanings(lines, out)
 
     # The repetition and structure passes compare words, not sounds, and only
     # ever look at lyric lines — markers are never sung, so a "[Chorus]" line

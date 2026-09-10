@@ -16,6 +16,7 @@ from backend.modules.lyricanalysis.phonetics import (
     Pron,
     classify_rhyme,
     consonant_distance,
+    consonant_family,
     normalize_word,
     pronounce,
     pronounce_phrase,
@@ -24,6 +25,9 @@ from backend.modules.lyricanalysis.phonetics import (
     syllabify,
     syllable_count,
     tail_key,
+    homophone_key,
+    pronunciations,
+    vowel_colour_distance,
     vowel_distance,
 )
 
@@ -387,6 +391,49 @@ def test_vowel_distance():
     for a in ARPABET_VOWELS:
         for b in ARPABET_VOWELS:
             assert 0.0 <= vowel_distance(a, b) <= 1.0
+
+
+def test_vowel_colour_ignores_the_length_that_rhyme_depends_on():
+    """The assonance twin of vowel_distance, and why there are two.
+
+    Tenseness is the only thing separating "hit" from "hate", so the rhyme
+    distance has to weigh it heavily — which puts IY and IH, the same vowel at
+    two lengths, further apart than AA and AY. For assonance that is the wrong
+    answer: "sleep" and "lift" ring together.
+    """
+    assert vowel_colour_distance("AE", "AE") == 0.0
+    assert vowel_colour_distance("AE", "K") == 1.0
+    assert vowel_colour_distance("IY", "IH") < vowel_distance("IY", "IH")
+    assert vowel_colour_distance("UW", "UH") < vowel_distance("UW", "UH")
+    assert vowel_colour_distance("EH", "EY") < vowel_distance("EH", "EY")
+    # The tense/lax partners come inside the near tier; unrelated vowels stay out.
+    for a, b in (("IY", "IH"), ("UW", "UH"), ("EH", "EY"), ("AA", "AO")):
+        assert vowel_colour_distance(a, b) <= 0.28, (a, b)
+    assert vowel_colour_distance("IY", "AA") > 0.5
+    assert vowel_colour_distance("IY", "IH") == vowel_colour_distance("IH", "IY")
+    for a in ARPABET_VOWELS:
+        for b in ARPABET_VOWELS:
+            assert 0.0 <= vowel_colour_distance(a, b) <= 1.0
+
+
+def test_consonant_families_join_the_pairs_a_writer_hears_as_one():
+    assert consonant_family("S") == consonant_family("Z")
+    assert consonant_family("T") == consonant_family("D")
+    assert consonant_family("M") == consonant_family("N") == consonant_family("NG")
+    assert consonant_family("S") != consonant_family("T")
+    # A phone with no family is its own.
+    assert consonant_family("HH") == "HH"
+    assert consonant_family("W") == "W"
+
+
+def test_homophones_and_heteronyms_come_off_the_dictionary():
+    same = {homophone_key(p) for p in pronunciations("sole")}
+    assert same & {homophone_key(p) for p in pronunciations("soul")}
+    assert not (same & {homophone_key(p) for p in pronunciations("sold")})
+    # Stress digits are not part of what a listener hears.
+    assert all(not any(c.isdigit() for c in k) for k in same)
+    # A word with no dictionary entry still answers with its sounded-out one.
+    assert pronunciations("skrrt")
 
 
 def test_a_diphthong_sits_between_its_endpoints_not_next_to_schwa():
