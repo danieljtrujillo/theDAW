@@ -1600,7 +1600,7 @@ async def generate(
     inversion_unconditional: str = Form("false"),
     # File format
     file_format: str = Form("wav"),
-    # "16" | "24" | "32f" — see _audio_save_kwargs. Anything else means "16".
+    # "16" | "24" | "32f" — see _audio_save_subtype. Anything else means "16".
     wav_bit_depth: str = Form("16"),
     # File uploads
     init_audio: Optional[UploadFile] = File(None),
@@ -2047,7 +2047,7 @@ async def generate_jobs(
     init_noise_level: float = Form(1.0),
     init_audio_type: str = Form("Audio"),
     file_format: str = Form("wav"),
-    # "16" | "24" | "32f" — see _audio_save_kwargs. Anything else means "16".
+    # "16" | "24" | "32f" — see _audio_save_subtype. Anything else means "16".
     wav_bit_depth: str = Form("16"),
     file_naming: str = Form("verbose"),
     custom_name: str = Form(""),
