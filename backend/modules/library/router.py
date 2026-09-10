@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from .bundle import build_bundle_bytes
-from .store import LibraryStore, _read_metadata, default_library_root
+from .store import AUDIO_EXTS, LibraryStore, _read_metadata, default_library_root
 from .tags import MAX_EMBEDDED_COVER_BYTES
 
 log = logging.getLogger(__name__)
@@ -476,20 +476,6 @@ async def import_media(
     return record.to_dict()
 
 
-_FOLDER_AUDIO_EXTS = {
-    ".wav",
-    ".mp3",
-    ".flac",
-    ".ogg",
-    ".m4a",
-    ".aac",
-    ".opus",
-    ".aif",
-    ".aiff",
-    ".wma",
-}
-
-
 class ImportFolderRequest(BaseModel):
     path: Optional[str] = None
     recursive: bool = True
@@ -515,7 +501,7 @@ def import_folder(
         raise HTTPException(400, f"not a folder: {folder!r}")
     paths = root.rglob("*") if req.recursive else root.iterdir()
     files = sorted(
-        (p for p in paths if p.is_file() and p.suffix.lower() in _FOLDER_AUDIO_EXTS),
+        (p for p in paths if p.is_file() and p.suffix.lower() in AUDIO_EXTS),
         key=lambda p: str(p).lower(),
     )
     store = get_store()

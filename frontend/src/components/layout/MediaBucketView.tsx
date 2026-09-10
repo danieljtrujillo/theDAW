@@ -6,6 +6,7 @@ import { useLibraryStore } from '../../state/libraryStore';
 import { logError, logInfo } from '../../state/logStore';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { setAudioDragData } from '../../lib/audioDnD';
+import { AUDIO_ACCEPT, hasAudioExt } from '../../lib/fileFilters';
 import { useAppUiStore } from '../../state/appUiStore';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 
@@ -16,7 +17,13 @@ const fmtSize = (b: number): string => {
 };
 
 const isAudio = (mime: string, name: string): boolean =>
-  mime.startsWith('audio/') || /\.(wav|mp3|flac|ogg|aac|m4a|opus)$/i.test(name);
+  mime.startsWith('audio/') || hasAudioExt(name);
+
+// The bucket takes anything the app can do something with: every audio type the
+// library backend imports, MIDI, and the media kinds. The audio extensions are
+// listed one by one because `audio/*` alone loses the files the OS hands over
+// with an empty mime type — a float .wav from another DAW, a .caf, a .w64.
+const BUCKET_ACCEPT = `${AUDIO_ACCEPT},.mid,.midi,image/*,video/*`;
 
 export const MediaBucketView: React.FC = () => {
   const items = useMediaBucketStore((s) => s.items);
@@ -42,6 +49,13 @@ export const MediaBucketView: React.FC = () => {
     () => items.filter((it) => selectedIds.includes(it.id) && isAudio(it.mimeType, it.name)),
     [items, selectedIds],
   );
+
+  // A row's INIT button acts on the whole selection when the row is part of a
+  // multi-select, so its name has to say which.
+  const sendToInitLabel = (item: BucketItem): string =>
+    selectedIds.includes(item.id) && selectedAudio.length > 1
+      ? `Send ${selectedAudio.length} selected to INIT (Chimera)`
+      : `Send ${item.name} to INIT`;
 
   const onRowClick = (e: React.MouseEvent, id: string) => {
     if (e.shiftKey && selectionAnchor) {
@@ -203,13 +217,14 @@ export const MediaBucketView: React.FC = () => {
               <Wand2 className="w-3 h-3" /> SEND {selectedAudio.length} → INIT
             </button>
           )}
-          <label className="relative">
+          <label htmlFor="media-bucket-add-files" className="relative">
             <input
               ref={fileInputRef}
+              id="media-bucket-add-files"
               type="file"
               name="media-bucket-add-files"
               multiple
-              accept="audio/*,.mid,.midi,image/*,video/*"
+              accept={BUCKET_ACCEPT}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               onChange={(e) => {
                 if (e.target.files && e.target.files.length > 0) addMany(e.target.files);
@@ -232,7 +247,9 @@ export const MediaBucketView: React.FC = () => {
       {/* URL import — paste a YouTube / SoundCloud / Bandcamp link */}
       <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/5 bg-black/20 shrink-0">
         <Link2 className="w-3 h-3 text-purple-300 shrink-0" />
+        <label htmlFor="media-bucket-import-url" className="sr-only">Link to import</label>
         <input
+          id="media-bucket-import-url"
           type="text"
           name="media-bucket-import-url"
           value={importUrl}
@@ -322,15 +339,14 @@ export const MediaBucketView: React.FC = () => {
                   </p>
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {/* Icon-only rows: aria-label carries the name so a screen
+                      reader never has to fall back on the title attribute. */}
                   <button
                     onClick={(e) => { e.stopPropagation(); handleSendToInit(item); }}
                     disabled={!isAudio(item.mimeType, item.name)}
                     className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-purple-300 disabled:opacity-30"
-                    title={
-                      selectedIds.includes(item.id) && selectedAudio.length > 1
-                        ? `Send ${selectedAudio.length} selected to INIT (Chimera)`
-                        : 'Send to INIT'
-                    }
+                    aria-label={sendToInitLabel(item)}
+                    title={sendToInitLabel(item)}
                   >
                     <Wand2 className="w-3 h-3" />
                   </button>
@@ -338,6 +354,7 @@ export const MediaBucketView: React.FC = () => {
                     onClick={(e) => { e.stopPropagation(); void handleSendToEditor(item); }}
                     disabled={!isAudio(item.mimeType, item.name)}
                     className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-purple-300 disabled:opacity-30"
+                    aria-label={`Send ${item.name} to a new editor track`}
                     title="Send to a new editor track"
                   >
                     <Send className="w-3 h-3" />
@@ -346,6 +363,7 @@ export const MediaBucketView: React.FC = () => {
                     onClick={(e) => { e.stopPropagation(); void handleSendToLibrary(item); }}
                     disabled={!isAudio(item.mimeType, item.name)}
                     className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-purple-300 disabled:opacity-30"
+                    aria-label={`Save ${item.name} to library`}
                     title="Save to library"
                   >
                     <Library className="w-3 h-3" />
@@ -353,6 +371,7 @@ export const MediaBucketView: React.FC = () => {
                   <button
                     onClick={(e) => { e.stopPropagation(); remove(item.id); }}
                     className="p-1 rounded hover:bg-red-500/20 text-zinc-500 hover:text-red-400"
+                    aria-label={`Remove ${item.name} from bucket`}
                     title="Remove from bucket"
                   >
                     <Trash2 className="w-3 h-3" />

@@ -250,6 +250,35 @@ def _write_metadata(entry_dir: Path, payload: dict[str, Any]) -> None:
     tmp.replace(p)
 
 
+# One table, because these two drifted apart: the folder importer accepted ten
+# extensions while the entry resolver accepted seventeen, so a .caf or a
+# 64-bit .w64 added by hand resolved fine and was invisible to folder import.
+# Keyed with the dot, the way Path.suffix reports it.
+AUDIO_MIME_BY_EXT: dict[str, str] = {
+    ".wav": "audio/wav",
+    ".wave": "audio/wav",
+    ".w64": "audio/x-wav",  # Sony Wave64 — the >4GB WAV a long float session reaches for
+    ".rf64": "audio/x-wav",  # RF64, the BWF-compatible answer to the same limit
+    ".bwf": "audio/wav",  # Broadcast Wave: WAV plus a bext chunk
+    ".caf": "audio/x-caf",
+    ".aif": "audio/aiff",
+    ".aiff": "audio/aiff",
+    ".aifc": "audio/aiff",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wma": "audio/x-ms-wma",
+}
+
+#: Every container the library will take. Derived, so it cannot fall behind
+#: the mime table the way the folder importer's own copy did.
+AUDIO_EXTS = frozenset(AUDIO_MIME_BY_EXT)
+
+
 def _resolve_audio_file(entry_dir: Path, meta: dict[str, Any]) -> Optional[Path]:
     """Resolve the audio file for an entry. Try the metadata-declared name
     first, then any first audio file in the entry directory."""
@@ -267,13 +296,7 @@ def _resolve_audio_file(entry_dir: Path, meta: dict[str, Any]) -> Optional[Path]
         if candidate.is_file():
             return candidate
     for path in entry_dir.iterdir():
-        if path.is_file() and path.suffix.lower() in {
-            ".wav",
-            ".mp3",
-            ".flac",
-            ".ogg",
-            ".m4a",
-        }:
+        if path.is_file() and path.suffix.lower() in AUDIO_EXTS:
             return path
     return None
 
@@ -877,19 +900,10 @@ class LibraryStore:
         entry_dir = self.root / entry_id
         entry_dir.mkdir(parents=True, exist_ok=True)
         meta_in = dict(metadata or {})
-        ext = src.suffix.lower().lstrip(".")
-        mime = {
-            "mp3": "audio/mpeg",
-            "wav": "audio/wav",
-            "flac": "audio/flac",
-            "ogg": "audio/ogg",
-            "m4a": "audio/mp4",
-            "aac": "audio/aac",
-            "opus": "audio/opus",
-            "aif": "audio/aiff",
-            "aiff": "audio/aiff",
-            "wma": "audio/x-ms-wma",
-        }.get(ext, "audio/mpeg")
+        # Unreachable from folder import, which filters on AUDIO_EXTS — but this
+        # is public, so an unknown container gets the honest generic answer
+        # rather than being labelled an MP3.
+        mime = AUDIO_MIME_BY_EXT.get(src.suffix.lower(), "application/octet-stream")
         record_meta: dict[str, Any] = {
             "id": entry_id,
             "source_path": str(src.resolve()),
