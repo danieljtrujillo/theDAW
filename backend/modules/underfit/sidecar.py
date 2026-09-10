@@ -304,8 +304,7 @@ def _setup_worker(cfg: UnderfitConfig, uv: str) -> None:
         del tail[:-12]
         ok = rc == 0
         with _setup_lock:
-            _setup["log_tail"] = "
-".join(tail)
+            _setup["log_tail"] = "\n".join(tail)
     with _setup_lock:
         _setup.update(
             state="done" if ok else "error",
@@ -356,8 +355,7 @@ def _install_sa3_backend(
             tail.append(line.rstrip())
             del tail[:-12]
             with _setup_lock:
-                _setup["log_tail"] = "
-".join(tail)
+                _setup["log_tail"] = "\n".join(tail)
     return proc.wait(), tail
 
 

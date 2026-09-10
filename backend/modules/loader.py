@@ -12,8 +12,17 @@ def load_modules(app: FastAPI, modules_dir: Path) -> list[dict]:
     Discover backend/modules/*/router.py files, import their APIRouter,
     and mount them on the app. Failures are logged and skipped — they
     never prevent the rest of the app from starting.
+
+    A failure is also RECORDED, in ``app.state.module_load_errors`` (module
+    name -> one-line reason), so ``/api/modules/all`` can say a module is
+    broken rather than merely absent. The underfit module shipped with a
+    SyntaxError for three days because the only trace of it was a warning
+    that nothing was listening to: every ``/api/underfit/*`` call 404'd and
+    the tab looked like a network problem.
     """
     manifests: list[dict] = []
+    errors: dict[str, str] = {}
+    app.state.module_load_errors = errors
     if not modules_dir.is_dir():
         return manifests
 
@@ -43,10 +52,16 @@ def load_modules(app: FastAPI, modules_dir: Path) -> list[dict]:
             manifests.append(config)
             log.info("Loaded module: %s → %s", module_dir.name, prefix)
         except Exception as e:
-            log.warning(
+            # ERROR, with the traceback: a module that does not mount is a
+            # broken feature, and "warning" is what this logged while nobody
+            # noticed. ``exc_info`` puts the failing line in the log, which
+            # for a SyntaxError is the whole diagnosis.
+            errors[module_dir.name] = f"{type(e).__name__}: {e}"
+            log.error(
                 "Module %s failed to load: %s — continuing without it",
                 module_dir.name,
                 e,
+                exc_info=True,
             )
 
     return manifests
