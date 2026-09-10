@@ -29,7 +29,6 @@ import { useVstStore } from '../../state/vstStore';
 import { useVstEditorStore } from '../../state/vstEditorStore';
 import type { ChainEntry } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
-import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
@@ -566,6 +565,37 @@ const MarkerFlag: React.FC<{
   );
 };
 
+/* A native (volume / pan) track fader, plus the badge that admits when the
+   fader is NOT what drives the sound. An enabled automation lane owns its
+   AudioParam: liveMixer schedules the envelope onto the param and applyMixLive
+   deliberately leaves the manual fader out of the reconcile, so a fader sitting
+   at 0.8 over a lane whose first breakpoint is 0.05 is simply lying about the
+   track. `automated` makes the control say who holds it, and `value` is then the
+   lane's value at the playhead rather than the stored one. */
+const NativeFader: React.FC<{
+  label: string;
+  min: number; max: number; step: number; defaultValue: number;
+  value: number;
+  automated: boolean;
+  onChange: (v: number) => void;
+}> = ({ label, min, max, step, defaultValue, value, automated, onChange }) => (
+  <>
+    <SlideTrack
+      min={min} max={max} step={step} defaultValue={defaultValue}
+      value={value}
+      onChange={onChange}
+      className="flex-1"
+      ariaLabel={automated ? `${label} (an automation lane drives this)` : label}
+    />
+    {automated && (
+      <span
+        className="text-[7px] font-mono font-black text-emerald-400 shrink-0"
+        title="An automation lane drives this parameter — the fader shows the lane's value at the playhead. Disable the lane to take the control back."
+      >A</span>
+    )}
+  </>
+);
+
 export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> = ({ onSwitchTab }) => {
   const tracks = useEditorStore((s) => s.tracks);
   const clips = useEditorStore((s) => s.clips);
@@ -666,7 +696,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const addClipToTrack = useEditorStore((s) => s.addClipToTrack);
   const snapSec = useEditorStore((s) => s.snapSec);
   const getTotalDurationSec = useEditorStore((s) => s.getTotalDurationSec);
-  const masterGain = usePlaybackStore((s) => (s.muted ? 0 : s.volume / 100));
   const inpaintSelection = useEditorStore((s) => s.inpaintSelection);
   // BPM/key per clip: audio clips resolve through the DJ analysis cache via
   // their originating library entry (same source the DJ decks read); MIDI
@@ -775,12 +804,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Derived: are we currently playing the editor's rendered timeline?
   const isEditorPlaying = playerIsPlaying && playerEntryId === 'editor-timeline';
 
-  // The FX/fader overlay should visually follow the moving playhead ONLY during
-  // automation-READ playback with active lanes. Subscribe to playheadSec just for
-  // that narrow case, so ordinary playback (no lanes / write mode — the common
-  // case) never pays the per-frame re-render the playhead note above avoids.
+  // The FX/fader overlay should visually follow the playhead ONLY when a lane is
+  // actually in charge — automation-READ with at least one enabled, non-empty
+  // lane. Subscribe to playheadSec just for that narrow case, so ordinary
+  // playback (no lanes / write mode — the common case) never pays the per-frame
+  // re-render the playhead note above avoids. Stopped counts too: a lane still
+  // owns the param when the transport is parked, and playheadSec then only moves
+  // on a seek, so following it costs nothing.
   const automationFollowActive =
-    isEditorPlaying && !automationWrite &&
+    !automationWrite &&
     automationLanes.some((l) => l.enabled && l.points.length > 0);
   const followPlayhead = useEditorStore((s) => (automationFollowActive ? s.playheadSec : 0));
 
@@ -808,16 +840,24 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     [isEditorPlaying, automationWrite, automationLanes, followPlayhead],
   );
 
-  // Displayed value for a native (volume/pan) track fader: follows its lane during
-  // playback, otherwise shows the stored value.
-  const faderDisplay = (kind: 'trackVolume' | 'trackPan', trackId: string, stored: number): number => {
-    if (!isEditorPlaying || automationWrite) return stored; // read mode follows; write mode shows your hands
+  // What a native (volume/pan) track fader should SHOW, and whether the fader is
+  // still the thing that decides. An enabled lane owns the AudioParam whether or
+  // not the transport is rolling, so "stopped" is no reason to fall back to the
+  // stored value — that is how a fader ends up reading 0.8 over a track the lane
+  // has pinned near silence. Automation WRITE is the one exception: there the
+  // fader IS your hands and the lane is recording them.
+  const faderDisplay = (
+    kind: 'trackVolume' | 'trackPan',
+    trackId: string,
+    stored: number,
+  ): { value: number; automated: boolean } => {
+    if (automationWrite) return { value: stored, automated: false };
     const lane = automationLanes.find(
       (l) => l.enabled && l.points.length > 0 && l.target.kind === kind && l.target.trackId === trackId,
     );
-    if (!lane) return stored;
+    if (!lane) return { value: stored, automated: false };
     const v = sampleLane(lane, followPlayhead);
-    return v == null ? stored : v;
+    return { value: v == null ? stored : v, automated: true };
   };
 
   // Color + value<->normalized mapping for a lane, used by both the overlay and the
@@ -1216,7 +1256,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       for (let ch = 0; ch < buf.numberOfChannels; ch += 1) {
         seg.copyToChannel(buf.getChannelData(ch).subarray(start, start + len), ch);
       }
-      return new File([encodeWav(seg)], 'clip.wav', { type: 'audio/wav' });
+      // Float: this is going to the stretch backend to be resampled, not to
+      // the timeline, so a 16-bit round trip here would only cost resolution
+      // on the way in.
+      return new File([encodeWav(seg, { float32: true })], 'clip.wav', { type: 'audio/wav' });
     } finally {
       ac.close().catch(() => {});
     }
@@ -1890,10 +1933,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const audioBuf = await ctx.decodeAudioData(buf.slice(0));
       const src = ctx.createBufferSource();
       src.buffer = audioBuf;
-      const gain = ctx.createGain();
-      gain.gain.value = masterGain;
-      // Route through the shared master → analyser → destination chain.
-      src.connect(gain).connect(getMasterGain());
+      // Route through the shared master → analyser → destination chain. No gain
+      // stage of our own: getMasterGain() is a unity summing bus and the
+      // listening fader lives on the monitor node at the END of that chain
+      // (playerStore), so scaling by playbackStore.volume here applied it twice
+      // and auditioned a clip 20*log10(volume/100) below the same clip on the
+      // timeline — 2.5 dB at the default 75, 10.5 dB at 30.
+      src.connect(getMasterGain());
       src.onended = () => {
         if (previewSourceRef.current === src) previewSourceRef.current = null;
       };
@@ -1903,7 +1949,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     } catch (e) {
       logError('editor', `Preview failed: ${e instanceof Error ? e.message : e}`);
     }
-  }, [clips, selectedClipId, masterGain, stopPreview]);
+  }, [clips, selectedClipId, stopPreview]);
 
   /* ── Clip clipboard + grid-aware edit actions ────────────────────────────────
      The clipboard holds the clip records themselves. Blobs (and cached peak
@@ -2675,7 +2721,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       } finally {
         fx.dispose();
       }
-      let blob: Blob = encodeWav(rendered);
+      // Float only when a VST chain follows: /api/vst/process-file answers in
+      // float precisely so a chain does not requantize between stages, and
+      // encoding the input at 16 bits would put the loss back at every hop.
+      // With no plugins the stem goes straight to the timeline, where 16-bit
+      // at half the size is the right answer.
+      let blob: Blob = encodeWav(rendered, { float32: vsts.length > 0 });
 
       // VST3 chain on the backend, in signal-chain order.
       let current = new File([blob], 'track-stem.wav', { type: 'audio/wav' });
@@ -3220,7 +3271,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   return (
     <div data-keyscope="edit-timeline" className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
       {/* Editor Toolbar */}
-      <div className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
+      <div data-tour="edit-toolbar" className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex bg-black/40 p-0.5 rounded border border-white/5 gap-0.5">
             <button
@@ -4050,13 +4101,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       SILENCE the track instead of returning it to unity. 0.8 is the
                       track default in editorStore. ariaLabel carries the track name
                       so the faders are distinguishable to a screen reader. */}
-                  <SlideTrack min={0} max={1} step={0.01} defaultValue={0.8} value={faderDisplay('trackVolume', t.id, t.volume)}
-                    onChange={(v) => writeFader('trackVolume', t.id, v)} className="flex-1" ariaLabel={`${t.name} volume`} />
+                  <NativeFader label={`${t.name} volume`} min={0} max={1} step={0.01} defaultValue={0.8}
+                    {...faderDisplay('trackVolume', t.id, t.volume)}
+                    onChange={(v) => writeFader('trackVolume', t.id, v)} />
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[7px] font-mono text-zinc-600 uppercase w-3">P</span>
-                  <SlideTrack min={-1} max={1} step={0.01} defaultValue={0} value={faderDisplay('trackPan', t.id, t.pan)}
-                    onChange={(v) => writeFader('trackPan', t.id, v)} className="flex-1" ariaLabel={`${t.name} pan`} />
+                  <NativeFader label={`${t.name} pan`} min={-1} max={1} step={0.01} defaultValue={0}
+                    {...faderDisplay('trackPan', t.id, t.pan)}
+                    onChange={(v) => writeFader('trackPan', t.id, v)} />
                   <span className="text-[7px] font-mono text-zinc-600 text-right w-5">
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
                   </span>

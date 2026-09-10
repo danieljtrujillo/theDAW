@@ -22,6 +22,7 @@ router = APIRouter()
 _BROWSER_OK_EXTS = {
     ".wav",
     ".wave",
+    ".bwf",
     ".flac",
     ".mp3",
     ".ogg",
@@ -41,7 +42,14 @@ _TRANSCODE_EXTS = {
     ".caf",
     ".wv",
     ".wma",
+    ".w64",
+    ".rf64",
 }
+# RIFF-family extensions where the extension says "browser-native" but the
+# sample format still might not be. Worth a header read before serving; every
+# other extension is either always decodable or already being transcoded, and
+# probing those would only buy an ffprobe subprocess per request.
+_DEPTH_SENSITIVE_EXTS = {".wav", ".wave", ".bwf"}
 # The endpoint only serves recognized audio (keeps it from being a general file
 # reader). The union of what we serve directly and what we transcode.
 _AUDIO_EXTS = _BROWSER_OK_EXTS | _TRANSCODE_EXTS
@@ -241,18 +249,28 @@ def _transcode_cache_dir() -> Path:
 
 
 async def _transcode_to_wav(src: Path) -> Path:
-    """Transcode a DAW-native sample (AIFF, CAF, …) to WAV the browser can decode.
-    Cached by source path + mtime + size so re-opening a project is instant."""
+    """Transcode a sample the browser cannot read to a WAV it can.
+
+    The depth survives as far as Chromium's decoder set allows: 24-bit stays
+    24-bit and a float source comes out pcm_f32le, so a float CAF from an
+    imported DAW project is not flattened to 16 bits just to reach the
+    timeline. 64-bit float steps down to 32 — that is the cap, not a choice.
+    Cached by source path + mtime + size so re-opening a project is instant.
+    The codec choice is part of the key too: the source has not changed when
+    this behaviour does, and a 16-bit file left over from the old rule would
+    otherwise outlive it."""
     from backend.lib import ffmpeg
+    from backend.lib.audio_depth import browser_pcm_args, probe_depth
 
     stat = src.stat()
+    codec = " ".join(browser_pcm_args(probe_depth(src)))
     key = hashlib.sha1(
-        f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8")
+        f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{codec}".encode("utf-8")
     ).hexdigest()
     out = _transcode_cache_dir() / f"{key}.wav"
     if out.is_file() and out.stat().st_size > 0:
         return out
-    await ffmpeg.render(src, out, filter_args=[], extra_out_args=["-c:a", "pcm_s16le"])
+    await ffmpeg.render(src, out, filter_args=[], extra_out_args=codec.split())
     return out
 
 
@@ -261,8 +279,9 @@ async def clip_audio(path: str):
     """Stream a clip's on-disk audio so the browser can load it when a project
     is opened. ``.tasmo`` clips reference linked files by absolute path (or files
     extracted from an embedded archive); the frontend cannot read those directly,
-    so it fetches them here. Browser-native formats are served as-is; DAW-native
-    formats (AIFF/CAF/…) are transcoded to WAV on the fly. Restricted to audio
+    so it fetches them here. Formats the browser reads are served as-is;
+    DAW-native containers (AIFF/CAF/W64/…) and sample formats Chromium has no
+    decoder for are transcoded to WAV on the fly. Restricted to audio
     inside theDAW's media roots (see media_access) because the server binds
     0.0.0.0 and this route would otherwise read any file on the machine."""
     p = media_access.resolve_media_path(path)
@@ -279,7 +298,17 @@ async def clip_audio(path: str):
     if not p.is_file():
         raise HTTPException(status_code=404, detail="Audio file not found")
 
-    if ext in _TRANSCODE_EXTS:
+    # Extension is not enough to decide this. A 64-bit float file is almost
+    # always named .wav, lands in _BROWSER_OK_EXTS, and then fails
+    # decodeAudioData silently — Chromium has no pcm_f64le decoder. So for the
+    # RIFF family the file's actual sample format gets the vote.
+    needs_transcode = ext in _TRANSCODE_EXTS
+    if not needs_transcode and ext in _DEPTH_SENSITIVE_EXTS:
+        from backend.lib.audio_depth import browser_can_decode, probe_depth
+
+        needs_transcode = not browser_can_decode(probe_depth(p))
+
+    if needs_transcode:
         try:
             wav = await _transcode_to_wav(p)
             return FileResponse(

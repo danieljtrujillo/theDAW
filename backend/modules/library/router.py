@@ -100,6 +100,8 @@ _FFPROBE_SUMMARY_KEYS = (
     "sample_rate",
     "channels",
     "bit_depth",
+    "bit_depth_is_float",
+    "sample_fmt",
     "codec",
     "container",
     "duration_sec",

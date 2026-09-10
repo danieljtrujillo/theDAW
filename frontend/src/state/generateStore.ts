@@ -9,6 +9,7 @@ import {
   type ChimeraMashupMeta,
   type ChimeraState,
   type GenerateParamsState,
+  type WavBitDepth,
 } from './generateParamsStore';
 import { getOrRenderChimera } from '../lib/chimeraClient';
 import { fetchModelStatus, setLocalOnly, type ModelStatusResponse } from '../lib/storageClient';
@@ -67,6 +68,7 @@ export interface GenerateParams {
   inversionUnconditional?: boolean;
 
   fileFormat?: string;
+  wavBitDepth?: WavBitDepth;
   fileNaming?: string;
   outputName?: string;
   cutToDuration?: boolean;
@@ -337,6 +339,7 @@ export const buildGenerateJobFormData = (params: GenerateParams, prompt: string)
   formData.append('init_noise_level', String(params.initNoise));
   formData.append('init_audio_type', params.initType);
   formData.append('file_format', params.fileFormat || 'wav');
+  formData.append('wav_bit_depth', params.wavBitDepth || '16');
   formData.append('file_naming', params.fileNaming || 'verbose');
   formData.append('custom_name', params.outputName || '');
 
@@ -442,6 +445,7 @@ export const buildGenerateParamsFromState = (params: GenerateParamsState): Gener
   inversionGamma: params.inversionGamma,
   inversionUnconditional: params.inversionUnconditional,
   fileFormat: params.fileFormat,
+  wavBitDepth: params.wavBitDepth,
   fileNaming: params.fileNaming,
   outputName: params.outputName,
   cutToDuration: params.cutToDuration,

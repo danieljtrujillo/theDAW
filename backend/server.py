@@ -1625,6 +1625,8 @@ async def generate(
     inversion_unconditional: str = Form("false"),
     # File format
     file_format: str = Form("wav"),
+    # "16" | "24" | "32f" — see _audio_save_kwargs. Anything else means "16".
+    wav_bit_depth: str = Form("16"),
     # File uploads
     init_audio: Optional[UploadFile] = File(None),
     inpaint_audio: Optional[UploadFile] = File(None),
@@ -1765,14 +1767,15 @@ async def generate(
 
         def _do_generate():
             gen_audio = generation_pipeline.generate(**generate_args)
-            gen_audio = gen_audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
-
             fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
+            gen_audio = (
+                _clamp_for_output(gen_audio.to(torch.float32), fmt, wav_bit_depth)
+                .squeeze(0)
+                .cpu()
+            )
 
             buf = io.BytesIO()
-            save_kwargs: dict = {}
-            if fmt == "wav":
-                save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
+            save_kwargs = _audio_save_kwargs(fmt, wav_bit_depth)
             # torchaudio.save accepts file-like objects at runtime; its stub
             # only declares str | PathLike, hence the cast.
             torchaudio.save(
@@ -1815,8 +1818,49 @@ def _prune_jobs() -> None:
             break
 
 
+def _audio_save_kwargs(fmt: str, wav_bit_depth: str) -> dict:
+    """torchaudio.save kwargs for a generated file at the requested depth.
+
+    PCM_16 stays the default: it halves the on-disk footprint at no perceptible
+    cost on generative audio, and every finished job also carries its audio
+    base64-encoded in the JOBS dict until it is pruned, so the depth is paid
+    for twice. ``32f`` is the escape hatch for output going straight back into
+    a float session — the Edit timeline, a VST chain, the Chimera stack — where
+    every requantization along the way compounds.
+
+    FLAC is lossless but it is not float, and torchaudio writes it at 16 bits
+    unless told otherwise, so a wider request lands there at 24. OGG is Vorbis
+    and has no PCM word length to set at all.
+    """
+    if fmt == "wav":
+        return {
+            "32f": dict(encoding="PCM_F", bits_per_sample=32),
+            "24": dict(encoding="PCM_S", bits_per_sample=24),
+        }.get(wav_bit_depth, dict(encoding="PCM_S", bits_per_sample=16))
+    if fmt == "flac" and wav_bit_depth in ("24", "32f"):
+        return {"bits_per_sample": 24}
+    return {}
+
+
+def _clamp_for_output(audio, fmt: str, wav_bit_depth: str):
+    """Fixed-point targets get the -1..1 clamp; a float WAV does not.
+
+    Int PCM wraps rather than saturates on overflow, so the clamp has to stay
+    for every fixed-point target. A float WAV is the one output that can carry
+    a true peak above 0 dBFS, and flattening it here would destroy exactly what
+    the caller asked for.
+    """
+    if fmt == "wav" and wav_bit_depth == "32f":
+        return audio
+    return audio.clamp(-1, 1)
+
+
 def _generate_to_bytes(
-    generation_pipeline, generate_args: dict, file_format: str, callback=None
+    generation_pipeline,
+    generate_args: dict,
+    file_format: str,
+    callback=None,
+    wav_bit_depth: str = "16",
 ) -> tuple[bytes, str]:
     import torch
     import torchaudio
@@ -1824,18 +1868,15 @@ def _generate_to_bytes(
     if callback:
         generate_args["callback"] = callback
     audio = generation_pipeline.generate(**generate_args)
-    audio = audio.to(torch.float32).clamp(-1, 1).squeeze(0).cpu()
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
+    audio = (
+        _clamp_for_output(audio.to(torch.float32), fmt, wav_bit_depth).squeeze(0).cpu()
+    )
     output_sample_rate = int(
         generation_pipeline.model_config.get("sample_rate", sample_rate)
     )
     buf = io.BytesIO()
-    # Save as PCM_16 instead of the default 32-bit float for WAV outputs —
-    # halves the on-disk footprint with no perceptible quality cost on
-    # generative audio. FLAC handles its own efficient encoding.
-    save_kwargs: dict = {}
-    if fmt == "wav":
-        save_kwargs.update(encoding="PCM_S", bits_per_sample=16)
+    save_kwargs = _audio_save_kwargs(fmt, wav_bit_depth)
     # torchaudio.save accepts file-like objects at runtime; its stub only
     # declares str | PathLike, hence the cast.
     torchaudio.save(
@@ -1850,6 +1891,7 @@ async def _run_generate_job(
     base_args: dict,
     batch_size: int,
     file_format: str,
+    wav_bit_depth: str,
     file_naming: str,
     custom_name: str,
     lora_paths: list[str],
@@ -1892,6 +1934,7 @@ async def _run_generate_job(
                         args,
                         file_format,
                         _step_callback,
+                        wav_bit_depth,
                     )
                     mime_type = mime_map.get(fmt, "audio/wav")
                     filename = _make_generation_filename(
@@ -2048,6 +2091,8 @@ async def generate_jobs(
     init_noise_level: float = Form(1.0),
     init_audio_type: str = Form("Audio"),
     file_format: str = Form("wav"),
+    # "16" | "24" | "32f" — see _audio_save_kwargs. Anything else means "16".
+    wav_bit_depth: str = Form("16"),
     file_naming: str = Form("verbose"),
     custom_name: str = Form(""),
     mask_start: float = Form(0.0),
@@ -2249,6 +2294,7 @@ async def generate_jobs(
                 base_args,
                 int(batch_size),
                 file_format,
+                wav_bit_depth,
                 file_naming,
                 custom_name,
                 lora_paths,

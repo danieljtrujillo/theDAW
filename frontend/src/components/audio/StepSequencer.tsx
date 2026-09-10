@@ -5,12 +5,12 @@ import {
   Download, Send, Music, Palette,
 } from 'lucide-react';
 import { SlideTrack } from './SlideTrack';
-import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { logError, logInfo } from '../../state/logStore';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import { encodeWav } from '../../lib/wavEncode';
 import {
   STYLE_NAMES,
   combineStylesForRole,
@@ -55,19 +55,25 @@ const getAudioCtx = (): AudioContext => {
 /**
  * Schedule a single voice hit at time `when` on the supplied context, routed
  * to the supplied destination. Used for both live playback (engine context +
- * master gain) and offline rendering (OfflineAudioContext + its destination).
+ * the shared master summing bus) and offline rendering (OfflineAudioContext +
+ * its destination).
+ *
+ * `gain` is the voice's own level and nothing else. The listening volume lives
+ * on the engine's monitor node at the very END of the master chain
+ * (playerStore.setMasterGain), so pre-multiplying by it here applied it twice
+ * and made every live voice quieter than the same pattern bounced offline —
+ * by 20*log10(volume/100), which is 2.5 dB at the default 75 and 10.5 dB at 30.
  */
 const triggerVoice = (
   voice: Voice,
   freq: number,
   gain: number,
-  masterGain: number,
   when: number,
   ctx: BaseAudioContext,
   dest: AudioNode,
 ): void => {
   const out = ctx.createGain();
-  out.gain.value = gain * masterGain;
+  out.gain.value = gain;
   out.connect(dest);
 
   switch (voice) {
@@ -298,41 +304,6 @@ const downloadMidi = (tracks: Track[], bpm: number, mode: 'single' | 'multi'): v
 // Offline audio bounce — render the pattern (or each voice) to a WAV Blob
 // =============================================================================
 
-const encodeWav = (audioBuf: AudioBuffer): Blob => {
-  const numCh = audioBuf.numberOfChannels;
-  const sr = audioBuf.sampleRate;
-  const len = audioBuf.length;
-  const buffer = new ArrayBuffer(44 + len * numCh * 2);
-  const view = new DataView(buffer);
-  const wstr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  wstr(0, 'RIFF');
-  view.setUint32(4, 36 + len * numCh * 2, true);
-  wstr(8, 'WAVE');
-  wstr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numCh, true);
-  view.setUint32(24, sr, true);
-  view.setUint32(28, sr * numCh * 2, true);
-  view.setUint16(32, numCh * 2, true);
-  view.setUint16(34, 16, true);
-  wstr(36, 'data');
-  view.setUint32(40, len * numCh * 2, true);
-  const channels: Float32Array[] = [];
-  for (let c = 0; c < numCh; c += 1) channels.push(audioBuf.getChannelData(c));
-  let off = 44;
-  for (let i = 0; i < len; i += 1) {
-    for (let c = 0; c < numCh; c += 1) {
-      const sample = Math.max(-1, Math.min(1, channels[c][i]));
-      view.setInt16(off, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      off += 2;
-    }
-  }
-  return new Blob([buffer], { type: 'audio/wav' });
-};
-
 const renderPatternBars = async (
   trackSubset: Track[],
   bpm: number,
@@ -348,7 +319,7 @@ const renderPatternBars = async (
       for (const t of trackSubset) {
         if (!t.steps[i]) continue;
         const when = bar * barSec + i * stepSec;
-        triggerVoice(t.voice, t.freq, t.gain, 1, when, offline, offline.destination);
+        triggerVoice(t.voice, t.freq, t.gain, when, offline, offline.destination);
       }
     }
   }
@@ -372,12 +343,9 @@ export const StepSequencer: React.FC = () => {
   // Refs so the timer callback always reads the latest state without re-creating the interval.
   const tracksRef = useRef(tracks);
   const currentStepRef = useRef(currentStep);
-  const masterGain = usePlaybackStore((s) => (s.muted ? 0 : s.volume / 100));
-  const masterGainRef = useRef(masterGain);
 
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
   useEffect(() => { currentStepRef.current = currentStep; }, [currentStep]);
-  useEffect(() => { masterGainRef.current = masterGain; }, [masterGain]);
 
   // Close the style popover on outside click / Escape.
   useEffect(() => {
@@ -406,10 +374,9 @@ export const StepSequencer: React.FC = () => {
       setCurrentStep(nextStep);
       const ctx = getAudioCtx();
       const when = ctx.currentTime + 0.02;
-      const master = masterGainRef.current;
       for (const t of tracksRef.current) {
         if (t.steps[nextStep]) {
-          triggerVoice(t.voice, t.freq, t.gain, master, when, ctx, getMasterGain());
+          triggerVoice(t.voice, t.freq, t.gain, when, ctx, getMasterGain());
         }
       }
     }, stepMs);
@@ -424,7 +391,7 @@ export const StepSequencer: React.FC = () => {
       const ctx = getAudioCtx();
       const when = ctx.currentTime + 0.02;
       for (const t of tracksRef.current) {
-        if (t.steps[0]) triggerVoice(t.voice, t.freq, t.gain, masterGainRef.current, when, ctx, getMasterGain());
+        if (t.steps[0]) triggerVoice(t.voice, t.freq, t.gain, when, ctx, getMasterGain());
       }
       setCurrentStep(0);
       currentStepRef.current = 0;
@@ -831,7 +798,7 @@ export const StepSequencer: React.FC = () => {
                 className="text-zinc-700 hover:text-white"
                 onClick={() => {
                   const ctx = getAudioCtx();
-                  triggerVoice(track.voice, track.freq, track.gain, masterGainRef.current, ctx.currentTime + 0.02, ctx, getMasterGain());
+                  triggerVoice(track.voice, track.freq, track.gain, ctx.currentTime + 0.02, ctx, getMasterGain());
                 }}
                 title="Preview voice"
               >

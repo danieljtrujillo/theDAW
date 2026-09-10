@@ -34,6 +34,8 @@ def probe_file(path: Path, timeout_sec: float = 20.0) -> dict[str, Any]:
           "sample_rate": 44100,
           "channels": 2,
           "bit_depth": 16,
+          "bit_depth_is_float": false,
+          "sample_fmt": "s16",
           "duration_sec": 30.5,
           "codec": "pcm_s16le",
           "container": "wav",
@@ -107,12 +109,22 @@ def _summarize(payload: dict[str, Any]) -> dict[str, Any]:
             return None
 
     bit_rate = _to_int(fmt.get("bit_rate"))
+    # bits_per_sample reads 32 for pcm_s32le and pcm_f32le alike, so the number
+    # on its own cannot answer "is this a float file". sample_fmt can: ffmpeg
+    # names float planes 'flt'/'fltp' and doubles 'dbl'/'dblp'. It is only
+    # meaningful next to a real word length, though — every lossy decoder also
+    # reports 'fltp', and an MP3 is not a float file.
+    sample_fmt = str(audio_stream.get("sample_fmt") or "")
+    bit_depth = _to_int(audio_stream.get("bits_per_sample")) or _to_int(
+        audio_stream.get("bits_per_raw_sample")
+    )
 
     return {
         "sample_rate": _to_int(audio_stream.get("sample_rate")),
         "channels": _to_int(audio_stream.get("channels")),
-        "bit_depth": _to_int(audio_stream.get("bits_per_sample"))
-        or _to_int(audio_stream.get("bits_per_raw_sample")),
+        "bit_depth": bit_depth,
+        "bit_depth_is_float": bool(bit_depth) and sample_fmt.startswith(("flt", "dbl")),
+        "sample_fmt": sample_fmt or None,
         "duration_sec": _to_float(fmt.get("duration"))
         or _to_float(audio_stream.get("duration")),
         "codec": audio_stream.get("codec_name"),

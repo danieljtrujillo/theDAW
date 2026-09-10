@@ -219,9 +219,12 @@ def process_audio(req: ProcessRequest):
 
     Reads the file at its native sample rate, processes it through the
     instances named in ``instance_ids`` (in order), and writes a WAV to
-    ``output_path`` (or a temp file). Returns the output path.
+    ``output_path`` (or a temp file) at the source's own bit depth. Returns
+    the output path.
     """
     import soundfile as sf
+
+    from backend.lib.audio_depth import write_like_source
 
     src = Path(req.audio_path)
     if not src.is_file():
@@ -263,7 +266,10 @@ def process_audio(req: ProcessRequest):
         created_temp = True
 
     try:
-        sf.write(out_path, processed, sr)
+        # Float in, float out, same as /process-file below: a chain that
+        # requantizes between stages loses a little at every plugin, and this
+        # endpoint exists precisely to run several in a row.
+        write_like_source(out_path, processed, sr, src)
     except Exception as e:
         if created_temp:
             try:

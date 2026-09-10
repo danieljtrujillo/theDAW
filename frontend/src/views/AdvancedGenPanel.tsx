@@ -6,7 +6,7 @@ import {
   Wand2, Loader2, BookOpen, Layers, Sparkles, Download,
   Music2, Dice5, Repeat, Aperture,
 } from 'lucide-react';
-import { useGenerateParamsStore, type GenerateParamsState } from '../state/generateParamsStore';
+import { useGenerateParamsStore, type GenerateParamsState, type WavBitDepth } from '../state/generateParamsStore';
 import { useGenerateStore } from '../state/generateStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
@@ -35,6 +35,11 @@ import { classifyModelGate } from '../lib/modelDownloadClient';
 import { requireFeature } from '../notices/featureGateStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import '../components/layout/track-controls.css';
+
+/* Local rather than in RICH_TOOLTIPS because the depth choice only makes sense
+   next to the format one — the two rules it has to state (FLAC stops at 24,
+   OGG has no word length at all) are about the Format select beside it. */
+const BIT_DEPTH_TIP = `• 16-bit — PCM. Half the file for no audible cost on generative audio, so it is the default.\n• 24-bit — PCM, and as deep as FLAC goes.\n• 32-bit float — WAV only. Nothing is clipped on the way out, so a true peak over 0 dBFS reaches EDIT, the Chimera stack or a VST chain intact. OGG ignores the setting.`;
 
 /* ── Full audio player (Compare row) ──────────────────────────────────── */
 /* Drives the global footer transport (playerStore) — the generated output is
@@ -149,7 +154,7 @@ function TemplatesPanel() {
       initAudioEnabled: p.initAudioEnabled, inversionSteps: p.inversionSteps,
       inversionGamma: p.inversionGamma, inversionUnconditional: p.inversionUnconditional,
       inpaintEnabled: p.inpaintEnabled, maskStart: p.maskStart, maskEnd: p.maskEnd,
-      fileFormat: p.fileFormat, fileNaming: p.fileNaming, cutToDuration: p.cutToDuration,
+      fileFormat: p.fileFormat, wavBitDepth: p.wavBitDepth, fileNaming: p.fileNaming, cutToDuration: p.cutToDuration,
       autoplay: p.autoplay, autoDownload: p.autoDownload,
     };
     setTemplates([{ id: uuid(), name: name.trim(), createdAt: new Date().toISOString(), params }, ...templates]);
@@ -689,7 +694,7 @@ export const AdvancedGenPanel: React.FC<{
       />
 
       {/* ═══ TOP: input waveforms (INIT | INPAINT) ═══ */}
-      <div className="shrink-0 grid grid-cols-2 gap-1.5" style={{ height: 108 }}>
+      <div data-tour="gen-init-inpaint" className="shrink-0 grid grid-cols-2 gap-1.5" style={{ height: 108 }}>
         {/* INIT */}
         <div className={`${accentBox} flex flex-col px-2 py-1.5 min-w-0`}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
@@ -819,7 +824,7 @@ export const AdvancedGenPanel: React.FC<{
           </div>
 
           {/* Controls */}
-          <div className="hardware-card flex flex-col shrink-0">
+          <div data-tour="gen-controls" className="hardware-card flex flex-col shrink-0">
             <span className={`${sectionTitle} mb-1.5`}>CONTROLS</span>
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
@@ -1090,14 +1095,18 @@ export const AdvancedGenPanel: React.FC<{
         <div className="flex flex-col gap-1.5 min-h-0 overflow-y-auto row-span-2">
             {/* LoRA — PRESETS-style dropdown; expands to show added LoRAs */}
             <div className="relative shrink-0">
-              <button onClick={() => setLorasOpen(!lorasOpen)}
+              <button type="button" onClick={() => setLorasOpen(!lorasOpen)}
+                data-tour="gen-lora"
+                aria-expanded={lorasOpen}
+                aria-controls="gen-lora-panel"
+                aria-label={`LoRA adapters (${p.loras.length} added)`}
                 className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded border border-white/10 bg-white/5 hover:bg-purple-500/15 hover:border-purple-500/30 text-zinc-300 hover:text-white transition-colors">
                 <Layers className="w-3.5 h-3.5" />
                 <span className="text-[10px] font-black uppercase tracking-widest">LoRA{p.loras.length ? ` (${p.loras.length})` : ''}</span>
                 <ChevronDown className={`w-3 h-3 transition-transform ${lorasOpen ? 'rotate-180' : ''}`} />
               </button>
               {lorasOpen && (
-                <div className="absolute left-0 top-full mt-1 z-50 w-full max-h-64 overflow-y-auto rounded border border-white/10 bg-[#0c0a12] shadow-2xl p-1.5 flex flex-col gap-1">
+                <div id="gen-lora-panel" className="absolute left-0 top-full mt-1 z-50 w-full max-h-64 overflow-y-auto rounded border border-white/10 bg-[#0c0a12] shadow-2xl p-1.5 flex flex-col gap-1">
                   <button
                     className="flex items-center justify-center gap-1 px-2 py-1 rounded border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-[10px] font-bold uppercase tracking-wider text-purple-200 cursor-pointer"
                     onClick={() => sf('loras', [...p.loras, { name: '', weight: 1.0, file: null }])}>
@@ -1146,6 +1155,12 @@ export const AdvancedGenPanel: React.FC<{
                   <label htmlFor="gen-file-naming" className="text-[10px] text-zinc-300 flex items-center gap-1">Naming <InfoTip {...RICH_TOOLTIPS.fileNaming} /></label>
                   <select id="gen-file-naming" name="gen-file-naming" className="compact-input w-full mt-0.5" value={p.fileNaming} onChange={(e) => sf('fileNaming', e.target.value)} style={{ colorScheme: 'dark' }}>
                     <option value="verbose">Verbose</option><option value="prompt">Prompt</option><option value="seed">Seed</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="gen-wav-bit-depth" className="text-[10px] text-zinc-300 flex items-center gap-1">Depth <InfoTip title="Bit Depth" body={BIT_DEPTH_TIP} /></label>
+                  <select id="gen-wav-bit-depth" name="gen-wav-bit-depth" className="compact-input w-full mt-0.5" value={p.wavBitDepth} onChange={(e) => sf('wavBitDepth', e.target.value as WavBitDepth)} style={{ colorScheme: 'dark' }}>
+                    <option value="16">16-bit</option><option value="24">24-bit</option><option value="32f">32-bit float</option>
                   </select>
                 </div>
               </div>

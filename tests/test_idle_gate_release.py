@@ -132,6 +132,7 @@ def _generate_kwargs(**overrides) -> dict:
         "init_noise_level": 1.0,
         "init_audio_type": "Audio",
         "file_format": "wav",
+        "wav_bit_depth": "16",
         "file_naming": "verbose",
         "custom_name": "",
         "mask_start": 0.0,

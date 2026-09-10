@@ -152,3 +152,32 @@ def test_generation_artifacts_save_audio_spectrograms_and_metadata(
     assert metadata["filename"] == "bad-name.wav"
     assert metadata["seed"] == 123
     assert metadata["prompt"] == "kick loop"
+
+
+def test_output_depth_never_leaks_into_the_filename():
+    """wav_bit_depth is a separate field from file_format on purpose: the
+    filename, the mime map and _safe_filename's suffix allow-list all key off
+    the format alone and must stay untouched by a depth choice."""
+    for depth in ("16", "24", "32f", "nonsense"):
+        name = _make_generation_filename(
+            "job123",
+            0,
+            "wav",
+            "verbose",
+            f"a test tone at {depth}",
+            None,
+            42,
+            "",
+        )
+        assert name.endswith(".wav")
+        assert _safe_filename(name) == name
+
+
+def test_generated_output_still_defaults_to_pcm16():
+    """The documented default. Anything unrecognised means 16, so a caller
+    that sends nothing gets exactly what it got before the field existed."""
+    from backend.server import _audio_save_kwargs
+
+    default = {"encoding": "PCM_S", "bits_per_sample": 16}
+    assert _audio_save_kwargs("wav", "16") == default
+    assert _audio_save_kwargs("wav", "") == default

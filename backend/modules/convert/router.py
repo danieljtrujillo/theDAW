@@ -53,6 +53,13 @@ FORMATS: dict[str, dict] = {
         "label": "WAV (PCM 24-bit)",
         "args": ["-vn", "-c:a", "pcm_s24le"],
     },
+    "wav32f": {
+        "ext": "wav",
+        "kind": "audio",
+        "mime": "audio/wav",
+        "label": "WAV (32-bit float)",
+        "args": ["-vn", "-c:a", "pcm_f32le"],
+    },
     "flac": {
         "ext": "flac",
         "kind": "audio",
@@ -224,6 +231,11 @@ ALLOWED_TARGETS: dict[str, set[str]] = {
 
 _AUDIO_EXT = {
     ".wav",
+    ".wave",
+    ".w64",
+    ".rf64",
+    ".bwf",
+    ".caf",
     ".flac",
     ".mp3",
     ".ogg",

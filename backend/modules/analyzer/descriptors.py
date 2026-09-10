@@ -5,8 +5,8 @@ audio file and returns a single JSON-serializable dict matching the schema
 documented in ``modules/analyzer/README.md``.
 
 Libraries used: numpy, scipy, soundfile, librosa, pyloudnorm.
-FFmpeg (via ``edit_tools_backend.lib.audio_analysis.measure_loudness``) provides
-EBU-R128 true-peak, momentary/short-term LUFS, and loudness range.
+FFmpeg (via ``backend.lib.audio_analysis.measure_loudness``) provides EBU-R128
+true-peak, momentary/short-term LUFS, and loudness range.
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ import pyloudnorm
 import soundfile as sf
 from scipy.signal import butter, sosfilt
 
-from edit_tools_backend.lib.audio_analysis import measure_loudness
+from backend.lib.audio_analysis import measure_loudness
+from backend.lib.audio_depth import probe_depth
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -577,7 +578,12 @@ def _detect_artifacts(
 
 
 def _detect_clipping(mono: np.ndarray, sr: int) -> dict[str, Any]:
-    """Detect digital clipping: consecutive samples at or near ±1.0."""
+    """Detect digital clipping: consecutive samples at or near ±1.0.
+
+    A 32-bit float file can legitimately peak above 1.0 with not one
+    flat-topped sample in it, and the threshold alone cannot tell that apart
+    from damage — so the measured peak rides along in the result.
+    """
     threshold = 0.99
     abs_mono = np.abs(mono)
     clipped = abs_mono > threshold
@@ -601,6 +607,9 @@ def _detect_clipping(mono: np.ndarray, sr: int) -> dict[str, Any]:
     return {
         "detected": clip_ratio > 1e-5,
         "severity": round(severity, 4),
+        # Above 1.0 with nothing in locations_sec is headroom used, not damage
+        # done: the runs are what make it clipping.
+        "sample_peak": round(float(np.max(abs_mono)), 4) if len(mono) else 0.0,
         "locations_sec": locations_sec[:50],  # Cap at 50 locations
     }
 
@@ -907,23 +916,18 @@ async def extract_descriptors(audio_path: Path) -> dict[str, Any]:
 
     Returns the JSON structure documented in README.md with keys:
     ``low_level``, ``mid_level``, ``high_level``, plus file metadata
-    (``duration_sec``, ``sample_rate``, ``channels``, ``bit_depth``).
+    (``duration_sec``, ``sample_rate``, ``channels``, ``bit_depth``,
+    ``bit_depth_is_float``, ``sample_format``).
+
+    ``bit_depth`` is null when the source carries no PCM word length — a lossy
+    codec, or a subtype nothing here recognises. Reporting a made-up 16 for
+    those is worse than reporting nothing, because a caller cannot tell the
+    difference between a measurement and a guess.
     """
     # ---- Read audio ----
     info = sf.info(str(audio_path))
     channels = info.channels
-    # soundfile subtype → approximate bit depth
-    subtype = info.subtype
-    bit_depth_map = {
-        "PCM_16": 16,
-        "PCM_24": 24,
-        "PCM_32": 32,
-        "FLOAT": 32,
-        "DOUBLE": 64,
-        "PCM_S8": 8,
-        "PCM_U8": 8,
-    }
-    bit_depth = bit_depth_map.get(subtype, 16)
+    depth = probe_depth(audio_path)
 
     audio, sr = sf.read(str(audio_path), always_2d=True, dtype="float64")
     duration = float(audio.shape[0]) / sr
@@ -957,5 +961,7 @@ async def extract_descriptors(audio_path: Path) -> dict[str, Any]:
         "duration_sec": round(duration, 3),
         "sample_rate": sr,
         "channels": channels,
-        "bit_depth": bit_depth,
+        "bit_depth": depth.bits or None,
+        "bit_depth_is_float": depth.is_float,
+        "sample_format": depth.label,
     }

@@ -137,7 +137,7 @@ Available actions:
 - `set_sampler` — Set sampler. Payload: `{"sampler": "pingpong"|"euler"|"rk4"|"dpmpp"}`
 - `set_shift_mode` — Set shift mode. Payload: `{"mode": "LogSNR"|"Flux"|"Full"|"None"}`
 - `set_init_noise` — Set init noise level. Payload: `{"noise": 0.7}`
-- `set_params` — Set multiple params at once. Payload: key-value pairs of any above, including advanced params like `sampler`, `sigma_max`, `duration_padding_sec`, `apg_scale`, `cfg_rescale`, `cfg_norm_threshold`, `cfg_interval_min`, `cfg_interval_max`, `shift_mode`, `file_format`, `file_naming`, and `cut_to_duration`.
+- `set_params` — Set multiple params at once. Payload: key-value pairs of any above, including advanced params like `sampler`, `sigma_max`, `duration_padding_sec`, `apg_scale`, `cfg_rescale`, `cfg_norm_threshold`, `cfg_interval_min`, `cfg_interval_max`, `shift_mode`, `file_format`, `file_naming`, `wav_bit_depth` ("16"|"24"|"32f"), and `cut_to_duration`.
 - `generate` — Start audio generation (uses current params). No payload needed. Requires user confirmation in the UI.
 - `abort` — Cancel in-progress generation. No payload needed. Requires user confirmation in the UI.
 - `get_status` — Query current generation status. No payload needed.

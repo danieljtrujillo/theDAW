@@ -8,7 +8,19 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
+from backend.lib.audio_depth import (
+    UNKNOWN_DEPTH,
+    PcmDepth,
+    ffmpeg_pcm_args,
+    probe_depth,
+    widest,
+)
+
 router = APIRouter()
+
+# A mastered render is a delivery-grade file, so it never comes back narrower
+# than 24-bit — but a float source still comes back float.
+MASTERING_FLOOR = PcmDepth(24, False)
 
 EFFECT_PARAM_BOUNDS = {
     "mastering_chain": {
@@ -179,10 +191,10 @@ def _build_filter(
             f"alimiter=limit={limiter},"
             f"loudnorm=I={lufs}:LRA=7:TP=-1"
         )
-        # pcm_s24le is only valid in WAV containers; let FFmpeg pick the right
-        # codec for every other format (mp3 → libmp3lame, aac → aac, etc.)
-        if output_format == "wav":
-            return ["-af", af, "-c:a", "pcm_s24le"]
+        # No codec here: the caller picks one from the source's depth, with a
+        # 24-bit floor for this effect (see MASTERING_FLOOR). A PCM codec name
+        # is only valid in a WAV container anyway — every other format lets
+        # FFmpeg pick (mp3 → libmp3lame, aac → aac, …).
         return ["-af", af]
 
     elif effect == "compression":
@@ -411,12 +423,25 @@ async def studio_process(
             while chunk := await audio.read(1 << 20):
                 f.write(chunk)
 
+        # ffmpeg's WAV default is pcm_s16le, so without this a float upload
+        # came back requantized from an effect that only touched its tone. A
+        # mastered render is a delivery-grade file and keeps 24-bit as a floor;
+        # everything else preserves what it was handed, and an effect that
+        # names its own codec (the export_* family) keeps the one it chose.
+        floor = MASTERING_FLOOR if effect == "mastering_chain" else UNKNOWN_DEPTH
+        depth_args = (
+            []
+            if "-c:a" in filter_args
+            else ffmpeg_pcm_args(widest(probe_depth(input_path), floor), output_format)
+        )
+
         cmd = [
             "ffmpeg",
             "-y",
             "-i",
             str(input_path),
             *filter_args,
+            *depth_args,
             str(output_path),
         ]
 

@@ -66,6 +66,51 @@ def test_probe_file_real_wav_when_ffprobe_available(tmp_path: Path):
     assert summary.get("channels") == 2
 
 
+def test_probe_summary_reports_whether_the_samples_are_float(tmp_path: Path):
+    """bits_per_sample reads 32 for pcm_s32le and pcm_f32le alike, so the
+    number on its own cannot answer "is this a float file"."""
+    if not has_ffprobe():
+        return  # silently skip on environments without ffprobe
+    try:
+        import numpy as np
+        import soundfile as sf
+    except ImportError:
+        return
+
+    tone = np.zeros((22050, 2), dtype=np.float32)
+    for subtype, bit_depth, is_float in (
+        ("FLOAT", 32, True),
+        ("DOUBLE", 64, True),
+        ("PCM_24", 24, False),
+        ("PCM_16", 16, False),
+    ):
+        p = tmp_path / f"{subtype.lower()}.wav"
+        sf.write(str(p), tone, 44100, subtype=subtype)
+        summary = (probe_file(p) or {}).get("_summary") or {}
+        assert summary.get("bit_depth") == bit_depth, subtype
+        assert summary.get("bit_depth_is_float") is is_float, subtype
+        assert summary.get("sample_fmt")
+
+
+def test_probe_summary_flac_falls_back_to_bits_per_raw_sample(tmp_path: Path):
+    """ffprobe reports bits_per_sample: 0 for FLAC, so the `or` fallback in
+    _summarize is what makes the depth land at all. A float source encoded to
+    FLAC is 24-bit int — lossless, but never float."""
+    if not has_ffprobe():
+        return
+    try:
+        import numpy as np
+        import soundfile as sf
+    except ImportError:
+        return
+
+    p = tmp_path / "from_float.flac"
+    sf.write(str(p), np.zeros((22050, 2), dtype=np.float32), 44100, subtype="PCM_24")
+    summary = (probe_file(p) or {}).get("_summary") or {}
+    assert summary.get("bit_depth") == 24
+    assert summary.get("bit_depth_is_float") is False
+
+
 def _seed_entry(root: Path, entry_id: str, sr: int = 22050) -> Path:
     """Seed a real WAV-backed library entry for engine tests."""
     item_dir = root / entry_id

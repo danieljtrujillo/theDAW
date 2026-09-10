@@ -12,6 +12,11 @@ Dispatch is by ``ToolSpec.mode``:
     macro    → async handler(input_path, output_path, params) -> None  (uses macro_runner)
     sidecar  → async handler(input_path, output_path, params, job) -> None (GPU model)
 
+A filter-mode render comes out at the SOURCE's bit depth, because ffmpeg's WAV
+default is pcm_s16le and an EQ move should not also be a bit-depth reduction.
+For a compressed upload there is nothing to preserve — ffprobe reports no word
+length for MP3 or Opus — so those stay on ffmpeg's own default, unchanged.
+
 Tools whose ``handler is None`` answer 501 with a clear, honest message — never
 fake output.
 """
@@ -28,6 +33,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from ..lib import ffmpeg
+from ..lib.audio_depth import ffmpeg_pcm_args, probe_depth
 from ..lib.filtergraph import FilterGraph
 from ..lib.params import ToolSpec
 
@@ -110,7 +116,12 @@ def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
                 filter_args = (
                     built.args() if isinstance(built, FilterGraph) else list(built)
                 )
-                await ffmpeg.render(in_path, out_path, filter_args)
+                await ffmpeg.render(
+                    in_path,
+                    out_path,
+                    filter_args,
+                    extra_out_args=ffmpeg_pcm_args(probe_depth(in_path), output_format),
+                )
             else:
                 # process / macro / sidecar — handler owns the full render.
                 # Async handlers await ffmpeg subprocesses and never block;

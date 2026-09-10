@@ -65,6 +65,7 @@ assert.equal(form.get('inversion_steps'), '88');
 assert.equal(form.get('inversion_gamma'), '0.25');
 assert.equal(form.get('inversion_unconditional'), 'true');
 assert.equal(form.get('file_format'), 'flac');
+assert.equal(form.get('wav_bit_depth'), '16');
 assert.equal(form.get('file_naming'), 'prompt');
 assert.equal(form.get('cut_to_duration'), 'false');
 assert.equal(form.get('lora_weight_0'), '0.65');

@@ -186,6 +186,8 @@ def _pitchlift(inp: Path, out: Path, params: dict) -> None:
     import numpy as np
     import soundfile as sf
 
+    from backend.lib.audio_depth import PcmDepth, write_like_source
+
     onset_threshold = float(params.get("onsetThreshold", 0.5))
 
     # Load audio as mono
@@ -232,8 +234,10 @@ def _pitchlift(inp: Path, out: Path, params: dict) -> None:
     if peak > 0:
         output = output * (0.9 / peak)
 
-    # Write output as WAV (same sample rate as input)
-    sf.write(str(out), output, sr, subtype="PCM_24")
+    # Write output as WAV (same sample rate as input). The signal here is
+    # resynthesized rather than filtered, so the source depth is a floor, not a
+    # target: 24-bit minimum, but a float source still comes back as float.
+    write_like_source(out, output, sr, inp, min_depth=PcmDepth(24, False))
 
 
 TOOLS: list[ToolSpec] = [

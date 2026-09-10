@@ -32,9 +32,11 @@ log = logging.getLogger(__name__)
 
 # Bump when the analysis pipeline changes in a way that should re-run already-
 # analyzed tracks. v2: tempo now falls back to librosa so MP3s actually get a
-# BPM (v1 rows persisted bpm=null because aubio can't open MP3). The GET
-# endpoint reports version<ANALYSIS_VERSION rows as 'pending' so they re-run.
-ANALYSIS_VERSION = 2
+# BPM (v1 rows persisted bpm=null because aubio can't open MP3). v3: rows now
+# record whether the samples are float, which bit_depth alone never said — 32
+# means pcm_s32le and pcm_f32le equally. The GET endpoint reports
+# version<ANALYSIS_VERSION rows as 'pending' so they re-run.
+ANALYSIS_VERSION = 3
 
 
 def analyze_audio(
@@ -63,6 +65,7 @@ def analyze_audio(
     out["sample_rate"] = summary.get("sample_rate")
     out["channels"] = summary.get("channels")
     out["bit_depth"] = summary.get("bit_depth")
+    out["bit_depth_is_float"] = summary.get("bit_depth_is_float")
     out["codec"] = summary.get("codec")
     out["container"] = summary.get("container")
     duration_sec = summary.get("duration_sec")

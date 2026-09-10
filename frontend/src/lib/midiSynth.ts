@@ -11,6 +11,7 @@
  * this module existed, so previews and bounces stay consistent.
  */
 import { parseMidi } from './midi';
+import { encodeWav } from './wavEncode';
 import { isSoundfontActive, getActiveSynthVoice, renderNotesToBlobSF, renderMidiBufferToBlobSF } from './soundfontEngine';
 import { getSynthVoice } from './synthVoices';
 
@@ -89,41 +90,10 @@ export const triggerActiveVoice: typeof triggerSynthVoice = (
   (voice ? voice.trigger : triggerSynthVoice)(ctx, dest, midi, velocity, when, duration, master);
 };
 
-/** Encode an AudioBuffer to a 16-bit PCM WAV Blob. */
-export const encodeWavBlob = (audioBuf: AudioBuffer): Blob => {
-  const numCh = audioBuf.numberOfChannels;
-  const sr = audioBuf.sampleRate;
-  const len = audioBuf.length;
-  const buffer = new ArrayBuffer(44 + len * numCh * 2);
-  const view = new DataView(buffer);
-  const writeStr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + len * numCh * 2, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numCh, true);
-  view.setUint32(24, sr, true);
-  view.setUint32(28, sr * numCh * 2, true);
-  view.setUint16(32, numCh * 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, len * numCh * 2, true);
-  const channels: Float32Array[] = [];
-  for (let c = 0; c < numCh; c += 1) channels.push(audioBuf.getChannelData(c));
-  let offset = 44;
-  for (let i = 0; i < len; i += 1) {
-    for (let c = 0; c < numCh; c += 1) {
-      const sample = Math.max(-1, Math.min(1, channels[c][i]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
-    }
-  }
-  return new Blob([buffer], { type: 'audio/wav' });
-};
+/** Encode an AudioBuffer to a WAV Blob. Kept as a named re-export because
+ * callers outside this module import it by this name; the encoder itself lives
+ * in lib/wavEncode so every bounce path in the app shares one. */
+export const encodeWavBlob = (audioBuf: AudioBuffer): Blob => encodeWav(audioBuf);
 
 /**
  * Render absolute-seconds notes to a WAV Blob. Uses the active soundfont

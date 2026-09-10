@@ -176,6 +176,9 @@ export interface ChimeraState {
   usePromptHint: boolean;
 }
 
+/** PCM word length for the rendered file, as the backend's `wav_bit_depth` spells it. */
+export type WavBitDepth = '16' | '24' | '32f';
+
 export interface GenerateParamsState {
   prompt: string;
   negativePrompt: string;
@@ -229,6 +232,11 @@ export interface GenerateParamsState {
   inpaintRegions: [number, number][];
 
   fileFormat: string;
+  /** 16 halves the file for no audible cost on generative audio, so it stays
+   *  the default. 32f is the one setting that survives a true peak over 0 dBFS
+   *  intact — pick it when the render goes on to EDIT, Chimera or a VST chain,
+   *  where every requantisation on the way compounds. */
+  wavBitDepth: WavBitDepth;
   fileNaming: string;
   outputName: string;
   cutToDuration: boolean;
@@ -323,6 +331,7 @@ export const useGenerateParamsStore = create<ParamsStore>()(persist((set) => ({
   inpaintRegions: [],
 
   fileFormat: 'wav',
+  wavBitDepth: '16',
   fileNaming: 'verbose',
   outputName: '',
   cutToDuration: true,

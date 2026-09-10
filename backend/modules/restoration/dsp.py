@@ -8,6 +8,10 @@ non-coroutine handlers to a worker thread via asyncio.to_thread, keeping the
 event loop responsive during CPU-bound DSP. ``vocal_isolate`` and
 ``breath_removal`` additionally keep thin async facades because
 ``backend.modules.vocal.preprocess.isolation`` awaits those exact names.
+
+Every write goes through ``write_like_source`` rather than ``sf.write``: these
+tools are asked to repair a file, not to requantize it, and soundfile's WAV
+default is PCM_16 whatever array it is handed.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+
+from backend.lib.audio_depth import write_like_source
 
 
 def vocal_isolate_sync(input_path: Path, output_path: Path, params: dict) -> None:
@@ -31,7 +37,7 @@ def vocal_isolate_sync(input_path: Path, output_path: Path, params: dict) -> Non
 
     # If mono, just copy through — nothing to separate
     if data.ndim == 1:
-        sf.write(str(output_path), data, sr)
+        write_like_source(output_path, data, sr, input_path)
         return
 
     left = data[:, 0]
@@ -53,9 +59,7 @@ def vocal_isolate_sync(input_path: Path, output_path: Path, params: dict) -> Non
     # Wet/dry blend with original
     blended = wet * extracted + (1.0 - wet) * data
 
-    # Clip to prevent overflow
-    blended = np.clip(blended, -1.0, 1.0)
-    sf.write(str(output_path), blended, sr)
+    write_like_source(output_path, blended, sr, input_path)
 
 
 async def vocal_isolate(input_path: Path, output_path: Path, params: dict) -> None:
@@ -101,7 +105,7 @@ def stem_separation(input_path: Path, output_path: Path, params: dict) -> None:
     # Transpose for soundfile (expects samples, channels)
     if was_stereo:
         result = result.T
-    sf.write(str(output_path), result, sr)
+    write_like_source(output_path, result, sr, input_path)
 
 
 def spectral_repair(input_path: Path, output_path: Path, params: dict) -> None:
@@ -145,8 +149,8 @@ def spectral_repair(input_path: Path, output_path: Path, params: dict) -> None:
     else:
         result = _repair_channel(y)
 
-    result = np.clip(result, -1.0, 1.0).astype(np.float32)
-    sf.write(str(output_path), result, sr)
+    result = result.astype(np.float32)
+    write_like_source(output_path, result, sr, input_path)
 
 
 async def breath_removal(input_path: Path, output_path: Path, params: dict) -> None:
@@ -216,5 +220,5 @@ def breath_removal_sync(input_path: Path, output_path: Path, params: dict) -> No
     else:
         result = mono * sample_gain
 
-    result = np.clip(result, -1.0, 1.0).astype(np.float32)
-    sf.write(str(output_path), result, sr)
+    result = result.astype(np.float32)
+    write_like_source(output_path, result, sr, input_path)

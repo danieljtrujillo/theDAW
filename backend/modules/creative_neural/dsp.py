@@ -1,7 +1,9 @@
 """DSP helpers for creative-neural tools.
 
 Pure numpy/scipy/librosa processing — no network, no GPU, no pip installs.
-Each function reads from input_path and writes to output_path (WAV).
+Each function reads from input_path and writes to output_path (WAV) at the
+source's bit depth: these are the tools whose whole point is fidelity, and
+``sf.write`` on its own would hand every one of them back a PCM_16 file.
 """
 
 from __future__ import annotations
@@ -9,6 +11,8 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 from pathlib import Path
+
+from backend.lib.audio_depth import write_like_source
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,7 +92,7 @@ def grainlab(input_path: Path, output_path: Path, params: dict) -> None:
         if out_rms > 0:
             out *= min(orig_rms / out_rms, 2.0)
 
-    sf.write(str(output_path), out, sr)
+    write_like_source(output_path, out, sr, input_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,7 +160,7 @@ def voxsynth(input_path: Path, output_path: Path, params: dict) -> None:
         out_channels.append(result)
 
     out = np.column_stack(out_channels)
-    sf.write(str(output_path), out, sr)
+    write_like_source(output_path, out, sr, input_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -210,7 +214,7 @@ def spectramorph(input_path: Path, output_path: Path, params: dict) -> None:
         out_channels.append(result)
 
     out = np.column_stack(out_channels)
-    sf.write(str(output_path), out, sr)
+    write_like_source(output_path, out, sr, input_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,7 +264,7 @@ def crossfade_morph(input_path: Path, output_path: Path, params: dict) -> None:
         out_channels.append(result)
 
     out = np.column_stack(out_channels)
-    sf.write(str(output_path), out, sr)
+    write_like_source(output_path, out, sr, input_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,4 +319,4 @@ def tokensynth(input_path: Path, output_path: Path, params: dict) -> None:
     peak = np.max(np.abs(out))
     if peak > 0:
         out *= 0.9 / peak
-    sf.write(str(output_path), out, sr)
+    write_like_source(output_path, out, sr, input_path)
