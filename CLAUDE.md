@@ -103,10 +103,19 @@ uv run pytest tests/test_inference.py
 # Run tests and save generated audio for inspection
 uv run pytest --save-audio
 
+# Frontend tests — plain tsx scripts under src/, NOT vitest
+cd frontend && npm test              # every suite
+cd frontend && npm run test:sing     # one suite (see package.json for the list)
+
 # Lint (runs on CI for PRs)
 uv run ruff check
 uv run ruff format --check
+cd frontend && npm run lint          # tsc --noEmit
 ```
+
+**Adding a frontend test:** a `*.test.ts` file only runs if a `test:*` script
+names it, and `npm test` chains every `test:*` script. Add yours to both, or it
+silently never runs — nine suites were orphaned that way.
 
 ## Architecture
 

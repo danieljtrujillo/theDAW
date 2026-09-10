@@ -199,7 +199,13 @@ def test_invariants_on_noisy_1500_token_lyric():
     words = asr(asr_tokens, step=0.3)
     t0 = time.perf_counter()
     out, stats = align_words(lines, words, int(words[-1]["end"] * 1000) + 5000)
-    assert time.perf_counter() - t0 < 1.0
+    # A blowup guard, not a latency budget. The alignment costs ~0.15s idle, so
+    # the ceiling is generous on purpose: a quadratic regression on 1500 tokens
+    # runs for tens of seconds and still trips it, while a GC pause or a loaded
+    # box no longer does. At 1.0s this failed intermittently in a full-suite run
+    # and passed every time on its own, which told you about the machine rather
+    # than about the code.
+    assert time.perf_counter() - t0 < 5.0
     assert stats.total == 1500
     assert stats.matched > 900
     prev_end = 0
