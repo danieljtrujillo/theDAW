@@ -251,7 +251,9 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
         aria-label="App menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-controls="app-hamburger-menu"
+        // Only while the menu is actually rendered: aria-controls naming an
+        // element that does not exist is worse than no aria-controls at all.
+        aria-controls={open ? 'app-hamburger-menu' : undefined}
         className={`p-1.5 rounded border transition-colors group flex items-center gap-1.5 outline-none focus-visible:ring-1 focus-visible:ring-purple-400/60 ${
           open ? TRIGGER_ACTIVE : TRIGGER_IDLE
         }`}

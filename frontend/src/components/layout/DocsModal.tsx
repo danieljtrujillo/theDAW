@@ -402,10 +402,14 @@ export const DocsModal: React.FC<DocsModalProps> = ({ open, onClose }) => {
         <div className="flex-1 min-h-0 flex">
           <aside className="docs-modal-toc w-65 shrink-0 border-r border-white/10 bg-black/40 flex flex-col min-h-0">
             <div className="px-3 pt-3 pb-2 shrink-0">
+              <label htmlFor="docs-toc-search" className="sr-only">
+                Filter the table of contents
+              </label>
               <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
+                <Search aria-hidden="true" className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600" />
                 <input
                   type="text"
+                  id="docs-toc-search"
                   name="docs-toc-search"
                   className="compact-input w-full pl-7"
                   placeholder="FILTER TOC..."
