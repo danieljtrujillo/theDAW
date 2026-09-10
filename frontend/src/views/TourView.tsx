@@ -922,7 +922,8 @@ export const TourView: React.FC = () => {
             <KeyField
               id="tour-key-ors"
               label="openrouteservice"
-              hint="powers route optimization — free key at account.heigit.org"
+              hint="powers route optimization"
+              getUrl="https://account.heigit.org/signup"
               state={keyCfg?.keys?.ors}
               value={orsInput}
               onChange={setOrsInput}
@@ -931,7 +932,8 @@ export const TourView: React.FC = () => {
               <KeyField
                 id="tour-key-ocm"
                 label="OpenChargeMap"
-                hint="powers EV charger stops — free key at openchargemap.org"
+                hint="powers EV charger stops"
+                getUrl="https://openchargemap.org/site/develop/api"
                 state={keyCfg?.keys?.openchargemap}
                 value={ocmInput}
                 onChange={setOcmInput}
@@ -1628,34 +1630,82 @@ export const TourView: React.FC = () => {
   );
 };
 
+/**
+ * One provider key: what it unlocks, where to get one, and where to paste it.
+ *
+ * `getUrl` is the provider's own sign-up / key page, opened in the system
+ * browser (the desktop shell routes every external http(s) link there, and the
+ * web build opens a tab). The field used to name the site in a grey hint and
+ * leave the user to find it — "zero-terminal setup" that still needed a
+ * search. The Paste button reads the clipboard so the key never has to be
+ * typed; it is optional in the sense that the input still takes a manual
+ * paste or typing, and it quietly disables itself where the clipboard API is
+ * unavailable (an insecure origin over the LAN).
+ */
 const KeyField: React.FC<{
   id: string;
   label: string;
   hint: string;
+  getUrl: string;
   state?: { configured: boolean; from_env: boolean };
   value: string;
   onChange: (v: string) => void;
-}> = ({ id, label, hint, state, value, onChange }) => (
-  <div>
-    <label htmlFor={id} className="flex items-baseline justify-between text-[10px]">
-      <span className="font-bold uppercase tracking-wider text-zinc-300">{label}</span>
-      <span className="text-[9px] text-zinc-400">
-        {state?.from_env ? 'set by env (env wins)' : state?.configured ? 'configured' : 'not set'}
-      </span>
-    </label>
-    <input
-      id={id}
-      name={id}
-      type="password"
-      autoComplete="off"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={state?.configured ? 'configured — paste to replace' : 'paste key...'}
-      className="mt-1 w-full rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-lime-500/50 focus:outline-none"
-    />
-    <p className="mt-0.5 text-[9px] leading-snug text-zinc-400">{hint}</p>
-  </div>
-);
+}> = ({ id, label, hint, getUrl, state, value, onChange }) => {
+  const canPaste = typeof navigator !== 'undefined' && !!navigator.clipboard?.readText;
+  const paste = async () => {
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (text) onChange(text);
+    } catch {
+      /* permission denied or nothing readable — the input still takes a manual paste */
+    }
+  };
+  return (
+    <div>
+      <label htmlFor={id} className="flex items-baseline justify-between text-[10px]">
+        <span className="font-bold uppercase tracking-wider text-zinc-300">{label}</span>
+        <span className="text-[9px] text-zinc-400">
+          {state?.from_env ? 'set by env (env wins)' : state?.configured ? 'configured' : 'not set'}
+        </span>
+      </label>
+      <div className="mt-1 flex items-stretch gap-1">
+        <input
+          id={id}
+          name={id}
+          type="password"
+          autoComplete="off"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={state?.configured ? 'configured — paste to replace' : 'paste key...'}
+          className="min-w-0 flex-1 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-lime-500/50 focus:outline-none"
+        />
+        {canPaste && (
+          <button
+            type="button"
+            onClick={() => void paste()}
+            aria-label={`Paste ${label} key from clipboard`}
+            title="Paste from clipboard"
+            className="shrink-0 rounded border border-white/10 bg-white/5 px-1.5 text-[9px] font-bold uppercase tracking-wider text-zinc-300 hover:border-white/25 hover:text-zinc-100"
+          >
+            Paste
+          </button>
+        )}
+      </div>
+      <p className="mt-0.5 flex items-baseline justify-between gap-2 text-[9px] leading-snug text-zinc-400">
+        <span>{hint}</span>
+        <a
+          href={getUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Get a free ${label} API key (opens the provider's site)`}
+          className="shrink-0 font-bold uppercase tracking-wider text-lime-300 hover:underline"
+        >
+          Get a free key ↗
+        </a>
+      </p>
+    </div>
+  );
+};
 
 const EnrichResult: React.FC<{ data: TourEnrichment }> = ({ data }) => {
   const rows: Array<[string, React.ReactNode]> = [];
