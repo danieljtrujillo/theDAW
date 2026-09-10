@@ -92,6 +92,11 @@ def test_get_entry_missing_returns_none(tmp_path: Path):
     assert store.get_entry("nope") is None
 
 
+def test_get_entry_overlong_id_returns_none(tmp_path: Path):
+    store = LibraryStore(tmp_path)
+    assert store.get_entry("lyricdoc_" + ("a" * 4096)) is None
+
+
 def test_get_audio_path_resolves_declared_filename(tmp_path: Path):
     item_dir = _seed_generate_entry(tmp_path, "job1", 0)
     store = LibraryStore(tmp_path)
