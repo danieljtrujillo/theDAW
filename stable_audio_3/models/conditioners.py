@@ -16,6 +16,22 @@ from pathlib import PureWindowsPath
 
 from stable_audio_3.model_configs import resolve_local_repo_path
 
+
+def _cached_hub_file(repo_id: str, subfolder: str | None, filename: str):
+    """``try_to_load_from_cache`` for a file that may live in a repo subfolder.
+
+    The hub cache keys entries by their path INSIDE the repo. The encoder
+    bundled under stabilityai/stable-audio-3-medium lives at
+    ``t5gemma-b-b-ul2/config.json``, not ``config.json`` — probing the root
+    name missed on every boot and logged a "downloading 2 GB now" that never
+    happened (transformers found the subfolder in the cache a moment later).
+    Returns the cached path as a str, or a non-str sentinel when absent.
+    """
+    from huggingface_hub import try_to_load_from_cache
+
+    rel = f"{subfolder.strip('/')}/{filename}" if subfolder else filename
+    return try_to_load_from_cache(repo_id, rel)
+
 class PaddingMode(str, Enum):
     """Enum for handling padding in text conditioner embeddings."""
     NONE = "none"       # No padding handling (raw embeddings with pad token)
@@ -206,17 +222,17 @@ class T5GemmaConditioner(Conditioner):
         )
         if isinstance(load_from, str) and "/" in load_from and not is_local_path and not os.path.isdir(load_from):
             try:
-                from huggingface_hub import try_to_load_from_cache
-
                 from stable_audio_3.model_configs import note_resolution
 
-                candidates = [load_from]
+                # (repo, subfolder) pairs: the requested repo keeps its subfolder;
+                # the google mirror carries the encoder at its root.
+                candidates = [(load_from, subfolder)]
                 if load_from == "stabilityai/t5gemma-b-b-ul2":
-                    candidates.append("google/t5gemma-b-b-ul2")
+                    candidates.append(("google/t5gemma-b-b-ul2", None))
 
                 requested_repo = load_from
-                for candidate_repo in candidates:
-                    cached_config = try_to_load_from_cache(candidate_repo, "config.json")
+                for candidate_repo, candidate_subfolder in candidates:
+                    cached_config = _cached_hub_file(candidate_repo, candidate_subfolder, "config.json")
                     if isinstance(cached_config, str):
                         load_from = str(Path(cached_config).parent)
                         hf_kwargs = {}
