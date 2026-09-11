@@ -186,6 +186,56 @@ describe("customCodeBridge", () => {
     expect(() => new Function(BRIDGE_BOOTSTRAP_SOURCE)).not.toThrow();
   });
 
+  // Run the bootstrap against a stand-in window. The free identifiers it uses
+  // (window, document, parent) become parameters, so nothing leaks into jsdom.
+  function bootWindow(win: Record<string, unknown>): Record<string, unknown> {
+    const doc = {
+      readyState: "loading",
+      addEventListener: () => {},
+      documentElement: { style: { setProperty: () => {} } },
+      body: null,
+    };
+    const parent = { postMessage: () => {} };
+    win.addEventListener = () => {};
+    new Function("window", "document", "parent", BRIDGE_BOOTSTRAP_SOURCE)(win, doc, parent);
+    return win;
+  }
+
+  it("shims an in-memory localStorage/sessionStorage when the sandbox denies them", () => {
+    const win: Record<string, unknown> = {};
+    // Chromium's sandboxed srcdoc: the accessor itself throws.
+    for (const name of ["localStorage", "sessionStorage"]) {
+      Object.defineProperty(win, name, {
+        configurable: true,
+        get() {
+          throw new DOMException("denied", "SecurityError");
+        },
+      });
+    }
+    bootWindow(win);
+    const ls = win.localStorage as Storage;
+    expect(ls.getItem("missing")).toBeNull();
+    ls.setItem("preset", "3");
+    expect(ls.getItem("preset")).toBe("3");
+    expect(ls.length).toBe(1);
+    expect(ls.key(0)).toBe("preset");
+    ls.removeItem("preset");
+    expect(ls.getItem("preset")).toBeNull();
+    ls.setItem("a", "1");
+    ls.clear();
+    expect(ls.length).toBe(0);
+    expect(typeof (win.sessionStorage as Storage).setItem).toBe("function");
+    // The shim is per frame: a second boot starts empty.
+    expect((bootWindow({}).localStorage as Storage).getItem("a")).toBeNull();
+  });
+
+  it("leaves a real localStorage alone when the page has one", () => {
+    const real = { getItem: () => "kept", setItem: () => {} };
+    const win = bootWindow({ localStorage: real, sessionStorage: real });
+    expect(win.localStorage).toBe(real);
+    expect(win.sessionStorage).toBe(real);
+  });
+
   it("elementStyleTokens maps set fields and omits undefined ones", () => {
     const el = {
       id: "e1",

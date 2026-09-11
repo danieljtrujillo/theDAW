@@ -800,9 +800,21 @@ function registerUpdaterHandlers(): void {
 // picked in the camera selector. Forcing the DirectShow capturer surfaces them.
 // Physical cameras keep working under DirectShow on Windows 10/11; remove this
 // switch only if a specific Media-Foundation-only device regresses.
-if (process.platform === 'win32') {
-  app.commandLine.appendSwitch('disable-features', 'MediaFoundationVideoCapture')
-}
+//
+// IsolateSandboxedIframes: Chromium moves every sandboxed srcdoc frame (the
+// Foundry's 24 custom-code pads, `sandbox="allow-scripts"`) into a renderer
+// process of its own. In this app that process grows about 250 MB a second
+// whether or not the pads' scripts run, is killed near 2.4 GB about ten
+// seconds after the frames load, and Chromium paints the dead frames grey.
+// Measured 2026-09-10 on Electron 42.11 / Chromium 148; browser tabs and
+// headless runs never isolate these frames, so it only showed in the desktop
+// app. With the feature off the frames stay sandboxed (opaque origin, no
+// same-origin access) inside the Foundry's own renderer, all of them stay
+// alive, and memory stays flat. Re-check on every Electron upgrade: the leak
+// is Chromium's and may be fixed upstream.
+const disabledFeatures = ['IsolateSandboxedIframes']
+if (process.platform === 'win32') disabledFeatures.push('MediaFoundationVideoCapture')
+app.commandLine.appendSwitch('disable-features', disabledFeatures.join(','))
 
 // Register custom protocol scheme before app is ready
 protocol.registerSchemesAsPrivileged([
