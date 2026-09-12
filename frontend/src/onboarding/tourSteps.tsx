@@ -490,9 +490,10 @@ export const TOUR_STEPS: ChapteredStep[] = [
     title: 'What a track actually is',
     body: (
       <>
-        <Em>DETAILS</Em> shows the selected item's prompt, metadata and analysis, and the media bucket
-        beside it stages clips and files you have not filed yet. Select something in the library and
-        this fills in.
+        <Em>DETAILS</Em> shows the selected item's prompt, metadata and analysis, with the whole
+        library listed beside it — click a track there and this fills in, or drop audio files from
+        the desktop onto the list to import them. That column also switches to the media bucket for
+        clips and files you have not filed yet.
       </>
     ),
     targetSelector: '[data-tour="bottom-tab-details"]',

@@ -30,6 +30,12 @@ export type BottomPanelTab =
 /** Layout of the merged DETAILS tab: both panes, or one of them full-width. */
 export type DetailsPane = 'split' | 'details' | 'media';
 
+/** What the SPLIT layout's right-hand column holds: the whole library to
+ *  browse (the default — clicking a row fills the details pane beside it), or
+ *  the media bucket of loose files. The 'media' DetailsPane still shows the
+ *  bucket full-width; this is the choice inside the split. */
+export type DetailsSplitRight = 'library' | 'media';
+
 /** Layout of the SING tab: the karaoke lyrics alone, the whole SCORE tab
  *  alone, the two side by side, or the lyrics beside the literary analysis.
  *  A future pane only adds a member here and a button in the tab row's
@@ -39,6 +45,7 @@ export type SingPane = 'sing' | 'split' | 'score' | 'analysis';
 interface BottomPanelState {
   activeTab: BottomPanelTab;
   detailsPane: DetailsPane;
+  detailsSplitRight: DetailsSplitRight;
   singPane: SingPane;
   singSplit: number;        // 0..1 fraction of the SING split the lyrics take
   lyricSplit: number;       // 0..1 fraction of the LYRIC split the editor takes
@@ -50,6 +57,7 @@ interface BottomPanelState {
   multiMaximized: boolean;  // multi-tab fills the work area
   setActiveTab: (t: BottomPanelTab) => void;
   setDetailsPane: (p: DetailsPane) => void;
+  setDetailsSplitRight: (p: DetailsSplitRight) => void;
   setSingPane: (p: SingPane) => void;
   setSingSplit: (f: number) => void;
   setLyricSplit: (f: number) => void;
@@ -77,6 +85,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
     (set) => ({
       activeTab: 'spectral',
       detailsPane: 'split',
+      detailsSplitRight: 'library',
       singPane: 'sing',
       singSplit: 0.5,
       // The writing surface gets the wider half: the analysis is a reference
@@ -90,6 +99,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       multiMaximized: false,
       setActiveTab: (t) => set({ activeTab: t }),
       setDetailsPane: (p) => set({ detailsPane: p }),
+      setDetailsSplitRight: (p) => set({ detailsSplitRight: p }),
       setSingPane: (p) => set({ singPane: p }),
       setSingSplit: (f) => set({ singSplit: Math.max(SING_SPLIT_MIN, Math.min(SING_SPLIT_MAX, f)) }),
       setLyricSplit: (f) => set({ lyricSplit: Math.max(SING_SPLIT_MIN, Math.min(SING_SPLIT_MAX, f)) }),
@@ -134,6 +144,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
       partialize: (s) => ({
         activeTab: s.activeTab,
         detailsPane: s.detailsPane,
+        detailsSplitRight: s.detailsSplitRight,
         singPane: s.singPane,
         singSplit: s.singSplit,
         lyricSplit: s.lyricSplit,

@@ -266,6 +266,10 @@ export const BottomMultiTabPanel: React.FC = () => {
 /**
  * DETAILS / BOTH / MEDIA layout toggle for the merged DETAILS tab, in the
  * tab row like the SLIDE toggle. Drives bottomPanelStore.detailsPane.
+ *
+ * BOTH's right-hand column is the whole library by default, with its own
+ * LIBRARY / MEDIA switch (DetailsMediaView); MEDIA here still fills the tab
+ * with the media bucket alone.
  */
 const DetailsPaneToggle: React.FC = () => {
   const pane = useBottomPanelStore((s) => s.detailsPane);
@@ -279,10 +283,10 @@ const DetailsPaneToggle: React.FC = () => {
         <button onClick={() => setPane('details')} className={`${btn} ${pane === 'details' ? on : off}`} title="Only the selected item's details" aria-pressed={pane === 'details'}>
           <span className="inline-flex items-center gap-1"><Info className="w-3 h-3" /> Details</span>
         </button>
-        <button onClick={() => setPane('split')} className={`${btn} ${pane === 'split' ? on : off}`} title="Details and the media bucket side by side" aria-pressed={pane === 'split'}>
+        <button onClick={() => setPane('split')} className={`${btn} ${pane === 'split' ? on : off}`} title="Details on the left, the library (or the media bucket) on the right" aria-pressed={pane === 'split'}>
           Both
         </button>
-        <button onClick={() => setPane('media')} className={`${btn} ${pane === 'media' ? on : off}`} title="Only the media bucket" aria-pressed={pane === 'media'}>
+        <button onClick={() => setPane('media')} className={`${btn} ${pane === 'media' ? on : off}`} title="Only the media bucket, full width" aria-pressed={pane === 'media'}>
           <span className="inline-flex items-center gap-1"><FolderOpen className="w-3 h-3" /> Media</span>
         </button>
       </div>

@@ -21,7 +21,7 @@ Seven workspaces plus the library, the Catalogue, and the live tools. Each entry
 
 - [Library and Catalogue](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#13-library): a disk-backed library with search, sort, and favorites, inline playback, play counts, the SUGGEST playlist, and the cross-provider [Catalogue gallery](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#29-catalogue) with a lineage panel.
 - [Notation and Score](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#33-notation-score-tabs-and-arrangements): MAKE SHEET to MusicXML, guitar and bass tabs, arrangements, ABC, PDF, and SVG export, and prompt inference.
-- [Bottom panel](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#16-bottom-panel-tabs): the spectral analyzer, piano roll, step sequencer, media bucket, the SLIDE control surface, and Details.
+- [Bottom panel](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#16-bottom-panel-tabs): the spectral analyzer, piano roll, step sequencer, media bucket, the SLIDE control surface, and Details with the library beside it.
 - [Footer, log, and assistant](https://github.com/gantasmo/theDAW/blob/main/docs/USER_GUIDE.md#17-player-footer): the player footer, the processing log, and the multi-provider assistant with RAG over these docs.
 
 ---

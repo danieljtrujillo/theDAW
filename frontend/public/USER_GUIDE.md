@@ -1103,7 +1103,7 @@ The picker also lists procedural synth voices grouped as **Bass**, **Lead / Chor
 
 The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Eleven tabs are available, in order: Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Lyric, Details, SLIDE, and SWAY. Development builds add a twelfth, **XR Bus**, a tester for the XR control bus (§34.4); production builds hide the tab and remap a persisted selection so it can never strand you on a missing tab.
 
-Two tabs carry their own layout toggle in the tab row. **Details** switches between Details alone, Media alone, and both side by side; **Sing** switches between **Lyrics**, **Both**, **Score** and **Study** (the lyrics beside the literary analysis). What each tab *is* lives in the feature registry under `panel-<id>`, so the hover tooltip on a tab and the sentence the **?** help search returns for it are the same sentence.
+Two tabs carry their own layout toggle in the tab row. **Details** switches between Details alone, Media alone, and both side by side — and in the side-by-side layout the right column carries its own **LIBRARY / MEDIA** switch (§16.4), so the layout choice and what fills that column are independent; **Sing** switches between **Lyrics**, **Both**, **Score** and **Study** (the lyrics beside the literary analysis). What each tab *is* lives in the feature registry under `panel-<id>`, so the hover tooltip on a tab and the sentence the **?** help search returns for it are the same sentence.
 
 The panel's tab strip reads as part of the footer rather than a separate slab: it carries the footer's tinted-blur treatment and hairline border, the group toggle is a labelled **PANELS** button showing the active tab, and both dock bodies animate outward from the button that opened them.
 
@@ -1164,9 +1164,13 @@ Displays full metadata for the currently selected library entry.
 
 **Prompt inference:** When the entry has been analyzed (§13.8), the **PROMPT INFERENCE** box derives a Stable Audio prompt and semantic tags from the analysis, and **USE AS PROMPT** copies the text into the MAKE prompt field. See §33.6.
 
+**The library column.** In the side-by-side layout the right-hand column lists the **whole library**, so you browse on the right and read the metadata on the left. Each row shows the cover, the title, and the model, length and date; a star marks a favourite and a speaker marks whatever is sounding. Clicking a row selects it, and the details on the left follow. The list is keyboard-driven: Tab into it, then the arrow keys, Home and End move the selection and Enter plays. A selection made anywhere else — a LIBRARY row's **Open details**, or the assistant — scrolls the matching row into view.
+
+The column's toolbar carries a **LIBRARY / MEDIA** switch (MEDIA puts the media bucket back in the column, §16.5), a filter that narrows the list without changing the LIBRARY tab, a sort that is the library's own order and so reorders the LIBRARY rail with it, and **IMPORT**. Rows can be dragged out to anywhere that accepts a library track — an EDIT track, a DJ deck, MAKE's init slot — and audio files dropped in from File Explorer or Finder are imported and the newest is selected. Files that are not audio are skipped with one line in the LOG naming them.
+
 ### 16.5 Media (a pane of Details)
 
-Media is not its own tab any more. It is one of the DETAILS tab's three layouts, chosen with the **Details tab layout** toggle in the tab row: Details alone, Media alone, or both side by side.
+Media is not its own tab any more. It is reached two ways from the DETAILS tab: the **Details tab layout** toggle in the tab row gives it the whole tab (Details alone, Media alone, or both side by side), and in the side-by-side layout the right column's **LIBRARY / MEDIA** switch puts it in that column beside the details. The choice persists.
 
 It is a session-scoped file holding area for arbitrary audio files. Contents are cleared on page reload.
 

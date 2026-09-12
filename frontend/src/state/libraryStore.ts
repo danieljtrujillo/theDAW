@@ -11,6 +11,7 @@ import { create } from 'zustand';
 import { logError, logInfo } from './logStore';
 import type { LibraryEntry, LibraryEntryPatch, ImportRequest } from './libraryEntry';
 import { getStorageProvider } from '../lib/backendLocalProvider';
+import { sortEntriesBy, type LibrarySortBy } from '../lib/libraryRows';
 
 export type { LibraryEntry, LibraryEntryPatch, ImportRequest } from './libraryEntry';
 
@@ -20,7 +21,8 @@ export interface LibraryState {
   loading: boolean;
   searchQuery: string;
   onlyFavorites: boolean;
-  sortBy: 'newest' | 'oldest' | 'duration' | 'title' | 'plays';
+  /** One of the library's sort orders; `sortEntriesBy` applies it. */
+  sortBy: LibrarySortBy;
   playingId: string | null;
   selectedEntryId: string | null;
 
@@ -251,12 +253,9 @@ export const useLibraryStore = create<LibraryState>()((set, get) => ({
         return false;
       });
     }
-    if (sortBy === 'newest') filtered.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    else if (sortBy === 'oldest') filtered.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    else if (sortBy === 'duration') filtered.sort((a, b) => b.duration - a.duration);
-    else if (sortBy === 'title') filtered.sort((a, b) => a.title.localeCompare(b.title));
-    else if (sortBy === 'plays') filtered.sort((a, b) => (b.playCount ?? 0) - (a.playCount ?? 0));
-    return filtered;
+    // The one comparator, shared with the DETAILS tab's library pane so the
+    // two lists can never disagree about what "newest" means.
+    return sortEntriesBy(filtered, sortBy);
   },
 }));
 
