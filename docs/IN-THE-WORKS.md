@@ -231,6 +231,50 @@ driven in the live app yet; items stay here until that happens.
 
 ---
 
+## P2 — follow-ups from the 2026-09-12 audit (not from the user; my own leftovers)
+
+Each one was found while building the five branches of 2026-09-12 and deliberately
+left undone, with the reason. None blocks those branches.
+
+- [ ] **The HF token card never shows a transport failure.** `fetchHfStatus` now returns
+  `error: {kind, message}` when the backend is unreachable, but `HfTokenField` reads only
+  `logged_in`/`available`, so the message is produced and dropped. ~4 lines: render it in the
+  existing `role="alert"` paragraph. — XS — `frontend/src/components/ui/HfTokenField.tsx`,
+  `frontend/src/lib/hfAuthClient.ts`
+- [ ] **`questMidiClient.wsUrl()` has no same-origin branch**, unlike `xrControlClient`, so its
+  own docstring ("rides the Vite dev proxy") is not what the code does and a phone on the LAN
+  connects to itself. Behaviour change, so it was out of scope for a loopback-literal pass. — XS
+  — `frontend/src/state/questMidiClient.ts:31`
+- [ ] **502 means two different things across the backend.** `hfauth` now answers 503 +
+  `x-thedaw-hop` for a failure it does not own, but `tour`, `suno`, `ytimport`, `genaiproxy` and
+  `/api/generate` still use 502 for upstream failures. They always carry a FastAPI `detail`, so
+  nothing is mislabelled today, but the convention should be one thing. — S — `backend/modules/*/router.py`
+- [ ] **The I/O device store has no sequence tests.** `ioResolve.test.ts` covers the pure table;
+  what is untested is ordering — enumerate-before-permission then grant, `devicechange` while a
+  device is selected, the notice raised exactly once across repeated resolves, legacy adoption
+  being a no-op once a choice exists. That is where this class of bug lives. — S —
+  `frontend/src/state/ioDevicesStore.ts`
+- [ ] **Dead exports left by the I/O work:** `currentDeviceIds` (`IoDeviceSelect.tsx`),
+  `followSurfaceSink` and `activeThruPortId` (`ioDevicesStore.ts`), `djEngine.getCueSinkId`,
+  `vocalToMidi.listAudioInputs`. — XS
+- [ ] **`VirtuosoControls` passes `showInstrument` against that prop's stated contract** — the
+  groove-reference picker synthesizes nothing, yet offers a dropdown that rewrites the app-wide
+  soundfont. Removing it takes away a control that existed before, so it is the user's call. — XS
+  — `frontend/src/components/audio/VirtuosoControls.tsx:301`
+- [ ] **`LibraryView` still runs its own `/api/library/_all/midi` and `/stems` fetches** rather
+  than the shared `libraryIndex`. Third copy, never collapsed. — XS —
+  `frontend/src/views/LibraryView.tsx:305,311,345,354`
+- [ ] **A camera picker needs a change in `gantasmo/VJ-9000`.** deviceIds are salted per origin,
+  and the VJ runs in an iframe on the backend origin, so a list enumerated by the host is
+  meaningless inside it. The list has to be enumerated in the child and sent up; the current
+  protocol is boolean-only. Until then theDAW shows a camera STATUS row, not a picker. — M —
+  `frontend/src/views/VJView.tsx:103-107,626-628`
+- [ ] **FlashAttention 3 (GH-127).** A wheel for our exact stack exists in the same mjun0812
+  release we already pin, but it is a different package with a different API (our code imports
+  `index_first_axis`, which FA3 has no equivalent for) and its speedup targets datacentre cards —
+  nothing for Turing or Ampere. Revisit only with a hardware reason. — M — `pyproject.toml`,
+  `stable_audio_3/models/transformer.py:22-39`
+
 ## P1 — from the user, 2026-09-11 (marked done only when the user says so)
 
 - [ ] **LOG strip: the gradient runs far past the readouts.** Only the things
