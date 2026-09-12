@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { logError, logInfo } from './logStore';
+import { logError, logInfo, logWarn } from './logStore';
 
 /**
  * Global playback engine — a single HTMLAudioElement piped through a single
@@ -111,6 +111,9 @@ export const ensureEngine = (): EngineHandles => {
   fxOut.connect(analyser);
   analyser.connect(monitor);
   monitor.connect(ctx.destination);
+  // A device may already have been chosen before anything built the graph
+  // (Settings loads before the first sound). Apply it now the graph exists.
+  void applyEngineSink(ctx);
 
   const audioEl = new Audio();
   audioEl.crossOrigin = 'anonymous';
@@ -160,6 +163,83 @@ export const ensureEngine = (): EngineHandles => {
   _mediaSrc = mediaSrc;
   return { ctx, master, analyser, audioEl };
 };
+
+/* ── main output device ───────────────────────────────────────────────────── */
+
+/**
+ * The device the whole graph is meant to play through ('' = the OS default).
+ * Held separately from `_appliedSinkId` because a choice can arrive before the
+ * context exists — Settings loads long before the first sound — and must then
+ * be applied by ensureEngine() rather than dropped.
+ */
+let _desiredSinkId = '';
+let _appliedSinkId = '';
+
+type SinkCapableContext = AudioContext & { setSinkId?: (id: string) => Promise<void> };
+
+/**
+ * Move the shared graph to `_desiredSinkId`.
+ *
+ * One call moves EVERY module that routes through getMasterGain (the footer
+ * transport, the sequencer, the DJ decks, the live mixer, previews) because
+ * they all share this context. `AudioContext.setSinkId` is not in the DOM lib
+ * yet, hence the cast — the same shape djEngine uses for the cue element.
+ *
+ * The context is never rebuilt to change a device: rebuilding would destroy the
+ * MediaElementAudioSourceNode (an element can be attached to exactly one, ever),
+ * the rack insert, the live-FX insert and every deck.
+ */
+async function applyEngineSink(ctx: AudioContext): Promise<boolean> {
+  const c = ctx as SinkCapableContext;
+  if (typeof c.setSinkId !== 'function') return false;
+  if (_appliedSinkId === _desiredSinkId) return true;
+  const before = ctx.outputLatency;
+  try {
+    await c.setSinkId(_desiredSinkId);
+    _appliedSinkId = _desiredSinkId;
+  } catch (e) {
+    logError('player', `Main output routing failed: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+  const after = ctx.outputLatency;
+  // The play-along latency calibration and the score time map both read
+  // ctx.outputLatency, so a device with a different buffer size silently
+  // shifts every timing that was calibrated on the old one. Say so.
+  if (Number.isFinite(before) && Number.isFinite(after) && Math.abs(after - before) > 0.002) {
+    logWarn(
+      'player',
+      `Output latency changed ${Math.round(before * 1000)} ms -> ${Math.round(after * 1000)} ms with the new device; re-run the play-along latency calibration.`,
+    );
+  }
+  return true;
+}
+
+/**
+ * Choose the device the main mix plays through. '' = the OS default, which is
+ * exactly what a user who never opens the I/O menu gets: no setSinkId call is
+ * made while nothing has ever been chosen.
+ */
+export const setEngineSink = async (deviceId: string): Promise<boolean> => {
+  _desiredSinkId = deviceId;
+  if (!_ctx) return false; // ensureEngine() applies it when the graph is built
+  return applyEngineSink(_ctx);
+};
+
+/** The device the graph is actually on ('' = OS default). */
+export const getEngineSinkId = (): string => _appliedSinkId;
+
+/**
+ * Sample rate + output latency of the live graph, or null when nothing has
+ * built it yet. Read-only on purpose: it must NOT construct an AudioContext
+ * just because a settings panel is open.
+ */
+export const getEngineOutputInfo = (): { sampleRate: number; outputLatencyMs: number | null } | null =>
+  _ctx
+    ? {
+        sampleRate: _ctx.sampleRate,
+        outputLatencyMs: Number.isFinite(_ctx.outputLatency) ? Math.round(_ctx.outputLatency * 1000) : null,
+      }
+    : null;
 
 /** Other sources (editor preview, sequencer voices) connect here so they go through the same analyser. */
 export const getMasterGain = (): GainNode => ensureEngine().master;
@@ -443,6 +523,12 @@ export const dumpAudioChain = (): Record<string, unknown> => {
         ctxState: _ctx.state,
         sampleRate: _ctx.sampleRate,
         destinationChannels: _ctx.destination.channelCount,
+        // Which physical output the graph is on. Without this a "no sound"
+        // report is undiagnosable: the chain can be perfect and the audio
+        // still be going to a monitor nobody is listening to.
+        sinkId: _appliedSinkId || '(system default)',
+        sinkWanted: _desiredSinkId || '(system default)',
+        outputLatencyMs: Number.isFinite(_ctx.outputLatency) ? Math.round(_ctx.outputLatency * 1000) : null,
         master: gainOf(_master),
         rackInsertIn: gainOf(_insertIn),
         rackInsertOut: gainOf(_insertOut),

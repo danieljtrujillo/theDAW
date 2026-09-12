@@ -250,6 +250,41 @@ driven in the live app yet; items stay here until that happens.
   `frontend/src/components/layout/score/chords/ChordStripCanvas.tsx`,
   `frontend/src/components/layout/score/chords/ChordDiagram.tsx`
 
+## P2 — device I/O follow-ups (added 2026-09-12, from the global I/O menu)
+
+The global input/output menu shipped with these three deliberately left out;
+each is a written reason in the PR, not an oversight.
+
+- [ ] **Camera picker for the VJ (phase 2).** theDAW cannot enumerate cameras for
+  the VJ: deviceIds are salted per origin and the VJ iframe runs on the backend
+  origin, so a host-side list is wrong by construction. The list has to be
+  enumerated INSIDE the VJ and travel up. Protocol to add: host →
+  `{type:'sa3-vj/camera', on, deviceId?}`, VJ →
+  `{type:'sa3-vj/camera-devices', devices:[{id,label}], active}`. Needs
+  `gantasmo/VJ-9000` cloned, edited, rebuilt and `electron-ui/resources/vj-dist`
+  re-staged. Note `frontend/src/state/slideStore.ts` (`VisualControl.kind` is
+  `'range' | 'toggle'`) cannot carry a picker — both `ingestManifest` and
+  `applyFromVj` branch exhaustively, so a select kind is a four-site change
+  across two repos. — M — `frontend/src/views/VJView.tsx:103-107,626-628`,
+  `backend/modules/vj/sidecar.py:181`
+- [ ] **Output routing for the 17 edit-module windows.** Each page owns its own
+  AudioContext inside a same-origin iframe, so a `'thedaw-sink'` message would
+  only move the two pages that play through an `<audio>` element — a control
+  that works for 2 of 17 is worse than none. Doing it properly means the pages
+  register their context with `theDAWKit` (a new `registerContext`) and the kit
+  applies `setSinkId` to both. Extend
+  `frontend/src/components/audio/effects/editModulesContract.test.ts:31` with the
+  fourth protocol token so the pages cannot drift. — S —
+  `frontend/public/edit-modules/module-kit.js`,
+  `frontend/src/components/audio/EffectGuiStage.tsx:122-129`
+- [ ] **Assistant voice input off the Web Speech API.** `AssistantPanel` builds a
+  `SpeechRecognition`, which has no device parameter, so it always takes the OS
+  default no matter what the I/O menu says (the menu says so, in words).
+  Migrating it to the `MediaRecorder` + `/api/assistant/transcribe` path the
+  UNDERFIT orb already uses would put it on the chosen microphone. — S —
+  `frontend/src/orb-kit/AssistantPanel.tsx:183`,
+  `frontend/src/views/underfit/UnderfitAssistantOrb.tsx:333-345`
+
 ## P0 — breaks the app's primary action
 
 - [ ] **ABORT is client-side only.** No cancel route exists; the job finishes on the GPU, writes artifacts to the library, and holds `_generation_job_lock` so the next CREATE queues behind it. — M — `backend/server.py:105,1351`, `frontend/src/state/generateStore.ts:759`

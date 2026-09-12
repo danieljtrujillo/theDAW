@@ -53,6 +53,7 @@ import { StemsRunModal, type StemsRunOptions } from '../library/StemsRunModal';
 import { EffectWindowsHost, FxChainList, openEffectWindow, type FxScope } from './EffectWindows';
 import { ensureStems } from '../../lib/djStems';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
+import { SurfaceAudio } from './IoDeviceSelect';
 
 const TRACK_HEADER_PX = 180;
 const DECODE_TIMEOUT_MS = 15000;
@@ -4870,7 +4871,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {/* Phase: review */}
           {inpaintPanel.kind === 'review' && (
             <>
-              <audio controls src={inpaintPanel.blobUrl} className="w-full h-8 mt-1" />
+              {/* Outside the shared graph, so it follows the 'preview' surface
+                  output rather than the main mix. */}
+              <SurfaceAudio surface="preview" controls src={inpaintPanel.blobUrl} className="w-full h-8 mt-1" />
               <div className="flex gap-2">
                 <button
                   onClick={() => acceptInpaint(inpaintPanel.blob)}

@@ -35,6 +35,7 @@ import { useMidiDevicesStore } from '../state/midiDevicesStore';
 import { useDjSampler } from '../state/djSamplerStore';
 import { useDjSideList } from '../state/djSideListStore';
 import { useFeatureToggleStore } from '../state/featureToggleStore';
+import { IoGlobalSelect } from '../components/audio/IoDeviceSelect';
 import { ControlSurface } from '../components/surface/ControlSurface';
 import { InfiNightCredit } from '../components/ui/Credit';
 import { DJ_TARGETS } from '../state/bindableTargets';
@@ -544,22 +545,12 @@ export const DJView: React.FC = () => {
   const [source, setSource] = useState<Source>({ kind: 'library' });
   // Lifted out of the old Mixer so the surface widget closures can drive them.
   const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
+  // The cue device is a GLOBAL slot in Settings -> Inputs & outputs, so the
+  // choice survives a reload (it used to live in a module variable and reset
+  // to the system default every time) and the DJ tab and the menu always
+  // agree. The one-shot enumerate that used to live here is gone: DJView never
+  // calls getUserMedia, so on this surface the labels could never fill in.
   const cueSupported = djEngine.isCueSupported();
-  const [cueDevices, setCueDevices] = useState<Array<{ id: string; label: string }>>([]);
-  const [cueDev, setCueDev] = useState(() => djEngine.getCueSinkId());
-  useEffect(() => {
-    if (!cueSupported || !navigator.mediaDevices?.enumerateDevices) return;
-    navigator.mediaDevices
-      .enumerateDevices()
-      .then((ds) =>
-        setCueDevices(
-          ds.filter((d) => d.kind === 'audiooutput').map((d) => ({ id: d.deviceId, label: d.label || 'Output' })),
-        ),
-      )
-      .catch(() => {
-        /* labels need permission; ids still resolve */
-      });
-  }, [cueSupported]);
 
   const entries = useLibraryStore((s) => s.entries);
   const analyzeAll = useDjAnalysisStore((s) => s.analyzeAll);
@@ -1036,7 +1027,7 @@ export const DJView: React.FC = () => {
     crossfader, onCrossfade: applyCrossfade,
     quantize, setQuantize, autoGain, setAutoGain,
     vinylSpinA, setVinylSpinA, vinylSpinB, setVinylSpinB,
-    limiterOn, setLimiterOn, cueSupported, cueDevices, cueDev, setCueDev,
+    limiterOn, setLimiterOn, cueSupported,
     midiMapOn: midiMapOpen, onToggleMidiMap: () => setMidiMapOpen((v) => !v),
     automixOn, onToggleAutomix: () => setAutomixOn((v) => !v),
   });
@@ -2762,7 +2753,7 @@ interface DjRegArgs {
   vinylSpinA: boolean; setVinylSpinA: (v: boolean) => void;
   vinylSpinB: boolean; setVinylSpinB: (v: boolean) => void;
   limiterOn: boolean; setLimiterOn: (v: boolean) => void;
-  cueSupported: boolean; cueDevices: Array<{ id: string; label: string }>; cueDev: string; setCueDev: (v: string) => void;
+  cueSupported: boolean;
   midiMapOn: boolean; onToggleMidiMap: () => void;
   automixOn: boolean; onToggleAutomix: () => void;
 }
@@ -3141,12 +3132,11 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   reg.cueDevice = { id: 'cueDevice', label: 'Cue Output', group: 'Mixer', kind: 'button', source: 'builtin', render: () => (
     <div className="h-full w-full grid place-items-center px-1">
       {p.cueSupported ? (
-        <div className="flex items-center gap-1 w-full" title="Headphone (cue) output device">
+        <div className="flex items-center gap-1 w-full">
           <Headphones className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
-          <select value={p.cueDev} onChange={(e) => { p.setCueDev(e.target.value); void djEngine.setCueSinkId(e.target.value); }} className="flex-1 min-w-0 bg-[#0e0c18] border border-white/10 text-zinc-300 text-[8px] font-mono px-1 py-0.5 rounded focus:outline-none" style={{ colorScheme: 'dark' }} title="Cue output device">
-            <option value="">Default out</option>
-            {p.cueDevices.map((dv) => <option key={dv.id} value={dv.id}>{dv.label}</option>)}
-          </select>
+          {/* Was the app's oldest device picker and had only a `title` — no id,
+              no name, no <label>, no aria-label. Now the shared control. */}
+          <IoGlobalSelect slot="cue_output" id="dj-cue-output" label="Headphone (cue) output" className="flex-1 text-[8px] px-1 py-0.5" />
         </div>
       ) : <span className="text-[7px] font-mono text-zinc-700">cue n/a</span>}
     </div>

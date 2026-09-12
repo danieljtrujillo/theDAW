@@ -41,6 +41,8 @@ import { AssistantOrb } from './AssistantOrb';
 import { usePianoRollStore, type PianoNote } from '../../../state/pianoRollStore';
 import { encodeWav } from '../../../lib/wavEncode';
 import { logInfo, logWarn } from '../../../state/logStore';
+import { getEngineCtx } from '../../../state/playerStore';
+import { surfaceDeviceId, useIoDevicesStore } from '../../../state/ioDevicesStore';
 import { InstrumentPicker } from '../InstrumentPicker';
 
 const HISTORY_KEY = 'vocal2midi_recordings';
@@ -138,6 +140,7 @@ export const Vocal2MidiPanel: React.FC = () => {
 
   // recorder refs (ported from the source App)
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const sinkRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -164,9 +167,20 @@ export const Vocal2MidiPanel: React.FC = () => {
   /* ── recorder (ported YIN capture) ─────────────────────────────────────── */
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // This panel is rendered INSIDE the MIDI tab, a few pixels under a
+      // microphone picker it used to ignore entirely. It follows the same
+      // surface now (with its own override available in Settings).
+      const deviceId = surfaceDeviceId('vocal2midi');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId } : true,
+      });
+      useIoDevicesStore.getState().notePermissionGranted();
       streamRef.current = stream;
-      const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      // The SHARED engine context, not a private one. A second AudioContext is
+      // a second hardware output stream that ignores the chosen main output —
+      // and this one was never closed, so every recording session leaked one.
+      const ctx = getEngineCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
       audioCtxRef.current = ctx;
 
       const an = ctx.createAnalyser();
@@ -181,7 +195,14 @@ export const Vocal2MidiPanel: React.FC = () => {
       const proc = ctx.createScriptProcessor(2048, 1, 1);
       processorRef.current = proc;
       src.connect(proc);
-      proc.connect(ctx.destination);
+      // Pull the processor through a MUTED sink so onaudioprocess keeps being
+      // called without routing the microphone at the speakers (the same shape
+      // the YIN capture path uses).
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      sinkRef.current = sink;
+      proc.connect(sink);
+      sink.connect(ctx.destination);
 
       startTimeRef.current = ctx.currentTime;
       bufferRef.current = [];
@@ -265,6 +286,10 @@ export const Vocal2MidiPanel: React.FC = () => {
     rec.stop();
     sourceRef.current?.disconnect();
     processorRef.current?.disconnect();
+    // The muted sink lives on the SHARED context, so it has to be released
+    // here — nothing closes that context.
+    sinkRef.current?.disconnect();
+    sinkRef.current = null;
     await new Promise<void>((resolve) => { rec.onstop = () => resolve(); });
     streamRef.current?.getTracks().forEach((t) => t.stop());
 

@@ -6,7 +6,7 @@ import { useOnboardingStore } from '../../onboarding/onboardingStore';
  * The body is a CSS multi-column layout (1 / 2 / 3 columns at <lg / lg / 2xl)
  * so the browser balances the sections' heights across columns; each section
  * is `break-inside-avoid` so it never splits. Reading order: Models,
- * Autoprocesses, Layout, Modules, Storage. At 1366x768 it degrades to two
+ * Autoprocesses, Layout, Inputs & outputs, Modules, Storage. At 1366x768 it degrades to two
  * balanced columns (and the body scrolls if it must). Every section lives in
  * ./settings/*; this file is the shell: backdrop, header (launch mode, artist,
  * restart, shutdown, close), the column body, and the sponsor footer.
@@ -19,6 +19,7 @@ import { StorageSection } from './settings/StorageSection';
 import { AutoprocessSection } from './settings/AutoprocessSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { LayoutSection } from './settings/LayoutSection';
+import { IoSection } from './settings/IoSection';
 import { RestartServerButton, ShutdownServerButton } from './settings/ServerButtons';
 
 export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
@@ -201,6 +202,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             <div className="break-inside-avoid mb-3"><ModelsSection /></div>
             <div className="break-inside-avoid mb-3"><AutoprocessSection /></div>
             <div className="break-inside-avoid mb-3"><LayoutSection /></div>
+            <div className="break-inside-avoid mb-3"><IoSection /></div>
             <div className="break-inside-avoid mb-3"><ModulesSection /></div>
             <div className="break-inside-avoid mb-3"><StorageSection /></div>
           </div>

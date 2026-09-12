@@ -176,6 +176,20 @@ export interface VocalCaptureController {
   stop: (opts?: CaptureOptions) => VocalCapture;
 }
 
+/**
+ * Tell the device store that a getUserMedia just resolved, so it re-enumerates
+ * and the labels (blank until then) fill in everywhere at once. Imported lazily
+ * so this module stays usable without the store, and so a failure to load it
+ * can never break a capture that already succeeded.
+ */
+const notePermissionGranted = (): void => {
+  void import('../state/ioDevicesStore')
+    .then((m) => m.useIoDevicesStore.getState().notePermissionGranted())
+    .catch(() => {
+      /* the store is not in this bundle; labels fill in on the next refresh */
+    });
+};
+
 /** Available microphone inputs. Labels are blank until mic permission is granted
  * once, so call this after a successful capture (or permission prompt). */
 export const listAudioInputs = async (): Promise<MediaDeviceInfo[]> => {
@@ -200,12 +214,17 @@ export interface InputMonitor {
 export const startInputMonitor = async (deviceId?: string): Promise<InputMonitor> => {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
-      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      // SOFT constraint, not `{ exact }`: the id has already been checked
+      // against the live device list by ioResolve, so a race between the
+      // enumerate and the open should degrade to the OS default rather than
+      // reject the whole capture with OverconstrainedError.
+      ...(deviceId ? { deviceId } : {}),
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
     },
   });
+  notePermissionGranted();
   const ctx = getEngineCtx();
   // Best-effort resume; on mount there may be no user gesture yet, so don't block.
   if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
@@ -257,12 +276,14 @@ export const startVocalCapture = async (
 ): Promise<VocalCaptureController> => {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
-      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      // Soft constraint — see startInputMonitor.
+      ...(deviceId ? { deviceId } : {}),
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
     },
   });
+  notePermissionGranted();
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') await ctx.resume();
   await ensureYinModule(ctx);

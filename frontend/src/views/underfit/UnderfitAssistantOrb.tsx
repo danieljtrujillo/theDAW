@@ -30,6 +30,7 @@ import GantasmoOrb from "../../orb-kit/react/GantasmoOrb";
 import "../../orb-kit/styles/gantasmo-orb.css";
 import "../../orb-kit/chat/orb-chat.css";
 import "./underfit-orb.css";
+import { surfaceDeviceId, useIoDevicesStore } from "../../state/ioDevicesStore";
 
 // Assistant backend base URL. This orb is bundled INTO underfit's dashboard
 // (served on :8791). It talks to underfit's OWN assistant backend — a clone of
@@ -330,10 +331,24 @@ function useSpeechInput(onText: (t: string) => void) {
     if (!supported || recRef.current) return;
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      // Mic permission denied / no device — surface as a one-shot note in input.
-      onText("[microphone unavailable — permission denied]");
+      const deviceId = surfaceDeviceId("assistantVoice");
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId } : true,
+      });
+      useIoDevicesStore.getState().notePermissionGranted();
+    } catch (e) {
+      // Say WHICH failure it was: "permission denied" for a device that is
+      // simply unplugged sends the user to the wrong fix.
+      const name = e instanceof Error ? e.name : "";
+      const why =
+        name === "NotAllowedError" || name === "SecurityError"
+          ? "permission denied"
+          : name === "NotFoundError" || name === "OverconstrainedError"
+            ? "no microphone found"
+            : name === "NotReadableError"
+              ? "the microphone is in use by another app"
+              : name || "unknown error";
+      onText(`[microphone unavailable — ${why}]`);
       return;
     }
     streamRef.current = stream;

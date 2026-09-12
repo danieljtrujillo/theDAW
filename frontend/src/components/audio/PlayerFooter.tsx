@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Volume2, Download, Share2, Heart, Repeat, Shuffle, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Activity, ChevronUp } from 'lucide-react';
+import { Volume2, Download, Share2, Heart, Repeat, Shuffle, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Activity, ChevronUp, Headphones, Speaker } from 'lucide-react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
@@ -13,6 +13,8 @@ import {
 } from '../../state/mixLiveRack';
 import { callEditorPlay, isEditorPlaybackRegistered } from '../../state/editorPlaybackBridge';
 import { SlideTrack } from './SlideTrack';
+import { IoGlobalSelect } from './IoDeviceSelect';
+import { useIoDevicesStore, useResolvedGlobal } from '../../state/ioDevicesStore';
 import { OrbTipBubble } from './OrbTipBubble';
 import {
   toggleVjPlayback,
@@ -198,6 +200,97 @@ const ScrubStrip: React.FC = () => {
  * all returns the master to a clean passthrough from wherever the user is
  * standing. It sits next to the volume control because that is the symptom.
  */
+/**
+ * Output device, where the symptom is.
+ *
+ * Plugging headphones in mid-session is the moment a person reaches for this,
+ * and making them open the hamburger → Settings for it is the wrong
+ * ergonomics. Mains + cue only; the full menu is one click away.
+ *
+ * Custom control (CLAUDE.md rule 3): a button carrying its own accessible name,
+ * expanded state and the id of the panel it controls — NOT wrapped in a label.
+ */
+const AudioOutIndicator: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const main = useResolvedGlobal('audio_output');
+  const supports = useIoDevicesStore((s) => s.supports);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const missing = main.source === 'missing';
+  const name = main.label || 'System default';
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={`Audio output device: ${missing ? 'not connected' : name}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls="footer-audio-out"
+        title={missing ? `${name} is not connected — playing on the system default` : `Output: ${name}`}
+        className={`${iconButton} ${missing ? 'text-amber-400 hover:text-amber-300' : ''}`}
+      >
+        <Speaker className="w-4 h-4" />
+      </button>
+      <div
+        id="footer-audio-out"
+        hidden={!open}
+        role="dialog"
+        aria-label="Audio output devices"
+        className="absolute bottom-full right-0 mb-2 z-50 w-80 rounded-md border border-purple-500/30 bg-[#0c0a14] p-2 shadow-xl flex flex-col gap-2"
+      >
+        <div className="flex items-center gap-1.5">
+          <Speaker className="w-3 h-3 text-zinc-500 shrink-0" />
+          <IoGlobalSelect
+            slot="audio_output"
+            id="footer-main-out"
+            label="Main output"
+            showLabel
+            className="flex-1"
+            unsupported={supports.ctxSink ? undefined : 'the desktop app can move this'}
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Headphones className="w-3 h-3 text-zinc-500 shrink-0" />
+          <IoGlobalSelect
+            slot="cue_output"
+            id="footer-cue-out"
+            label="Cue output"
+            showLabel
+            className="flex-1"
+            unsupported={supports.elementSink ? undefined : 'not routable here'}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            window.dispatchEvent(new CustomEvent('thedaw:open-settings'));
+          }}
+          className="self-start text-[11px] font-mono uppercase tracking-widest text-purple-300 hover:text-purple-100"
+        >
+          All inputs &amp; outputs…
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const MasterFxIndicator: React.FC = () => {
   const attached = useMixLiveRackStore((s) => s.attached);
   const chain = useEffectChainStore((s) => s.chain);
@@ -775,6 +868,7 @@ export const PlayerFooter: React.FC = () => {
           </button>
           <div className="flex items-center gap-4 shrink-0">
             <MasterFxIndicator />
+            <AudioOutIndicator />
             <div className="flex items-center gap-2.5">
               <button
                 type="button"

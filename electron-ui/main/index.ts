@@ -5,6 +5,7 @@ import {
   dialog,
   protocol,
   net,
+  screen,
   session,
   shell,
 } from 'electron'
@@ -506,11 +507,17 @@ function createWindow(): void {
       return false
     }
   }
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url, frameName, features }) => {
     if (isExternal(url)) {
       void shell.openExternal(url)
       return { action: 'deny' }
     }
+    // The VJ pop-out asks for a specific monitor (Settings -> Inputs & outputs
+    // -> Pop-out screen). It travels in the window.open features string because
+    // that is the only channel available from inside the click handler — and
+    // the call HAS to stay in the gesture or the pop-out is blocked.
+    const bounds = requestedDisplayBounds(frameName, features)
+    if (bounds) return { action: 'allow', overrideBrowserWindowOptions: bounds }
     return { action: 'allow' }
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -525,6 +532,36 @@ function createWindow(): void {
   // backend is ready — exactly like the web app. This keeps ONE background the
   // whole time and keeps the desktop + web boot flows in sync.
   loadRenderer()
+}
+
+/**
+ * Where a pop-out asked to be placed. Returns null when the window is not one
+ * we position, when no display was asked for, or when that display is gone —
+ * in which case Chromium's own default placement applies.
+ */
+function requestedDisplayBounds(
+  frameName: string,
+  features: string,
+): { x: number; y: number; width: number; height: number } | null {
+  if (frameName !== 'sa3-vj-window') return null
+  const match = /(?:^|,)\s*thedawDisplay=([^,]+)/.exec(features || '')
+  const wanted = match?.[1]?.trim()
+  if (!wanted) return null
+  try {
+    const target = screen.getAllDisplays().find((d) => String(d.id) === wanted)
+    if (!target) return null
+    const area = target.workArea
+    const width = Math.min(1280, area.width)
+    const height = Math.min(800, area.height)
+    return {
+      x: Math.round(area.x + (area.width - width) / 2),
+      y: Math.round(area.y + (area.height - height) / 2),
+      width,
+      height,
+    }
+  } catch {
+    return null
+  }
 }
 
 function loadRenderer(): void {
@@ -687,6 +724,23 @@ function registerIpcHandlers(): void {
   // into the MIX area: the backend sidecar reparents the editor under this HWND.
   // getNativeWindowHandle() returns a Buffer holding the pointer; encode it as a
   // decimal string so it survives JSON/IPC without precision loss.
+  // The monitors this machine has, so the renderer can offer them as a choice
+  // for pop-out windows. Web has no equivalent API, which is why that row reads
+  // "desktop app only" in a browser.
+  ipcMain.handle('display:list', () => {
+    try {
+      const primary = screen.getPrimaryDisplay().id
+      return screen.getAllDisplays().map((d) => ({
+        id: String(d.id),
+        label: `${d.label || `Display ${d.id}`} (${d.size.width}x${d.size.height})${d.id === primary ? ' · primary' : ''}`,
+        bounds: d.workArea,
+        primary: d.id === primary,
+      }))
+    } catch {
+      return []
+    }
+  })
+
   ipcMain.handle('window:getNativeHandle', () => {
     if (!mainWindow) return null
     try {

@@ -23,7 +23,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -118,6 +118,35 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # here, so this default is what lets the PATCH land.
         "musescore_path": "",
     },
+    "io": {
+        # Global input/output device choices, plus per-surface overrides.
+        #
+        # Every slot stores BOTH the browser deviceId and the label the device
+        # had when it was chosen. deviceIds are salted per-origin and rotate
+        # when site data is cleared, so the id alone is not portable between
+        # the browser build (:5173) and the desktop app (app://) that the same
+        # user switches between with app.launch_mode. The label is the recovery
+        # key: the frontend resolves by id, then by label, then falls back to
+        # the system default WITH a visible notice — never silently.
+        #
+        # Empty id AND empty label = "use the system default".
+        "audio_output": {"id": "", "label": ""},  # main mix
+        "cue_output": {"id": "", "label": ""},  # DJ headphone pre-listen
+        "audio_input": {"id": "", "label": ""},  # microphone
+        # 'all' (every port, including one plugged in later) | 'some' (ports).
+        "midi_inputs": {"mode": "all", "ports": []},
+        "midi_output": {"id": "", "label": ""},  # MIDI thru; '' = send nothing
+        "visual_display": {"id": "", "label": ""},  # Electron display for pop-outs
+        # Per-surface overrides keyed by surface id (see frontend
+        # state/ioSurfaces.ts), each value a {id,label} ref. A surface with NO
+        # entry follows the global slot; an entry of {"id":"","label":""} means
+        # "the OS default, ignoring the global".
+        #
+        # NOTE: `patch()` assigns a dict-valued key WHOLESALE — it does not
+        # deep-merge — so a caller must always PATCH the complete object for
+        # `overrides` (and for every slot above), never a fragment.
+        "overrides": {},
+    },
 }
 
 
@@ -190,6 +219,11 @@ def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         # Migration v6 → v7: add the `notation` section (artist). New section,
         # already filled from DEFAULT_SETTINGS above; re-persist the bump.
         merged.setdefault("notation", deepcopy(DEFAULT_SETTINGS["notation"]))
+    if old_version < 8:
+        # Migration v7 → v8: add the `io` section (global device choices +
+        # per-surface overrides). New section, already filled from
+        # DEFAULT_SETTINGS above; this branch re-persists the bumped schema.
+        merged.setdefault("io", deepcopy(DEFAULT_SETTINGS["io"]))
 
     merged["schema_version"] = SCHEMA_VERSION
     return merged

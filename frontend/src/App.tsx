@@ -59,6 +59,10 @@ import { startPoseRouting } from './state/poseRouting';
 import { startXrViz, stopXrViz } from './state/xrViz';
 import { useMidiDevicesStore } from './state/midiDevicesStore';
 import { isMidiAudioMuted, useMidiTriggerStore } from './state/midiTriggerStore';
+import { midiInputConfig, startIoDevices, useIoDevicesStore } from './state/ioDevicesStore';
+import { midiPortAllowed } from './lib/midiPortFilter';
+import { setMidiOutputPorts } from './state/midiOutBus';
+import { useFeatureToggleStore } from './state/featureToggleStore';
 import { useGanStore } from './state/ganStore';
 import { useProjectStore } from './state/projectStore';
 import { useAppUiStore } from './state/appUiStore';
@@ -191,6 +195,15 @@ export default function App() {
     void useModuleStore.getState().load();
   }, [isBackendReady]);
 
+  // ONE device-change subscription for the whole app, plus the boot read of the
+  // saved input/output choices. Idempotent — it only ever runs once. Waits for
+  // the backend so the first /api/settings round trip lands rather than
+  // failing and leaving every device on the system default.
+  useEffect(() => {
+    if (!isBackendReady) return;
+    startIoDevices();
+  }, [isBackendReady]);
+
   useEffect(() => {
     logInfo('system', 'theDAW UI initialized');
   }, []);
@@ -219,12 +232,22 @@ export default function App() {
   // the synth voice has its own envelope that naturally decays.
   // Hot-plug aware via MIDIAccess.onstatechange.
   const midiEnabled = useMidiTriggerStore((s) => s.enabled);
+  // Which ports are let through (Settings -> Inputs & outputs). Re-attaching on
+  // a change is the whole point, so the effect depends on a stable key rather
+  // than the object identity a settings refresh would churn.
+  const midiInputKey = useFeatureToggleStore((s) => {
+    const cfg = s.settings.io?.midi_inputs;
+    const ports = Array.isArray(cfg?.ports) ? cfg.ports : [];
+    return `${cfg?.mode ?? 'all'}:${ports.map((p) => p.id || p.label).join(',')}`;
+  });
   useEffect(() => {
     // Gated behind the master MIDI toggle: until the user turns MIDI on
     // we never call requestMIDIAccess(), so Chrome's permission prompt +
     // Web MIDI deprecation notice only appear on explicit opt-in.
     if (!midiEnabled) {
       useMidiDevicesStore.getState().setMidiInputs([]);
+      useIoDevicesStore.getState().setMidiPorts([]);
+      setMidiOutputPorts([]);
       return;
     }
     if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
@@ -256,14 +279,29 @@ export default function App() {
     };
 
     const attach = (a: MIDIAccess) => {
+      const cfg = midiInputConfig();
       const names: string[] = [];
+      const ports: Array<{ id: string; label: string }> = [];
       a.inputs.forEach((input) => {
-        input.onmidimessage = onMidiMessage;
+        // Filter HERE, at the Web MIDI boundary, where the port id still
+        // exists — never inside publishMidi, which also carries the Quest
+        // bridge and the synthetic Sway surface and would silence both.
+        input.onmidimessage = midiPortAllowed(input, cfg) ? onMidiMessage : null;
         names.push(input.name ?? 'unnamed');
+        ports.push({ id: input.id, label: input.name ?? 'unnamed' });
       });
       // Publish the connected device names so the SLIDE/DJ controller pickers
       // can auto-detect a profile by name (and show what's plugged in).
       useMidiDevicesStore.getState().setMidiInputs(names);
+      // And the {id,label} pairs for the I/O menu: names alone are not
+      // identities (two identical controllers collide, and unplug/replug
+      // reorders the list).
+      const outs: Array<{ id: string; name: string; send: (data: number[]) => void }> = [];
+      a.outputs.forEach((out) => {
+        outs.push({ id: out.id, name: out.name ?? 'unnamed', send: (data) => out.send(data) });
+      });
+      setMidiOutputPorts(outs);
+      useIoDevicesStore.getState().setMidiPorts(ports);
     };
 
     // Pass an explicit MIDIOptions ({ sysex: false }) — we don't need SysEx for
@@ -303,8 +341,10 @@ export default function App() {
         });
         access.onstatechange = null;
       }
+      setMidiOutputPorts([]);
+      useIoDevicesStore.getState().setMidiPorts([]);
     };
-  }, [midiEnabled]);
+  }, [midiEnabled, midiInputKey]);
 
   // Auto-enable the Sway DAW-control mirror when the Audima Sway is the detected
   // controller — until the user manually toggles it, after which their choice

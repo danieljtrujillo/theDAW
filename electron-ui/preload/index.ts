@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Screen-space content-area bounds (DIP) for converting an element rect into
   // absolute screen pixels.
   getContentBounds: () => ipcRenderer.invoke('window:getContentBounds'),
+  // Monitors attached to this machine, for the pop-out screen choice in
+  // Settings -> Inputs & outputs. Absent in a browser, which is what makes that
+  // row render as "desktop app only" rather than as a dead dropdown.
+  listDisplays: () => ipcRenderer.invoke('display:list'),
   // Subscribe to OS file-open events (double-clicked .tasmo / .gan). Returns a
   // disposer so the renderer can unsubscribe (StrictMode-safe).
   onOpenFile: (cb: (filePath: string) => void) => {
