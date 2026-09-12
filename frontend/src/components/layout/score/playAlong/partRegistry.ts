@@ -10,12 +10,13 @@
  * This module is that small shared memory: views register the parts they
  * learn, the toolbar applies the preset through it, and for a MusicXML sheet
  * whose parts nobody has seen yet the `<part-list>` is fetched and parsed
- * directly (a few kilobytes of regex work, only on an explicit preset).
+ * directly (a few kilobytes of regex work, on an explicit preset or when the
+ * EXPORT menu opens).
  *
  * Session-only, like the store's partVisibility.
  */
 import { useEffect, useState } from 'react';
-import { notationArtifactUrl } from '../../../../lib/notationClient';
+import { fetchArtifactText } from '../../../../lib/notationClient';
 import {
   partsForInstrument,
   usePlayAlongStore,
@@ -148,9 +149,11 @@ export function parseMusicXmlPartList(xml: string): PartDescriptor[] {
 }
 
 /**
- * Learn a MusicXML artifact's parts without a renderer: fetch the file and
- * parse its part-list. Cached per artifact, deduplicated while in flight,
- * registered on success. Throws on a failed fetch or an unparsable document.
+ * Learn a MusicXML artifact's parts without a renderer: read the file through
+ * the artifact text cache (a sheet a view has already fetched is not
+ * downloaded again to read a few KB of part-list) and parse it. Cached per
+ * artifact, deduplicated while in flight, registered on success. Throws on a
+ * failed fetch or an unparsable document.
  */
 export function discoverParts(artifactId: string): Promise<PartDescriptor[]> {
   const known = partsById.get(artifactId);
@@ -159,9 +162,7 @@ export function discoverParts(artifactId: string): Promise<PartDescriptor[]> {
   if (pending) return pending;
   const task = (async () => {
     try {
-      const res = await fetch(notationArtifactUrl(artifactId));
-      if (!res.ok) throw new Error(`MusicXML HTTP ${res.status}`);
-      const parts = parseMusicXmlPartList(await res.text());
+      const parts = parseMusicXmlPartList(await fetchArtifactText(artifactId));
       if (parts.length === 0) throw new Error('no <part-list> in the MusicXML');
       registerParts(artifactId, parts);
       return parts;

@@ -16,6 +16,10 @@ export interface BeatSaberExportPopoverProps {
   /** Part names when known (from a loaded view or the part registry); null
    *  means "every pitched part" and hides the part checkboxes. */
   parts: string[] | null;
+  /** Chart part indices pre-selected when the popover opens from a per-part
+   *  EXPORT menu entry; null = every part ticked. The menu never offers a
+   *  percussion part here (they are never mapped to blocks). */
+  initialParts?: number[] | null;
   caps: NotationCapabilities | null;
   /** The analysis BPM of the track, for the BPM selector's label. */
   analysisBpm?: number | null;
@@ -23,7 +27,8 @@ export interface BeatSaberExportPopoverProps {
   onClose: () => void;
 }
 
-/** Element id the BEAT SABER button's aria-controls points at. */
+/** Element id of the popover (role=dialog); the EXPORT menu's BEAT SABER
+ *  entries open it. */
 export const BEATSABER_POPOVER_ID = 'score-bs-popover';
 
 const DIFFICULTY_IDS: Record<string, string> = {
@@ -48,6 +53,7 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
   entryId,
   artifact,
   parts,
+  initialParts = null,
   caps,
   analysisBpm = null,
   onDone,
@@ -60,19 +66,22 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
   const [bpmSource, setBpmSource] = useState<'analysis' | 'chart'>('analysis');
   const [version, setVersion] = useState<2 | 3>(2);
   const [includeAudio, setIncludeAudio] = useState(!ffmpegMissing);
-  const [partSel, setPartSel] = useState<boolean[]>(() => (parts ?? []).map(() => true));
+  const [partSel, setPartSel] = useState<boolean[]>(() =>
+    (parts ?? []).map((_, i) => !initialParts || initialParts.includes(i)),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const firstRef = useRef<HTMLInputElement | null>(null);
 
-  // Parts may arrive after the popover opened (a fetch of the part-list).
+  // Parts may arrive after the popover opened (a fetch of the part-list);
+  // the new slots follow the same pre-selection rule as the initial state.
   useEffect(() => {
     setPartSel((prev) => {
       const n = parts?.length ?? 0;
       if (prev.length === n) return prev;
-      return Array.from({ length: n }, (_, i) => prev[i] ?? true);
+      return Array.from({ length: n }, (_, i) => prev[i] ?? (initialParts ? initialParts.includes(i) : true));
     });
-  }, [parts]);
+  }, [parts, initialParts]);
 
   useEffect(() => {
     if (ffmpegMissing) setIncludeAudio(false);

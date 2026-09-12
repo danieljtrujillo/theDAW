@@ -355,7 +355,7 @@ export const FEATURES: FeatureEntry[] = [
     how: [
       'Select a track, then open the SCORE tab in the bottom dock.',
       'Convert the audio to notation.',
-      'Arrange the parts, then export as PDF, SVG or ABC.',
+      'Arrange the parts, then EXPORT as MusicXML, PDF, ABC, SVG, a note chart or a Beat Saber level.',
     ],
     where: 'Bottom dock → SCORE',
     surface: { kind: 'dock', tab: 'score' },
