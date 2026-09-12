@@ -18,7 +18,7 @@ Default models per provider are configured in the provider catalog (for example 
 
 Ask the assistant to do something ("switch to advanced", "set the prompt to epic orchestral and generate") and it drives the UI directly. Providers with native function calling receive an OpenAI-style tool schema (`theDAW_TOOLS`, converted to Anthropic tool format for Claude); other models emit `<action>{...}</action>` blocks the frontend executes. Actions cover navigation, prompt editing, every generation parameter, generate/abort/status, and a full **timeline-editing vocabulary**.
 
-**Navigation reaches every workspace.** `navigateTo()` resolves all twelve center tabs plus the library rail, and returns false — reported back to the model — on an unknown target, instead of silently no-opping while claiming success (`frontend/src/state/appUiStore.ts`).
+**Navigation reaches every workspace.** `navigateTo()` resolves all thirteen center tabs plus the library rail, and returns false — reported back to the model — on an unknown target, instead of silently no-opping while claiming success (`frontend/src/state/appUiStore.ts`).
 
 **Editor tools.** Twelve `editor_*` tools let the assistant read and modify the EDIT arrangement: `editor_get_state`, `add_track`, `remove_track`, `set_track`, `move_clip`, `remove_clip`, `split_clip`, `select_clip`, `set_playhead`, `set_bpm`, `set_loop`, and `add_marker`. They are implemented against `editorStore` with honest error strings, and the assistant's app context now reports the real active tab plus a bounded arrangement summary (tracks, clips, playhead, selection, loop, BPM) — previously it was architecturally blind to the timeline and was always told the user was on CREATE.
 

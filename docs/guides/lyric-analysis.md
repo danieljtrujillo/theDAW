@@ -81,10 +81,20 @@ one letter per line, sections separated by spaces.
 ### Sound, repetition and structure
 
 Sound devices are found from the phones: a repeated word-initial consonant
-within three words is alliteration, a repeated stressed vowel within four is
-assonance, a repeated non-initial consonant with at least three carriers is
-consonance, and a dense enough run of s/z/sh/ch or p/b/t/d/k/g over a six-word
-window is sibilance or plosives.
+within three words is alliteration, a repeated non-initial consonant with at
+least three carriers is consonance, and a dense enough run of s/z/sh/ch or
+p/b/t/d/k/g over a six-word window is sibilance or plosives.
+
+Assonance is not an exact-phone match. It is a run of words ringing on one vowel
+**colour**, within a tolerance — so "green / grin" belongs together the way an
+ear hears it rather than the way a dictionary spells it. Two rules keep that
+honest. Every member of a run is measured against every other member, not just
+against the one before it, because chaining neighbour to neighbour lets a run
+drift the whole length of the vowel space one comfortable step at a time
+("green / grin / grand / grunt" comes out as one run, which is an artefact of
+the walk and not a finding). And a run may reach across a line break, but only
+so far, so a vowel does not tie the whole song together. A run that rings on
+more than one vowel reports both, with how far apart they are.
 
 Repetition is found from the words: lines that open alike (anaphora), close
 alike (epistrophe), do both (symploce), hand the last word to the next line
@@ -97,11 +107,31 @@ strong break inside a line) and meter — named only when a line's actual stress
 pattern fits a named foot, so you get "iambic tetrameter" when the line really
 is one and nothing when it is not.
 
-### Meaning: the optional interpretive pass
+### Meaning: what is computed, and what is asked for
 
-Metaphor, simile, irony, imagery, symbolism, puns and double meanings are
-readings, not measurements, so they are not computed — they are asked for.
-Tick **READ THE MEANING TOO** and pick a provider before you analyse.
+Most of what a reader calls a double meaning is not interpretive at all. It is a
+fact about the language, and the checkable ones are computed on every analysis,
+with no model and no key:
+
+- **Homophone play** — two spellings in the lyric that sound identical:
+  "sole" / "soul", "their" / "there". The dictionary proves it, so this is the
+  strongest finding in the family.
+- **Heteronyms** — one spelling with two readings and two meanings: "record",
+  "live", "tear". Which one was sung is a choice, and the rhyme depends on it,
+  so the fork is worth pointing at.
+- **A second sense** — "bars", "hook", "change", "cold". A curated list, because
+  there is no machine-readable sense inventory in this repo and a sense count
+  invented from spelling would be a lie. A word that recurs is the stronger
+  claim (the same word twice, meaning two things, is antanaclasis); a single
+  occurrence is a nudge, pitched just below the pane's default confidence floor
+  so it only shows when you ask for it.
+- **Homophone echo** — a word whose identical-sounding partner is *not* in the
+  lyric. The ear cannot tell them apart, so the second reading is available
+  whether or not it was meant.
+
+Metaphor, simile, irony, imagery and symbolism are readings, not measurements,
+so those are not computed — they are asked for. Tick **READ THE MEANING TOO**
+and pick a provider before you analyse.
 
 The pass uses whatever LLM key the assistant already has (Gemini, OpenAI,
 Anthropic, Grok, Groq, OpenRouter, in that probe order); nothing extra to set
@@ -142,9 +172,64 @@ The row of controls above the sheet is both the legend and the filter:
 |---|---|
 | The five family checkboxes | Show or hide a whole family, with its shape and its count beside it. **Sound is off by default** — alliteration, assonance and consonance fire on most of a lyric by their nature (78% of words carry a mark with every family on, against 48% without), and a highlighter over everything says nothing. |
 | **FLOOR** | Hide findings the detector is less sure of than this. Starts at 50%. |
-| **LINKS** | Draw internal, leonine and cross-line rhymes as arcs over the sheet — they are invisible in a flat list and they are the interesting part of a rap lyric. On by default. |
+| **OFF / NEAR / ALL** (wires) | How much of the wiring is drawn over the sheet — internal, leonine and cross-line rhymes as arcs, which are invisible in a flat list and are the interesting part of a rap lyric. **NEAR** is the default: connections within two lines. **ALL** draws every one, with a live count beside it. **OFF** still wires the finding you currently have open, in full. |
+| **WEB** | Open the whole lyric as one chart — see [The web](#the-web) below. |
+| **A- / A+ / B** | Lyric text size and weight. Shared with the writing surface, so both panes read the same. |
 | **STRESS** | One dot per syllable beside each line, filled where the stress falls. Off by default, and hidden when the pane is narrow. |
-| **KARAOKE OVERLAY** | Underline the same devices on the karaoke words while the song plays. On by default. |
+| **TIE** | Tie the two panes together: select a word while writing and it lights here; pick a word here and the caret lands on it over there. |
+| **FOLLOW** | Scroll this sheet with the song, the way the karaoke does. Needs a song playing in the SING tab. |
+| **ON KARAOKE** | Underline the same devices on the karaoke words while the song plays. On by default. |
+| **MARK** | Mark the lyric yourself — see [Your own marks](#your-own-marks) below. Offered only on a LYRIC-notebook draft; a song opened straight from the library shows **MARK IN THE LYRIC TAB** instead. |
+
+### The long-range shapes
+
+Above the sheet sits a map of the shapes that are too big to see on the words.
+Each is one band across the width of the song, with a code, the lines it spans,
+and tick marks where it actually lands:
+
+| Code | What it is |
+|---|---|
+| **RUN** | Consecutive lines all landing on one rhyme. |
+| **CHAIN** | One rhyme threaded across a long stretch, gaps included. |
+| **CALL** | A rhyme returning after a long gap, or in a later section. |
+| **ENDS** | A section tied at both ends: its first line rhymes with its last. |
+
+Click a band to light that shape up on the lyric. Section boundaries are drawn
+through the map as faint cuts, so a callback that crosses from verse to chorus
+reads as one. The map keeps the long shapes and says how many shorter ones it
+left out; all of them are in the findings list either way.
+
+### The web
+
+**WEB** opens the whole lyric as one chart. The sheet draws findings *on* the
+words, which is the right place to read them and the wrong place to see the
+shape — a callback across three verses is a wire that leaves the top of the
+screen. The web is the other view: one node per line, every connection drawn
+as an arc, and nothing else on the page.
+
+- **ARC** lays the lines down a vertical spine in reading order and bows each
+  connection out to the side. Distance is preserved, so a callback across forty
+  lines is a forty-line arc and looks like one.
+- **RING** closes that spine into a circle and draws the connections as chords.
+  Distance stops being legible and density starts being: a song whose chorus
+  answers every verse is a starburst.
+
+It renders to SVG and nothing else — no canvas, no layout library — so the
+export *is* the picture on the screen rather than a redraw of it. Export as SVG,
+or as PNG rasterised at whatever scale you ask for.
+
+### Your own marks
+
+The engine finds what it can prove. **MARK** is where you say what you hear:
+click the words that rhyme — two, three, as many as you like — and name them as
+one mark, with a verdict of your own. Your marks are drawn as boxes, never as
+another underline, so they never read as something the engine claimed.
+
+Marks are saved against a lyric **document**, which is why the toggle only
+appears on a LYRIC-notebook draft; a song opened from the library has nowhere to
+keep them and shows **MARK IN THE LYRIC TAB** instead. The engine never writes
+to them, so a mark survives a re-analysis unchanged. Spans that name no word in
+the document are dropped on save, and the response says how many.
 
 Findings honour their character offsets, so a multisyllabic rhyme marks
 "ele|VATION" rather than the whole word. The karaoke overlay stays
@@ -249,7 +334,15 @@ POST   /api/lyricanalysis/{entry_id}/run     {force, llm, provider, model, api_k
 GET    /api/lyricanalysis/{entry_id}/job     the analysis running for this subject, if any
 DELETE /api/lyricanalysis/{entry_id}         delete the stored analysis
 GET    /api/lyricanalysis/jobs/{job_id}      job status and result
+
+GET    /api/lyricanalysis/documents/{doc_id}/marks   the writer's own marks on this draft
+PUT    /api/lyricanalysis/documents/{doc_id}/marks   replace the whole set
 ```
+
+A mark is a set of word positions the writer picked by hand, saved with a name
+and a verdict. `GET` anchors them onto the words as they are now and names the
+ids the lyric has moved out from under; `PUT` replaces the whole set, mints ids
+server-side, and drops spans that no longer match a word.
 
 `{entry_id}` is either a library entry or a lyric document id (`lyricdoc_` plus
 32 hex characters), so one pane reads a song or a notebook page without knowing

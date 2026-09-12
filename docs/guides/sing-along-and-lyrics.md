@@ -128,7 +128,7 @@ the queued job then finds it done.
 - Timings autosave a moment after each change and when playback pauses.
 - Once a song has been analysed in STUDY, its rhymes and devices are drawn on
   the karaoke words as they are sung, one underline shape per family. Turn it
-  off with KARAOKE OVERLAY in the analysis pane.
+  off with ON KARAOKE in the analysis pane.
 
 ## Export
 

@@ -111,7 +111,14 @@ PUT    /api/lyricanalysis/documents/{doc_id}         {title?, text?, language?, 
 DELETE /api/lyricanalysis/documents/{doc_id}         delete the draft and its analysis
 POST   /api/lyricanalysis/documents/{doc_id}/duplicate
 POST   /api/lyricanalysis/documents/{doc_id}/attach  {entry_id, write_lyrics}
+GET    /api/lyricanalysis/documents/{doc_id}/marks   the writer's own marks
+PUT    /api/lyricanalysis/documents/{doc_id}/marks   replace the whole set
 ```
+
+The two `marks` routes are the writer's hand-made rhyme marks, described in
+[Your own marks](lyric-analysis.md#your-own-marks). They live on the document
+rather than on the analysis, which is why marking is offered on a draft and not
+on a song opened straight from the library.
 
 A document id is `lyricdoc_` plus 32 hex characters, minted by the backend and
 never taken from a request. `PUT` sends only the fields that changed; passing

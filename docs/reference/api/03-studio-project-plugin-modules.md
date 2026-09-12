@@ -195,8 +195,10 @@ Hosts the Audima SwayCommand performance app as an embedded iframe, the same sid
 ### updates — `/api/updates`
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/updates/check?force=` | Compare installed vs latest GitHub release (`updates/router.py:177`) |
-| GET | `/api/updates/releases` | Up to 10 recent releases (`:218`) |
+| GET | `/api/updates/check?force=` | Compare installed vs latest GitHub release; also reports `install_kind` and the release assets (`updates/router.py:224`) |
+| POST | `/api/updates/apply` | Pull a git-clone install and restart it (exit 89 → the supervisor syncs deps and respawns). 400 for the packaged app, 409 on a dirty tree or an apply already running, 503 without git (`:407`) |
+| GET | `/api/updates/apply-status` | Progress of the last `/apply` (`:401`) |
+| GET | `/api/updates/releases` | Up to 10 recent releases (`:448`) |
 
 ### delivery — `/api/edit/delivery` (delivery/export tool family)
 Router is built by `build_router("delivery", TOOLS)` (`backend/core/module_base.py:45`), so it exposes the shared tool-family surface. Tools: codec_matrix, smart_export, high_quality_src, dither, metadata, batch_export (`backend/modules/delivery/router.py:154`).
