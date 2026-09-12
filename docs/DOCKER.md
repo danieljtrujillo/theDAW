@@ -24,7 +24,7 @@ Two named volumes persist state across container recreation:
 
 ## GPU enablement
 
-The torch 2.7.1+cu126 wheels baked into the image bundle the CUDA userspace
+The torch 2.14.0+cu130 wheels baked into the image bundle the CUDA userspace
 libraries, so the image itself contains no CUDA toolkit and needs none. GPU
 access requires two things on the host:
 
@@ -66,7 +66,7 @@ and the rest of the app keeps working.
 
 ## Image size expectations
 
-Expect roughly 9 to 11 GB uncompressed. The bulk is the cu126 torch stack
+Expect roughly 9 to 11 GB uncompressed. The bulk is the cu130 torch stack
 (the wheels bundle CUDA userspace), followed by the scientific Python set and
 the baked embedder. The frontend build stage contributes only the compiled
 `dist` output.

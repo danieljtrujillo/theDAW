@@ -22,7 +22,7 @@ Full detail: [Generation core](01-generation-core.md).
 ## Frontend: one tab per workspace
 
 The workspace tabs are declared in one place, `CENTER_TABS`
-(`frontend/src/state/appUiStore.ts:17`):
+(`frontend/src/state/appUiStore.ts:19`) — thirteen of them:
 
 | Tab | What it is | Page |
 |---|---|---|
@@ -32,9 +32,11 @@ The workspace tabs are declared in one place, `CENTER_TABS`
 | PERFORM | Live scene/clip grid | [08](08-perform-foundry-nodefi.md) |
 | DJ | Two-deck console | [07](07-dj.md) |
 | VJ | Live visuals engine | [09](09-vj-live-visuals.md) |
+| SWAY | Gesture / SwayCommand live performance deck | [sway-perform-live guide](../../guides/sway-perform-live.md) |
 | FOUNDRY | Plugin/VST interface designer | [08](08-perform-foundry-nodefi.md) |
 | UNDERFIT | LoRA finetune trainer | [11](11-underfit-lora.md) |
 | NODEFI | Node-graph generation pipelines | [08](08-perform-foundry-nodefi.md) |
+| LOOM | The Shard Index as one living colony, grown bar by bar | [loom-and-shards guide](../../guides/loom-and-shards.md) |
 | LEARN | Guides, docs, in-app assistant | [13](13-assistant-llm-suno.md) |
 | TOUR | Venue discovery and tour routing | [12](12-tour-planner.md) |
 

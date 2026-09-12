@@ -48,10 +48,15 @@ DOC_PATHS = [
     # its confidence and `?` marks, syncopation, swing, polymeter, cross-rhythms
     # — and the six things that silently break any beat-synchronous analysis.
     PROJECT_ROOT / "docs" / "guides" / "rhythm-analysis.md",
-    # Onboarding: the pinned labels on the library rail, LOG and PANELS, why
-    # they retire themselves, and the menu entry that brings them back. Indexed
-    # because "where is the library?" is exactly what gets asked here.
+    # Onboarding: the header's "?" feature search, the pinned LOG and PANELS
+    # labels, why they retire themselves, and the menu entry that brings them
+    # back. Indexed because "where is the library?" is exactly what gets asked
+    # here — and the "?" search is now the answer to it.
     PROJECT_ROOT / "docs" / "guides" / "feature-notes.md",
+    # The app-wide theme system: the 28 themes plus the custom-image theme, what
+    # a theme does and does not recolour, the derived accent, and the --et-*
+    # variables. "How do I change the colours?" has no other doc.
+    PROJECT_ROOT / "docs" / "guides" / "themes.md",
     PROJECT_ROOT / "docs" / "guides" / "foundry.md",
     PROJECT_ROOT / "docs" / "guides" / "underfit.md",
     PROJECT_ROOT / "docs" / "UI" / "hover-text-guide.md",
@@ -79,12 +84,20 @@ DOC_PATHS = [
     # punches, the routing that travels in a .tasmo, the shipped performance
     # templates, and the Kargyraa Sub subharmonic bass engine.
     PROJECT_ROOT / "docs" / "guides" / "sway-perform-live.md",
+    # LOOM (the thirteenth tab) and the Shard Index underneath it: what a shard
+    # is, how the crate and the colony work, the generators and free meters, and
+    # the /api/shards routes. Nothing else in the index mentions either.
+    PROJECT_ROOT / "docs" / "guides" / "loom-and-shards.md",
     # Code-grounded reference tree (July 2026): one page per subsystem listing
     # every feature with the exact models/libraries it uses, the full HTTP API by
     # router cluster, and the offline/performance story. Each page cites its
     # source as path:line — when a feature changes, update its page in the same
     # commit so the assistant keeps answering from the current behavior.
     PROJECT_ROOT / "docs" / "OFFLINE-AND-PERFORMANCE.md",
+    # backend/lib/audio_io.py as THE audio I/O layer, and the standing rule that
+    # torchaudio.load / save are never called. Indexed so the assistant stops
+    # handing people torchaudio snippets that raise in this venv.
+    PROJECT_ROOT / "docs" / "guides" / "audio-io.md",
     PROJECT_ROOT / "docs" / "reference" / "README.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "00-overview.md",
     PROJECT_ROOT / "docs" / "reference" / "features" / "01-generation-core.md",
