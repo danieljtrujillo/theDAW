@@ -231,6 +231,43 @@ driven in the live app yet; items stay here until that happens.
 
 ---
 
+## P1 — from the user, 2026-09-12 (marked done only when the user says so)
+
+- [ ] **Meter maps have no UI at all.** The whole rhythm engine ships and is
+  reachable over HTTP, but nothing in the frontend calls it: `grep "api/rhythm"
+  frontend/src` returns zero hits. The user wants it in four places: **Library >
+  right-click a track > Meter map**, and then in **SCORE**, **SING** and
+  **STUDY**. Backend is ready — `GET /api/rhythm` (capabilities), `GET
+  /api/rhythm/{entry_id}` (the stored map), `POST /api/rhythm/{entry_id}/run`,
+  `POST /api/rhythm/file`, producing `meter_map` with per-segment
+  `start_sec`/`end_sec`/`bpm` plus syncopation, polymeter and cross-rhythm
+  (`backend/modules/rhythm/engine.py:1776,1849,1990`). The library menu already
+  has the exact pattern to copy: the "Run analysis" item at
+  `frontend/src/views/LibraryView.tsx:1312` calling `runJobForEntry(id, kind)`
+  at `:138` — note its `kind` union is `'analysis' | 'stems' | 'midi'` and needs
+  a `'rhythm'` arm. SCORE/SING/STUDY anchors: `ScoreView.tsx` toolbar,
+  `frontend/src/components/layout/sing/SingScoreView.tsx:89` (BOTH and STUDY
+  share a two-column layout; STUDY is `pane === 'analysis'`), and
+  `LyricAnalysisPane.tsx` for the STUDY column. The engine's own write-up is
+  `docs/guides/rhythm-analysis.md`. — M
+- [ ] **The assistant orb and its chat panel render all-white while SCORE is
+  open**, in the packaged exe (seen on v0.1.7). Both the WebGL orb and its DOM
+  chat go white at once, which points at something global rather than the
+  renderer. Under investigation; the mechanism and the proposed fix will be
+  attached here. Note the likely files (`frontend/src/orb-kit/AssistantPanel.tsx`,
+  `frontend/src/orb-kit/chat/OrbChatPanel.tsx`) are owned by the open
+  `key-icon-everywhere` branch, so the fix lands AFTER that merges rather than on
+  a branch stacked on it. Suspect window is `v0.1.6..v0.1.7`, in particular
+  `69fa44d` (the orb's alpha canvas + OutputPass) and `9a5e86f`/`3f65470` (the
+  WebGL render gate). — S
+- [ ] **aubio cannot read mp3, and says so on every import.** `chimera detect:
+  aubio could not handle <file>.mp3 (AUBIO ERROR: source_wavread: Failed opening
+  ... could not find RIFF header) - falling back to librosa`. The fallback works,
+  so this is noise, not breakage — but it reads as a failure in the LOG on every
+  mp3. aubio's wavread backend is WAV-only; either probe the extension and skip
+  straight to librosa for anything that is not WAV, or decode to a temp WAV
+  first. — XS — `backend/modules/chimera/detect.py:62`
+
 ## P2 — follow-ups from the 2026-09-12 audit (not from the user; my own leftovers)
 
 Each one was found while building the five branches of 2026-09-12 and deliberately
