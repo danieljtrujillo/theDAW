@@ -157,7 +157,7 @@ const ScrubStrip: React.FC = () => {
             <div className="absolute inset-y-0 left-0 bg-white/10" style={{ width: `${hover * 100}%` }} />
           )}
           <div
-            className="absolute inset-y-0 left-0 bg-purple-500"
+            className="absolute inset-y-0 left-0 bg-[rgb(var(--et-accent))]"
             style={{ width: `${frac * 100}%` }}
           />
         </div>
@@ -236,11 +236,11 @@ const MasterFxIndicator: React.FC = () => {
         onClick={openMix}
         aria-label={`${count} master effect${plural} live on the output — open MIX`}
         title={`${count} effect${plural} on the master insert${takers > 0 ? ', some of which take level' : ''}. Open MIX.`}
-        className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-l border border-r-0 border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors shadow-[0_0_12px_rgba(168,85,247,0.18)]"
+        className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-l border border-r-0 border-[rgb(var(--et-accent)/0.4)] bg-[rgb(var(--et-accent)/0.1)] text-[rgb(var(--et-accent))] hover:bg-[rgb(var(--et-accent)/0.2)] hover:border-[rgb(var(--et-accent)/0.7)] transition-colors shadow-[0_0_12px_rgb(var(--et-accent)/0.18)]"
       >
         <Activity className="w-3 h-3" />
         <span className="text-[9px] font-black uppercase tracking-widest">Master FX</span>
-        <span className="text-[9px] font-mono text-purple-300">{count}</span>
+        <span className="text-[9px] font-mono text-[rgb(var(--et-accent))]">{count}</span>
       </button>
       <button
         type="button"
@@ -248,16 +248,16 @@ const MasterFxIndicator: React.FC = () => {
         aria-label={open ? 'Hide what is on the master insert' : 'Show what is on the master insert'}
         aria-expanded={open}
         aria-controls="master-fx-detail"
-        className="px-1 py-1 rounded-r border border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
+        className="px-1 py-1 rounded-r border border-[rgb(var(--et-accent)/0.4)] bg-[rgb(var(--et-accent)/0.1)] text-[rgb(var(--et-accent))] hover:bg-[rgb(var(--et-accent)/0.2)] hover:border-[rgb(var(--et-accent)/0.7)] transition-colors"
       >
         <ChevronUp className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <div
           id="master-fx-detail"
-          className="absolute bottom-full right-0 mb-2 w-64 flex flex-col gap-2 p-2.5 rounded-lg border border-purple-500/30 bg-[#0a080f] shadow-[0_0_24px_rgba(168,85,247,0.2)]"
+          className="absolute bottom-full right-0 mb-2 w-64 flex flex-col gap-2 p-2.5 rounded-lg border border-[rgb(var(--et-accent)/0.3)] bg-[#0a080f] shadow-[0_0_24px_rgb(var(--et-accent)/0.2)]"
         >
-          <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">On the master insert</span>
+          <span className="text-[9px] font-black uppercase tracking-widest text-[rgb(var(--et-accent))]">On the master insert</span>
           <p className="text-[10px] leading-snug text-zinc-400">
             These sit between the mix bus and the meter, so they shape everything the
             transport plays — in every tab, until they are switched off.
@@ -276,14 +276,14 @@ const MasterFxIndicator: React.FC = () => {
             <button
               type="button"
               onClick={openMix}
-              className="flex-1 px-2 py-1 rounded border border-white/10 text-[9px] font-black uppercase tracking-widest text-zinc-300 hover:border-purple-400/60 hover:text-purple-200 transition-colors"
+              className="flex-1 px-2 py-1 rounded border border-white/10 text-[9px] font-black uppercase tracking-widest text-zinc-300 hover:border-[rgb(var(--et-accent)/0.6)] hover:text-[rgb(var(--et-accent))] transition-colors"
             >
               Show in MIX
             </button>
             <button
               type="button"
               onClick={bypassLiveRack}
-              className="flex-1 px-2 py-1 rounded border border-purple-500/40 bg-purple-500/10 text-[9px] font-black uppercase tracking-widest text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
+              className="flex-1 px-2 py-1 rounded border border-[rgb(var(--et-accent)/0.4)] bg-[rgb(var(--et-accent)/0.1)] text-[9px] font-black uppercase tracking-widest text-[rgb(var(--et-accent))] hover:bg-[rgb(var(--et-accent)/0.2)] hover:border-[rgb(var(--et-accent)/0.7)] transition-colors"
             >
               Bypass all
             </button>
@@ -325,12 +325,12 @@ const transportKey = 'h-full w-8 flex flex-col items-center justify-center gap-0
  */
 const transportKeyOff = 'bg-white/5 text-zinc-400 hover:text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_0_0_100px_rgba(255,255,255,0.06)]';
 /**
- * …toggle ON: latched IN (inset shade, one tint step up) with purple ink — the
- * glyph and legend take currentColor, so nothing else is needed and no light is
- * added. A plain class rather than an `aria-pressed:` variant, so the scope's
- * accent remaps (purple-300 on dark themes, purple-700 on light) keep applying.
+ * …toggle ON: latched IN (inset shade, one tint step up) in the theme's accent
+ * ink (`--et-accent`, editThemes.ts: the theme's own hue, or purple on a
+ * neutral theme) — the glyph and legend take currentColor, so nothing else is
+ * needed and no light is added. Hover brightens the whole key a step.
  */
-const transportKeyOn = 'bg-white/10 text-purple-400 hover:text-purple-300 shadow-[inset_0_1px_2px_rgba(0,0,0,0.6)] hover:shadow-[inset_0_1px_2px_rgba(0,0,0,0.6),inset_0_0_0_100px_rgba(255,255,255,0.04)]';
+const transportKeyOn = 'bg-white/10 text-[rgb(var(--et-accent))] hover:brightness-110 shadow-[inset_0_1px_2px_rgba(0,0,0,0.6)] hover:shadow-[inset_0_1px_2px_rgba(0,0,0,0.6),inset_0_0_0_100px_rgba(255,255,255,0.04)]';
 /**
  * …disabled: the key keeps its cap — a dead START/END stays a tile in the grid,
  * not a hole — and only its glyph and legend dim, to 40 % of the live ink, so
@@ -347,12 +347,12 @@ const transportKeyDead = 'bg-white/5 text-zinc-400 [&>*]:opacity-40 shadow-[inse
 const transportPlayKey = 'h-full w-11 flex flex-col items-center justify-center gap-0.5 rounded-none select-none border-b transition-[color,box-shadow,border-color] duration-100 active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.7)] focus-visible:relative focus-visible:z-10 disabled:pointer-events-none';
 const transportPlayRest = 'bg-white/10 text-zinc-100 border-b-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.1),inset_0_0_0_100px_rgba(255,255,255,0.08)]';
 /**
- * …while playing: the same fill and shadow, purple ink and a 1px etched purple
- * bottom edge (rgba(168,85,247), sitting 1px above the plate's own hairline) —
- * the grammar of a latched LOOP/RAND, so it reads across the room on the DJ/VJ
- * tabs where this key is the master transport. No glow.
+ * …while playing: the same fill and shadow, accent ink and a 1px etched accent
+ * bottom edge (sitting 1px above the plate's own hairline) — the grammar of a
+ * latched LOOP/RAND, so it reads across the room on the DJ/VJ tabs where this
+ * key is the master transport. No glow.
  */
-const transportPlayOn = 'bg-white/10 text-purple-400 hover:text-purple-300 border-b-purple-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.1),inset_0_0_0_100px_rgba(255,255,255,0.06)]';
+const transportPlayOn = 'bg-white/10 text-[rgb(var(--et-accent))] hover:brightness-110 border-b-[rgb(var(--et-accent))] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.1),inset_0_0_0_100px_rgba(255,255,255,0.06)]';
 const transportPlayDead = 'bg-white/10 text-zinc-100 [&>*]:opacity-40 border-b-transparent shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]';
 /**
  * The etched legend under each glyph. Decorative (aria-hidden — the key's
@@ -366,7 +366,7 @@ const keyLabel = 'text-[8px] font-mono uppercase tracking-widest leading-none';
 /**
  * The four motion glyphs, hard-cornered (no rounded joins) so they read as one
  * engraved set at 14px — lucide's round joins go soft that small. Fill-only in
- * currentColor, so the key's ink, hover ink and ON purple flow straight in.
+ * currentColor, so the key's ink, hover ink and ON accent flow straight in.
  */
 const Glyph: React.FC<{ d: string; className?: string }> = ({ d, className }) => (
   <svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true" focusable="false" className={className}>
@@ -630,7 +630,7 @@ export const PlayerFooter: React.FC = () => {
               {displayLabel ?? 'No output loaded'}
             </h4>
             <div className="flex items-center gap-2">
-              <span className="text-[9px] text-purple-400 font-mono uppercase tracking-widest border border-purple-500/20 px-1 rounded-xs bg-purple-500/5">
+              <span className="text-[9px] text-[rgb(var(--et-accent))] font-mono uppercase tracking-widest border border-[rgb(var(--et-accent)/0.25)] px-1 rounded-xs bg-[rgb(var(--et-accent)/0.06)]">
                 {lastModelName ? lastModelName.toUpperCase() : (displayLabel ? 'LIBRARY' : 'IDLE')}
               </span>
               <span className="text-[10px] text-zinc-500 font-mono">

@@ -20,6 +20,7 @@ import { createRenderGate } from '../../lib/renderGate';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { vs as sphereVS } from './cymatics/sphere-shader';
 import { HybridSource, IdleSource, type FreqSource } from './cymatics/hybrid-source';
 import { getMasterGain } from '../../state/playerStore';
@@ -37,7 +38,12 @@ const FerroOrbCore: React.FC = () => {
 
     let renderer: THREE.WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true });
+      // A transparent canvas: only the ferrofluid body and its bloom are
+      // painted, so the orb has no disc behind it and no hard edge — the app
+      // shows through around the sphere. premultipliedAlpha off, because the
+      // bloom pass blends additively over a cleared-to-transparent screen and a
+      // premultiplied canvas would darken the halo's fringe.
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false });
     } catch {
       // WebGL unavailable / context exhausted — the CSS gradient core beneath
       // this overlay stays visible, so the orb still renders.
@@ -56,10 +62,13 @@ const FerroOrbCore: React.FC = () => {
     const noiseViscosity = 1.2;
     const isFerrofluid = 1.0;
 
+    renderer.setClearColor(0x000000, 0);
+
     const scene = new THREE.Scene();
-    // The panels' backdrop dome resolves to this deep violet-black; a flat
-    // color here keeps bloom simple at 48px (the dome would be invisible).
-    scene.background = new THREE.Color(0x0e0912);
+    // No background: the scene clears to transparent and the sphere's own
+    // silhouette is the orb's edge. (It used to clear to a flat violet-black,
+    // which drew a disc behind the body with a hard rim against the app.)
+    scene.background = null;
 
     const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 1000);
 
@@ -131,6 +140,12 @@ const FerroOrbCore: React.FC = () => {
     const composer = new EffectComposer(renderer);
     composer.addPass(renderPass);
     composer.addPass(bloomPass);
+    // The bloom pass must not be the pass that reaches the screen: when it is,
+    // it copies the frame with an opaque MeshBasicMaterial, which three
+    // compiles with OPAQUE and forces alpha to 1 — the whole canvas became a
+    // dark disc around the sphere. OutputPass copies the composed frame with
+    // its alpha intact, so everything outside the body stays transparent.
+    composer.addPass(new OutputPass());
 
     const applySize = () => {
       const w = container.clientWidth || 1;

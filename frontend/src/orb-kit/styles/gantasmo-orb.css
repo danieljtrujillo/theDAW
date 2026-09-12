@@ -217,9 +217,11 @@
 
 /* The ferrofluid canvas IS the body for this orb, so the stock purple gradient
    core underneath it only ever showed as a rim around the canvas edge — another
-   ring by another name. Same for the face's white drop-shadow halo. */
+   ring by another name. Same for the face's white drop-shadow halo. The canvas
+   is transparent (FerroOrbCore clears to alpha 0), so the core has NO fill at
+   all: a flat colour here drew a disc with a hard edge around the body. */
 .gantasmo-orb-theme.orb-2x .orb-core-main {
-    background: #05040a;
+    background: transparent;
 }
 
 .gantasmo-orb-theme.orb-2x .gantasmo-face svg {

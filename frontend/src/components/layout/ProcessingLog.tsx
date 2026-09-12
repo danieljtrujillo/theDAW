@@ -346,8 +346,11 @@ export const LogBody: React.FC = () => {
 // high-contrast inverse (light chip, dark text) so state is unmissable.
 const ACTION_BASE =
   'relative w-full h-full overflow-hidden rounded-lg border font-black uppercase tracking-widest text-[9px] leading-tight flex items-center justify-center text-center px-1 transition-colors disabled:cursor-not-allowed';
-const ACTION_IDLE = 'bg-white/8 hover:bg-white/15 border-white/15 text-zinc-200';
-const ACTION_HOT = 'bg-zinc-100 hover:bg-white border-white/80 text-black';
+// Both states draw on the theme's accent (`--et-accent`, editThemes.ts): a
+// neutral white block read as foreign on the hued themes. Idle is a tinted
+// ghost of it; hot is the solid accent with the ink that reads on it.
+const ACTION_IDLE = 'bg-[rgb(var(--et-accent)/0.12)] hover:bg-[rgb(var(--et-accent)/0.22)] border-[rgb(var(--et-accent)/0.45)] text-[rgb(var(--et-accent))]';
+const ACTION_HOT = 'bg-[rgb(var(--et-accent))] hover:brightness-110 border-[rgb(var(--et-accent))] text-[rgb(var(--et-accent-ink))]';
 
 export const LogActionButton: React.FC = () => {
   const centerTab     = useAppUiStore((s) => s.centerTab);

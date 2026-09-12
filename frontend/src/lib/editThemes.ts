@@ -646,18 +646,50 @@ export function resolveEditThemeVars(
 ): ResolvedEditTheme {
   if (id === CUSTOM_IMAGE_ID && customImage) {
     return {
-      vars: {
+      vars: withAccent({
         ...DEFAULT_ET_VARS,
         ...CUSTOM_IMAGE_VARS,
         // Scrim gradient over the image keeps foreground content legible.
         '--et-root-bg': `linear-gradient(rgba(6,6,10,0.45), rgba(6,6,10,0.45)), url("${customImage}") center / cover no-repeat`,
-      },
+      }, false),
       light: false,
     };
   }
   const theme = editThemeById(id) ?? editThemeById('obsidian') ?? EDIT_THEMES[0];
   return {
-    vars: { ...DEFAULT_ET_VARS, ...theme.vars },
+    vars: withAccent({ ...DEFAULT_ET_VARS, ...theme.vars }, !!theme.light),
     light: !!theme.light,
   };
+}
+
+const parseTriplet = (v: string | undefined): [number, number, number] | null => {
+  if (!v) return null;
+  const n = v.trim().split(/\s+/).map(Number);
+  return n.length === 3 && n.every((x) => Number.isFinite(x)) ? [n[0], n[1], n[2]] : null;
+};
+
+/** A tint whose channels spread less than this is a grey, not a hue. */
+const NEUTRAL_CHROMA = 30;
+
+/**
+ * `--et-accent` / `--et-accent-ink`: the hue the footer's latched transport
+ * keys, the scrub fill and the action button use, and the ink that reads on
+ * a solid fill of it. A hued theme's accent is its own tint (Navy & Gold's
+ * gold, Sage & Terracotta's clay) so the chrome stops fighting the theme; a
+ * neutral theme keeps the app's purple, darkened on light grounds. A theme
+ * that sets `--et-accent` itself is left alone.
+ */
+export function withAccent(vars: Record<string, string>, light: boolean): Record<string, string> {
+  const out = { ...vars };
+  if (!out['--et-accent']) {
+    const tint = parseTriplet(out['--et-tint']);
+    const chroma = tint ? Math.max(...tint) - Math.min(...tint) : 0;
+    out['--et-accent'] = tint && chroma >= NEUTRAL_CHROMA ? tint.join(' ') : light ? '126 34 206' : '168 85 247';
+  }
+  if (!out['--et-accent-ink']) {
+    const a = parseTriplet(out['--et-accent']) ?? [168, 85, 247];
+    const luminance = (0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2]) / 255;
+    out['--et-accent-ink'] = luminance > 0.6 ? '0 0 0' : '255 255 255';
+  }
+  return out;
 }
