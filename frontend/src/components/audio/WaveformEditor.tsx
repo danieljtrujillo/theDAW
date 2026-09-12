@@ -24,7 +24,8 @@ import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, sampleLane, clipPeakGain, snapStepSec, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
-import { useLibraryStore } from '../../state/libraryStore';
+import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
+import { LIBRARY_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../../lib/libraryDrop';
 import { useVstStore } from '../../state/vstStore';
 import { useVstEditorStore } from '../../state/vstEditorStore';
 import type { ChainEntry } from '../../state/effectChainStore';
@@ -2976,58 +2977,81 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   };
 
-  // --- Drag-and-drop from Library ---
+  // --- Drag-and-drop from the Library, or audio files from the desktop ---
   const onTimelineDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/x-thedaw-library-id')) {
+    if (dropHasLibraryOrFiles(e.dataTransfer)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   };
 
+  /** Fetch, decode and place one library entry as a clip on `targetTrack` —
+   *  the shared tail of a library drop and a desktop drop. */
+  const placeEntryOnTrack = async (entry: LibraryEntry, targetTrack: EditorTrack, startSec: number) => {
+    const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+    const { peaks, duration } = await computePeaks(blob, 240);
+    const clipId = addClipToTrack({
+      trackId: targetTrack.id,
+      label: entry.title ?? `clip_${entry.id.slice(0, 6)}`,
+      audioBlob: blob,
+      mimeType: entry.mimeType,
+      sourceDuration: duration || entry.duration,
+      offsetIntoSource: 0,
+      durationSec: duration || entry.duration,
+      startSec,
+      color: targetTrack.color,
+      libraryEntryId: entry.id,
+    });
+    cachePeaks(clipId, peaks);
+    logInfo('editor', `Dropped ${entry.title} on ${targetTrack.name} at ${startSec.toFixed(2)}s`);
+  };
+
   const onTimelineDrop = async (e: React.DragEvent) => {
-    const entryId = e.dataTransfer.getData('application/x-thedaw-library-id');
-    if (!entryId) return;
+    const dt = e.dataTransfer;
+    if (!dropHasLibraryOrFiles(dt)) return;
     e.preventDefault();
     if (!timelineRef.current) return;
-    const entry = useLibraryStore.getState().entries.find((x) => x.id === entryId);
-    if (!entry) {
-      logError('editor', `Drop: library entry ${entryId.slice(0, 8)} not found`);
-      return;
-    }
+    // Everything the DataTransfer and the pointer give is read before the
+    // import awaits: the browser locks the DataTransfer once the handler yields.
+    const entryId = dt.getData(LIBRARY_ID_MIME);
+    const fromDesktop = !entryId;
     const rect = timelineRef.current.getBoundingClientRect();
     // Viewport px -> local px: yPx is compared against trackH (local) to pick the
     // target lane, so an unscaled value dropped clips onto the wrong track.
     const xPx = viewportPxToLocal(e.clientX - rect.left);
     const yPx = viewportPxToLocal(e.clientY - rect.top);
     const droppedBelowAllTracks = yPx >= tracks.length * trackH;
-    let targetTrack: typeof tracks[number] | undefined;
-    if (droppedBelowAllTracks) {
+    const startSec = droppedBelowAllTracks ? 0 : snapSec(pxToSec(xPx));
+
+    // A desktop drop imports its audio files to the library first, so both
+    // paths continue from library entries.
+    const dropped = await entriesFromDrop(dt, { entries: useLibraryStore.getState().entries });
+    if (dropped.length === 0) {
+      if (entryId) logError('editor', `Drop: library entry ${entryId.slice(0, 8)} not found`);
+      return;
+    }
+    const newTrackFor = (entry: LibraryEntry): EditorTrack | undefined => {
       const newTrackId = addTrack({ name: entry.title });
       // Re-read tracks from the store after the mutation.
-      targetTrack = useEditorStore.getState().tracks.find((t) => t.id === newTrackId);
+      return useEditorStore.getState().tracks.find((t) => t.id === newTrackId);
+    };
+    let targetTrack: EditorTrack | undefined;
+    if (droppedBelowAllTracks) {
+      targetTrack = newTrackFor(dropped[0]);
     } else {
       const targetTrackIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(yPx / trackH)));
       targetTrack = tracks[targetTrackIdx];
     }
     if (!targetTrack) return;
-    const startSec = droppedBelowAllTracks ? 0 : snapSec(pxToSec(xPx));
     try {
-      const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
-      const { peaks, duration } = await computePeaks(blob, 240);
-      const clipId = addClipToTrack({
-        trackId: targetTrack.id,
-        label: entry.title ?? `clip_${entryId.slice(0, 6)}`,
-        audioBlob: blob,
-        mimeType: entry.mimeType,
-        sourceDuration: duration || entry.duration,
-        offsetIntoSource: 0,
-        durationSec: duration || entry.duration,
-        startSec,
-        color: targetTrack.color,
-        libraryEntryId: entry.id,
-      });
-      cachePeaks(clipId, peaks);
-      logInfo('editor', `Dropped ${entry.title} on ${targetTrack.name} at ${startSec.toFixed(2)}s`);
+      // The first entry lands where the pointer let go; every further file of
+      // a multi-file desktop drop gets a new track of its own at the same time.
+      await placeEntryOnTrack(dropped[0], targetTrack, startSec);
+      for (const entry of dropped.slice(1)) {
+        const track = newTrackFor(entry);
+        if (track) await placeEntryOnTrack(entry, track, startSec);
+      }
+      if (fromDesktop) logInfo('editor', `Imported ${dropped.length} file(s) from the desktop onto the timeline at ${startSec.toFixed(2)}s`);
     } catch (err) {
       logError('editor', `Drop decode failed: ${err instanceof Error ? err.message : err}`);
     }

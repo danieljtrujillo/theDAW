@@ -195,6 +195,10 @@ The application window has five regions:
 
 **Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, the app menu (§37), and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
+**IMPORT** sits between the ? help button and the ☰ app menu on every tab. It opens a small menu: **Audio files…** adds tracks to the library (pick several at once; the newest is selected and the library rail opens), **Open project…** opens a saved `.tasmo`, **DAW project…** imports an Ableton set. You can also drop audio files straight onto the IMPORT button.
+
+**Dropping files from the desktop.** Anywhere a library track can be dropped also takes audio files dragged in from File Explorer or Finder: the library list itself, the EDIT timeline (each file becomes a clip, extra files on new tracks), the MAKE init and inpaint slots, the MIX source, the Chimera stack, the MIDI panel's song box, the DJ decks, sampler pads, NEXT queue and prepared sets, the Media bucket and, for video and image files, the VJ tab. The file is imported into the library first (it shows up in the library rail with the newest selected) and then lands where you dropped it, exactly as a library track would.
+
 **Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly — and the assistant can reach every workspace plus the Library rail, reporting an honest failure rather than a false success if a target does not exist. Alongside the nine below, the bar also carries **NodeF.I.** (§40), **SWAY**, and **Tour**. The nine core tabs are:
 
 - **MAKE**: generate audio from a text prompt with the AI models (§6).
@@ -2354,7 +2358,7 @@ The app menu (`HamburgerMenu`) is the hamburger button in the header icon cluste
 
 ### 37.1 Menu items
 
-- **Project**: **New Project** clears the workspace for a fresh session. **Open Project** loads a saved `.tasmo` file. **Save Project** writes the current session to a `.tasmo` file. **Import DAW Project** brings in a project written by another DAW.
+- **Project**: **New Project** clears the workspace for a fresh session. **Open Project** loads a saved `.tasmo` file. **Save Project** writes the current session to a `.tasmo` file. **Import DAW Project** brings in a project written by another DAW. **Open Project** and **Import DAW Project** are also reachable from the header IMPORT button, which is on screen on every tab.
 - **Data**: **Backup / Migrate**, **Check for Updates**, and **Restore Previous Version** open the maintenance dialogs described in §39.
 - **Devices**: **Deploy to Quest** opens the headset deploy dialog described in §34.8.
 - **App**: **Edit Layout** toggles Design Mode for the draggable panel layouts (its row shows an accent dot while active). **Settings** opens the Settings modal. **Docs** opens this guide (§5).

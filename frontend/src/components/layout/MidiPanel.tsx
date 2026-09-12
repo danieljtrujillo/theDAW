@@ -14,6 +14,7 @@
 import { Activity, Download, Drum, FileCheck2, Loader2, Mic, Music4, Square } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
+import { DESKTOP_DROP_ORIGIN, LIBRARY_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../../lib/libraryDrop';
 import type { RenderNote } from '../../lib/midiSynth';
 import { colorAt, rgb, rgba } from '../../lib/trackColor';
 import { renderDrumBeatBlob, vocalizeEffect } from '../../lib/vocalBeat';
@@ -439,22 +440,32 @@ export const MidiPanel: React.FC = () => {
 
         <span className="w-px h-4 bg-white/10" aria-hidden="true" />
 
-        {/* Analyze a library vocal into the roll — search by name or drop a
-            library item here instead of pasting a raw id. */}
+        {/* Analyze a library vocal into the roll — search by name, drop a
+            library item here instead of pasting a raw id, or drop an audio
+            file from the desktop (it imports to the library, then lands here). */}
         <div
           className="relative"
           onDragOver={(e) => {
-            if (e.dataTransfer.types.includes('application/x-thedaw-library-id')) {
+            if (dropHasLibraryOrFiles(e.dataTransfer)) {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'copy';
             }
           }}
           onDrop={(e) => {
-            const id = e.dataTransfer.getData('application/x-thedaw-library-id');
-            if (!id) return;
+            const dt = e.dataTransfer;
+            if (!dropHasLibraryOrFiles(dt)) return;
             e.preventDefault();
-            const dropped = entries.find((en) => en.id === id);
-            pickAsset(id, dropped?.title ?? id);
+            const id = dt.getData(LIBRARY_ID_MIME);
+            // A desktop drop imports its first audio file, then picks it.
+            void entriesFromDrop(dt, { entries: useLibraryStore.getState().entries, origin: DESKTOP_DROP_ORIGIN, max: 1 }).then(([first]) => {
+              if (first) {
+                pickAsset(first.id, first.title);
+                if (!id) logInfo('vocal', `Imported "${first.title}" from the desktop into the song box`);
+              } else if (id) {
+                // An id the library does not know: keep the raw id, as before.
+                pickAsset(id, id);
+              }
+            });
           }}
         >
           <label htmlFor="midi-asset-id" className="sr-only">
