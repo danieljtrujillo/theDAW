@@ -33,6 +33,7 @@ import { IoSurfaceSelect } from '../audio/IoDeviceSelect';
 import { useIoDevicesStore, useResolvedSurface } from '../../state/ioDevicesStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { logInfo, logWarn } from '../../state/logStore';
+import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
@@ -184,8 +185,16 @@ export const MidiPanel: React.FC = () => {
         void refreshInputs();
       } catch (e) {
         if (!cancelled) {
+          // Re-enumerate first: a device that went away raises the "not
+          // connected" notice from the store, in one place.
           void refreshInputs();
-          logWarn('vocal', `mic monitor unavailable: ${String(e)}`);
+          // A machine with no microphone is not a fault, and this effect re-runs
+          // on every device change and remount — so classify it, say it once,
+          // and only call it a warning when something is actually wrong.
+          const failure = describeMicFailure(e, 'the level meter');
+          if (shouldAnnounceMicFailure(failure, 'the level meter')) {
+            (failure.benign ? logInfo : logWarn)('vocal', failure.message);
+          }
         }
       }
     })();

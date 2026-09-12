@@ -6,6 +6,7 @@ import { useIoDevicesStore, useResolvedSurface } from '../../../state/ioDevicesS
 import { pollVocalJob } from '../../../lib/lyricsClient';
 import { useLyricsStore } from '../../../state/lyricsStore';
 import { logError } from '../../../state/logStore';
+import { describeMicFailure } from '../../../lib/micErrors';
 import { LineScore, MIN_CLARITY, scoreFrame } from './singSync';
 import { FrameRing, startSingMic, type SingMic } from './singPitch';
 
@@ -169,15 +170,14 @@ export const PitchLane: React.FC<PitchLaneProps> = ({ entryId, getPosMs, activeL
       })
       .catch((e) => {
         if (cancelled) return;
-        const name = e instanceof Error ? e.name : '';
         // A device that went away mid-session is not a permission problem, and
         // saying "permission denied" for it sends the user to the wrong fix.
-        // Re-enumerating raises the "not connected" notice from one place.
-        if (name === 'OverconstrainedError' || name === 'NotFoundError') {
-          setMicError('the chosen microphone is not connected');
+        // describeMicFailure separates the four real causes; re-enumerating
+        // raises the "not connected" notice from one place.
+        const failure = describeMicFailure(e, "SING's pitch lane");
+        setMicError(failure.message);
+        if (failure.kind === 'no-device' || failure.kind === 'overconstrained') {
           void useIoDevicesStore.getState().refresh();
-        } else {
-          setMicError(e instanceof Error ? e.message : String(e));
         }
         setMicOn(false);
       });

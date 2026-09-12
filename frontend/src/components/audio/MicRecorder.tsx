@@ -5,6 +5,7 @@ import {
 import { registerSinkElement } from '../../lib/audioSink';
 import { surfaceDeviceId, useIoDevicesStore } from '../../state/ioDevicesStore';
 import { logError, logInfo } from '../../state/logStore';
+import { describeMicFailure } from '../../lib/micErrors';
 import { useLibraryStore } from '../../state/libraryStore';
 import {
   sendAudioToEditor, sendAudioToInit, sendAudioToInpaint,
@@ -145,9 +146,14 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
         setElapsedSec((Date.now() - startedAtRef.current) / 1000);
       }, 250);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      logError('mic', `getUserMedia failed: ${msg}`);
+      // "NotFoundError: Requested device not found" told the user nothing about
+      // what to do. describeMicFailure names the cause and the fix, and marks
+      // the no-microphone case as the ordinary state of a machine rather than a
+      // fault worth an error line.
+      const failure = describeMicFailure(e, 'recording');
+      setError(failure.message);
+      if (failure.benign) logInfo('mic', failure.message);
+      else logError('mic', failure.message);
     }
   };
 

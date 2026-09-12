@@ -41,6 +41,7 @@ import { AssistantOrb } from './AssistantOrb';
 import { usePianoRollStore, type PianoNote } from '../../../state/pianoRollStore';
 import { encodeWav } from '../../../lib/wavEncode';
 import { logInfo, logWarn } from '../../../state/logStore';
+import { describeMicFailure } from '../../../lib/micErrors';
 import { getEngineCtx } from '../../../state/playerStore';
 import { surfaceDeviceId, useIoDevicesStore } from '../../../state/ioDevicesStore';
 import { InstrumentPicker } from '../InstrumentPicker';
@@ -258,8 +259,12 @@ export const Vocal2MidiPanel: React.FC = () => {
       rec.ondataavailable = (ev) => { if (ev.data.size) chunksRef.current.push(ev.data); };
       rec.start();
     } catch (err) {
-      logWarn('vocal2midi', `mic error: ${String(err)}`);
-      setStatus('mic error - check permission');
+      // "check permission" was wrong for three of the four real causes — a
+      // machine with no microphone, a device another program holds, and an
+      // unmeetable constraint all sent the user to the permission dialog.
+      const failure = describeMicFailure(err, 'this recorder');
+      logWarn('vocal2midi', failure.message);
+      setStatus(failure.message);
     }
   }, []);
 
