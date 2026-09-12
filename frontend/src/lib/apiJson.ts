@@ -25,8 +25,10 @@ async function handle<T>(r: Response): Promise<T> {
 async function describeApiError(r: Response): Promise<string> {
   const body = await r.clone().text();
   try {
-    const parsed = JSON.parse(body) as { error?: unknown };
-    if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error.trim();
+    const parsed = JSON.parse(body) as { detail?: unknown; error?: unknown };
+    const hasDetail =
+      (typeof parsed.detail === 'string' && Boolean(parsed.detail.trim())) || Array.isArray(parsed.detail);
+    if (!hasDetail && typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error.trim();
   } catch {
     /* not JSON, or no `error` key: fall through to the shared description */
   }
