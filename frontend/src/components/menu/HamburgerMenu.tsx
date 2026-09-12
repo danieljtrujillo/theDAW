@@ -233,8 +233,14 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
     }
   };
 
+  // Focus goes back to the trigger before the action runs, as it does on
+  // Escape: the focused item unmounts with the menu, and an item that opens
+  // no modal (Edit Layout, Show/Hide Feature Notes) would otherwise leave
+  // focus on <body>. Items that open a modal take focus into their dialog
+  // from there.
   const selectItem = (item: MenuAction) => {
     setOpen(false);
+    triggerRef.current?.focus();
     item.onSelect();
   };
 

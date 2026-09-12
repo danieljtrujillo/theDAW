@@ -19,9 +19,9 @@
  *   `input.click()`, run synchronously inside HOME's click handler: any await
  *   or timeout before `.click()` leaves the user activation and the browser
  *   silently refuses to open the picker.
- * - The menu mechanics (outside click, Escape back to the trigger, roving
- *   arrows, Tab closes, aria-controls only while rendered) mirror
- *   HamburgerMenu so the two neighbours behave as one.
+ * - The menu mechanics (outside click, Escape and a chosen item both hand
+ *   focus back to the trigger, roving arrows, Tab closes, aria-controls only
+ *   while rendered) mirror HamburgerMenu so the two neighbours behave as one.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { FileAudio, FolderInput, FolderOpen } from 'lucide-react';
@@ -154,10 +154,15 @@ export const ImportMenu: React.FC<ImportMenuProps> = ({ onOpenProject, onImportD
     }
   };
 
-  // Close first, then act: the picker's click must still be inside the user
-  // activation, and so must the modal opens, so nothing here is deferred.
+  // Close, hand focus back to the trigger, then act — nothing deferred, since
+  // the picker's click and the modal opens must stay inside the user
+  // activation. Focus moves before the action because the focused item is
+  // about to unmount with the menu: without this, "Audio files…" then Cancel
+  // in the OS picker left focus on <body>, and only Escape ever returned it.
+  // The project and DAW modals take focus into their own dialogs from there.
   const selectItem = (item: MenuAction) => {
     setOpen(false);
+    triggerRef.current?.focus();
     item.onSelect();
   };
 
@@ -204,9 +209,14 @@ export const ImportMenu: React.FC<ImportMenuProps> = ({ onOpenProject, onImportD
         ariaExpanded={open}
         ariaControls={open ? MENU_ID : undefined}
       />
-      {/* The native picker. Hidden, but a real labelled field: the sr-only
-          label is what a screen reader names it by. AUDIO_ACCEPT rather than
-          a bare audio/* so an empty-mime .wav is not greyed out on Windows. */}
+      {/* The native picker: a real labelled field, visually hidden with
+          sr-only (a 1px clip) rather than display:none, which would drop it
+          from the accessibility tree and leave the label naming nothing. It
+          is kept out of the Tab order because the menu's "Audio files…" item
+          is the keyboard route — Tab from IMPORT must not land on a field
+          nobody can see — while a screen reader's browse mode still finds it
+          under its label. AUDIO_ACCEPT rather than a bare audio/* so an
+          empty-mime .wav is not greyed out on Windows. */}
       <label htmlFor={INPUT_ID} className="sr-only">
         Audio files to import
       </label>
@@ -217,7 +227,8 @@ export const ImportMenu: React.FC<ImportMenuProps> = ({ onOpenProject, onImportD
         type="file"
         accept={AUDIO_ACCEPT}
         multiple
-        className="hidden"
+        tabIndex={-1}
+        className="sr-only"
         onChange={onFileChange}
       />
 
