@@ -1,10 +1,11 @@
 /**
- * The header's icon button.
+ * The header's button: an icon, optionally with a word beside it.
  *
  * One treatment for every control in the top-bar cluster — mobile access, the
- * help search, the app menu — so the row reads as one set of buttons instead of
- * three lookalikes. `accent` picks the hue; `active` is the filled state a
- * popover trigger wears while its panel is open.
+ * help search, IMPORT, the app menu — so the row reads as one set of buttons
+ * instead of four lookalikes. `accent` picks the hue; `active` is the filled
+ * state a popover trigger wears while its panel is open; `label` adds visible
+ * text for the one control (IMPORT) that has to be found without hovering.
  *
  * It sits in its own file rather than inside Shell because the help-search
  * popover renders one for its own trigger while Shell renders the popover:
@@ -17,8 +18,17 @@ export type TopBarAccent = 'purple' | 'emerald' | 'sky' | 'rose' | 'neutral';
 export interface TopBarButtonProps {
   onClick: () => void;
   icon: React.ReactNode;
-  /** Tooltip AND accessible name — these buttons carry no visible text. */
+  /**
+   * Tooltip, and the accessible name when there is no `label` — an icon-only
+   * button carries no visible text.
+   */
   title: string;
+  /**
+   * Visible text beside the icon. When present it IS the accessible name, so
+   * no aria-label is set: one would override what the button plainly says.
+   * `title` then carries the longer hint.
+   */
+  label?: string;
   accent?: TopBarAccent;
   /** Filled treatment. A popover trigger wears it while its panel is open. */
   active?: boolean;
@@ -67,6 +77,7 @@ export const TopBarButton: React.FC<TopBarButtonProps> = ({
   onClick,
   icon,
   title,
+  label,
   accent = 'neutral',
   active = false,
   ariaHasPopup,
@@ -82,13 +93,16 @@ export const TopBarButton: React.FC<TopBarButtonProps> = ({
       ref={buttonRef}
       onClick={onClick}
       title={title}
-      aria-label={title}
+      aria-label={label ? undefined : title}
       aria-haspopup={ariaHasPopup}
       aria-expanded={ariaExpanded}
       aria-controls={ariaControls}
       className={`p-1.5 rounded border transition-colors group flex items-center gap-1.5 outline-none focus-visible:ring-1 focus-visible:ring-purple-400/60 ${stateCls}`}
     >
       {icon}
+      {label && (
+        <span className="text-[10px] font-black uppercase tracking-widest leading-none">{label}</span>
+      )}
     </button>
   );
 };
