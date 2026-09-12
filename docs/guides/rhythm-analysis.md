@@ -78,9 +78,7 @@ about as well: 13/8 at the quarter is a two-bar 13/4, and the bar is the
 shortest cycle that explains the accents. A grid finer than the music is
 rejected by an occupancy test: a position is occupied when its onset mass is
 1.5x the mass at the midpoints either side, and a grid needs 60 % of its
-positions occupied. `level` on each segment names the grid it was read on;
-`diagnostics.levels` lists every grid tried with its rate, occupancy, quality
-and why it was taken or not.
+`level` on each segment names the grid it was read on; `diagnostics.levels` records the grids tried, with rate and acceptance status on each candidate and occupancy, quality, and rejection details when available.
 
 ## Known limits
 
