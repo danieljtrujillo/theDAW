@@ -30,8 +30,9 @@ import { useEffect, useState } from 'react';
 
 export const DESIGN_W = 1600;
 export const DESIGN_SHELL_H = 820;
-/** PlayerFooter height (h-20) — fixed, outside the zoomed subtree. */
-export const FOOTER_H = 56;
+/** PlayerFooter height (h-16: a 16px scrub strip over a 48px control row) —
+ *  fixed, outside the zoomed subtree. PlayerFooter's `h-16` must match. */
+export const FOOTER_H = 64;
 export const LAYOUT_ZOOM_MIN = 0.6;
 export const LAYOUT_ZOOM_MAX = 1.1;
 

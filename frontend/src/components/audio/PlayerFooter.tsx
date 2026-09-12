@@ -36,68 +36,146 @@ const formatDuration = (sec: number | null | undefined): string => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+
+/** Arrow keys move the playhead by this much; Shift multiplies it by six. */
+const SEEK_STEP_SEC = 5;
+
 /**
- * The time readouts + scrub bar, isolated so the per-frame `currentTime` tick
- * re-renders ONLY this row — previously the whole footer (both side sections,
- * the transport cluster, the action button) re-rendered every animation frame,
- * which is exactly the kind of cost a fixed chrome element must not have.
+ * The scrub strip: the footer's whole top edge, 16px tall, with the elapsed
+ * and total times at its ends. It used to be a 3px line under the transport
+ * buttons with a handle that only appeared on hover, which made the playhead
+ * the hardest thing in the footer to reach. Now the hit area is the strip, the
+ * handle is always there once a track is loaded, a hover shows the time under
+ * the pointer, dragging scrubs, and the keyboard seeks.
+ *
+ * Isolated so the per-frame `currentTime` tick re-renders ONLY this strip —
+ * the footer shell (side sections, transport, action button) must not pay
+ * that cost.
  */
-const TransportProgressRow: React.FC = () => {
-  const progressRef = useRef<HTMLDivElement | null>(null);
+const ScrubStrip: React.FC = () => {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef(false);
   const currentTime = usePlayerStore((s) => s.currentTime);
   const engineDuration = usePlayerStore((s) => s.duration);
+  const hasTrack = usePlayerStore((s) => s.hasTrack);
   const seekByFraction = usePlayerStore((s) => s.seekByFraction);
   const lastDurationSec = useGenerateStore((s) => s.lastDurationSec);
-  const centerTab = useAppUiStore((s) => s.centerTab);
-  const vjSetCount = useVjSetStatusStore((s) => s.count);
-  const vjSetAcked = useVjSetStatusStore((s) => s.acked);
-  const vjSetName = useVjSetStatusStore((s) => s.name);
-  const isVjMode = centerTab === 'vj' || centerTab === 'dj';
+  // Fraction under the pointer while dragging; the strip follows it instead of
+  // the engine so the handle never lags the hand.
+  const [drag, setDrag] = useState<number | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
 
-  const displayDuration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
-  const progressPct = displayDuration > 0 ? Math.min(100, (currentTime / displayDuration) * 100) : 0;
+  const duration = engineDuration > 0 ? engineDuration : (lastDurationSec ?? 0);
+  const canSeek = hasTrack && duration > 0;
+  const frac = drag ?? (duration > 0 ? clamp01(currentTime / duration) : 0);
+  const shown = drag ?? hover;
 
-  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = progressRef.current;
-    if (!el || displayDuration <= 0) return;
-    const rect = el.getBoundingClientRect();
-    seekByFraction((e.clientX - rect.left) / rect.width);
+  const fracAt = (clientX: number): number => {
+    const el = trackRef.current;
+    if (!el) return frac;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 ? clamp01((clientX - r.left) / r.width) : frac;
+  };
+  const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canSeek) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const el = e.currentTarget;
+    el.setPointerCapture?.(e.pointerId);
+    // Focus before preventDefault, or the widget never becomes activeElement
+    // and the keyboard seek below is unreachable by mouse (same trap SlideTrack
+    // documents).
+    el.focus({ preventScroll: true });
+    dragRef.current = true;
+    const f = fracAt(e.clientX);
+    setDrag(f);
+    seekByFraction(f);
+    e.preventDefault();
+  };
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const f = fracAt(e.clientX);
+    if (dragRef.current) {
+      setDrag(f);
+      seekByFraction(f);
+    } else {
+      setHover(canSeek ? f : null);
+    }
+  };
+  const onUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current) {
+      dragRef.current = false;
+      seekByFraction(fracAt(e.clientX));
+      setDrag(null);
+    }
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!canSeek) return;
+    const step = (SEEK_STEP_SEC * (e.shiftKey ? 6 : 1)) / duration;
+    let handled = true;
+    switch (e.key) {
+      case 'ArrowRight': case 'ArrowUp': seekByFraction(clamp01(frac + step)); break;
+      case 'ArrowLeft': case 'ArrowDown': seekByFraction(clamp01(frac - step)); break;
+      case 'Home': seekByFraction(0); break;
+      case 'End': seekByFraction(1); break;
+      default: handled = false;
+    }
+    // stopPropagation too: the window-level editor shortcuts share these keys.
+    if (handled) { e.preventDefault(); e.stopPropagation(); }
   };
 
   return (
-    <div className="w-full flex items-center gap-3">
-      {isVjMode && vjSetCount > 0 && (
-        <span
-          className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono uppercase tracking-widest shrink-0 ${
-            vjSetAcked
-              ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-300'
-              : 'border-amber-500/40 bg-amber-500/5 text-amber-300'
-          }`}
-          title={
-            vjSetAcked
-              ? `VJ set "${vjSetName ?? ''}" loaded — ${vjSetCount} item${vjSetCount === 1 ? '' : 's'}`
-              : `Sending set "${vjSetName ?? ''}" to the VJ…`
-          }
-        >
-          {vjSetAcked ? <Check className="w-3 h-3" /> : <Cast className="w-3 h-3" />}
-          VJ {vjSetCount}
-        </span>
-      )}
-      <span className="text-[10px] font-mono text-zinc-500 w-8 text-right">{formatDuration(currentTime)}</span>
+    <div className="flex items-center gap-2.5 pl-36 pr-6 h-4 shrink-0">
+      <span className="w-9 shrink-0 text-right text-[10px] font-mono tabular-nums text-zinc-400">
+        {formatDuration(drag !== null ? drag * duration : currentTime)}
+      </span>
       <div
-        ref={progressRef}
-        onClick={handleProgressClick}
-        className="flex-1 h-0.75 bg-white/5 rounded-full relative group/bar cursor-pointer"
+        ref={trackRef}
+        role="slider"
+        aria-label="Playback position"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(duration)}
+        aria-valuenow={Math.round(frac * duration)}
+        aria-valuetext={`${formatDuration(frac * duration)} of ${formatDuration(duration)}`}
+        aria-disabled={!canSeek}
+        tabIndex={canSeek ? 0 : -1}
+        className={`group/scrub relative flex-1 h-4 select-none outline-none ${canSeek ? 'cursor-pointer' : 'cursor-default'}`}
+        style={{ touchAction: 'none' }}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+        onPointerLeave={() => setHover(null)}
+        onKeyDown={onKeyDown}
       >
-        <div className="absolute inset-0 bg-white/5" />
-        <div
-          className="absolute inset-y-0 left-0 bg-linear-to-r from-purple-600 to-purple-400 rounded-full"
-          style={{ width: `${progressPct}%` }}
-        >
-          <div className="hidden group-hover/bar:block absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-[0_0_8px_rgba(139,92,246,0.6)]" />
+        {/* The rail: thin at rest, thicker under the pointer or keyboard focus. */}
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 rounded-full bg-white/12 transition-[height] group-hover/scrub:h-1 group-focus-visible/scrub:h-1">
+          {hover !== null && drag === null && (
+            <div className="absolute inset-y-0 left-0 rounded-full bg-white/10" style={{ width: `${hover * 100}%` }} />
+          )}
+          <div
+            className="absolute inset-y-0 left-0 rounded-full bg-linear-to-r from-purple-600 to-purple-400"
+            style={{ width: `${frac * 100}%` }}
+          />
         </div>
+        <div
+          className={`absolute top-1/2 w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_8px_rgba(168,85,247,0.8)] transition-[opacity,transform] ${
+            canSeek ? 'opacity-100' : 'opacity-0'
+          } ${drag !== null ? 'scale-125' : 'group-hover/scrub:scale-125 group-focus-visible/scrub:scale-125'}`}
+          style={{ left: `${frac * 100}%` }}
+        />
+        {canSeek && shown !== null && (
+          <span
+            className="absolute bottom-full mb-1.5 -translate-x-1/2 whitespace-nowrap rounded border border-purple-500/30 bg-[#0a080f] px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-purple-200 pointer-events-none"
+            style={{ left: `${shown * 100}%` }}
+          >
+            {formatDuration(shown * duration)}
+          </span>
+        )}
       </div>
-      <span className="text-[10px] font-mono text-zinc-500 w-8">{formatDuration(displayDuration)}</span>
+      <span className="w-9 shrink-0 text-[10px] font-mono tabular-nums text-zinc-400">
+        {formatDuration(duration)}
+      </span>
     </div>
   );
 };
@@ -212,6 +290,9 @@ const MasterFxIndicator: React.FC = () => {
   );
 };
 
+/** A quiet icon button in the footer's secondary row. */
+const iconButton = 'p-1.5 rounded-md text-zinc-500 hover:text-white hover:bg-white/5 transition-colors disabled:opacity-30 disabled:pointer-events-none';
+
 export const PlayerFooter: React.FC = () => {
   const [isLiked, setIsLiked] = useState(false);
 
@@ -248,8 +329,8 @@ export const PlayerFooter: React.FC = () => {
   const toggleMute = usePlaybackStore((s) => s.toggleMute);
 
   // Engine state — deliberately NO `currentTime` subscription here: the
-  // per-frame tick lives in TransportProgressRow so the footer shell doesn't
-  // re-render 60×/s.
+  // per-frame tick lives in ScrubStrip so the footer shell doesn't re-render
+  // 60×/s.
   const engineLabel = usePlayerStore((s) => s.currentLabel);
   const engineDuration = usePlayerStore((s) => s.duration);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
@@ -311,6 +392,9 @@ export const PlayerFooter: React.FC = () => {
   // live transport rather than a disabled audio-only state.
   const isVjMode = centerTab === 'vj' || centerTab === 'dj';
   const isDjMode = centerTab === 'dj';
+  const vjSetCount = useVjSetStatusStore((s) => s.count);
+  const vjSetAcked = useVjSetStatusStore((s) => s.acked);
+  const vjSetName = useVjSetStatusStore((s) => s.name);
 
   // DJ master transport — the footer ▶ drives the DJ decks/set (not the global
   // single-track player) while on the DJ tab.
@@ -390,163 +474,215 @@ export const PlayerFooter: React.FC = () => {
     })();
   };
 
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void document.documentElement.requestFullscreen();
+    }
+  };
+
   return (
     <footer
-      className="edit-theme-scope fixed bottom-0 left-0 right-0 h-14 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 px-6 flex items-center gap-4 group"
+      className="edit-theme-scope fixed bottom-0 left-0 right-0 h-16 bg-[#0a080f]/95 backdrop-blur-xl border-t border-white/5 z-50 flex flex-col group"
       data-et-light={editTheme.light ? '1' : undefined}
       style={editTheme.vars as React.CSSProperties}
     >
-      {/* 1. Orb speech bubble + Now Playing. flex-1 (mirrors section 3) so the
-          now-playing readout fills the space between the bubble and the centred
-          transport, and the PLAY button still lands on the true viewport centre.
-          The orb sticks to the bottom-left corner and overlaps the footer, so
-          pad left past it: 16px margin + the 112px orb = 128, plus clearance. */}
-      <div className="flex items-center gap-3 flex-1 min-w-0 pl-36">
-        {/* The orb's speech bubble, in the slot G-Search used to hold. */}
-        <OrbTipBubble className="hidden xl:block" />
-        <div className="flex flex-col min-w-0 flex-1">
-          <h4 className="text-[13px] font-bold text-zinc-100 truncate tracking-tight">
-            {displayLabel ?? 'No output loaded'}
-          </h4>
-          <div className="flex items-center gap-2">
-            <span className="text-[9px] text-purple-400 font-mono uppercase tracking-widest border border-purple-500/20 px-1 rounded bg-purple-500/5">
-              {lastModelName ? lastModelName.toUpperCase() : (displayLabel ? 'LIBRARY' : 'IDLE')}
-            </span>
-            <span className="text-[10px] text-zinc-500 font-mono">
-              {displayDuration > 0 ? `${formatDuration(displayDuration)} // 48kHz` : '--:-- // 48kHz'}
-            </span>
+      {/* Row 1: the scrub strip along the footer's top edge, full width from
+          the orb's clearance to the right padding. Its height is FOOTER_H
+          (lib/layoutScale.ts) minus the 48px row below; change both together. */}
+      <ScrubStrip />
+
+      {/* Row 2: now playing · transport · up next + utilities. One row, so
+          nothing stacks inside 48px any more. */}
+      <div className="flex-1 min-h-0 flex items-center gap-4 px-6 pb-0.5">
+        {/* 1. Orb speech bubble + Now Playing. flex-1 (mirrors section 3) so the
+            now-playing readout fills the space between the bubble and the centred
+            transport, and the PLAY button still lands on the true viewport centre.
+            The orb sticks to the bottom-left corner and overlaps the footer, so
+            pad left past it: 16px margin + the 112px orb = 128, plus clearance. */}
+        <div className="flex items-center gap-3 flex-1 min-w-0 pl-36">
+          {/* The orb's speech bubble, in the slot G-Search used to hold. */}
+          <OrbTipBubble className="hidden xl:block" />
+          <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+            <h4 className="text-[13px] font-bold text-zinc-100 truncate tracking-tight leading-tight">
+              {displayLabel ?? 'No output loaded'}
+            </h4>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] text-purple-400 font-mono uppercase tracking-widest border border-purple-500/20 px-1 rounded bg-purple-500/5">
+                {lastModelName ? lastModelName.toUpperCase() : (displayLabel ? 'LIBRARY' : 'IDLE')}
+              </span>
+              <span className="text-[10px] text-zinc-500 font-mono">
+                {displayDuration > 0 ? `${formatDuration(displayDuration)} // 48kHz` : '--:-- // 48kHz'}
+              </span>
+              {isVjMode && vjSetCount > 0 && (
+                <span
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono uppercase tracking-widest shrink-0 ${
+                    vjSetAcked
+                      ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-300'
+                      : 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+                  }`}
+                  title={
+                    vjSetAcked
+                      ? `VJ set "${vjSetName ?? ''}" loaded — ${vjSetCount} item${vjSetCount === 1 ? '' : 's'}`
+                      : `Sending set "${vjSetName ?? ''}" to the VJ…`
+                  }
+                >
+                  {vjSetAcked ? <Check className="w-3 h-3" /> : <Cast className="w-3 h-3" />}
+                  VJ {vjSetCount}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-0.5 ml-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+            <button
+              type="button"
+              onClick={() => setIsLiked(!isLiked)}
+              aria-label={isLiked ? 'Unlike' : 'Like'}
+              aria-pressed={isLiked}
+              className={`${iconButton} ${isLiked ? 'text-pink-500 hover:text-pink-400' : ''}`}
+            >
+              <Heart className={`w-3.5 h-3.5 ${isLiked ? 'fill-current' : ''}`} />
+            </button>
+            <button type="button" aria-label="Share" className={iconButton}>
+              <Share2 className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onClick={() => setIsLiked(!isLiked)} className={`p-1.5 transition-colors ${isLiked ? 'text-pink-500' : 'text-zinc-600 hover:text-white'}`}>
-             <Heart className={`w-3.5 h-3.5 ${isLiked ? 'fill-current' : ''}`} />
-          </button>
-          <button className="p-1.5 text-zinc-600 hover:text-white transition-colors">
-             <Share2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
 
-      {/* 2. Main Transport Control — fixed-width + centred between the two
-          flex-1 side sections so the PLAY button stays on the viewport centre. */}
-      <div data-tour="transport" className="shrink min-w-72 w-136 max-w-2xl flex flex-col items-center gap-1">
-        <div className="flex items-center gap-5">
+        {/* 2. Transport — one row of controls, centred between the two flex-1
+            side sections so PLAY stays on the viewport centre. The playhead is
+            in the strip above, so this cluster no longer stacks. */}
+        <div data-tour="transport" className="shrink-0 flex items-center gap-4">
           <button
+            type="button"
             onClick={toggleLoop}
-            className={`p-1 transition-colors ${isLooping ? 'text-purple-400' : 'text-zinc-600 hover:text-white'}`}
+            aria-label={isLooping ? 'Looping on' : 'Looping off'}
+            aria-pressed={isLooping}
             title={isLooping ? 'Looping on' : 'Looping off'}
+            className={`${iconButton} ${isLooping ? 'text-purple-400 hover:text-purple-300' : ''}`}
           >
-            <Repeat className="w-4 h-4" />
+            <Repeat className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             onClick={() => seekByFraction(0)}
-            className="text-zinc-500 hover:text-white transition-colors disabled:opacity-30"
             disabled={!inEditorMode && !hasTrack}
+            aria-label="Jump to start"
             title="Jump to start"
+            className={iconButton}
           >
-            <SkipBack className="w-5 h-5 fill-current" />
+            <SkipBack className="w-4 h-4 fill-current" />
           </button>
           <button
+            type="button"
             onClick={handleToggle}
             disabled={!isVjMode && !inEditorMode && !hasTrack}
-            className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-[0_0_15px_rgba(255,255,255,0.2)] disabled:opacity-40 disabled:pointer-events-none"
+            aria-label={displayIsPlaying ? 'Pause' : 'Play'}
             title={displayIsPlaying ? 'Pause' : 'Play'}
+            className={`w-7.5 h-7.5 rounded-full flex items-center justify-center text-white bg-linear-to-br from-purple-400 to-purple-700 ring-1 ring-white/15 transition-all hover:scale-105 hover:brightness-110 active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
+              displayIsPlaying
+                ? 'shadow-[0_0_18px_rgba(168,85,247,0.6)]'
+                : 'shadow-[0_0_10px_rgba(168,85,247,0.25)]'
+            }`}
           >
-            {displayIsPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+            {displayIsPlaying
+              ? <Pause className="w-3.5 h-3.5 fill-current" />
+              : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
           </button>
           <button
+            type="button"
             onClick={() => seekByFraction(1)}
-            className="text-zinc-500 hover:text-white transition-colors disabled:opacity-30"
             disabled={!hasTrack}
+            aria-label="Jump to end"
             title="Jump to end"
+            className={iconButton}
           >
-            <SkipForward className="w-5 h-5 fill-current" />
+            <SkipForward className="w-4 h-4 fill-current" />
           </button>
           <button
-            onClick={() => {
-              if (document.fullscreenElement) {
-                void document.exitFullscreen();
-              } else {
-                void document.documentElement.requestFullscreen();
-              }
-            }}
-            className="p-1 text-zinc-600 hover:text-white transition-colors"
+            type="button"
+            onClick={toggleFullscreen}
+            aria-label="Toggle fullscreen"
             title="Toggle fullscreen"
+            className={iconButton}
           >
-            <Maximize2 className="w-4 h-4" />
+            <Maximize2 className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <TransportProgressRow />
-      </div>
+        {/* 3. Up Next (mirrors Now Playing) + Utilities. flex-1 (mirrors section 1)
+            so the up-next readout fills the space between the transport and the
+            utilities, right-aligned. */}
+        <div className="flex items-center gap-4 flex-1 min-w-0 justify-end">
+          {/* Up Next — mirror of the Now Playing block, right-aligned. Click loads
+              the next track (no formal queue yet, so it's the next library entry).
+              Hidden on narrow windows so the transport and action button keep room. */}
+          <button
+            type="button"
+            onClick={loadNext}
+            disabled={!nextEntry}
+            title={nextEntry ? `Play next: ${nextEntry.title}` : 'Nothing queued'}
+            className="group/next hidden lg:flex flex-col min-w-0 flex-1 items-end text-right gap-0.5 disabled:cursor-default"
+          >
+            <h4 className="text-[13px] font-bold text-zinc-300 group-hover/next:text-white transition-colors truncate tracking-tight leading-tight w-full">
+              {nextEntry?.title ?? 'Nothing queued'}
+            </h4>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-zinc-500 font-mono">
+                {nextEntry ? formatDuration(nextEntry.duration) : '--:--'}
+              </span>
+              <span className="text-[9px] text-emerald-400 font-mono uppercase tracking-widest border border-emerald-500/20 px-1 rounded bg-emerald-500/5">
+                Up Next
+              </span>
+            </div>
+          </button>
+          <div className="flex items-center gap-4 shrink-0">
+            <MasterFxIndicator />
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={toggleMute}
+                aria-label={isMuted ? 'Unmute' : 'Mute'}
+                aria-pressed={isMuted}
+                title={isMuted ? 'Unmute' : 'Mute'}
+                className={iconButton}
+              >
+                {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+              <SlideTrack min={0} max={100} step={1} value={volume}
+                onChange={(v) => setVolume(v)} className="w-24" ariaLabel="Volume" />
+            </div>
 
-      {/* 3. Up Next (mirrors Now Playing) + Utilities. flex-1 (mirrors section 1)
-          so the up-next readout fills the space between the transport and the
-          utilities, right-aligned. The pr-20 mirrors section 1's pl-20 (orb
-          clearance) so the two flex-1 sides stay equal and the transport — and
-          its PLAY button — lands on the true viewport centre (aligned with the
-          bottom-panel expand chevron). */}
-      <div className="flex items-center gap-3 flex-1 min-w-0 justify-end">
-        {/* Up Next — mirror of the Now Playing block, right-aligned. Click loads
-            the next track (no formal queue yet, so it's the next library entry).
-            Hidden on narrow windows so the transport and action button keep room. */}
-        <button
-          type="button"
-          onClick={loadNext}
-          disabled={!nextEntry}
-          title={nextEntry ? `Play next: ${nextEntry.title}` : 'Nothing queued'}
-          className="group/next hidden lg:flex flex-col min-w-0 flex-1 items-end text-right disabled:cursor-default"
-        >
-          <h4 className="text-[13px] font-bold text-zinc-300 group-hover/next:text-white transition-colors truncate tracking-tight w-full">
-            {nextEntry?.title ?? 'Nothing queued'}
-          </h4>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-zinc-500 font-mono">
-              {nextEntry ? formatDuration(nextEntry.duration) : '--:--'}
-            </span>
-            <span className="text-[9px] text-emerald-400 font-mono uppercase tracking-widest border border-emerald-500/20 px-1 rounded bg-emerald-500/5">
-              Up Next
-            </span>
-          </div>
-        </button>
-        <div className="flex items-center gap-5 shrink-0">
-          <MasterFxIndicator />
-          <div className="flex items-center gap-3">
-            <button onClick={toggleMute} className="text-zinc-500 hover:text-white transition-colors" title={isMuted ? 'Unmute' : 'Mute'}>
-              {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
-            </button>
-            <SlideTrack min={0} max={100} step={1} value={volume}
-              onChange={(v) => setVolume(v)} className="w-20" ariaLabel="Volume" />
-          </div>
+            <div className="h-6 w-px bg-white/5" />
 
-          <div className="h-6 w-px bg-white/5" />
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleDownload}
+                disabled={!hasTrack}
+                aria-label="Download current track"
+                title="Download current track"
+                className={iconButton}
+              >
+                <Download className="w-4 h-4" />
+              </button>
+              <button type="button" aria-label="More options" title="More options" className={iconButton}>
+                <MoreHorizontal className="w-4 h-4" />
+              </button>
+            </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleDownload}
-              disabled={!hasTrack}
-              className="p-2 border border-white/5 rounded-lg hover:border-purple-500/50 hover:bg-purple-500/5 transition-all text-zinc-500 hover:text-purple-400 disabled:opacity-30 disabled:pointer-events-none"
-              title="Download current track"
-            >
-               <Download className="w-4 h-4" />
-            </button>
-            <button className="p-2 border border-white/5 rounded-lg hover:border-white/20 transition-all text-zinc-500 hover:text-white">
-               <MoreHorizontal className="w-4 h-4" />
-            </button>
-          </div>
+            <div className="h-6 w-px bg-white/5" />
 
-          <div className="h-6 w-px bg-white/5" />
-
-          {/* The workspace action button (CREATE / PROCESS / TRAIN / …) — lives
-              at the footer's bottom-right on EVERY tab. Rounded 2×1, sized to
-              sit inside the 56px footer. */}
-          <div data-tour="action-button" className="shrink-0 w-20 h-10">
-            <LogActionButton />
+            {/* The workspace action button (CREATE / PROCESS / TRAIN / …) — lives
+                at the footer's bottom-right on EVERY tab. Rounded 2×1, sized to
+                sit inside the 48px row. */}
+            <div data-tour="action-button" className="shrink-0 w-20 h-10">
+              <LogActionButton />
+            </div>
           </div>
         </div>
       </div>
-
     </footer>
   );
 };
-
