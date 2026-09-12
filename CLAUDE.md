@@ -77,6 +77,32 @@ Concrete rules:
 
 See the `## Ruff Configuration` section below for more detail.
 
+### 4. NEVER push a lock that does not install on every shipped platform
+
+`uv lock` records whatever wheels the index listed at that minute. On
+2026-09-10 onnxruntime-gpu 1.30.0 was locked twenty minutes before its Linux
+x86_64 wheels reached PyPI, and the merge into gantasmo/theDAW failed on the
+Linux runner. The guard is in three places and all three stay:
+
+- `tool.uv.required-environments` in `pyproject.toml` names Linux x86_64 and
+  Windows AMD64, so `uv lock` refuses a version without wheels for both.
+- `scripts/check_lock.py` runs `uv lock --check` and a cross-platform dry-run
+  sync per target. The pre-commit hook in `.githooks/` runs it whenever
+  `pyproject.toml` or `uv.lock` is staged; the `lock` job in
+  `.github/workflows/test.yml` runs it on every pull request.
+- `theDAW.bat` / `theDAW.sh` set `git config core.hooksPath .githooks` on
+  every launch, so the hook is installed in every clone.
+
+Concrete rules:
+
+- **After any edit to `pyproject.toml`**, run `uv lock` and then
+  `python scripts/check_lock.py` before committing. Commit both files.
+- **When the check fails, fix the dependency, never the check or the CI.**
+  A missing wheel is a fact about the index; wait for it, pin the previous
+  patch release, or add a platform marker. Never `--no-install-package` the
+  problem away and never remove a platform from `required-environments`.
+- **Never bypass the hook** (`--no-verify`) to get a lock through.
+
 ## Project Overview
 
 Stable Audio 3 is a text-conditioned audio generation system. It generates audio from text prompts using a two-stage architecture: a DiT (diffusion transformer) generates latents, then the SAME autoencoder decodes them to 44.1kHz stereo audio.

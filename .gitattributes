@@ -33,3 +33,5 @@
 *.ckpt  binary
 *.pt    binary
 *.onnx  binary
+# Hooks run under sh on every platform; CRLF would break them.
+.githooks/* text eol=lf
