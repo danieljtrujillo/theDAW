@@ -29,8 +29,9 @@ import { ingestManifest, applyFromVj, registerControlSink } from '../state/contr
 import type { VisualControl } from '../state/slideStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useVjSetStatusStore } from '../state/vjSetStatusStore';
-import { logError, logInfo } from '../state/logStore';
+import { logError, logInfo, logWarn } from '../state/logStore';
 import { backendHttpBase, lanReachablePort } from '../lib/backendBase';
+import { importMedia, isMediaFile } from '../lib/mediaLibrary';
 import { describeQuestCastStatus, type QuestCastStatus } from '../components/vj/QuestCastPreview';
 
 
@@ -237,19 +238,28 @@ export const VJView: React.FC = () => {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
-  // Detect a library media drag anywhere in the app so we can raise a drop
-  // layer over the iframe BEFORE the cursor reaches it (the iframe would
-  // otherwise swallow the drag and the parent never sees the drop).
+  // Detect a library media drag — or a file drag from the desktop — anywhere in
+  // the app so we can raise a drop layer over the iframe BEFORE the cursor
+  // reaches it (the iframe would otherwise swallow the drag and the parent
+  // never sees the drop).
   useEffect(() => {
-    const hasMedia = (e: DragEvent) =>
-      Array.from(e.dataTransfer?.types ?? []).includes('application/x-thedaw-media');
-    const onDragOver = (e: DragEvent) => { if (hasMedia(e)) setMediaDragActive(true); };
+    const hasDroppable = (e: DragEvent) => {
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      return types.includes('application/x-thedaw-media') || types.includes('Files');
+    };
+    const onDragOver = (e: DragEvent) => { if (hasDroppable(e)) setMediaDragActive(true); };
     const clear = () => setMediaDragActive(false);
+    // An OS drag never fires dragend in this window; when it leaves the window
+    // (relatedTarget null) the layer has to come down or it keeps covering the
+    // iframe. A spurious clear is harmless — the next dragover raises it again.
+    const onDragLeave = (e: DragEvent) => { if (e.relatedTarget === null) clear(); };
     window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
     window.addEventListener('drop', clear);
     window.addEventListener('dragend', clear);
     return () => {
       window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', clear);
       window.removeEventListener('dragend', clear);
     };
@@ -259,19 +269,50 @@ export const VJView: React.FC = () => {
     e.preventDefault();
     setMediaDragActive(false);
     const raw = e.dataTransfer.getData('application/x-thedaw-media');
-    if (!raw) return;
-    try {
-      const m = JSON.parse(raw) as { id?: string; url?: string; kind?: string; name?: string };
-      sendTrackToVj({
-        entryId: m.id ?? null,
-        label: m.name ?? 'media',
-        url: m.url,
-        kind: m.kind === 'image' ? 'image' : 'video',
-      });
-      logInfo('vj', `Added "${m.name ?? 'media'}" to the VJ from a drag-and-drop.`);
-    } catch {
-      logError('vj', 'Could not read the dropped media.');
+    if (raw) {
+      try {
+        const m = JSON.parse(raw) as { id?: string; url?: string; kind?: string; name?: string };
+        sendTrackToVj({
+          entryId: m.id ?? null,
+          label: m.name ?? 'media',
+          url: m.url,
+          kind: m.kind === 'image' ? 'image' : 'video',
+        });
+        logInfo('vj', `Added "${m.name ?? 'media'}" to the VJ from a drag-and-drop.`);
+      } catch {
+        logError('vj', 'Could not read the dropped media.');
+      }
+      return;
     }
+    // Files from the desktop: video / image files import to the media library
+    // (the same entries the Library's Video tab drags from, so the VJ gets a
+    // persistent URL rather than a session blob), then each one goes to the VJ
+    // exactly as a media drag does. Read the files before anything awaits — the
+    // browser locks the DataTransfer once the handler yields.
+    const files = Array.from(e.dataTransfer.files);
+    const media = files.filter(isMediaFile);
+    const skipped = files.filter((f) => !isMediaFile(f));
+    if (skipped.length > 0) logWarn('vj', `${skipped.length} file(s) skipped — the VJ takes video and image files: ${skipped.map((f) => f.name).join(', ')}`);
+    if (media.length === 0) return;
+    void (async () => {
+      let added = 0;
+      for (const file of media) {
+        try {
+          const entry = await importMedia(file);
+          sendTrackToVj({
+            entryId: entry.id,
+            label: entry.title,
+            url: entry.mediaUrl ?? entry.audioUrl,
+            kind: entry.kind === 'image' ? 'image' : 'video',
+            thumbUrl: entry.thumbUrl ?? null,
+          });
+          added += 1;
+        } catch (err) {
+          logError('vj', `${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (added > 0) logInfo('vj', `Imported ${added} file(s) from the desktop into the media library and added them to the VJ.`);
+    })();
   };
 
   // Fetch the VJ URL on mount. The backend will spawn the dev server

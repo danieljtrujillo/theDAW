@@ -170,3 +170,18 @@ export async function refreshCoverArt(id: string, image?: File): Promise<string>
 /** The MIME types the media import input accepts. */
 export const MEDIA_ACCEPT =
   'video/*,image/*,.mp4,.webm,.mov,.mkv,.m4v,.avi,.ogv,.png,.webp,.gif,.jpg,.jpeg,.bmp,.avif,.apng';
+
+/** The extensions in MEDIA_ACCEPT, lower-case, without the dot. */
+const MEDIA_EXTS = new Set(
+  MEDIA_ACCEPT.split(',').filter((t) => t.startsWith('.')).map((t) => t.slice(1).toLowerCase()),
+);
+
+/**
+ * Mime OR extension, the way `isAudioFile` works for audio: Windows hands many
+ * files over with an empty mime type, and a mime-only check would drop a .mov.
+ */
+export const isMediaFile = (file: File): boolean => {
+  if (file.type.startsWith('video/') || file.type.startsWith('image/')) return true;
+  const dot = file.name.lastIndexOf('.');
+  return dot > 0 && MEDIA_EXTS.has(file.name.slice(dot + 1).toLowerCase());
+};

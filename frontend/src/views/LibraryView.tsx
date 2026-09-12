@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { CoverArt } from '../catalog/CoverArt';
 import { importUrlToLibrary } from '../lib/onlineImport';
+import { DESKTOP_DROP_ORIGIN, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
 import { LineageModal } from '../components/library/LineageModal';
@@ -474,6 +475,34 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
   const showBottomTab = useBottomPanelStore((s) => s.showTab);
   const setDetailsPane = useBottomPanelStore((s) => s.setDetailsPane);
+
+  // Audio files dropped anywhere on the list import to the library — the one
+  // place imports land — and the newest is selected, the way the header IMPORT
+  // button lands them. In-app library drags are not intercepted (a row dropped
+  // on its own list is a no-op), so the gate takes no in-app mime.
+  const [fileDragOver, setFileDragOver] = useState(false);
+  const onListDragOver = (e: React.DragEvent) => {
+    if (!dropHasLibraryOrFiles(e.dataTransfer, [])) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setFileDragOver(true);
+  };
+  const onListDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setFileDragOver(false);
+  };
+  const onListDrop = (e: React.DragEvent) => {
+    setFileDragOver(false);
+    const dt = e.dataTransfer;
+    if (!dropHasLibraryOrFiles(dt, [])) return;
+    e.preventDefault();
+    void entriesFromDrop(dt, { mimes: [], entries: [], origin: DESKTOP_DROP_ORIGIN }).then((imported) => {
+      const newest = imported[imported.length - 1];
+      if (!newest) return;
+      setSelectedEntry(newest.id);
+      logInfo('library', `Imported ${imported.length} file(s) from the desktop into the library`);
+    });
+  };
 
   const openScoreForEntry = (entryId: string) => {
     setSelectedEntry(entryId);
@@ -985,8 +1014,14 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         </div>
 
         {/* THE scroll region: only the per-tab lists scroll; everything
-            above (stats / search / filters / sub-tab strip) stays pinned. */}
-        <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar flex flex-col">
+            above (stats / search / filters / sub-tab strip) stays pinned.
+            It is also the drop target for audio files from the desktop. */}
+        <div
+          className={`flex-1 min-h-0 overflow-y-auto no-scrollbar flex flex-col transition-colors ${fileDragOver ? 'ring-1 ring-inset ring-purple-400/60 bg-purple-500/5' : ''}`}
+          onDragOver={onListDragOver}
+          onDragLeave={onListDragLeave}
+          onDrop={onListDrop}
+        >
 
         {subTab === 'tracks' && (<>
         {/* Icon-only top-level actions toolbar (user request 2026-05-28).

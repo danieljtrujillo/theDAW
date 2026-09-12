@@ -62,6 +62,8 @@ import { sendSetToVj, sendTrackToVj, isVjSetTargetActive, type VjSetItem } from 
 import { registerDjMasterHandler, reportDjMasterState } from '../state/djMasterBus';
 import { importUrlToLibrary } from '../lib/onlineImport';
 import { importAudioFile } from '../lib/importAudioFiles';
+import { DESKTOP_DROP_ORIGIN, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { logInfo } from '../state/logStore';
 import { listStems, prepareStems } from '../lib/djStems';
 import * as djEngine from '../state/djEngine';
 
@@ -201,9 +203,10 @@ const hasDeckLoadDragData = (event: React.DragEvent): boolean => {
 };
 
 /** Finder/Explorer drops onto a deck or a set. The same helper as the header
- *  IMPORT button; only the recorded provenance differs. */
+ *  IMPORT button; only the recorded provenance differs (the one every desktop
+ *  drop surface shares, from lib/libraryDrop). */
 const importAudioFileToLibrary = (file: File): Promise<LibraryEntry> =>
-  importAudioFile(file, { prompt: 'Imported from Finder drop', tags: ['finder-drop'] });
+  importAudioFile(file, DESKTOP_DROP_ORIGIN);
 
 const sameStringArray = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v, i) => v === b[i]);
@@ -1175,7 +1178,8 @@ const PlatterDropTarget: React.FC<{
 
 const SAMPLER_SLOTS = 10;
 
-/** Sampler bank (D7): 10 one-shot pads. Drop a library track onto a pad to load
+/** Sampler bank (D7): 10 one-shot pads. Drop a library track — or an audio file
+ *  from the desktop, which imports to the library first — onto a pad to load
  *  it; click fires it (polyphonic, through the DJ master); right-click clears.
  *  Pad→track assignments persist (djSamplerStore); buffers re-decode on mount. */
 const SamplerRail: React.FC = () => {
@@ -1201,15 +1205,19 @@ const SamplerRail: React.FC = () => {
 
   const drop = async (i: number, e: React.DragEvent) => {
     setOver(null);
-    const entryId = e.dataTransfer.getData(DJ_TRACK_MIME);
-    if (!entryId) return;
+    const dt = e.dataTransfer;
+    if (!dropHasLibraryOrFiles(dt, [DJ_TRACK_MIME])) return;
     e.preventDefault();
-    const entry = entries.find((x) => x.id === entryId);
+    const fromDesktop = !dt.getData(DJ_TRACK_MIME);
+    // A desktop drop imports its first audio file to the library, then loads
+    // the pad exactly as a library drop does.
+    const [entry] = await entriesFromDrop(dt, { mimes: [DJ_TRACK_MIME], entries, max: 1 });
     if (!entry?.audioUrl) return;
     try {
       await djEngine.loadSample(`sampler:${i}`, entry.audioUrl);
-      loadedRef.current.add(`sampler:${i}:${entryId}`);
-      setPad(i, { entryId, name: entry.title });
+      loadedRef.current.add(`sampler:${i}:${entry.id}`);
+      setPad(i, { entryId: entry.id, name: entry.title });
+      if (fromDesktop) logInfo('dj', `Imported "${entry.title}" from the desktop onto sampler pad ${i === 9 ? 0 : i + 1}`);
     } catch { /* decode/fetch failed — leave the pad empty */ }
   };
 
@@ -1227,10 +1235,10 @@ const SamplerRail: React.FC = () => {
             <button key={i} type="button"
               onClick={() => { if (pad) djEngine.triggerSample(`sampler:${i}`); }}
               onContextMenu={(e) => { e.preventDefault(); if (pad) { djEngine.clearSample(`sampler:${i}`); clearPad(i); } }}
-              onDragOver={(e) => { if (e.dataTransfer.types.includes(DJ_TRACK_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(i); } }}
+              onDragOver={(e) => { if (dropHasLibraryOrFiles(e.dataTransfer, [DJ_TRACK_MIME])) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(i); } }}
               onDragLeave={() => setOver((o) => (o === i ? null : o))}
               onDrop={(e) => void drop(i, e)}
-              title={pad ? `${pad.name} — click to fire, right-click to clear` : 'Drop a library track here to load a one-shot'}
+              title={pad ? `${pad.name} — click to fire, right-click to clear` : 'Drop a library track or an audio file here to load a one-shot'}
               className={`flex flex-col items-center justify-center gap-0.5 rounded-md border py-1.5 transition-colors active:scale-95 ${
                 over === i ? 'border-amber-400/70 bg-amber-500/15'
                   : pad ? 'border-amber-500/40 bg-amber-500/8 text-amber-200 hover:bg-amber-500/15'
@@ -1794,7 +1802,8 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
 /* ═══════════════════════════════ SideListLane ═══════════════════════════════ */
 
 /** Staging queue ("prepare / play-next") — a compact card in the center-bottom
- *  rack row, flanked by the FX racks. Drag library/set rows in to stage them;
+ *  rack row, flanked by the FX racks. Drag library/set rows in to stage them
+ *  (audio files from the desktop import to the library first, then stage);
  *  reorder into play order; fire each onto a deck (→A/→B) or push the whole
  *  queue into the active Automix set. Staged rows re-emit the shared
  *  DJ_TRACK_MIME so they also drop straight onto the waveform lanes / sampler.
@@ -1813,11 +1822,17 @@ const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.Deck
   const [over, setOver] = useState(false);
   const [queueSort, setQueueSort] = useState<{ key: 'title' | 'bpm'; dir: 'asc' | 'desc' } | null>(null);
 
-  const stage = (id: string) => { const lib = entries.find((e) => e.id === id); if (lib) add({ entryId: id, label: lib.title }); };
   const onDrop = (e: React.DragEvent) => {
     setOver(false);
-    const id = e.dataTransfer.getData(DJ_TRACK_MIME);
-    if (id) { e.preventDefault(); stage(id); }
+    const dt = e.dataTransfer;
+    if (!dropHasLibraryOrFiles(dt, [DJ_TRACK_MIME])) return;
+    e.preventDefault();
+    const fromDesktop = !dt.getData(DJ_TRACK_MIME);
+    // A desktop drop imports every audio file to the library, then stages each.
+    void entriesFromDrop(dt, { mimes: [DJ_TRACK_MIME], entries }).then((dropped) => {
+      for (const lib of dropped) add({ entryId: lib.id, label: lib.title });
+      if (fromDesktop && dropped.length > 0) logInfo('dj', `Imported ${dropped.length} file(s) from the desktop into the Next queue`);
+    });
   };
   const pushToSet = () => {
     if (!activeId || items.length === 0) return;
@@ -1850,7 +1865,7 @@ const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.Deck
 
   return (
     <div
-      onDragOver={(e) => { if (e.dataTransfer.types.includes(DJ_TRACK_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(true); } }}
+      onDragOver={(e) => { if (dropHasLibraryOrFiles(e.dataTransfer, [DJ_TRACK_MIME])) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(true); } }}
       onDragLeave={() => setOver(false)}
       onDrop={onDrop}
       className={`hardware-card min-h-0 overflow-hidden transition-colors ${over ? 'ring-1 ring-purple-400/60 bg-purple-500/5' : ''}`}
