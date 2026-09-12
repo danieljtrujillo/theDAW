@@ -12,7 +12,7 @@ import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
 import { SemanticWave } from '../components/audio/SemanticWave';
 import { FooterScrubWave } from '../components/audio/FooterScrubWave';
-import { LibraryMidiPicker, type PickerAnchor } from '../components/audio/LibraryMidiPicker';
+import { LibraryPicker, MIDI_ONLY_TABS, type PickerAnchor } from '../components/audio/LibraryPicker';
 import { renderMidiBufferToBlob } from '../lib/midiSynth';
 import { uuid } from '../orb-kit/utils';
 import { InfoTip } from '../components/ui/Tooltip';
@@ -682,14 +682,18 @@ export const AdvancedGenPanel: React.FC<{
     <div className="h-full w-full overflow-y-auto overflow-x-hidden text-[11px] flex flex-col gap-1.5 p-1.5">
 
       {/* MIDI picker — right-click the INIT box to render a MIDI into the init slot. */}
-      <LibraryMidiPicker
+      <LibraryPicker
         open={initMidiPicker !== null}
         anchor={initMidiPicker}
         title="Add MIDI to Init audio"
+        subtitle="Rendered to audio and loaded into the init slot"
+        tabs={MIDI_ONLY_TABS}
+        allowFiles
+        showInstrument
         onClose={() => setInitMidiPicker(null)}
-        onPick={(bytes, label) => {
+        onPick={(pick) => {
           setInitMidiPicker(null);
-          void addMidiToInit(bytes, label);
+          if (pick.kind === 'midi') void addMidiToInit(pick.bytes, pick.label);
         }}
       />
 
