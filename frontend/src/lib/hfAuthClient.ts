@@ -8,11 +8,30 @@
 //   POST /api/hfauth/logout      -> { logged_in: false }
 //   GET  /api/hfauth/login-url   -> { url }
 //
-// `logged_in: null` is a real third state: the backend could not reach the Hub,
-// so it reports "unknown" rather than wrongly logging an offline user out.
+// `logged_in: null` is a real third state: nobody could get an answer about
+// this token — either the backend could not reach the Hub, or we could not
+// reach the backend. It is NOT "signed out"; reporting it as signed out is how
+// a dead backend came to look like a missing token.
+//
+// Which hop failed, and how we know (see ./httpError):
+//   503 + x-thedaw-hop: huggingface  the backend answered; the HUB hop failed
+//   502 / 504, no hop header         a gateway answered; the BACKEND never did
+// The backend used to raise 502 for a bad answer from the Hub, which meant the
+// same status carried both meanings and neither could be trusted (issue #144).
+
+import {
+  HOP_HEADER,
+  HOP_HUGGINGFACE,
+  BACKEND_UNREACHABLE,
+  describeHttpError,
+  detailFromResponse,
+} from './httpError';
 
 /** Where the detected token came from. 'env' wins over 'stored' on the backend. */
 export type HfTokenSource = 'env' | 'stored' | 'none';
+
+/** Which hop failed. 'rejected' = the Hub said no about the token itself. */
+export type HfFailureKind = 'rejected' | 'unreachable' | 'backend-down' | 'disabled' | 'unknown';
 
 export interface HfAuthStatus {
   logged_in: boolean | null;
@@ -26,6 +45,19 @@ export interface HfAuthStatus {
    * never succeed. Routers mount at import, so a toggle needs a restart.
    */
   available: boolean;
+  /**
+   * Set when the STATUS CALL ITSELF failed, so a caller can say "we could not
+   * ask" instead of showing a signed-out state it did not measure. Null on a
+   * successful call. `logged_in` is null whenever this is set.
+   */
+  error?: HfStatusError | null;
+}
+
+/** Why the status call could not produce an answer. */
+export interface HfStatusError {
+  kind: HfFailureKind;
+  /** A sentence to show the user as-is. */
+  message: string;
 }
 
 /** Thrown by `hfLogin` so callers can tell a bad token from a dead network. */
@@ -33,7 +65,7 @@ export class HfAuthError extends Error {
   constructor(
     message: string,
     /** 'rejected' = the Hub said no. 'unreachable' = we never got an answer. */
-    readonly kind: 'rejected' | 'unreachable' | 'backend-down' | 'disabled' | 'unknown',
+    readonly kind: HfFailureKind,
   ) {
     super(message);
     this.name = 'HfAuthError';
@@ -42,44 +74,67 @@ export class HfAuthError extends Error {
 
 export const HF_TOKENS_URL = 'https://huggingface.co/settings/tokens';
 
-/** Read the backend's `detail` field (FastAPI error shape) if present. */
-async function readDetail(res: Response): Promise<string | null> {
-  try {
-    const body = (await res.json()) as { detail?: unknown } | null;
-    const detail = body?.detail;
-    return typeof detail === 'string' ? detail : null;
-  } catch {
-    return null;
-  }
+/** Said when we could not even ask the backend. */
+const STATUS_UNKNOWN_SUFFIX = ' Until it answers, theDAW cannot tell whether you are signed in.';
+
+/**
+ * Which hop a failed hfauth response blames.
+ *
+ * The backend marks the one hop it does not own with `x-thedaw-hop:
+ * huggingface` and reports it as 503. A 502/504 without that marker came from
+ * a gateway in front of the backend, so huggingface.co was never contacted —
+ * the status alone is enough even if a deployment strips custom headers.
+ */
+function hopOf(res: Response): HfFailureKind {
+  if (res.headers.get(HOP_HEADER) === HOP_HUGGINGFACE) return 'unreachable';
+  if (res.status === 503) return 'unreachable';
+  if (res.status === 502 || res.status === 504) return 'backend-down';
+  return 'unknown';
 }
 
 /**
- * Current login state. Never throws — an unreachable backend or a disabled
- * hfauth module reports the same "not signed in" shape, so callers can render
- * the token field instead of an error.
+ * Current login state. Never throws, and never invents one: a call that could
+ * not be answered comes back as `logged_in: null` with `error` set, so a
+ * backend outage is distinguishable from a missing token. Callers that only
+ * check `logged_in === true` keep working unchanged.
  */
 export async function fetchHfStatus(): Promise<HfAuthStatus> {
+  let res: Response;
   try {
-    const res = await fetch('/api/hfauth/status');
-    if (res.status === 404) {
-      return { logged_in: false, username: null, token_source: 'none', available: false };
-    }
-    if (!res.ok) {
-      return { logged_in: false, username: null, token_source: 'none', available: true };
-    }
-    const data = (await res.json()) as Partial<HfAuthStatus> | null;
-    return {
-      logged_in: data?.logged_in ?? null,
-      username: data?.username ?? null,
-      token_source: data?.token_source ?? 'none',
-      checking: data?.checking ?? false,
-      available: true,
-    };
+    res = await fetch('/api/hfauth/status');
   } catch {
-    // Backend still booting or momentarily down — assume the module is there
-    // and let the sign-in attempt produce the real error.
-    return { logged_in: false, username: null, token_source: 'none', available: true };
+    // No response at all — the backend is still booting, or it is gone.
+    return {
+      logged_in: null,
+      username: null,
+      token_source: 'none',
+      available: true,
+      error: { kind: 'backend-down', message: BACKEND_UNREACHABLE + STATUS_UNKNOWN_SUFFIX },
+    };
   }
+  if (res.status === 404) {
+    return { logged_in: false, username: null, token_source: 'none', available: false, error: null };
+  }
+  if (!res.ok) {
+    const kind = hopOf(res);
+    const message = await describeHttpError(res);
+    return {
+      logged_in: null,
+      username: null,
+      token_source: 'none',
+      available: true,
+      error: { kind, message: message + (kind === 'backend-down' ? STATUS_UNKNOWN_SUFFIX : '') },
+    };
+  }
+  const data = (await res.json().catch(() => null)) as Partial<HfAuthStatus> | null;
+  return {
+    logged_in: data?.logged_in ?? null,
+    username: data?.username ?? null,
+    token_source: data?.token_source ?? 'none',
+    checking: data?.checking ?? false,
+    available: true,
+    error: null,
+  };
 }
 
 /**
@@ -106,28 +161,23 @@ export async function hfLogin(token: string): Promise<string> {
   if (res.status === 404) {
     throw new HfAuthError('The Hugging Face Auth module is turned off in Settings → Modules.', 'disabled');
   }
-  // 502 and 503 are NOT the same failure and must not read the same.
-  //
-  // 503 is the backend's own verdict — it tried whoami and could not reach the
-  // Hub (hfauth/router.py). 502 is theDAW's Electron proxy saying it could not
-  // reach the BACKEND; huggingface.co was never contacted. Reporting both as
-  // "couldn't reach huggingface.co" sent a user to test their internet, prove
-  // it worked, and file a bug against the wrong half of the app.
-  if (res.status === 502) {
-    const detail = await readDetail(res);
-    throw new HfAuthError(
-      detail ?? "theDAW's own backend did not answer — huggingface.co was never contacted.",
-      'backend-down',
-    );
+  // "We could not reach huggingface.co" and "we could not reach our own
+  // backend" are different problems with different fixes, and the message has
+  // to name the right one. A user who is told the Hub is down when the Hub is
+  // fine tests their internet, proves it works, and files a bug against the
+  // wrong half of the app — which is exactly what happened in issue #144.
+  const kind = hopOf(res);
+  if (kind === 'unreachable') {
+    // The backend answered: it reached out to the Hub and that hop failed. Its
+    // own detail already names what the Hub did, so prefer it verbatim.
+    const detail = await detailFromResponse(res);
+    throw new HfAuthError(detail ?? "Couldn't reach huggingface.co to check the token.", 'unreachable');
   }
-  if (res.status === 503) {
-    const detail = await readDetail(res);
-    throw new HfAuthError(
-      detail ?? "Couldn't reach huggingface.co to check the token.",
-      'unreachable',
-    );
+  if (kind === 'backend-down') {
+    // A gateway answered, not the backend, so nothing was asked of the Hub.
+    throw new HfAuthError(await describeHttpError(res), 'backend-down');
   }
-  const detail = await readDetail(res);
+  const detail = await detailFromResponse(res);
   throw new HfAuthError(detail ?? `Sign-in failed (HTTP ${res.status}).`, 'unknown');
 }
 
